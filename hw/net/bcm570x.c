@@ -222,15 +222,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MODE_RESET          0x00000001u
 #define BCM570X_MISCCFG_RESET_CORE_CLOCKS 0x00000001u
 
-/*
- * The buffer-manager enable bit diverges from the public drivers. tg3 and bge
- * set BUFMGR_MODE.ENABLE and poll for it to stay SET; the IRIX tg driver sets
- * it and instead polls for it to CLEAR, reading the drop as the chip's
- * acknowledgement that the buffer manager has started. So the model
- * self-clears ENABLE (an enable-request the chip completes at once), while
- * ATTN_ENABLE and the rest of the write persist.
- */
+/* PG105 p. 152: ENABLE reports buffer-manager startup completion. */
 #define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
+#define BCM570X_BUFMGR_START_NS     1000000
 
 /*
  * The firmware-ready handshake. The driver writes the magic to on-chip SRAM
@@ -544,6 +538,8 @@ struct Bcm570xState {
     bool tx_coal_expired;
     QEMUTimer tx_coal_timer;
     QEMUTimer coal_timer;
+    QEMUTimer bufmgr_start_timer;
+    bool bufmgr_start_pending;
 
     /* The integrated copper PHY, reached through the MI registers. */
     Bcm570xPhyState phy;
@@ -557,6 +553,24 @@ static uint32_t bcm570x_regfile_read(Bcm570xState *s, uint32_t off)
 static void bcm570x_regfile_write(Bcm570xState *s, uint32_t off, uint32_t val)
 {
     s->regfile[(off & (BCM570X_REG_FILE_SIZE - 1)) >> 2] = val;
+}
+
+static void bcm570x_bufmgr_start(void *opaque)
+{
+    Bcm570xState *s = opaque;
+
+    if (s->bufmgr_start_pending) {
+        s->bufmgr_start_pending = false;
+        bcm570x_regfile_write(s, BCM570X_BUFMGR_MODE,
+                             bcm570x_regfile_read(s, BCM570X_BUFMGR_MODE) |
+                             BCM570X_BUFMGR_MODE_ENABLE);
+    }
+}
+
+static void bcm570x_bufmgr_cancel_start(Bcm570xState *s)
+{
+    s->bufmgr_start_pending = false;
+    timer_del(&s->bufmgr_start_timer);
 }
 
 static uint32_t bcm570x_sram_read(Bcm570xState *s, uint32_t off)
@@ -698,6 +712,7 @@ static void bcm570x_reset_rx_queue(Bcm570xState *s)
  */
 static void bcm570x_global_reset(Bcm570xState *s)
 {
+    bcm570x_bufmgr_cancel_start(s);
     memset(s->regfile, 0, sizeof(s->regfile));
     memset(s->sram, 0, sizeof(s->sram));
     s->tx_cons = 0;
@@ -1636,12 +1651,23 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
                                    &s->tx_coal_expired);
         return;
     case BCM570X_BUFMGR_MODE:
-        /*
-         * The reset bit self-clears like any *_MODE register, and so does the
-         * ENABLE request the IRIX driver polls for clear (its divergence from
-         * tg3/bge). ATTN_ENABLE and the rest persist for read-back.
-         */
-        val &= ~(BCM570X_MODE_RESET | BCM570X_BUFMGR_MODE_ENABLE);
+        if (val & BCM570X_MODE_RESET) {
+            bcm570x_bufmgr_cancel_start(s);
+            bcm570x_regfile_write(s, off, 0);
+        }
+        val &= ~BCM570X_MODE_RESET;
+        if (!(val & BCM570X_BUFMGR_MODE_ENABLE)) {
+            bcm570x_bufmgr_cancel_start(s);
+        } else if (!(bcm570x_regfile_read(s, off) &
+                     BCM570X_BUFMGR_MODE_ENABLE)) {
+            if (!s->bufmgr_start_pending) {
+                s->bufmgr_start_pending = true;
+                timer_mod(&s->bufmgr_start_timer,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          BCM570X_BUFMGR_START_NS);
+            }
+            val &= ~BCM570X_BUFMGR_MODE_ENABLE;
+        }
         break;
     case BCM570X_MBX_IRQ0_LO:
         /*
@@ -2527,6 +2553,7 @@ static NetClientInfo net_bcm570x_info = {
 
 static void bcm570x_cleanup_net(Bcm570xState *s)
 {
+    bcm570x_bufmgr_cancel_start(s);
     sgi_net_rx_latency_cleanup(&s->rx_latency);
     if (s->rx_flush_bh) {
         qemu_bh_delete(s->rx_flush_bh);
@@ -2684,6 +2711,7 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
 {
     Bcm570xState *s = BCM570X(obj);
 
+    bcm570x_bufmgr_cancel_start(s);
     /*
      * A cold reset zeroes the register file, the on-chip SRAM and the
      * indirect-window bases. The firmware-ready complement is arranged only
@@ -2734,6 +2762,16 @@ static int bcm570x_post_load(void *opaque, int version_id)
     Bcm570xState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
+    if (s->bufmgr_start_pending) {
+        if ((bcm570x_regfile_read(s, BCM570X_BUFMGR_MODE) &
+             BCM570X_BUFMGR_MODE_ENABLE) ||
+            !timer_pending(&s->bufmgr_start_timer)) {
+            return -EINVAL;
+        }
+    } else if (timer_pending(&s->bufmgr_start_timer)) {
+        return -EINVAL;
+    }
+
     /* The PHY migrates its cable state; NetClientState does not. */
     qemu_get_queue(s->nic)->link_down = s->phy.link_down;
     bcm570x_update_irq(s);
@@ -2759,8 +2797,8 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 10,
-    .minimum_version_id = 10,
+    .version_id = 11,
+    .minimum_version_id = 11,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, Bcm570xState),
@@ -2788,6 +2826,8 @@ static const VMStateDescription vmstate_bcm570x = {
                        Bcm570xPhyState),
         VMSTATE_BOOL(rx_coal_expired, Bcm570xState),
         VMSTATE_BOOL(tx_coal_expired, Bcm570xState),
+        VMSTATE_BOOL(bufmgr_start_pending, Bcm570xState),
+        VMSTATE_TIMER(bufmgr_start_timer, Bcm570xState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2812,6 +2852,8 @@ static void bcm570x_init(Object *obj)
     Bcm570xState *s = BCM570X(obj);
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
+    timer_init_ns(&s->bufmgr_start_timer, QEMU_CLOCK_VIRTUAL,
+                  bcm570x_bufmgr_start, s);
     timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_rx_coal_timer,
                   s);
     timer_init_ns(&s->tx_coal_timer, QEMU_CLOCK_VIRTUAL,
