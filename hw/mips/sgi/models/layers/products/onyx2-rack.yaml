@@ -253,5 +253,5 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image]
         provenance: derived
-        sources: ["tools/origami_lib/node_prom.py: node_prom_drives, the harness's own requirement that every launch seed one independent node flash image per node because the machine takes no -bios", "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"]
+        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"]
     evidence_policy: strict

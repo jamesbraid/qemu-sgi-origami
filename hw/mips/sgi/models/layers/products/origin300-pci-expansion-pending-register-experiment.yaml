@@ -10,7 +10,7 @@ sources:
   origin300-evidence-matrix: "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length"
   origin300-reset-alias-evidence: "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset"
   bounded-emulator-carrier-decision: "D-0024: bounded emulator carrier with the physical decoder left unresolved"
-  tools-origami-lib-prom: "tools/origami_lib/prom.py: L1_CONSOLE, ORIGIN300_EEPROM_INPUTS, ORIGIN300_SPD_INPUTS, and PromLaunchRequest.brick_serial, the harness's own existing Origin 300 identity inputs"
+  tools-origami-lib-prom: "tools/origami_lib/prom.py: ORIGIN300_EEPROM_INPUTS and PromLaunchRequest.brick_serial, the harness's Origin 300 identity inputs; hw/mips/sgi/sn-machine.c: the chassis-eeprom, board-eeprom and spd-eeprom raw record overrides; include/hw/mips/sgi/sn-machine.h: sgi_sn1_serial_line(), which puts each node's L1 console first"
   tools-origami-lib-irix: "tools/origami_lib/irix.py: _select_irix_profile rejecting IRIX install mode on Origin 300 (\"Origin 300 currently supports IRIX boot mode\")"
   tools-origami-lib-prom-b: "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection"
 layer:
