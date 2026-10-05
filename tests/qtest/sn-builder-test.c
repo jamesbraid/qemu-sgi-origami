@@ -3971,22 +3971,26 @@ static void test_unsupported_memory_population_rejected(const void *data)
  */
 #define MAX_RENDERS_PER_VIEW 16
 
+/* Each system reset begins with the root reset container's enter phase. */
+#define RESET_STARTS "(resettable-container)"
+
 /*
  * Start the machine with flat-view renders traced, run act, and count each
- * root's renders: those before the first system reset begins when after is
- * zero, otherwise those from the after'th reset start on. Returns the most
- * renders any one root had.
+ * root's renders. With after zero, count those before the first line
+ * naming marker; otherwise count those after the after'th such line.
+ * Returns the most renders any one root had.
  */
 static unsigned int count_renders(const char *machine,
                                   void (*act)(QTestState *qts),
-                                  unsigned int after, GHashTable *renders)
+                                  const char *marker, unsigned int after,
+                                  GHashTable *renders)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *path = NULL;
     g_autofree char *contents = NULL;
     g_auto(GStrv) lines = NULL;
     unsigned int most = 0;
-    unsigned int resets = 0;
+    unsigned int marks = 0;
     QTestState *qts;
     int fd;
 
@@ -3994,7 +3998,8 @@ static unsigned int count_renders(const char *machine,
     g_assert_no_error(error);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf("-M %s -display none -trace flatview_new "
-                      "-trace resettable_phase_enter_begin -D %s",
+                      "-trace resettable_phase_enter_begin "
+                      "-trace memory_region_ops_write -D %s",
                       machine, path);
     if (act) {
         act(qts);
@@ -4008,14 +4013,14 @@ static unsigned int count_renders(const char *machine,
         const char *root;
         unsigned int count;
 
-        if (strstr(*line, "(resettable-container)")) {
-            resets++;
+        if (strstr(*line, marker)) {
+            marks++;
             if (!after) {
                 break;
             }
             continue;
         }
-        if (resets < after || !strstr(*line, "flatview_new ")) {
+        if (marks < after || !strstr(*line, "flatview_new ")) {
             continue;
         }
         root = strstr(*line, "(root ");
@@ -4024,7 +4029,7 @@ static unsigned int count_renders(const char *machine,
         g_hash_table_insert(renders, g_strdup(root), GUINT_TO_POINTER(count));
         most = MAX(most, count);
     }
-    g_assert_cmpuint(resets, >=, MAX(after, 1));
+    g_assert_cmpuint(marks, >=, MAX(after, 1));
     return most;
 }
 
@@ -4042,7 +4047,7 @@ static void test_one_memory_transaction(const void *data)
     g_test_skip("flat view renders are traced only by the log backend");
     return;
 #endif
-    most = count_renders(data, NULL, 0, renders);
+    most = count_renders(data, NULL, RESET_STARTS, 0, renders);
     g_assert_cmpuint(g_hash_table_size(renders), >, 1);
     g_assert_cmpuint(most, <=, MAX_RENDERS_PER_VIEW);
 }
@@ -4096,7 +4101,8 @@ static void test_reset_renders(const void *data)
     g_test_skip("flat view renders are traced only by the log backend");
     return;
 #endif
-    most = count_renders(c->machine, c->prepare_and_reset, 2, renders);
+    most = count_renders(c->machine, c->prepare_and_reset, RESET_STARTS, 2,
+                         renders);
     g_assert_cmpuint(g_hash_table_size(renders), >, 1);
     g_assert_cmpuint(most, <=, c->most);
 }
@@ -4125,6 +4131,154 @@ static const ResetRenders bridge_origin200_reset = {
     .most = 2,
 };
 
+#define NI_VECTOR_PARMS         0x600200
+#define NI_VECTOR               0x600208
+#define NI_VECTOR_DATA          0x600210
+#define NI_VECTOR_STATUS        0x600300
+#define NI_VECTOR_CLEAR         0x600380
+#define NI_LOCAL_TABLE          0x638100
+#define NI_META_TABLE           0x638000
+#define ROUTER_PROTECTION       0x10
+#define ROUTER_LOCAL_TABLE      0x70100
+#define VECTOR_VALID            (UINT64_C(1) << 63)
+
+static const unsigned int module_nasids[] = { 0x11, 0x12, 0x23, 0x24 };
+
+static void hub_write(QTestState *qts, unsigned int node, uint64_t offset,
+                      uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 2 * node, HUB_LOCAL + offset,
+                                     bytes, sizeof(bytes)));
+}
+
+static uint64_t hub_read(QTestState *qts, unsigned int node, uint64_t offset)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 2 * node, HUB_LOCAL + offset,
+                                    bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void vector_write(QTestState *qts, uint64_t route, uint64_t address,
+                         uint64_t data)
+{
+    uint64_t ids = ((UINT64_C(0x30) + route) << 40) | (UINT64_C(0x81) << 32);
+
+    hub_read(qts, 0, NI_VECTOR_CLEAR);
+    hub_write(qts, 0, NI_VECTOR_DATA, data);
+    hub_write(qts, 0, NI_VECTOR, route);
+    hub_write(qts, 0, NI_VECTOR_PARMS, ids | address | 1);
+    g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_STATUS) & (VECTOR_VALID | 7),
+                    ==, VECTOR_VALID | 1);
+}
+
+/*
+ * Number and route a four-node Origin 2000 as sn0-baseio-test does: the
+ * Routers' tables through node 0's vector port, then each Hub's first
+ * turns, so that every Hub reaches every other.
+ */
+static void program_module(QTestState *qts)
+{
+    static const uint8_t first_turns[][4] = {
+        { 0, 5, 1, 1 }, { 1, 0, 2, 2 }, { 1, 1, 0, 5 }, { 2, 2, 1, 0 },
+    };
+    static const uint32_t router_entries[][4] = {
+        { 0xffffff, 0xffffff, 0x5fffff, 0x4fffff },
+        { 0x5fffff, 0x4fffff, 0xffffff, 0xffffff },
+    };
+    unsigned int from, to;
+
+    for (from = 0; from < 4; from++) {
+        hub_write(qts, from, NI_STATUS,
+                  NI_REGION_SIZE | ((uint64_t)module_nasids[from] << 8));
+    }
+    for (from = 0; from < 2; from++) {
+        uint64_t route = from ? 6 : 0;
+
+        vector_write(qts, route, ROUTER_PROTECTION, UINT64_C(1) << 12);
+        for (to = 0; to < 4; to++) {
+            vector_write(qts, route,
+                         ROUTER_LOCAL_TABLE + (module_nasids[to] & 15) * 8,
+                         router_entries[from][to]);
+        }
+    }
+    for (from = 0; from < 4; from++) {
+        for (to = 0; to < 4; to++) {
+            bool local = (module_nasids[from] >> 4) ==
+                         (module_nasids[to] >> 4);
+            uint64_t entry = local ?
+                NI_LOCAL_TABLE + (module_nasids[to] & 15) * 8 :
+                NI_META_TABLE + (module_nasids[to] >> 4) * 8;
+
+            hub_write(qts, from, entry, first_turns[from][to]);
+        }
+    }
+}
+
+/*
+ * A NUMAlink change floods every device the cable graph reaches, and each
+ * Hub whose claim aliases move would commit on its own: one render per
+ * Hub, four on a programmed four-node Origin 2000. One transaction at the
+ * flood's origin makes that one. These cases program the module's routing
+ * as sn0-baseio-test does, so that Hubs reach each other, then count the
+ * renders after a marker store to a scratch register.
+ */
+#define NI_SCRATCH_0            0x600100
+#define FLOOD_MARKER            "600100 value 0x1 "
+
+static void program_module_then_mark(QTestState *qts)
+{
+    program_module(qts);
+    hub_write(qts, 0, NI_SCRATCH_0, 1);
+}
+
+/*
+ * A Hub's flood: renumbering node 0 moves every Hub's claim alias for
+ * it. A route-table write starts the same flood, but only the writing
+ * Hub's own claims follow its tables, so one would commit either way.
+ */
+static void renumber_hub_flood(QTestState *qts)
+{
+    program_module_then_mark(qts);
+    hub_write(qts, 0, NI_STATUS, NI_REGION_SIZE | ((uint64_t)0x13 << 8));
+}
+
+/* A cable's flood: parting the Routers cuts each Hub off from two. */
+static void cable_down_flood(QTestState *qts)
+{
+    program_module_then_mark(qts);
+    qtest_qmp_assert_success(qts, "{'execute': 'qom-set', 'arguments': "
+                             "{'path': '/machine/r1-r2', "
+                             "'property': 'down', 'value': true}}");
+}
+
+typedef struct FloodRenders {
+    void (*flood)(QTestState *qts);
+} FloodRenders;
+
+static const FloodRenders hub_number_flood = { renumber_hub_flood };
+static const FloodRenders cable_flood = { cable_down_flood };
+
+static void test_flood_renders(const void *data)
+{
+    const FloodRenders *c = data;
+    g_autoptr(GHashTable) renders = new_render_table();
+    unsigned int most;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    most = count_renders("origin2000 -smp 8 -m 256M", c->flood, FLOOD_MARKER,
+                         1, renders);
+    g_assert_cmpuint(g_hash_table_size(renders), >, 1);
+    g_assert_cmpuint(most, ==, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4141,6 +4295,10 @@ int main(int argc, char **argv)
                         &numbered_origin2000_reset, test_reset_renders);
     qtest_add_data_func("sn/builder/reset-renders/bridge-origin200",
                         &bridge_origin200_reset, test_reset_renders);
+    qtest_add_data_func("sn/builder/flood-renders/hub-number",
+                        &hub_number_flood, test_flood_renders);
+    qtest_add_data_func("sn/builder/flood-renders/cable-down",
+                        &cable_flood, test_flood_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
