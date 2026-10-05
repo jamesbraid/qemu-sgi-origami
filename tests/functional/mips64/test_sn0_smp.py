@@ -23,6 +23,13 @@ STATE_EARLY_EXIT = 0x28
 
 RTC_TICKS_PER_MS = 1250
 
+# The RTC rendezvous needs CPU A to run during CPU B's 1 ms poll.  Under
+# icount a round-robin slice lasts until the next virtual-clock deadline,
+# so without a stated kick period the slice length is whatever timer some
+# device happens to arm.  A 0.1 ms kick, the period lib_matrix uses for its
+# multi-CPU round-robin cells, makes the poll span several slices.
+RTC_POLL_RR_KICK_PERIOD_NS = 100000
+
 PROMDATA_CPU_A = 0x00
 PROMDATA_CPU_B = 0x08
 PROMDATA_READY = 0x10
@@ -1242,7 +1249,9 @@ class SN0SMPMachine(QemuSystemTest):
         build_rtc_rendezvous().write(firmware)
 
         self.vm.set_machine(MACHINES['origin200'])
-        self.vm.add_args('-accel', 'tcg,thread=single',
+        self.vm.add_args('-accel',
+                         f'tcg,thread=single,rr-kick-period-ns='
+                         f'{RTC_POLL_RR_KICK_PERIOD_NS}',
                          '-icount', 'shift=2,align=off,sleep=on',
                          '-smp', '2', '-bios', firmware)
         self.vm.launch()
