@@ -53,6 +53,13 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/tests/test_check_sgi_test_results.py',
     'scripts/tests/test_archive_source.py',
     'scripts/ci/test_sgi_check.py',
+    'scripts/test_sanitizer_workflow.py',
+]
+
+# Script tests that import the functional test framework, which needs
+# pycotap and qemu.qmp from the build tree's pyvenv.
+BUILD_SCRIPT_SUITES = [
+    'scripts/test_provision_sgi_test_assets.py',
 ]
 
 # Migration cases start several QEMU processes per test file, so limit the
@@ -258,6 +265,7 @@ def select_qtests(build, base):
 
 def smoke(args):
     build = Build(args.build)
+    script_suites(BUILD_SCRIPT_SUITES, build.python)
     build.ninja('tests/functional/mips64-linux_kernel.tstamp')
 
     qtests, _ = select_qtests(build, args.base)
@@ -367,9 +375,9 @@ def main(argv=None):
     mode.set_defaults(func=scripts)
 
     mode = modes.add_parser(
-        'smoke', help='the pull-request checks: the qtests a change '
-                      'selects, one Linux boot, the unit tests and the ROM '
-                      'suite')
+        'smoke', help='the pull-request checks: the script tests that '
+                      'need a build, the qtests a change selects, one Linux '
+                      'boot, the unit tests and the ROM suite')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
                       help='select qtests changed since the merge base '
                            'with this commit (default: $PR_BASE_SHA; none '
