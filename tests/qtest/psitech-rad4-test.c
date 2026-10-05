@@ -2264,6 +2264,34 @@ static void test_dma_abort_mid_transfer(void)
     qtest_quit(qts);
 }
 
+/*
+ * Start needs enable in the same write (PCI 9060 Data Sheet Table 57): a
+ * start without it moves nothing and leaves Done set. A start while a
+ * transfer runs is ignored, so the running transfer finishes as it began
+ * rather than restarting from a new descriptor pointer.
+ */
+static void test_dma_start_needs_enable_and_idle(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_prepare_big(qts, 0x7c3u, 0);
+    dma_start(qts, DMA_CMD_START & ~DMA_CMD_ENABLE);
+    qtest_clock_step(qts, 4 * total);
+    g_assert_true(dma_done(qts));
+    g_assert_cmphex(dma_big_first(qts), ==, 0x00eeeeeeu);
+
+    dma_start(qts, DMA_CMD_START);
+    qtest_clock_step(qts, total / 2);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, FB_SIZE);
+    dma_start(qts, DMA_CMD_START);
+    qtest_clock_step(qts, total);
+    g_assert_true(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, DMA_BIG_LAST_WORD);
+
+    qtest_quit(qts);
+}
+
 /* Clearing enable mid-transfer pauses it; setting enable again resumes. */
 static void test_dma_pause_resume(void)
 {
@@ -3876,6 +3904,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-abort-mid-transfer",
                    test_dma_abort_mid_transfer);
     qtest_add_func("/psitech-rad4/dma-pause-resume", test_dma_pause_resume);
+    qtest_add_func("/psitech-rad4/dma-start-needs-enable-and-idle",
+                   test_dma_start_needs_enable_and_idle);
     qtest_add_func("/psitech-rad4/dma-chain-interrupt-timing",
                    test_dma_chain_interrupt_timing);
     qtest_add_func("/psitech-rad4/dma-reset-mid-transfer",
