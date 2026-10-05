@@ -575,6 +575,7 @@ struct PsitechRad4State {
     /* BAR2 framebuffer and mask. */
     uint8_t *framebuffer;
     uint32_t mask;
+    bool overlay_index_compat;
 
     /*
      * Scanlines of the framebuffer written since the last rad4_gfx_update(),
@@ -757,6 +758,38 @@ static bool rad4_rgb_index_is_display_attribute(uint16_t index)
             index < RAD4_RGB_AUX_FB_WAT + RAD4_RGB_AUX_WAT_COUNT) ||
            (index >= RAD4_RGB_AUX_OL_WAT &&
             index < RAD4_RGB_AUX_OL_WAT + RAD4_RGB_AUX_WAT_COUNT);
+}
+
+/*
+ * The overlay plane mask the shipped X server sets for its 4-plane overlay
+ * visual: bits 24-27 of the pixel word (see RAD4_PIXEL_WID_SHIFT).
+ */
+#define RAD4_OVERLAY_PLANE_MASK 0x0f000000u
+
+/*
+ * One 32-bit framebuffer store under the plane mask:
+ * new = (old & ~mask) | (value & mask).
+ *
+ * Guest compatibility approximation, not established board behaviour: with
+ * overlay-index-compat on, a store under the overlay plane mask whose value
+ * is a bare 4-bit index (nothing outside bits 0-3) writes that index into
+ * the overlay bits. The shipped IRIX 6.5.30 X server draws Motif's
+ * insensitive (greyed) menu labels with a tiled span fill that copies raw
+ * depth-4 tile pixels unshifted, while every other overlay path it and the
+ * driver use shifts the index to bits 24-27. Under a plain plane mask those
+ * labels come out transparent and the window behind shows through them. No
+ * other observed overlay store is a bare low-nibble index, so the remaining
+ * overlay drawing is unchanged. The property turns this off for strict
+ * plane-mask behaviour.
+ */
+static uint32_t rad4_masked_store(PsitechRad4State *s, uint32_t old,
+                                  uint32_t value)
+{
+    if (s->overlay_index_compat && s->mask == RAD4_OVERLAY_PLANE_MASK &&
+        (value & ~0xfu) == 0) {
+        value <<= 24;
+    }
+    return (old & ~s->mask) | (value & s->mask);
 }
 
 static bool rad4_index_in_color_lut(uint16_t index)
@@ -2090,7 +2123,7 @@ static bool rad4_dma_run(PsitechRad4State *s)
                 incoming = ldl_be_p(word);
                 old = ldl_be_p(s->framebuffer + local_addr + off);
                 stl_be_p(s->framebuffer + local_addr + off,
-                        (old & ~s->mask) | (incoming & s->mask));
+                        rad4_masked_store(s, old, incoming));
                 rad4_mark_dirty_range(s, local_addr + off, 4);
             }
         }
@@ -2331,7 +2364,7 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     if (offset < RAD4_FB_SIZE) {
         uint32_t old = ldl_be_p(s->framebuffer + offset);
 
-        stl_be_p(s->framebuffer + offset, (old & ~s->mask) | (v & s->mask));
+        stl_be_p(s->framebuffer + offset, rad4_masked_store(s, old, v));
         rad4_mark_dirty_range(s, offset, size);
         return;
     }
@@ -2862,6 +2895,8 @@ static const Property psitech_rad4_properties[] = {
     DEFINE_PROP_UINT16("device-id", PsitechRad4State, device_id,
                        RAD4_DEVICE_ID),
     DEFINE_PROP_DRIVE("eeprom", PsitechRad4State, eeprom_blk),
+    DEFINE_PROP_BOOL("overlay-index-compat", PsitechRad4State,
+                     overlay_index_compat, true),
 };
 
 static void rad4_instance_init(Object *obj)
