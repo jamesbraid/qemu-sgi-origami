@@ -521,6 +521,12 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
     uint16_t links = (1 << 8) | (1 << 15);
 
+    if (machine->kernel_filename) {
+        error_setg(errp, "%s: stock-PROM boot only; boot a kernel through "
+                   "the PROM's own TFTP netboot or a disk image, not -kernel",
+                   product);
+        return false;
+    }
     s->model = octane_model(product, s->topology_name, s->nodes_requested,
                             errp);
     if (!s->model) {
