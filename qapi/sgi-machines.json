@@ -1915,13 +1915,36 @@
 #
 # @offerings: every configuration a launcher may select
 #
+# @references: documented configurations retained for comparison
+#     They are not buildable or selectable.
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIMachines',
   'data': { 'schema': 'str',
             'version': 'uint32',
             'topologies': ['SGIModelTopology'],
-            'offerings': ['SGIModelOffering'] } }
+            'offerings': ['SGIModelOffering'],
+            '*references': ['SGIModelReference'] } }
+
+##
+# @SGIModelReference:
+#
+# A documented reference configuration retained for comparison.
+# The emulator cannot build it, and a launcher cannot select it.
+#
+# @name: stable configuration name
+# @product: product family
+# @display-name: human-readable configuration name
+# @description: authored description and known limitations
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelReference',
+  'data': { 'name': 'str',
+            'product': 'str',
+            'display-name': 'str',
+            'description': 'str' } }
 
 ##
 # @query-sgi-machines:

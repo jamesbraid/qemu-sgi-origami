@@ -2548,12 +2548,12 @@ static void test_ip53_runtime_permission_refusals(void)
         const char *message;
         bool qtest;
     } cases[] = {
-        { "origin350,topology=origin350-ip53-experiment",
+        { "origin350,topology=origin350",
           "2G", "4", "R16000",
-          "origin350-ip53-experiment requires ip53-experimental=on", false },
+          "origin350 requires ip53-experimental=on", false },
         { "origin300,ip53-experimental=on", "512M", "2", "R14000",
           "ip53-experimental=on requires the origin350 machine and "
-          "origin350-ip53-experiment topology", false },
+          "origin350 topology", false },
         { "origin350,topology=origin300-pci-expansion-experiment,"
           "ip53-experimental=on", "2G", "4", "R16000",
           "unknown topology", false },
@@ -2618,6 +2618,55 @@ static void test_ip53_runtime_permission_refusals(void)
     g_unlink(bios);
     g_unlink(data_path);
     g_unlink(clock_path);
+}
+
+static void test_sgi_catalogue_references(void)
+{
+    static const char *const names[] = {
+        "origin350-reference", "onyx350-base", "tezro-tower-one",
+        "tezro-tower-multi", "tezro-tower-four", "tezro-rack-base",
+        "tezro-rack-two-enclosure", "onyx4-host-g2", "onyx4-host-g2n",
+    };
+    QTestState *qts = qtest_init("-M none");
+    QDict *resp = qtest_qmp(qts,
+        "{ 'execute': 'query-sgi-sn-catalogue' }");
+    QDict *catalogue = qdict_get_qdict(resp, "return");
+    QList *references, *topologies, *offerings;
+    QListEntry *entry;
+    bool found[G_N_ELEMENTS(names)] = { false };
+
+    g_assert_nonnull(catalogue);
+    references = qdict_get_qlist(catalogue, "references");
+    topologies = qdict_get_qlist(catalogue, "topologies");
+    offerings = qdict_get_qlist(catalogue, "offerings");
+    g_assert_nonnull(references);
+    g_assert_cmpuint(qlist_size(references), ==, G_N_ELEMENTS(names));
+    QLIST_FOREACH_ENTRY(references, entry) {
+        QDict *reference = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *name = qdict_get_str(reference, "name");
+
+        for (size_t i = 0; i < G_N_ELEMENTS(names); i++) {
+            if (g_str_equal(name, names[i])) {
+                found[i] = true;
+                break;
+            }
+        }
+        g_assert_cmpstr(qdict_get_str(reference, "display-name"), !=, "");
+        g_assert_cmpstr(qdict_get_str(reference, "description"), !=, "");
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(names); i++) {
+        g_assert_true(found[i]);
+        QLIST_FOREACH_ENTRY(topologies, entry) {
+            QDict *topology = qobject_to(QDict, qlist_entry_obj(entry));
+            g_assert_cmpstr(qdict_get_str(topology, "name"), !=, names[i]);
+        }
+        QLIST_FOREACH_ENTRY(offerings, entry) {
+            QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
+            g_assert_cmpstr(qdict_get_str(offering, "topology"), !=, names[i]);
+        }
+    }
+    qobject_unref(resp);
+    qtest_quit(qts);
 }
 
 static void test_ip53_runtime_permission_defaults_false_and_immutable(void)
@@ -2706,7 +2755,7 @@ static void test_ip53_runtime_construction(void)
     g_assert_cmpint(ftruncate(clock_fd, 16), ==, 0);
     g_assert_cmpint(close(clock_fd), ==, 0);
     qts = qtest_initf(
-        "-M origin350,topology=origin350-ip53-experiment,"
+        "-M origin350,topology=origin350,"
         "ip53-experimental=on -m 2G -smp 4 "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000 "
@@ -2925,7 +2974,7 @@ static void test_ip53_integrated_bte_reset_overlap(void)
 static void test_ip53_static_bcm5701_nic_none(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start(
-        "origin350,topology=origin350-ip53-experiment,ip53-experimental=on",
+        "origin350,topology=origin350,ip53-experimental=on",
         "-nic none");
 
     ip53_bcm_assert_static_device(fixture->qts);
@@ -2955,7 +3004,7 @@ static void test_ip53_static_bcm5701_network_backend(void)
     nic = g_strdup_printf("-nic socket,fd=%d,mac=52:54:00:bc:57:01",
                           sockets[1]);
     fixture = ip53_runtime_test_start(
-        "origin350,topology=origin350-ip53-experiment,ip53-experimental=on",
+        "origin350,topology=origin350,ip53-experimental=on",
         nic);
     close(sockets[1]);
     ip53_bcm_assert_static_device(fixture->qts);
@@ -3678,7 +3727,7 @@ static void test_ip53_runtime_pxbow_migration(const void *opaque)
 static void test_ip53_l1_reported_type(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start(
-        "origin350,topology=origin350-ip53-experiment,ip53-experimental=on",
+        "origin350,topology=origin350,ip53-experimental=on",
         NULL);
     const uint64_t uart = NASID_TEST_HUB_LOCAL_REGISTERS + 0x80;
     const uint8_t request[] = { 0x10, 0, 4, 0x10, 6, 0, 3, 0 };
@@ -7245,6 +7294,8 @@ int main(int argc, char **argv)
                    test_ip53_previous_direct64_migration);
     qtest_add_func("sn/builder/ip53-runtime-permission-refusals",
                    test_ip53_runtime_permission_refusals);
+    qtest_add_func("sn/builder/catalogue-references",
+                   test_sgi_catalogue_references);
     qtest_add_func(
         "sn/builder/ip53-runtime-permission-defaults-false-and-immutable",
         test_ip53_runtime_permission_defaults_false_and_immutable);

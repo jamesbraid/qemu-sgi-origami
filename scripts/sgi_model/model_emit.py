@@ -1127,7 +1127,8 @@ def _offerings_for(model: dict, topology: dict,
 
 
 def render_catalogue_json(models: list[dict], *,
-                          product_models: dict[str, dict]) -> str:
+                          product_models: dict[str, dict],
+                          references: list[dict] | None = None) -> str:
     """The compiled catalogue: `topologies` and `offerings`, one
     schema-versioned JSON document with no provenance in it. `models` is
     every emulation-target configuration's
@@ -1150,5 +1151,6 @@ def render_catalogue_json(models: list[dict], *,
         # them with .get().
         "topologies": [_strip_none(topology) for topology in topologies],
         "offerings": [_strip_none(offering) for offering in offerings],
+        "references": sorted(references or [], key=lambda row: row["name"]),
     }
     return json.dumps(catalogue, indent=2, sort_keys=True) + "\n"

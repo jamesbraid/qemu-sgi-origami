@@ -21,7 +21,7 @@ from .model_compile import compile_model
 from .model_emit import default_topology, render_catalogue_json, render_manifest
 from .model_shared import install_generated_outputs
 
-from .registry import PRODUCT_MODELS, PRODUCT_NAMES
+from .registry import PRODUCT_MODELS, PRODUCT_NAMES, REFERENCE_TOPOLOGIES
 from .model_validation import load_checked_system_models, discover_model_paths
 
 SN_MODEL_JSON = "hw/mips/sgi/sn-model.json"
@@ -73,10 +73,19 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
         discover_model_paths(model_root), model_root=model_root)
 
     topologies = []
+    references = []
     machine_names: dict[str, str] = {}
     source_models: dict[str, dict] = {}
     for path, model in checked:
         machine = model["machine"]
+        if (path.stem in REFERENCE_TOPOLOGIES
+                and machine.get("model_role") == "reference"):
+            references.append({
+                "name": path.stem,
+                "product": path.stem.split("-")[0],
+                "display-name": machine["name"],
+                "description": machine.get("notes", ""),
+            })
         emulation = machine.get("emulation", {})
         machine_name = emulation.get("machine_name")
         if machine.get("model_role") != "emulation-target" or machine_name not in machines:
@@ -99,10 +108,17 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
                    if _path.stem == filename)
         for name, filename in PRODUCT_MODELS.items()
     }
+    reference_models = {
+        path.stem: model for path, model in checked
+        if path.stem in REFERENCE_TOPOLOGIES
+        and model["machine"].get("model_role") == "reference"
+    }
     _check_default_topology(topologies, machine_names, product_models)
     catalogue = render_catalogue_json(
-        list(source_models.values()), product_models=product_models)
-    manifest = render_manifest(source_models, {SGI_MACHINES_JSON: catalogue})
+        list(source_models.values()), product_models=product_models,
+        references=references)
+    manifest_models = {**source_models, **reference_models}
+    manifest = render_manifest(manifest_models, {SGI_MACHINES_JSON: catalogue})
     return {SGI_MACHINES_JSON: catalogue, SN_MODEL_JSON: manifest}
 
 
