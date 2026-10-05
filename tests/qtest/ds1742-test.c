@@ -86,6 +86,44 @@ static void test_fresh_seed(void)
     qtest_quit(qts);
 }
 
+static void test_qom_link_query(void)
+{
+    QTestState *qts = start("");
+    QDict *response;
+    QList *properties;
+    const QListEntry *entry;
+    bool found = false;
+
+    response = qtest_qmp(qts,
+        "{'execute':'qom-list','arguments':{"
+        "'path':'/machine/peripheral/clock'}}");
+    g_assert_null(qdict_get(response, "error"));
+    properties = qdict_get_qlist(response, "return");
+    g_assert_nonnull(properties);
+    for (entry = qlist_first(properties); entry; entry = qlist_next(entry)) {
+        QDict *property = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *name = qdict_get_try_str(property, "name");
+
+        if (name && g_str_equal(name, "memory-region")) {
+            g_assert_cmpstr(qdict_get_try_str(property, "type"), ==,
+                            "link<memory-region>");
+            found = true;
+            break;
+        }
+    }
+    g_assert_true(found);
+    qobject_unref(response);
+
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/peripheral/clock','property':'memory-region'}}");
+    g_assert_null(qdict_get(response, "error"));
+    g_assert_cmpstr(qdict_get_try_str(response, "return"), ==,
+                    "/machine/peripheral/clock/ds1742[0]");
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
 static void test_fresh_seed_default(void)
 {
     QTestState *qts = start_at("2024-02-28T23:59:59", "", "");
@@ -856,6 +894,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("/ds1742/backing-retry", GUINT_TO_POINTER(true),
                         test_backing_noop);
     qtest_add_func("/ds1742/fresh-seed", test_fresh_seed);
+    qtest_add_func("/ds1742/qom-link-query", test_qom_link_query);
     qtest_add_func("/ds1742/fresh-seed-default", test_fresh_seed_default);
     qtest_add_func("/ds1742/fresh-seed-year-boundary",
                    test_fresh_seed_year_boundary);
