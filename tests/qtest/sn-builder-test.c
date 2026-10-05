@@ -9,7 +9,9 @@
  * real two-node build.
  *
  * The one-memory-transaction cases count flat-view renders before the
- * first reset, so a builder that commits per device again fails here.
+ * first reset, so a builder that commits per device again fails here. The
+ * reset-renders cases count them during a system reset, so a reset path
+ * that commits per region again fails too.
  *
  * The named structural faults sgi_machine_validate_topology used to reject
  * here (a minimal two-node fixture topology fed straight to that validator)
@@ -3969,31 +3971,34 @@ static void test_unsupported_memory_population_rejected(const void *data)
  */
 #define MAX_RENDERS_PER_VIEW 16
 
-static void test_one_memory_transaction(const void *data)
+/*
+ * Start the machine with flat-view renders traced, run act, and count each
+ * root's renders: those before the first system reset begins when after is
+ * zero, otherwise those from the after'th reset start on. Returns the most
+ * renders any one root had.
+ */
+static unsigned int count_renders(const char *machine,
+                                  void (*act)(QTestState *qts),
+                                  unsigned int after, GHashTable *renders)
 {
-    const char *machine = data;
     g_autoptr(GError) error = NULL;
-    g_autoptr(GHashTable) renders = g_hash_table_new_full(g_str_hash,
-                                                          g_str_equal,
-                                                          g_free, NULL);
     g_autofree char *path = NULL;
     g_autofree char *contents = NULL;
     g_auto(GStrv) lines = NULL;
     unsigned int most = 0;
-    bool reset = false;
+    unsigned int resets = 0;
     QTestState *qts;
     int fd;
 
-#ifndef CONFIG_TRACE_LOG
-    g_test_skip("flat view renders are traced only by the log backend");
-    return;
-#endif
     fd = g_file_open_tmp("sn-builder-renders-XXXXXX.log", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf("-M %s -display none -trace flatview_new "
                       "-trace resettable_phase_enter_begin -D %s",
                       machine, path);
+    if (act) {
+        act(qts);
+    }
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
     g_unlink(path);
@@ -4004,10 +4009,13 @@ static void test_one_memory_transaction(const void *data)
         unsigned int count;
 
         if (strstr(*line, "(resettable-container)")) {
-            reset = true;
-            break;
+            resets++;
+            if (!after) {
+                break;
+            }
+            continue;
         }
-        if (!strstr(*line, "flatview_new ")) {
+        if (resets < after || !strstr(*line, "flatview_new ")) {
             continue;
         }
         root = strstr(*line, "(root ");
@@ -4016,10 +4024,84 @@ static void test_one_memory_transaction(const void *data)
         g_hash_table_insert(renders, g_strdup(root), GUINT_TO_POINTER(count));
         most = MAX(most, count);
     }
-    g_assert_true(reset);
+    g_assert_cmpuint(resets, >=, MAX(after, 1));
+    return most;
+}
+
+static GHashTable *new_render_table(void)
+{
+    return g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+}
+
+static void test_one_memory_transaction(const void *data)
+{
+    g_autoptr(GHashTable) renders = new_render_table();
+    unsigned int most;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    most = count_renders(data, NULL, 0, renders);
     g_assert_cmpuint(g_hash_table_size(renders), >, 1);
     g_assert_cmpuint(most, <=, MAX_RENDERS_PER_VIEW);
 }
+
+/*
+ * A system reset renders each view once per commit the reset makes, so
+ * these cases count the renders that follow the second system-reset start
+ * (the first is machine creation's). Each prepares state the reset must
+ * undo first, because a region already where reset puts it commits
+ * nothing.
+ */
+typedef struct ResetRenders {
+    const char *machine;
+    void (*prepare_and_reset)(QTestState *qts);
+    unsigned int most;
+} ResetRenders;
+
+#define NI_STATUS               0x600000
+#define NI_REGION_SIZE          (UINT64_C(1) << 17)
+
+/* Number every Hub of a four-node Origin 2000, then reset. */
+static void number_hubs_then_reset(QTestState *qts)
+{
+    for (unsigned int node = 0; node < 4; node++) {
+        uint8_t bytes[8];
+
+        stq_be_p(bytes, NI_REGION_SIZE | ((uint64_t)(0x11 + node) << 8));
+        g_assert_true(qtest_memwrite_cpu(qts, 2 * node, HUB_LOCAL + NI_STATUS,
+                                         bytes, sizeof(bytes)));
+    }
+    qtest_system_reset(qts);
+}
+
+static void test_reset_renders(const void *data)
+{
+    const ResetRenders *c = data;
+    g_autoptr(GHashTable) renders = new_render_table();
+    unsigned int most;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    most = count_renders(c->machine, c->prepare_and_reset, 2, renders);
+    g_assert_cmpuint(g_hash_table_size(renders), >, 1);
+    g_assert_cmpuint(most, <=, c->most);
+}
+
+/*
+ * Each Hub's reset re-aims its seven big windows. A commit per window
+ * renders every view seven times per Hub, 28 on four nodes; one
+ * transaction per Hub makes that four. The Routers' reset-exit floods
+ * then move each numbered Hub's claim aliases, one commit per Hub.
+ */
+static const ResetRenders numbered_origin2000_reset = {
+    .machine = "origin2000 -smp 8 -m 256M",
+    .prepare_and_reset = number_hubs_then_reset,
+    .most = 8,
+};
 
 int main(int argc, char **argv)
 {
@@ -4033,6 +4115,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/one-memory-transaction/origin2000",
                         "origin2000",
                         test_one_memory_transaction);
+    qtest_add_data_func("sn/builder/reset-renders/numbered-origin2000",
+                        &numbered_origin2000_reset, test_reset_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"

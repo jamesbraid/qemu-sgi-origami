@@ -4279,11 +4279,18 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
      * Entries reset to zero with the windows enabled: a guest calls a zero
      * entry free, and zero spells widget 0, OpenBSD's only route there.
      * Zeroed entries with disabled windows would pass every Linux test.
+     *
+     * Each entry commits on its own, and every commit re-renders the flat
+     * view of every address space in the machine, so one transaction
+     * defers them to a single commit. Re-aiming a window only moves and
+     * gates regions, and nothing here accesses an address space.
     */
+    memory_region_transaction_begin();
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         s->io_bwin[n] = 0;
         sgi_hub_bwin_follow(s, n);
     }
+    memory_region_transaction_commit();
 }
 
 /* Output lines move in the hold phase, after every enter phase. */
