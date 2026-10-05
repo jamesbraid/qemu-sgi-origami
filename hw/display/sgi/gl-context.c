@@ -3944,7 +3944,7 @@ static const VMStateDescription vmstate_sgi_gl_strip_mesh = {
     },
 };
 
-/* Old streams omit the optional pattern, including on a reused context. */
+/* Subsections are omitted while initial, including on a reused context. */
 static int sgi_gl_context_pre_load(void *opaque)
 {
     SGIGLContext *c = opaque;
