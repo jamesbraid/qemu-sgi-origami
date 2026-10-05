@@ -10,6 +10,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
@@ -643,7 +644,7 @@ static void test_xio_port_is_not_a_head(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*external port must be 8 to 0xd*");
 }
@@ -659,7 +660,7 @@ static void test_xio_port_is_not_the_host_port(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*is the host's own port*");
 }
@@ -675,7 +676,7 @@ static void test_realize_checks(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*host port must be 8 to 0xd*");
 }
@@ -689,7 +690,7 @@ static void test_realize_needs_fabric(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*needs the fabric link*");
 }
@@ -1150,7 +1151,7 @@ static void test_assembly_duplicate_port(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*fixture cables share U0 port 8*");
 }
@@ -1183,7 +1184,7 @@ static void test_superbridge_rejects_e_nic(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*Super Bridge head E has no NIC*");
 }
@@ -1198,7 +1199,7 @@ static void test_assembly_rejects_host_port(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*other than host port a*");
 }

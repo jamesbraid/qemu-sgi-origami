@@ -6,6 +6,7 @@
 #include "libqos/pci.h"
 #include "libqos/pci-sgi-bridge.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include <sys/socket.h>
 
 #define NEGOTIATION_NS 100000000
@@ -533,7 +534,7 @@ static void test_conflicting_selection(void)
         stop(t);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*cannot select ICS1890 and DP83843 together*");
 }

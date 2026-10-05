@@ -4928,7 +4928,7 @@ static void test_clock_backing_noop(const void *data)
     }
 #endif
     if (kind && !g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr("*m48t35:*backing store failed*");
         g_rmdir(dir);

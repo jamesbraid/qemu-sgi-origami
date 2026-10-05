@@ -2682,7 +2682,7 @@ static void test_assembly_immutable_mismatch(gconstpointer opaque)
             "*vmstate_load_field_error field \"%s\" load failed, ret = -22*",
             fields[kind]);
 
-        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr(expected);
         return;
@@ -3067,7 +3067,7 @@ static void test_uart_invalid_origins(gconstpointer opaque)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*two or four compute origins*");
 }
@@ -3083,7 +3083,7 @@ static void test_uart_migration_mismatch(gconstpointer opaque)
     };
 
     if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr(expected[kind]);
         return;

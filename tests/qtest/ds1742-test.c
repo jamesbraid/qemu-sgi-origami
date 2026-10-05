@@ -5,6 +5,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define PATH "/machine/peripheral/clock"
 #define BASE UINT64_C(0x10000000)
@@ -521,7 +522,7 @@ static void test_backing_noop(const void *data)
     }
 #endif
     if (failure && !g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr("*ds1742: could not save SRAM byte*");
         g_rmdir(dir);
