@@ -27,9 +27,13 @@ on:
         default: smoke
 
 # New commits supersede older runs for the same pull request. Runs use an
-# ephemeral workspace, so cancelling a superseded run is safe.
+# ephemeral workspace, so cancelling a superseded run is safe. A dispatch's
+# group also carries its event and suite. With the ref alone, a smoke
+# dispatched by hand on a branch would cancel the merge queue's full suite
+# running there and cost the queue a re-run. Dispatches of the same suite on
+# the same branch still supersede each other.
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ github.event_name }}-${{ inputs.suite }}
   cancel-in-progress: true
 
 jobs:
