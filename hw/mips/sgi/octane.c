@@ -38,9 +38,6 @@
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "hw/block/flash.h"
-#include "migration/blocker.h"
-#include "migration/register.h"
-#include "system/runstate.h"
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
@@ -87,7 +84,6 @@ typedef struct OctaneMachineState {
     MemoryRegion graphics_fabric;
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
-    Error *flash_migration_blocker;
     /* Catalogue storage item name -> the block node or drive it binds. */
     GHashTable *storage;
     bool flash_select;
@@ -438,18 +434,6 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     return pci_realize_and_unref(pci, bus, errp);
 }
 
-static int octane_flash_load_setup(QEMUFile *f, void *opaque, Error **errp)
-{
-    error_setg(errp,
-               "octane: migration with persistent boot flash is not supported");
-    return -EINVAL;
-}
-
-/* loadvm does not consult migration blockers, even for existing snapshots. */
-static const SaveVMHandlers octane_flash_load_handlers = {
-    .load_setup = octane_flash_load_setup,
-};
-
 /*
  * The boot flash and DS1685 backings: the catalogue's node0-flash, nvram0
  * and nvram0-clock bindings, or the older sgi-nvram0 drive form, which
@@ -573,24 +557,16 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     qdev_prop_set_bit(flash_chip, "big-endian", true);
     qdev_prop_set_uint16(flash_chip, "id0", 0x00b0);
     qdev_prop_set_uint16(flash_chip, "id1", 0x66a8);
-    if (flash_node) {
-        if (runstate_check(RUN_STATE_INMIGRATE)) {
-            error_setg(errp, "octane: migration with persistent boot flash "
-                       "is not supported");
-            return false;
-        }
-        if (!object_property_set_str(OBJECT(flash_chip), "drive", flash_node,
-                                     errp)) {
-            return false;
-        }
-        error_setg(&s->flash_migration_blocker,
-                   "octane: migration with persistent boot flash is not supported");
-        if (migrate_add_blocker(&s->flash_migration_blocker, errp) < 0) {
-            return false;
-        }
-        register_savevm_live("octane-flash-storage",
-                             VMSTATE_INSTANCE_ID_ANY, 0,
-                             &octane_flash_load_handlers, s);
+    /*
+     * Bound flash migrates as the SN machines' does: the CFI01 part
+     * carries its command state, its array migrates as RAM, and the
+     * destination writes that array back to the shared backing once it
+     * runs.
+     */
+    if (flash_node &&
+        !object_property_set_str(OBJECT(flash_chip), "drive", flash_node,
+                                 errp)) {
+        return false;
     }
     sgi_bridge_connect_cfi_flash(SGI_BRIDGE(bridge), PFLASH_CFI01(flash_chip));
     if (!sysbus_realize(SYS_BUS_DEVICE(flash_chip), errp)) {
@@ -911,8 +887,6 @@ static void octane_instance_finalize(Object *obj)
     g_free(s->topology_name);
     g_free(s->graphics_board);
     g_free(s->mac);
-    unregister_savevm(NULL, "octane-flash-storage", s);
-    migrate_del_blocker(&s->flash_migration_blocker);
     if (s->storage) {
         g_hash_table_destroy(s->storage);
     }
