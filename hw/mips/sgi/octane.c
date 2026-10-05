@@ -76,6 +76,8 @@ typedef struct OctaneMachineState {
     const SGIModelTopology *model;
     const SGIModelNode *node;
     char *topology_name;
+    /* nodes=, or zero for the topology's largest row. */
+    uint32_t nodes_requested;
     char *graphics_board;
     uint8_t graphics_widget;
     bool graphics_widget_set;
@@ -138,16 +140,43 @@ static void octane_set_graphics_widget(Object *obj, Visitor *v,
     s->graphics_widget_set = true;
 }
 
+/* Whether @t is a topology this machine can build: one HEART node. */
+static bool octane_ip30_topology(const SGIModelTopology *t)
+{
+    return t->generation == SGI_MODEL_GENERATION_IP30 && t->nodes &&
+           !t->nodes->next && t->nodes->value->heart;
+}
+
+/*
+ * The topology the machine builds: the chassis topology= names, or the
+ * product's default, with the node-population row nodes= selects. This is
+ * the resolution the SN machines and qemu-sgi-machine-init use.
+ */
 static const SGIModelTopology *octane_model(const char *product,
-                                           const char *name, Error **errp)
+                                           const char *name,
+                                           unsigned int nodes, Error **errp)
 {
     const char *selected = name ? name : sgi_model_default_topology(product);
-    const SGIModelTopology *model = selected ?
-        sgi_model_find_topology(selected) : NULL;
+    const SGIModelTopology *chassis = selected ?
+        sgi_model_product_topology(sgi_machines(), product, selected) : NULL;
+    const SGIModelTopology *model;
 
-    if (!model || strcmp(model->product, product) ||
-        model->generation != SGI_MODEL_GENERATION_IP30 || !model->nodes ||
-        model->nodes->next || !model->nodes->value->heart) {
+    if (!chassis) {
+        g_autoptr(GString) names = g_string_new(NULL);
+
+        for (const SGIModelTopologyList *entry = sgi_machines()->topologies;
+             entry; entry = entry->next) {
+            if (sgi_model_topology_matches_product(entry->value, product)) {
+                g_string_append_printf(names, "%s%s", names->len ? ", " : "",
+                                       entry->value->name);
+            }
+        }
+        error_setg(errp, "%s: unknown topology '%s'; known topologies: %s",
+                   product, selected ? selected : "(none)", names->str);
+        return NULL;
+    }
+    model = sgi_model_resolve_population(chassis, nodes, errp);
+    if (model && !octane_ip30_topology(model)) {
         error_setg(errp, "%s requires its checked IP30 topology", product);
         return NULL;
     }
@@ -157,7 +186,7 @@ static const SGIModelTopology *octane_model(const char *product,
 /* The product's default topology, which the compiled catalogue carries. */
 static const SGIModelTopology *octane_default_model(const char *product)
 {
-    const SGIModelTopology *model = octane_model(product, NULL, NULL);
+    const SGIModelTopology *model = octane_model(product, NULL, 0, NULL);
 
     g_assert(model);
     return model;
@@ -491,7 +520,8 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
     uint16_t links = (1 << 8) | (1 << 15);
 
-    s->model = octane_model(product, s->topology_name, errp);
+    s->model = octane_model(product, s->topology_name, s->nodes_requested,
+                            errp);
     if (!s->model) {
         return false;
     }
@@ -807,8 +837,42 @@ static void octane_set_topology(Object *obj, const char *name, Error **errp)
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "topology cannot change once the machine is built");
+        return;
+    }
     g_free(s->topology_name);
     s->topology_name = g_strdup(name);
+}
+
+static void octane_get_nodes(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    uint32_t value = s->nodes_requested ? s->nodes_requested :
+                     QAPI_LIST_LENGTH(s->model->nodes);
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void octane_set_nodes(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    uint32_t value;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "%s cannot change once the machine is built", name);
+        return;
+    }
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!value) {
+        error_setg(errp, "nodes must be at least 1");
+        return;
+    }
+    s->nodes_requested = value;
 }
 
 static void octane_instance_init_common(Object *obj, const char *product)
@@ -818,8 +882,6 @@ static void octane_instance_init_common(Object *obj, const char *product)
 
     s->model = octane_default_model(product);
     s->node = s->model->nodes->value;
-    object_property_add_str(obj, "topology", octane_get_topology,
-                            octane_set_topology);
     s->graphics_board = g_strdup("none");
     object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
                             octane_set_graphics_board);
@@ -910,6 +972,15 @@ static void octane_set_flash_strap(Object *obj, bool value, Error **errp)
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+
+    object_class_property_add_str(oc, "topology", octane_get_topology,
+                                  octane_set_topology);
+    object_class_property_set_description(oc, "topology",
+        "Catalogue topology to build (query-sgi-machines lists them)");
+    object_class_property_add(oc, "nodes", "uint32", octane_get_nodes,
+                              octane_set_nodes, NULL, NULL);
+    object_class_property_set_description(oc, "nodes",
+        "Node boards to fit: 1, the one HEART node board");
 
     object_class_property_add_bool(oc, "flash-select",
                                    octane_get_flash_select,

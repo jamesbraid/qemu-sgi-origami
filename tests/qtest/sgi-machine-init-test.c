@@ -286,8 +286,8 @@ static void test_octane(gconstpointer data)
 {
     static const unsigned int cpus[] = { 0 };
     bool octane2 = GPOINTER_TO_INT(data);
-    const char *machine = octane2 ? "octane2,topology=octane2" :
-                                    "octane,topology=octane";
+    const char *machine = octane2 ? "octane2,topology=octane2,nodes=1" :
+                                    "octane,topology=octane,nodes=1";
     const char *cpu = octane2 ? "-cpu R12000 -m 256M" : "-cpu R10000 -m 128M";
     g_autofree char *prom = make_prom("ip30-prom", IP30_PROM_SIZE, false);
     char *dir = create_state("ip30", machine, prom, NULL);

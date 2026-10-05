@@ -3277,6 +3277,28 @@ static void octane_storage_rejected(const char *machine, const char *extra,
                                     const char *message);
 
 /*
+ * topology= and nodes= resolve through the shared catalogue resolver, so
+ * Octane refuses a node count or topology its catalogue does not list as
+ * the SN machines do, and reports the count it builds.
+ */
+static void test_topology_and_nodes(void)
+{
+    g_autofree char *bios = g_strdup_printf("-bios %s", flash_path);
+    QTestState *qts = octane_start_args("-M octane,topology=octane,nodes=1");
+    g_autoptr(QDict) nodes = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': "
+        "{'path': '/machine', 'property': 'nodes'}}");
+
+    g_assert_cmpint(qdict_get_int(nodes, "return"), ==, 1);
+    qtest_quit(qts);
+    octane_storage_rejected("octane,nodes=2", bios,
+                            "topology 'octane' fits 1 node board, not 2");
+    octane_storage_rejected("octane,topology=octane2", bios,
+                            "octane: unknown topology 'octane2'; known "
+                            "topologies: octane");
+}
+
+/*
  * The boot flash's select and strap come from the catalogue, which
  * lists both for each Octane topology; the machine properties start
  * from those values and take only booleans.
@@ -4517,6 +4539,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane/storage/nvram-legacy-drive",
                         GINT_TO_POINTER(2), test_storage_nvram);
     qtest_add_func("/octane/storage/refusals", test_storage_refusals);
+    qtest_add_func("/octane/topology-and-nodes", test_topology_and_nodes);
     qtest_add_func("/octane/catalogue-machine-options",
                    test_catalogue_machine_options);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);

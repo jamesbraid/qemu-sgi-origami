@@ -1151,12 +1151,13 @@ static void test_resolve_selection(void)
                        &error_abort);
     g_assert_cmpuint(offering->nodes, ==, 2);
 
-    /* Octane has no nodes= property, so its -M value names none. */
+    /* Octane names its one node board like every other machine. */
     offering = resolve("octane2", &error_abort);
     g_assert_cmpstr(offering->machine_options, ==,
-                    "octane2,topology=octane2");
+                    "octane2,topology=octane2,nodes=1");
     offering = resolve("octane", &error_abort);
-    g_assert_cmpstr(offering->machine_options, ==, "octane,topology=octane");
+    g_assert_cmpstr(offering->machine_options, ==,
+                    "octane,topology=octane,nodes=1");
 }
 
 /* Refusals carry the machine's own wording for the same selection. */

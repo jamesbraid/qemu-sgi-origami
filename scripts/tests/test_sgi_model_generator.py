@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "67953c224edf35d1edd604b9ba5032749fde9e6611dfcd0281732e3623cdd0bb"
+    "5e3d04de158427f8ea38a55249122d98a51ff376e599de174c1c616bbc9c5bd9"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -179,13 +179,10 @@ class StorageTests(unittest.TestCase):
     def test_every_offering_lists_consistent_storage(self):
         for offering in self.catalogue["offerings"]:
             with self.subTest(options=offering["machine-options"]):
-                # Octane has no nodes= property; its one node is implied.
-                nodes = ("" if offering["product"].startswith("octane")
-                         else f",nodes={offering['nodes']}")
                 self.assertEqual(
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
-                    f"{nodes}")
+                    f",nodes={offering['nodes']}")
                 self.assertNotIn("firmware", offering)
                 names = [item["name"] for item in offering["storage"]]
                 self.assertEqual(len(names), len(set(names)))

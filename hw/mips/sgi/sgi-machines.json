@@ -322,7 +322,7 @@
         }
       ],
       "install-media": [],
-      "machine-options": "octane,topology=octane",
+      "machine-options": "octane,topology=octane,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           128
@@ -435,7 +435,7 @@
         }
       ],
       "install-media": [],
-      "machine-options": "octane2,topology=octane2",
+      "machine-options": "octane2,topology=octane2,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           256
