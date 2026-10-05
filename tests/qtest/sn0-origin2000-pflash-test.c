@@ -475,18 +475,22 @@ static void test_launch_selection(gconstpointer data)
     g_test_message("launch output: %s", error_output);
     g_assert_true(WIFEXITED(status));
     /*
-     * which == 1 and which == 2 used to be refused under Origin 2000's own
-     * rules ("requires all four node pflash drives", "cannot combine -bios
-     * with node pflash drives"). The one-builder step's unified rule (-bios
-     * fills every node's flash, per-node pflash overrides) accepts both:
-     * which == 1's three drive-less nodes come up with blank flash, the same
-     * as a node would with neither -bios nor a drive of its own; which == 2's
-     * four drives leave nothing for -bios to fill, the same as passing -bios
-     * alongside a full population on every other product. which == 3's
-     * wrong-sized backing file is still refused. That is the generic pflash
-     * device's own size check, not an Origin 2000 rule.
+     * which == 1's three drive-less nodes would boot a flash holding no
+     * PROM, so a machine with only some drives and no -bios is refused.
+     * which == 2's four drives leave nothing for -bios to fill, which every
+     * SGI machine refuses, so a newer -bios cannot be silently ignored.
+     * which == 3's wrong-sized backing file is the generic pflash device's
+     * own size check, not an Origin 2000 rule.
      */
-    if (which == 3) {
+    if (which == 1) {
+        g_assert_cmpint(WEXITSTATUS(status), !=, 0);
+        g_assert_nonnull(strstr(error_output, "origin2000: 1 of 4 boot "
+                                "flashes are bound"));
+    } else if (which == 2) {
+        g_assert_cmpint(WEXITSTATUS(status), !=, 0);
+        g_assert_nonnull(strstr(error_output, "origin2000: -bios has no "
+                                "unbound boot flash to fill"));
+    } else if (which == 3) {
         g_assert_cmpint(WEXITSTATUS(status), !=, 0);
         g_assert_nonnull(strstr(error_output, "requires 1048576 bytes"));
     } else {
@@ -528,7 +532,7 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_launch_selection);
     qtest_add_data_func("sn0/origin2000/pflash/partial-drives",
                         GUINT_TO_POINTER(1), test_launch_selection);
-    qtest_add_data_func("sn0/origin2000/pflash/bios-with-full-drives",
+    qtest_add_data_func("sn0/origin2000/pflash/bios-with-full-drives-refused",
                         GUINT_TO_POINTER(2), test_launch_selection);
     qtest_add_data_func("sn0/origin2000/pflash/reject-wrong-size",
                         GUINT_TO_POINTER(3), test_launch_selection);

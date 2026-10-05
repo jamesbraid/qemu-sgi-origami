@@ -420,9 +420,9 @@ static bool octane_storage_backing(OctaneMachineState *s, const char *product,
                    "back the boot flash", product, s->flash_drive);
         return false;
     }
-    if (!!machine->firmware + !!node + !!s->flash_drive != 1) {
-        error_setg(errp, "%s requires one of -bios, node0-flash or "
-                   "flash-drive", product);
+    if (!sgi_storage_check_boot_prom(product, machine->firmware,
+                                     node || s->flash_drive, 1, false,
+                                     errp)) {
         return false;
     }
     *flash = node;

@@ -493,16 +493,15 @@ static char *create_flash(uint64_t marker)
     return path;
 }
 
+/* Both nodes boot from their own flash, so no -bios. */
 static QTestState *machine_start_marked(char **flashes)
 {
-    g_autofree char *quoted = g_shell_quote(prom_path);
-
     flashes[0] = create_flash(0);
     flashes[1] = create_flash(PROM_MARKER);
-    return qtest_initf(MACHINE_ARGS " -bios %s "
+    return qtest_initf(MACHINE_ARGS " "
                        "-drive if=pflash,index=0,format=raw,file=%s "
                        "-drive if=pflash,index=1,format=raw,file=%s",
-                       quoted, flashes[0], flashes[1]);
+                       flashes[0], flashes[1]);
 }
 
 static void machine_quit_marked(QTestState *qts, char **flashes)

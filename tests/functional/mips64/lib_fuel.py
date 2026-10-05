@@ -121,7 +121,6 @@ def launch_args(fixture, files, scratch):
     argv = [
         '-cpu', 'R14000', '-smp', '1', '-m', '512M',
         '-accel', 'tcg,thread=multi',
-        '-bios', files['prom'],
         '-drive', f'if=pflash,index=0,file={private_flash},format=raw',
         '-drive',
         f'if=none,id=disk0,file={files["disk"]},format=qcow2,snapshot=on',
