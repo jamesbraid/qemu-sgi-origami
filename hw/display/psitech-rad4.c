@@ -93,14 +93,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 /*
  * INTCSR bits, PLX PCI 9060 Data Sheet (Version 1.2, December 1995) Table
  * 45. PENDING is the local interrupt input's status and DMA0_ACTIVE the DMA
- * channel 0 interrupt's; both follow their sources and ignore writes.
+ * channel 0 interrupt's; both follow their sources and ignore writes. The
+ * PCI line follows the local input only with both the PCI interrupt enable
+ * and the PCI local interrupt enable set.
+ *
+ * RAD4_INTCSR_WRITABLE is every bit the table marks writable: bits 2:0, 12:8,
+ * 19:16 and 27. The rest are read-only and ignore writes. Bits 8 and 16
+ * reset set. The writable bits for sources this model does not have (LSERR#,
+ * SERR#, doorbells, aborts, retry abort, DMA channel 1) are stored and read
+ * back without effect.
  */
+#define RAD4_INTCSR_SERR                (1u << 2)
 #define RAD4_INTCSR_ENABLE              (1u << 8)
+#define RAD4_INTCSR_LOCAL_IN_ENABLE     (1u << 11)
 #define RAD4_INTCSR_PENDING             (1u << 15)
 #define RAD4_INTCSR_LOCAL_OUT_ENABLE    (1u << 16)
 #define RAD4_INTCSR_LOCAL_DMA0_ENABLE   (1u << 18)
 #define RAD4_INTCSR_DMA0_ACTIVE         (1u << 21)
 #define RAD4_INTCSR_STATUS      (RAD4_INTCSR_PENDING | RAD4_INTCSR_DMA0_ACTIVE)
+#define RAD4_INTCSR_WRITABLE    0x080f1f07u
+#define RAD4_INTCSR_RESET \
+    (RAD4_INTCSR_ENABLE | RAD4_INTCSR_LOCAL_OUT_ENABLE)
 
 #define RAD4_SERIAL_CLOCK       (1u << 24)
 #define RAD4_SERIAL_CS          (1u << 25)
@@ -1239,6 +1252,10 @@ static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
  * 18, DMA mode 0x7c3), and its interrupt handler looks for DMA completion,
  * INTCSR bit 21, only when the local input's status, bit 15, is set. The
  * board's frame event drives the same input.
+ *
+ * Bit 21 follows the channel's interrupt whether or not bit 18 enables it
+ * towards the local output; Table 45 calls it the interrupt's status
+ * without naming an enable, so that much is inferred.
  */
 static void rad4_update_irq(PsitechRad4State *s)
 {
@@ -1255,7 +1272,8 @@ static void rad4_update_irq(PsitechRad4State *s)
         s->intcsr |= RAD4_INTCSR_DMA0_ACTIVE;
     }
     level = (s->intcsr & RAD4_INTCSR_PENDING) &&
-            (s->intcsr & RAD4_INTCSR_ENABLE);
+            (s->intcsr & RAD4_INTCSR_ENABLE) &&
+            (s->intcsr & RAD4_INTCSR_LOCAL_IN_ENABLE);
     pci_set_irq(&s->pci, level || s->km_irq_level);
 }
 
@@ -2018,8 +2036,13 @@ static void rad4_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->mailbox = val;
         break;
     case RAD4_BAR0_INTCSR:
+        if (val & RAD4_INTCSR_SERR) {
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: INTCSR SERR# generation not "
+                         "modelled\n");
+        }
         s->intcsr = (s->intcsr & RAD4_INTCSR_STATUS) |
-                    (val & ~RAD4_INTCSR_STATUS);
+                    (val & RAD4_INTCSR_WRITABLE);
         rad4_update_irq(s);
         break;
     case RAD4_BAR0_SERIAL: {
@@ -2804,7 +2827,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->reg14 = 0;
     s->reg18 = 0;
     s->mailbox = 0;
-    s->intcsr = 0;
+    s->intcsr = RAD4_INTCSR_RESET;
     s->dma0_irq = false;
     s->serial = 0;
     rad4_serial_reset(s);
