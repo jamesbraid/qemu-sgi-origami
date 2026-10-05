@@ -3483,6 +3483,12 @@ static void test_storage_refusals(void)
     octane_storage_rejected("octane,nvram0=nv,nvram0-clock=claimed", extra,
                             "Drive 'claimed' is already in use");
     g_free(extra);
+    /* The same holds for the boot flash. */
+    extra = g_strdup_printf("-drive if=scsi,id=claimed,bus=0,unit=1,"
+                            "file=%s,format=raw", right);
+    octane_storage_rejected("octane,node0-flash=claimed", extra,
+                            "Drive 'claimed' is already in use");
+    g_free(extra);
     extra = g_strdup_printf("-bios %s -blockdev %s", flash_path, nvram_node);
     octane_storage_rejected("octane,nvram1=nv", extra,
                             "Property 'octane-machine.nvram1' not found");
