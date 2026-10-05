@@ -4324,6 +4324,12 @@ static const DeviceRenders ioc3_renders = {
     CHIP_ARGS " -device sgi-ioc3,bus=head-e.0,addr=0", "sgi-ioc3", 5,
 };
 
+/* A MENET board in an Origin 2000's IO4 slot. */
+static const DeviceRenders menet_renders = {
+    "origin2000 -device sgi-xio-baseio,preset=menet,slot=io4",
+    "sgi-xio-baseio", 11,
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4347,6 +4353,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/device-renders/xbridge",
                         &xbridge_renders, test_device_renders);
     qtest_add_data_func("sn/builder/device-renders/ioc3", &ioc3_renders,
+                        test_device_renders);
+    qtest_add_data_func("sn/builder/device-renders/menet", &menet_renders,
                         test_device_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
