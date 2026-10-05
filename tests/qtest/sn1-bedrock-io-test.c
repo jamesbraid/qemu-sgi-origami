@@ -2,6 +2,7 @@
 /* Isolated Bedrock I/O register, PIO, inbound and DMA tests. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "qobject/qdict.h"
 
 #define IO_PATH "/machine/peripheral/io"
@@ -1068,21 +1069,7 @@ static void test_reset(void)
 
 static void migrate_wait(QTestState *from)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    sgi_wait_migration(from, "completed");
 }
 
 static void test_migration(void)

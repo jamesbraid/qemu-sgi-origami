@@ -25,7 +25,9 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define SN1_MD_MEMORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x780008)
 /* Software bank zero on the installed memory, as the stock PROM leaves it. */
@@ -51,7 +53,6 @@
 #define POINTER(_p) (((_p) << 8) | 0x1)
 #define SHARED(_vector) (((_vector) << 8) | 0x2)
 
-#define POLL_TRIES 500
 #define POLL_INTERVAL_US 10000
 
 /* Registers. */
@@ -253,11 +254,11 @@ static uint64_t result(QTestState *s, unsigned int slot)
 /* Wait until the processors have finished step @count or faulted. */
 static void wait_steps(QTestState *s, unsigned int count)
 {
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
-        if (result(s, RESULT_STEP) >= count || result(s, RESULT_EPC)) {
-            break;
-        }
-        g_usleep(POLL_INTERVAL_US);
+    SgiWait w;
+
+    sgi_wait_start(&w, "step %u or a fault", count);
+    while (result(s, RESULT_STEP) < count && !result(s, RESULT_EPC)) {
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(result(s, RESULT_EPC), ==, 0);
     g_assert_cmpuint(result(s, RESULT_STEP), ==, count);
@@ -665,15 +666,23 @@ static void test_debugger_read(void)
     char *prom;
     QTestState *s;
     char *out;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
     s = start_scenario(&sc, &prom);
-    /* The processors are running, so 64-bit addressing is on. */
-    g_usleep(100 * 1000);
-    out = qtest_hmp(s, "x /1gx 0x90000001c00b0000");
+    /*
+     * The address only translates once the processors have turned 64-bit
+     * addressing on, which they do as they start, so read until it does.
+     */
+    sgi_wait_start(&w, "64-bit addressing on");
+    while (strstr(out = qtest_hmp(s, "x /1gx 0x90000001c00b0000"),
+                  "Cannot access memory")) {
+        g_free(out);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
+    }
     g_assert_nonnull(strstr(out, "0000000000000000"));
     g_free(out);
     qtest_writeq(s, RESULT_PHYS + RESULT_GO, 1);
@@ -1370,23 +1379,7 @@ static void test_naming_is_spent_on_watching(void)
 
 static void migrate_wait(QTestState *qts)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        QDict *response = qtest_qmp(qts, "{'execute':'query-migrate'}");
-        const char *status = qdict_get_str(qdict_get_qdict(response,
-                                                           "return"),
-                                           "status");
-        bool done = !strcmp(status, "completed");
-
-        g_assert_cmpstr(status, !=, "failed");
-        qobject_unref(response);
-        if (done) {
-            return;
-        }
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    sgi_wait_migration(qts, "completed");
 }
 
 /*

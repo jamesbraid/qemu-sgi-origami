@@ -7,6 +7,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define BEDROCK_PI1 UINT64_C(0x200000)
@@ -28,7 +29,6 @@
 /* Both slots of both processor interfaces. */
 #define SGI_SLICES 4
 
-#define POLL_TRIES 200
 #define POLL_INTERVAL_US 10000
 
 /*
@@ -115,6 +115,7 @@ static void test_each_processor_knows_its_slot(void)
     uint64_t compare_a = 0;
     uint64_t compare_c = 0;
     uint64_t compare_c_after = 0;
+    SgiWait w;
 
     /* Guest code has to run, so the accelerator has to be a real one. */
     if (!qtest_has_accel("tcg")) {
@@ -133,14 +134,15 @@ static void test_each_processor_knows_its_slot(void)
                     "-accel tcg,thread=multi -no-shutdown -S", quoted);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "both processors' compare marks");
+    for (;;) {
         compare_a = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_A);
         compare_c = qtest_readq(s, BEDROCK_LOCAL + BEDROCK_PI1 +
                                   PI_RT_COMPARE_A);
         if (compare_a && compare_c) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     /* Each processor reached its own register without a CPU_ENABLE write. */
@@ -153,13 +155,14 @@ static void test_each_processor_knows_its_slot(void)
     g_usleep(10 * POLL_INTERVAL_US);
     compare_c = qtest_readq(s, BEDROCK_LOCAL + BEDROCK_PI1 +
                               PI_RT_COMPARE_A);
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "CPU C compare change after enable");
+    for (;;) {
         compare_c_after = qtest_readq(s, BEDROCK_LOCAL + BEDROCK_PI1 +
                                         PI_RT_COMPARE_A);
         if (compare_c_after != compare_c) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(compare_c_after, !=, compare_c);
 
@@ -169,13 +172,14 @@ static void test_each_processor_knows_its_slot(void)
     g_usleep(10 * POLL_INTERVAL_US);
     compare_c = qtest_readq(s, BEDROCK_LOCAL + BEDROCK_PI1 +
                               PI_RT_COMPARE_A);
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "CPU C compare change after disable");
+    for (;;) {
         compare_c_after = qtest_readq(s, BEDROCK_LOCAL + BEDROCK_PI1 +
                                         PI_RT_COMPARE_A);
         if (compare_c_after != compare_c) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(compare_c_after, !=, compare_c);
 
@@ -256,6 +260,7 @@ static void test_four_processors_know_their_slots(void)
         BEDROCK_LOCAL + BEDROCK_PI1 + PI_RT_COMPARE_A,
         BEDROCK_LOCAL + BEDROCK_PI1 + PI_RT_COMPARE_A + PI_RT_COMPARE_STRIDE,
     };
+    SgiWait w;
 
     /* Guest code has to run, so the accelerator has to be a real one. */
     if (!qtest_has_accel("tcg")) {
@@ -269,7 +274,8 @@ static void test_four_processors_know_their_slots(void)
                     "-accel tcg,thread=multi -no-shutdown -S", quoted);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "four slice marks");
+    for (;;) {
         unsigned int seen = 0;
 
         for (unsigned int slice = 0; slice < SGI_SLICES; slice++) {
@@ -279,7 +285,7 @@ static void test_four_processors_know_their_slots(void)
         if (seen == SGI_SLICES) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     for (unsigned int slice = 0; slice < SGI_SLICES; slice++) {

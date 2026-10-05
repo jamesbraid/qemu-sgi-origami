@@ -13,6 +13,7 @@
 #include "qemu/bswap.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define MACHINE_ARGS "-M origin300,topology=origin300-two-chassis " \
                      "-cpu R14000 -smp 4 -m 1024"
@@ -671,7 +672,7 @@ static void test_prom_copy_range_leaves_at_handoff(void)
     g_autofree char *quoted = NULL;
     QTestState *qts;
     uint64_t value = 0;
-    unsigned int tries;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -698,11 +699,12 @@ static void test_prom_copy_range_leaves_at_handoff(void)
     set_node_number(qts, 1, 0);
 
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    for (tries = 0; tries < 500; tries++) {
+    sgi_wait_start(&w, "handoff ready");
+    for (;;) {
         if (cpu_readq(qts, 2, HANDOFF_READY, &value) && (value >> 32) == 1) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
     }
     g_assert_cmphex(value >> 32, ==, 1);
     /* Give the handoff time to be noticed: many of its poll periods. */
@@ -710,11 +712,12 @@ static void test_prom_copy_range_leaves_at_handoff(void)
 
     set_node_number(qts, 1, 1);
     qtest_writeq(qts, HANDOFF_GO, UINT64_C(1) << 32);
-    for (tries = 0; tries < 500; tries++) {
+    sgi_wait_start(&w, "handoff done");
+    for (;;) {
         if ((qtest_readq(qts, HANDOFF_DONE) >> 32) == 1) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
     }
     g_assert_cmphex(qtest_readq(qts, HANDOFF_DONE) >> 32, ==, 1);
     g_assert_cmphex(qtest_readq(qts, PROM_DATA_WINDOW) >> 32, ==,
@@ -828,7 +831,7 @@ static void test_remote_reader_in_the_directory(void)
     g_autofree char *quoted = NULL;
     QTestState *qts;
     uint64_t value = 0;
-    unsigned int tries;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -849,20 +852,22 @@ static void test_remote_reader_in_the_directory(void)
     qtest_writeq(qts, NODE(1) + DIRECTORY_READY, 0);
     set_node_number(qts, 1, 0);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    for (tries = 0; tries < 500; tries++) {
+    sgi_wait_start(&w, "remote directory ready");
+    for (;;) {
         if (cpu_readq(qts, 2, DIRECTORY_READY, &value) && value == 1) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
     }
     g_assert_cmphex(value, ==, 1);
     set_node_number(qts, 1, 1);
     qtest_writeq(qts, DIRECTORY_GO, UINT64_C(1) << 32);
-    for (tries = 0; tries < 500; tries++) {
+    sgi_wait_start(&w, "remote directory done");
+    for (;;) {
         if (qtest_readq(qts, DIRECTORY_DONE) == 1) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
     }
     g_assert_cmphex(qtest_readq(qts, DIRECTORY_DONE), ==, 1);
     g_assert_cmphex(qtest_readq(qts, DIRECTORY_BEFORE) & 0xff1f, ==, 0);

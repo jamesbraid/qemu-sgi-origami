@@ -26,6 +26,7 @@
 #include "libqtest.h"
 #include "sgi-mips-emit.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define HUB_WINDOW UINT64_C(0x9200000001000000)
 #define PI_CPU_NUMBER UINT64_C(0x20)
@@ -45,7 +46,6 @@
 #define STATE_PHYS UINT64_C(0x180000)
 #define STATE_HOST (SPACE_HUB + STATE_PHYS)
 
-#define POLL_TRIES 500
 #define POLL_INTERVAL_US 10000
 
 #define R_ZERO 0
@@ -200,6 +200,7 @@ static void check_local_reset_restarts_the_processors(const void *data)
     g_autofree char *quoted = NULL;
     QTestState *s;
     uint64_t starts = 0;
+    SgiWait w;
 
     /* Guest code has to run, so the accelerator has to be a real one. */
     if (!qtest_has_accel("tcg")) {
@@ -214,12 +215,15 @@ static void check_local_reset_restarts_the_processors(const void *data)
     qtest_writeq(s, STATE_HOST, 0);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "processor A's second start");
+    for (;;) {
         starts = qtest_readq(s, STATE_HOST);
         if (starts >= 2) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     g_test_message("processor A started %" PRIu64 " time(s)", starts);
     /* Once from power-on and once more from its own reset. */
