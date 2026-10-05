@@ -6,6 +6,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "sgi-l1-test.h"
 #include <poll.h>
 #include <sys/socket.h>
@@ -1120,7 +1121,7 @@ static void console_expect(int fd, const char *expected)
     while (offset < length) {
         struct pollfd pfd = { .fd = fd, .events = POLLIN };
         ssize_t n;
-        g_assert_cmpint(poll(&pfd, 1, 3000), ==, 1);
+        g_assert_cmpint(poll(&pfd, 1, SGI_WAIT_S * 1000), ==, 1);
         n = read(fd, actual + offset, length - offset);
         g_assert_cmpint(n, >, 0);
         offset += n;
@@ -1169,9 +1170,11 @@ static QTestState *console_start(int *fd, const char *props,
 
 static void console_frame(QTestState *s, uint8_t *reply, size_t expected)
 {
-    for (unsigned i = 0; !(qtest_readq(s, BASE + 0x28) & 1); i++) {
-        g_assert_cmpuint(i, <, 1000);
-        g_usleep(1000);
+    SgiWait w;
+
+    sgi_wait_start(&w, "L1 frame received");
+    while (!(qtest_readq(s, BASE + 0x28) & 1)) {
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmpuint(receive(s, reply), ==, expected);
 }
@@ -1187,9 +1190,11 @@ static const char *status(QTestState *s)
 
 static void wait_running(QTestState *s)
 {
-    for (unsigned i = 0; strcmp(status(s), "running"); i++) {
-        g_assert_cmpuint(i, <, 3000);
-        g_usleep(1000);
+    SgiWait w;
+
+    sgi_wait_start(&w, "machine running");
+    while (strcmp(status(s), "running")) {
+        sgi_wait_pause(&w, 1000);
     }
     qtest_qmp_assert_success(s, "{'execute':'stop'}");
 }
@@ -1252,7 +1257,7 @@ static void test_fresh_off(void)
     console_send(fd, "x");
     console_expect(fd, OFF_WARNING);
     console_send(fd, "y");
-    g_usleep(20000);
+    sgi_wait_socket_read(fd);
     g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
     console_send(fd, "\024power up\r");
     console_expect(fd, ESCAPE RETURN_CPU0);
@@ -4253,7 +4258,7 @@ static void test_bic_startup_active_save(void)
     g_autofree char *dir = g_dir_make_tmp("l1-bic-active-XXXXXX", &error);
     g_autofree char *socket = NULL, *uri = NULL;
     QTestState *from, *to;
-    bool failed = false;
+    SgiWait w;
 
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
@@ -4266,17 +4271,16 @@ static void test_bic_startup_active_save(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    for (unsigned tries = 0; tries < 1000; tries++) {
+    sgi_wait_start(&w, "refused migration to fail");
+    for (;;) {
         g_autoptr(QDict) status = qtest_qmp_assert_success_ref(from,
             "{'execute':'query-migrate'}");
 
         if (g_str_equal(qdict_get_str(status, "status"), "failed")) {
-            failed = true;
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
-    g_assert_true(failed);
     bic_write(from, 112, 0);
     qtest_wait_qemu(to);
     qtest_quit(to);

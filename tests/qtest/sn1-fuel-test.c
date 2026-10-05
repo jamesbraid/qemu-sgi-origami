@@ -7,6 +7,7 @@
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -177,14 +178,12 @@ static char *fuel_prid_prom(void)
 
 static void fuel_wait_prid(QTestState *qts, uint32_t expected)
 {
-    uint64_t value = 0;
+    uint64_t value;
+    SgiWait w;
 
-    for (unsigned int attempt = 0; attempt < 200; attempt++) {
-        value = qtest_readq(qts, BEDROCK_LOCAL + 0x108);
-        if (value) {
-            break;
-        }
-        g_usleep(10000);
+    sgi_wait_start(&w, "guest to publish its PRId");
+    while (!(value = qtest_readq(qts, BEDROCK_LOCAL + 0x108))) {
+        sgi_wait_pause(&w, 10000);
     }
     g_assert_cmphex(value, ==, expected);
 }
@@ -655,6 +654,7 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     uint8_t received[sizeof(frame)];
     g_autofree char *quoted = g_shell_quote(data);
     QTestState *qts;
+    SgiWait w;
     int sv[2];
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
@@ -693,11 +693,9 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     memcpy(packet + 4, frame, sizeof(frame));
     g_assert_cmpint(write(sv[0], packet, sizeof(packet)), ==,
                     (int)sizeof(packet));
-    for (unsigned int i = 0; i < 200; i++) {
-        if (qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_RX_CONSUME) == 8) {
-            break;
-        }
-        g_usleep(1000);
+    sgi_wait_start(&w, "receive consume index");
+    while (qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_RX_CONSUME) != 8) {
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(qts, 50000);
     }
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_RX_CONSUME),
@@ -1359,7 +1357,7 @@ static void fuel_expect_serial_byte(int fd, char expected)
     struct pollfd pfd = { .fd = fd, .events = POLLIN };
     char actual;
 
-    g_assert_cmpint(poll(&pfd, 1, 3000), ==, 1);
+    g_assert_cmpint(poll(&pfd, 1, SGI_WAIT_S * 1000), ==, 1);
     g_assert_cmpint(read(fd, &actual, 1), ==, 1);
     g_assert_cmpint(actual, ==, expected);
 }
@@ -1373,11 +1371,11 @@ static void fuel_expect_no_serial_byte(int fd)
 
 static void fuel_wait_serial_input(QTestState *qts, uint64_t port)
 {
-    gint64 deadline = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    SgiWait w;
 
+    sgi_wait_start(&w, "UART receive data ready");
     while (!(qtest_readb(qts, port + IOC3_UART_LSR) & IOC3_UART_LSR_DR)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 
