@@ -2298,6 +2298,7 @@ static void rad4_dma_desc_done(PsitechRad4State *s)
     }
     if (s->dma_next & RAD4_DMA_DESC_END_OF_CHAIN) {
         rad4_dma_stop(s);
+        trace_rad4_dma_done(s->dma_descs);
         s->rom_command |= RAD4_DMA_STATUS_DONE;
         if (s->rom_mode & RAD4_DMA_MODE_DONE_IRQ_ENABLE) {
             s->dma0_irq = true;
@@ -2393,6 +2394,7 @@ static void rad4_dma_command_write(PsitechRad4State *s, uint32_t val)
             s->dma_have_desc = false;
             s->dma_next = s->rom_desc;
             s->dma_descs = 0;
+            trace_rad4_dma_start(s->rom_desc);
         }
     }
     rad4_dma_schedule(s);
