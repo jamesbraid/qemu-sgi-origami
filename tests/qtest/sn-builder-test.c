@@ -4076,6 +4076,16 @@ static void number_hubs_then_reset(QTestState *qts)
     qtest_system_reset(qts);
 }
 
+/* Turn every slot of an Origin 200's Bridge to I/O space, then reset. */
+static void bridge_io_slots_then_reset(QTestState *qts)
+{
+    for (unsigned int slot = 0; slot < 8; slot++) {
+        qtest_writel(qts, SMALL_WINDOW(BASEIO_WIDGET) +
+                     BRIDGE_DEVICE_REG(slot) + 4, 0);
+    }
+    qtest_system_reset(qts);
+}
+
 static void test_reset_renders(const void *data)
 {
     const ResetRenders *c = data;
@@ -4103,6 +4113,17 @@ static const ResetRenders numbered_origin2000_reset = {
     .most = 8,
 };
 
+/*
+ * The Bridge's reset puts each slot's window back in memory space, gating
+ * one region on and one off per slot: sixteen commits, one once batched.
+ * The Hub's big windows add one more.
+ */
+static const ResetRenders bridge_origin200_reset = {
+    .machine = "origin200",
+    .prepare_and_reset = bridge_io_slots_then_reset,
+    .most = 2,
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4117,6 +4138,8 @@ int main(int argc, char **argv)
                         test_one_memory_transaction);
     qtest_add_data_func("sn/builder/reset-renders/numbered-origin2000",
                         &numbered_origin2000_reset, test_reset_renders);
+    qtest_add_data_func("sn/builder/reset-renders/bridge-origin200",
+                        &bridge_origin200_reset, test_reset_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"

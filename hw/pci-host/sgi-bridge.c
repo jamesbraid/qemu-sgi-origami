@@ -564,14 +564,23 @@ static void sgi_bridge_aim_window(SGIBridgeState *s, unsigned int slot)
     memory_region_set_enabled(&s->device_window_io[slot], !memory);
 }
 
-/* Shared by reset and post_load: windows derive from the registers. */
+/*
+ * Shared by reset and post_load: windows derive from the registers. Each
+ * window that changes commits on its own, and every commit re-renders the
+ * flat view of every address space in the machine, so one transaction
+ * defers them to a single commit. Aiming only gates regions and records
+ * the base the window handlers read later; nothing here accesses an
+ * address space.
+ */
 static void sgi_bridge_aim_all_windows(SGIBridgeState *s)
 {
     unsigned int slot;
 
+    memory_region_transaction_begin();
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
         sgi_bridge_aim_window(s, slot);
     }
+    memory_region_transaction_commit();
 }
 
 void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
