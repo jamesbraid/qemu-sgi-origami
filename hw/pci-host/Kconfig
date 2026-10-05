@@ -114,9 +114,13 @@ config GT64120
     select EMPTY_SLOT
     select I8259
 
+config SGI_DMA_PLACEMENT
+    bool
+
 config SGI_BRIDGE
     bool
     select SGI_DMA_BUFFER
+    select SGI_DMA_PLACEMENT
     select ONEWIRE
     select PCI
     select SGI_XIO_PORT

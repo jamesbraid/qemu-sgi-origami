@@ -570,8 +570,7 @@ static QTestState *tigon_init_netdev_traced(int guest_fd, const char *logfile)
     return qtest_initf("-M origin200 "
                        "-netdev socket,fd=%d,id=n0 "
                        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
-                       "-d trace:sgi_bridge_lane_swap_read,"
-                       "trace:sgi_bridge_lane_swap_write,"
+                       "-d trace:sgi_dma_placement_access,"
                        "trace:sgi_bridge_dma_xlate_plain -D %s",
                        guest_fd, logfile);
 }
@@ -1143,14 +1142,15 @@ static unsigned count_lines_with(const char *text, const char *needle)
 }
 
 /*
- * Payload must use plain DMA, not the byte-lane swap window. Both routes
+ * Payload must use plain DMA, not the Bridge's word placement. Both routes
  * produce identical wire bytes: per-word reversal cancels the card's word
- * consumption, but the swap path dispatches once per word and limits
- * throughput. The trace distinguishes them. Nonzero descriptor swap counts
- * prove tracing is active; payload counts on the plain route prove the
- * address matches. Both addresses derive from the buffer constant, so moving
- * it updates both. A trace format change fails the positive check first. Swap
- * logs a window offset; plain DMA logs the device's raw PCI address.
+ * consumption, but the placement path dispatches once per doubleword and
+ * limits throughput. The trace distinguishes them. Nonzero descriptor
+ * placement counts prove tracing is active; payload counts on the plain route
+ * prove the address matches. Both addresses derive from the buffer constant,
+ * so moving it updates both. A trace format change fails the positive check
+ * first. Placement logs a fabric address; plain DMA logs the device's raw PCI
+ * address.
  */
 static void test_payload_skips_lane_swap(const void *data)
 {
@@ -1170,8 +1170,8 @@ static void test_payload_skips_lane_swap(const void *data)
     transmit_direct_map_check(false, logfile);
 
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
-    /* Control: the swap window saw the descriptor and ring traffic. */
-    g_assert_cmpuint(count_lines_with(log, "lane swap "), >, 0);
+    /* Control: the word placement saw the descriptor and ring traffic. */
+    g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement.word "), >, 0);
     /* Control: the payload buffer's address showed up on the plain route. */
     g_assert_cmpuint(count_lines_with(log, plain_needle), >, 0);
     /* The payload buffer never crossed the swap window. */

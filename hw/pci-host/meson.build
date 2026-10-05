@@ -36,6 +36,8 @@ pci_ss.add(when: 'CONFIG_VERSATILE_PCI', if_true: files('versatile.c'))
 pci_ss.add(when: 'CONFIG_SGI_BRIDGE', if_true: files('sgi-bridge.c'),
            if_false: files('sgi-bridge-stub.c'))
 pci_ss.add(when: 'CONFIG_SGI_XBRIDGE', if_true: files('sgi-xbridge.c'))
+pci_ss.add(when: 'CONFIG_SGI_DMA_PLACEMENT',
+           if_true: files('sgi-dma-placement.c'))
 
 # HPPA devices
 specific_ss.add(when: 'CONFIG_ASTRO', if_true: files('astro.c'))

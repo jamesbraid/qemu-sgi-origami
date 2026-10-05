@@ -2793,7 +2793,7 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 /*
  * Assert the route a received payload took, independently of its bytes. The
  * Hub maps the memory view straight onto RAM, so neither of its inbound
- * traces may see the payload. The Bridge's byte-lane swap still sees it: on
+ * traces may see the payload. The Bridge's byte placement still sees it: on
  * the native route every payload word passes through it, while the batched
  * interface moves whole doublewords itself and leaves only an unaligned head
  * and a sub-doubleword tail, under two doublewords between them, to the swap.
@@ -2818,9 +2818,10 @@ static void assert_dma_payload_trace(const char *path, uint32_t start,
             g_assert_false(addr < start + length && addr + size > start);
             continue;
         }
-        /* The swap names the word before its lanes are exchanged. */
-        if (sscanf(lines[i], "sgi_bridge_lane_swap_write lane swap write "
-                   "addr 0x%" SCNx64 " size %u", &addr, &size) == 2 &&
+        /* The placement names the word before its lanes are exchanged. */
+        if (sscanf(lines[i], "sgi_dma_placement_access %*s write "
+                   "addr 0x%" SCNx64 " host 0x%*x size %u",
+                   &addr, &size) == 2 &&
             addr >= (start & ~3U) && addr < start + length) {
             swapped += size;
             callbacks++;
@@ -3142,7 +3143,7 @@ static void test_dma_buffer_payloads(const void *data)
                                     (unsigned)getpid(), g_random_int());
                 g_autofree char *tracing = g_strdup_printf(
                     "-trace enable=sgi_hub_ii_* "
-                    "-trace enable=sgi_bridge_lane_swap_write,file=%s", path);
+                    "-trace enable=sgi_dma_placement_access,file=%s", path);
                 g_autofree char *extra = g_strdup_printf(
                     "-global sgi-ioc3-eth.dma-buffer=%s %s",
                     native ? "off" : "on", tracing);
