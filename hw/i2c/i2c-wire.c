@@ -1504,7 +1504,7 @@ uint32_t i2c_bus_resolved_owner(I2CBus *base)
 static const VMStateDescription vmstate_i2c_wire_master = {
     .name = "i2c-wire-master",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_INT64(low_ns, I2CWireMaster),
         VMSTATE_INT64(high_ns, I2CWireMaster),
@@ -1518,7 +1518,7 @@ static const VMStateDescription vmstate_i2c_wire_master = {
         VMSTATE_BOOL(staged_sda, I2CWireMaster),
         VMSTATE_BOOL(staged_clock, I2CWireMaster),
         VMSTATE_BOOL(clock_after_loss, I2CWireMaster),
-        VMSTATE_BOOL_V(paused, I2CWireMaster, 2),
+        VMSTATE_BOOL(paused, I2CWireMaster),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1599,7 +1599,6 @@ static bool i2c_wire_needed(void *opaque)
 }
 
 static const VMStateDescription vmstate_sgi_wire = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/wire",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1632,7 +1631,6 @@ static int i2c_masters_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_sgi_masters = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/masters",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1800,7 +1798,6 @@ static int i2c_slaves_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_i2c_wire_slave = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-slave",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1819,7 +1816,6 @@ static const VMStateDescription vmstate_i2c_wire_slave = {
 };
 
 static const VMStateDescription vmstate_sgi_slaves = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/slaves",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1864,7 +1860,6 @@ static int sgi_wire_bus_post_load(void *opaque, int version_id)
 }
 
 const VMStateDescription vmstate_sgi_i2c_wire_bus = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus",
     .version_id = 1,
     .minimum_version_id = 1,

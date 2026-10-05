@@ -1181,20 +1181,6 @@ static int pcf8584_post_load(void *opaque, int version_id)
 {
     PCF8584State *s = opaque;
 
-    if (version_id < 4 && s->start_address_staged) {
-        s->start_address = s->data;
-    }
-    if (version_id < 5) {
-        s->wire_grant_pending = false;
-        s->wire_grant = 0;
-    }
-    if (version_id < 6) {
-        s->wire_start_waiting = false;
-    }
-    if (version_id < 7) {
-        s->wire_stop_pending = false;
-    }
-
     if (s->wire_phase >= PCF8584_WIRE_PHASE_COUNT ||
         s->wire_hold_release >= PCF8584_HOLD_COUNT ||
         s->wire_bit > 8 || s->wire_free_at < 0 ||
@@ -1236,7 +1222,7 @@ static int pcf8584_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
     .version_id = 7,
-    .minimum_version_id = 1,
+    .minimum_version_id = 7,
     .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(own_address, PCF8584State),
@@ -1248,24 +1234,24 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL(transfer, PCF8584State),
         VMSTATE_BOOL(recv, PCF8584State),
         VMSTATE_BOOL(start_pending, PCF8584State),
-        VMSTATE_BOOL_V(start_address_staged, PCF8584State, 2),
-        VMSTATE_UINT8_V(start_address, PCF8584State, 4),
+        VMSTATE_BOOL(start_address_staged, PCF8584State),
+        VMSTATE_UINT8(start_address, PCF8584State),
         VMSTATE_UINT8(cur_addr7, PCF8584State),
-        VMSTATE_UINT8_V(wire_phase, PCF8584State, 3),
-        VMSTATE_UINT8_V(wire_bit, PCF8584State, 3),
-        VMSTATE_UINT8_V(wire_shift, PCF8584State, 3),
-        VMSTATE_UINT8_V(wire_recv_byte, PCF8584State, 3),
-        VMSTATE_UINT8_V(wire_hold_release, PCF8584State, 3),
-        VMSTATE_BOOL_V(wire_active, PCF8584State, 3),
-        VMSTATE_BOOL_V(wire_address_byte, PCF8584State, 3),
-        VMSTATE_BOOL_V(wire_ack_nak, PCF8584State, 3),
-        VMSTATE_BOOL_V(wire_grant_pending, PCF8584State, 5),
-        VMSTATE_UINT8_V(wire_grant, PCF8584State, 5),
-        VMSTATE_BOOL_V(wire_start_waiting, PCF8584State, 6),
-        VMSTATE_BOOL_V(wire_stop_pending, PCF8584State, 7),
-        VMSTATE_BOOL_V(wire_scl, PCF8584State, 3),
-        VMSTATE_BOOL_V(wire_sda, PCF8584State, 3),
-        VMSTATE_INT64_V(wire_free_at, PCF8584State, 3),
+        VMSTATE_UINT8(wire_phase, PCF8584State),
+        VMSTATE_UINT8(wire_bit, PCF8584State),
+        VMSTATE_UINT8(wire_shift, PCF8584State),
+        VMSTATE_UINT8(wire_recv_byte, PCF8584State),
+        VMSTATE_UINT8(wire_hold_release, PCF8584State),
+        VMSTATE_BOOL(wire_active, PCF8584State),
+        VMSTATE_BOOL(wire_address_byte, PCF8584State),
+        VMSTATE_BOOL(wire_ack_nak, PCF8584State),
+        VMSTATE_BOOL(wire_grant_pending, PCF8584State),
+        VMSTATE_UINT8(wire_grant, PCF8584State),
+        VMSTATE_BOOL(wire_start_waiting, PCF8584State),
+        VMSTATE_BOOL(wire_stop_pending, PCF8584State),
+        VMSTATE_BOOL(wire_scl, PCF8584State),
+        VMSTATE_BOOL(wire_sda, PCF8584State),
+        VMSTATE_INT64(wire_free_at, PCF8584State),
         VMSTATE_END_OF_LIST()
     },
 };
