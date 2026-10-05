@@ -4330,6 +4330,13 @@ static const DeviceRenders menet_renders = {
     "sgi-xio-baseio", 11,
 };
 
+/* The test-only assembly of three XBridges. */
+static const DeviceRenders assembly_renders = {
+    "none -cpu R10000 -device sgi-xbridge-assembly-fixture,"
+    "chip1-e-port=8,chip1-f-port=9,chip2-e-port=0xc,chip2-f-port=0xd",
+    "sgi-xbridge-assembly-fixture", 2,
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4356,6 +4363,8 @@ int main(int argc, char **argv)
                         test_device_renders);
     qtest_add_data_func("sn/builder/device-renders/menet", &menet_renders,
                         test_device_renders);
+    qtest_add_data_func("sn/builder/device-renders/xbridge-assembly",
+                        &assembly_renders, test_device_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"

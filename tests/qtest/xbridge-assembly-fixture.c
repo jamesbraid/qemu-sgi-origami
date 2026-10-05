@@ -47,7 +47,7 @@ static const MemoryRegionOps assembly_wide_ops = {
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
-static void assembly_realize(DeviceState *dev, Error **errp)
+static void assembly_build(DeviceState *dev, Error **errp)
 {
     XBridgeAssemblyState *s = XBRIDGE_ASSEMBLY(dev);
     unsigned i, j;
@@ -165,6 +165,14 @@ static void assembly_realize(DeviceState *dev, Error **errp)
         sysbus_init_mmio(SYS_BUS_DEVICE(s),
                          sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ii), 0));
     }
+}
+
+/* Build the fixture in one memory transaction, as a machine's builder does. */
+static void assembly_realize(DeviceState *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    assembly_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 static void assembly_finalize(Object *obj)
