@@ -2533,12 +2533,7 @@ static const VMStateDescription vmstate_qlogic_isp_isp12160 = {
     }
 };
 
-/*
- * One completion the guest has not been given room for. Its version is
- * the entry format's own: a struct field is loaded at the version its
- * descriptor names, and the stream version that first carried the array
- * belongs to the array field instead.
- */
+/* One completion the guest has not been given room for. */
 static const VMStateDescription vmstate_qlogic_isp_pending_status = {
     .name = "qlogic-isp/pending-status",
     .version_id = 1,
@@ -2619,19 +2614,14 @@ static bool qlogic_isp_post_load(void *opaque, int version_id, Error **errp)
 }
 
 /*
- * Version 7 added resp_cons; an older stream loads with it at 0, which
- * is exactly what an unacknowledged guest means. Version 9 marks the
- * subsection below, which an older stream simply omits, so the minimum
- * stays where it was. Version 10 adds the held completions as a count and
- * a bounded array; an older stream loads with none held. Nothing has to be
- * kicked after a load: the request ring stays where the source left it
- * until the guest acknowledges an entry or a request retires, and both of
- * those already resume consumption.
+ * Nothing has to be kicked after a load: the request ring stays where the
+ * source left it until the guest acknowledges an entry or a request retires,
+ * and both of those already resume consumption.
  */
 static const VMStateDescription vmstate_qlogic_isp = {
     .name = "qlogic-isp",
     .version_id = 10,
-    .minimum_version_id = 6,
+    .minimum_version_id = 10,
     .pre_save_errp = qlogic_isp_pre_save,
     .pre_load_errp = qlogic_isp_pre_load,
     .post_load_errp = qlogic_isp_post_load,
@@ -2643,8 +2633,8 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(semaphore, QLogicISPState),
         VMSTATE_UINT16(nvram, QLogicISPState),
         VMSTATE_UINT16(risc_flags, QLogicISPState),
-        VMSTATE_UINT16_V(dma_cmd_cfg, QLogicISPState, 8),
-        VMSTATE_UINT16_V(dma_data_cfg, QLogicISPState, 8),
+        VMSTATE_UINT16(dma_cmd_cfg, QLogicISPState),
+        VMSTATE_UINT16(dma_data_cfg, QLogicISPState),
         VMSTATE_UINT16_ARRAY(mailbox, QLogicISPState, ISP_MAILBOX_COUNT),
         VMSTATE_UINT16_ARRAY(risc_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
         VMSTATE_UINT16_ARRAY(sxp_bank, QLogicISPState, ISP_SXP_RISC_COUNT),
@@ -2655,12 +2645,12 @@ static const VMStateDescription vmstate_qlogic_isp = {
         VMSTATE_UINT16(resp_len, QLogicISPState),
         VMSTATE_UINT16(rqst_cons, QLogicISPState),
         VMSTATE_UINT16(resp_prod, QLogicISPState),
-        VMSTATE_UINT16_V(resp_cons, QLogicISPState, 7),
-        VMSTATE_UINT32_V(held_count, QLogicISPState, 10),
+        VMSTATE_UINT16(resp_cons, QLogicISPState),
+        VMSTATE_UINT32(held_count, QLogicISPState),
         VMSTATE_VALIDATE("held completion count within the ring rule",
                          qlogic_isp_held_count_valid),
         VMSTATE_STRUCT_VARRAY_UINT32(held_wire, QLogicISPState, held_count,
-                                     10, vmstate_qlogic_isp_pending_status,
+                                     0, vmstate_qlogic_isp_pending_status,
                                      QLogicISPPendingStatus),
         VMSTATE_END_OF_LIST()
     },
