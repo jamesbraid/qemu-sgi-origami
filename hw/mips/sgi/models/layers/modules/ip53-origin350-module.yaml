@@ -6,8 +6,8 @@ sources:
   sn-family-closure-origin350: "docs/research/sn-family-closure-20260913.md family table, Origin 350 row: Bedrock rev 2 (O); NUMAlink 3, one port; PIC, two heads on one widget (0xF; second head at +0x800000); IO9 in bus 1 slot 1: IOC4 config dev 1, ISP12160 dev 3, BCM5701 dev 4; L1 with display; L2 with the NUMAlink module"
 layer:
   kind: module
-  id: origin350-ip53-experiment-module
-  requires: {architecture: sn1-ip53-experiment, assembly: ip53-experiment}
+  id: ip53-origin350-module
+  requires: {architecture: sn1, assembly: ip53}
   data:
     components:
       - id: bedrock

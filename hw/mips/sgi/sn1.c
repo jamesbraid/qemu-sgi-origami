@@ -29,7 +29,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
     bool ip53 = g_str_equal(product, "origin350");
-    const char *topology = ip53 ? "origin350-ip53-experiment" : product;
+    const char *topology = product;
     const SGIModelTopology *t = sgi_model_find_topology(topology);
 
     g_assert(t);

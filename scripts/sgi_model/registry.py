@@ -7,7 +7,7 @@ PRODUCT_MODELS = {
     "origin200": "origin200",
     "origin2000": "origin2000-rack",
     "origin300": "origin300",
-    "origin350": "origin350-ip53-experiment",
+    "origin350": "origin350",
     "onyx2": "onyx2-rack",
     "octane": "octane",
     "octane2": "octane2",
@@ -23,5 +23,19 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-pci-expansion-configuration-storage-experiment",
     "origin300-pci-expansion-unconnected-uart-experiment",
     "origin300-pci-expansion-pending-register-experiment",
-    "origin350-ip53-experiment",
+    "origin350",
+)
+
+# Authored reference compositions are useful for comparing product topology,
+# but their unresolved hardware inputs keep them out of the runtime catalogue.
+REFERENCE_TOPOLOGIES = (
+    "origin350-reference",
+    "onyx350-base",
+    "tezro-tower-one",
+    "tezro-tower-multi",
+    "tezro-tower-four",
+    "tezro-rack-base",
+    "tezro-rack-two-enclosure",
+    "onyx4-host-g2",
+    "onyx4-host-g2n",
 )

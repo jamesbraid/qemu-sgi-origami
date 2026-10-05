@@ -87,7 +87,7 @@
         "required": ["composition", "machine"],
         "properties": {
           "composition": { "required": ["product"], "properties": {
-            "product": { "const": "origin350-ip53-experiment" }
+            "product": { "const": "origin350" }
           } },
           "machine": {
             "required": ["generation", "harness", "emulation"],

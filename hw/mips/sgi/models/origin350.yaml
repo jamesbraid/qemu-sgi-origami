@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 350 reference composition. Resolve before validation or generation.
+# Origin 350 IP53 software profile. The product name identifies the product;
+# selected emulation inputs remain explicitly approximate.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53.yaml
-  - layers/modules/origin350-module.yaml
+  - layers/modules/ip53-origin350-module.yaml
   - layers/products/origin350.yaml

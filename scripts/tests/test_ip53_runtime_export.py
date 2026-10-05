@@ -19,9 +19,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from sgi_model.model_composition import validate_initialization_policy
 from sgi_model.model_compile import CompileError
 from sgi_model.model_emit import (
-    _is_ip53_experiment,
+    _is_origin350_ip53_profile,
     _validate_export_profiles,
-    _validate_ip53_experiment_consoles,
+    _validate_origin350_ip53_consoles,
     render_catalogue_json,
 )
 from sgi_model.model_validation import check_schema, load_checked_system_model, schema
@@ -32,7 +32,7 @@ from sgi_model.registry import PRODUCT_MODELS
 class IP53RuntimeExportTests(unittest.TestCase):
     def experiment_model(self):
         return {
-            "composition": {"product": "origin350-ip53-experiment"},
+            "composition": {"product": "origin350"},
             "machine": {
                 "emulation": {"machine_name": "origin350"},
                 "harness": {"launch_recipe": "ip53-discovery"},
@@ -46,7 +46,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
         model["machine"]["emulation"]["pic_profiles"] = {
             "pic": "pic-rev3-bedrock-experimental"}
         validate_initialization_policy(model)
-        for field, value in (("product", "origin350"),
+        for field, value in (("product", "onyx350-base"),
                              ("machine_name", "origin300"),
                              ("launch_recipe", "other")):
             changed = self.experiment_model()
@@ -76,11 +76,11 @@ class IP53RuntimeExportTests(unittest.TestCase):
 
     def test_export_scope_requires_exact_product_machine_and_recipe(self):
         model = self.experiment_model()
-        self.assertTrue(_is_ip53_experiment(model))
+        self.assertTrue(_is_origin350_ip53_profile(model))
         _validate_export_profiles(model, {"pci_host_bridges": [{
             "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
-        model["composition"]["product"] = "origin350"
-        self.assertFalse(_is_ip53_experiment(model))
+        model["composition"]["product"] = "onyx350-base"
+        self.assertFalse(_is_origin350_ip53_profile(model))
         with self.assertRaisesRegex(CompileError, "restricted"):
             _validate_export_profiles(model, {"pci_host_bridges": [{
                 "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
@@ -112,7 +112,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
                         "launcher_name": f"ioc4-serial-{index}",
                     } for index in range(4)],
                 })
-                _validate_ip53_experiment_consoles(
+                _validate_origin350_ip53_consoles(
                     model, {"nodes": [{"id": "node-0"}]})
 
     def test_order_count_and_node_changes_are_rejected(self):
@@ -132,10 +132,10 @@ class IP53RuntimeExportTests(unittest.TestCase):
                         [dict(records[0], node_id="foreign")] + records[1:]):
             harness["console_records"] = altered
             with self.assertRaises(ValueError):
-                _validate_ip53_experiment_consoles(model, topology)
+                _validate_origin350_ip53_consoles(model, topology)
         harness["console_records"] = records
         with self.assertRaises(ValueError):
-            _validate_ip53_experiment_consoles(
+            _validate_origin350_ip53_consoles(
                 model, {"nodes": [{"id": "node-0"}, {"id": "node-1"}]})
 
     def test_r16000_identity_fields_are_limited_to_r16000_cpu(self):
@@ -186,7 +186,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
             for product, filename in PRODUCT_MODELS.items()
         }
         for filename, expected, l1_type in (
-                ("origin350-ip53-experiment.yaml", 0x2001, 0x37),
+                ("origin350.yaml", 0x2001, 0x37),
                 ("origin300.yaml", 0x8001, 0x34)):
             with self.subTest(filename=filename):
                 model = load_checked_system_model(
@@ -202,7 +202,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
                 self.assertEqual(controllers[0]["kind"], "l1")
                 self.assertEqual(controllers[0]["l1"]["reported-type"],
                                  l1_type)
-                if filename == "origin350-ip53-experiment.yaml":
+                if filename == "origin350.yaml":
                     self.assertEqual((word >> 12) & 0xF, 2)
                     self.assertEqual(word & 0xFFF, 1)
                     self.assertEqual(topology["modules"][0]["nodes"], [0])
@@ -212,7 +212,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
     def test_integer_reset_mode_is_experiment_only(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
         experiment = load_checked_system_model(
-            ROOT / "hw/mips/sgi/models/origin350-ip53-experiment.yaml",
+            ROOT / "hw/mips/sgi/models/origin350.yaml",
             model_schema=model_schema)
         self.assertEqual(experiment["machine"]["firmware_config"][
             "processor_reset_mode"], 0x009cad85)
@@ -225,7 +225,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
         for selector, mutate in (
                 ("missing product", lambda model: model["composition"].pop("product")),
                 ("wrong product", lambda model: model["composition"].update(
-                    product="origin350")),
+                    product="onyx350-base")),
                 ("missing generation", lambda model: model["machine"].pop("generation")),
                 ("wrong generation", lambda model: model["machine"].update(
                     generation="SN0")),
