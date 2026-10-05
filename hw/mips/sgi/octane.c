@@ -381,6 +381,10 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     if (serial_hd(1)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-b", serial_hd(1));
     }
+    /* The populated TL16PIR552 port takes -parallel, as on the SN boards. */
+    if (parallel_hds[0]) {
+        qdev_prop_set_chr(DEVICE(pci), "parallel-chardev", parallel_hds[0]);
+    }
     if (!pci_realize_and_unref(pci, bus, errp) ||
         !octane_attach_record(s, OBJECT(pci), "frontplane-record",
                               SGI_IOC3(pci)->onewire_bus, "frontplane",
@@ -1068,7 +1072,6 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     mc->block_default_type = IF_SCSI;
     mc->no_floppy = true;
     mc->no_cdrom = true;
-    mc->no_parallel = true;
 }
 
 static const TypeInfo octane_machine_types[] = {
