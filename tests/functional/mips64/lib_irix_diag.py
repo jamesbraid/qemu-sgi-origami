@@ -604,9 +604,11 @@ def wav_nonzero_samples(data):
 @dataclass(frozen=True)
 class Ethernet:
     """An IOC3 Ethernet: the interface IRIX names it, the explicit station
-    address QEMU gives it (QEMU never rewrites an explicit mac=, so the
-    address netstat reports can only have come through the model), and
-    the user-mode network behind it as its first three octets."""
+    address QEMU gives it (the machine's mac= for the first onboard one,
+    each further onboard one the next address; QEMU never rewrites an
+    explicit mac=, so the address netstat reports can only have come
+    through the model), and the user-mode network behind it as its first
+    three octets."""
     ifname: str
     mac: str
     subnet: str
@@ -998,6 +1000,10 @@ def launch_args(flavour, row, assets, paths, quick_prom=False):
         argv += o300
     else:
         argv += ['-bios', assets['firmware']]
+        # The machine gives its onboard Ethernets mac= and the addresses
+        # after it, and refuses a different -nic mac= for them.
+        if flavour.ethernets:
+            machine += f',mac={flavour.ethernets[0].mac}'
         if quick_prom and flavour.dip_switches:
             machine += f',elsc-dip-switches={QUICK_PROM_SWITCHES}'
     if row.cells['rad1'] == RUN:

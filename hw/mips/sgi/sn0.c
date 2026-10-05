@@ -1307,6 +1307,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
+                           const char *ioc3_mac,
                            DeviceState **bridge_out, Error **errp)
 {
     const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
@@ -1338,6 +1339,9 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                              &error_abort);
     if (ioc3_serial) {
         qdev_prop_set_uint64(baseio, "onewire-serial", *ioc3_serial);
+    }
+    if (ioc3_mac) {
+        qdev_prop_set_string(baseio, "ioc3-mac", ioc3_mac);
     }
     if (nvram_drive_id) {
         qdev_prop_set_string(baseio, "nvram-drive", nvram_drive_id);

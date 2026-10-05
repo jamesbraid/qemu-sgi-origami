@@ -1864,14 +1864,16 @@ static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
     return sn0_ioc3_attach_with_netdev_options(host_fd, "");
 }
 
-/* The one-wire tests need a known MAC to check the part against, which the
- * explicit mac= supplies; the socket backend is otherwise unused. */
+/*
+ * The one-wire tests need a known MAC to check the part against, which the
+ * machine's mac= supplies; the socket backend is otherwise unused.
+ */
 static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
 {
     QTestState *qts;
-    char *args = g_strdup_printf("-M origin200 "
-                                 "-nic socket,fd=%d,id=n0,mac=%s",
-                                 host_fd, mac);
+    char *args = g_strdup_printf("-M origin200,mac=%s "
+                                 "-nic socket,fd=%d,id=n0",
+                                 mac, host_fd);
 
     qts = qtest_init(args);
     g_free(args);
@@ -2257,6 +2259,45 @@ static void test_the_default_station_address_is_an_sgi_address(const void *data)
     qtest_quit(qts);
     close(sv[0]);
 }
+
+/*
+ * A -nic mac= that differs from the board's own address is refused: the
+ * one-wire part and the station address cannot disagree.
+ */
+static void test_a_conflicting_nic_mac_is_refused(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,mac=08:00:69:00:00:01",
+        "-nic", "user,mac=08:00:69:00:00:02", "-S", "-display", "none",
+        "-qtest", "stdio", "-accel", "qtest", NULL,
+    };
+    g_autofree char *err = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL,
+                               G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL, NULL,
+                               &err, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(err, "IOC3 NIC MAC conflicts with board "
+                            "identity"));
+}
+
+/*
+ * Each Origin 200 node's onboard IOC3 takes mac= plus its position, as
+ * each Bedrock node does.
+ */
+static void test_dual_node_addresses_follow_mac(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,topology=origin200-dual,"
+                                 "mac=08:00:69:00:00:10 -smp 4 -m 128M");
+    g_autofree char *network = qtest_hmp(qts, "info network");
+
+    g_test_message("info network: %s", network);
+    g_assert_nonnull(strstr(network, "macaddr=08:00:69:00:00:10"));
+    g_assert_nonnull(strstr(network, "macaddr=08:00:69:00:00:11"));
+    qtest_quit(qts);
+}
+
 
 /* The converse: mac= is the operator's word, never rewritten, even inside
  * the generator's own range, the one range address bytes cannot attribute. */
@@ -6652,6 +6693,10 @@ int main(int argc, char **argv)
                         test_the_default_station_address_is_an_sgi_address);
     qtest_add_data_func("sn0/ioc3/one-wire-explicit-mac-survives", NULL,
                         test_an_explicit_mac_in_the_generator_range_stays);
+    qtest_add_data_func("sn0/ioc3/conflicting-nic-mac-refused", NULL,
+                        test_a_conflicting_nic_mac_is_refused);
+    qtest_add_data_func("sn0/ioc3/dual-node-addresses-follow-mac", NULL,
+                        test_dual_node_addresses_follow_mac);
     qtest_add_data_func("sn0/ioc3/device-supplied-mac-survives", NULL,
                         test_a_device_supplied_mac_survives);
     qtest_add_data_func("sn0/ioc3/one-wire-read-status-no-redirection", NULL,

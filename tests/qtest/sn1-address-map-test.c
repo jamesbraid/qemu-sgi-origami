@@ -3049,17 +3049,6 @@ static void test_mac_rejects(const void *data)
 
         assert_qemu_rejects(args, cases[i].message);
     }
-
-    /* Origin 200 has no L1 record to carry the address. */
-    {
-        const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", "origin200,mac=02:00:5d:aa:bb:cc",
-            "-S", "-display", "none", "-qtest", "stdio", "-accel", "qtest",
-            NULL,
-        };
-
-        assert_qemu_rejects(args, "mac name an L1 identity controller");
-    }
 }
 
 static void l1_expect_mac_text(QTestState *qts, const char *text)

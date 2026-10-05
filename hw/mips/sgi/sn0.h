@@ -275,6 +275,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
+                           const char *ioc3_mac,
                            DeviceState **bridge_out, Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
