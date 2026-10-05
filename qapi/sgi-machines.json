@@ -125,11 +125,20 @@
 #
 # @size: total chip size in bytes
 #
+# @select: an IP30 boot flash's Bridge flash select: true for select
+#     1.  The machine's flash-select property defaults to it.  Absent
+#     on the SN nodes, which have no select
+#
+# @strap: an IP30 board's flash select strap: true boots from select
+#     1.  The machine's flash-strap property defaults to it
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelFlash',
   'data': { 'kind': 'SGIModelFlashKind',
-            'size': 'uint64' } }
+            'size': 'uint64',
+            '*select': 'bool',
+            '*strap': 'bool' } }
 
 ##
 # @SGIModelAsicIdentity:

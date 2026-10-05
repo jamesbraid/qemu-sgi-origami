@@ -1624,7 +1624,7 @@ static void test_alternate_flash(gconstpointer data)
 
 static void test_flash_bios_strap(void)
 {
-    QTestState *qts = octane_start_args("-machine flash-strap=1");
+    QTestState *qts = octane_start_args("-machine flash-strap=on");
     uint32_t word;
     uint64_t wide;
 
@@ -1644,9 +1644,10 @@ static QTestState *octane_start_flash(const char *path,
     g_autofree char *image = g_shell_quote(path);
 
     return qtest_initf(
-        MEMTX_TEST_DEVICE "-M octane,flash-select=%u,flash-strap=%u,"
+        MEMTX_TEST_DEVICE "-M octane,flash-select=%s,flash-strap=%s,"
         "node0-flash=flash0 -m 128M -cpu R10000 "
-        "-drive if=none,id=flash0,file=%s,format=raw", select, strap, image);
+        "-drive if=none,id=flash0,file=%s,format=raw",
+        select ? "on" : "off", strap ? "on" : "off", image);
 }
 
 static void test_flash(gconstpointer data)
@@ -3272,6 +3273,55 @@ static void test_catalogue_machine_options(void)
     qtest_quit(qts);
 }
 
+static void octane_storage_rejected(const char *machine, const char *extra,
+                                    const char *message);
+
+/*
+ * The boot flash's select and strap come from the catalogue, which
+ * lists both for each Octane topology; the machine properties start
+ * from those values and take only booleans.
+ */
+static void test_flash_wiring_defaults(void)
+{
+    QTestState *qts = octane_start();
+    QDict *response = qtest_qmp(qts, "{'execute': 'query-sgi-machines'}");
+    QList *topologies = qdict_get_qlist(qdict_get_qdict(response, "return"),
+                                        "topologies");
+    g_autoptr(QDict) select = NULL;
+    g_autoptr(QDict) strap = NULL;
+    g_autofree char *bios = g_strdup_printf("-bios %s", flash_path);
+    const QListEntry *entry;
+    unsigned int found = 0;
+
+    QLIST_FOREACH_ENTRY(topologies, entry) {
+        QDict *topology = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *product = qdict_get_str(topology, "product");
+        QDict *node, *flash;
+
+        if (!g_str_equal(product, "octane") &&
+            !g_str_equal(product, "octane2")) {
+            continue;
+        }
+        node = qobject_to(QDict, qlist_peek(qdict_get_qlist(topology,
+                                                            "nodes")));
+        flash = qdict_get_qdict(node, "flash");
+        g_assert_false(qdict_get_bool(flash, "select"));
+        g_assert_false(qdict_get_bool(flash, "strap"));
+        found++;
+    }
+    g_assert_cmpuint(found, ==, 2);
+    qobject_unref(response);
+    select = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                       "{'path': '/machine', 'property': 'flash-select'}}");
+    strap = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                      "{'path': '/machine', 'property': 'flash-strap'}}");
+    g_assert_false(qdict_get_bool(select, "return"));
+    g_assert_false(qdict_get_bool(strap, "return"));
+    qtest_quit(qts);
+    octane_storage_rejected("octane,flash-strap=1", bios,
+                            "Parameter 'flash-strap' expects 'on' or 'off'");
+}
+
 /* "-blockdev ..." for a raw file node named @node. */
 static char *octane_blockdev(const char *node, const char *path)
 {
@@ -4400,6 +4450,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
                         test_alternate_flash);
     qtest_add_func("/octane/flash-bios-strap", test_flash_bios_strap);
+    qtest_add_func("/octane/flash-wiring-defaults",
+                   test_flash_wiring_defaults);
     qtest_add_data_func("/octane/flash-select0-strap0", GUINT_TO_POINTER(0),
                         test_flash);
     qtest_add_data_func("/octane/flash-select0-strap1", GUINT_TO_POINTER(1),

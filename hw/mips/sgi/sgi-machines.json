@@ -11549,7 +11549,9 @@
           ],
           "flash": {
             "kind": "operator-prom",
-            "size": 1048576
+            "select": false,
+            "size": 1048576,
+            "strap": false
           },
           "heart": {
             "board-records": [
@@ -11728,7 +11730,9 @@
           ],
           "flash": {
             "kind": "operator-prom",
-            "size": 1048576
+            "select": false,
+            "size": 1048576,
+            "strap": false
           },
           "heart": {
             "board-records": [

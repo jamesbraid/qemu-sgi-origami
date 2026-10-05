@@ -38,6 +38,16 @@ layer:
         display_description: SGI Octane (IP30)
         lifecycle: implemented
         profile: serial
+        # The fitted part, its select and the strap are unknown (Origami
+        # docs/datasheets/ip30-flash.md). Select 0 with the strap low is
+        # the compatibility default every launch has used.
+        boot_flash_wiring:
+          select: false
+          strap: false
+          provenance: unsourced
+          sources:
+          - docs/datasheets/ip30-flash.md
+          notes: Unknown wiring; the compatibility default, not a measured board.
         emulator_constraints:
           accepted_bank_sizes_mib:
           - 64
@@ -68,9 +78,9 @@ layer:
         default_topology: octane
         # The candidate part's 1 MiB array (Origami docs/designs/
         # ip30-flash-configuration.md), which the reviewed CFI01 boot flash
-        # ("hw/mips/sgi: use CFI01 for Octane boot flash") implements as
-        # octane.c's OCTANE_FLASH_SIZE. The fitted physical part is still
-        # unknown.
+        # ("hw/mips/sgi: use CFI01 for Octane boot flash") implements and
+        # octane.c sizes from this catalogue entry. The fitted physical
+        # part is still unknown.
         firmware_bytes: 1048576
         identity_inputs: []
         supported_guests:

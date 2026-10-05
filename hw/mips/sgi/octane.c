@@ -85,8 +85,8 @@ typedef struct OctaneMachineState {
     Error *flash_migration_blocker;
     /* Catalogue storage item name -> the block node or drive it binds. */
     GHashTable *storage;
-    uint64_t flash_select;
-    uint64_t flash_strap;
+    bool flash_select;
+    bool flash_strap;
 } OctaneMachineState;
 
 static char *octane_get_graphics_board(Object *obj, Error **errp)
@@ -520,10 +520,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         error_setg(errp, "octane2 requires an R12000 CPU");
         return false;
     }
-    if (s->flash_select > 1 || s->flash_strap > 1) {
-        error_setg(errp, "octane flash-select and flash-strap must be 0 or 1");
-        return false;
-    }
     if (!octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock,
                                 errp)) {
         return false;
@@ -850,10 +846,9 @@ static void octane_instance_init_common(Object *obj, const char *product)
             }
         }
     }
-    object_property_add_uint64_ptr(obj, "flash-select", &s->flash_select,
-                                   OBJ_PROP_FLAG_READWRITE);
-    object_property_add_uint64_ptr(obj, "flash-strap", &s->flash_strap,
-                                   OBJ_PROP_FLAG_READWRITE);
+    /* The catalogue's wiring, which a launcher may override. */
+    s->flash_select = s->node->flash->has_select && s->node->flash->select;
+    s->flash_strap = s->node->flash->has_strap && s->node->flash->strap;
     default_bank = s->node->bank_mib;
 
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
@@ -892,9 +887,41 @@ static void octane_instance_finalize(Object *obj)
     }
 }
 
+static bool octane_get_flash_select(Object *obj, Error **errp)
+{
+    return ((OctaneMachineState *)obj)->flash_select;
+}
+
+static void octane_set_flash_select(Object *obj, bool value, Error **errp)
+{
+    ((OctaneMachineState *)obj)->flash_select = value;
+}
+
+static bool octane_get_flash_strap(Object *obj, Error **errp)
+{
+    return ((OctaneMachineState *)obj)->flash_strap;
+}
+
+static void octane_set_flash_strap(Object *obj, bool value, Error **errp)
+{
+    ((OctaneMachineState *)obj)->flash_strap = value;
+}
+
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+
+    object_class_property_add_bool(oc, "flash-select",
+                                   octane_get_flash_select,
+                                   octane_set_flash_select);
+    object_class_property_set_description(oc, "flash-select",
+        "Wire the boot flash to Bridge flash select 1 (default from "
+        "query-sgi-machines; the board's wiring is unknown)");
+    object_class_property_add_bool(oc, "flash-strap", octane_get_flash_strap,
+                                   octane_set_flash_strap);
+    object_class_property_set_description(oc, "flash-strap",
+        "Strap the PROM to boot from Bridge flash select 1 (default from "
+        "query-sgi-machines; the board's strap is unknown)");
 
     mc->desc = "SGI Octane (IP30), functional profile";
     mc->init = octane_init;

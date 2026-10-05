@@ -59,7 +59,8 @@ class IP30CatalogueTests(unittest.TestCase):
         topology = next(t for t in catalogue["topologies"]
                         if t["name"] == "octane2")
         self.assertEqual(topology["nodes"][0]["flash"],
-                         {"kind": "operator-prom", "size": 1048576})
+                         {"kind": "operator-prom", "size": 1048576,
+                          "select": False, "strap": False})
         self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)
@@ -75,6 +76,18 @@ class IP30CatalogueTests(unittest.TestCase):
         del self.component(model, "heart")["identity"]
         with self.assertRaisesRegex(CompileError, "has no identity"):
             compile_model(model)
+
+    def test_boot_flash_wiring_is_required(self):
+        model = resolved("octane")
+        del model["machine"]["emulation"]["boot_flash_wiring"]
+        with self.assertRaisesRegex(CompileError, "boot_flash_wiring"):
+            compile_model(model)
+
+    def test_boot_flash_wiring_reaches_the_topology(self):
+        model = resolved("octane")
+        model["machine"]["emulation"]["boot_flash_wiring"]["strap"] = True
+        flash = compile_model(model)["nodes"][0]["flash"]
+        self.assertEqual((flash["select"], flash["strap"]), (False, True))
 
     def test_heart_widget_revision_must_match_id(self):
         model = resolved("octane")
