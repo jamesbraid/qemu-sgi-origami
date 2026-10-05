@@ -26,21 +26,32 @@ layer:
       name: Onyx 350 base compute module
       model_role: reference
       notes: >-
-        The boot module has an IP53 node board, Bedrock, IO9 in the lowermost PCI
-        slot, and an L1 controller. The guide establishes two PCI buses, an XIO
-        connector, and one NUMAlink 3 connector. The graphics attachment is
-        outside this non-graphics reference. PIC revision, XIO widget
-        placement, PCI device numbers, fitted DIMMs and board revisions are
-        unknown for this selected configuration. Origin 350 placements do not
-        establish those values for Onyx 350.
+        The boot module has an IP53 node board, Bedrock, an IO9 in bus 1,
+        slot 1, and an L1 controller. Figure 3-2 (printed page 53) labels a PIC ASIC and a PCI
+        riser card. PIC placement, count, widget, revision, PCI device numbers
+        and interrupt route, fitted DIMMs, board revisions, L1 identity, PROM
+        flash fitment and guest serial routing remain unknown. The guide also
+        lists a factory SCSI disk, which this reference layer does not model.
+        Origin 350 placements and software inputs do not
+        establish those values for Onyx 350. The graphics attachment is
+        outside this non-graphics reference.
     evidence_policy: strict
     components:
-      - {id: chassis, name: Onyx 350 base compute module, kind: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 47: base compute module"]}
-      - {id: cpu0, name: MIPS processor, kind: cpu, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
-      - {id: cpu1, name: MIPS processor, kind: cpu, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
-      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 53: 1-8 GB in two to eight DIMMs"]}
-      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 47 and 50: factory-installed IO9 in lowermost PCI slot"]}
+      - {id: chassis, name: Onyx 350 base compute module, kind: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 47: required 2U base compute module"]}
+      - {id: node-board, name: IP53 node board, kind: board, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 54: IP53 node board"]}
+      - {id: cpu0, name: MIPS processor, kind: cpu, parent: node-board, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
+      - {id: cpu1, name: MIPS processor, kind: cpu, parent: node-board, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
+      - {id: memory, name: node memory, kind: memory, parent: node-board, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 55-56: 1-8 GB in two to eight DIMMs"]}
+      - {id: pci-riser, name: PCI riser card, kind: board, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 53 and 58: Figure 3-2 labels the PIC ASIC and PCI riser; the IO9 section describes the PCI ASIC"]}
+      - {id: io9-slot-bus1-slot1, name: IO9 PCI slot, kind: connector, parent: chassis, connector: {interface: PCI/PCI-X, location: "bus 1, slot 1", occupancy: occupied, notes: Factory IO9 location; no configuration device or function number is assigned.}, provenance: vendor-document, sources: ["007-4632-001 printed pages 52 and 57: IO9 in bus 1, slot 1, the lowermost slot"]}
+      - {id: io9, name: IO9 card, kind: io-controller, parent: io9-slot-bus1-slot1, provenance: vendor-document, sources: ["007-4632-001 printed pages 47, 50, 57-58: factory IO9 card in bus 1, slot 1"]}
+      - {id: ioc4, name: IOC-4 ASIC, kind: io-controller, hardware_kind: ioc4, parent: io9, provenance: vendor-document, sources: ["007-4632-001 printed page 58: IO9 contains an IOC-4 ASIC"]}
+      - {id: usb-card, name: four-port USB PCI card, kind: board, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 47: factory-installed PCI 4-port USB card"], notes: "The manual does not identify its bus, slot, PCI IDs or controller model."}
+      - {id: interface-board, name: interface board, kind: board, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 58: interface board with a daughtercard"]}
+      - {id: serial-daughtercard, name: serial daughtercard, kind: board, parent: interface-board, provenance: vendor-document, sources: ["007-4632-001 printed pages 47 and 58: factory serial daughtercard on the interface board"], notes: The manual assigns three IOC-4 serial ports and two PS/2 ports to the daughtercard; connector-to-emulator UART routing is unknown.}
     buses:
-      - {id: pci, name: PCI/PCI-X slots on two buses, kind: pci, provenance: vendor-document, sources: ["007-4632-001 printed page 49: four slots on two buses"]}
+      - {id: pci-bus-1, name: PCI bus 1, kind: pci, provenance: vendor-document, sources: ["007-4632-001 printed pages 52 and 57: IO9 is in bus 1, slot 1"]}
+      - {id: pci-bus-2, name: PCI bus 2, kind: pci, provenance: vendor-document, sources: ["007-4632-001 printed pages 49 and 51: four PCI/PCI-X slots on two buses"]}
     connections:
-      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4632-001 printed page 50: IO9 in lowermost PCI slot"]}
+      - {component: io9-slot-bus1-slot1, bus: pci-bus-1, role: endpoint, provenance: vendor-document, sources: ["007-4632-001 printed pages 52 and 57: IO9 occupies bus 1, slot 1"]}
+      - {component: io9, bus: pci-bus-1, role: endpoint, provenance: vendor-document, sources: ["007-4632-001 printed pages 52 and 57: IO9 in bus 1, slot 1"]}
