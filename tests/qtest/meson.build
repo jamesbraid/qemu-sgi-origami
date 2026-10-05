@@ -436,6 +436,7 @@ sn0_machine_qtests = \
                                                    'sn0-snapshot-test',
                                                    'sn0-ds1685-test',
                                                    'sn0-fabric-test',
+                                                   'sn0-hub-inbound-test',
                                                    'sn0-qtest-cpu-test',
                                                    'sgi-debug-tools-test',
                                                    'sn-builder-test',

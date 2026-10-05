@@ -712,6 +712,7 @@ tests/qtest/sn0-elsc-test.c
 tests/qtest/sn0-fabric-test.c
 tests/qtest/sn0-forward-progress-test.c
 tests/qtest/sn0-gigachannel-test.c
+tests/qtest/sn0-hub-inbound-test.c
 tests/qtest/sn0-hub-test.c
 tests/qtest/sn0-i2c-test.c
 tests/qtest/sn0-ioc3-kbc-routing-test.c
