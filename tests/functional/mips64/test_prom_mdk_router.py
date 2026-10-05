@@ -8,34 +8,24 @@
 MDK_router_sso is the third MDK 1.6 package, the Router simultaneous
 switching test. SGI's MDK-Based Field Diagnostics manual (108-0162-004,
 chapter 5, PDF pages 81 to 85) describes it on Router-equipped Origin
-2000 and Onyx2 systems: 238 passes in which one CPU per node reads 16 MB
-from other nodes so that traffic crosses every Router link, then reads
-each Router's per-port error registers and each Hub's network interface
-error register, failing on more than 10 checkbit errors in a pass. A
-clean run ends with "TEST RESULT: **** TEST PASSED ****" and "MDK
-Router_sso test run is complete."
+2000 and Onyx2 systems. Each pass one CPU per node reads 16 MB from other
+nodes so that traffic crosses every Router link, then reads each Router's
+per-port error registers and each Hub's network interface error register
+(PDF 82). The manual is inconsistent on the details: its procedure and
+pass output say 238 passes (PDF 82 and 83) while its failure text says 96
+(PDF 83), and its procedure's threshold is more than 10 checkbit errors
+a pass (PDF 82) while its example error line allows 50 on port 5 (PDF
+83). The package itself prints an end pass of 238 and thresholds of 10,
+50 for port 5, and 10 for a star router's port 3. A clean run ends with
+"TEST RESULT: **** TEST PASSED ****" and "MDK Router_sso test run is
+complete."
 
 This test boots the Origin 2000 module the machine models (four nodes,
 eight CPUs, two Routers, 256 MB), netboots the package and requires that
 result: every node and both Routers discovered, all 238 passes, the
 diagnostic's own pass line, and none of its error, warning or failure
-lines.
-
-It used to run on the two-chassis Origin 200, which joins two nodes
-through a null router. The package's release note (MDK 1.6 on Internal
-Support Tools 2.7) says it was written for that case, but it never
-passed there and cannot pass on evidence we hold. Each pass the
-diagnostic reads the Router port error-clear registers (port number in
-bits 18:16, offset 0x88) through vector route 0, ignores the read's
-status, and takes bits 15:8 of its result buffer as the checkbit count;
-the buffer is written only on a successful read response (from the
-package's disassembly). Behind a null router, route 0 reaches the peer
-Hub, and what a real Hub answers to those addresses is not established
-by any Hub document or capture we hold. The model refuses them with an
-address error, so the diagnostic prints whatever its stack held and
-fails every pass. A capture of router_sso, or of the PROM's vector-read
-command at those addresses, on a real two-module Origin 200 would
-settle it.
+lines. It previously booted the two-chassis Origin 200, which has no
+Routers and so was the wrong machine for a Router link test.
 """
 
 import json
@@ -48,7 +38,8 @@ from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
                       run_record, utc_now)
-from lib_prom_mdk import PROM_SHA256, payload_identity_problems
+from lib_prom_mdk import (PROM_SHA256, mdk_extra_args,
+                          payload_identity_problems)
 from lib_prom_mdk_router import NETBOOT_PATH, verdict
 
 
@@ -57,10 +48,11 @@ ROUTER_SSO_SHA256 = (
     "8caaf050bbf1a71caf0bb59944415e98c7ffd49242975c2b41e5d29cdd3108f2"
 )
 
-# One run of this test on the debug_tcg build at host load 75 to 80 took
-# 2847s: the router test started about 140s after launch, then about 11s a
-# pass. A run with interrupt logging on took about 19s a pass. This allows
-# close to twice the measured run; the meson timeout is 60s above it.
+# Two runs of this test on the debug_tcg build at host load 75 to 80 took
+# 2847s and 3016s: the router test started 140 to 180s after launch, then
+# took 11 to 12s a pass. A run with interrupt logging on took about 19s a
+# pass. This allows about 1.8 times the slower run; the meson timeout is
+# 60s above it.
 BOOT_TIMEOUT_SECONDS = 5340
 
 DRIVER_STEPS = (
@@ -100,21 +92,15 @@ class PromMdkRouter(QemuSystemTest):
         netboot_tftp = self._stage_netboot_tftp(mdk)
 
         vm = self.get_vm(name='prom_mdk_router')
-        vm.set_machine(MACHINES['origin2000'])
+        vm.set_machine(MACHINES['origin2000'] + ',debug-leds=off')
         vm.set_console()
+        elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
-        vm.add_args(
-            '-accel', 'tcg,thread=multi',
-            '-cpu', 'R10000',
-            '-smp', '8',
-            '-m', '256',
-            '-bios', str(prom),
-            '-audio', 'none',
-            '-nic', ('user,id=net0,net=192.0.2.0/24,host=192.0.2.2,'
-                     f'dhcpstart=192.0.2.15,tftp={netboot_tftp},'
-                     f'bootfile={NETBOOT_PATH}'),
-            '-object', f'filter-dump,id=netcap,netdev=net0,file={capture}',
-        )
+        extra = mdk_extra_args(prom, netboot_tftp, elsc_log, capture,
+                               netboot_path=NETBOOT_PATH)
+        extra[extra.index('-smp') + 1] = '8'
+        extra[extra.index('-m') + 1] = '256'
+        vm.add_args('-accel', 'tcg,thread=multi', *extra)
 
         started = utc_now()
         vm.launch()
