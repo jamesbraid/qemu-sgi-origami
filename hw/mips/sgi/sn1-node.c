@@ -1748,6 +1748,11 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              node->io_board_widget == 14 ?
                              "board-part-e" : "board-part-f",
                              node->io_board_part);
+        /* Each chassis's IO-8 answers with its own serial. */
+        qdev_prop_set_uint64(node->xbridge,
+                             node->io_board_widget == 14 ?
+                             "onewire-serial-e" : "onewire-serial-f",
+                             node->io_board_serial);
     }
     sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
                       OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
@@ -2147,6 +2152,8 @@ static const Property sn1_node_properties[] = {
                       installed_bank_mask, 0),
     DEFINE_PROP_UINT8("io-board-widget", SN1NodeState, io_board_widget, 0),
     DEFINE_PROP_STRING("io-board-part", SN1NodeState, io_board_part),
+    DEFINE_PROP_UINT64("io-board-serial", SN1NodeState, io_board_serial,
+                       SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
     DEFINE_PROP_UINT8("xbridge-xio-port", SN1NodeState, xbridge_xio_port,
                       SGI_XBRIDGE_XIO_PORT_DEFAULT),
     DEFINE_PROP_STRING("flash-node", SN1NodeState, flash_node),

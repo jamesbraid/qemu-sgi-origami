@@ -2970,6 +2970,65 @@ static void test_identity_defaults(void)
     }
 }
 
+/*
+ * Each node's board areas carry their own instance, so a second chassis's
+ * serials read "EMUN01" and "EMUI01" where the first's read "EMUN00" and
+ * "EMUI00". The serial sits at the same offset in both areas' layout: the
+ * text after the manufacturer and the name, here bytes 27-32 of the node
+ * area and 21-26 of the IO8's.
+ */
+static void test_identity_index_names_the_node(void)
+{
+    QTestState *s = start_identity(
+        "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+        "node-board-revision=-C,mac=08:00:69:12:34:57,"
+        "mac-record=io8-board,identity-index=1");
+    uint8_t node[72], io8[80];
+    uint8_t reply[131];
+    uint8_t sum = 0;
+
+    g_assert_cmpuint(eeprom_read(s, 0, 2, 0, sizeof(node), reply), ==,
+                     12 + sizeof(node));
+    memcpy(node, reply + 12, sizeof(node));
+    g_assert_cmpuint(eeprom_read(s, 1, 2, 0, sizeof(io8), reply), ==,
+                     12 + sizeof(io8));
+    memcpy(io8, reply + 12, sizeof(io8));
+
+    g_assert_cmphex(node[26], ==, 0xc6);
+    g_assert_cmpmem(node + 27, 6, "EMUN01", 6);
+    g_assert_cmphex(io8[20], ==, 0xc6);
+    g_assert_cmpmem(io8 + 21, 6, "EMUI01", 6);
+    /* Apart from the serial and the checksum, the areas are instance 0's. */
+    g_assert_cmpmem(node, 27, expected_node_board_2cpu, 27);
+    g_assert_cmpmem(node + 33, 38, expected_node_board_2cpu + 33, 38);
+    g_assert_cmpmem(io8 + 27, 52, expected_io8_board_default_next + 27, 52);
+    for (size_t i = 0; i < sizeof(node); i++) {
+        sum += node[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+    for (size_t i = 0; i < sizeof(io8); i++) {
+        sum += io8[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+    qtest_quit(s);
+}
+
+/* An instance past the two-digit serial is refused. */
+static void test_identity_index_bound(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*identity-index must be 0 to 99*");
+        return;
+    }
+    s = qtest_init("-M none -cpu R10000 -S "
+                   "-device sgi-l1,id=l1c,identity-index=100" UART);
+    qtest_quit(s);
+}
+
 /* A raw file still replaces the synthetic area it names, and only that. */
 static void test_identity_raw_override(void)
 {
@@ -3031,33 +3090,34 @@ static void test_identity_mac_text(void)
 
 /*
  * A Fuel system board's node and logic-board areas, written out by hand
- * from the board-area field layout: placeholder manufacturer and serial,
- * IP34 030-1707-003 -G, then for component 1 the station address digits
- * where the IO8 keeps them.
+ * from the board-area field layout: placeholder manufacturer, the marked
+ * synthetic serial "EMUN00" in both, since the two areas describe one
+ * board, IP34 030-1707-003 -G, then for component 1 the station address
+ * digits where the IO8 keeps them.
  */
 static const uint8_t expected_system_node_board[72] = {
     0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xc9, 0x53,
     0x59, 0x4e, 0x54, 0x48, 0x45, 0x54, 0x49, 0x43,
-    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x30, 0x30,
-    0x30, 0x30, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
+    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x45, 0x4d,
+    0x55, 0x4e, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
     0x2d, 0x31, 0x37, 0x30, 0x37, 0x2d, 0x30, 0x30,
     0x33, 0x00, 0xc2, 0x2d, 0x47, 0x01, 0x00, 0xc2,
     0x30, 0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04,
     0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-    0x00, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88,
+    0x00, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13,
 };
 
 static const uint8_t expected_system_logic_board[80] = {
     0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0xc9, 0x53,
     0x59, 0x4e, 0x54, 0x48, 0x45, 0x54, 0x49, 0x43,
-    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x30, 0x30,
-    0x30, 0x30, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
+    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x45, 0x4d,
+    0x55, 0x4e, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
     0x2d, 0x31, 0x37, 0x30, 0x37, 0x2d, 0x30, 0x30,
     0x33, 0x00, 0xc2, 0x2d, 0x47, 0x01, 0x00, 0xc2,
     0x30, 0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04,
     0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
     0x00, 0xcc, 0x30, 0x32, 0x41, 0x31, 0x42, 0x32,
-    0x43, 0x33, 0x44, 0x34, 0x45, 0x35, 0xc1, 0x0b,
+    0x43, 0x33, 0x44, 0x34, 0x45, 0x35, 0xc1, 0x96,
 };
 
 /*
@@ -4759,6 +4819,9 @@ int main(int argc, char **argv)
                    test_ip34_identity_needs_supplied_type);
     qtest_add_func("sn1/l1/fuel-mac-eeprom", test_fuel_mac_eeprom);
     qtest_add_func("sn1/l1/identity-defaults", test_identity_defaults);
+    qtest_add_func("sn1/l1/identity-index-names-the-node",
+                   test_identity_index_names_the_node);
+    qtest_add_func("sn1/l1/identity-index-bound", test_identity_index_bound);
     qtest_add_func("sn1/l1/identity-raw-override",
                    test_identity_raw_override);
     qtest_add_func("sn1/l1/identity-mac-text", test_identity_mac_text);

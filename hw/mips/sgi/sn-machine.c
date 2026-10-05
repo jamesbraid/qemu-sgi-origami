@@ -532,6 +532,8 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
         return false;
     }
     qdev_prop_set_string(l1, "mac", address);
+    /* Each node's board areas name their own instance, so serials differ. */
+    qdev_prop_set_uint8(l1, "identity-index", node_index);
     if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8) {
         qdev_prop_set_string(l1, "mac-record", "system-board");
         qdev_prop_set_string(l1, "node-board-name", SGI_FUEL_BOARD_NAME);
@@ -4160,6 +4162,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 found_board = true;
                 qdev_prop_set_uint8(DEVICE(node), "io-board-widget",
                                     placement->widget);
+                qdev_prop_set_uint64(DEVICE(node), "io-board-serial",
+                                     board->serial);
                 if (board->part) {
                     qdev_prop_set_string(DEVICE(node), "io-board-part",
                                          board->part);

@@ -35,6 +35,14 @@ synthetic node and IO8 identity records, to the stock PROM's "ALL DIAGS
 PASSED" and System Maintenance Menu.
 test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
+
+test_reset_keeps_the_nvram_owner resets the machine at that menu and
+requires the second boot to accept its NVRAM. The PROM compares a board
+number it derives from the node board area's serial with the one it saved,
+and with the old all-zero serial "000000" every reset printed "This NVRAM
+did not belong to this system" and reinitialized it. The marked serial
+"EMUN00" boots the second time with "Checking hardware inventory" ending
+in DONE.
 """
 
 import lib_origin300
@@ -91,6 +99,25 @@ class Origin300PromMenu(QemuSystemTest):
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_four_cpus_reach_the_menu_with_all_diags_passed(self):
         self.boot_to_menu(4)
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_reset_keeps_the_nvram_owner(self):
+        firmware = self.ASSET_FIRMWARE.fetch()
+        machine, argv = lib_origin300.launch_args(firmware, 2, self.workdir)
+
+        self.set_machine('origin300')
+        self.vm.set_console()
+        self.vm.set_machine(machine)
+        self.vm.add_args(*argv)
+        self.vm.launch()
+        wait_for_console_pattern(self, 'System Maintenance Menu')
+        self.vm.cmd('system_reset')
+        wait_for_console_pattern(
+            self, 'Checking hardware inventory ...............'
+            '              DONE',
+            failure_message='did not belong to this system')
+        wait_for_console_pattern(self, 'System Maintenance Menu')
+        self.vm.shutdown()
 
 
 if __name__ == '__main__':

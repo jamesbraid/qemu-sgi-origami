@@ -179,6 +179,8 @@ struct SGIL1State {
     char *node_board_name;
     char *node_board_part;
     char *node_board_revision;
+    /* The instance the synthetic board-area serials name: the node's. */
+    uint8_t identity_index;
     /* The address the identity records carry, for the onboard Ethernet. */
     uint8_t board_mac[6];
     bool board_mac_valid;

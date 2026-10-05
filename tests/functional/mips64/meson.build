@@ -24,9 +24,9 @@ test_mips64_timeouts = {
   # System Maintenance Menu. The installed IRIX test checks the same
   # outcome for two CPUs. Before that test absorbed the two-CPU menu
   # boot, all four methods took 72s (2026-09-22); the four-CPU menu
-  # boot passed three runs in a row. Keep 240s until the shorter script
-  # is measured in CI.
-  'origin300_prom' : 240,
+  # boot passed three runs in a row. The reset check adds two two-CPU
+  # menu boots; 360s until the longer script is measured in CI.
+  'origin300_prom' : 360,
   # One-processor Origin 200 PROM under record/replay: a record and replay
   # to the menu (20-30s each when measured on 2026-10-04), a partial
   # record with a seek, and a short gdb reverse-debugging session. Each
