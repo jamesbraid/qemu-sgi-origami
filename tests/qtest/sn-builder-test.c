@@ -8,6 +8,9 @@
  * tests/qtest/sn-builder-fault-test.c's sn-builder-console-test machine, a
  * real two-node build.
  *
+ * The one-memory-transaction cases count flat-view renders before the
+ * first reset, so a builder that commits per device again fails here.
+ *
  * The named structural faults sgi_machine_validate_topology used to reject
  * here (a minimal two-node fixture topology fed straight to that validator)
  * are gone along with it: hw/mips/sgi/sn-machine.c now trusts the compiled
@@ -3941,12 +3944,83 @@ static void test_unsupported_memory_population_rejected(const void *data)
                         "MiB per node");
 }
 
+/*
+ * The builder maps the whole board in one memory transaction, so before
+ * the machine's first system reset each address space's flat view is
+ * rendered a few times however many devices the board has: when the
+ * address space is created, at the builder's commit, and at each of the
+ * few commits machine creation makes after it (at most seven on an Onyx2).
+ * A commit per realized device instead renders the earliest views once for
+ * every device built after them, 166 times on an Origin 200 and 708 on an
+ * Origin 2000. The flatview_new trace event names each rendered view's
+ * root region, and the system reset begins at the root reset container.
+ */
+#define MAX_RENDERS_PER_VIEW 16
+
+static void test_one_memory_transaction(const void *data)
+{
+    const char *machine = data;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GHashTable) renders = g_hash_table_new_full(g_str_hash,
+                                                          g_str_equal,
+                                                          g_free, NULL);
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned int most = 0;
+    bool reset = false;
+    QTestState *qts;
+    int fd;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    fd = g_file_open_tmp("sn-builder-renders-XXXXXX.log", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M %s -display none -trace flatview_new "
+                      "-trace resettable_phase_enter_begin -D %s",
+                      machine, path);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    g_unlink(path);
+
+    lines = g_strsplit(contents, "\n", -1);
+    for (char **line = lines; *line; line++) {
+        const char *root;
+        unsigned int count;
+
+        if (strstr(*line, "(resettable-container)")) {
+            reset = true;
+            break;
+        }
+        if (!strstr(*line, "flatview_new ")) {
+            continue;
+        }
+        root = strstr(*line, "(root ");
+        g_assert_nonnull(root);
+        count = GPOINTER_TO_UINT(g_hash_table_lookup(renders, root)) + 1;
+        g_hash_table_insert(renders, g_strdup(root), GUINT_TO_POINTER(count));
+        most = MAX(most, count);
+    }
+    g_assert_true(reset);
+    g_assert_cmpuint(g_hash_table_size(renders), >, 1);
+    g_assert_cmpuint(most, <=, MAX_RENDERS_PER_VIEW);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn/builder/numa-refused", NULL,
                         test_numa_refused);
+    qtest_add_data_func("sn/builder/one-memory-transaction/origin200",
+                        "origin200",
+                        test_one_memory_transaction);
+    qtest_add_data_func("sn/builder/one-memory-transaction/origin2000",
+                        "origin2000",
+                        test_one_memory_transaction);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
