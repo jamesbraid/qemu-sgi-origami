@@ -39,6 +39,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(DS1742State, DS1742)
 struct DS1742State {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    Object *iomem_link;
     BlockBackend *blk, *clock_blk;
     VMChangeStateEntry *vmstate_change;
     Notifier shutdown;
@@ -428,9 +429,6 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
         s->shutdown.notify = ds1742_shutdown_notifier;
         qemu_register_shutdown_notifier(&s->shutdown);
     }
-    memory_region_init_io(&s->iomem, OBJECT(dev), &ds1742_ops, s,
-                          "ds1742", SIZE);
-    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
 static void ds1742_unrealize(DeviceState *dev)
@@ -492,6 +490,17 @@ static const Property ds1742_properties[] = {
     DEFINE_PROP_UINT32("fresh-year-base", DS1742State, fresh_year_base, 0),
 };
 
+static void ds1742_instance_init(Object *obj)
+{
+    DS1742State *s = DS1742(obj);
+
+    memory_region_init_io(&s->iomem, obj, &ds1742_ops, s, "ds1742", SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+    s->iomem_link = OBJECT(&s->iomem);
+    object_property_add_link(obj, "memory-region", TYPE_MEMORY_REGION,
+                             &s->iomem_link, NULL, 0);
+}
+
 static void ds1742_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -508,6 +517,7 @@ static const TypeInfo ds1742_info = {
     .name = TYPE_DS1742,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(DS1742State),
+    .instance_init = ds1742_instance_init,
     .class_init = ds1742_class_init,
 };
 
