@@ -17,6 +17,7 @@
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
 #include "scsi/constants.h"
+#include "sgi-wait.h"
 
 /* Register offsets within the 16-bit window. */
 #define ISP_REG_ID_LOW      0x00
@@ -2281,7 +2282,7 @@ static void test_write_four_pages(void *obj, void *data, QGuestAllocator *alloc)
     const uint32_t handle = 0x16384004;
     int fd;
     unsigned int i, j;
-    int64_t deadline;
+    SgiWait w;
 
     qpci_device_enable(dev);
     io = qpci_iomap(dev, 0, NULL);
@@ -2347,10 +2348,9 @@ static void test_write_four_pages(void *obj, void *data, QGuestAllocator *alloc)
                        cont, sizeof(cont));
     }
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, test->a64 ? 3 : 2);
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "response queue index");
     while (qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE) != 2) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
                   sizeof(status));

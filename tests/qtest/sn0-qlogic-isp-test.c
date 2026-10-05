@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
@@ -731,7 +732,7 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     uint8_t expected[4 * PAGE_SIZE_4K], source[sizeof(expected)];
     uint8_t seen[sizeof(expected)], guard[8];
     unsigned int i, j;
-    int64_t deadline;
+    SgiWait w;
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, 1024 * 1024), ==, 0);
@@ -800,10 +801,9 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     normalise_words(entry, sizeof(entry));
     qtest_memwrite(qts, RING_PHYS + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 2);
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "WRITE(10) response");
     while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != 2) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_memread(qts, RESP_PHYS + ISP_QUEUE_ENTRY_SIZE, status,
                   sizeof(status));
@@ -832,10 +832,9 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     qtest_memwrite(qts, RING_PHYS + 2 * ISP_QUEUE_ENTRY_SIZE,
                    entry, sizeof(entry));
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 3);
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "READ(10) response");
     while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != 3) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_memread(qts, RESP_PHYS + 2 * ISP_QUEUE_ENTRY_SIZE, status,
                   sizeof(status));

@@ -14,6 +14,7 @@
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
@@ -1576,13 +1577,12 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
 }
 
 #define STATUS_STEP_NS      (1000 * 1000)
-#define STATUS_WAIT_US      (10 * 1000 * 1000)
 
 /*
  * The next completion in the ring, whichever handle it carries. Reading
  * mailbox 5 answers the adapter's response producer index, so the entry the
  * test has not read yet is ready once that index moves; writing mailbox 5
- * back releases the slot. The wait is bounded in wall time, and must be. A
+ * back releases the slot. The wait is bounded in host time, and must be. A
  * read held by a block filter waits on that filter's own timer, and although
  * a throttle group picks the virtual clock when qtest is enabled, one built
  * from -object never sees that: object_create_early() runs it before
@@ -1594,15 +1594,11 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
  */
 static uint32_t wait_next_status(QTestState *qts, uint8_t *status)
 {
-    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+    SgiWait w;
 
+    sgi_wait_start(&w, "response producer to leave %u", ring.resp_next);
     while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) == ring.resp_next) {
-        if (g_get_monotonic_time() >= deadline) {
-            g_test_message("the response producer stayed at %u for %d "
-                           "seconds", ring.resp_next,
-                           STATUS_WAIT_US / (1000 * 1000));
-            g_assert_not_reached();
-        }
+        sgi_wait_pause(&w, 0);
         qtest_clock_step(qts, STATUS_STEP_NS);
     }
 
@@ -3119,17 +3115,11 @@ static void test_migration_preserves_distinct_state(const void *data)
  */
 static void wait_for_response_producer(QTestState *qts, uint16_t prod)
 {
-    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
-    uint16_t seen;
+    SgiWait w;
 
-    while ((seen = isp_readw(qts, ISP_REG_RESPONSE_QUEUE)) != prod) {
-        if (g_get_monotonic_time() >= deadline) {
-            g_test_message("the response producer held %u, not %u, after %d "
-                           "seconds", seen, prod,
-                           STATUS_WAIT_US / (1000 * 1000));
-            g_assert_not_reached();
-        }
-        g_usleep(10 * 1000);
+    sgi_wait_start(&w, "response producer %u", prod);
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != prod) {
+        sgi_wait_pause(&w, 10 * 1000);
     }
 }
 

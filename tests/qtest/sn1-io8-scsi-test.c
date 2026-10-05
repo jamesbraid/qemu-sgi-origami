@@ -26,6 +26,7 @@
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -213,9 +214,12 @@
 #define DIRECT64(phys) (((uint64_t)XBRIDGE_HOST_PORT << 60) | \
                         (UINT64_C(1) << 55) | (uint64_t)(phys))
 
-/* A read held by the block layer waits on wall time, not the guest clock. */
+/*
+ * A read held by the block layer waits on host time, not the guest clock, so
+ * waits for it take the SGI tests' host-time bound.
+ */
 #define STATUS_STEP_NS (1000 * 1000)
-#define STATUS_WAIT_US (10 * 1000 * 1000)
+#define STATUS_WAIT_US (SGI_WAIT_S * G_USEC_PER_SEC)
 
 static char *prom_path;
 
@@ -551,15 +555,16 @@ static void submit_command(QTestState *qts, uint32_t handle,
 
 /*
  * Mailbox 5 reports the response producer index; a new completion moves it.
- * Use a wall-time bound because a block-layer request waits on its timer, not
+ * Use a host-time bound because a block-layer request waits on its timer, not
  * the guest clock.
  */
 static void wait_for_completion(QTestState *qts)
 {
-    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+    SgiWait w;
 
+    sgi_wait_start(&w, "response producer to leave %u", ring.resp_next);
     while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) == ring.resp_next) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        sgi_wait_pause(&w, 0);
         qtest_clock_step(qts, STATUS_STEP_NS);
     }
 }
