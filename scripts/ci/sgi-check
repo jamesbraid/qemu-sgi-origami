@@ -47,8 +47,10 @@ MODEL_SUITES = [
 ]
 
 # Migration cases start several QEMU processes per test file, so limit the
-# number of concurrent files on the eight-CPU builders.
-QTEST_PROCESSES = 2
+# number of concurrent files on the eight-CPU builders. On a loaded 32-thread
+# host the whole set passed at four in 27 minutes against 45 at two, and
+# timing assertions failed at eight.
+QTEST_PROCESSES = 4
 
 # Every pull request runs this whatever it changes.
 ALWAYS_QTESTS = {'qtest-mips64/sn0-forward-progress-test'}
