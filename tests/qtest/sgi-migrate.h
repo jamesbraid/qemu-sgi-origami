@@ -25,9 +25,8 @@
 
 /*
  * Block until @s reports @status, polling query-migrate against a wall-clock
- * deadline of @deadline_s seconds, or SGI_MIGRATION_WAIT_MIN_S if that is
- * longer. Every duplicate this header replaces
- * polled query-migrate this way; none enabled the "events" migration
+ * deadline of SGI_MIGRATION_WAIT_MIN_S seconds. Every duplicate this header
+ * replaces polled query-migrate this way; none enabled the "events" migration
  * capability, so waiting on the MIGRATION QMP event instead would block
  * forever. migrate_generate_event() in migration.c only sends it when that
  * capability is on, and turning it on after "migrate" is issued can still
@@ -40,13 +39,10 @@
  * suite is shorter than this wait: a hang it kills still leaves its last
  * migration state in the test log.
  */
-static inline void sgi_wait_migration_status(QTestState *s,
-                                              const char *status,
-                                              int deadline_s)
+static inline void sgi_wait_migration(QTestState *s, const char *status)
 {
     int64_t deadline = g_get_monotonic_time() +
-                       MAX(deadline_s, SGI_MIGRATION_WAIT_MIN_S) *
-                       G_TIME_SPAN_SECOND;
+                       SGI_MIGRATION_WAIT_MIN_S * G_TIME_SPAN_SECOND;
     int64_t next_log = g_get_monotonic_time() +
                        SGI_MIGRATION_WAIT_LOG_S * G_TIME_SPAN_SECOND;
 
@@ -74,20 +70,31 @@ static inline void sgi_wait_migration_status(QTestState *s,
 }
 
 /*
+ * The old spelling, whose deadline argument stopped mattering once every
+ * wait took SGI_MIGRATION_WAIT_MIN_S. sn-builder-test.c still calls it;
+ * remove it when that file calls sgi_wait_migration() instead.
+ */
+static inline void sgi_wait_migration_status(QTestState *s,
+                                              const char *status,
+                                              int deadline_s)
+{
+    sgi_wait_migration(s, status);
+}
+
+/*
  * Migrate @from over @uri and block until it reports the transfer completed.
  * The destination must already be listening for the incoming stream, either
  * via "-incoming <uri>" on its command line or a prior "migrate-incoming"
  * QMP command. This only drives @from's "migrate" command and its own
  * completion wait, matching every existing caller, none of which keeps a
- * handle to the destination QTestState here. It takes no deadline of its
- * own and waits SGI_MIGRATION_WAIT_MIN_S.
+ * handle to the destination QTestState here.
  */
 static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
 {
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
 
-    sgi_wait_migration_status(from, "completed", SGI_MIGRATION_WAIT_MIN_S);
+    sgi_wait_migration(from, "completed");
 }
 
 #endif /* SGI_MIGRATE_H */

@@ -381,7 +381,7 @@ static void test_nmi_latch_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
 
     qtest_set_irq_in(to, dest_path, "nmi", 0, 1);

@@ -1213,7 +1213,7 @@ static QTestState *migrate_pending_retry(QTestState *from, DiskPair *disks)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_quit(from);
     return to;
 }

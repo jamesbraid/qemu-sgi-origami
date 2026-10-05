@@ -477,7 +477,7 @@ static void test_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, RAM + 0x8000), ==,
                     UINT64_C(0x123456789abcdef0));
     g_assert_cmphex(qtest_readq(to, REQUESTER(1) + NODE(11) + 0x8000), ==,
@@ -717,7 +717,7 @@ static void test_intx_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     intx_state(to, 0, 2, UINT64_C(1) << 16);
     /* Destination-only observation catches even idempotent repeated packets. */
     g_assert_cmphex(qtest_readq(to, STATUS + 16), ==, 0);
@@ -1189,7 +1189,7 @@ static void test_management_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     management_identity(to, 0, 19, 1);
     management_identity(to, 1, 7, 0);
     management_empty(to, 0);
@@ -1736,7 +1736,7 @@ static void test_pending_migration(gconstpointer opaque)
         qtest_wait_qemu(to);
     } else {
         sgi_migrate_stopped(from, uri);
-        sgi_wait_migration_status(to, "completed", 30);
+        sgi_wait_migration(to, "completed");
         if (kind == 4) {
             qtest_readq(to, PENDING_BASE(0) + 0x98);
             result(to, 0, MEMTX_ACCESS_ERROR);
@@ -1788,7 +1788,7 @@ static void test_processor_absence_migration(const void *data)
         qtest_wait_qemu(to);
     } else {
         sgi_migrate_stopped(from, uri);
-        sgi_wait_migration_status(to, "completed", 30);
+        sgi_wait_migration(to, "completed");
         absence_transfer(to, BIC_IO + 0x1800040, 8, false, MEMTX_ACCESS_ERROR);
         power_set(to, true);
         absence_words(to, 7);
@@ -1951,7 +1951,7 @@ static void test_storage_migration_off(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_readw(to, STORAGE_BASE + STORAGE_SECOND + 0x20);
     result(to, 0, MEMTX_ACCESS_ERROR);
@@ -2002,7 +2002,7 @@ static void test_storage_migration_erase_off(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_readw(to, upper + 0x20000);
     result(to, 0, MEMTX_ACCESS_ERROR);
     power_set(to, true);
@@ -2384,7 +2384,7 @@ static void test_power_errors(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(qts, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
     g_assert_cmphex(qtest_readq(to, COMPUTE + 0x98), ==, 0);
     power_set(to, true);
@@ -2604,7 +2604,7 @@ static void test_power_migration(void)
         qtest_qmp_assert_success(to,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
         sgi_migrate_stopped(from, uri);
-        sgi_wait_migration_status(to, "completed", 30);
+        sgi_wait_migration(to, "completed");
         g_assert_cmpuint(qtest_readq(to, STATUS + 48), ==, mode == 0);
         g_assert_cmpuint(qtest_readq(to, STATUS + 56), ==, mode != 1);
         g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
@@ -3009,7 +3009,7 @@ static void test_uart_migration(gconstpointer opaque)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     if (off) {
         g_assert_cmphex(qtest_readq(to, MANAGEMENT + 160), ==, 0);
         power_set(to, true);

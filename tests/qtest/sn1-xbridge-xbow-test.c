@@ -460,9 +460,9 @@ static void test_migration_reset(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x24);
     g_assert_cmphex(reg_read(to, 0xc0), ==, 0x77);
     g_assert_cmphex(reg_read(to, 0x78), ==, 0x0f);

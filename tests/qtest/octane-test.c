@@ -764,7 +764,7 @@ static void test_board_identity_migration(gconstpointer data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     octane_heart_identity_check(to, octane2);
     for (unsigned i = 0; i < 3; i++) {
         octane_onewire_read(to, boards[i].master, records[i] + 17, 47);
@@ -3920,7 +3920,7 @@ static void test_migration_state(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     qtest_memread(to, 0, low_seen, sizeof(low_seen));
     g_assert_cmpmem(low_seen, sizeof(low_seen), low_pattern,
@@ -4022,7 +4022,7 @@ static void test_octane2_low_ram_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     qtest_memread(to, 0, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));

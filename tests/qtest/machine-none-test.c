@@ -250,7 +250,7 @@ static void test_transaction_scratch(void)
     uri = g_strdup_printf("exec:cat %s", quoted);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readb(to, 0), ==, 0x55);
     response = qtest_qmp(to,
         "{'execute':'qom-get','arguments':{'path':%s,'property':'result'}}",

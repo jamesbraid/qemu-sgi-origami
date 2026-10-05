@@ -182,7 +182,7 @@ static void test_migration_validity(void)
         qtest_qmp_assert_success(to,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
         sgi_migrate_stopped(from, uri);
-        sgi_wait_migration_status(to, "completed", 30);
+        sgi_wait_migration(to, "completed");
         if (valid == 3) {
             latch(to, 0xabcd);
         } else {
@@ -222,7 +222,7 @@ static void test_migration_initial(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     latch(to, 0xab34);
     byte(to, 0, false, 0xcd, true, 0);
     latch(to, 0xabcd);

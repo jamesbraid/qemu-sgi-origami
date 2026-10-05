@@ -1532,7 +1532,7 @@ static void r12000_migrate_profile(const char *profile, bool wide_block)
     r12000_wait_mailbox(from, 24);
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     stl_be_p(value, 1);
     qtest_memwrite(to, R12000_MAILBOX + 28, value, sizeof(value));
     qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");

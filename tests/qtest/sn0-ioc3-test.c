@@ -1020,7 +1020,7 @@ static void test_ip30_board_gpio_migration(const void *data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_quit(from);
 
     ip30_ioc3_assert_input(to, octane2);
@@ -5166,7 +5166,7 @@ static void test_the_backed_clock_survives_migration_source_quit(
 
     to = rtc_start_1968_backed(&destination, RTC_BASE, uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
     g_clear_pointer(&status, qdict_unref);

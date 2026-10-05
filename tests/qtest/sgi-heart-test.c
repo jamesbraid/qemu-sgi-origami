@@ -548,7 +548,7 @@ static void test_ecc_migration(gconstpointer data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, HEART_REGS), ==,
                     enables | (1ULL << 13));
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==,
@@ -1479,7 +1479,7 @@ static void test_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, HEART_STATUS), ==, 0x18);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
     qtest_clock_step(to, 464999);
@@ -1851,7 +1851,7 @@ static void test_xtalk_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, HEART_XTALK_REGS + 0x10030), ==, bits);
     g_assert_cmphex(qtest_readl(to, HEART_XTALK_REGS + 0x20), ==, 0x80030000);
     g_assert_cmphex(qtest_readl(to, HEART_XTALK_REGS + 0x24), ==, 0x80030004);

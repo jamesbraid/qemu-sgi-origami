@@ -1094,7 +1094,7 @@ static void run_assembly_migration(bool context)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     for (i = 0; i < 6; i++) {
         g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x24) & 0xf, ==, 8 + i);
         g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x4c), ==, 0x123400 + i);

@@ -262,8 +262,8 @@ static void test_fuel_processor_prid_migration(const void *data)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + 0x108), ==, 0x0f23);
     qtest_qmp_assert_success(to, "{'execute':'stop'}");
     qtest_system_reset(to);
@@ -565,8 +565,8 @@ static void test_fuel_ioc3_superio_interrupt_migration(const void *data)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readl(to, IOC3_WINDOW + IOC3_INT_STATUS) &
                     IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
     g_assert_cmphex(fuel_xbridge_read(to, XBRIDGE_INT_STATUS) & (1U << pin),
@@ -1313,8 +1313,8 @@ static void test_fuel_board_id_migration(const void *data)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
                     ==, BOARD_ID_HYPOTHESIS);
     g_assert_cmphex(qtest_readq(to, HUB_REMOTE_REGISTERS + BOARD_ID_OFFSET),
@@ -1712,7 +1712,7 @@ static void fuel_timekeeper_migration(const char *prom, bool stopped)
     to = fuel_start_timekeeper_backed(prom, &destination,
                                       "2026-01-02T03:04:05", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
     g_clear_pointer(&status, qdict_unref);

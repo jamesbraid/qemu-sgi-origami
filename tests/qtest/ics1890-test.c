@@ -503,7 +503,7 @@ static void test_migration(void)
     qtest_qmp_assert_success(to->qts,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from->qts, uri);
-    sgi_wait_migration_status(to->qts, "completed", 30);
+    sgi_wait_migration(to->qts, "completed");
     /* qtest's test-owned clock is not migrated with absolute device timers. */
     qtest_clock_set(to->qts, source_clock);
     /* Resume timer callbacks. The qtest accelerator executes no guest code. */

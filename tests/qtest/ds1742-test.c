@@ -203,7 +203,7 @@ static void test_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(rd(to, 0x7f7), ==, 0x5a);
     g_assert_cmphex(rd(to, 0x7f9), ==, 0x58);
     wr(to, 0x7f8, 0);
@@ -246,7 +246,7 @@ static void test_backed_migration_quit(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(rd(to, 0x7f7), ==, 0x5a);
     status = qtest_qmp_assert_success_ref(from,
         "{'execute':'query-status'}");
@@ -355,7 +355,7 @@ static void test_backed_destination_persistence(const void *data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
     g_clear_pointer(&status, qdict_unref);

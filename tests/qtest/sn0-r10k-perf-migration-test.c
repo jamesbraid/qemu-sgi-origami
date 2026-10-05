@@ -683,7 +683,7 @@ static void test_active_counter(const void *opaque)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     after = wait_for_change(to, before);
     delta = after - before;
@@ -739,7 +739,7 @@ static void test_stream_representation(const void *opaque)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     qtest_quit(from);
 
     state_fd = open(state, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -813,7 +813,7 @@ static void test_r10000_scache_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
@@ -886,7 +886,7 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     assert_r16000_properties(to, capacity, capacity->reset_mode);
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_writeq(to, STATE_PHYS + CAPACITY_COMMAND_OFF, 1);

@@ -478,7 +478,7 @@ static void test_migration(gconstpointer data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     assert_identity(to);
     g_assert_cmphex(qtest_readl(to, SI_LONG + CONTROL), ==, 0xc1d28354);
     g_assert_cmphex(qtest_readl(to, SI_SHORT + 0x040000), ==, 0x75e68192);
