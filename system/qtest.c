@@ -193,14 +193,22 @@ static void *qtest_server_send_opaque;
  *  > read ADDR SIZE [CPU_INDEX]
  *  < OK DATA
  *
+ *  > read-debug VADDR SIZE [CPU_INDEX]
+ *  < OK DATA
+ *
  * .. code-block:: none
  *
  *  > write ADDR SIZE DATA [CPU_INDEX]
  *  < OK
  *
+ *  > write-debug VADDR SIZE DATA [CPU_INDEX]
+ *  < OK
+ *
  * Raw read and write use the first CPU's physical address space unless an
  * explicit CPU_INDEX is supplied. An invalid index or argument count returns
  * FAIL without accessing memory. DATA retains the same raw byte order.
+ * The debug commands use a CPU virtual address and its debug translation.
+ * They default to the first CPU when CPU_INDEX is omitted.
  *
  * .. code-block:: none
  *
@@ -680,6 +688,33 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         qtest_sendf(chr, "OK 0x%s\n", enc->str);
 
         g_free(data);
+    } else if (strcmp(words[0], "read-debug") == 0) {
+        g_autoptr(GString) enc = NULL;
+        uint64_t addr, len;
+        uint8_t *data;
+        int ret;
+        CPUState *cpu = qtest_memory_cpu(chr, words, 3);
+
+        if (!cpu) {
+            return;
+        }
+
+        g_assert(words[1] && words[2]);
+        ret = qemu_strtou64(words[1], NULL, 0, &addr);
+        g_assert(ret == 0);
+        ret = qemu_strtou64(words[2], NULL, 0, &len);
+        g_assert(ret == 0);
+        g_assert(len);
+
+        data = g_malloc(len);
+        if (cpu_memory_rw_debug(cpu, addr, data, len, false) < 0) {
+            qtest_send(chr, "FAIL virtual debug read failed\n");
+            g_free(data);
+            return;
+        }
+        enc = qemu_hexdump_line(NULL, data, len, 0, 0);
+        qtest_sendf(chr, "OK 0x%s\n", enc->str);
+        g_free(data);
     } else if (strcmp(words[0], "b64read") == 0) {
         uint64_t addr, len;
         uint8_t *data;
@@ -736,6 +771,43 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
                             len);
         g_free(data);
 
+        qtest_send(chr, "OK\n");
+    } else if (strcmp(words[0], "write-debug") == 0) {
+        uint64_t addr, len, i;
+        uint8_t *data;
+        size_t data_len;
+        int ret;
+        CPUState *cpu = qtest_memory_cpu(chr, words, 4);
+
+        if (!cpu) {
+            return;
+        }
+
+        g_assert(words[1] && words[2] && words[3]);
+        ret = qemu_strtou64(words[1], NULL, 0, &addr);
+        g_assert(ret == 0);
+        ret = qemu_strtou64(words[2], NULL, 0, &len);
+        g_assert(ret == 0);
+        data_len = strlen(words[3]);
+        if (data_len < 3) {
+            qtest_send(chr, "FAIL invalid argument size\n");
+            return;
+        }
+        data = g_malloc(len);
+        for (i = 0; i < len; i++) {
+            if ((i * 2 + 4) <= data_len) {
+                data[i] = hex2nib(words[3][i * 2 + 2]) << 4;
+                data[i] |= hex2nib(words[3][i * 2 + 3]);
+            } else {
+                data[i] = 0;
+            }
+        }
+        if (cpu_memory_rw_debug(cpu, addr, data, len, true) < 0) {
+            qtest_send(chr, "FAIL virtual debug write failed\n");
+            g_free(data);
+            return;
+        }
+        g_free(data);
         qtest_send(chr, "OK\n");
     } else if (strcmp(words[0], "memset") == 0) {
         uint64_t addr, len;

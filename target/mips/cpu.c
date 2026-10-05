@@ -25,6 +25,7 @@
 #include "qapi/error.h"
 #include "cpu.h"
 #include "internal.h"
+#include "exec/target_page.h"
 #include "qemu/module.h"
 #include "qemu/qtree.h"
 #include "system/qtest.h"
@@ -761,9 +762,30 @@ static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
 }
 
+static bool mips_cpu_translate_for_debug(CPUState *cs, vaddr addr,
+                                         TranslateForDebugResult *result)
+{
+    MIPSCPU *cpu = MIPS_CPU(cs);
+    CPUMIPSState *env = &cpu->env;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+    hwaddr phys_addr;
+    int prot;
+
+    if (get_physical_address(env, &phys_addr, &prot, addr, MMU_DATA_LOAD,
+                             mips_env_mmu_index(env), &attrs) != 0) {
+        return false;
+    }
+    attrs.debug = true;
+    result->physaddr = phys_addr;
+    result->attrs = attrs;
+    result->lg_page_size = TARGET_PAGE_BITS;
+    return true;
+}
+
 static const struct SysemuCPUOps mips_sysemu_ops = {
     .has_work = mips_cpu_has_work,
     .get_phys_addr_debug = mips_cpu_get_phys_addr_debug,
+    .translate_for_debug = mips_cpu_translate_for_debug,
     .asidx_from_attrs = mips_asidx_from_attrs,
     .legacy_vmsd = &vmstate_mips_cpu,
 };

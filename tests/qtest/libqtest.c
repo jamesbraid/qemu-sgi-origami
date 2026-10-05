@@ -1453,6 +1453,31 @@ bool qtest_memread_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
     return qtest_memread_full(s, addr, data, size, cpu_index);
 }
 
+bool qtest_memread_cpu_debug(QTestState *s, unsigned int cpu_index,
+                             uint64_t addr, void *data, size_t size)
+{
+    uint8_t *ptr = data;
+    gchar **args;
+    size_t i;
+
+    if (!size) {
+        return true;
+    }
+
+    qtest_sendf(s, "read-debug 0x%" PRIx64 " 0x%zx %u\n", addr, size,
+                cpu_index);
+    args = qtest_rsp_args_full(s, 2, true);
+    if (!args) {
+        return false;
+    }
+    for (i = 0; i < size; i++) {
+        ptr[i] = hex2nib(args[1][2 + (i * 2)]) << 4;
+        ptr[i] |= hex2nib(args[1][2 + (i * 2) + 1]);
+    }
+    g_strfreev(args);
+    return true;
+}
+
 uint64_t qtest_rtas_call(QTestState *s, const char *name,
                          uint32_t nargs, uint64_t args,
                          uint32_t nret, uint64_t ret)
@@ -1586,6 +1611,32 @@ bool qtest_memwrite_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
                         const void *data, size_t size)
 {
     return qtest_memwrite_full(s, addr, data, size, cpu_index);
+}
+
+bool qtest_memwrite_cpu_debug(QTestState *s, unsigned int cpu_index,
+                              uint64_t addr, const void *data, size_t size)
+{
+    const uint8_t *ptr = data;
+    size_t i;
+    char *enc;
+    gchar **reply;
+    bool success;
+
+    if (!size) {
+        return true;
+    }
+
+    enc = g_malloc(2 * size + 1);
+    for (i = 0; i < size; i++) {
+        sprintf(&enc[i * 2], "%02x", ptr[i]);
+    }
+    qtest_sendf(s, "write-debug 0x%" PRIx64 " 0x%zx 0x%s %u\n", addr,
+                size, enc, cpu_index);
+    reply = qtest_rsp_args_full(s, 0, true);
+    success = reply != NULL;
+    g_strfreev(reply);
+    g_free(enc);
+    return success;
 }
 
 void qtest_memset(QTestState *s, uint64_t addr, uint8_t pattern, size_t size)
