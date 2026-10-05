@@ -374,7 +374,7 @@ static bool sgi_xio_board_attach_identity(SGIXioBoardState *board,
     return true;
 }
 
-static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
+static void sgi_xio_board_build(DeviceState *dev, Error **errp)
 {
     SGIXioBoardState *board = SGI_XIO_BOARD(dev);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_GET_CLASS(board);
@@ -410,6 +410,20 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
         board->queued = false;
         return;
     }
+}
+
+/*
+ * A board added with -device realizes after the machine's own build, so
+ * each region it maps would commit on its own and re-render the flat view
+ * of every address space in the machine. Build it in one transaction.
+ * Nothing the build runs accesses an address space: it creates and maps
+ * regions, wires IRQs and links the board's widget to its crossbar.
+ */
+static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    sgi_xio_board_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 static void sgi_xio_board_unrealize(DeviceState *dev)
