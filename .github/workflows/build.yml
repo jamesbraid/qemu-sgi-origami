@@ -94,10 +94,10 @@ jobs:
           echo "fetch SGI test assets" > "$CI_STEP"
           bash scripts/ci/runner-setup assets
 
-      - name: check the build container can see the checkout
+      - name: check the build container can see the checkout and TAP device
         run: |
-          echo "check the build container can see the checkout" > "$CI_STEP"
-          bash scripts/ci/runner-setup check
+          echo "check the build container can see the checkout and TAP device" > "$CI_STEP"
+          bash scripts/ci/runner-setup check tap
 
       # These need no QEMU build, so run them first: a broken model file
       # or script fails the job in minutes instead of after the build.
@@ -119,7 +119,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           echo "smoke checks" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run-tests -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e PR_BASE_SHA="$PR_BASE_SHA" \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               "$IMAGE_ID" python3 scripts/ci/sgi-check smoke
@@ -218,10 +218,10 @@ jobs:
           echo "$PART: fetch SGI test assets" > "$CI_STEP"
           bash scripts/ci/runner-setup assets
 
-      - name: check the build container can see the checkout
+      - name: check the build container can see the checkout and TAP device
         run: |
-          echo "$PART: check the build container can see the checkout" > "$CI_STEP"
-          bash scripts/ci/runner-setup check
+          echo "$PART: check the build container can see the checkout and TAP device" > "$CI_STEP"
+          bash scripts/ci/runner-setup check tap
 
       # These need no QEMU build, so run them first: a broken model file
       # or script fails the job in minutes instead of after the build.
@@ -242,7 +242,7 @@ jobs:
       - name: run this part of the SGI test suite
         run: |
           echo "$PART: run this part of the SGI test suite" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run-tests -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               "$IMAGE_ID" python3 scripts/ci/sgi-check full --part "$PART"
 

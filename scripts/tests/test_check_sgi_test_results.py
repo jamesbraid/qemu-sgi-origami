@@ -163,10 +163,10 @@ class CheckSgiTestResults(unittest.TestCase):
         identity = ('qemu', 'qemu:qtest+qtest-mips64+slow / '
                     'qtest-mips64/cdrom-test')
         identities = checker.read_skip_allowlist(manifest)
-        self.assertEqual(len(identities), 18)
+        self.assertEqual(len(identities), 6)
         self.assertIn(identity, identities)
-        self.assertIn(('qtest-mips64/bcm570x-test',
-                       '/mips64/bcm570x/transmit-vnet-plain'),
+        self.assertIn(('qtest-mips64/sn0-origin2000-kona-3d-test',
+                       '/mips64/sn0/origin2000/kona-3d/renderer/real-gl'),
                       identities)
         self.write_report(f'''<testsuite name="qemu" tests="1" skipped="1">
           <testcase classname="qemu"

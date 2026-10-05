@@ -187,7 +187,14 @@ case "${1-}" in
     echo "WORKSPACE_VOLUME=$volume" >> "$GITHUB_ENV"
     echo "workspace volume: $volume"
     ;;
-  run)
+  run|run-tests)
+    # run-tests also gives the container the TAP device and the capability
+    # to create one, which the BCM570x and Xframe vnet cases need. The
+    # container's own network namespace confines what it can change.
+    tap_options=()
+    if [ "$1" = run-tests ]; then
+      tap_options=(--device /dev/net/tun --cap-add NET_ADMIN)
+    fi
     shift
     : "${IMAGE_ID:?IMAGE_ID is required}"
     parent=$(docker inspect "$(hostname)" --format '{{.Id}}')
@@ -220,7 +227,8 @@ case "${1-}" in
     # background client: a signal then interrupts the wait and removes the
     # child at once.
     docker run --rm --name "$child" --label "ci.parent=$parent" \
-      --ulimit core=0:0 --entrypoint /usr/bin/timeout "${options[@]}" \
+      --ulimit core=0:0 --entrypoint /usr/bin/timeout "${tap_options[@]}" \
+      "${options[@]}" \
       "$IMAGE_ID" --signal=TERM --kill-after=30s "${remaining}s" "$@" &
     wait "$!"
     ;;
@@ -232,10 +240,21 @@ case "${1-}" in
       echo "The guest's Docker daemon cannot see this job's checkout."
       exit 1
     fi
+    # check tap: the test steps run in run-tests mode, which needs the
+    # host's TAP device. Without it every test step on this builder would
+    # fail with only Docker's device error, so say so before the build.
+    if [ "${2-}" = tap ] &&
+       ! bash "$0" run-tests "$IMAGE_ID" test -c /dev/net/tun; then
+      builder=$(docker info --format '{{.Name}}' 2>/dev/null || echo unknown)
+      echo "The Docker host on builder $builder cannot give a test container"
+      echo "/dev/net/tun with CAP_NET_ADMIN, which the BCM570x and Xframe TAP"
+      echo "cases need. Load the tun module or create /dev/net/tun there."
+      exit 1
+    fi
     ;;
   *)
-    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|check|report-failure|nudge-queue' >&2
-    echo '       runner-setup run [Docker options] IMAGE_ID command' >&2
+    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|check [tap]|report-failure|nudge-queue' >&2
+    echo '       runner-setup run|run-tests [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;
 esac
