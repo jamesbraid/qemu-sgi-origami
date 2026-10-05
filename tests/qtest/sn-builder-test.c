@@ -4319,6 +4319,11 @@ static void test_device_renders(const void *data)
 
 static const DeviceRenders xbridge_renders = { CHIP_ARGS, "sgi-xbridge", 3 };
 
+/* An IOC3 on one of the XBridge's heads. */
+static const DeviceRenders ioc3_renders = {
+    CHIP_ARGS " -device sgi-ioc3,bus=head-e.0,addr=0", "sgi-ioc3", 5,
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4341,6 +4346,8 @@ int main(int argc, char **argv)
                         &cable_flood, test_flood_renders);
     qtest_add_data_func("sn/builder/device-renders/xbridge",
                         &xbridge_renders, test_device_renders);
+    qtest_add_data_func("sn/builder/device-renders/ioc3", &ioc3_renders,
+                        test_device_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
