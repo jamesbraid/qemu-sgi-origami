@@ -113,6 +113,9 @@ void mips_octeon_llm_store(QTree **treep, uint64_t addr, uint64_t value);
 #define KSEG2_BASE      ((target_ulong)(int32_t)0xC0000000UL)
 #define KSEG3_BASE      ((target_ulong)(int32_t)0xE0000000UL)
 
+/* Used to construct the R10000-family CPU type in linux-user builds. */
+void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data);
+
 #if !defined(CONFIG_USER_ONLY)
 
 enum {
@@ -188,9 +191,6 @@ void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val);
 void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 
 extern const VMStateDescription vmstate_mips_cpu;
-
-/* Used to construct the R10000-family CPU type in linux-user builds. */
-void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data);
 
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
 extern const VMStateDescription mips_vmstate_r10k;

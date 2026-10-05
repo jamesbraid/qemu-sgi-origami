@@ -327,7 +327,6 @@ static R10KCp0Result gen_cacherr_mfc0(DisasContext *ctx, TCGv arg, int sel,
     }
     return R10K_CP0_DONE;
 }
-#endif /* !CONFIG_USER_ONLY */
 
 static R10KCp0Result gen_cacherr_mtc0(DisasContext *ctx, TCGv arg, int sel,
                                       bool is_64, const char **register_name)
@@ -395,6 +394,7 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
     }
     return R10K_CP0_UNIMP;
 }
+#endif /* !CONFIG_USER_ONLY */
 
 /*
  * PREF and PREFX. The R10000 family moves the block into its caches, which
