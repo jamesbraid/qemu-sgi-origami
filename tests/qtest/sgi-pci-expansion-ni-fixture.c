@@ -878,7 +878,7 @@ static bool fixture_power_operation(void *opaque, bool on, Error **errp)
     return true;
 }
 
-static void fixture_realize(DeviceState *dev, Error **errp)
+static void fixture_build(DeviceState *dev, Error **errp)
 {
     NIFixtureState *s = NI_FIXTURE(dev);
     SGIBedrockState *compute;
@@ -1204,6 +1204,14 @@ static void fixture_realize(DeviceState *dev, Error **errp)
                               "ni-fixture.management", 0xe00);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->management_control);
     }
+}
+
+/* Build the fixture in one memory transaction, as a machine's builder does. */
+static void fixture_realize(DeviceState *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    fixture_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 static const Property fixture_properties[] = {

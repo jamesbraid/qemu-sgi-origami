@@ -4344,6 +4344,15 @@ static const DeviceRenders board_fixture_renders = {
     "sgi-board-test-fixture", 2,
 };
 
+/*
+ * The test-only PCI expansion fixture: a compute Bedrock and a whole
+ * expansion module.
+ */
+static const DeviceRenders ni_fixture_renders = {
+    "none -cpu R10000 -device sgi-pci-expansion-ni-fixture",
+    "sgi-pci-expansion-ni-fixture", 8,
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4374,6 +4383,8 @@ int main(int argc, char **argv)
                         &assembly_renders, test_device_renders);
     qtest_add_data_func("sn/builder/device-renders/board-fixture",
                         &board_fixture_renders, test_device_renders);
+    qtest_add_data_func("sn/builder/device-renders/ni-fixture",
+                        &ni_fixture_renders, test_device_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
