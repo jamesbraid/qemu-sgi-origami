@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SGI Origin 300 ("SN1", IP35/Bedrock) node device. See sn1-node.h.
+ * SGI Bedrock node device. See sn1-node.h.
  *
  * The family builder (sn-machine.c) creates one of these from the format-2
  * descriptor's Bedrock node record, links its RAM and CPU clock, sets its
  * populated I/O board (if any) and realizes it; this file owns everything the
- * node needs to become a running Origin 300: the PROM/flash policy, the
- * node's own address-space views, the CPUs, Bedrock, L1 and the XBridge, a
- * fitted part of the IP45 node board itself. The Bedrock's XIO port and
+ * node needs to run: the PROM/flash policy, its address-space views, CPUs,
+ * Bedrock, and L1. The IP45 path also creates the node board's XBridge. The
+ * Bedrock's XIO port and
  * the XBridge's port 0xa connect through the XBridge link
  * (hw/mips/sgi/xio-link.c) before either realizes. The IO-8's fixed devices
  * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
@@ -74,7 +74,6 @@
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_ECC_SCRUB (SN1_SPACE_HUB + UINT64_C(0x100000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
-#define SN1_PROM_RESET UINT64_C(0x1fc00000)
 #define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
 #define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
 /*
@@ -472,6 +471,26 @@ static MemTxResult sn1_node_ni_destination_rw(SN1FabricEndpoint *endpoint,
                                      buffer, size);
 }
 
+static bool sn1_node_bte_local_rw(void *opaque, hwaddr address,
+                                 void *buffer, size_t size, bool write,
+                                 MemTxResult *result)
+{
+    SN1NodeState *node = opaque;
+    unsigned number;
+
+    if (address >= (UINT64_C(1) << 40)) {
+        return false;
+    }
+    number = (address >> SN1_FABRIC_ADDRESS_SHIFT) & 0x7f;
+    if (number != sn1_node_number(node)) {
+        return false;
+    }
+
+    *result = sn1_node_ni_destination_rw(&node->endpoint, NULL, address,
+                                         buffer, size, write);
+    return true;
+}
+
 static void sn1_node_ni_target_as(SN1NodeState *node, unsigned index,
     MemoryRegion *target, AddressSpace *as, const char *name)
 {
@@ -506,6 +525,8 @@ static void sn1_node_init_claims(SN1NodeState *node)
     /* Incoming memory uses the same bank decoder and overlays as CPUs. */
     sn1_node_ni_target_as(node, 0, &SGI_BEDROCK(node->bedrock)->md.memory_mr,
                           &node->ni_ram_as, "sn1.ni-ram");
+    sgi_bedrock_io_set_bte_local_rw(&SGI_BEDROCK(node->bedrock)->io,
+                                    sn1_node_bte_local_rw, node);
     address_space_init(&node->ni_hub_as,
                       &SGI_BEDROCK(node->bedrock)->hub_window, "sn1.ni-hub");
     sn1_node_ni_target_as(node, 4, sysbus_mmio_get_region(
@@ -827,16 +848,16 @@ static bool sn1_init_prom_view(SN1PromView *view, Object *owner,
 
 static void sn1_refresh_prom_views(SN1NodeState *node, bool everything)
 {
-    uint64_t prom_size = node->model_node->flash->size;
+    uint64_t size = memory_region_size(&node->prom_view_reset.rom);
     MemoryRegion *backing = node->prom_view_reset.backing;
     g_autofree DirtyBitmapSnapshot *snapshot =
-        memory_region_snapshot_and_clear_dirty(backing, 0, prom_size,
+        memory_region_snapshot_and_clear_dirty(backing, 0, size,
                                                DIRTY_MEMORY_VGA);
 
     sn1_prom_view_apply(&node->prom_view_reset, everything ? NULL : snapshot,
-                       prom_size);
+                       size);
     sn1_prom_view_apply(&node->prom_view_local_high,
-                       everything ? NULL : snapshot, prom_size);
+                       everything ? NULL : snapshot, size);
 }
 
 static void sn1_prom_flash_programmed(void *opaque, unsigned position)
@@ -908,6 +929,123 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
  * compiled catalogue (see the header on sn1_node_attach_prom's use of this
  * table).
  */
+#define TYPE_SN1_RESET_ROUTER "sn1-reset-router"
+
+enum {
+    SN1_RESET_MEMORY,
+    SN1_RESET_PROM,
+    SN1_RESET_INDEXES,
+};
+
+/*
+ * Compatibility policy: the stock PROM still executes noncoherently and
+ * through KSEG1 here after enabling RAM. Coherent and explicit uncached
+ * memory accesses must see RAM. These bounded firmware views reserve PROM.
+ */
+static int sn1_reset_attrs_to_index(IOMMUMemoryRegion *iommu, MemTxAttrs attrs)
+{
+    /* MIPS supplies mips_cca even when attrs.unspecified remains set. */
+    return attrs.mips_cca == 3 || attrs.mips_kseg1 ?
+           SN1_RESET_PROM : SN1_RESET_MEMORY;
+}
+
+static int sn1_reset_num_indexes(IOMMUMemoryRegion *iommu)
+{
+    return SN1_RESET_INDEXES;
+}
+
+static IOMMUTLBEntry sn1_reset_translate(IOMMUMemoryRegion *iommu,
+                                         hwaddr addr, IOMMUAccessFlags flags,
+                                         int index)
+{
+    SN1NodeState *node = container_of(iommu, SN1NodeState, reset_router);
+
+    return (IOMMUTLBEntry) {
+        .target_as = index == SN1_RESET_PROM ?
+                     &node->reset_prom_as : &node->reset_memory_as,
+        .iova = addr & ~UINT64_C(0xfff),
+        .translated_addr = addr & ~UINT64_C(0xfff),
+        .addr_mask = 0xfff,
+        .perm = IOMMU_RW,
+    };
+}
+
+static void sn1_reset_memory_changed(MemoryListener *listener,
+                                      MemoryRegionSection *section)
+{
+    SN1NodeState *node = container_of(listener, SN1NodeState,
+                                      reset_memory_listener);
+
+    node->reset_memory_changed = true;
+}
+
+static void sn1_reset_memory_commit(MemoryListener *listener)
+{
+    SN1NodeState *node = container_of(listener, SN1NodeState,
+                                      reset_memory_listener);
+    IOMMUTLBEvent event = {
+        .type = IOMMU_NOTIFIER_UNMAP,
+        .entry = {
+            .target_as = &node->reset_memory_as,
+            .iova = 0,
+            .addr_mask = UINT64_MAX,
+            .perm = IOMMU_NONE,
+        },
+    };
+
+    if (node->reset_memory_changed) {
+        node->reset_memory_changed = false;
+        memory_region_notify_iommu(&node->reset_router, SN1_RESET_MEMORY,
+                                    event);
+    }
+}
+
+static void sn1_node_map_reset(SN1NodeState *node, MemoryRegion *prom)
+{
+    uint64_t size = memory_region_size(prom);
+
+    memory_region_init_iommu(&node->reset_router, sizeof(node->reset_router),
+                             TYPE_SN1_RESET_ROUTER, OBJECT(node),
+                             "sn1.reset-router", size);
+    memory_region_init(&node->reset_memory, OBJECT(node),
+                       "sn1.reset-memory", size);
+    memory_region_init_alias(&node->reset_prom_alias, OBJECT(node),
+                             "sn1.reset-memory.prom", prom, 0, size);
+    memory_region_init_alias(&node->reset_ram_alias, OBJECT(node),
+                             "sn1.reset-memory.ram",
+                             &SGI_BEDROCK(node->bedrock)->md.memory_live,
+                             SN1_PROM_RESET, size);
+    memory_region_add_subregion(&node->reset_memory, 0,
+                                &node->reset_prom_alias);
+    memory_region_add_subregion_overlap(&node->reset_memory, 0,
+                                        &node->reset_ram_alias, 1);
+    address_space_init(&node->reset_prom_as, prom, "sn1.reset-prom");
+    address_space_init(&node->reset_memory_as, &node->reset_memory,
+                       "sn1.reset-memory");
+    node->reset_memory_listener = (MemoryListener) {
+        .name = "sn1.reset-memory",
+        .region_add = sn1_reset_memory_changed,
+        .region_del = sn1_reset_memory_changed,
+        .commit = sn1_reset_memory_commit,
+    };
+    memory_listener_register(&node->reset_memory_listener,
+                              &node->reset_memory_as);
+    node->reset_router_ready = true;
+    /* Exact bounds retain QEMU's subpage dispatch at the payload's tail. */
+    memory_region_add_subregion_overlap(
+        get_system_memory(), sn1_node_address(node, SN1_PROM_RESET),
+        MEMORY_REGION(&node->reset_router), 1);
+}
+
+static void sn1_reset_router_class_init(ObjectClass *klass, const void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
+
+    imrc->attrs_to_index = sn1_reset_attrs_to_index;
+    imrc->num_indexes = sn1_reset_num_indexes;
+    imrc->translate = sn1_reset_translate;
+}
+
 static const char * const sn1_prom_view_names[] = {
     "sn1.prom.reset", "sn1.prom.local", "sn1.prom.local-high",
     "sn1.prom.remote",
@@ -934,6 +1072,11 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                           Error **errp)
 {
     uint64_t prom_size = node->model_node->flash->size;
+    uint64_t execution_size = node->ip53_assembly_validated ?
+                             SN1_IP53_PROM_PAYLOAD_SIZE : prom_size;
+    bool reset_view = node->ip53_assembly_validated &&
+        sgi_machine_ip53_experiment_authorized(
+            MACHINE(qdev_get_machine()));
     MemoryRegion *system = get_system_memory();
     g_autofree char *prom_name = NULL;
     MemoryRegion *stored;
@@ -972,19 +1115,19 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
             g_strdup_printf("sn1.node%u.prom.local-high", node->nasid) :
             g_strdup("sn1.prom.local-high");
         if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
-                                node->prom_view_names[0], stored, prom_size,
+                                node->prom_view_names[0], stored,
+                                execution_size,
                                 errp) ||
             !sn1_init_prom_view(&node->prom_view_local_high, OBJECT(node),
-                                node->prom_view_names[1], stored, prom_size,
+                                node->prom_view_names[1], stored,
+                                execution_size,
                                 errp)) {
             return false;
         }
         SGI_BEDROCK_FLASH(node->boot_flash)->programmed =
             sn1_prom_flash_programmed;
         SGI_BEDROCK_FLASH(node->boot_flash)->programmed_opaque = node;
-        memory_region_add_subregion_overlap(
-            system, sn1_node_address(node, SN1_PROM_RESET),
-            &node->prom_view_reset.rom, 1);
+        sn1_node_map_reset(node, &node->prom_view_reset.rom);
         /*
          * The high local view sits inside a boot space the flash answers for,
          * so it is overlaid above it. The remote space is left to the flash:
@@ -1018,6 +1161,17 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     sn1_apply_cpu_config(node, memory_region_get_ram_ptr(&node->prom));
     memory_region_set_dirty(&node->prom, 0, prom_size);
 
+    if (reset_view) {
+        node->prom_view_names[0] = node->nasid ?
+            g_strdup_printf("sn1.node%u.prom.reset", node->nasid) :
+            g_strdup("sn1.prom.reset");
+        if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
+                                node->prom_view_names[0], &node->prom,
+                                execution_size, errp)) {
+            return false;
+        }
+    }
+
     /*
      * Which named views this node's flash controller answers, and their
      * addresses, are Bedrock hardware facts, not configuration: every view
@@ -1035,12 +1189,21 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                        MACHINE_GET_CLASS(qdev_get_machine())->name, name);
             return false;
         }
+        if (reset_view && i == 0) {
+            continue;
+        }
         memory_region_init_alias(&node->prom_views[i], OBJECT(node),
                                  name, &node->prom, 0, prom_size);
-        /* PROM views take precedence where their carriers overlap RAM. */
-        memory_region_add_subregion_overlap(
-            system, sn1_node_address(node, address),
-            &node->prom_views[i], 1);
+        if (i == 0) {
+            sn1_node_map_reset(node, &node->prom_views[i]);
+        } else {
+            memory_region_add_subregion_overlap(
+                system, sn1_node_address(node, address),
+                &node->prom_views[i], 1);
+        }
+    }
+    if (reset_view) {
+        sn1_node_map_reset(node, &node->prom_view_reset.rom);
     }
 
     /* An empty second position answers erased through both boot spaces. */
@@ -1404,9 +1567,43 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
-static bool sn1_node_validate_r14000_processors(SN1NodeState *node,
-                                         MachineState *machine, Error **errp)
+static bool sn1_node_validate_processors(SN1NodeState *node,
+                                        MachineState *machine, Error **errp)
 {
+    bool r16000 = node->ip53_assembly_validated &&
+        sgi_machine_ip53_experiment_authorized(machine);
+
+    if (r16000) {
+        if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R16000"))) {
+            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 experiment requires "
+                       "R16000, requested %s", machine->cpu_type);
+            return false;
+        }
+        for (unsigned int i = 0; i < node->nr_cpus; i++) {
+            const SGIModelProcessor *processor =
+                sn1_cpu_processor(node->model_node, i);
+
+            /*
+             * The explicit CPU type supplies omitted IDs; authored IDs must
+             * agree with that type rather than silently selecting a variant.
+             */
+            if (strcmp(processor->kind, "R16000") ||
+                processor->clock_hz != 700000000 ||
+                !node->cpuclk || clock_get_hz(node->cpuclk) != 700000000 ||
+                processor->cache_mib != 8 || !processor->has_mode_bits ||
+                processor->mode_bits != 0x009cad85 ||
+                (processor->has_prid && processor->prid != 0x00000f50) ||
+                (processor->has_fpu_prid &&
+                 processor->fpu_prid != 0x00000900)) {
+                error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor %u "
+                           "does not match the authorized 700 MHz, 8 MiB, "
+                           "reset-mode 0x009cad85 R16000 profile", i);
+                return false;
+            }
+        }
+        return true;
+    }
+
     if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R14000"))) {
         error_setg(errp, TYPE_SGI_SN1_NODE " requires R14000, requested %s",
                    machine->cpu_type);
@@ -1424,7 +1621,8 @@ static bool sn1_node_validate_r14000_processors(SN1NodeState *node,
     return true;
 }
 
-static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
+static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
+                                 Error **errp)
 {
     MemoryRegion *system = get_system_memory();
     uint64_t prom_size = node->model_node->flash->size;
@@ -1441,7 +1639,14 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             g_strdup_printf("sn1.node%u.cpu%u.system", node->nasid, i);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
-        DeviceState *cpu_dev = qdev_new(machine->cpu_type);
+        const SGIModelProcessor *processor =
+            sn1_cpu_processor(node->model_node, i);
+        uint32_t prid = processor->prid;
+        bool r16000 = node->ip53_assembly_validated &&
+            sgi_machine_ip53_experiment_authorized(machine);
+        const char *cpu_type = r16000 ? machine->cpu_type : prid == 0x0f23 ?
+            MIPS_CPU_TYPE_NAME("sgi-r14000-rev23") : machine->cpu_type;
+        DeviceState *cpu_dev = qdev_new(cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
         /*
@@ -1463,17 +1668,54 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         qdev_connect_clock_in(cpu_dev, "clk-in", node->cpuclk);
         object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                                  &error_abort);
-        /* The reset-latched processor mode field is Config0 bits 24:0. */
-        object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
-            node->model_node->cpu_slots->value->assembly->mode_bits &
-            0x01ffffff, &error_abort);
-        /*
-         * The slot's R14000 revision, through r14000-prid unless -cpu
-         * R14000,r14000-prid= named one: Fuel's catalogue part is revision
-         * 2.3 (0x0f23), Origin 300's the model default 0x0f24.
-         */
-        sgi_cpu_apply_processor(cpu_dev, sn1_cpu_processor(node->model_node, i),
-                                &error_fatal);
+        if (!r16000) {
+            if (!sgi_cpu_apply_processor(cpu_dev, processor, errp)) {
+                return false;
+            }
+            /* The reset-latched processor mode field is Config0 bits 24:0. */
+            object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
+                node->model_node->cpu_slots->value->assembly->mode_bits &
+                0x01ffffff, &error_abort);
+        } else {
+            const GlobalProperty *prop;
+            bool experimental;
+            uint64_t reset_mode, scache_bytes;
+
+            prop = qdev_find_global_prop(OBJECT(cpu_dev),
+                                         "r16000-experimental");
+            experimental = object_property_get_bool(
+                OBJECT(cpu_dev), "r16000-experimental", &error_abort);
+            if (prop && !experimental) {
+                error_setg(errp, "IP53 CPU property r16000-experimental "
+                           "conflicts with the authorized descriptor");
+                return false;
+            }
+            prop = qdev_find_global_prop(OBJECT(cpu_dev),
+                                         "r16000-reset-mode");
+            reset_mode = object_property_get_uint(
+                OBJECT(cpu_dev), "r16000-reset-mode", &error_abort);
+            if (prop && reset_mode != processor->mode_bits) {
+                error_setg(errp, "IP53 CPU property r16000-reset-mode "
+                           "conflicts with the authorized descriptor");
+                return false;
+            }
+            prop = qdev_find_global_prop(OBJECT(cpu_dev),
+                                         "r16000-scache-bytes");
+            scache_bytes = object_property_get_uint(
+                OBJECT(cpu_dev), "r16000-scache-bytes", &error_abort);
+            if (prop && scache_bytes != (uint64_t)processor->cache_mib * MiB) {
+                error_setg(errp, "IP53 CPU property r16000-scache-bytes "
+                           "conflicts with the authorized descriptor");
+                return false;
+            }
+            object_property_set_bool(OBJECT(cpu_dev), "r16000-experimental",
+                                     true, &error_abort);
+            object_property_set_uint(OBJECT(cpu_dev), "r16000-reset-mode",
+                                     processor->mode_bits, &error_abort);
+            object_property_set_uint(OBJECT(cpu_dev), "r16000-scache-bytes",
+                                     (uint64_t)processor->cache_mib * MiB,
+                                     &error_abort);
+        }
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,
                                  &error_abort);
@@ -1537,6 +1779,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             }
         }
     }
+    return true;
 }
 
 /*
@@ -1865,7 +2108,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                 qdev_get_gpio_in_named(DEVICE(node),
                                                        "bedrock-reset", 0));
 
-    if (!sn1_node_create_ip45_xbridge(node, errp)) {
+    if (!node->ip53_assembly_validated &&
+        !sn1_node_create_ip45_xbridge(node, errp)) {
         return false;
     }
 
@@ -1882,6 +2126,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  &error_abort);
     }
     qdev_prop_set_uint64(node->bedrock, "io-space-base", SN1_IO_SPACE_ADDRESS);
+    for (i = 0; i < node->pic_widget_count; i++) {
+        g_autofree char *property =
+            g_strdup_printf("widget-%u", node->pic_widgets[i].widget);
+
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(node->pic_widgets[i].face),
+                                 &error_abort);
+    }
 
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
@@ -2070,24 +2322,97 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget)
 {
-    return sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), widget);
+    return node->xbridge ?
+        sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), widget) : NULL;
+}
+
+bool sn1_node_set_ip53_assembly_validated(SN1NodeState *node, Error **errp)
+{
+    const SGIModelNode *model_node = node->model_node;
+
+    if (qdev_is_realized(DEVICE(node)) || node->bedrock || node->xbridge ||
+        node->cpu[0] || node->endpoint.ready ||
+        node->ip53_assembly_validated) {
+        error_setg(errp, "cannot validate IP53 assembly after node "
+                   "construction has started");
+        return false;
+    }
+    if (!model_node || !model_node->has_board_kind ||
+        model_node->board_kind != SGI_MODEL_BOARD_KIND_IP53 ||
+        model_node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
+        error_setg(errp, "IP53 assembly validation requires a Bedrock node "
+                   "record selecting board kind 'ip53'");
+        return false;
+    }
+    node->ip53_assembly_validated = true;
+    return true;
+}
+
+bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
+                                  MemoryRegion *face, Error **errp)
+{
+    size_t i;
+
+    if (!node->ip53_assembly_validated || qdev_is_realized(DEVICE(node)) ||
+        node->bedrock || node->xbridge || node->cpu[0] ||
+        node->endpoint.ready) {
+        error_setg(errp, "cannot map a PIC widget after node construction "
+                   "has started");
+        return false;
+    }
+    if (!face || widget >= SGI_XIO_WIDGETS) {
+        error_setg(errp, "IP53 widget mapping has an invalid widget or "
+                   "face");
+        return false;
+    }
+    for (i = 0; i < node->pic_widget_count; i++) {
+        if (node->pic_widgets[i].widget == widget) {
+            error_setg(errp, "IP53 node already has a PIC mapped at widget %u",
+                       widget);
+            return false;
+        }
+    }
+    node->pic_widgets = g_renew(SN1PicWidget, node->pic_widgets,
+                                node->pic_widget_count + 1);
+    node->pic_widgets[node->pic_widget_count++] = (SN1PicWidget) {
+        .widget = widget,
+        .face = face,
+    };
+    return true;
+}
+
+SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node)
+{
+    if (!node->bedrock || !qdev_is_realized(node->bedrock)) {
+        return NULL;
+    }
+    return &SGI_BEDROCK(node->bedrock)->io;
 }
 
 static void sn1_node_realize(DeviceState *dev, Error **errp)
 {
     SN1NodeState *node = SN1_NODE(dev);
     MachineState *machine = MACHINE(qdev_get_machine());
+    bool ip53 = node->model_node && node->model_node->has_board_kind &&
+        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53;
 
-    if (node->model_node && node->model_node->has_board_kind &&
-        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+    if (ip53 && !node->ip53_assembly_validated) {
         error_setg(errp, "sgi-sn1-node cannot realize board kind 'ip53'");
         return;
     }
-    if (!sn1_node_validate_r14000_processors(node, machine, errp)) {
+    if (node->ip53_assembly_validated &&
+        (!ip53 || node->model_node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK)) {
+        error_setg(errp, "sgi-sn1-node requires machine validation for an "
+                   "IP53 assembly");
+        return;
+    }
+    if (!sn1_node_validate_processors(node, machine, errp)) {
         return;
     }
     sn1_node_map_memory(node);
-    sn1_node_create_cpus(node, machine);
+    if (!sn1_node_create_cpus(node, machine, errp)) {
+        return;
+    }
     if (!sn1_node_create_bedrock(node, machine, errp)) {
         return;
     }
@@ -2098,6 +2423,13 @@ static void sn1_node_unrealize(DeviceState *dev)
 {
     SN1NodeState *node = SN1_NODE(dev);
 
+    if (node->reset_router_ready) {
+        memory_listener_unregister(&node->reset_memory_listener);
+        memory_region_del_subregion(get_system_memory(),
+                                    MEMORY_REGION(&node->reset_router));
+        address_space_destroy(&node->reset_memory_as);
+        address_space_destroy(&node->reset_prom_as);
+    }
     if (node->ni_boot_initialized) {
         address_space_destroy(&node->ni_boot_as);
     }
@@ -2197,6 +2529,7 @@ static void sn1_node_instance_finalize(Object *obj)
 
     g_free(node->prom_views);
     g_free(node->xbridge_widgets);
+    g_free(node->pic_widgets);
     g_free(node->prom_view_names[0]);
     g_free(node->prom_view_names[1]);
 }
@@ -2275,6 +2608,12 @@ static void sn1_node_class_init(ObjectClass *oc, const void *data)
 }
 
 static const TypeInfo sn1_node_types[] = {
+    {
+        .name = TYPE_SN1_RESET_ROUTER,
+        .parent = TYPE_IOMMU_MEMORY_REGION,
+        .instance_size = sizeof(IOMMUMemoryRegion),
+        .class_init = sn1_reset_router_class_init,
+    },
     {
         .name              = TYPE_SGI_SN1_NODE,
         .parent            = TYPE_SYS_BUS_DEVICE,

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Opt-in software experiment for one IP53 compute module.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1-ip53-experiment.yaml
+  - layers/assemblies/ip53-experiment.yaml
+  - layers/modules/origin350-ip53-experiment-module.yaml
+  - layers/products/origin350-ip53-experiment.yaml

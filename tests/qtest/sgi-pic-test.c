@@ -14,8 +14,11 @@
 #define PIC "/machine/peripheral/pic"
 #define PIC_CHILD "/machine/peripheral/fabric/pic"
 #define BASE 0x100000000000ULL
+#define CPU_BASE (BASE + 0x100000000ULL)
 #define HEAD(n) (BASE + (n) * 0x800000ULL)
+#define CPU_HEAD(n) (CPU_BASE + (n) * 0x800000ULL)
 #define TARGET 0x20000000ULL
+#define TARGET_NODE1 0x30000000ULL
 #define II_REGISTER (1ULL << 47)
 #define XIO_WIDGET(n) ((uint64_t)(n) << 48)
 #define II_NODE(n) ((uint64_t)(n) << 39)
@@ -38,9 +41,283 @@
 #define IOC4_RX_DATA_VALID 0x80
 #define IOC4_UART_PASS 0x40
 #define IOC4_UART_DATA 0x41
+
+static uint32_t pic_ioc4_read_reg(QTestState *qts, unsigned offset);
 #define IOC4_IRQ_DESTINATION \
     ((UINT64_C(0x1234) << 48) | II_REGISTER | II_NODE(1) | \
      II_HUB_REMOTE | 0x1000)
+#define PIC_SHORT_CFG(n, slot) (HEAD(n) + 0x20000 + (slot) * 0x1000)
+#define PIC_SHORT_WIN(n, w) (HEAD(n) + (w == 0 ? 0x200000 : \
+    w == 1 ? 0x400000 : w == 2 ? 0x600000 : 0x700000))
+#define PIC_SHORT_GUARD (BASE + 0x1000000)
+#define PIC_SHORT_DEVICE(n, w) (HEAD(n) + 0x200 + (w) * 8)
+#define PIC_SHORT_MEMORY_BASE 0x02000000U
+
+static QTestState *pic_short_start(bool incoming)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S %s"
+        "-d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536 "
+        "-device sgi-pic,id=pic,test-fixture=on,"
+        "target-0=/machine/peripheral/fabric/fabric.ram[0] "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=2",
+        incoming ? "-incoming defer " : "");
+
+    qtest_sysbus_mmio_map(qts, PIC, 0, BASE);
+    return qts;
+}
+
+static void pic_short_enable_card(QTestState *qts, unsigned head,
+                                  unsigned slot,
+                                  uint32_t bar0, uint32_t bar1,
+                                  uint32_t bar2, uint16_t command)
+{
+    uint64_t cfg = PIC_SHORT_CFG(head, slot);
+
+    qtest_writel(qts, cfg + 4, command);
+    qtest_writel(qts, cfg + 0x10, bar0);
+    qtest_writel(qts, cfg + 0x14, bar1);
+    qtest_writel(qts, cfg + 0x18, bar2);
+    g_assert_cmphex(qtest_readl(qts, cfg + 4) & 0xffff, ==, command);
+    g_assert_cmphex(qtest_readl(qts, cfg + 0x10), ==, bar0);
+    g_assert_cmphex(qtest_readl(qts, cfg + 0x14), ==, bar1);
+    g_assert_cmphex(qtest_readl(qts, cfg + 0x18), ==, bar2);
+}
+
+static void pic_short_program(QTestState *qts, unsigned head, unsigned window,
+                              uint32_t base, bool memory)
+{
+    qtest_writeq(qts, PIC_SHORT_DEVICE(head, window),
+                 base | (memory ? 1U << 12 : 0));
+}
+
+static void test_short_device_io_windows(void)
+{
+    QTestState *qts = pic_short_start(false);
+    unsigned head, window;
+
+    for (head = 0; head < 2; head++) {
+        pic_short_enable_card(qts, head, 1, PIC_SHORT_MEMORY_BASE,
+                              0x04000000, 0x3001,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        pic_short_enable_card(qts, head, 2, 0x03000000,
+                              0x05000000, 0x3009,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        for (window = 0; window < 4; window++) {
+            uint64_t short_base = PIC_SHORT_WIN(head, window);
+            unsigned slot = window == 1 || window == 3 ? 2 : 1;
+            uint32_t base = slot == 1 ? 0x40 : 0x50;
+            uint64_t pci_base = (uint64_t)base << 20;
+            uint64_t offset = 8;
+            uint64_t value = UINT64_C(0x123456789abcdef0) ^
+                             ((uint64_t)head << 40) ^ window;
+
+            pic_short_program(qts, head, window, base, true);
+            qtest_writeq(qts, short_base + offset, value);
+            g_assert_cmphex(qtest_readq(qts, BASE + (head ? 0xc0000000ULL :
+                                    0x40000000ULL) + pci_base + offset), ==,
+                            value);
+            g_assert_cmphex(qtest_readq(qts, short_base + offset), ==, value);
+        }
+
+        /* A window follows its programmed base to a different PCI function. */
+        pic_short_program(qts, head, 0, 0x40, true);
+        qtest_writeq(qts, PIC_SHORT_WIN(head, 0) + 8, 0x13579bdf2468ace0ULL);
+        pic_short_program(qts, head, 0, 0x50, true);
+        qtest_writeq(qts, PIC_SHORT_WIN(head, 0) + 8, 0xfedcba9876543210ULL);
+        pic_short_program(qts, head, 1, 0x50, true);
+        g_assert_cmphex(qtest_readq(qts, PIC_SHORT_WIN(head, 1) + 8), ==,
+                        0xfedcba9876543210ULL);
+    }
+
+    pic_short_program(qts, 0, 2, 0x40, true);
+    qtest_writeb(qts, PIC_SHORT_WIN(0, 2) + 8, 0x3d);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x40000000ULL + 0x04000008), ==,
+                    0x3d);
+    qtest_writew(qts, PIC_SHORT_WIN(0, 2) + 8, 0x5a2c);
+    g_assert_cmphex(qtest_readw(qts, BASE + 0x40000000ULL + 0x04000008), ==,
+                    0x5a2c);
+    qtest_writel(qts, PIC_SHORT_WIN(0, 2) + 8, 0x19e3b46a);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x40000000ULL + 0x04000008), ==,
+                    0x19e3b46a);
+    qtest_writeq(qts, PIC_SHORT_WIN(0, 2) + 8, 0x23a91d5ce047b682ULL);
+    g_assert_cmphex(qtest_readq(qts, BASE + 0x40000000ULL + 0x04000008), ==,
+                    0x23a91d5ce047b682ULL);
+
+    /* Odd 2 MiB bases align down; the upper MiB remains an address offset. */
+    for (head = 0; head < 2; head++) {
+        pic_short_enable_card(qts, head, 1, 0x02000000, 0x04000000,
+                              0x3001, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        for (window = 0; window < 2; window++) {
+            uint64_t bar = BASE + (head ? 0xc0000000ULL : 0x40000000ULL) +
+                           0x02100000;
+            uint64_t short_addr = PIC_SHORT_WIN(head, window) + 0x100024;
+
+            pic_short_enable_card(qts, head, 1, 0x02100000, 0x04000000,
+                                  0x3001, PCI_COMMAND_MEMORY |
+                                  PCI_COMMAND_IO);
+            pic_short_program(qts, head, window, 0x21, true);
+            qtest_writel(qts, short_addr, 0x96b341e7 + window);
+            g_assert_cmphex(qtest_readl(qts, bar + 0x24), ==,
+                            0x96b341e7 + window);
+        }
+    }
+
+    /* Distinct responders at the same numeric address separate both spaces. */
+    pic_short_enable_card(qts, 0, 1, 0x3000, 0x04000000, 0x3001,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    pic_short_program(qts, 0, 2, 0, true);
+    pic_short_program(qts, 0, 3, 0, false);
+    qtest_writel(qts, PIC_SHORT_WIN(0, 2) + 0x3000, 0x10293847);
+    qtest_writeq(qts, PIC_SHORT_WIN(0, 3) + 0x3000, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_WIN(0, 2) + 0x3000), ==,
+                    0x10293847);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_WIN(0, 3) + 0x3000), ==,
+                    0xfedcba9876543210ULL);
+
+    /* Memory discards bits 11:10; I/O preserves them. */
+    pic_short_enable_card(qts, 0, 1, 0x02000000, 0x04000000,
+                          0x3001, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    pic_short_program(qts, 0, 2, 0x820, true);
+    qtest_writel(qts, PIC_SHORT_WIN(0, 2) + 0x24, 0x1a2b3c4d);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x40000000ULL + 0x02000024), ==,
+                    0x1a2b3c4d);
+    pic_short_enable_card(qts, 0, 1, 0x3000, 0x04000000,
+                          0x82000021, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    pic_short_program(qts, 0, 3, 0x820, false);
+    qtest_writel(qts, PIC_SHORT_WIN(0, 3) + 0x24, 0xa15c39e7);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_WIN(0, 3) + 0x24), ==,
+                    0xa15c39e7);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_DEVICE(0, 2)), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_DEVICE(1, 3)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_short_device_io_attributes_and_boundaries(void)
+{
+    QTestState *qts = pic_short_start(false);
+
+    for (unsigned head = 0; head < 2; head++) {
+        uint64_t mem_alias = BASE + (head ? 0xc0000000ULL : 0x40000000ULL) +
+                             0x02100024;
+
+        pic_short_enable_card(qts, head, 1, 0x02100000, 0x04000000,
+                              0xffff9, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        pic_short_program(qts, head, 2, 0x21, true);
+        qtest_writel(qts, PIC_SHORT_WIN(head, 2) + 0x24,
+                     0x7e3a91c5 + head);
+
+        for (unsigned attr = 13; attr <= 22; attr += 9) {
+            qtest_writel(qts, mem_alias, 0x13579bdf + head);
+            qtest_writeq(qts, PIC_SHORT_DEVICE(head, 2),
+                         0x21 | (1U << 12) | (UINT64_C(1) << attr));
+            qtest_writel(qts, PIC_SHORT_WIN(head, 2) + 0x24,
+                         0xa1b2c3d4);
+            g_assert_cmphex(qtest_readl(qts, mem_alias), ==,
+                            0x13579bdf + head);
+        }
+
+        pic_short_program(qts, head, 2, 0x21, true);
+        qtest_writel(qts, mem_alias, 0x13579bdf + head);
+        qtest_writel(qts, PIC_SHORT_CFG(head, 1) + 4, PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(head, 1) + 4) & 0xffff,
+                        ==, PCI_COMMAND_IO);
+        qtest_writel(qts, PIC_SHORT_WIN(head, 2) + 0x24, 0xa1b2c3d4);
+        qtest_writel(qts, PIC_SHORT_CFG(head, 1) + 4,
+                     PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(head, 1) + 4) & 0xffff,
+                        ==, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readl(qts, mem_alias), ==, 0x13579bdf + head);
+        qtest_writel(qts, PIC_SHORT_WIN(head, 2) + 0x24, 0xa1b2c3d4);
+        g_assert_cmphex(qtest_readl(qts, mem_alias), ==, 0xa1b2c3d4);
+
+        pic_short_program(qts, head, 2, 0, false);
+        qtest_writeq(qts, PIC_SHORT_WIN(head, 2) + 0xffff8,
+                     0x8172635445362718ULL + head);
+        qtest_writel(qts, PIC_SHORT_CFG(head, 1) + 4, PCI_COMMAND_MEMORY);
+        qtest_writeq(qts, PIC_SHORT_WIN(head, 2) + 0xffff8,
+                     0xfedcba9876543210ULL);
+        qtest_writel(qts, PIC_SHORT_CFG(head, 1) + 4,
+                     PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readq(qts, PIC_SHORT_WIN(head, 2) + 0xffff8),
+                        ==, 0x8172635445362718ULL + head);
+
+        /* Four bytes of the crossing access overlap this BAR's wide scratch. */
+        pic_short_enable_card(qts, head, 1, 0x02100000, 0x020ffff0,
+                              0xffff9, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        qtest_writeq(qts, BASE + (head ? 0xc0000000ULL : 0x40000000ULL) +
+                     0x020ffff8, 0x193a5c7e80b2d4f6ULL + head);
+        pic_short_program(qts, head, 3, 0x20, true);
+        qtest_writeq(qts, HEAD(head) + 0x7ffffc,
+                     0xfedcba9876543210ULL - head);
+        g_assert_cmphex(qtest_readq(qts,
+                        BASE + (head ? 0xc0000000ULL : 0x40000000ULL) +
+                        0x020ffff8), ==, 0x193a5c7e80b2d4f6ULL + head);
+    }
+
+    qtest_writeq(qts, PIC_SHORT_GUARD, 0xdeadbeef12345678ULL);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_GUARD), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_DEVICE(1, 3)), ==,
+                    0x20 | (1U << 12));
+
+    /* A doubleword straddling the 1 MiB edge must not touch the BAR. */
+    pic_short_program(qts, 0, 2, 0, false);
+    qtest_writeq(qts, PIC_SHORT_WIN(0, 2) + 0xffff8, 0x8172635445362718ULL);
+    qtest_writeq(qts, PIC_SHORT_WIN(0, 2) + 0xffffc, 0xdeadbeef12345678ULL);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_WIN(0, 2) + 0xffff8), ==,
+                    0x8172635445362718ULL);
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_WIN(0, 2) + 0xffffc), ==,
+                    0);
+    qtest_quit(qts);
+}
+
+static void test_short_device_io_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-short-migration-XXXXXX",
+                                           NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = pic_short_start(false);
+    QTestState *to = pic_short_start(true);
+
+    for (unsigned head = 0; head < 2; head++) {
+        pic_short_enable_card(from, head, 1, 0x02000000, 0x04000000,
+                              0x3001, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        pic_short_enable_card(to, head, 1, 0x02000000, 0x04000000,
+                              0x3001, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        pic_short_program(from, head, head, 0x40, true);
+        qtest_writeq(from, PIC_SHORT_WIN(head, head) + 8,
+                     0x0192a3b4c5d6e7f8ULL + head);
+    }
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(to, PIC_SHORT_WIN(head, head) + 8), ==,
+                        0x0192a3b4c5d6e7f8ULL + head);
+        qtest_writeq(to, PIC_SHORT_WIN(head, head) + 8,
+                     0xfedcba9876543210ULL - head);
+        g_assert_cmphex(qtest_readq(to, PIC_SHORT_WIN(head, head) + 8), ==,
+                        0xfedcba9876543210ULL - head);
+    }
+
+    qtest_quit(to);
+    qtest_quit(from);
+    /* Incoming migration cleanup may already have removed its listener. */
+    if (unlink(socket) < 0) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
 
 static uint32_t pic_requests_at(QTestState *qts, const char *base,
                                 unsigned head, unsigned pin, bool set)
@@ -154,16 +431,935 @@ static QTestState *pic_linked_start(bool cards, const char *fixture_options,
     return qts;
 }
 
-static QTestState *pic_bedrock_parent_start(bool map_io_registers)
+static QTestState *pic_runtime_start(bool cards, const char *extra)
 {
-    QTestState *qts = qtest_init(
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off %s "
+        "%s",
+        cards ?
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3500 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3501" : "",
+        extra ? extra : "");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    return qts;
+}
+
+static QTestState *pic_runtime_cpu_start(bool cards, const char *extra)
+{
+    QTestState *qts = pic_runtime_start(cards, extra);
+
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static void test_cpu_pio_conventional_lanes(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+    uint64_t raw = BASE + 0x40000000ULL + 0x04000000 + 8;
+    uint64_t short_view = CPU_HEAD(0) + 0x600000 + 8;
+    uint64_t large_view = CPU_HEAD(0) + 0x44000008;
+
+    pic_short_enable_card(qts, 0, 1, 0x02000000, 0x04000000, 0x3001,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
+    qtest_writeq(qts, raw, UINT64_C(0x8877665544332211));
+
+    g_assert_cmphex(qtest_readb(qts, short_view), ==, 0x44);
+    g_assert_cmphex(qtest_readw(qts, short_view + 2), ==, 0x2211);
+    g_assert_cmphex(qtest_readw(qts, short_view), ==, 0x4433);
+    g_assert_cmphex(qtest_readl(qts, short_view), ==, 0x44332211);
+    g_assert_cmphex(qtest_readb(qts, large_view), ==, 0x44);
+    g_assert_cmphex(qtest_readw(qts, large_view + 2), ==, 0x2211);
+    g_assert_cmphex(qtest_readl(qts, large_view), ==, 0x44332211);
+
+    qtest_writeb(qts, short_view, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, raw + 3), ==, 0xa5);
+    qtest_writew(qts, short_view + 2, 0x1234);
+    g_assert_cmphex(qtest_readb(qts, raw), ==, 0x34);
+    g_assert_cmphex(qtest_readb(qts, raw + 1), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, raw + 2), ==, 0x33);
+    qtest_writew(qts, short_view, 0x5678);
+    g_assert_cmphex(qtest_readb(qts, raw + 2), ==, 0x78);
+    g_assert_cmphex(qtest_readb(qts, raw + 3), ==, 0x56);
+
+    qtest_writel(qts, short_view, 0x89abcdef);
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x89abcdef);
+    qtest_writeb(qts, large_view, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, raw + 3), ==, 0x5a);
+    qtest_writel(qts, large_view, 0x12345678);
+    g_assert_cmphex(qtest_readb(qts, raw), ==, 0x78);
+    g_assert_cmphex(qtest_readb(qts, raw + 1), ==, 0x56);
+    g_assert_cmphex(qtest_readb(qts, raw + 2), ==, 0x34);
+    g_assert_cmphex(qtest_readb(qts, raw + 3), ==, 0x12);
+
+    qtest_writew(qts, short_view + 1, 0x6677);
+    g_assert_cmphex(qtest_readb(qts, raw + 1), ==, 0x77);
+    g_assert_cmphex(qtest_readb(qts, raw + 2), ==, 0x66);
+    qtest_writeq(qts, short_view, UINT64_C(0x1029384756abcdef));
+    g_assert_cmphex(qtest_readq(qts, raw), ==,
+                    UINT64_C(0x1029384756abcdef));
+
+    qtest_writeb(qts, HEAD(0) + 0x600000 + 8, 0x3c);
+    g_assert_cmphex(qtest_readb(qts, raw), ==, 0x3c);
+
+    /* Repeat lane checks on the second PCI host bridge. */
+    {
+        uint64_t raw1 = BASE + 0xc0000000ULL + 0x04000000 + 8;
+        uint64_t view1 = CPU_HEAD(1) + 0x600000 + 8;
+
+        pic_short_enable_card(qts, 1, 1, 0x02000000, 0x04000000, 0x3001,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        qtest_writeq(qts, CPU_HEAD(1) + 0x210, 0x40 | (1U << 12));
+        qtest_writeq(qts, raw1, UINT64_C(0x8877665544332211));
+        qtest_writeb(qts, view1, 0xa5);
+        g_assert_cmphex(qtest_readb(qts, raw1 + 3), ==, 0xa5);
+        qtest_writew(qts, view1 + 2, 0x1234);
+        g_assert_cmphex(qtest_readb(qts, raw1), ==, 0x34);
+        g_assert_cmphex(qtest_readb(qts, raw1 + 1), ==, 0x12);
+        g_assert_cmphex(qtest_readb(qts, raw1 + 2), ==, 0x33);
+        qtest_writel(qts, view1, 0x89abcdef);
+        g_assert_cmphex(qtest_readl(qts, raw1), ==, 0x89abcdef);
+    }
+
+    qtest_quit(qts);
+}
+
+static QTestState *pic_runtime_actual_pio_start(int serial_fd,
+                                                bool second_isp,
+                                                bool switched)
+{
+    g_autofree char *chardev = serial_fd >= 0 ?
+        g_strdup_printf("-chardev socket,id=serial,fd=%d ", serial_fd) :
+        g_strdup("");
+    const char *serial_arg = serial_fd >= 0 ? ",chardev1=serial" : "";
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off,"
+        "pic-switched=%s "
+        "-device ds1742,id=clock "
+        "-device sgi-ioc4,bus=pic-head-0.0,addr=1,clock-hz=33333333,"
+        "clock=/machine/peripheral/clock/memory-region%s "
+        "-device qlogic-isp12160,bus=pic-head-0.0,addr=2 %s %s",
+        switched ? "on" : "off", serial_arg,
+        second_isp ? "-device qlogic-isp12160,bus=pic-head-1.0,addr=2" : "",
+        chardev);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static void test_cpu_pio_actual_ioc4(void)
+{
+    int sockets[2];
+    QTestState *qts;
+    const uint8_t tx = 0x51;
+    uint8_t clock_control;
+    uint8_t received;
+    struct pollfd pfd = { .fd = -1, .events = POLLIN };
+    uint64_t cpu_view = CPU_HEAD(0) + 0x600000;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), ==, 0);
+    qts = pic_runtime_actual_pio_start(sockets[1], false, false);
+    close(sockets[1]);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 1) + 0x10, IOC4_BAR);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 1) + 4, PCI_COMMAND_MEMORY);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x10 | (1U << 12));
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(0) + 0x210), ==,
+                    0x10 | (1U << 12));
+
+    /* IOC4 UART byte offsets stay native through its active PCI BAR. */
+    qtest_writeb(qts, cpu_view + 0x383, 3);
+    qtest_writeb(qts, cpu_view + 0x382, 1);
+    qtest_writeb(qts, cpu_view + 0x384, 0x03);
+    qtest_writeb(qts, cpu_view + 0x380, tx);
+    pfd.fd = sockets[0];
+    g_assert_cmpint(poll(&pfd, 1, 1000), ==, 1);
+    g_assert_cmpint(read(sockets[0], &received, 1), ==, 1);
+    g_assert_cmphex(received, ==, tx);
+
+    /* The supported IOC4 enable register is an asymmetric native-order word. */
+    qtest_writel(qts, cpu_view + 0x10, 0x00000040);
+    g_assert_cmphex(qtest_readl(qts, cpu_view + 0x10), ==, 0x40);
+    g_assert_cmphex(pic_ioc4_read_reg(qts, 0x10), ==, 0x40);
+
+    /* The BAR clock alias exposes the DS1742 clock bytes at its BAR offset. */
+    clock_control = qtest_readb(qts, IOC4_MEMORY + 0x87ff8) | 0x80;
+    qtest_writeb(qts, cpu_view + 0x87ff8, clock_control);
+    qtest_writeb(qts, cpu_view + 0x87ff9, 0x42);
+    g_assert_cmphex(qtest_readb(qts, cpu_view + 0x87ff8), ==, clock_control);
+    g_assert_cmphex(qtest_readb(qts, cpu_view + 0x87ff9), ==, 0x42);
+    g_assert_cmphex(qtest_readb(qts, IOC4_MEMORY + 0x87ff9), ==, 0x42);
+    g_assert_cmphex(qtest_readb(qts, IOC4_MEMORY + 0x87ff8), ==,
+                    clock_control);
+
+    qtest_quit(qts);
+    close(sockets[0]);
+}
+
+static void test_cpu_pio_isp12160(void)
+{
+    QTestState *qts = pic_runtime_actual_pio_start(-1, false, false);
+    uint64_t cpu_view = CPU_HEAD(0) + 0x600000;
+    uint64_t raw = BASE + 0x45000000ULL;
+
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x14, 0x05000000);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, PCI_COMMAND_MEMORY);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x50 | (1U << 12));
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(0) + 0x210), ==,
+                    0x50 | (1U << 12));
+
+    /* CPU offsets 0x0e and 0x72 select adapter offsets 0x0c and 0x70. */
+    qtest_writew(qts, cpu_view + 0x0e, 1);
+    g_assert_cmphex(qtest_readw(qts, cpu_view + 0x0e), ==, 1);
+    g_assert_cmphex(qtest_readw(qts, raw + 0x0c), ==, 1);
+    qtest_writew(qts, cpu_view + 0x0e, 0);
+    g_assert_cmphex(qtest_readw(qts, cpu_view + 0x0e), ==, 0);
+
+    g_assert_cmphex(qtest_readw(qts, cpu_view + 0x70), ==, 0x4953);
+    qtest_writew(qts, cpu_view + 0x72, 0x0006);
+    qtest_writew(qts, cpu_view + 0xc2, 0x5000);
+    g_assert_cmphex(qtest_readw(qts, cpu_view + 0x72), ==, 0x4000);
+    g_assert_cmphex(qtest_readw(qts, cpu_view + 0x70), ==, 0x4953);
+    g_assert_cmphex(qtest_readw(qts, raw + 0x70), ==, 0x4000);
+    g_assert_cmphex(qtest_readw(qts, raw + 0x72), ==, 0x4953);
+
+    qtest_quit(qts);
+}
+
+static hwaddr isp_mbox_cpu_offset(unsigned mailbox)
+{
+    return (0x70 + mailbox * 2) ^ 2;
+}
+
+static void isp_mailbox_write(QTestState *qts, uint64_t cpu_view,
+                              unsigned mailbox, uint16_t value)
+{
+    qtest_writew(qts, cpu_view + isp_mbox_cpu_offset(mailbox), value);
+}
+
+static uint16_t isp_mailbox_read(QTestState *qts, uint64_t cpu_view,
+                                 unsigned mailbox)
+{
+    return qtest_readw(qts, cpu_view + isp_mbox_cpu_offset(mailbox));
+}
+
+static uint16_t isp_mailbox_command(QTestState *qts, uint64_t cpu_view,
+                                    uint16_t command)
+{
+    isp_mailbox_write(qts, cpu_view, 0, command);
+    qtest_writew(qts, cpu_view + 0xc2, 0x5000);
+    return isp_mailbox_read(qts, cpu_view, 0);
+}
+
+static void isp_mailbox_ack(QTestState *qts, uint64_t cpu_view)
+{
+    qtest_writew(qts, cpu_view + 0xc2, 0x7000);
+    qtest_writew(qts, cpu_view + 0x0e, 0);
+}
+
+static void isp_load_ram_a64(QTestState *qts, uint64_t cpu_view,
+                             uint64_t address, uint16_t base, uint16_t count)
+{
+    uint16_t status;
+
+    isp_mailbox_write(qts, cpu_view, 1, base);
+    isp_mailbox_write(qts, cpu_view, 2, address >> 16);
+    isp_mailbox_write(qts, cpu_view, 3, address);
+    isp_mailbox_write(qts, cpu_view, 4, count);
+    isp_mailbox_write(qts, cpu_view, 6, address >> 48);
+    isp_mailbox_write(qts, cpu_view, 7, address >> 32);
+    status = isp_mailbox_command(qts, cpu_view, 9);
+
+    isp_mailbox_ack(qts, cpu_view);
+    g_assert_cmphex(status, ==, 0x4000);
+}
+
+static uint16_t isp_read_ram_word(QTestState *qts, uint64_t cpu_view,
+                                  uint16_t address)
+{
+    uint16_t status, value;
+
+    isp_mailbox_write(qts, cpu_view, 1, address);
+    status = isp_mailbox_command(qts, cpu_view, 5);
+    value = isp_mailbox_read(qts, cpu_view, 2);
+
+    isp_mailbox_ack(qts, cpu_view);
+    g_assert_cmphex(status, ==, 0x4000);
+    return value;
+}
+
+static void test_direct64_isp_load(void)
+{
+    static const uint8_t source[12] = {
+        0xa5, 0x10, 0x11, 0x12, 0x13, 0x14,
+        0x15, 0x16, 0x17, 0x5a, 0x00, 0x6b,
+    };
+    static const uint16_t byte_stream_words[4] = {
+        0x1110, 0x1312, 0x1514, 0x1716,
+    };
+    static const uint16_t word_value_words[4] = {
+        0x1011, 0x16a5, 0x1415, 0x6b13,
+    };
+    const uint64_t payload = 0x1ffd;
+    const uint64_t isp_payload = 0xc08000;
+    const unsigned heads[] = { 0, 1 };
+    QTestState *qts = pic_runtime_actual_pio_start(-1, true, false);
+    uint8_t observed[sizeof(source)];
+    unsigned h, i, mode;
+
+    qtest_memwrite(qts, TARGET + payload - 1, source, sizeof(source));
+    qtest_memwrite(qts, TARGET + isp_payload - 1, source, sizeof(source));
+
+    for (h = 0; h < G_N_ELEMENTS(heads); h++) {
+        unsigned head = heads[h];
+        uint64_t cpu_view = CPU_HEAD(head) + 0x600000;
+        uint64_t dma_base = UINT64_C(0xa) << 60;
+
+        qtest_writel(qts, PIC_SHORT_CFG(head, 2) + 0x14, 0x05000000);
+        qtest_writel(qts, PIC_SHORT_CFG(head, 2) + 4,
+                     PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x20, head ? 4 : 3);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x80,
+                     (head ? 2ULL : 1ULL) << 20);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x208, 1U << 19);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x210,
+                     0x50 | (1U << 12));
+
+        for (mode = 0; mode < 4; mode++) {
+            uint64_t address = dma_base | payload |
+                ((mode & 1) ? UINT64_C(1) << 58 : 0) |
+                ((mode & 2) ? UINT64_C(1) << 56 : 0) |
+                ((mode & 1) ? 0 : UINT64_C(1) << 55);
+            const uint16_t *expected = mode & 1 ? word_value_words :
+                                                  byte_stream_words;
+
+            isp_load_ram_a64(qts, cpu_view, address, 0x100 + mode * 4, 4);
+            for (i = 0; i < 4; i++) {
+                g_assert_cmphex(isp_read_ram_word(qts, cpu_view,
+                                                  0x100 + mode * 4 + i),
+                                ==, expected[i]);
+            }
+        }
+
+        /* This ISP12160 firmware address requests prefetch and channel 1. */
+        isp_load_ram_a64(qts, cpu_view, dma_base | (UINT64_C(1) << 59) |
+                         (UINT64_C(1) << 57) | (UINT64_C(1) << 55) |
+                         isp_payload, 0x180 + h * 4, 4);
+        for (i = 0; i < 4; i++) {
+            g_assert_cmphex(isp_read_ram_word(qts, cpu_view,
+                                              0x180 + h * 4 + i),
+                            ==, byte_stream_words[i]);
+        }
+    }
+
+    qtest_memread(qts, TARGET + payload - 1, observed, sizeof(source));
+    g_assert_cmpmem(observed, sizeof(observed), source, sizeof(source));
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 4);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==, 0);
+    qtest_quit(qts);
+}
+
+static void direct64_card_write(QTestState *qts, unsigned head,
+                                uint64_t address, uint32_t length,
+                                uint32_t seed)
+{
+    qtest_writel(qts, CARD(head), address);
+    qtest_writel(qts, CARD(head) + 0x18, address >> 32);
+    qtest_writel(qts, CARD(head) + 4, length);
+    qtest_writel(qts, CARD(head) + 8, seed);
+    qtest_writel(qts, CARD(head) + 0xc, 1);
+}
+
+static void direct64_card_copy(QTestState *qts, unsigned head,
+                               uint64_t source, uint64_t destination,
+                               uint32_t length)
+{
+    qtest_writel(qts, CARD(head), destination);
+    qtest_writel(qts, CARD(head) + 0x18, destination >> 32);
+    qtest_writel(qts, CARD(head) + 0x14, source);
+    qtest_writel(qts, CARD(head) + 0x1c, source >> 32);
+    qtest_writel(qts, CARD(head) + 4, length);
+    qtest_writel(qts, CARD(head) + 0xc, 2);
+}
+
+static void direct64_card_enable(QTestState *qts, unsigned head)
+{
+    qtest_writel(qts, HEAD(head) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(head) + 0x21004,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writeq(qts, HEAD(head) + 0x20, head ? 4 : 3);
+    qtest_writeq(qts, HEAD(head) + 0x80, (head ? 2ULL : 1ULL) << 20);
+    qtest_writeq(qts, HEAD(head) + 0x200, 1U << 19);
+}
+
+static void test_direct64_card_write(void)
+{
+    static const uint8_t initial[16] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    const uint64_t payload = 0x2ffc;
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    const unsigned heads[] = { 0, 1 };
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+    uint8_t observed[sizeof(initial)];
+    unsigned h, i;
+
+    qtest_memwrite(qts, TARGET + payload - 3, initial, sizeof(initial));
+    for (h = 0; h < G_N_ELEMENTS(heads); h++) {
+        unsigned head = heads[h];
+
+        direct64_card_enable(qts, head);
+        direct64_card_write(qts, head, widget | (UINT64_C(1) << 55) |
+                            payload, 8, 0x31 + head * 0x20);
+        qtest_memread(qts, TARGET + payload - 3, observed, sizeof(observed));
+        for (i = 0; i < 8; i++) {
+            g_assert_cmphex(observed[3 + i], ==,
+                            0x31 + head * 0x20 + i);
+        }
+        for (i = 0; i < sizeof(observed); i++) {
+            if (i < 3 || i > 10) {
+                g_assert_cmphex(observed[i], ==, 0xa5);
+            }
+        }
+
+        direct64_card_write(qts, head, widget | payload, 8,
+                            0x61 + head * 0x20);
+        qtest_memread(qts, TARGET + payload - 3, observed, sizeof(observed));
+        for (i = 0; i < 8; i++) {
+            unsigned index = ((payload + i) ^ 3) - (payload - 3);
+
+            g_assert_cmphex(observed[index], ==, 0x61 + head * 0x20 + i);
+        }
+        for (i = 0; i < sizeof(observed); i++) {
+            if (i < 3 || i > 10) {
+                g_assert_cmphex(observed[i], ==, 0xa5);
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_direct64_requester_and_dir_map_controls(void)
+{
+    const uint64_t address = (UINT64_C(0xa) << 60) |
+                             (UINT64_C(1) << 55) | 0x2400;
+    const unsigned heads[] = { 0, 1 };
+    uint8_t sentinel[8], observed[8];
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    for (unsigned h = 0; h < G_N_ELEMENTS(heads); h++) {
+        unsigned head = heads[h];
+        uint64_t calls;
+
+        direct64_card_enable(qts, head);
+        qtest_memwrite(qts, TARGET + 0x2400, sentinel, sizeof(sentinel));
+        calls = target_metric(qts, "x-test-packet-calls");
+
+        qtest_writeq(qts, HEAD(head) + 0x200, 0);
+        qtest_writeq(qts, HEAD(head) + 0x20, 5 + head);
+        qtest_writeq(qts, HEAD(head) + 0x80, 0xd12345);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x80), ==, 0xd12345);
+        direct64_card_write(qts, head, address, sizeof(sentinel), 0x31 + head);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 1);
+        qtest_memread(qts, TARGET + 0x2400, observed, sizeof(observed));
+        for (unsigned i = 0; i < sizeof(observed); i++) {
+            g_assert_cmphex(observed[i], ==, 0x31 + head + i);
+        }
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==,
+                         5 + head);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                         0x2400);
+
+        qtest_writeq(qts, HEAD(head) + 0x200, 1U << 19);
+        qtest_writeq(qts, HEAD(head) + 0x20, 7 + head);
+        qtest_writeq(qts, HEAD(head) + 0x80, 0x21abcd);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x80), ==, 0x21abcd);
+        direct64_card_write(qts, head, address, sizeof(sentinel),
+                            0x51 + head);
+        qtest_memread(qts, TARGET + 0x2400, observed, sizeof(observed));
+        for (unsigned i = 0; i < sizeof(observed); i++) {
+            g_assert_cmphex(observed[i], ==, 0x51 + head + i);
+        }
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==,
+                         7 + head);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                         0x2400);
+    }
+    qtest_quit(qts);
+}
+
+static void test_direct64_attribute_matrix(void)
+{
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    const unsigned heads[] = { 0, 1 };
+    uint8_t source[4], observed[4];
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+
+    for (unsigned h = 0; h < G_N_ELEMENTS(heads); h++) {
+        unsigned head = heads[h];
+
+        direct64_card_enable(qts, head);
+        for (unsigned swap = 0; swap < 2; swap++) {
+            for (unsigned attributes = 0; attributes < 16; attributes++) {
+                uint64_t calls = target_metric(qts, "x-test-packet-calls");
+                uint64_t bits = ((attributes & 1) ? UINT64_C(1) << 58 : 0) |
+                                ((attributes & 2) ? UINT64_C(1) << 56 : 0) |
+                                ((attributes & 4) ? UINT64_C(1) << 59 : 0) |
+                                ((attributes & 8) ? UINT64_C(1) << 57 : 0) |
+                                (swap ? UINT64_C(1) << 55 : 0);
+                uint64_t source_address = widget | bits | 0x4000;
+                uint64_t destination = widget | bits | 0x5000;
+
+                for (unsigned i = 0; i < sizeof(source); i++) {
+                    source[i] = 0x40 + i;
+                }
+                qtest_memwrite(qts, TARGET + 0x4000, source, sizeof(source));
+                memset(observed, 0xa5, sizeof(observed));
+                qtest_memwrite(qts, TARGET + 0x5000, observed,
+                               sizeof(observed));
+                direct64_card_copy(qts, head, source_address, destination,
+                                   sizeof(source));
+                g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), ==,
+                                MEMTX_OK);
+                g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"),
+                                 ==, calls + (swap ? 2 : 8));
+                g_assert_cmpuint(target_metric(qts, "x-test-packet-size"),
+                                 ==, swap ? sizeof(source) : 1);
+                g_assert_cmphex(target_metric(qts, "x-test-packet-address"),
+                                ==, 0x5000);
+                qtest_memread(qts, TARGET + 0x5000, observed,
+                              sizeof(observed));
+                g_assert_cmpmem(observed, sizeof(observed), source,
+                                sizeof(source));
+
+                direct64_card_write(qts, head, destination, sizeof(source),
+                                    0x60 + attributes * 4 + swap * 8);
+                qtest_memread(qts, TARGET + 0x5000, observed,
+                              sizeof(observed));
+                for (unsigned i = 0; i < sizeof(observed); i++) {
+                    unsigned source_index = swap ? i : (i ^ 3);
+
+                    g_assert_cmphex(observed[i], ==,
+                        (0x60 + attributes * 4 + swap * 8) + source_index);
+                }
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static QTestState *pic_runtime_packet_window_start(void)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off,"
+        "packet-window-base=0x124c000 "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static void test_direct64_kernel_queue_addresses(void)
+{
+    static const uint64_t queue_addresses[] = {
+        UINT64_C(0xa38000000124c000), UINT64_C(0xa380000001250000),
+    };
+    static const uint8_t source[8] = {
+        0x91, 0x20, 0xe3, 0x44, 0x15, 0xb6, 0x77, 0xc8,
+    };
+    uint8_t actual[16];
+    uint8_t initialized[16];
+    QTestState *qts = pic_runtime_packet_window_start();
+
+    memset(initialized, 0xa5, sizeof(initialized));
+    qtest_memwrite(qts, TARGET, source, sizeof(source));
+    for (unsigned h = 0; h < 2; h++) {
+        uint64_t calls;
+
+        direct64_card_enable(qts, h);
+        calls = target_metric(qts, "x-test-packet-calls");
+        qtest_memwrite(qts, TARGET + 0x4000, initialized,
+                       sizeof(initialized));
+        direct64_card_copy(qts, h, queue_addresses[0], queue_addresses[1],
+                           sizeof(source));
+        g_assert_cmphex(qtest_readl(qts, CARD(h) + 0x28), ==, MEMTX_OK);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 2);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==,
+                         sizeof(source));
+        g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                        0x01250000);
+        qtest_memread(qts, TARGET + 0x4000, actual, sizeof(actual));
+        g_assert_cmpmem(actual, 8, source, sizeof(source));
+        g_assert_cmpmem(actual + 8, 8, initialized + 8, 8);
+        qtest_memread(qts, TARGET, actual, sizeof(actual));
+        g_assert_cmpmem(actual, 8, source, sizeof(source));
+    }
+    qtest_quit(qts);
+}
+
+static void test_direct64_rejects_unsupported_addresses(void)
+{
+    static const uint64_t unsupported_bits[] = {
+        UINT64_C(1) << 54, UINT64_C(1) << 53, UINT64_C(1) << 52,
+        UINT64_C(1) << 51, UINT64_C(1) << 50, UINT64_C(1) << 49,
+        UINT64_C(1) << 48,
+    };
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    const unsigned heads[] = { 0, 1 };
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-direct64-refusal-XXXXXX",
+                                          &error);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log_contents = NULL;
+    uint8_t sentinel[8], observed[8];
+    QTestState *qts;
+    unsigned h, i;
+
+    g_assert_no_error(error);
+    log_path = g_build_filename(dir, "qemu.log", NULL);
+    qts = qtest_initf("-M none -cpu R10000 -S -d unimp,guest_errors -D %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1", log_path);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    for (h = 0; h < G_N_ELEMENTS(heads); h++) {
+        unsigned head = heads[h];
+        uint64_t calls;
+
+        direct64_card_enable(qts, head);
+        calls = target_metric(qts, "x-test-packet-calls");
+        for (i = 0; i < G_N_ELEMENTS(unsupported_bits); i++) {
+            direct64_card_write(qts, head, widget | unsupported_bits[i] |
+                                0x1000, 4, 0x80 + i);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls);
+            g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), !=,
+                            MEMTX_OK);
+            qtest_memread(qts, TARGET + 0x1000, observed, sizeof(observed));
+            g_assert_cmpmem(observed, sizeof(observed), sentinel,
+                            sizeof(sentinel));
+        }
+        direct64_card_write(qts, head, widget | (UINT64_C(1) << 47) |
+                            0x1000, 4, 0x90);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls);
+        g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), !=, MEMTX_OK);
+        qtest_memread(qts, TARGET + 0x1000, observed, sizeof(observed));
+        g_assert_cmpmem(observed, sizeof(observed), sentinel,
+                        sizeof(sentinel));
+        direct64_card_write(qts, head, UINT64_C(1) << 32, 4, 0xa0);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls);
+        g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), !=, MEMTX_OK);
+        qtest_memread(qts, TARGET + 0x1000, observed, sizeof(observed));
+        g_assert_cmpmem(observed, sizeof(observed), sentinel,
+                        sizeof(sentinel));
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log_contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log_contents, "direct64 reserved-bits"));
+    g_assert_nonnull(strstr(log_contents, "direct64 target-zero"));
+    g_assert_nonnull(strstr(log_contents, "direct64 register-space"));
+    unlink(log_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_direct64_range_boundary_is_split(void)
+{
+    const uint64_t boundary = UINT64_C(1) << 47;
+    uint8_t initial[8], observed[8];
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,packet-window-base=140737488355326 "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1");
+
+    memset(initial, 0xa5, sizeof(initial));
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    qtest_memwrite(qts, TARGET, initial, sizeof(initial));
+    direct64_card_enable(qts, 0);
+    direct64_card_write(qts, 0, (UINT64_C(0xa) << 60) |
+                        (UINT64_C(1) << 55) | (boundary - 2), 4, 0x90);
+
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, CARD(0) + 0x28), ==,
+                    MEMTX_DECODE_ERROR);
+    qtest_memread(qts, TARGET, observed, sizeof(observed));
+    g_assert_cmphex(observed[0], ==, 0x90);
+    g_assert_cmphex(observed[1], ==, 0x91);
+    for (unsigned i = 2; i < sizeof(observed); i++) {
+        g_assert_cmphex(observed[i], ==, 0xa5);
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
+static void test_direct64_target_error_preserves_data(void)
+{
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    uint8_t sentinel[8], observed[8];
+    QTestState *qts = pic_runtime_cpu_start(
+        true, "-global sgi-xio-test-target.packet-failure=on");
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x3000, sentinel, sizeof(sentinel));
+    for (unsigned head = 0; head < 2; head++) {
+        direct64_card_enable(qts, head);
+    }
+    for (unsigned head = 0; head < 2; head++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            for (unsigned attributes = 0; attributes < 4; attributes++) {
+                uint64_t bits = ((attributes & 1) ? UINT64_C(1) << 58 : 0) |
+                                ((attributes & 2) ? UINT64_C(1) << 56 : 0) |
+                                (swap ? UINT64_C(1) << 55 : 0);
+                uint64_t destination = widget | bits | 0x3000;
+                uint64_t source = widget | bits | (UINT64_C(1) << 47) |
+                                  0x3000;
+
+                qtest_memwrite(qts, TARGET + 0x3000, sentinel,
+                               sizeof(sentinel));
+                direct64_card_write(qts, head, destination,
+                                    sizeof(sentinel), 0x51);
+                g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), ==,
+                                MEMTX_ACCESS_ERROR);
+                qtest_memread(qts, TARGET + 0x3000, observed,
+                              sizeof(observed));
+                g_assert_cmpmem(observed, sizeof(observed), sentinel,
+                                sizeof(sentinel));
+
+                direct64_card_copy(qts, head, source, destination,
+                                   sizeof(sentinel));
+                g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), ==,
+                                MEMTX_DECODE_ERROR);
+                qtest_memread(qts, TARGET + 0x3000, observed,
+                              sizeof(observed));
+                g_assert_cmpmem(observed, sizeof(observed), sentinel,
+                                sizeof(sentinel));
+            }
+        }
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 16);
+    qtest_quit(qts);
+}
+
+static void test_direct64_crossbow_widget_routing(void)
+{
+    const uint64_t payload = 0x1800;
+    const uint64_t control = 0x10000000;
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xbow-transport-test,id=switch "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=on,pic-switched=on,"
+        "target-port=/machine/peripheral/switch/xbow,target-index=9 "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1");
+    uint64_t initial8, initial10;
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/switch", 0, control);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 3, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    direct64_card_enable(qts, 0);
+    initial8 = qtest_readq(qts, control + 0x100 + 1 * 32 + 16);
+    initial10 = qtest_readq(qts, control + 0x100 + 3 * 32 + 16);
+
+    direct64_card_write(qts, 0, (UINT64_C(8) << 60) |
+                        (UINT64_C(1) << 55) | payload, 8, 0x28);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 1 * 32), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 3 * 32), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 1 * 32 + 8), ==,
+                    payload);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 1 * 32 + 24), ==, 24);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 1 * 32 + 16), !=,
+                    initial8);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 3 * 32 + 16), ==,
+                    initial10);
+
+    direct64_card_write(qts, 0, (UINT64_C(10) << 60) |
+                        (UINT64_C(1) << 55) | payload, 8, 0x3a);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 1 * 32), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 3 * 32), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 3 * 32 + 8), ==,
+                    payload);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 3 * 32 + 24), ==, 24);
+    g_assert_cmphex(qtest_readq(qts, control + 0x100 + 3 * 32 + 16), !=,
+                    initial10);
+
+    direct64_card_write(qts, 0, (UINT64_C(12) << 60) |
+                        (UINT64_C(1) << 55) | payload, 8, 0x4c);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 1 * 32), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, control + 0x100 + 3 * 32), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, CARD(0) + 0x28), ==, MEMTX_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_cpu_pio_order_follows_pci_mapping(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(
+        true,
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,"
+        "byte-lane-self-ordered=on");
+    uint64_t cpu_short = CPU_HEAD(0) + 0x600008;
+    uint64_t ordinary = BASE + 0x44000008;
+    uint64_t native = BASE + 0x45000008;
+    uint64_t relocated = BASE + 0x46000008;
+
+    pic_short_enable_card(qts, 0, 1, 0x02000000, 0x04000000, 0x3001,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    pic_short_enable_card(qts, 0, 2, 0x03000000, 0x05000000, 0x3009,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
+    qtest_writeq(qts, ordinary, UINT64_C(0x0123456789abcdef));
+    qtest_writeb(qts, cpu_short, 0xa1);
+    g_assert_cmphex(qtest_readb(qts, ordinary + 3), ==, 0xa1);
+
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x50 | (1U << 12));
+    qtest_writeq(qts, native, UINT64_C(0x0123456789abcdef));
+    qtest_writeb(qts, cpu_short, 0xb2);
+    g_assert_cmphex(qtest_readb(qts, native), ==, 0xb2);
+    qtest_writel(qts, cpu_short, 0x12345678);
+    g_assert_cmphex(qtest_readb(qts, native), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, native + 1), ==, 0x34);
+    g_assert_cmphex(qtest_readb(qts, native + 2), ==, 0x56);
+    g_assert_cmphex(qtest_readb(qts, native + 3), ==, 0x78);
+
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x14, 0x06000000);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x60 | (1U << 12));
+    qtest_writeq(qts, relocated, UINT64_C(0x1122334455667788));
+    qtest_writeb(qts, cpu_short, 0xc3);
+    g_assert_cmphex(qtest_readb(qts, relocated), ==, 0xc3);
+
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, 0);
+    qtest_writeb(qts, cpu_short, 0xd4);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, PCI_COMMAND_MEMORY);
+    g_assert_cmphex(qtest_readb(qts, relocated), ==, 0xc3);
+    qtest_quit(qts);
+}
+
+static void test_cpu_pio_overlapping_bars_use_active_function(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(
+        true,
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,"
+        "byte-lane-self-ordered=on");
+    uint64_t raw = BASE + 0x45000000ULL + 0x24;
+    uint64_t cpu_short = CPU_HEAD(0) + 0x600024;
+
+    pic_short_enable_card(qts, 0, 1, 0x05000000, 0x04000000, 0x3001,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    pic_short_enable_card(qts, 0, 2, 0x05000000, 0x06000000, 0x3009,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x50 | (1U << 12));
+
+    /* The later native BAR owns the overlapping raw PCI address. */
+    qtest_writel(qts, raw, 0x01234567);
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x01234567);
+    qtest_writel(qts, cpu_short, 0x11223344);
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x44332211);
+
+    qtest_quit(qts);
+}
+
+static QTestState *pic_profile_migration_start(bool runtime_profile,
+                                               bool incoming,
+                                               bool v5_migration_source)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=%s,pic-linked=on,pic-bedrock-interrupts=on,"
+        "pic-v5-migration-source=%s "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1",
+        incoming_arg, runtime_profile ? "on" : "off",
+        v5_migration_source ? "on" : "off");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    if (runtime_profile) {
+        qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    }
+    return qts;
+}
+
+static QTestState *pic_profile_v6_migration_start(bool incoming)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=on,pic-bedrock-interrupts=on,"
+        "pic-v6-migration-source=on "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1",
+        incoming_arg);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static QTestState *pic_profile_v7_migration_start(bool incoming,
+                                                 bool previous_binary)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    const char *args = "-M none -cpu R10000 -S %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=on,pic-bedrock-interrupts=on "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1";
+    g_autofree char *formatted = g_strdup_printf(args, incoming_arg);
+    QTestState *qts = previous_binary ?
+        qtest_init_ext("QTEST_QEMU_BINARY_SRC", formatted, NULL, true) :
+        qtest_initf("%s", formatted);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static QTestState *pic_bedrock_parent_start(bool map_io_registers,
+                                            bool runtime_profile)
+{
+    QTestState *qts = qtest_initf(
         "-M none -cpu R10000 -m 256M -S -d unimp,guest_errors "
         "-device sgi-xio-test-target,id=memory,size=16777216 "
         "-device sgi-bedrock,id=bedrock,processor-count=1,"
         "dma-memory=/machine/peripheral/memory/memory.ram[0] "
         "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
+        "pic-runtime-profile=%s,"
         "pic-linked=on,pic-switched=on,pic-bedrock-interrupts=on,"
-        "target-port=/machine/peripheral/bedrock/io");
+        "target-port=/machine/peripheral/bedrock/io",
+        runtime_profile ? "on" : "off");
 
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/bedrock", 0,
                           0x10000000);
@@ -175,27 +1371,32 @@ static QTestState *pic_bedrock_parent_start(bool map_io_registers)
     return qts;
 }
 
-static QTestState *pic_bedrock_start(void)
+static QTestState *pic_bedrock_start(bool runtime_profile)
 {
-    QTestState *qts = qtest_init(
+    QTestState *qts = qtest_initf(
         "-M none -cpu R10000 -S -d unimp,guest_errors "
-        "-device sgi-xio-test-target,id=memory,size=16777216 "
+        "-device sgi-xio-test-target,id=memory,size=16777216,"
+        "sparse-node-memory=on "
         "-device sgi-bedrock-io,id=serving,node-number=1,"
         "device-mask-reset=0x0000ffffffffffff,"
-        "dma-memory=/machine/peripheral/memory/memory.ram[0],"
-        "hub-registers=/machine/peripheral/memory/memory.ram[0] "
+        "dma-memory=/machine/peripheral/memory/sparse-dma[0],"
+        "hub-registers=/machine/peripheral/memory/memory.node1.ram[0] "
         "-device sgi-bedrock-io,id=ingress,node-number=0,"
-        "dma-memory=/machine/peripheral/memory/memory.ram[0],"
+        "dma-memory=/machine/peripheral/memory/sparse-dma[0],"
         "hub-registers=/machine/peripheral/memory/memory.ram[0] "
         "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
+        "pic-runtime-profile=%s,"
         "pic-bedrock-interrupts=on,target-port=ingress,"
         "target-peer=serving,pic-switched=on "
         "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1,"
         "vendor-id=0xfeed,device-id=0x3500 "
         "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1,"
-        "vendor-id=0xfeed,device-id=0x3501");
+        "vendor-id=0xfeed,device-id=0x3501",
+        runtime_profile ? "on" : "off");
 
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/memory", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/memory", 1,
+                          TARGET_NODE1);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 3, BASE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/ingress", 0,
                           INGRESS_REGS);
@@ -557,16 +1758,19 @@ static void pic_bedrock_dma(QTestState *qts, uint32_t pattern)
 
 static void test_linked_receiving_ii_denial(void)
 {
-    QTestState *qts = pic_bedrock_start();
+    QTestState *qts = pic_bedrock_start(false);
     uint8_t sentinel[8];
     uint8_t bytes[8];
 
     memset(sentinel, 0xa5, sizeof(sentinel));
     qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_NODE1 + 0x1000, sentinel, sizeof(sentinel));
     pic_bedrock_configure(qts, false);
     qtest_writeq(qts, INGRESS_REGS + 0x118,
                  qtest_readq(qts, INGRESS_REGS + 0x118) & ~(1ULL << 14));
     pic_bedrock_dma(qts, 0x61);
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
     qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
     g_assert_cmphex(qtest_readl(qts, CARD(0) + 8), ==, 0x61);
@@ -597,12 +1801,13 @@ static void test_linked_receiving_ii_denial(void)
 
 static void test_linked_serving_ii_denial(void)
 {
-    QTestState *qts = pic_bedrock_start();
+    QTestState *qts = pic_bedrock_start(false);
     uint8_t sentinel[8];
     uint8_t bytes[8];
 
     memset(sentinel, 0xa5, sizeof(sentinel));
     qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_NODE1 + 0x1000, sentinel, sizeof(sentinel));
     pic_bedrock_configure(qts, true);
 
     /*
@@ -614,7 +1819,7 @@ static void test_linked_serving_ii_denial(void)
     pic_bedrock_dma(qts, 0x61);
     qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX);
     pic_bedrock_dma(qts, 0x71);
-    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
     g_assert_cmphex(qtest_readl(qts, CARD(0) + 8), ==, 0x71);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
@@ -640,7 +1845,7 @@ static void test_linked_serving_ii_denial(void)
 
     qtest_writeq(qts, SERVING_REGS + 0x120, UINT64_MAX);
     pic_bedrock_dma(qts, 0x81);
-    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
     for (unsigned i = 0; i < sizeof(bytes); i++) {
         g_assert_cmpuint(bytes[i], ==, 0x81 + i);
     }
@@ -649,7 +1854,7 @@ static void test_linked_serving_ii_denial(void)
                      MEMTX_OK);
     qtest_writel(qts, CARD(1) + 8, 0x91);
     qtest_writel(qts, CARD(1) + 0xc, 1);
-    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
     for (unsigned i = 0; i < sizeof(bytes); i++) {
         g_assert_cmpuint(bytes[i], ==, 0x91 + i);
     }
@@ -661,6 +1866,400 @@ static void test_linked_serving_ii_denial(void)
     g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
                      MEMTX_OK);
     qtest_quit(qts);
+}
+
+static void test_direct64_bedrock_high_payload_source_denial(void)
+{
+    const uint64_t swap = UINT64_C(1) << 55;
+    const uint64_t local_destination = (UINT64_C(0xf) << 60) | swap | 0x1000;
+    const uint64_t destination = (UINT64_C(0xf) << 60) | swap |
+                                (UINT64_C(1) << 33) | 0x1000;
+    uint8_t sentinel[8], bytes[8];
+    QTestState *qts = pic_bedrock_start(true);
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_NODE1 + 0x1000, sentinel, sizeof(sentinel));
+    direct64_card_enable(qts, 0);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+
+    direct64_card_write(qts, 0, local_destination, sizeof(sentinel), 0x31);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i], ==, 0x31 + i);
+    }
+    g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                    XIO_WIDGET(15) | 0x1000);
+
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_writeq(qts, INGRESS_REGS + 0x118,
+                 qtest_readq(qts, INGRESS_REGS + 0x118) & ~(1ULL << 14));
+    direct64_card_write(qts, 0, destination, sizeof(sentinel), 0x61);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    g_assert_cmphex(qtest_readl(qts, CARD(0) + 0x28), ==,
+                    MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                    XIO_WIDGET(15) | (UINT64_C(1) << 33) | 0x1000);
+
+    qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX);
+    direct64_card_write(qts, 0, destination, sizeof(sentinel), 0x71);
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i], ==, 0x71 + i);
+    }
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_NODE1 + 0x1000, sentinel, sizeof(sentinel));
+    direct64_card_write(qts, 0,
+                        (UINT64_C(0xf) << 60) | swap |
+                        (UINT64_C(2) << 33) | 0x1000,
+                        sizeof(sentinel), 0x81);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_DECODE_ERROR);
+    g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                    XIO_WIDGET(15) | (UINT64_C(2) << 33) | 0x1000);
+
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_NODE1 + 0x1000, sentinel, sizeof(sentinel));
+    direct64_card_write(qts, 0, (UINT64_C(0xf) << 60) | swap |
+                        (UINT64_C(1) << 33) | 0x01000000,
+                        sizeof(sentinel), 0x91);
+    g_assert_cmphex(qtest_readl(qts, CARD(0) + 0x28), ==,
+                    MEMTX_DECODE_ERROR);
+    qtest_memread(qts, TARGET_NODE1 + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    qtest_quit(qts);
+}
+
+static void assert_pic_identity_word(uint64_t value, unsigned head,
+                                     uint32_t manufacturer)
+{
+    g_assert_cmphex((value >> 28) & 0xf, ==, 3);
+    g_assert_cmphex((value >> 12) & 0xffff, ==,
+                    head ? 0xd112 : 0xd102);
+    g_assert_cmphex((value & 0xffe) >> 1, ==, manufacturer);
+    g_assert_cmphex(value & 1, ==, 0);
+}
+
+static void assert_pic_identity(QTestState *qts, uint32_t manufacturer)
+{
+    for (unsigned head = 0; head < 2; head++) {
+        assert_pic_identity_word(qtest_readq(qts, HEAD(head)), head,
+                                 manufacturer);
+        assert_pic_identity_word(qtest_readl(qts, HEAD(head) + 4), head,
+                                 manufacturer);
+    }
+}
+
+static void test_identity_fields(void)
+{
+    QTestState *qts = pic_start(false, "");
+
+    assert_pic_identity(qts, 0x24);
+    qtest_writeq(qts, HEAD(0) + 0x20, 5);
+    qtest_writeq(qts, HEAD(1) + 0x20, 6);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    assert_pic_identity(qts, 0x24);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x20), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_cpu_word_view_registers(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-cpu-word-view-XXXXXX",
+                                          &error);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log_arg = NULL;
+    g_autofree char *log_contents = NULL;
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    log_path = g_build_filename(dir, "qemu.log", NULL);
+    log_arg = g_strdup_printf("-D %s", log_path);
+    qts = pic_runtime_cpu_start(true, log_arg);
+
+    for (unsigned head = 0; head < 2; head++) {
+        uint64_t packet_head = HEAD(head);
+        uint64_t cpu_config = CPU_HEAD(head) + 0x21000;
+        uint64_t packet_config = packet_head + 0x21000;
+        uint64_t upper = UINT64_C(0x1234567800000000) | head;
+
+        pic_short_enable_card(qts, head, 1, 0x03000000,
+                              PIC_SHORT_MEMORY_BASE, 0x3001,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+
+        qtest_writel(qts, cpu_config + 4,
+                     PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readl(qts, cpu_config + 4) & 0xffff, ==,
+                        PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        g_assert_cmphex(qtest_readl(qts, packet_config + 4) & 0xffff, ==,
+                        PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        qtest_writel(qts, cpu_config + 0x14, 0x04000000);
+        g_assert_cmphex(qtest_readl(qts, cpu_config + 0x14), ==,
+                        0x04000000);
+        g_assert_cmphex(qtest_readl(qts, packet_config + 0x14), ==,
+                        0x04000000);
+        qtest_writeq(qts, BASE +
+                     (head ? 0xc0000000ULL : 0x40000000ULL) +
+                     0x04000008, UINT64_C(0x1234abcd5678ef01) | head);
+        g_assert_cmphex(qtest_readq(qts, BASE +
+                                   (head ? 0xc0000000ULL : 0x40000000ULL) +
+                                   0x04000008), ==,
+                        UINT64_C(0x1234abcd5678ef01) | head);
+        qtest_writel(qts, cpu_config + 0x14, PIC_SHORT_MEMORY_BASE);
+        g_assert_cmphex(qtest_readl(qts, cpu_config + 0x14), ==,
+                        PIC_SHORT_MEMORY_BASE);
+        g_assert_cmphex(qtest_readl(qts, packet_config + 0x14), ==,
+                        PIC_SHORT_MEMORY_BASE);
+
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 4), ==,
+                        (uint32_t)qtest_readq(qts, CPU_HEAD(head)));
+        g_assert_cmphex(qtest_readl(qts, packet_head + 4), ==,
+                        (uint32_t)qtest_readq(qts, packet_head));
+        qtest_writel(qts, CPU_HEAD(head) + 4, 0);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 4), ==,
+                        (uint32_t)qtest_readq(qts, CPU_HEAD(head)));
+        qtest_writeq(qts, CPU_HEAD(head) + 0x130, upper | 0x11223344);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x134), ==,
+                        0x11223344 | head);
+        qtest_writel(qts, CPU_HEAD(head) + 0x134, 0xaabbccdd);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x130), ==,
+                        upper | 0xaabbccdd);
+        qtest_writeq(qts, packet_head + 0x130,
+                     upper | 0x76543210);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x130), ==,
+                        upper | 0x76543210);
+        g_assert_cmphex(qtest_readl(qts, packet_head + 0x134), ==, 0);
+        qtest_writel(qts, packet_head + 0x134, 0xdeadbeef);
+        g_assert_cmphex(qtest_readq(qts, packet_head + 0x130), ==,
+                        upper | 0x76543210);
+
+        qtest_writel(qts, CPU_HEAD(head) + 0x204,
+                     0x80000000U | PIC_SHORT_MEMORY_BASE / 0x100000 |
+                     (1U << 12));
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x200), ==,
+                        PIC_SHORT_MEMORY_BASE / 0x100000 | (1U << 12));
+        qtest_writeq(qts, CPU_HEAD(head) + 0x200000 + 8,
+                     UINT64_C(0x8877665544332211) | head);
+        g_assert_cmphex(qtest_readq(qts, BASE +
+                                   (head ? 0xc0000000ULL : 0x40000000ULL) +
+                                   PIC_SHORT_MEMORY_BASE + 8), ==,
+                        UINT64_C(0x8877665544332211) | head);
+        qtest_writel(qts, CPU_HEAD(head) + 0x200000 + 12, 0xaabbccdd);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x200000 + 12), ==,
+                        0xaabbccdd);
+        g_assert_cmphex(qtest_readl(qts, BASE +
+                                   (head ? 0xc0000000ULL : 0x40000000ULL) +
+                                   PIC_SHORT_MEMORY_BASE + 12), ==,
+                        0xaabbccdd);
+
+        for (unsigned bank = 0; bank < 3; bank++) {
+            uint64_t request_upper = UINT64_C(0xfedcba9800000000);
+            uint64_t request = 0x18000 + bank * 0x800 + head * 8;
+
+            qtest_writeq(qts, CPU_HEAD(head) + request,
+                         request_upper | 0x55667788 | head);
+            g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + request + 4), ==,
+                            0x55667788 | head);
+            qtest_writel(qts, CPU_HEAD(head) + request + 4, 0x99aabbcc);
+            g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + request), ==,
+                            request_upper | 0x99aabbcc);
+        }
+
+        qtest_writeq(qts, CPU_HEAD(head) + 0x20,
+                     UINT64_C(0x1234567800000005));
+        qtest_writel(qts, CPU_HEAD(head) + 0x24, 0x10a);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x20), ==, 0xa);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x80,
+                     UINT64_C(0x1234567800000007));
+        qtest_writel(qts, CPU_HEAD(head) + 0x84, 0x80012345);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x80), ==,
+                        0x12345);
+        qtest_writeq(qts, CPU_HEAD(head) + 0xc8,
+                     UINT64_C(0x1234567800000000) | 0x100);
+        qtest_writel(qts, CPU_HEAD(head) + 0xcc, 0x2345);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0xc8), ==,
+                        UINT64_C(0x1234567800002345));
+
+        qtest_writeq(qts, CPU_HEAD(head) + 0x100, 0);
+        qtest_writel(qts, CPU_HEAD(head) + 0x104, 0xffffffff);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100), ==, 0);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x120, 0x1234);
+        qtest_writel(qts, CPU_HEAD(head) + 0x124, 0x5678);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x120), ==, 0x1234);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x50), ==, 0);
+        qtest_writel(qts, CPU_HEAD(head) + 0x54, 0x9876);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x50), ==, 0);
+        qtest_writel(qts, CPU_HEAD(head) + 0x618, 0xfeed);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x618), ==, 0);
+    }
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x24, 0x5);
+    uint64_t control_before[2] = {
+        qtest_readq(qts, CPU_HEAD(0) + 0x20),
+        qtest_readq(qts, CPU_HEAD(1) + 0x20),
+    };
+    g_assert_cmphex(control_before[0], ==, 0x5);
+    g_assert_cmphex(control_before[1], ==, 0xa);
+    qtest_writel(qts, CPU_HEAD(0) + 0x20, 0xffffffff);
+    qtest_writel(qts, CPU_HEAD(0) + 0x26, 0xffffffff);
+    qtest_writel(qts, CPU_HEAD(0) + 0x22, 0xffffffff);
+    qtest_writew(qts, CPU_HEAD(0) + 0x24, 0xffff);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7ffffc, 0xffffffff);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7ffffe, 0xffffffff);
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x20), ==,
+                        control_before[head]);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log_contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log_contents,
+                            "offset 0x20 size 8 value 0x10a unsupported"));
+    g_assert_nonnull(strstr(log_contents,
+                            "offset 0x80 size 8 value 0x80012345 unsupported"));
+    g_assert_nonnull(strstr(log_contents,
+                            "offset 0x200 size 8 value 0x80001020 "
+                            "unsupported"));
+    unlink(log_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_cpu_word_view_profile_isolation(void)
+{
+    QTestState *qts = pic_start(false, "");
+
+    qtest_writeq(qts, HEAD(0) + 0x20, 0x5);
+    qtest_writel(qts, HEAD(0) + 0x24, 0x5678);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0x5);
+    g_assert_cmphex(qtest_readl(qts, HEAD(0) + 0x24), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEAD(0) + 4), ==,
+                    (uint32_t)qtest_readq(qts, HEAD(0)));
+    qtest_quit(qts);
+}
+
+static void test_cpu_word_view_interrupt_effects(void)
+{
+    QTestState *qts = pic_bedrock_parent_start(false, true);
+
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    for (unsigned head = 0; head < 2; head++) {
+        unsigned level = 0x34 + head;
+        uint64_t pending_bit = UINT64_C(1) << level;
+        uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+        uint64_t destination = ((uint64_t)level << 48) | address;
+        uint64_t calls = target_metric(qts, "x-test-packet-calls");
+        g_autofree char *head_path = g_strdup_printf(
+            PIC_CHILD "/head-%u", head);
+
+        qtest_writeq(qts, CPU_HEAD(head) + 0x130, destination);
+        qtest_writel(qts, CPU_HEAD(head) + 0x134, (uint32_t)destination);
+        qtest_writel(qts, CPU_HEAD(head) + 0x11c, 1);
+        qtest_set_irq_in(qts, head_path, NULL, 0, 1);
+        qtest_set_irq_in(qts, head_path, NULL, 1, 1);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls);
+
+        qtest_writel(qts, CPU_HEAD(head) + 0x10c, 1);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 1);
+        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending_bit,
+                        ==, pending_bit);
+        qtest_writel(qts, CPU_HEAD(head) + 0x10c, 1);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 1);
+
+        qtest_writel(qts, CPU_HEAD(head) + 0x114, 1);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 2);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 3);
+        qtest_set_irq_in(qts, head_path, NULL, 0, 0);
+        qtest_writel(qts, CPU_HEAD(head) + 0x114, 1);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 2);
+        qtest_set_irq_in(qts, head_path, NULL, 1, 0);
+        qtest_writel(qts, CPU_HEAD(head) + 0x114, 2);
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+static QTestState *pic_identity_migration_start(bool incoming,
+                                                bool old_source)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    g_autofree char *args = NULL;
+    QTestState *qts;
+
+    args = g_strdup_printf("-M none -cpu R10000 -S %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536 "
+        "-device sgi-pic,id=pic,test-fixture=on,"
+        "target-0=/machine/peripheral/fabric/fabric.ram[0]", incoming_arg);
+    if (old_source) {
+        qts = qtest_init_ext("QTEST_QEMU_BINARY_SRC", args, NULL, true);
+    } else {
+        qts = qtest_initf("%s", args);
+    }
+    qtest_sysbus_mmio_map(qts, PIC, 0, BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    return qts;
+}
+
+static void test_identity_migration(bool old_source)
+{
+    GError *error = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from;
+    QTestState *to;
+
+    if (old_source && !g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        g_test_skip("QTEST_QEMU_BINARY_SRC is not set");
+        return;
+    }
+    dir = g_dir_make_tmp("sgi-pic-identity-XXXXXX", &error);
+    g_assert_no_error(error);
+    from = pic_identity_migration_start(false, old_source);
+    to = pic_identity_migration_start(true, false);
+    assert_pic_identity(from, old_source ? 0x12 : 0x24);
+    qtest_writeq(from, HEAD(0) + 0x20, 5);
+    qtest_writeq(from, HEAD(1) + 0x20, 6);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    assert_pic_identity(to, 0x24);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x20), ==, 5);
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x20), ==, 6);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_current_identity_migration(void)
+{
+    test_identity_migration(false);
+}
+
+static void test_old_identity_migration(void)
+{
+    test_identity_migration(true);
 }
 
 static void test_heads_and_widths(void)
@@ -677,8 +2276,7 @@ static void test_heads_and_widths(void)
     extra = g_strdup_printf("-D %s", log_path);
     qts = pic_start(false, extra);
 
-    g_assert_cmphex(qtest_readq(qts, HEAD(0)), ==, 0x3d102024);
-    g_assert_cmphex(qtest_readq(qts, HEAD(1)), ==, 0x3d112024);
+    assert_pic_identity(qts, 0x24);
     qtest_writeq(qts, HEAD(0) + 0x20, 0x123456789abcdef3ULL);
     qtest_writeq(qts, HEAD(1) + 0x20, 0xfedcba9876543217ULL);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 3);
@@ -796,6 +2394,238 @@ static void test_unconnected_linked_transport(void)
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*PIC linked transport requires a typed peer "
                               "before realization*");
+}
+
+static void assert_pic_profile_realize_error(const char *profile_options,
+                                              const char *message)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+            "-device sgi-pic,id=pic,%s", profile_options);
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr(message);
+}
+
+static void test_bedrock_profile_is_fixture_only(void)
+{
+    assert_pic_profile_realize_error(
+        "compatibility-profile=pic-rev3-bedrock",
+        "*pic-rev3-bedrock is only for qtest fixtures*");
+}
+
+static void test_runtime_profile_rejects_fixture_mode(void)
+{
+    assert_pic_profile_realize_error(
+        "compatibility-profile=pic-rev3-bedrock-experimental,"
+        "test-fixture=on",
+        "*PIC runtime profile cannot enable test-fixture*");
+}
+
+static void test_runtime_profile_non_qtest_cli_refuses_static_sysbus(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-display", "none",
+        "-device",
+        "sgi-xio-test-target,id=fabric,pic-runtime-profile=on", NULL,
+    };
+    g_autofree char *command = g_strjoinv(" ", (char **)args);
+    g_autofree char *stderr_text = NULL;
+    int status;
+    GError *error = NULL;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &stderr_text, &status, &error));
+    g_assert_no_error(error);
+    if (!stderr_text || !strstr(stderr_text,
+            "Parameter 'driver' expects a dynamic sysbus device type "
+            "for the machine")) {
+        g_test_message("non-qtest CLI did not report the static SysBus "
+                       "device refusal; "
+                       "wait status 0x%x; command: %s; stderr: %s",
+                       status, command,
+                       stderr_text ? stderr_text : "(empty)");
+    }
+    g_assert_true(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), ==, 1);
+    g_assert_nonnull(strstr(stderr_text,
+        "Parameter 'driver' expects a dynamic sysbus device type "
+        "for the machine"));
+}
+
+static void test_runtime_profile_derives_linked_transport(void)
+{
+    assert_pic_profile_realize_error(
+        "compatibility-profile=pic-rev3-bedrock-experimental",
+        "*PIC linked transport requires a typed peer before realization*");
+}
+
+static void test_runtime_profile_is_immutable_after_realize(void)
+{
+    QTestState *qts = pic_runtime_start(false, "");
+    QDict *error = qtest_qmp_assert_failure_ref(qts,
+        "{'execute':'qom-set','arguments':{'path':"
+        "'/machine/peripheral/fabric/pic',"
+        "'property':'compatibility-profile',"
+        "'value':'pic-rev3-bedrock'}}");
+
+    g_assert_cmpstr(qdict_get_str(error, "desc"), ==,
+        "Attempt to set property 'compatibility-profile' on anonymous device "
+        "(type 'sgi-pic') after it was realized");
+    qobject_unref(error);
+    qtest_quit(qts);
+}
+
+static void pic_runtime_copy_rejects_source(QTestState *qts, uint64_t source,
+                                            const uint8_t *sentinel,
+                                            size_t size)
+{
+    uint8_t after[8];
+
+    g_assert_cmpuint(size, <=, sizeof(after));
+    qtest_memwrite(qts, TARGET + 0x3000, sentinel, size);
+    qtest_writel(qts, CARD(0), 0x80003000);
+    qtest_writel(qts, CARD(0) + 4, (uint32_t)size);
+    qtest_writel(qts, CARD(0) + 0x14, (uint32_t)source);
+    qtest_writel(qts, CARD(0) + 0x1c, (uint32_t)(source >> 32));
+    qtest_writel(qts, CARD(0) + 0xc, 2);
+    qtest_memread(qts, TARGET + 0x3000, after, size);
+    g_assert_cmpmem(after, size, sentinel, size);
+}
+
+static void test_runtime_profile_reserved_device_and_dma(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-runtime-copy-XXXXXX",
+                                          &error);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log_arg = NULL;
+    g_autofree char *log_contents = NULL;
+    QTestState *qts;
+    uint8_t bytes[8];
+    uint8_t copied[8];
+    uint8_t sentinel[8] = { 0xa5, 0xa5, 0xa5, 0xa5,
+                            0xa5, 0xa5, 0xa5, 0xa5 };
+    const uint64_t unsupported_sources[] = {
+        UINT64_C(0x100000000), UINT64_C(0x180000000),
+        UINT64_C(0x40000000),
+    };
+
+    g_assert_no_error(error);
+    log_path = g_build_filename(dir, "qemu.log", NULL);
+    log_arg = g_strdup_printf("-D %s", log_path);
+    qts = pic_runtime_start(true, log_arg);
+
+    for (unsigned head = 0; head < 2; head++) {
+        uint32_t address = 0x80001000 + head * 0x1000;
+        uint8_t pattern = 0x31 + head * 0x10;
+
+        g_assert_cmphex(qtest_readl(qts, HEAD(head) + 0x20000), ==,
+                        0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, HEAD(head) + 0x21000), ==,
+                        0x3500feed + head * 0x10000);
+        qtest_writel(qts, HEAD(head) + 0x21010, 0x01000000);
+        qtest_writel(qts, HEAD(head) + 0x21004,
+                     PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+        qtest_writeq(qts, HEAD(head) + 0x20, 4 + head);
+        qtest_writeq(qts, HEAD(head) + 0x80, 0);
+        qtest_writeq(qts, HEAD(head) + 0x200,
+                     head ? 1ULL << 19 : 0);
+        qtest_writel(qts, CARD(head), address);
+        qtest_writel(qts, CARD(head) + 4, sizeof(bytes));
+        qtest_writel(qts, CARD(head) + 8, pattern);
+        qtest_writel(qts, CARD(head) + 0xc, 1);
+        qtest_memread(qts, TARGET + 0x1000 + head * 0x1000,
+                      bytes, sizeof(bytes));
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            g_assert_cmpuint(bytes[i], ==,
+                             pattern + (head ? (i ^ 3) : i));
+        }
+    }
+
+    /* A supported source read must produce the expected destination copy. */
+    qtest_writel(qts, CARD(0), 0x80002000);
+    qtest_writel(qts, CARD(0) + 4, sizeof(bytes));
+    qtest_writel(qts, CARD(0) + 0x14, 0x80001000);
+    qtest_writel(qts, CARD(0) + 0x1c, 0);
+    qtest_writel(qts, CARD(0) + 0xc, 2);
+    qtest_memread(qts, TARGET + 0x2000, copied, sizeof(copied));
+    for (unsigned i = 0; i < sizeof(copied); i++) {
+        g_assert_cmpuint(copied[i], ==, 0x31 + i);
+    }
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(unsupported_sources); i++) {
+        pic_runtime_copy_rejects_source(qts, unsupported_sources[i], sentinel,
+                                        sizeof(sentinel));
+    }
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x80), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x200), ==, 0);
+    }
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log_contents, NULL, &error));
+    g_assert_no_error(error);
+    for (unsigned i = 0; i < G_N_ELEMENTS(unsupported_sources); i++) {
+        g_autofree char *copy_failure = g_strdup_printf(
+            "sgi-bridge-dma-test: the copy's read of 0x%" PRIx64
+            " failed, so it writes nothing", unsupported_sources[i]);
+        g_autofree char *pic_refusal = unsupported_sources[i] > UINT32_MAX ?
+            g_strdup_printf("sgi-pic: head 0 direct64 target-zero address "
+                            "0x%016" PRIx64 " from slot",
+                            unsupported_sources[i]) :
+            g_strdup_printf("sgi-pic: head 0 unsupported DMA 0x%" PRIx64,
+                            unsupported_sources[i]);
+
+        g_assert_nonnull(strstr(log_contents, copy_failure));
+        g_assert_nonnull(strstr(log_contents, pic_refusal));
+    }
+    unlink(log_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_dir_map_unsupported_fields(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-dir-map-XXXXXX", &error);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log_contents = NULL;
+    QTestState *qts;
+    const uint64_t supported = UINT64_C(0x1ffff) | (UINT64_C(0xf) << 20);
+
+    g_assert_no_error(error);
+    log_path = g_build_filename(dir, "qemu.log", NULL);
+    qts = qtest_initf("-M none -cpu R10000 -S -d unimp,guest_errors -D %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off",
+        log_path);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    for (unsigned head = 0; head < 2; head++) {
+        uint64_t value = (UINT64_C(1) << 63) | (UINT64_C(1) << 17) |
+                         (UINT64_C(3) << 20) | 0x1234;
+
+        qtest_writeq(qts, HEAD(head) + 0x80, value);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x80), ==,
+                        value & supported);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log_contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log_contents,
+        "head 0 origin=widget-mmio write offset 0x80 size 8 value "
+        "0x8000000000321234 unsupported"));
+    g_assert_nonnull(strstr(log_contents,
+        "head 1 origin=widget-mmio write offset 0x80 size 8 value "
+        "0x8000000000321234 unsupported"));
+    g_unlink(log_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 static void test_type1_configuration(void)
@@ -1388,59 +3218,101 @@ static void test_packet_window_exact_limit_fit(void)
     qtest_quit(qts);
 }
 
-static void test_linked_bedrock_interrupt(void)
+static void test_bedrock_interrupt_profile(bool runtime_profile)
 {
-    uint64_t pending_bit = UINT64_C(1) << 52;
-    uint64_t destination = (UINT64_C(0x34) << 48) | 0x800001800090;
     unsigned map_io_registers;
 
     for (map_io_registers = 0; map_io_registers < 2; map_io_registers++) {
-        QTestState *qts = pic_bedrock_parent_start(map_io_registers);
+        QTestState *qts = pic_bedrock_parent_start(map_io_registers,
+                                                   runtime_profile);
 
-        qtest_writeq(qts, HEAD(0) + 0x20, 14);
-        qtest_writeq(qts, HEAD(0) + 0x130, destination);
-        qtest_writeq(qts, HEAD(0) + 0x118, 1);
-        qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 1);
-        qtest_writeq(qts, HEAD(0) + 0x108, 1);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
-        g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
-                        0x800001800090);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 14);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 8);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"),
-                         ==, 0);
-        g_assert_cmphex(target_metric(qts, "x-test-packet-result"), ==,
-                        MEMTX_OK);
-        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending_bit,
-                        ==, pending_bit);
+        for (unsigned head = 0; head < 2; head++) {
+            unsigned level = 0x34 + head;
+            uint64_t pending_bit = UINT64_C(1) << level;
+            uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+            uint64_t destination = ((uint64_t)level << 48) | address;
+            uint64_t calls = target_metric(qts, "x-test-packet-calls");
+            g_autofree char *head_path = g_strdup_printf(
+                PIC_CHILD "/head-%u", head);
 
-        qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 0);
-        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending_bit,
-                        ==, 0);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
-                         MEMTX_OK);
-        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
+            qtest_writeq(qts, HEAD(head) + 0x20, 14 + head);
+            qtest_writeq(qts, HEAD(head) + 0x130, destination);
+            qtest_writeq(qts, HEAD(head) + 0x118, 1);
+            qtest_set_irq_in(qts, head_path, NULL, 0, 1);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls);
+            qtest_writeq(qts, HEAD(head) + 0x108, 1);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls + 1);
+            g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                            address);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==,
+                             14 + head);
+            g_assert_cmphex(target_metric(qts, "x-test-packet-result"), ==,
+                            MEMTX_OK);
+            g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) &
+                            pending_bit, ==, pending_bit);
 
-        qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 1);
-        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending_bit,
-                        ==, pending_bit);
+            qtest_set_irq_in(qts, head_path, NULL, 0, 0);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls + 2);
+            qtest_writeq(qts, HEAD(head) + 0x110, 1);
+            g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x100) & 1, ==, 0);
+            g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) &
+                            pending_bit, ==, 0);
 
-        qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
-        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending_bit,
-                        ==, 0);
+            qtest_set_irq_in(qts, head_path, NULL, 0, 1);
+            g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) &
+                            pending_bit, ==, pending_bit);
+            qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+            g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x100), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) &
+                            pending_bit, ==, 0);
+        }
+
+        for (unsigned level_index = 0; level_index < 2; level_index++) {
+            unsigned level = level_index ? 128 : 6;
+            uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0xa0;
+            uint64_t destination = ((uint64_t)level << 48) | address;
+            uint64_t calls = target_metric(qts, "x-test-packet-calls");
+
+            qtest_writeq(qts, HEAD(0) + 0x138, destination);
+            qtest_writeq(qts, HEAD(0) + 0x118, 2);
+            qtest_writeq(qts, HEAD(0) + 0x108, 2);
+            qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 1, 1);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls);
+            qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 1, 0);
+            g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                             calls);
+        }
         qtest_quit(qts);
     }
+}
+
+static void test_linked_bedrock_interrupt(void)
+{
+    test_bedrock_interrupt_profile(false);
+}
+
+static void test_runtime_profile_bedrock_interrupt(void)
+{
+    test_bedrock_interrupt_profile(true);
 }
 
 static void test_linked_bedrock_interrupt_node_route(void)
 {
     static const uint8_t set_value[8] = { 0, 0, 0, 0, 0, 0, 1, 0x34 };
     static const uint8_t clear_value[8] = { 0, 0, 0, 0, 0, 0, 0, 0x34 };
-    QTestState *qts = pic_bedrock_start();
+    QTestState *qts = pic_bedrock_start(false);
     uint64_t address = II_REGISTER | II_NODE(1) | II_HUB_REMOTE | 0x90;
     uint64_t destination = (UINT64_C(0x34) << 48) | address;
     uint8_t bytes[8];
+    uint8_t ingress_sentinel[8];
 
+    memset(ingress_sentinel, 0xa5, sizeof(ingress_sentinel));
+    qtest_memwrite(qts, TARGET + 0x90, ingress_sentinel,
+                   sizeof(ingress_sentinel));
     qtest_writeq(qts, SERVING_REGS + 0x120, UINT64_C(0x00ff000000000000));
     g_assert_cmphex(qtest_readq(qts, SERVING_REGS + 0x120), ==,
                     UINT64_C(0x00ffffffffffffff));
@@ -1455,20 +3327,29 @@ static void test_linked_bedrock_interrupt_node_route(void)
     g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 8);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
                      MEMTX_OK);
-    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x90, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), set_value, sizeof(set_value));
+    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), ingress_sentinel,
+                    sizeof(ingress_sentinel));
 
     qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 0);
-    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x90, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), clear_value, sizeof(clear_value));
+    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), ingress_sentinel,
+                    sizeof(ingress_sentinel));
 
     qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX ^ (UINT64_C(1) << 14));
     qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 1);
     qtest_writeq(qts, HEAD(0) + 0x108, 1);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
                      MEMTX_ACCESS_ERROR);
-    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x90, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), clear_value, sizeof(clear_value));
+    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), ingress_sentinel,
+                    sizeof(ingress_sentinel));
     qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 0);
 
     qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX);
@@ -1481,8 +3362,11 @@ static void test_linked_bedrock_interrupt_node_route(void)
                     address);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
                      MEMTX_DECODE_ERROR);
-    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    qtest_memread(qts, TARGET_NODE1 + 0x90, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), clear_value, sizeof(clear_value));
+    qtest_memread(qts, TARGET + 0x90, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), ingress_sentinel,
+                    sizeof(ingress_sentinel));
     qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 0);
     qtest_quit(qts);
 }
@@ -1616,6 +3500,244 @@ static void test_bedrock_interrupt_mode_mismatch(void)
     QTestState *from = pic_linked_start(false,
         ",pic-bedrock-interrupts=on", "");
     QTestState *to = pic_linked_start(false, "", "-incoming defer");
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-runtime-migration-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_migration_start(true, false, false);
+    QTestState *to = pic_profile_migration_start(true, true, false);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_writeq(from, HEAD(0) + 0x80, UINT64_C(5) << 20);
+    qtest_writeq(from, HEAD(1) + 0x130,
+                 (UINT64_C(0x34) << 48) | UINT64_C(0x800001800090));
+    qtest_writel(from, PIC_SHORT_CFG(0, 1) + 0x10, 0x04000000);
+    qtest_writel(from, PIC_SHORT_CFG(0, 1) + 4, PCI_COMMAND_MEMORY);
+    qtest_writeq(from, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
+    qtest_writel(from, CPU_HEAD(0) + 0x600024, 0x12345678);
+    g_assert_cmphex(qtest_readl(from, BASE + 0x44000024), ==, 0x12345678);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x80), ==,
+                    UINT64_C(5) << 20);
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x130), ==,
+                    (UINT64_C(0x34) << 48) |
+                    UINT64_C(0x800001800090));
+    g_assert_cmphex(qtest_readl(to, CPU_HEAD(0) + 0x600024), ==,
+                    0x12345678);
+    g_assert_cmphex(qtest_readl(to, BASE + 0x44000024), ==, 0x12345678);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_direct64_migration_and_dma(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-direct64-migration-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    const uint64_t payload = 0x4ffc;
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    uint8_t bytes[8];
+    QTestState *from = pic_runtime_cpu_start(true, NULL);
+    QTestState *to = pic_runtime_cpu_start(true, "-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    for (unsigned head = 0; head < 2; head++) {
+        direct64_card_enable(from, head);
+    }
+    direct64_card_write(from, 0, widget | (UINT64_C(1) << 55) | payload,
+                        sizeof(bytes), 0x41);
+    qtest_memread(from, TARGET + payload, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i], ==, 0x41 + i);
+    }
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_memread(to, TARGET + payload, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i], ==, 0x41 + i);
+    }
+
+    direct64_card_write(to, 1, widget | payload, sizeof(bytes), 0x71);
+    qtest_memread(to, TARGET + payload, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i ^ 3], ==, 0x71 + i);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_migration_rejects_fixture_profile(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*PIC migration compatibility profile does not match destination*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-profile-mismatch-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_migration_start(true, false, false);
+    QTestState *to = pic_profile_migration_start(false, true, false);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_v5_migration_rejects_cpu_pio_policy(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*PIC migration CPU PIO policy does not match destination*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-v5-policy-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_migration_start(true, false, true);
+    QTestState *to = pic_profile_migration_start(true, true, false);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_v6_migration_rejects_direct64_policy(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr("*PIC direct64 policy mismatch*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-v6-direct64-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_v6_migration_start(false);
+    QTestState *to = pic_profile_migration_start(true, true, false);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_runtime_profile_v7_migration_rejects_attribute_policy(void)
+{
+    if (!g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        g_test_skip("QTEST_QEMU_BINARY_SRC is needed for the version-7 source");
+        return;
+    }
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*PIC direct64 attribute policy mismatch*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-v7-policy-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_v7_migration_start(false, true);
+    QTestState *to = pic_profile_v7_migration_start(true, false);
     int64_t deadline;
 
     g_assert_no_error(error);
@@ -1861,6 +3983,40 @@ static void test_unwired_pci_interrupt(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi-pic/short-device-io-windows",
+                   test_short_device_io_windows);
+    qtest_add_func("/sgi-pic/short-device-io-attributes-boundaries",
+                   test_short_device_io_attributes_and_boundaries);
+    qtest_add_func("/sgi-pic/short-device-io-migration",
+                   test_short_device_io_migration);
+    qtest_add_func("/sgi-pic/cpu-pio-conventional-lanes",
+                   test_cpu_pio_conventional_lanes);
+    qtest_add_func("/sgi-pic/cpu-pio-order-follows-pci-mapping",
+                   test_cpu_pio_order_follows_pci_mapping);
+    qtest_add_func("/sgi-pic/cpu-pio-overlapping-bars-use-active-function",
+                   test_cpu_pio_overlapping_bars_use_active_function);
+    qtest_add_func("/sgi-pic/cpu-pio-actual-ioc4",
+                   test_cpu_pio_actual_ioc4);
+    qtest_add_func("/sgi-pic/cpu-pio-isp12160",
+                   test_cpu_pio_isp12160);
+    qtest_add_func("/sgi-pic/direct64-isp-load", test_direct64_isp_load);
+    qtest_add_func("/sgi-pic/direct64-card-write", test_direct64_card_write);
+    qtest_add_func("/sgi-pic/direct64-requester-and-dir-map-controls",
+                   test_direct64_requester_and_dir_map_controls);
+    qtest_add_func("/sgi-pic/direct64-attribute-matrix",
+                   test_direct64_attribute_matrix);
+    qtest_add_func("/sgi-pic/direct64-kernel-queue-addresses",
+                   test_direct64_kernel_queue_addresses);
+    qtest_add_func("/sgi-pic/direct64-range-boundary-is-split",
+                   test_direct64_range_boundary_is_split);
+    qtest_add_func("/sgi-pic/direct64-crossbow-widget-routing",
+                   test_direct64_crossbow_widget_routing);
+    qtest_add_func("/sgi-pic/direct64-rejects-unsupported-addresses",
+                   test_direct64_rejects_unsupported_addresses);
+    qtest_add_func("/sgi-pic/direct64-target-error-preserves-data",
+                   test_direct64_target_error_preserves_data);
+    qtest_add_func("/sgi-pic/direct64-bedrock-high-payload-source-denial",
+                   test_direct64_bedrock_high_payload_source_denial);
     qtest_add_func("/sgi-pic/heads-and-widths", test_heads_and_widths);
     qtest_add_func("/sgi-pic/configuration", test_configuration);
     qtest_add_func("/sgi-pic/slot-bounds", test_slot_bounds);
@@ -1868,9 +4024,34 @@ int main(int argc, char **argv)
                    test_unresolved_default_identity);
     qtest_add_func("/sgi-pic/unconnected-linked-transport",
                    test_unconnected_linked_transport);
+    qtest_add_func("/sgi-pic/bedrock-profile-is-fixture-only",
+                   test_bedrock_profile_is_fixture_only);
+    qtest_add_func("/sgi-pic/runtime-profile-rejects-fixture-mode",
+                   test_runtime_profile_rejects_fixture_mode);
+    qtest_add_func("/sgi-pic/runtime-profile-non-qtest-static-sysbus-refusal",
+                   test_runtime_profile_non_qtest_cli_refuses_static_sysbus);
+    qtest_add_func("/sgi-pic/runtime-profile-derives-linked-transport",
+                   test_runtime_profile_derives_linked_transport);
+    qtest_add_func("/sgi-pic/runtime-profile-immutable-after-realize",
+                   test_runtime_profile_is_immutable_after_realize);
+    qtest_add_func("/sgi-pic/runtime-profile-reserved-device-and-dma",
+                   test_runtime_profile_reserved_device_and_dma);
+    qtest_add_func("/sgi-pic/runtime-dir-map-unsupported-fields",
+                   test_runtime_dir_map_unsupported_fields);
     qtest_add_func("/sgi-pic/type1-configuration", test_type1_configuration);
     qtest_add_func("/sgi-pic/unsupported-registers",
                    test_unsupported_registers);
+    qtest_add_func("/sgi-pic/identity-fields", test_identity_fields);
+    qtest_add_func("/sgi-pic/cpu-word-view-registers",
+                   test_cpu_word_view_registers);
+    qtest_add_func("/sgi-pic/cpu-word-view-profile-isolation",
+                   test_cpu_word_view_profile_isolation);
+    qtest_add_func("/sgi-pic/cpu-word-view-interrupt-effects",
+                   test_cpu_word_view_interrupt_effects);
+    qtest_add_func("/sgi-pic/current-identity-migration",
+                   test_current_identity_migration);
+    qtest_add_func("/sgi-pic/old-identity-migration",
+                   test_old_identity_migration);
     qtest_add_func("/sgi-pic/pin-and-reset", test_pin_and_reset);
     qtest_add_func("/sgi-pic/remaining-pin-edges",
                    test_remaining_pin_edges);
@@ -1900,6 +4081,8 @@ int main(int argc, char **argv)
                    test_packet_window_exact_limit_fit);
     qtest_add_func("/sgi-pic/linked-bedrock-interrupt",
                    test_linked_bedrock_interrupt);
+    qtest_add_func("/sgi-pic/runtime-profile-bedrock-interrupt",
+                   test_runtime_profile_bedrock_interrupt);
     qtest_add_func("/sgi-pic/linked-bedrock-interrupt-node-route",
                    test_linked_bedrock_interrupt_node_route);
     qtest_add_func("/sgi-pic/bedrock-interrupt-level-bounds",
@@ -1909,6 +4092,20 @@ int main(int argc, char **argv)
                    test_linked_migration_mismatch);
     qtest_add_func("/sgi-pic/bedrock-interrupt-mode-mismatch",
                    test_bedrock_interrupt_mode_mismatch);
+    qtest_add_func("/sgi-pic/runtime-profile-migration",
+                   test_runtime_profile_migration);
+    qtest_add_func("/sgi-pic/runtime-profile-direct64-migration-and-dma",
+                   test_runtime_profile_direct64_migration_and_dma);
+    qtest_add_func("/sgi-pic/runtime-profile-migration-profile-mismatch",
+                   test_runtime_profile_migration_rejects_fixture_profile);
+    qtest_add_func("/sgi-pic/runtime-profile-v5-migration-pio-policy-mismatch",
+                   test_runtime_profile_v5_migration_rejects_cpu_pio_policy);
+    qtest_add_func(
+        "/sgi-pic/runtime-profile-v6-migration-direct64-policy-mismatch",
+        test_runtime_profile_v6_migration_rejects_direct64_policy);
+    qtest_add_func(
+        "/sgi-pic/runtime-profile-v7-migration-attribute-policy-mismatch",
+        test_runtime_profile_v7_migration_rejects_attribute_policy);
     qtest_add_func("/sgi-pic/v1-migration-defaults-generic-mode",
                    test_pic_v1_migration_defaults_generic_mode);
     qtest_add_func("/sgi-pic/direct-dma-head-targets",

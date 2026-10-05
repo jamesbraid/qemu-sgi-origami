@@ -14,6 +14,7 @@
 #include "hw/char/serial.h"
 #include "hw/core/irq.h"
 #include "hw/core/resettable.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -108,6 +109,7 @@ struct SGIIOC4State {
     uint32_t other_pending;
     uint32_t dma_error_low;
     uint32_t dma_error_high;
+    unsigned dma_request_depth;
     uint8_t dma_migration_mode;
     bool serial_dma_experimental;
     IRQState uart_irq[IOC4_PORTS];
@@ -235,6 +237,7 @@ static bool ioc4_rx_publish(SGIIOC4Port *p)
     SGIIOC4State *s = p->ioc4;
     uint8_t entry[8] = { 0 };
     uint64_t address;
+    MemTxResult result;
     unsigned i;
 
     if (!p->rx_count || p->halted || ioc4_port_paused(p) ||
@@ -251,8 +254,10 @@ static bool ioc4_rx_publish(SGIIOC4Port *p)
         entry[4 + i] = p->rx_status[i];
     }
     address = ioc4_rx_ring_address(p);
-    if (pci_dma_write(&s->parent_obj, address, entry, sizeof(entry)) !=
-        MEMTX_OK) {
+    s->dma_request_depth++;
+    result = pci_dma_write(&s->parent_obj, address, entry, sizeof(entry));
+    s->dma_request_depth--;
+    if (result != MEMTX_OK) {
         ioc4_dma_error(p, address, false);
         return false;
     }
@@ -283,9 +288,13 @@ static void ioc4_tx_run(SGIIOC4Port *p)
         if (!p->tx_active) {
             uint64_t address = ioc4_tx_ring_address(p);
             uint8_t entry[8];
+            MemTxResult result;
 
-            if (pci_dma_read(&s->parent_obj, address, entry,
-                             sizeof(entry)) != MEMTX_OK) {
+            s->dma_request_depth++;
+            result = pci_dma_read(&s->parent_obj, address, entry,
+                                 sizeof(entry));
+            s->dma_request_depth--;
+            if (result != MEMTX_OK) {
                 ioc4_dma_error(p, address, true);
                 return;
             }
@@ -821,6 +830,9 @@ static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
     if (dma_value != UINT64_MAX) {
         return dma_value;
     }
+    if (addr == 0x20 && s->serial_dma_experimental) {
+        return s->dma_request_depth ? 0 : 0x80;
+    }
     switch (addr) {
     case 0x08:
         return s->serial_pending | s->uart_level;
@@ -854,6 +866,11 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
     }
     if (dma_value != UINT64_MAX) {
         ioc4_dma_register_write(s, addr, val);
+        return;
+    }
+    if (addr == 0x20 && s->serial_dma_experimental) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-ioc4: write to read-only serial status at 0x20\n");
         return;
     }
     switch (addr) {
@@ -973,6 +990,7 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->dma_base[0] = s->dma_base[1] = 0;
     s->dma_ring_size[0] = s->dma_ring_size[1] = IOC4_RING_1K;
     s->dma_error_low = s->dma_error_high = 0;
+    s->dma_request_depth = 0;
     for (i = 0; i < IOC4_PORTS; i++) {
         ioc4_port_reset(&s->dma[i]);
         s->uart[i].baudbase = s->clock_hz / 16;
@@ -1218,6 +1236,16 @@ static void ioc4_instance_init(Object *obj)
     }
 }
 
+static bool ioc4_byte_lane_self_ordered(Object *obj, Error **errp)
+{
+    return true;
+}
+
+static bool ioc4_dma_byte_lane_self_ordered(Object *obj, Error **errp)
+{
+    return false;
+}
+
 static void ioc4_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1225,6 +1253,10 @@ static void ioc4_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     SGIIOC4Class *ic = (SGIIOC4Class *)klass;
 
+    object_class_property_add_bool(klass, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                   ioc4_byte_lane_self_ordered, NULL);
+    object_class_property_add_bool(klass, SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED,
+                                   ioc4_dma_byte_lane_self_ordered, NULL);
     pc->realize = ioc4_realize;
     pc->exit = ioc4_exit;
     pc->vendor_id = 0x10a9;

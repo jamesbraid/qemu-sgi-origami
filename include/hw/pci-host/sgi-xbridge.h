@@ -167,6 +167,9 @@ struct SGIXBridgeHeadState {
     uint64_t onewire_serial;
     qemu_irq pci_irq[SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     uint32_t pci_levels;
+    /* Rebuilt from the fixed PCI population before migration state loads. */
+    uint32_t pio_self_ordered_slots;
+    uint32_t dma_self_ordered_slots;
     MemTxResult (*packet_sender)(void *opaque, SGIXBridgeHeadState *head,
                                  hwaddr address, void *buffer, size_t size,
                                  bool write, const SGIXioSource *source);

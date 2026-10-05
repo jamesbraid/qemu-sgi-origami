@@ -11,17 +11,27 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qapi/qapi-types-sgi-sn.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
+#include "system/qtest.h"
 
 #define TYPE_SGI_XIO_TEST_TARGET "sgi-xio-test-target"
+#define PIC_RUNTIME_PROFILE \
+    SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXioTestTargetState, SGI_XIO_TEST_TARGET)
 
 struct SGIXioTestTargetState {
     SysBusDevice parent_obj;
     MemoryRegion ram;
+    MemoryRegion dma_observer;
     MemoryRegion alias;
     MemoryRegion overlap;
+    MemoryRegion sparse_dma;
+    MemoryRegion sparse_node0;
+    MemoryRegion sparse_node1;
+    MemoryRegion sparse_node1_ram;
+    MemoryRegion sparse_node1_alias;
     MemoryRegion pic_widget_alias;
     char *memory_kind;
     void *backing;
@@ -40,8 +50,20 @@ struct SGIXioTestTargetState {
     uint8_t source_device;
     MemoryRegion source_window;
     MemoryRegion source_status;
+    AddressSpace target_packet_as;
+    bool target_packet_as_initialized;
+    bool sparse_node_memory;
     MemTxResult result;
     bool destination_callback;
+    bool dma_observer_enabled;
+    bool dma_observer_fail_read;
+    bool dma_observer_fail_write;
+    bool dma_observer_nested;
+    bool dma_observer_nested_active;
+    uint64_t dma_observer_calls;
+    uint64_t dma_observer_status;
+    uint64_t dma_observer_after_nested_status;
+    uint32_t dma_observer_nested_offset;
     uint64_t destination_calls;
     hwaddr destination_address;
     SGIXioSource destination_source;
@@ -52,12 +74,17 @@ struct SGIXioTestTargetState {
     bool pic_peer;
     bool pic_linked;
     bool pic_bedrock_interrupts;
+    bool pic_runtime_profile;
+    bool pic_v5_migration_source;
+    bool pic_v6_migration_source;
     bool pic_switched;
     bool pic_test_irq_route;
     bool packet_failure;
     bool nested_dma;
     bool nested_active;
+    uint32_t nested_dma_head;
     uint64_t packet_partial;
+    uint64_t nested_dma_address;
     uint32_t packet_result;
     uint64_t packet_calls;
     uint64_t packet_size;
@@ -66,6 +93,78 @@ struct SGIXioTestTargetState {
     uint64_t packet_widget;
     uint64_t packet_device_known;
     uint64_t packet_result_value;
+};
+
+static MemTxResult dma_observer_access(SGIXioTestTargetState *s,
+                                       hwaddr address, void *buffer,
+                                       size_t size, bool write)
+{
+    Object *object;
+    PCIDevice *ioc4;
+    uint64_t status = 0;
+    object = object_resolve_path_type("/machine/peripheral/ioc4",
+                                      TYPE_PCI_DEVICE, NULL);
+    if (!object) {
+        return MEMTX_DECODE_ERROR;
+    }
+    ioc4 = PCI_DEVICE(object);
+    status = ioc4->io_regions[0].memory->ops->read(
+                 ioc4->io_regions[0].memory->opaque, 0x20, 4);
+    s->dma_observer_calls++;
+    s->dma_observer_status = status;
+    if (write && s->dma_observer_nested && !s->dma_observer_nested_active) {
+        s->dma_observer_nested_active = true;
+        ioc4->io_regions[0].memory->ops->write(
+            ioc4->io_regions[0].memory->opaque,
+            s->dma_observer_nested_offset, 8, 4);
+        s->dma_observer_nested_active = false;
+        s->dma_observer_after_nested_status =
+            ioc4->io_regions[0].memory->ops->read(
+                ioc4->io_regions[0].memory->opaque, 0x20, 4);
+    }
+    if ((write && s->dma_observer_fail_write) ||
+        (!write && s->dma_observer_fail_read)) {
+        return MEMTX_ACCESS_ERROR;
+    }
+    if (address > s->size || size > s->size - address) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return address_space_rw(&s->ram_as, address, MEMTXATTRS_UNSPECIFIED,
+                            buffer, size, write);
+}
+
+static MemTxResult dma_observer_read(void *opaque, hwaddr address,
+                                    uint64_t *value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    uint8_t bytes[8] = { 0 };
+    uint8_t *data = bytes + sizeof(bytes) - size;
+    MemTxResult result = dma_observer_access(opaque, address, data, size,
+                                              false);
+
+    *value = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult dma_observer_write(void *opaque, hwaddr address,
+                                     uint64_t value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    return dma_observer_access(opaque, address, bytes + 8 - size, size,
+                               true);
+}
+
+static const MemoryRegionOps dma_observer_ops = {
+    .read_with_attrs = dma_observer_read,
+    .write_with_attrs = dma_observer_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
 };
 
 static MemTxResult target_packet_rw(Object *port, unsigned int index,
@@ -85,13 +184,15 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
     s->packet_widget = source->widget;
     s->packet_device_known = source->device_known;
     if (s->nested_dma && !s->nested_active && s->pic && write) {
-        PCIDevice *card = pci_find_device(sgi_pic_pci_bus(SGI_PIC(s->pic), 0),
+        PCIDevice *card = pci_find_device(sgi_pic_pci_bus(SGI_PIC(s->pic),
+                                                         s->nested_dma_head),
                                           0, PCI_DEVFN(1, 0));
         uint8_t nested[4] = { 0xd1, 0xd2, 0xd3, 0xd4 };
 
         if (card) {
             s->nested_active = true;
-            pci_dma_write(card, 0x80003000, nested, sizeof(nested));
+            pci_dma_write(card, s->nested_dma_address, nested,
+                          sizeof(nested));
             s->nested_active = false;
         }
     }
@@ -106,6 +207,19 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
             } else {
                 result = pc->packet_rw(s->target_port, s->target_index,
                                        address, buffer, size, write, source);
+            }
+        } else if (sgi_xio_port_switched(s->target_port,
+                                         s->target_index)) {
+            if (!s->target_packet_as_initialized) {
+                result = MEMTX_ACCESS_ERROR;
+            } else {
+                MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+
+                /* Keep the observed packet source available to endpoints. */
+                attrs.requester_id = (source->widget << 3) |
+                    (source->device_known ? source->device : 0);
+                result = address_space_rw(&s->target_packet_as, address,
+                                          attrs, buffer, size, write);
             }
         } else {
             if (s->pic_switched) {
@@ -192,6 +306,10 @@ static void target_unrealize(DeviceState *dev)
     if (s->ram_as_initialized) {
         address_space_destroy(&s->ram_as);
         s->ram_as_initialized = false;
+    }
+    if (s->target_packet_as_initialized) {
+        address_space_destroy(&s->target_packet_as);
+        s->target_packet_as_initialized = false;
     }
 }
 
@@ -342,8 +460,32 @@ static void target_realize(DeviceState *dev, Error **errp)
     g_autofree char *name = g_strdup_printf("%s.ram",
         object_get_canonical_path_component(OBJECT(dev)));
 
+    if (s->pic_runtime_profile && !qtest_enabled()) {
+        error_setg(errp, "PIC runtime profile is available only in qtest");
+        return;
+    }
+    if (s->pic_v5_migration_source &&
+        (!qtest_enabled() || !s->pic_runtime_profile)) {
+        error_setg(errp, "PIC version-5 source is available only for "
+                   "runtime-profile qtests");
+        return;
+    }
+    if (s->pic_v6_migration_source &&
+        (!qtest_enabled() || !s->pic_runtime_profile)) {
+        error_setg(errp, "PIC version-6 source is available only for "
+                   "runtime-profile qtests");
+        return;
+    }
     if (s->pic_test_irq_route && !s->pic_peer) {
         error_setg(errp, "PIC test IRQ route requires PIC peer mode");
+        return;
+    }
+    if (s->dma_observer_enabled && !qtest_enabled()) {
+        error_setg(errp, "DMA observer is available only in qtest");
+        return;
+    }
+    if (s->nested_dma_head > 1) {
+        error_setg(errp, "nested PIC DMA head must be 0 or 1");
         return;
     }
     if (!s->size || s->size > 16 * MiB) {
@@ -410,11 +552,41 @@ static void target_realize(DeviceState *dev, Error **errp)
             bytes[i] = i + 0x40;
         }
     }
+    if (s->sparse_node_memory) {
+        g_autofree char *node1_name = g_strdup_printf("%s.node1.ram",
+            object_get_canonical_path_component(OBJECT(dev)));
+
+        if (!memory_region_init_ram(&s->sparse_node1_ram, OBJECT(s),
+                                    node1_name, s->size, errp)) {
+            return;
+        }
+        memory_region_init(&s->sparse_dma, OBJECT(s), "sparse-dma",
+                           UINT64_C(1) << 34);
+        memory_region_init_alias(&s->sparse_node0, OBJECT(s),
+                                 "sparse-node0", &s->ram, 0, s->size);
+        memory_region_init_alias(&s->sparse_node1, OBJECT(s),
+                                 "sparse-node1", &s->sparse_node1_ram,
+                                 0, s->size);
+        memory_region_add_subregion(&s->sparse_dma, 0, &s->sparse_node0);
+        memory_region_add_subregion(&s->sparse_dma, UINT64_C(1) << 33,
+                                    &s->sparse_node1);
+        memory_region_init_alias(&s->sparse_node1_alias, OBJECT(s),
+                                 "sparse-node1-cpu", &s->sparse_node1_ram,
+                                 0, s->size);
+    }
     address_space_init(&s->ram_as, &s->ram, "xio-test-target.ram");
     s->ram_as_initialized = true;
+    if (s->dma_observer_enabled) {
+        memory_region_init_io(&s->dma_observer, OBJECT(s),
+                              &dma_observer_ops, s, "dma-observer", s->size);
+        s->dma_observer.disable_reentrancy_guard = true;
+    }
     memory_region_init_alias(&s->alias, OBJECT(s), "cpu-alias", &s->ram,
                              0, s->size);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->alias);
+    if (s->sparse_node_memory) {
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->sparse_node1_alias);
+    }
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-calls",
                                    &s->packet_calls, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-size",
@@ -429,7 +601,29 @@ static void target_realize(DeviceState *dev, Error **errp)
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-result",
                                    &s->packet_result_value,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(s), "x-test-dma-observer-calls",
+                                   &s->dma_observer_calls,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(s), "x-test-dma-observer-status",
+                                   &s->dma_observer_status,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(s),
+                                   "x-test-dma-observer-after-nested-status",
+                                   &s->dma_observer_after_nested_status,
+                                   OBJ_PROP_FLAG_READ);
     if (s->target_port) {
+        if (sgi_xio_port_switched(s->target_port, s->target_index)) {
+            MemoryRegion *face = sgi_xio_port_packet_face(s->target_port,
+                                                           s->target_index);
+
+            if (!face) {
+                error_setg(errp, "switched XIO target has no packet face");
+                return;
+            }
+            address_space_init(&s->target_packet_as, face,
+                               "xio-test-target.packet");
+            s->target_packet_as_initialized = true;
+        }
         memory_region_init_io(&s->source_window, OBJECT(s), &source_ops, s,
                               "explicit-source", 16 * SGI_XIO_PACKET_SIZE);
         memory_region_init_io(&s->source_status, OBJECT(s), &source_status_ops,
@@ -448,13 +642,23 @@ static void target_realize(DeviceState *dev, Error **errp)
             error_setg(errp, "PIC peer mode cannot use a destination callback");
             return;
         }
-        s->pic = qdev_new(TYPE_SGI_PIC);
+        s->pic = qdev_new(s->pic_v6_migration_source ? "sgi-pic-v6-test" :
+                          s->pic_v5_migration_source ?
+                          TYPE_SGI_PIC_V5_TEST : TYPE_SGI_PIC);
         object_property_add_child(OBJECT(s), "pic", OBJECT(s->pic));
-        qdev_prop_set_bit(s->pic, "test-fixture", true);
-        qdev_prop_set_bit(s->pic, "linked-transport", s->pic_linked);
-        qdev_prop_set_bit(s->pic, "bedrock-interrupts",
-                          s->pic_bedrock_interrupts);
-        if (s->pic_linked) {
+        if (s->pic_runtime_profile) {
+            qdev_prop_set_enum(s->pic, "compatibility-profile",
+                               PIC_RUNTIME_PROFILE);
+            qdev_prop_set_bit(s->pic, "test-fixture", false);
+            qdev_prop_set_bit(s->pic, "linked-transport", false);
+            qdev_prop_set_bit(s->pic, "bedrock-interrupts", false);
+        } else {
+            qdev_prop_set_bit(s->pic, "test-fixture", true);
+            qdev_prop_set_bit(s->pic, "linked-transport", s->pic_linked);
+            qdev_prop_set_bit(s->pic, "bedrock-interrupts",
+                              s->pic_bedrock_interrupts);
+        }
+        if (s->pic_linked || s->pic_runtime_profile) {
             sgi_xio_link_init(&s->pic_link, OBJECT(s), "pic-peer",
                               OBJECT(s->pic), 0, OBJECT(s), 0);
             if (!sgi_xio_link_connect(&s->pic_link, &local_err)) {
@@ -490,10 +694,26 @@ static const Property target_properties[] = {
                        overlap_offset, 0x8004),
     DEFINE_PROP_BOOL("destination-callback", SGIXioTestTargetState,
                       destination_callback, false),
+    DEFINE_PROP_BOOL("dma-observer", SGIXioTestTargetState,
+                     dma_observer_enabled, false),
+    DEFINE_PROP_BOOL("dma-observer-fail-read", SGIXioTestTargetState,
+                     dma_observer_fail_read, false),
+    DEFINE_PROP_BOOL("dma-observer-fail-write", SGIXioTestTargetState,
+                     dma_observer_fail_write, false),
+    DEFINE_PROP_BOOL("dma-observer-nested", SGIXioTestTargetState,
+                     dma_observer_nested, false),
+    DEFINE_PROP_UINT32("dma-observer-nested-offset", SGIXioTestTargetState,
+                       dma_observer_nested_offset, 0x330),
     DEFINE_PROP_BOOL("pic-peer", SGIXioTestTargetState, pic_peer, false),
     DEFINE_PROP_BOOL("pic-linked", SGIXioTestTargetState, pic_linked, true),
     DEFINE_PROP_BOOL("pic-bedrock-interrupts", SGIXioTestTargetState,
-                     pic_bedrock_interrupts, false),
+                      pic_bedrock_interrupts, false),
+    DEFINE_PROP_BOOL("pic-runtime-profile", SGIXioTestTargetState,
+                     pic_runtime_profile, false),
+    DEFINE_PROP_BOOL("pic-v5-migration-source", SGIXioTestTargetState,
+                     pic_v5_migration_source, false),
+    DEFINE_PROP_BOOL("pic-v6-migration-source", SGIXioTestTargetState,
+                     pic_v6_migration_source, false),
     DEFINE_PROP_BOOL("pic-switched", SGIXioTestTargetState, pic_switched,
                      false),
     DEFINE_PROP_BOOL("pic-test-irq-route", SGIXioTestTargetState,
@@ -501,11 +721,17 @@ static const Property target_properties[] = {
     DEFINE_PROP_BOOL("packet-failure", SGIXioTestTargetState,
                      packet_failure, false),
     DEFINE_PROP_BOOL("nested-dma", SGIXioTestTargetState, nested_dma, false),
+    DEFINE_PROP_UINT32("nested-dma-head", SGIXioTestTargetState,
+                       nested_dma_head, 0),
+    DEFINE_PROP_UINT64("nested-dma-address", SGIXioTestTargetState,
+                       nested_dma_address, 0x80003000),
     DEFINE_PROP_SIZE("packet-partial", SGIXioTestTargetState,
                      packet_partial, 0),
     DEFINE_PROP_UINT32("packet-result", SGIXioTestTargetState,
                        packet_result, MEMTX_ACCESS_ERROR),
     DEFINE_PROP_SIZE("size", SGIXioTestTargetState, size, 64 * KiB),
+    DEFINE_PROP_BOOL("sparse-node-memory", SGIXioTestTargetState,
+                     sparse_node_memory, false),
     DEFINE_PROP_UINT64("packet-window-base", SGIXioTestTargetState,
                        packet_window_base, 0),
     DEFINE_PROP_LINK("target-port", SGIXioTestTargetState, target_port,

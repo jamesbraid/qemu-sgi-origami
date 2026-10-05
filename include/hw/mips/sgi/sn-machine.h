@@ -55,6 +55,9 @@ struct SGIMachineClass {
  */
 void sgi_machine_init(MachineState *machine);
 
+/* True after the selected Origin 350 experiment passes machine preflight. */
+bool sgi_machine_ip53_experiment_authorized(MachineState *machine);
+
 /*
  * Register the storage properties (node<N>-flash, io<N>-flash, nvram<N>,
  * nvram<N>-clock) a product class binds. Call once smc->product is set.

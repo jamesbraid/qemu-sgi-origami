@@ -85,8 +85,8 @@ struct SGIXbowState {
 
     /* The register block, and the view of it each link port is given. */
     MemoryRegion regs;
-    MemoryRegion regs_view[SGI_XBOW_LINKS];
-    MemoryRegion packet_regs_view[SGI_XBOW_LINKS];
+    MemoryRegion ingress_regs[SGI_XBOW_LINKS];
+    MemoryRegion packet_ingress_regs[SGI_XBOW_LINKS];
 
     /*
      * What a packet addressed to each widget reaches, from the machine. The
@@ -97,6 +97,8 @@ struct SGIXbowState {
      */
     MemoryRegion *face[SGI_XBOW_LINKS];
     MemoryRegion *packet_face[SGI_XBOW_LINKS];
+    /* Legacy target-N properties intentionally map one region to both faces. */
+    MemoryRegion *legacy_target[SGI_XBOW_LINKS];
     AddressSpace *face_as[SGI_XBOW_LINKS];
     bool regions_initialized;
     bool quiesced;
@@ -139,6 +141,7 @@ struct SGIXbowState {
     uint8_t link_reset_asserted;
     uint8_t link_reset_restore_alive;
     bool interrupt_asserted;
+    bool status_source_field;
 
     /*
      * Reset fences (revision 5, "Crossbow 2.0", and later only): one mask
@@ -216,7 +219,13 @@ void sgi_xbow_quiesce(SGIXbowState *s);
 /* Full packet address, with destination widget in bits 51:48. */
 MemoryRegion *sgi_xbow_packet_ingress(SGIXbowState *s, unsigned int widget);
 
-/* Both initialized endpoint faces must be supplied before realization. */
+/* Enable the PIC-owned source field before realization. */
+bool sgi_xbow_enable_status_source_field(SGIXbowState *s, Error **errp);
+
+/*
+ * Supply one or both initialized faces before realization. A packet-only
+ * endpoint receives interrupts but cannot receive CPU-routed accesses.
+ */
 bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
                               MemoryRegion *cpu_face, MemoryRegion *packet_face,
                               Error **errp);

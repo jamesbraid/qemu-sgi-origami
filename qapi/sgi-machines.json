@@ -162,11 +162,15 @@
 # @system-controller: whether that controller also answers as the
 #     node's system controller (Origin 200's embedded ELSC)
 #
+# @clock-hz: explicitly authored Bedrock core clock in hertz, present
+#     only for a reviewed IP53 construction
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelAsicIdentity',
   'data': { '*ni-revision': 'uint8',
             '*widget-revision': 'uint8',
+            '*clock-hz': 'uint64',
             'serial': 'uint64',
             'i2c-controller': 'bool',
             'system-controller': 'bool' } }
@@ -973,15 +977,19 @@
 ##
 # @SGIModelPicCompatibilityProfile:
 #
-# A narrowly scoped compatibility profile for qtest PIC fixtures.
+# Compatibility profiles for PIC host fixtures and runtime
+# approximations.
 #
 # @pic-rev3-bedrock: tested PIC revision 3 profile for a Bedrock
 #     host fixture
 #
+# @pic-rev3-bedrock-experimental:
+#     Experimental IP53 software policy; hardware remains unknown.
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPicCompatibilityProfile',
-  'data': ['pic-rev3-bedrock'] }
+  'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-experimental'] }
 
 ##
 # @SGIModelPciHostBridge:
@@ -1482,6 +1490,28 @@
   'data': [ 'ip53-discovery' ] }
 
 ##
+# @SGIModelFirmware:
+#
+# Firmware expected by an offering's PROM.
+#
+# @kind: firmware contract for this machine generation
+# @argument: QEMU argument used to supply the image
+# @asset: repository asset path, when the product model names one
+# @size: expected firmware image size in bytes
+# @sha256: expected digest, when the model pins one
+# @per-node-flash: whether each node receives its own flash image
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelFirmware',
+  'data': { 'kind': 'str',
+            'argument': 'str',
+            '*asset': 'str',
+            'size': 'uint64',
+            '*sha256': 'str',
+            'per-node-flash': 'bool' } }
+
+##
 # @SGIModelInitInputKind:
 #
 # Which firmware image format an initialization input carries.
@@ -1577,12 +1607,13 @@
 ##
 # @SGIModelResource:
 #
-# One identity input or DS1742 backend pair a launcher supplies beyond
+# One persistent resource or identity input a launcher supplies beyond
 # the machine's generic writable storage.
 #
-# @kind: what this resource is (identity-eeprom, spd-eeprom, ds1742)
+# @kind: what this resource is (boot-flash, nvram, identity-eeprom,
+#     spd-eeprom, ds1742)
 #
-# @scope: what it is supplied per (board, dimm)
+# @scope: what it is supplied per (board, node, dimm)
 #
 # @count: how many instances this offering accepts
 #
@@ -1676,7 +1707,8 @@
 { 'struct': 'SGIModelOfferingProcessor',
   'data': { 'part': 'str',
             'clock-hz': 'uint64',
-            'cache-mib': 'uint16' } }
+            'cache-mib': 'uint16',
+            '*required-properties': ['str'] } }
 
 ##
 # @SGIModelOverrideTarget:
@@ -1777,6 +1809,8 @@
 #
 # @processor: the processor this population is built from
 #
+# @firmware: firmware required by this offering
+#
 # @init-inputs: the images creating this configuration's @storage
 #     reads
 #
@@ -1838,6 +1872,7 @@
             'smp': 'uint32',
             'memory-per-node-mib': 'SGIModelMemoryPopulation',
             'processor': 'SGIModelOfferingProcessor',
+            'firmware': 'SGIModelFirmware',
             'init-inputs': ['SGIModelInitInput'],
             'storage': ['SGIModelStorageItem'],
             'resources': ['SGIModelResource'],

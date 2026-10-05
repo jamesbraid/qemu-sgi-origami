@@ -28,6 +28,8 @@
 #define DMA_BAD_BASE (DMA_HOST_WIDGET + 0x100000)
 #define SDMA_BASE_LO 0x300
 #define SDMA_BASE_HI 0x304
+#define SIO_CR 0x20
+#define SIO_DIAG_IDLE 0x80
 #define SDMA_PORT_BASE(n) (0x310 + 0x1c * (n))
 #define SDMA_CONTROL(n) (SDMA_PORT_BASE(n) + 0x00)
 #define SDMA_TX_PRODUCE(n) (SDMA_PORT_BASE(n) + 0x04)
@@ -61,6 +63,19 @@
 
 static uint32_t reg_read(QTestState *qts, unsigned offset);
 static void reg_write(QTestState *qts, unsigned offset, uint32_t value);
+
+static uint64_t ioc4_target_property(QTestState *qts, const char *property)
+{
+    QDict *reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        "/machine/peripheral/fabric", property);
+    uint64_t value;
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    value = qdict_get_int(reply, "return");
+    qobject_unref(reply);
+    return value;
+}
 
 static void ioc4_map(QTestState *qts)
 {
@@ -112,9 +127,11 @@ static char *ioc4_log_file_take(const char *path)
     return contents;
 }
 
-static QTestState *ioc4_start_dma(bool incoming, bool enabled,
-                                  unsigned serial_port, int serial_fd,
-                                  const char *log)
+static QTestState *ioc4_start_dma_full(bool incoming, bool enabled,
+                                       unsigned serial_port, int serial_fd,
+                                       const char *log, bool observer,
+                                       bool fail_read, bool fail_write,
+                                       bool nested)
 {
     g_autofree char *args = NULL;
     g_autofree char *chardev = serial_fd >= 0 ?
@@ -123,20 +140,31 @@ static QTestState *ioc4_start_dma(bool incoming, bool enabled,
     g_autofree char *attachment = serial_fd >= 0 ?
         g_strdup_printf(",chardev%u=serial", serial_port + 1) : g_strdup("");
     const char *profile = enabled ? ",serial-dma-experimental=on" : "";
+    const char *observer_prop = observer ?
+        ",dma-observer=on" : "";
+    const char *fail_read_prop = fail_read ?
+        ",dma-observer-fail-read=on" : "";
+    const char *fail_write_prop = fail_write ?
+        ",dma-observer-fail-write=on" : "";
+    const char *nested_prop = nested ? ",dma-observer-nested=on" : "";
+    const char *ioc4_id = observer ? ",id=ioc4" : "";
+    const char *fabric = observer ?
+        "/machine/peripheral/fabric/dma-observer[0]" :
+        "/machine/peripheral/fabric/fabric.ram[0]";
     QTestState *qts;
 
     g_assert_cmpuint(serial_port, <, 4);
 
     args = g_strdup_printf(
         "-M none -cpu R10000 " DMA_TEST_LOG_OPTIONS "%s "
-        "-device sgi-xio-test-target,id=fabric,size=0x10000 "
+        "-device sgi-xio-test-target,id=fabric,size=0x10000%s%s%s%s "
         "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
-        "fabric=/machine/peripheral/fabric/fabric.ram[0] "
-        "%s%s"
-        "-device sgi-ioc4,bus=head-e.0,addr=0,clock-hz=33333333%s%s",
-        log,
-        chardev,
-        incoming ? "-incoming defer " : "", profile, attachment);
+        "fabric=%s "
+        "%s%s-device sgi-ioc4%s,bus=head-e.0,addr=0,"
+        "clock-hz=33333333%s%s",
+        log, observer_prop, fail_read_prop, fail_write_prop, nested_prop,
+        fabric, chardev,
+        incoming ? "-incoming defer " : "", ioc4_id, profile, attachment);
     qts = qtest_init(args);
 
     qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
@@ -144,6 +172,14 @@ static QTestState *ioc4_start_dma(bool incoming, bool enabled,
     ioc4_map(qts);
     qtest_writel(qts, CFG + 0x04, 0x00000006);
     return qts;
+}
+
+static QTestState *ioc4_start_dma(bool incoming, bool enabled,
+                                  unsigned serial_port, int serial_fd,
+                                  const char *log)
+{
+    return ioc4_start_dma_full(incoming, enabled, serial_port, serial_fd,
+                               log, false, false, false, false);
 }
 
 static void ioc4_set_pair_base(QTestState *qts, unsigned pair,
@@ -225,17 +261,17 @@ static void ioc4_expect_bytes(QTestState *qts, int fd,
                                            "%s%02x", j ? " " : "",
                                            expected[received + j]);
             }
-            g_test_message("UART output mismatch at byte %zu: "
-                           "received [%s], expected [%s]",
-                           received, actual_hex, expected_hex);
-            g_test_message("port 0: control=0x%08x TX producer=0x%08x "
-                           "TX consumer=0x%08x; DMA error low=0x%08x "
-                           "high=0x%08x; other pending=0x%08x",
-                           reg_read(qts, SDMA_CONTROL(0)),
-                           reg_read(qts, SDMA_TX_PRODUCE(0)),
-                           reg_read(qts, SDMA_TX_CONSUME(0)),
-                           reg_read(qts, 0x00), reg_read(qts, 0x04),
-                           reg_read(qts, 0x0c));
+            g_printerr("UART output mismatch at byte %zu: "
+                       "received [%s], expected [%s]; "
+                       "port 0 control=0x%08x TX producer=0x%08x "
+                       "TX consumer=0x%08x DMA error low=0x%08x "
+                       "high=0x%08x other pending=0x%08x\n",
+                       received, actual_hex, expected_hex,
+                       reg_read(qts, SDMA_CONTROL(0)),
+                       reg_read(qts, SDMA_TX_PRODUCE(0)),
+                       reg_read(qts, SDMA_TX_CONSUME(0)),
+                       reg_read(qts, 0x00), reg_read(qts, 0x04),
+                       reg_read(qts, 0x0c));
         }
         g_assert_cmpmem(bytes, n, expected + received, n);
         received += n;
@@ -912,6 +948,268 @@ static void test_dma_full_reset_clears_shadow(void)
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)), ==, 0);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_serial_idle_status(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    g_autofree char *contents = NULL;
+    int sv[2];
+    QTestState *qts;
+    const uint8_t byte = 0x5a;
+    const uint8_t tx_data[4] = { 0x5a, 0, 0, 0 };
+    const uint8_t mcr_data[4] = { 0x15, 0, 0, 0 };
+    const uint8_t mcr_control[4] = { TX_MCR | TX_EXPLICIT, 0, 0, 0 };
+    uint32_t serial_pending, other_pending;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma_full(false, true, 0, sv[1], log,
+                              false, false, false, false);
+    close(sv[1]);
+
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    reg_write(qts, SIO_CR, SIO_DIAG_IDLE);
+    qtest_readb(qts, BAR + SIO_CR);
+    qtest_readl(qts, BAR + SIO_CR + 1);
+    qtest_writeb(qts, BAR + SIO_CR, SIO_DIAG_IDLE);
+    qtest_writel(qts, BAR + SIO_CR + 1, SIO_DIAG_IDLE);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    g_assert_cmphex(reg_read(qts, 0x100), ==, 0);
+    reg_write(qts, 0x100, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_PAUSE);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, tx_data,
+                        (const uint8_t[4]) { TX_VALID, 0, 0, 0 });
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & SSCR_PAUSE_STATE, !=, 0);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    ioc4_map(qts);
+    qtest_writeb(qts, UART(0), byte);
+    ioc4_expect_bytes(qts, sv[0], &byte, sizeof(byte));
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    ioc4_map(qts);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_writel(qts, CFG + 0x04, 0x00000006);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    ioc4_write_tx_entry(qts, 1, 0x1000, 0, mcr_data, mcr_control);
+    reg_write(qts, SDMA_CONTROL(1), SSCR_DMA_EN);
+    reg_write(qts, SDMA_TX_PRODUCE(1), 8);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(1), 0xff8, 8);
+    serial_pending = reg_read(qts, 0x08);
+    other_pending = reg_read(qts, 0x0c);
+    g_assert_cmphex(serial_pending, !=, 0);
+    reg_write(qts, SIO_CR, SIO_DIAG_IDLE);
+    reg_write(qts, 0x100, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, 0x08), ==, serial_pending);
+    g_assert_cmphex(reg_read(qts, 0x0c), ==, other_pending);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+    g_assert_nonnull(strstr(contents, "read-only serial status"));
+    g_assert_nonnull(strstr(contents, "Invalid read"));
+    g_assert_nonnull(strstr(contents, "Invalid write"));
+    g_assert_nonnull(strstr(contents, "unsupported BAR offset 0x100"));
+}
+
+
+static void test_serial_idle_status_backend_backpressure(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    const uint8_t tx_data[4] = { 0x41, 0x42, 0x43, 0x44 };
+    const uint8_t tx_control[4] = { TX_VALID, 0, 0, 0 };
+    QTestState *qts = ioc4_start_dma_full(false, true, 0, -1, log,
+                                           true, false, false, false);
+    g_autofree char *contents = NULL;
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, tx_data, tx_control);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    g_usleep(10000);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    ==, 1);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_serial_idle_status_default_pio(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, false, 0, -1, log);
+    g_autofree char *contents = NULL;
+
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, 0);
+    reg_write(qts, SIO_CR, SIO_DIAG_IDLE);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x100), ==, 0);
+    reg_write(qts, 0x100, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, 0);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(strstr(contents, "unsupported BAR offset 0x20"));
+    g_assert_nonnull(strstr(contents, "unsupported BAR offset 0x100"));
+}
+
+static void test_serial_idle_status_dma_callbacks(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input[] = { 0x61, 0x62, 0x63 };
+    const uint8_t tx_data[4] = { 0x41, 0x42, 0x43, 0x44 };
+    const uint8_t tx_control[4] = { TX_VALID, 0, 0, 0 };
+    uint8_t entry[8];
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma_full(false, true, 0, sv[1], log,
+                              true, false, false, false);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
+    g_usleep(10000);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
+    ioc4_wait_reg(qts, SDMA_RX_PRODUCE(0), 0xff8, 8);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    ==, 1);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-status"),
+                    ==, 0);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(input), input, sizeof(input));
+
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, tx_data, tx_control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    ioc4_expect_bytes(qts, sv[0], tx_data, 1);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    ==, 2);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-status"),
+                    ==, 0);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_serial_idle_status_nested_dma(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input[] = { 0x71, 0x72, 0x73 };
+    const uint8_t nested_tx_data[4] = { 0x15, 0, 0, 0 };
+    const uint8_t nested_tx_control[4] = { TX_MCR, 0, 0, 0 };
+    uint8_t entry[8];
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma_full(false, true, 0, sv[1], log,
+                              true, false, false, true);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    ioc4_write_tx_entry(qts, 1, 0x1000, 0, nested_tx_data,
+                        nested_tx_control);
+    reg_write(qts, SDMA_CONTROL(1), SSCR_DMA_EN);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
+    g_usleep(10000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
+    ioc4_wait_reg(qts, SDMA_RX_PRODUCE(0), 0xff8, 8);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(1)), ==, 8);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(1)), ==, 0x15000000);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    >=, 2);
+    g_assert_cmphex(ioc4_target_property(qts,
+                    "x-test-dma-observer-status"), ==, 0);
+    g_assert_cmphex(ioc4_target_property(qts,
+                    "x-test-dma-observer-after-nested-status"), ==, 0);
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(input), input, sizeof(input));
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_serial_idle_status_dma_failures(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input[] = { 0x61, 0x62, 0x63 };
+    const uint8_t tx_data[4] = { 0x41, 0x42, 0x43, 0x44 };
+    const uint8_t tx_control[4] = { TX_VALID, 0, 0, 0 };
+    const uint8_t zero[8] = { 0 };
+    uint8_t entry[8];
+    g_autofree char *contents = NULL;
+    g_autofree char *rx_log = NULL;
+
+    qts = ioc4_start_dma_full(false, true, 0, -1, log,
+                              true, true, false, false);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, tx_data, tx_control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    ioc4_wait_reg(qts, 0x0c, DMA_ERROR(0), DMA_ERROR(0));
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    ==, 1);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-status"),
+                    ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0);
+    ioc4_dma_read(qts, ioc4_tx_ring_offset(0, 0x1000), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(tx_data), tx_data, sizeof(tx_data));
+    g_assert_cmpmem(entry + 4, sizeof(tx_control), tx_control,
+                    sizeof(tx_control));
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+
+    rx_log = ioc4_log_file_new();
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma_full(false, true, 0, sv[1], rx_log,
+                              true, false, true, false);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
+    g_usleep(10000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
+    ioc4_wait_reg(qts, 0x0c, DMA_ERROR(0), DMA_ERROR(0));
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
+                    ==, 1);
+    g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-status"),
+                    ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(entry), zero, sizeof(zero));
+    g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(rx_log);
     g_assert_nonnull(contents);
 }
 
@@ -1648,7 +1946,19 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-port-fault-isolation-recovery",
                    test_dma_port_fault_isolation_and_recovery);
     qtest_add_func("/sgi-ioc4/dma-full-reset-shadow",
-                   test_dma_full_reset_clears_shadow);
+                    test_dma_full_reset_clears_shadow);
+    qtest_add_func("/sgi-ioc4/serial-idle-status",
+                    test_serial_idle_status);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-default-pio",
+                    test_serial_idle_status_default_pio);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-backend-backpressure",
+                    test_serial_idle_status_backend_backpressure);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-dma-callbacks",
+                    test_serial_idle_status_dma_callbacks);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-nested-dma",
+                    test_serial_idle_status_nested_dma);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-dma-failures",
+                    test_serial_idle_status_dma_failures);
     qtest_add_func("/sgi-ioc4/dma-rejects-bad-base-pointer",
                    test_dma_rejects_bad_base_and_pointer);
     qtest_add_func("/sgi-ioc4/identity-reset", test_identity_and_reset);

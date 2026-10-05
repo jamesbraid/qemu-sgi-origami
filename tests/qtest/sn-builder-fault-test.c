@@ -774,6 +774,8 @@ static SGIModelBedrockConfig bedrock_test_config = {
 static SGIModelAsicIdentity bedrock_test_identity = {
     .has_widget_revision = true,
     .widget_revision = 2,
+    .has_clock_hz = true,
+    .clock_hz = 200000000,
 };
 
 static SGIModelL1Revision bedrock_test_l1_revision = {
@@ -899,6 +901,161 @@ static SGIModelTopology bedrock_test_topology = {
     .junk_uart = -1,
 };
 
+static unsigned int ip53_test_population_cpus[] = { 1 };
+static SGIModelCpuPopulation ip53_test_population;
+static SGIModelPciFunction ip53_test_ioc4 = {
+    .kind = SGI_MODEL_PCI_FUNCTION_KIND_IOC4,
+    .revision = 0x53,
+    .has_pci_device = true,
+    .pci_device = 1,
+    .has_pci_function = true,
+    .pci_function = 0,
+    .has_intx_pin = true,
+    .intx_pin = SGI_MODEL_PCI_INTX_PIN_INTA,
+    .has_pic_input = true,
+    .pic_input = 3,
+    .has_clock_hz = true,
+    .clock_hz = 33333333,
+    .has_serial_dma_experimental = true,
+    .serial_dma_experimental = true,
+};
+static SGIModelPciFunction ip53_test_isp12160 = {
+    .kind = SGI_MODEL_PCI_FUNCTION_KIND_ISP12160,
+    .revision = 0x06,
+    .has_pci_device = true,
+    .pci_device = 2,
+    .has_pci_function = true,
+    .pci_function = 0,
+    .has_intx_pin = true,
+    .intx_pin = SGI_MODEL_PCI_INTX_PIN_INTA,
+    .has_pic_input = true,
+    .pic_input = 4,
+};
+static SGIModelPciFunction ip53_test_bcm5701 = {
+    .kind = SGI_MODEL_PCI_FUNCTION_KIND_BCM5701,
+    .revision = 0x00,
+    .has_pci_device = true,
+    .pci_device = 3,
+    .has_pci_function = true,
+    .pci_function = 0,
+    .has_intx_pin = true,
+    .intx_pin = SGI_MODEL_PCI_INTX_PIN_INTA,
+    .has_pic_input = true,
+    .pic_input = 5,
+};
+static SGIModelPciFunctionList ip53_test_function_list[] = {
+    { .value = &ip53_test_ioc4, .next = &ip53_test_function_list[1] },
+    { .value = &ip53_test_isp12160, .next = &ip53_test_function_list[2] },
+    { .value = &ip53_test_bcm5701 },
+};
+static SGIModelPciHostBridge ip53_test_pic = {
+    .id = (char *)"fixture-pic",
+    .kind = SGI_MODEL_PCI_HOST_KIND_PIC,
+    .xio_attachment_index = 0,
+    .has_compatibility_profile = true,
+    .compatibility_profile =
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK,
+};
+static uint64_t ip53_test_bank_mib[] = { 0, 0, 64, 0, 0, 0, 0, 0 };
+static SGIModelNode ip53_test_node;
+static SGIModelBedrockConfig ip53_test_bedrock_config;
+static uint64List *ip53_test_bank_mib_list;
+
+static SGIModelXioAttachment ip53_test_xio = {
+    .crossbar_index = -1,
+    .widget = 9,
+    .node_index = 0,
+};
+static SGIModelXioAttachment ip53_test_unowned_xio = {
+    .crossbar_index = -1,
+    .widget = 14,
+    .node_index = 0,
+};
+static SGIModelCrossbar ip53_test_crossbar = {
+    .id = (char *)"fixture-crossbar",
+    .module_index = 0,
+    .kind = SGI_MODEL_CROSSBAR_KIND_XBOW,
+    .widget_revision = 1,
+};
+static SGIModelXioAttachmentList ip53_test_attachment_entry = {
+    .value = &ip53_test_xio,
+};
+static SGIModelXioAttachmentList ip53_test_unowned_attachment_entry = {
+    .value = &ip53_test_unowned_xio,
+};
+static SGIModelCrossbarList ip53_test_crossbar_entry = {
+    .value = &ip53_test_crossbar,
+};
+static SGIModelIoBoard ip53_test_io9 = {
+    .id = (char *)"fixture-io9",
+    .module_index = 0,
+    .preset = SGI_MODEL_IO_BOARD_PRESET_IO9,
+    .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+    .has_pci_host_index = true,
+    .pci_host_index = 0,
+    .has_pci_head = true,
+    .pci_head = 0,
+    .populated = true,
+    .has_ds1742 = true,
+    .ds1742 = true,
+    .pci_functions = &ip53_test_function_list[0],
+};
+
+static SGIModelAsicIdentity ip53_test_identity = {
+    .has_widget_revision = true,
+    .widget_revision = 2,
+    .has_clock_hz = true,
+    .clock_hz = 200000000,
+};
+
+static void bedrock_test_install_ip53_descriptor(bool include_profile)
+{
+    static unsigned int one_node[] = { 0 };
+    static SGIModelControllerList controller_entry;
+    static SGIModelPciHostBridgeList host_entry;
+    static SGIModelIoBoardList board_entry;
+
+    ip53_test_node = bedrock_test_nodes[0];
+    ip53_test_bedrock_config = bedrock_test_config;
+    ip53_test_bedrock_config.installed_bank_mask = 0x04;
+    ip53_test_node.has_board_kind = true;
+    ip53_test_node.board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    ip53_test_identity.has_ni_revision = true;
+    ip53_test_identity.ni_revision = 2;
+    ip53_test_identity.has_widget_revision = true;
+    ip53_test_identity.widget_revision = 2;
+    ip53_test_identity.clock_hz = 200000000;
+    ip53_test_node.identity = &ip53_test_identity;
+    ip53_test_node.bedrock = &ip53_test_bedrock_config;
+    if (!ip53_test_bank_mib_list) {
+        ip53_test_bank_mib_list = uint64_list(ip53_test_bank_mib,
+                                               ARRAY_SIZE(ip53_test_bank_mib));
+    }
+    ip53_test_node.bank_mib = ip53_test_bank_mib_list;
+    bedrock_test_topology.nodes = node_list(&ip53_test_node, 1);
+    bedrock_test_topology.modules = module_list(bedrock_test_modules, 1);
+    bedrock_test_topology.modules->value->nodes = uint32_list(one_node, 1);
+    controller_entry.value = &bedrock_test_controllers[0];
+    bedrock_test_topology.controllers = &controller_entry;
+    ip53_test_attachment_entry.next = NULL;
+    bedrock_test_topology.xio_attachments = &ip53_test_attachment_entry;
+    ip53_test_unowned_xio.crossbar_index = -1;
+    ip53_test_unowned_attachment_entry.next = NULL;
+    bedrock_test_topology.crossbars = NULL;
+    bedrock_test_topology.pci_host_bridges = NULL;
+    ip53_test_pic.has_compatibility_profile = include_profile;
+    host_entry.value = &ip53_test_pic;
+    bedrock_test_topology.pci_host_bridges = &host_entry;
+    bedrock_test_topology.has_pci_host_bridges = true;
+    board_entry.value = &ip53_test_io9;
+    bedrock_test_topology.io_boards = &board_entry;
+    ip53_test_population.cpus_per_node =
+        uint32_list(ip53_test_population_cpus, 1);
+    bedrock_test_topology.node_populations = whole_population(
+        &bedrock_test_topology,
+        cpu_population_list(&ip53_test_population, 1));
+}
+
 #define TYPE_SN_BUILDER_BEDROCK_TEST \
     MACHINE_TYPE_NAME("sn-builder-bedrock-test")
 
@@ -918,13 +1075,75 @@ static void bedrock_test_set_construction_fault(Object *obj,
                                                  const char *value,
                                                  Error **errp)
 {
-    if (strcmp(value, "ip53")) {
+    if (!strcmp(value, "ip53")) {
+        bedrock_test_install_ip53_descriptor(false);
+    } else if (!strcmp(value, "ip53-pic-io9") ||
+               !strcmp(value, "ip53-pic-io9-d1-h0")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 1;
+        ip53_test_io9.pci_head = 0;
+    } else if (!strcmp(value, "ip53-pic-io9-ioc4-input0")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 1;
+        ip53_test_io9.pci_head = 0;
+        ip53_test_ioc4.pic_input = 0;
+    } else if (!strcmp(value, "ip53-pic-io9-d4-h0")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 4;
+        ip53_test_io9.pci_head = 0;
+    } else if (!strcmp(value, "ip53-pic-io9-d1-h1")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 1;
+        ip53_test_io9.pci_head = 1;
+    } else if (!strcmp(value, "ip53-pic-io9-d4-h1")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 4;
+        ip53_test_io9.pci_head = 1;
+    } else if (!strcmp(value, "ip53-slot0")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 0;
+    } else if (!strcmp(value, "ip53-slot5")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 5;
+    } else if (!strcmp(value, "ip53-slot31")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.pci_device = 31;
+    } else if (!strcmp(value, "ip53-intxb")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_ioc4.intx_pin = SGI_MODEL_PCI_INTX_PIN_INTB;
+    } else if (!strcmp(value, "ip53-alt-clock")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_identity.clock_hz = 150000000;
+    } else if (!strcmp(value, "ip53-alt-board-id")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_bedrock_config.board_id_word = 0x2001;
+    } else if (!strcmp(value, "ip53-alt-l1-type")) {
+        bedrock_test_install_ip53_descriptor(true);
+        bedrock_test_l1.reported_type = 0x35;
+    } else if (!strcmp(value, "ip53-ni3-widget2")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_identity.ni_revision = 3;
+    } else if (!strcmp(value, "ip53-ni2-widget3")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_identity.widget_revision = 3;
+    } else if (!strcmp(value, "ip53-missing-profile")) {
+        bedrock_test_install_ip53_descriptor(false);
+    } else if (!strcmp(value, "ip53-extra-attachment")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_attachment_entry.next = &ip53_test_unowned_attachment_entry;
+    } else if (!strcmp(value, "ip53-extra-crossbar")) {
+        bedrock_test_install_ip53_descriptor(true);
+        /* The population view retains Crossbows reached by an attachment. */
+        ip53_test_unowned_xio.crossbar_index = 0;
+        ip53_test_attachment_entry.next =
+            &ip53_test_unowned_attachment_entry;
+        ip53_test_crossbar_entry.next = NULL;
+        bedrock_test_topology.crossbars = &ip53_test_crossbar_entry;
+    } else {
         error_setg(errp, "unknown sn-builder-bedrock-test construction "
                    "fault '%s'", value);
         return;
     }
-    bedrock_test_nodes[0].has_board_kind = true;
-    bedrock_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP53;
     bedrock_test_activate_requested = true;
 }
 

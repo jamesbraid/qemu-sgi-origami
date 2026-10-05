@@ -4,11 +4,10 @@
 
 One compile path takes a resolved composition and produces the record shapes
 consumed by QEMU's SGI catalogue emitter, over one typed index of the physical
-component graph. The compiler never branches on a
-product name: every distinction it makes reads a fact already in the
-resolved model (an asic kind, whether a crossbar is present, an authored
-physical slot number), so a new product that fits the same vocabulary needs
-no change here.
+component graph. Most distinctions read facts already in the resolved model
+(an ASIC kind, whether a crossbar is present, or an authored physical slot).
+The R16000 exception is restricted to the reviewed Origin 350 IP53 experiment;
+other products do not gain that CPU through the shared component vocabulary.
 
 A reference-role configuration (`machine.model_role != "emulation-target"`)
 is refused, never compiled: format 2 carries no facts for a system nobody
@@ -970,9 +969,43 @@ def _processor(model: dict, cpu: dict) -> dict:
             "cache_mib": cache_mib,
             # mode_bits filled in by the caller, as above.
         }
+    if part == "r16000":
+        emulation = model.get("machine", {}).get("emulation", {})
+        if (model.get("composition", {}).get("product") !=
+                "origin350-ip53-experiment" or
+                emulation.get("machine_name") != "origin350"):
+            raise CompileError(
+                "R16000 is supported for only the Origin 350 IP53 experiment"
+            )
+        clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
+        cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
+        reset_mode = _integer(
+            identity, "r16000_reset_mode", f"CPU '{cpu['id']}'", 32)
+        scache_bytes = _integer(
+            identity, "r16000_scache_bytes", f"CPU '{cpu['id']}'", 64)
+        required_properties = identity.get("required_properties")
+        expected_properties = [
+            "r16000-experimental", "r16000-reset-mode",
+            "r16000-scache-bytes",
+        ]
+        if (clock_mhz != 700 or cache_mib != 8 or
+                reset_mode != 0x009cad85 or scache_bytes != 0x800000 or
+                required_properties != expected_properties):
+            raise CompileError(
+                f"CPU '{cpu['id']}' does not match the selected "
+                "700 MHz/8 MiB Origin 350 IP53 experiment inputs"
+            )
+        return {
+            "id": "r16000-700mhz",
+            "kind": "R16000",
+            "clock_hz": clock_mhz * 1_000_000,
+            "cache_mib": cache_mib,
+            "mode_bits": reset_mode,
+            "required_properties": expected_properties,
+        }
     raise CompileError(
         f"CPU '{cpu['id']}' names unsupported part '{part}' "
-        "(only r10000 and r14000 have a reset-mode encoding today)"
+        "(no reset-mode projection is available)"
     )
 
 
@@ -989,6 +1022,8 @@ def _mode_bits(model: dict, node: dict, processor: dict) -> int:
             model, processor["clock_hz"] // 1_000_000, processor["cache_mib"])
     if processor["kind"] == "R10000":
         return _r10000_mode_bits(model, node, processor["clock_hz"])
+    if processor["kind"] == "R16000":
+        return processor["mode_bits"]
     raise CompileError(
         f"processor kind '{processor['kind']}' has no reset-mode encoding"
     )
@@ -1227,7 +1262,8 @@ def _hub_ni_revision(model: dict, node: dict, identity: dict) -> int:
 
 
 def _node_identity(model: dict, components: dict[str, dict], node: dict,
-                    asic_kind: str, node_index: int) -> dict:
+                    asic_kind: str, node_index: int,
+                    board_kind: str | None = None) -> dict:
     """A node ASIC's `SGIModelAsicIdentity`: its own fitted-part revisions
     and serial, and whether it carries an embedded I2C controller that also
     answers as the node's system controller (the Origin 200 family's own
@@ -1240,7 +1276,30 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
     identity = node.get("identity") or {}
     ni_field, widget_field = _ASIC_IDENTITY_REVISION_FIELDS[asic_kind]
     revisions = {}
-    if asic_kind == "hub" or "hardware_revision" in identity:
+    clock_hz = None
+    if asic_kind == "bedrock" and board_kind == "ip53":
+        clock_mhz = identity.get("clock_mhz")
+        if type(clock_mhz) is not int or clock_mhz <= 0:
+            raise CompileError(
+                f"IP53 Bedrock node '{node['id']}' requires "
+                "identity.clock_mhz as a positive integer")
+        if clock_mhz > 0xffffffffffffffff // 1_000_000:
+            raise CompileError(
+                f"IP53 Bedrock node '{node['id']}' identity.clock_mhz "
+                "overflows uint64 clock-hz")
+        clock_hz = clock_mhz * 1_000_000
+        if ("clock_hz" in identity and
+                (type(identity["clock_hz"]) is not int or
+                 identity["clock_hz"] != clock_hz)):
+            raise CompileError(
+                f"IP53 Bedrock node '{node['id']}' has contradictory "
+                "identity.clock_hz")
+    if asic_kind == "bedrock" and board_kind == "ip53":
+        revisions["ni_revision"] = _integer(
+            identity, "ni_revision", f"IP53 Bedrock node '{node['id']}'", 4)
+        revisions["widget_revision"] = _integer(
+            identity, "widget_revision", f"IP53 Bedrock node '{node['id']}'", 4)
+    elif asic_kind == "hub" or "hardware_revision" in identity:
         revisions["ni_revision"] = (
             _hub_ni_revision(model, node, identity) if asic_kind == "hub"
             else _integer(identity, ni_field, f"node '{node['id']}'", 8)
@@ -1264,11 +1323,13 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
             if component is not None and component.get("kind") == "system-controller":
                 system_controller = True
                 break
-    identity = {
+    result = {
         **revisions, "serial": serial,
         "i2c_controller": found is not None, "system_controller": system_controller,
     }
-    return identity
+    if clock_hz is not None:
+        result["clock_hz"] = clock_hz
+    return result
 
 
 def _region(component: dict, region_id: str) -> dict | None:
@@ -1445,7 +1506,8 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
             )
     processor["mode_bits"] = _mode_bits(model, node, processor)
     max_population = _node_max_population(model, position, node_count)
-    identity = _node_identity(model, components, node, asic_kind, position)
+    identity = _node_identity(model, components, node, asic_kind, position,
+                              board_kind)
     banks = _node_bank_mib(model, position, node_count)
     configuration = ({"bedrock": _bedrock_configuration(model, node, banks)}
                      if asic_kind == "bedrock" else {})
@@ -2750,6 +2812,14 @@ def compile_model(model: dict) -> dict:
     if node_count == 0:
         raise CompileError("configuration has no node-asic component")
     modules_by_id = {module["id"]: module["index"] for module in graph["modules"]}
+    ip53_graph_nodes = [
+        index for index, node in enumerate(graph["nodes"])
+        if node["component"].get("hardware_kind") == "bedrock"
+        and _bedrock_board_kind(components, node["component"]) == "ip53"
+    ]
+    if ip53_graph_nodes and len(ip53_graph_nodes) != node_count:
+        raise CompileError(
+            "mixed IP53 and non-IP53 SN1 nodes are unsupported")
 
     try:
         ds1742_boards = validate_io9_clock_links(model)
@@ -2790,27 +2860,40 @@ def compile_model(model: dict) -> dict:
         # own xbridge-kind check is what excludes Origin 300's XBridge from
         # getting a record, so this one call serves every generation.
         crossbars = _compile_crossbars(model, components, modules_by_id, graph["crossbars"])
+        ip53_node_indices = [
+            index for index, node in enumerate(nodes)
+            if node.get("board_kind") == "ip53"
+        ]
         if generation == "SN1":
-            # Origin 300 has no separate Crossbow: the XBridge's two
-            # PCI-hosting heads are found together, off each Bedrock's
-            # own XIO bus (see `_compile_bedrock_io_boards`'s own
-            # comment), not through the Hub/Crossbow-oriented graph the
-            # shared io-board/xio-attachment compilers below read.
-            io_boards, xio_attachments = [], []
-            for index, entry in enumerate(graph["nodes"]):
-                boards, attachments = _compile_bedrock_io_boards(
-                    model, components, entry["id"], node_index=index,
-                    module_index=entry["module_index"],
-                    first_attachment=len(xio_attachments))
-                io_boards.extend(boards)
-                xio_attachments.extend(attachments)
-            for entry, attachment in zip(graph["io_boards"],
-                                         graph["xio_attachments"], strict=True):
-                board = _compile_io_board(model, components, entry)
-                board["slot_index"] = len(xio_attachments)
-                io_boards.append(board)
-                xio_attachments.append(attachment)
-            xio_slots = []
+            if ip53_node_indices:
+                if not graph["pic_host_ids"]:
+                    raise CompileError(
+                        "IP53 Bedrock nodes require an authored PIC host")
+                io_boards = [_compile_io_board(model, components, entry)
+                             for entry in graph["io_boards"]]
+                xio_attachments = graph["xio_attachments"]
+                xio_slots = graph["xio_slots"]
+            else:
+                # Origin 300 has no separate Crossbow: the XBridge's two
+                # PCI-hosting heads are found together, off each Bedrock's
+                # own XIO bus (see `_compile_bedrock_io_boards`'s own
+                # comment), not through the Hub/Crossbow-oriented graph the
+                # shared io-board/xio-attachment compilers below read.
+                io_boards, xio_attachments = [], []
+                for index, entry in enumerate(graph["nodes"]):
+                    boards, attachments = _compile_bedrock_io_boards(
+                        model, components, entry["id"], node_index=index,
+                        module_index=entry["module_index"],
+                        first_attachment=len(xio_attachments))
+                    io_boards.extend(boards)
+                    xio_attachments.extend(attachments)
+                for entry, attachment in zip(graph["io_boards"],
+                                             graph["xio_attachments"], strict=True):
+                    board = _compile_io_board(model, components, entry)
+                    board["slot_index"] = len(xio_attachments)
+                    io_boards.append(board)
+                    xio_attachments.append(attachment)
+                xio_slots = []
         else:
             io_boards = [_compile_io_board(model, components, entry)
                          for entry in graph["io_boards"]]
@@ -2829,6 +2912,16 @@ def compile_model(model: dict) -> dict:
                                         len(xio_attachments), ds1742_boards))
             io_boards.extend(io9_boards)
             xio_attachments.extend(pic_attachments)
+        if ip53_node_indices:
+            pic_node_indices = {
+                xio_attachments[host["xio_attachment_index"]]["node_index"]
+                for host in pci_host_bridges
+            }
+            missing_pic_nodes = sorted(set(ip53_node_indices) - pic_node_indices)
+            if missing_pic_nodes:
+                raise CompileError(
+                    f"IP53 Bedrock node {missing_pic_nodes[0]} has no authored "
+                    "PIC attachment")
         profile_owners = set(model.get("machine", {}).get(
             "emulation", {}).get("pic_profiles", {}))
         emitted_hosts = {host["id"] for host in pci_host_bridges}
@@ -2893,7 +2986,22 @@ def _compile_ip35_firmware(model: dict) -> dict:
     Every SN1 product authors them; Origin 300 and Fuel differ in machine
     type, so neither may default to the other's.
     """
-    firmware = model["machine"].get("emulation", {}).get("ip35_firmware")
+    machine = model["machine"]
+    firmware = machine.get("emulation", {}).get("ip35_firmware")
+    if (firmware is None and
+            model.get("composition", {}).get("product") ==
+            "origin350-ip53-experiment"):
+        firmware = machine.get("firmware_config")
+        if not isinstance(firmware, dict):
+            raise CompileError(
+                "machine.firmware_config is absent; the Origin 350 IP53 "
+                "experiment needs its firmware values")
+        return {
+            "machine_type": _integer(
+                firmware, "machine_type", "machine.firmware_config", 32),
+            "cpu_mode_word": _integer(
+                firmware, "processor_reset_mode", "machine.firmware_config", 32),
+        }
     if not isinstance(firmware, dict):
         raise CompileError(
             "machine.emulation.ip35_firmware is absent; an SN1 configuration "

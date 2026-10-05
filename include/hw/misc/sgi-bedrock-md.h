@@ -127,6 +127,7 @@ struct SGIBedrockMDState {
     MemoryRegion ecc_scrub_mmio;
     MemoryRegion memory_mr;
     MemoryRegion memory_mmio;
+    MemoryRegion memory_live;
     MemoryRegion memory_alias[8];
     MemoryRegion fetchop_mmio;
     MemoryRegion ecc_overlay;

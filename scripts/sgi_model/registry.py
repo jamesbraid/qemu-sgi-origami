@@ -7,6 +7,7 @@ PRODUCT_MODELS = {
     "origin200": "origin200",
     "origin2000": "origin2000-rack",
     "origin300": "origin300",
+    "origin350": "origin350-ip53-experiment",
     "onyx2": "onyx2-rack",
     "octane": "octane",
     "octane2": "octane2",
@@ -22,4 +23,5 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-pci-expansion-configuration-storage-experiment",
     "origin300-pci-expansion-unconnected-uart-experiment",
     "origin300-pci-expansion-pending-register-experiment",
+    "origin350-ip53-experiment",
 )

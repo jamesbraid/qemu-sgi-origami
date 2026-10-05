@@ -14,22 +14,30 @@ static const char * const sgi_sn1_r14000_cpu_types[] = {
     NULL,
 };
 
+static const char * const sgi_sn1_r16000_cpu_types[] = {
+    MIPS_CPU_TYPE_NAME("R16000"),
+    NULL,
+};
+
 /*
  * The Bedrock products differ only in catalogue data, so one class init
- * serves each, keyed by a product whose default topology shares its name.
+ * serves each, keyed by its product and selected default topology.
  */
 static void sn1_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
-    const SGIModelTopology *t = sgi_model_find_topology(product);
+    bool ip53 = g_str_equal(product, "origin350");
+    const char *topology = ip53 ? "origin350-ip53-experiment" : product;
+    const SGIModelTopology *t = sgi_model_find_topology(topology);
 
     g_assert(t);
     smc->product = product;
-    smc->default_topology = product;
+    smc->default_topology = topology;
     mc->desc = t->description;
-    mc->valid_cpu_types = sgi_sn1_r14000_cpu_types;
+    mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
+                                 sgi_sn1_r14000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     /* A product's default population is also its smallest accepted one. */
     mc->min_cpus = mc->default_cpus;
@@ -45,6 +53,12 @@ static const TypeInfo sn1_machine_types[] = {
         .parent        = TYPE_SGI_SN_MACHINE,
         .class_init    = sn1_machine_class_init,
         .class_data    = "origin300",
+    },
+    {
+        .name          = MACHINE_TYPE_NAME("origin350"),
+        .parent        = TYPE_SGI_SN_MACHINE,
+        .class_init    = sn1_machine_class_init,
+        .class_data    = "origin350",
     },
     {
         .name          = MACHINE_TYPE_NAME("fuel"),

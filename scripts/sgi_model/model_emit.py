@@ -89,7 +89,8 @@ def _identity(raw: dict) -> dict:
         "system-controller": raw["system_controller"],
     }
     for source, target in (("ni_revision", "ni-revision"),
-                           ("widget_revision", "widget-revision")):
+                           ("widget_revision", "widget-revision"),
+                           ("clock_hz", "clock-hz")):
         if source in raw:
             identity[target] = raw[source]
     return identity
@@ -435,6 +436,7 @@ _SCSI_TARGETS = {
 # sgi_sn1_serial_line(): one `-serial chardev:l1` first).
 _DS1742_ARGUMENT = "-drive if=none,id=sgi-ds1742-data-BOARD"
 _DS1742_BYTES = 2048
+_PFLASH_ARGUMENT = "-drive if=pflash,unit=N"
 
 # Each Timekeeper kind's NVRAM and the clock reference record its model
 # keeps beside it: the m48t35 window (hw/rtc/m48t35.h's M48T35_SIZE and
@@ -668,7 +670,17 @@ def _product_facts(machine_name: str, product_models: dict[str, dict]) -> dict:
     borrows these facts rather than going without.
     """
     machine = product_models[machine_name]["machine"]
+    harness = machine["harness"]
     firmware_payload = machine["emulation"].get("firmware_payload")
+    default_firmware_asset = harness.get("default_firmware_asset")
+    if default_firmware_asset is not None:
+        firmware_asset = default_firmware_asset
+        firmware_sha256 = None
+    elif firmware_payload is not None:
+        firmware_asset = "assets/" + firmware_payload["path"]
+        firmware_sha256 = firmware_payload.get("sha256")
+    else:
+        firmware_asset = firmware_sha256 = None
     second_selection = (
         firmware_payload.get("second_selection") if firmware_payload else None
     )
@@ -676,8 +688,14 @@ def _product_facts(machine_name: str, product_models: dict[str, dict]) -> dict:
         2 * int(second_selection["size"], 0) if second_selection else None
     )
     return {
-        "harness": machine["harness"],
+        "harness": harness,
         "boot_flash_bytes": boot_flash_bytes,
+        "firmware_argument": (
+            firmware_payload["argument"] if firmware_payload is not None
+            else "-bios"
+        ),
+        "firmware_asset": firmware_asset,
+        "firmware_sha256": firmware_sha256,
     }
 
 
@@ -784,8 +802,9 @@ def _init_inputs_for(topology: dict, storage: list[dict]) -> list[dict]:
     return inputs
 
 
-def _resources_for(topology: dict, harness: dict,
+def _resources_for(topology: dict, harness: dict, product: dict,
                    dimms_per_node: tuple[int, ...],
+                   nodes: int,
                    population_nodes: tuple[int, ...]) -> list[dict]:
     """The catalogue's `resources` list for one offering: identity and SPD
     inputs a launcher may supply beyond its writable `storage`.
@@ -813,6 +832,18 @@ def _resources_for(topology: dict, harness: dict,
             "count": len(ds1742_board_ids), "board-ids": ds1742_board_ids,
             "argument": _DS1742_ARGUMENT, "part": "ds1742",
             "size": _DS1742_BYTES, "clock-reference": True,
+        })
+    if harness.get("requires_per_node_flash"):
+        resources.append({
+            "kind": "boot-flash", "scope": "node", "count": nodes,
+            "size": topology["nodes"][0]["flash"]["size"],
+            "argument": _PFLASH_ARGUMENT,
+        })
+    elif harness.get("has_managed_boot_flash"):
+        resources.append({
+            "kind": "boot-flash", "scope": "board", "count": nodes,
+            "size": product["boot_flash_bytes"],
+            "argument": _PFLASH_ARGUMENT,
         })
     # Origin 300's raw identity and SPD record overrides: the machine's
     # chassis-eeprom and board-eeprom arrays (one pair per board: the node
@@ -867,6 +898,8 @@ _CPU_OVERRIDES = {
     "R12000": ("r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
                "r12000-scache-bytes", "r12000-scache-block-words"),
     "R14000": ("r14000-prid",),
+    "R16000": ("r16000-experimental", "r16000-reset-mode",
+               "r16000-scache-bytes"),
 }
 
 
@@ -898,6 +931,63 @@ def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
     return f"{machine_name},topology={topology['name']},nodes={nodes}"
 
 
+def _is_ip53_experiment(model: dict) -> bool:
+    return (model.get("composition", {}).get("product") ==
+            "origin350-ip53-experiment"
+            and model.get("machine", {}).get("emulation", {}).get(
+                "machine_name") == "origin350"
+            and model.get("machine", {}).get("harness", {}).get(
+                "launch_recipe") == "ip53-discovery")
+
+
+def _validate_ip53_experiment_consoles(model: dict, topology: dict) -> None:
+    harness = model["machine"].get("harness", {})
+    records = harness.get("console_records")
+    policy = harness.get("console")
+    if (policy not in ("l1-uart", "ip53-ioc4")
+            or len(topology["nodes"]) != 1
+            or not isinstance(records, list)
+            or len(records) != 5
+            or any(not isinstance(record, dict) for record in records)
+            or any(record.get("node_id") != topology["nodes"][0]["id"]
+                   for record in records)):
+        raise ValueError(
+            "origin350-ip53-experiment requires five ordered single-node serial bindings"
+        )
+    l1 = ("l1", "-serial chardev:l1")
+    ports = [(f"ioc4-serial-{index}",
+              f"-serial chardev:ioc4_serial_{index}") for index in range(4)]
+    if policy == "l1-uart":
+        expected = [("console", *l1)] + [
+            ("second-port", name, argument) for name, argument in ports]
+        candidates = [expected]
+    else:
+        candidates = [[("system-controller", *l1)] + [
+            ("console" if index == primary else "second-port", name, argument)
+            for index, (name, argument) in enumerate(ports)
+        ] for primary in range(4)]
+    actual = [(record.get("kind"), record.get("launcher_name"),
+               record.get("argument")) for record in records]
+    if actual not in candidates:
+        raise ValueError(
+            "origin350-ip53-experiment requires five ordered single-node serial bindings"
+        )
+
+
+def _validate_export_profiles(model: dict, topology: dict) -> None:
+    hosts = topology.get("pci_host_bridges", [])
+    experimental = any(
+        host.get("compatibility_profile") == "pic-rev3-bedrock-experimental"
+        for host in hosts)
+    if experimental and not _is_ip53_experiment(model):
+        raise CompileError(
+            "experimental PIC profile is restricted to origin350-ip53-experiment")
+    if any("compatibility_profile" in host
+           and host.get("compatibility_profile") != "pic-rev3-bedrock-experimental"
+           for host in hosts):
+        raise CompileError("qtest-only PIC profile cannot be exported as a product")
+
+
 def _offerings_for(model: dict, topology: dict,
                    product_models: dict[str, dict]) -> list[dict]:
     """One offering per node-population row and accepted CPU population
@@ -922,6 +1012,9 @@ def _offerings_for(model: dict, topology: dict,
         if "console" not in model_harness:
             raise ValueError("ip53-discovery requires an explicit console policy")
         launch_harness["console"] = model_harness["console"]
+    experiment = _is_ip53_experiment(model)
+    if experiment:
+        _validate_ip53_experiment_consoles(model, topology)
     population = model["composition"]["population"]
     dimms_per_node = tuple(population["dimms_per_node"])
     node = topology["nodes"][0]
@@ -949,6 +1042,17 @@ def _offerings_for(model: dict, topology: dict,
             "ip53-discovery requires an explicit L1 or IOC4 console policy"
         )
     networks = _networks_for(topology)
+    firmware = {
+        "kind": {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}[
+            topology["generation"]],
+        "argument": product["firmware_argument"],
+        "asset": product["firmware_asset"],
+        "size": node["flash"]["size"],
+        "sha256": product["firmware_sha256"],
+        "per-node-flash": harness.get(
+            "requires_per_node_flash",
+            topology["generation"] in ("SN0", "SN1")),
+    }
     identity_inputs = harness.get("identity_inputs", ())
     recipe = model["machine"].get("harness", {}).get(
         "smdk", harness.get("smdk"))
@@ -959,7 +1063,8 @@ def _offerings_for(model: dict, topology: dict,
                   key=lambda row: -len(row["nodes"]))
     for row in rows:
         nodes = len(row["nodes"])
-        resources = _resources_for(topology, harness, dimms_per_node[:nodes],
+        resources = _resources_for(topology, harness, product,
+                                   dimms_per_node[:nodes], nodes,
                                    tuple(row["nodes"]))
         storage = _storage_for(topology, harness, product,
                                list(row["nodes"]))
@@ -988,7 +1093,10 @@ def _offerings_for(model: dict, topology: dict,
                 "processor": {
                     "part": assembly["kind"], "clock-hz": assembly["clock_hz"],
                     "cache-mib": assembly["cache_mib"],
+                    **({"required-properties": list(assembly["required_properties"])}
+                       if "required_properties" in assembly else {}),
                 },
+                "firmware": firmware,
                 "init-inputs": init_inputs,
                 "storage": storage,
                 "resources": resources,
@@ -1028,10 +1136,7 @@ def render_catalogue_json(models: list[dict], *,
     offerings = []
     for model in models:
         topology = compile_model(model)
-        if any("compatibility_profile" in host
-               for host in topology.get("pci_host_bridges", [])):
-            raise CompileError(
-                "qtest-only PIC profile cannot be exported as a product")
+        _validate_export_profiles(model, topology)
         machine_name = model["machine"]["emulation"]["machine_name"]
         topologies.append(_render_topology(topology, machine_name))
         offerings.extend(_offerings_for(model, topology, product_models))

@@ -906,7 +906,16 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         if (component.get("kind") != "pci-host-bridge"
                 or component.get("hardware_kind") != "pic"):
             raise ResolutionError(f"component '{cid}' is not a PIC host")
-        if profile != "pic-rev3-bedrock":
+        experiment = (
+            model.get("composition", {}).get("product") ==
+            "origin350-ip53-experiment"
+            and model.get("machine", {}).get("emulation", {}).get(
+                "machine_name") == "origin350"
+            and model.get("machine", {}).get("harness", {}).get(
+                "launch_recipe") == "ip53-discovery"
+        )
+        if profile != "pic-rev3-bedrock" and not (
+                profile == "pic-rev3-bedrock-experimental" and experiment):
             raise ResolutionError(
                 f"pic_profiles has unsupported profile '{profile}' for '{cid}'")
     allowed = {

@@ -1,14 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SGI Origin 300 (IP35/Bedrock, "SN1") node device: the CPUs, Bedrock, L1 and
- * its UART, boot flash and PROM views one Origin 300 chassis carries. The
- * family builder (sn-machine.c) creates it from the format-2 descriptor's
- * Bedrock node record and its populated I/O board, then realizes it; sn1.c
- * holds only the product class. Each node's address-space views are strided
- * by its nasid property (sn1-node.c), so a second node's windows land clear
- * of the first's; the machine still refuses more than one Bedrock node
- * (sn-machine.c) because nothing sources or models the cross-node NUMAlink
- * fabric a real multi-chassis Origin 300 pair would need.
+ * SGI Bedrock node device. Its Origin 300/IP45 path builds the node's XBridge;
+ * a machine-validated IP53 assembly reuses the node without that bridge. The
+ * family builder (sn-machine.c) creates it from a compiled node record, then
+ * realizes it. Each node's address-space views are strided by its nasid
+ * property (sn1-node.c), so a second node's windows land clear of the first's.
  */
 
 #ifndef HW_MIPS_SGI_SN1_NODE_H
@@ -19,6 +15,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-bedrock-io.h"
 #include "cpu.h"
 #include "sn-promdata.h"
 #include "sn1-fabric.h"
@@ -28,6 +25,8 @@
  * per interface.
  */
 #define SGI_SN1_NODE_MAX_CPUS 4
+#define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_IP53_PROM_PAYLOAD_SIZE UINT64_C(1476264)
 
 /*
  * The four processor-selected spaces a node's window appears in (memory, Hub
@@ -47,6 +46,11 @@
  * A cacheable ROM device mirroring the boot flash's current storage. Stores
  * still reach its write callback and are refused; its RAM block migrates.
  */
+typedef struct SN1PicWidget {
+    unsigned int widget;
+    MemoryRegion *face;
+} SN1PicWidget;
+
 typedef struct SN1PromView {
     MemoryRegion rom;
     MemoryRegion *backing;
@@ -90,10 +94,12 @@ typedef struct SN1NodeState {
     /*
      * The topology's Bedrock node record, set by the machine before
      * realize -- the compiled catalogue this node builds from
-     * (qapi/sgi-machines.json). The machine passes the I/O board's fitted
-     * identity through properties before this node realizes the XBridge.
+     * (qapi/sgi-machines.json). The machine passes the I/O board's
+     * fitted identity through properties before this node realizes.
      */
     const SGIModelNode *model_node;
+    /* Set by the machine after validating the selected IP53 assembly. */
+    bool ip53_assembly_validated;
     /*
      * Every widget the crossbar decodes for this node (widget zero, the
      * host's own local view, plus one per XIO attachment), set by the
@@ -101,8 +107,10 @@ typedef struct SN1NodeState {
      */
     unsigned int *xbridge_widgets;
     size_t xbridge_widget_count;
+    SN1PicWidget *pic_widgets;
+    size_t pic_widget_count;
 
-    /* The Bedrock's I/O interface linked to the XBridge's host port. */
+    /* The Bedrock's I/O interface linked to the IP45 XBridge host port. */
     SGIXioLink xbridge_link;
 
     Clock *cpuclk;
@@ -157,6 +165,15 @@ typedef struct SN1NodeState {
     MemoryRegion prom_flash_remote;
     /* Used in place of the aliases above once a flash part is attached. */
     SN1PromView prom_view_reset;
+    IOMMUMemoryRegion reset_router;
+    MemoryRegion reset_memory;
+    MemoryRegion reset_prom_alias;
+    MemoryRegion reset_ram_alias;
+    AddressSpace reset_prom_as;
+    AddressSpace reset_memory_as;
+    MemoryListener reset_memory_listener;
+    bool reset_router_ready;
+    bool reset_memory_changed;
     SN1PromView prom_view_local_high;
     char *prom_view_names[2];
 
@@ -206,6 +223,11 @@ DECLARE_INSTANCE_CHECKER(SN1NodeState, SN1_NODE, TYPE_SGI_SN1_NODE)
  */
 void sn1_node_full_reset(SN1NodeState *node, ResetType type);
 
+/* Authorize this node's IP53 construction after machine-level preflight. */
+bool sn1_node_set_ip53_assembly_validated(SN1NodeState *node, Error **errp);
+bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
+                                  MemoryRegion *face, Error **errp);
+
 /*
  * The two halves of sn1_node_full_reset() for a machine of several nodes,
  * which resets every node's processors, then every device once, then releases
@@ -242,6 +264,9 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * a board-owning attachment builds. The node must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
+
+/* The node-owned Bedrock I/O endpoint, available after node realization. */
+SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node);
 
 /*
  * Re-derive this node's claim layer and its cabled peer's: which node each

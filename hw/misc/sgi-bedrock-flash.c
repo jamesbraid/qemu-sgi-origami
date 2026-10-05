@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Origin 300 boot flash: two CFI PROM positions shared by local and remote
+ * Bedrock boot flash: two CFI PROM positions shared by local and remote
  * boot spaces.
 */
 /*
@@ -105,16 +105,18 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
     case 1:
     case 2:
     case 4:
-        return memory_region_dispatch_read(part_mmio, part, value,
-                                           size_memop(size) | MO_BE, attrs);
     case 8:
-        /* The flash answers at most four bytes per cycle. */
-        result = memory_region_dispatch_read(part_mmio, part, &high,
-                                             MO_32 | MO_BE, attrs);
-        result |= memory_region_dispatch_read(part_mmio, part + 4, &low,
-                                              MO_32 | MO_BE, attrs);
-        *value = (high << 32) | (uint32_t)low;
-        return result;
+        if (size > SGI_BEDROCK_FLASH_PART_SIZE - part) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-flash: %s boot space: %u-byte read "
+                          "cycle at "
+                          "0x%" HWADDR_PRIx " crosses the end of the 8 MiB "
+                          "selection; refused\n",
+                          flash_window_name[window->index], size, offset);
+            *value = 0;
+            return MEMTX_ERROR;
+        }
+        break;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s boot space: %u-byte "
                       "read at 0x%" HWADDR_PRIx " is not a supported access "
@@ -122,6 +124,24 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
                       offset);
         *value = 0;
         return MEMTX_ERROR;
+    }
+    switch (size) {
+    case 1:
+    case 2:
+    case 4:
+        return memory_region_dispatch_read(part_mmio, part, value,
+                                           size_memop(size) | MO_BE, attrs);
+    case 8:
+        /* The flash answers at most four bytes per cycle. */
+        high = low = 0;
+        result = memory_region_dispatch_read(part_mmio, part, &high,
+                                             MO_32 | MO_BE, attrs);
+        result |= memory_region_dispatch_read(part_mmio, part + 4, &low,
+                                              MO_32 | MO_BE, attrs);
+        *value = (high << 32) | (uint32_t)low;
+        return result;
+    default:
+        g_assert_not_reached();
     }
 }
 
@@ -157,10 +177,25 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     flash_store_position(offset, &position, &within);
+    if (within & 3) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
+                      "8-byte store at 0x%" HWADDR_PRIx " is not four-byte "
+                      "aligned; refused without a flash cycle\n",
+                      flash_window_name[window->index], offset);
+        return MEMTX_ERROR;
+    }
     if (within >= SGI_BEDROCK_FLASH_WRITE_LIMIT) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
                       "store at 0x%" HWADDR_PRIx " is past the last backing "
                       "word; refused without a flash cycle\n",
+                      flash_window_name[window->index], offset);
+        return MEMTX_ERROR;
+    }
+    if (within > SGI_BEDROCK_FLASH_WRITE_LIMIT - size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
+                      "8-byte write cycle at 0x%" HWADDR_PRIx " crosses the "
+                      "end of the 32 MiB selection aperture; refused without "
+                      "a flash cycle\n",
                       flash_window_name[window->index], offset);
         return MEMTX_ERROR;
     }
@@ -310,7 +345,7 @@ static void flash_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->desc = "SGI Origin 300 boot flash";
+    dc->desc = "SGI Bedrock boot flash";
     dc->realize = flash_realize;
     dc->vmsd = &vmstate_flash;
     device_class_set_props(dc, flash_properties);

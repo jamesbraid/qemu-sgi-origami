@@ -228,6 +228,22 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
  * notification-line write targets ordinary memory and
  * stays synchronous.
 */
+static MemTxResult ii_bte_memory_rw(SGIBedrockIOState *s, hwaddr address,
+                                    void *buffer, size_t size, bool write)
+{
+    MemTxResult result;
+
+    if (s->bte_local_rw &&
+        s->bte_local_rw(s->bte_local_opaque, address, buffer, size, write,
+                        &result)) {
+        return result;
+    }
+    return write ? dma_memory_write(s->dma_as, address, buffer, size,
+                                    MEMTXATTRS_UNSPECIFIED) :
+                   dma_memory_read(s->dma_as, address, buffer, size,
+                                   MEMTXATTRS_UNSPECIFIED);
+}
+
 static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint64_t value;
@@ -243,8 +259,8 @@ static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
         return;
     }
     value = cpu_to_be64(bte->status);
-    if (dma_memory_write(s->dma_as, bte->notification, &value, sizeof(value),
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (ii_bte_memory_rw(s, bte->notification, &value, sizeof(value),
+                          true) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-io: BTE notification write failed\n");
     }
@@ -298,12 +314,12 @@ static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
             return;
         }
         if (!(bte->control & 1)) {
-            result = dma_memory_read(s->dma_as, bte->source, buffer,
-                                     sizeof(buffer), MEMTXATTRS_UNSPECIFIED);
+            result = ii_bte_memory_rw(s, bte->source, buffer,
+                                       sizeof(buffer), false);
         }
         if (result == MEMTX_OK) {
-            result = dma_memory_write(s->dma_as, bte->destination, buffer,
-                                      sizeof(buffer), MEMTXATTRS_UNSPECIFIED);
+            result = ii_bte_memory_rw(s, bte->destination, buffer,
+                                        sizeof(buffer), true);
         }
         if (result != MEMTX_OK) {
             /* The failed line and those after it are still owed. */
@@ -1082,6 +1098,14 @@ void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as)
 {
     assert(!DEVICE(s)->realized);
     s->dma_as = as;
+}
+
+void sgi_bedrock_io_set_bte_local_rw(SGIBedrockIOState *s,
+                                     SGIBedrockIOBTELocalRW rw,
+                                     void *opaque)
+{
+    s->bte_local_rw = rw;
+    s->bte_local_opaque = opaque;
 }
 
 static void ii_reset_enter(Object *obj, ResetType type)
