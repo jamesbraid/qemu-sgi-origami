@@ -246,7 +246,10 @@ static void test_sn0_node_flash_refusals(void)
     g_assert_cmpint(g_unlink(right), ==, 0);
 }
 
-/* "-M <machine>,help" lists the storage properties, as it lists io-prom. */
+/*
+ * "-M <machine>,help" lists the storage properties, as it lists io-prom,
+ * and Octane's own machine properties too.
+ */
 static void test_machine_help_lists_storage(void)
 {
     static const char *const expected[][2] = {
@@ -255,6 +258,16 @@ static void test_machine_help_lists_storage(void)
         { "onyx2", "nvram0-clock=" },
         { "origin300", "node1-flash=" },
         { "fuel", "nvram0=" },
+        { "octane", "node0-flash=" },
+        { "octane", "nvram0-clock=" },
+        { "octane", "graphics-board=" },
+        { "octane", "graphics-widget=" },
+        { "octane", "bank3-size=" },
+        { "octane", "flash-strap=" },
+        { "octane", "topology=" },
+        { "octane", "nodes=" },
+        { "octane2", "nvram0=" },
+        { "octane2", "bank0-size=" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(expected); i++) {

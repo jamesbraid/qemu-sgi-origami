@@ -883,46 +883,15 @@ static void octane_instance_init_common(Object *obj, const char *product)
     s->model = octane_default_model(product);
     s->node = s->model->nodes->value;
     s->graphics_board = g_strdup("none");
-    object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
-                            octane_set_graphics_board);
-    object_property_set_description(obj, "graphics-board",
-                                    "Optional graphics board: none, vpro, si, "
-                                    "si-t, ssi, mxi, esi, esi-t, essi or emxi");
     s->graphics_widget = OCTANE_GRAPHICS_WIDGET;
-    object_property_add(obj, "graphics-widget", "uint8",
-                        octane_get_graphics_widget,
-                        octane_set_graphics_widget, NULL, NULL);
-    object_property_set_description(obj, "graphics-widget",
-                                    "Crossbow port of the graphics board, "
-                                    "9 to 12 (default 11)");
-    for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
-         entry; entry = entry->next) {
-        if (!g_str_equal(entry->value->product, product)) {
-            continue;
-        }
-        for (const SGIModelStorageItemList *item = entry->value->storage;
-             item; item = item->next) {
-            if (!object_property_find(obj, item->value->name)) {
-                sgi_storage_add_property(obj, &s->storage,
-                                         item->value->name);
-            }
-        }
-    }
     /* The catalogue's wiring, which a launcher may override. */
     s->flash_select = s->node->flash->has_select && s->node->flash->select;
     s->flash_strap = s->node->flash->has_strap && s->node->flash->strap;
     default_bank = s->node->bank_mib;
-
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
-        g_autofree char *name = g_strdup_printf("bank%u-size", bank);
-
         g_assert(default_bank);
         s->bank_size[bank] = default_bank->value * MiB;
         default_bank = default_bank->next;
-        object_property_add_uint64_ptr(obj, name, &s->bank_size[bank],
-                                       OBJ_PROP_FLAG_READWRITE);
-        object_property_set_description(obj, name,
-                                        "Capacity of the selected HEART bank in bytes");
     }
 }
 
@@ -969,6 +938,70 @@ static void octane_set_flash_strap(Object *obj, bool value, Error **errp)
     ((OctaneMachineState *)obj)->flash_strap = value;
 }
 
+/* bank<N>-size: @opaque is the bank. */
+static void octane_get_bank_size(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    visit_type_uint64(v, name, &s->bank_size[(uintptr_t)opaque], errp);
+}
+
+static void octane_set_bank_size(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    uint64_t value;
+
+    if (visit_type_uint64(v, name, &value, errp)) {
+        s->bank_size[(uintptr_t)opaque] = value;
+    }
+}
+
+/*
+ * Every machine property is a class property, so "-M octane,help" lists
+ * them; values that come from the catalogue are set per instance.
+ */
+static void octane_class_add_properties(ObjectClass *oc, const char *product)
+{
+    g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+
+    object_class_property_add_str(oc, "graphics-board",
+                                  octane_get_graphics_board,
+                                  octane_set_graphics_board);
+    object_class_property_set_description(oc, "graphics-board",
+        "Optional graphics board: none, vpro, si, si-t, ssi, mxi, esi, "
+        "esi-t, essi or emxi");
+    object_class_property_add(oc, "graphics-widget", "uint8",
+                              octane_get_graphics_widget,
+                              octane_set_graphics_widget, NULL, NULL);
+    object_class_property_set_description(oc, "graphics-widget",
+        "Crossbow port of the graphics board, 9 to 12 (default 11)");
+    for (uintptr_t bank = 0; bank < HEART_BANKS; bank++) {
+        g_autofree char *name = g_strdup_printf("bank%u-size",
+                                                (unsigned)bank);
+
+        object_class_property_add(oc, name, "uint64", octane_get_bank_size,
+                                  octane_set_bank_size, NULL, (void *)bank);
+        object_class_property_set_description(oc, name,
+            "Capacity of the selected HEART bank in bytes");
+    }
+    for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
+         entry; entry = entry->next) {
+        if (!g_str_equal(entry->value->product, product)) {
+            continue;
+        }
+        for (const SGIModelStorageItemList *item = entry->value->storage;
+             item; item = item->next) {
+            if (g_hash_table_add(seen, item->value->name)) {
+                sgi_storage_class_add_property(
+                    oc, offsetof(OctaneMachineState, storage),
+                    item->value->name);
+            }
+        }
+    }
+}
+
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -1012,11 +1045,18 @@ static void octane2_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
 
     octane_class_init(oc, data);
+    octane_class_add_properties(oc, "octane2");
     mc->desc = "SGI Octane2 (IP30), functional profile";
     mc->init = octane2_init;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
     mc->default_ram_size = octane_model_ram(
         octane_default_model("octane2")->nodes->value);
+}
+
+static void octane1_class_init(ObjectClass *oc, const void *data)
+{
+    octane_class_init(oc, data);
+    octane_class_add_properties(oc, "octane");
 }
 
 static const TypeInfo octane2_machine = {
@@ -1034,7 +1074,7 @@ static const TypeInfo octane_machine = {
     .instance_size = sizeof(OctaneMachineState),
     .instance_init = octane_instance_init,
     .instance_finalize = octane_instance_finalize,
-    .class_init = octane_class_init,
+    .class_init = octane1_class_init,
 };
 
 static void octane_register_types(void)
