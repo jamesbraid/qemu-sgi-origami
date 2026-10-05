@@ -186,18 +186,6 @@ static const MemoryRegionOps xbridge_swap_ops = {
     .impl.max_access_size = 4,
 };
 
-static bool xbridge_pio_slot_needs_correction(SGIXBridgeHeadState *s,
-                                              unsigned slot)
-{
-    return !(s->pio_self_ordered_slots & (1U << slot));
-}
-
-static bool xbridge_dma_slot_needs_correction(SGIXBridgeHeadState *s,
-                                              unsigned slot)
-{
-    return !(s->dma_self_ordered_slots & (1U << slot));
-}
-
 static uint64_t xbridge_flush_read(void *opaque, hwaddr addr, unsigned size)
 {
     return 0;
@@ -315,7 +303,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         goto out;
     }
     *placement = sgi_dma_placement_select(
-        swap || !xbridge_dma_slot_needs_correction(s, dma->slot),
+        swap,
         s->dma_64bit & (1U << dma->slot));
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
@@ -665,7 +653,7 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     unsigned width;
     AddressSpace *as;
     MemTxResult result;
-    bool needs_correction, swizzle, stream;
+    bool swizzle, stream;
 
     if (addr < 0x600000) {
         slot = (addr - 0x200000) >> 21;
@@ -692,20 +680,8 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     base <<= 20;
     as = dev & (1U << 12) ? &s->pci_mem_as : &s->pci_io_as;
-    /*
-     * With the device's own swap bit (bit 13) clear, a narrow access is
-     * placed by offset exclusive-or; the value crosses unchanged. Set, it
-     * is a byte stream; the value is mirrored and the offset is not
-     * touched. The two corrections are alternatives keyed on that one bit,
-     * never both at once; conflating them (as this function used to) nets to
-     * a mirrored value on the placement path a self-ordered device does not
-     * take, which is what a live BASEIO PROM crash traced back to (OHCI's
-     * HcControl read 0xc0000000 instead of 0xc0, so usb_ohci_bus_attach never
-     * saw UsbSuspend). The big-window path (xbridge_range_rw) already applies
-     * only the placement correction and already matches this rule.
-     */
-    needs_correction = xbridge_pio_slot_needs_correction(s, slot);
-    swizzle = needs_correction && !(dev & (1U << 13));
+    /* Bit 13 selects address placement or byte-stream conversion. */
+    swizzle = !(dev & (1U << 13));
     stream = dev & (1U << 13);
     if (swizzle) {
         offset ^= width - size;
@@ -1149,32 +1125,6 @@ static const VMStateDescription vmstate_xbridge = {
     }
 };
 
-static void xbridge_plug(const HotplugHandler *handler, DeviceState *dev,
-                         Error **errp)
-{
-    SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(handler);
-    Object *obj = OBJECT(dev);
-    Error *local_err = NULL;
-    bool pio_self_ordered, dma_self_ordered;
-
-    if (!object_dynamic_cast(obj, TYPE_PCI_DEVICE)) {
-        return;
-    }
-
-    if (!sgi_bridge_device_byte_lane_traits(obj, &pio_self_ordered,
-                                            &dma_self_ordered, &local_err)) {
-        error_propagate(errp, local_err);
-        return;
-    }
-
-    if (pio_self_ordered) {
-        s->pio_self_ordered_slots |= 1U << PCI_SLOT(PCI_DEVICE(dev)->devfn);
-    }
-    if (dma_self_ordered) {
-        s->dma_self_ordered_slots |= 1U << PCI_SLOT(PCI_DEVICE(dev)->devfn);
-    }
-}
-
 static bool xbridge_is_hotpluggable_bus(const HotplugHandler *handler, BusState *bus)
 {
     return false;
@@ -1201,7 +1151,6 @@ static void xbridge_class_init(ObjectClass *oc, const void *data)
     dc->realize = xbridge_realize;
     dc->unrealize = xbridge_unrealize;
     dc->vmsd = &vmstate_xbridge;
-    hc->plug = xbridge_plug;
     hc->is_hotpluggable_bus = xbridge_is_hotpluggable_bus;
     rc->phases.hold = xbridge_reset_hold;
     rc->phases.exit = xbridge_reset_exit;

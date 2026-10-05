@@ -8,7 +8,6 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "hw/pci-host/sgi-pic.h"
-#include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/pci/pci.h"
@@ -757,9 +756,9 @@ static bool pic_cpu_pio_native_order(SGIPICHead *s, AddressSpace *as,
     PCIDevice *dev = pic_pio_mapped_function(s, as, addr, size);
 
     return dev &&
-        object_property_find(OBJECT(dev), SGI_BRIDGE_BYTE_LANE_SELF_ORDERED) &&
+        object_property_find(OBJECT(dev), SGI_PIC_BYTE_LANE_SELF_ORDERED) &&
         object_property_get_bool(OBJECT(dev),
-                                 SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                 SGI_PIC_BYTE_LANE_SELF_ORDERED,
                                  &error_abort);
 }
 

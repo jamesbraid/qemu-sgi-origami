@@ -294,21 +294,6 @@ static void test_config_type1(void)
 #define TARGET_B 0x21000000ULL
 #define TARGET_C 0x123400000000ULL
 #define SCRATCH 0x8000
-#define CARD "/machine/peripheral/card"
-
-static uint64_t card_wide_scratch(QTestState *qts)
-{
-    QDict *r = qtest_qmp(qts,
-        "{ 'execute': 'qom-get', 'arguments': "
-        "{ 'path': %s, 'property': %s } }", CARD, "x-test-wide-scratch");
-    uint64_t value;
-
-    g_assert_true(qdict_haskey(r, "return"));
-    value = qdict_get_int(r, "return");
-
-    qobject_unref(r);
-    return value;
-}
 
 static QTestState *transport_start_card(const char *card, const char *extra)
 {
@@ -738,79 +723,6 @@ static void test_dma_swap_controls(void)
                             swap ? native : reversed, sizeof(native));
         }
     }
-    qtest_quit(qts);
-}
-
-static void test_dma_only_trait_without_pio(void)
-{
-    static const uint8_t expected[] = { 0x40, 0x41, 0x42, 0x43,
-                                        0x44, 0x45, 0x46, 0x47 };
-    QTestState *qts = transport_start_type("sgi-bridge-dma-only-test", "");
-    uint8_t actual[sizeof(expected)];
-
-    reg_write(qts, 0x80, 0xa00000);
-    reg_write(qts, 0x200, 0x3010);
-    dma_fill(qts, 0x80008000, 0x40);
-    qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
-    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
-    qtest_quit(qts);
-}
-
-static void test_self_ordered_pio(void)
-{
-    static const uint8_t expected[] = { 0xef, 0xcd, 0xab, 0x89,
-                                        0x67, 0x45, 0x23, 0x01 };
-    QTestState *qts = transport_start(
-        "-global sgi-bridge-dma-test.byte-lane-self-ordered=on");
-
-    qtest_writel(qts, BASE + 0x20014, 0x01200000);
-    reg_write(qts, 0x200, 0x481012);
-    for (unsigned i = 0; i < sizeof(expected); i++) {
-        g_assert_cmphex(qtest_readb(qts, BASE + 0x200000 + i), ==,
-                        expected[i]);
-    }
-    qtest_quit(qts);
-}
-
-static void test_self_ordered_pio_values(void)
-{
-    QTestState *qts = transport_start(
-        "-global sgi-bridge-dma-test.byte-lane-self-ordered=on");
-    uint8_t actual[8];
-    static const uint8_t word_bytes[] = { 0x12, 0x34, 0x56, 0x78 };
-
-    qtest_writel(qts, BASE + 0x20014, 0x01200000);
-    reg_write(qts, 0x200, 0x483012);
-    qtest_writel(qts, BASE + 0x200000 + 8, 0x12345678);
-    reg_write(qts, 0x200, 0x481012);
-    for (unsigned i = 0; i < sizeof(word_bytes); i++) {
-        actual[i] = qtest_readb(qts, BASE + 0x200000 + 8 + i);
-    }
-    g_assert_cmpmem(actual, sizeof(word_bytes), word_bytes,
-                    sizeof(word_bytes));
-    g_assert_cmphex(card_wide_scratch(qts), ==, 0x0000000078563412ULL);
-
-    reg_write(qts, 0x200, 0x483012);
-    qtest_writeb(qts, BASE + 0x200000 + 8, 0xa5);
-    qtest_writew(qts, BASE + 0x200000 + 10, 0x6b7c);
-    reg_write(qts, 0x200, 0x481012);
-    for (unsigned i = 0; i < sizeof(actual); i++) {
-        actual[i] = qtest_readb(qts, BASE + 0x200000 + 8 + i);
-    }
-    g_assert_cmphex(actual[0], ==, 0xa5);
-    g_assert_cmphex(actual[1], ==, 0x34);
-    g_assert_cmphex(actual[2], ==, 0x6b);
-    g_assert_cmphex(actual[3], ==, 0x7c);
-    g_assert_cmphex(card_wide_scratch(qts), ==, 0x000000007c6b34a5ULL);
-
-    /* The adjacent fixed register remains at its addressed location. */
-    for (unsigned i = 0; i < sizeof(actual); i++) {
-        actual[i] = qtest_readb(qts, BASE + 0x200000 + i);
-    }
-    g_assert_cmphex(actual[0], ==, 0xef);
-    g_assert_cmphex(actual[1], ==, 0xcd);
-    g_assert_cmphex(actual[2], ==, 0xab);
-    g_assert_cmphex(actual[3], ==, 0x89);
     qtest_quit(qts);
 }
 
@@ -2179,11 +2091,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",
                    test_ioc3_pio_swap_controls);
     qtest_add_func("/sn1/xbridge/dma-swap-controls", test_dma_swap_controls);
-    qtest_add_func("/sn1/xbridge/dma-only-trait-without-pio",
-                   test_dma_only_trait_without_pio);
-    qtest_add_func("/sn1/xbridge/self-ordered-pio", test_self_ordered_pio);
-    qtest_add_func("/sn1/xbridge/self-ordered-pio-values",
-                   test_self_ordered_pio_values);
     qtest_add_func("/sn1/xbridge/upstream-requester", test_upstream_requester);
     qtest_add_func("/sn1/xbridge/migration-reset", test_migration_reset);
     qtest_add_func("/sn1/xbridge/access-errors", test_access_errors);
