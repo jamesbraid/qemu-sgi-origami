@@ -154,7 +154,7 @@ static void octane_set_flash_drive(Object *obj, const char *value,
 }
 
 static const SGIModelTopology *octane_model(const char *product,
-                                           const char *name)
+                                           const char *name, Error **errp)
 {
     const char *selected = name ? name : sgi_model_default_topology(product);
     const SGIModelTopology *model = selected ?
@@ -163,9 +163,18 @@ static const SGIModelTopology *octane_model(const char *product,
     if (!model || strcmp(model->product, product) ||
         model->generation != SGI_MODEL_GENERATION_IP30 || !model->nodes ||
         model->nodes->next || !model->nodes->value->heart) {
-        error_setg(&error_fatal, "%s requires its checked IP30 topology",
-                   product);
+        error_setg(errp, "%s requires its checked IP30 topology", product);
+        return NULL;
     }
+    return model;
+}
+
+/* The product's default topology, which the compiled catalogue carries. */
+static const SGIModelTopology *octane_default_model(const char *product)
+{
+    const SGIModelTopology *model = octane_model(product, NULL, NULL);
+
+    g_assert(model);
     return model;
 }
 
@@ -181,7 +190,8 @@ static uint64_t octane_model_ram(const SGIModelNode *node)
 }
 
 static const SGIModelBoardRecord *octane_board_record(OctaneMachineState *s,
-                                                     const char *role)
+                                                     const char *role,
+                                                     Error **errp)
 {
     for (SGIModelBoardRecordList *item = s->node->heart->board_records;
          item; item = item->next) {
@@ -189,21 +199,25 @@ static const SGIModelBoardRecord *octane_board_record(OctaneMachineState *s,
             return item->value;
         }
     }
-    error_setg(&error_fatal, "IP30 catalogue has no %s board identity", role);
+    error_setg(errp, "IP30 catalogue has no %s board identity", role);
     return NULL;
 }
 
 static bool octane_attach_record(OctaneMachineState *s, Object *owner,
                                   const char *child, OneWireBus *bus,
-                                  const char *role)
+                                  const char *role, Error **errp)
 {
-    const SGIModelBoardRecord *data = octane_board_record(s, role);
-    SGIBoardRecord record = {
+    const SGIModelBoardRecord *data = octane_board_record(s, role, errp);
+    SGIBoardRecord record;
+
+    if (!data) {
+        return false;
+    }
+    record = (SGIBoardRecord) {
         data->barcode, data->part, data->revision, data->name,
     };
-
     return sgi_board_record_attach(owner, child, bus, &record, data->serial,
-                                   role, &error_fatal);
+                                   role, errp);
 }
 
 static bool octane_valid_banks(OctaneMachineState *s)
@@ -288,8 +302,9 @@ static void octane_reset(MachineState *machine, ResetType type)
     }
 }
 
-static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
-                           const char *nvram, const char *nvram_clock)
+static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
+                           const char *nvram, const char *nvram_clock,
+                           Error **errp)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
@@ -300,7 +315,9 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         object_property_add_child(OBJECT(machine),
                                   slot ? "external-scsi" : "internal-scsi",
                                   OBJECT(pci));
-        pci_realize_and_unref(pci, bus, &error_fatal);
+        if (!pci_realize_and_unref(pci, bus, errp)) {
+            return false;
+        }
         qlogic_isp_handle_legacy_cmdline(DEVICE(pci));
     }
 
@@ -330,13 +347,16 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
                          s->node->heart->gpio_classic ? 1u << 2 : 0);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
-    if (nvram) {
-        object_property_set_str(OBJECT(pci), "ds1685-drive", nvram,
-                                &error_fatal);
+    if (nvram &&
+        !object_property_set_str(OBJECT(pci), "ds1685-drive", nvram, errp)) {
+        object_unref(OBJECT(pci));
+        return false;
     }
-    if (nvram_clock) {
-        object_property_set_str(OBJECT(pci), "ds1685-clock-drive",
-                                nvram_clock, &error_fatal);
+    if (nvram_clock &&
+        !object_property_set_str(OBJECT(pci), "ds1685-clock-drive",
+                                 nvram_clock, errp)) {
+        object_unref(OBJECT(pci));
+        return false;
     }
     qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);
     qdev_prop_set_uint8(DEVICE(pci), "phy-addr", 1);
@@ -346,12 +366,14 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     if (serial_hd(1)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-b", serial_hd(1));
     }
-    pci_realize_and_unref(pci, bus, &error_fatal);
-    if (!octane_attach_record(s, OBJECT(pci), "frontplane-record",
-                               SGI_IOC3(pci)->onewire_bus, "frontplane") ||
+    if (!pci_realize_and_unref(pci, bus, errp) ||
+        !octane_attach_record(s, OBJECT(pci), "frontplane-record",
+                              SGI_IOC3(pci)->onewire_bus, "frontplane",
+                              errp) ||
         !octane_attach_record(s, OBJECT(pci), "power-supply-record",
-                               SGI_IOC3(pci)->onewire_bus, "power-supply")) {
-        return;
+                              SGI_IOC3(pci)->onewire_bus, "power-supply",
+                              errp)) {
+        return false;
     }
     /* The fitted SuperIO line is Bridge input 4; Ethernet uses input 2. */
     qdev_connect_gpio_out(DEVICE(pci), 0,
@@ -359,7 +381,7 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
 
     pci = pci_new(PCI_DEVFN(3, 0), TYPE_SGI_RAD1_OCTANE);
     object_property_add_child(OBJECT(machine), "rad", OBJECT(pci));
-    pci_realize_and_unref(pci, bus, &error_fatal);
+    return pci_realize_and_unref(pci, bus, errp);
 }
 
 static int octane_flash_load_setup(QEMUFile *f, void *opaque, Error **errp)
@@ -380,40 +402,47 @@ static const SaveVMHandlers octane_flash_load_handlers = {
  * drive forms, which still work. Both forms of one store at once, and a
  * clock record without its NVRAM, are refused as on the SN machines.
  */
-static void octane_storage_backing(OctaneMachineState *s, const char *product,
+static bool octane_storage_backing(OctaneMachineState *s, const char *product,
                                    const char **flash, const char **nvram,
-                                   const char **nvram_clock)
+                                   const char **nvram_clock, Error **errp)
 {
     BlockBackend *legacy_nvram = blk_by_name("sgi-nvram0");
     MachineState *machine = MACHINE(s);
     const char *node;
 
-    sgi_storage_check(s->storage, product, product, s->model, &error_fatal);
+    if (!sgi_storage_check(s->storage, product, product, s->model, errp)) {
+        return false;
+    }
     node = sgi_storage_node(s->storage, "node0-flash");
     if (node && s->flash_drive) {
-        error_setg(&error_fatal, "%s: node0-flash and flash-drive=%s both "
+        error_setg(errp, "%s: node0-flash and flash-drive=%s both "
                    "back the boot flash", product, s->flash_drive);
+        return false;
     }
     if (!!machine->firmware + !!node + !!s->flash_drive != 1) {
-        error_setg(&error_fatal, "%s requires one of -bios, node0-flash or "
+        error_setg(errp, "%s requires one of -bios, node0-flash or "
                    "flash-drive", product);
+        return false;
     }
     *flash = node;
 
     *nvram = sgi_storage_node(s->storage, "nvram0");
     *nvram_clock = sgi_storage_node(s->storage, "nvram0-clock");
     if (legacy_nvram && (*nvram || *nvram_clock)) {
-        error_setg(&error_fatal, "%s: %s and -drive id=sgi-nvram0 both back "
+        error_setg(errp, "%s: %s and -drive id=sgi-nvram0 both back "
                    "the same Timekeeper NVRAM", product,
                    *nvram ? "nvram0" : "nvram0-clock");
+        return false;
     }
     if (*nvram_clock && !*nvram) {
-        error_setg(&error_fatal, "%s: nvram0-clock needs nvram0", product);
+        error_setg(errp, "%s: nvram0-clock needs nvram0", product);
+        return false;
     }
     if (legacy_nvram) {
         /* The DS1685 finds the legacy "sgi-nvram0-clock" itself. */
         *nvram = blk_name(legacy_nvram);
     }
+    return true;
 }
 
 /*
@@ -423,8 +452,9 @@ static void octane_storage_backing(OctaneMachineState *s, const char *product,
  * reset word, and the cache geometry its SS and SB fields select, are an
  * emulator approximation (docs/datasheets/ip30-r12000.md).
  */
-static void octane_r12000_profile(DeviceState *dev,
-                                  const SGIModelProcessor *processor)
+static bool octane_r12000_profile(DeviceState *dev,
+                                  const SGIModelProcessor *processor,
+                                  Error **errp)
 {
     uint32_t mode = processor->mode_bits;
     const struct {
@@ -442,14 +472,17 @@ static void octane_r12000_profile(DeviceState *dev,
     g_assert(processor->has_prid && processor->has_fpu_prid &&
              processor->has_mode_bits);
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
-        if (!qdev_find_global_prop(OBJECT(dev), fields[i].name)) {
-            object_property_set_uint(OBJECT(dev), fields[i].name,
-                                     fields[i].value, &error_fatal);
+        if (!qdev_find_global_prop(OBJECT(dev), fields[i].name) &&
+            !object_property_set_uint(OBJECT(dev), fields[i].name,
+                                      fields[i].value, errp)) {
+            return false;
         }
     }
+    return true;
 }
 
-static void octane_init_common(MachineState *machine, bool octane2)
+/* Build the machine; every refusal is returned through @errp. */
+static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     DeviceState *heart = qdev_new(TYPE_SGI_HEART);
@@ -469,6 +502,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MIPSCPU *cpu;
     Clock *cpuclk;
     const SGIModelProcessor *processor;
+    const SGIModelBoardRecord *system_board;
     const char *product = octane2 ? "octane2" : "octane";
     const char *flash_node, *nvram, *nvram_clock;
     g_autofree char *path = NULL;
@@ -480,36 +514,43 @@ static void octane_init_common(MachineState *machine, bool octane2)
     unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
     uint16_t links = (1 << 8) | (1 << 15);
 
-    s->model = octane_model(product, s->topology_name);
+    s->model = octane_model(product, s->topology_name, errp);
+    if (!s->model) {
+        return false;
+    }
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
 
     if (s->graphics_widget_set && !mgras) {
-        error_setg(&error_fatal,
-                   "graphics-widget requires an MGRAS graphics-board");
+        error_setg(errp, "graphics-widget requires an MGRAS graphics-board");
+        return false;
     }
 
     if (machine->ram_size != octane_model_ram(s->node) ||
         machine->smp.cpus != 1) {
-        error_setg(&error_fatal, "%s supports one CPU and %u MiB of RAM",
-                   octane2 ? "octane2" : "octane",
+        error_setg(errp, "%s supports one CPU and %u MiB of RAM", product,
                    (unsigned)(octane_model_ram(s->node) / MiB));
+        return false;
     }
     if (!octane_valid_banks(s) ||
         s->bank_size[0] + s->bank_size[1] + s->bank_size[2] +
         s->bank_size[3] != machine->ram_size) {
-        error_setg(&error_fatal, "%s unsupported HEART bank population",
-                   octane2 ? "octane2" : "octane");
+        error_setg(errp, "%s unsupported HEART bank population", product);
+        return false;
     }
     if (octane2 && strcmp(machine->cpu_type,
                           MIPS_CPU_TYPE_NAME("R12000"))) {
-        error_setg(&error_fatal, "octane2 requires an R12000 CPU");
+        error_setg(errp, "octane2 requires an R12000 CPU");
+        return false;
     }
     if (s->flash_select > 1 || s->flash_strap > 1) {
-        error_setg(&error_fatal,
-                   "octane flash-select and flash-strap must be 0 or 1");
+        error_setg(errp, "octane flash-select and flash-strap must be 0 or 1");
+        return false;
     }
-    octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock);
+    if (!octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock,
+                                errp)) {
+        return false;
+    }
     flash_chip = qdev_new(TYPE_PFLASH_CFI01);
     object_property_add_child(OBJECT(machine), "boot-flash",
                               OBJECT(flash_chip));
@@ -524,34 +565,41 @@ static void octane_init_common(MachineState *machine, bool octane2)
     qdev_prop_set_uint16(flash_chip, "id1", 0x66a8);
     if (flash_node || s->flash_drive) {
         if (runstate_check(RUN_STATE_INMIGRATE)) {
-            error_setg(&error_fatal,
-                       "octane: migration with persistent boot flash is not supported");
+            error_setg(errp, "octane: migration with persistent boot flash "
+                       "is not supported");
+            return false;
         }
         if (s->flash_drive) {
             BlockBackend *blk = blk_by_name(s->flash_drive);
 
             if (!blk) {
-                error_setg(&error_fatal, "no flash drive named '%s'",
-                           s->flash_drive);
+                error_setg(errp, "no flash drive named '%s'", s->flash_drive);
+                return false;
             }
             if (blk_getlength(blk) != OCTANE_FLASH_SIZE) {
-                error_setg(&error_fatal,
-                           "octane boot flash must be exactly 1 MiB");
+                error_setg(errp, "octane boot flash must be exactly 1 MiB");
+                return false;
             }
-            qdev_prop_set_drive_err(flash_chip, "drive", blk, &error_fatal);
-        } else {
-            object_property_set_str(OBJECT(flash_chip), "drive", flash_node,
-                                    &error_fatal);
+            if (!qdev_prop_set_drive_err(flash_chip, "drive", blk, errp)) {
+                return false;
+            }
+        } else if (!object_property_set_str(OBJECT(flash_chip), "drive",
+                                            flash_node, errp)) {
+            return false;
         }
         error_setg(&s->flash_migration_blocker,
                    "octane: migration with persistent boot flash is not supported");
-        migrate_add_blocker(&s->flash_migration_blocker, &error_fatal);
+        if (migrate_add_blocker(&s->flash_migration_blocker, errp) < 0) {
+            return false;
+        }
         register_savevm_live("octane-flash-storage",
                              VMSTATE_INSTANCE_ID_ANY, 0,
                              &octane_flash_load_handlers, s);
     }
     sgi_bridge_connect_cfi_flash(SGI_BRIDGE(bridge), PFLASH_CFI01(flash_chip));
-    sysbus_realize(SYS_BUS_DEVICE(flash_chip), &error_fatal);
+    if (!sysbus_realize(SYS_BUS_DEVICE(flash_chip), errp)) {
+        return false;
+    }
     firmware = sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_chip), 0);
     if (machine->firmware) {
         uint8_t *storage = memory_region_get_ram_ptr(firmware);
@@ -559,15 +607,16 @@ static void octane_init_common(MachineState *machine, bool octane2)
         path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
         size = path ? get_image_size(path, NULL) : -1;
         if (size <= 0 || size > OCTANE_FLASH_SIZE) {
-            error_setg(&error_fatal, "octane firmware '%s' must contain "
-                       "1 to 1 MiB bytes",
-                       machine->firmware);
+            error_setg(errp, "octane firmware '%s' must contain "
+                       "1 to 1 MiB bytes", machine->firmware);
+            return false;
         }
         memset(storage, 0xff, OCTANE_FLASH_SIZE);
         loaded = load_image_size(path, storage, OCTANE_FLASH_SIZE);
         if (loaded != size) {
-            error_setg(&error_fatal, "octane cannot load firmware image '%s'",
+            error_setg(errp, "octane cannot load firmware image '%s'",
                        machine->firmware);
+            return false;
         }
         memory_region_flush_rom_device(firmware, 0, OCTANE_FLASH_SIZE);
     }
@@ -578,20 +627,23 @@ static void octane_init_common(MachineState *machine, bool octane2)
         DeviceState *dev = qdev_new(machine->cpu_type);
 
         qdev_connect_clock_in(dev, "clk-in", cpuclk);
-        object_property_set_bool(OBJECT(dev), "big-endian", true,
-                                 &error_fatal);
-        octane_r12000_profile(dev, processor);
-        qdev_realize(dev, NULL, &error_fatal);
+        if (!object_property_set_bool(OBJECT(dev), "big-endian", true, errp) ||
+            !octane_r12000_profile(dev, processor, errp) ||
+            !qdev_realize(dev, NULL, errp)) {
+            return false;
+        }
         cpu = MIPS_CPU(dev);
     } else {
         DeviceState *dev = qdev_new(machine->cpu_type);
 
         qdev_connect_clock_in(dev, "clk-in", cpuclk);
-        object_property_set_bool(OBJECT(dev), "big-endian", TARGET_BIG_ENDIAN,
-                                 &error_fatal);
-        object_property_set_uint(OBJECT(dev), "r10000-prid", processor->prid,
-                                 &error_fatal);
-        qdev_realize(dev, NULL, &error_fatal);
+        if (!object_property_set_bool(OBJECT(dev), "big-endian",
+                                      TARGET_BIG_ENDIAN, errp) ||
+            !object_property_set_uint(OBJECT(dev), "r10000-prid",
+                                      processor->prid, errp) ||
+            !qdev_realize(dev, NULL, errp)) {
+            return false;
+        }
         cpu = MIPS_CPU(dev);
     }
     cpu_mips_irq_init_cpu(cpu);
@@ -601,8 +653,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
     /* Functional storage approximation for the full 16 KiB low window. */
-    memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
-                           OCTANE_LOW_RAM_SIZE, &error_fatal);
+    if (!memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
+                                OCTANE_LOW_RAM_SIZE, errp)) {
+        return false;
+    }
     memory_region_add_subregion(physical, 0, &s->low_ram);
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
@@ -621,12 +675,13 @@ static void octane_init_common(MachineState *machine, bool octane2)
     if (s->node->heart->widget_status_f_measured) {
         qdev_prop_set_bit(heart, "widget-status-f-measured", true);
     }
-    object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
-                             &error_fatal);
-    sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
-    if (!octane_attach_record(s, OBJECT(heart), "processor-record",
-                               SGI_HEART(heart)->onewire_bus, "processor")) {
-        return;
+    if (!object_property_set_link(OBJECT(heart), "cpu-memory",
+                                  OBJECT(physical), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(heart), errp) ||
+        !octane_attach_record(s, OBJECT(heart), "processor-record",
+                              SGI_HEART(heart)->onewire_bus, "processor",
+                              errp)) {
+        return false;
     }
     memory_region_init_io(&s->high_guard, OBJECT(machine),
                           &octane_high_guard_ops, s, "octane.high-guard",
@@ -647,24 +702,27 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_init(proxy, OBJECT(machine), "octane.bridge-fabric",
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     object_property_add_child(OBJECT(machine), "bridge", OBJECT(bridge));
-    qdev_prop_set_string(bridge, "board-barcode",
-                         octane_board_record(s, "system-board")->barcode);
-    qdev_prop_set_string(bridge, "board-part",
-                         octane_board_record(s, "system-board")->part);
-    qdev_prop_set_string(bridge, "board-revision",
-                         octane_board_record(s, "system-board")->revision);
-    qdev_prop_set_string(bridge, "board-name",
-                         octane_board_record(s, "system-board")->name);
-    qdev_prop_set_uint64(bridge, "onewire-serial",
-                         octane_board_record(s, "system-board")->serial);
-    object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
-                             &error_fatal);
-    object_property_set_link(OBJECT(bridge),
-                             s->flash_select ? "flash-select1" : "flash",
-                             OBJECT(firmware), &error_fatal);
+    system_board = octane_board_record(s, "system-board", errp);
+    if (!system_board) {
+        return false;
+    }
+    qdev_prop_set_string(bridge, "board-barcode", system_board->barcode);
+    qdev_prop_set_string(bridge, "board-part", system_board->part);
+    qdev_prop_set_string(bridge, "board-revision", system_board->revision);
+    qdev_prop_set_string(bridge, "board-name", system_board->name);
+    qdev_prop_set_uint64(bridge, "onewire-serial", system_board->serial);
+    if (!object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
+                                  errp) ||
+        !object_property_set_link(OBJECT(bridge),
+                                  s->flash_select ? "flash-select1" : "flash",
+                                  OBJECT(firmware), errp)) {
+        return false;
+    }
     qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
     qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
-    sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
+    if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
+        return false;
+    }
     object_unref(OBJECT(flash_chip));
 
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
@@ -698,13 +756,14 @@ static void octane_init_common(MachineState *machine, bool octane2)
                                  octane2 ? 0x7a3002000005ULL :
                                            0x7a3001000005ULL);
         }
-        object_property_set_link(OBJECT(board), "fabric",
-                                 OBJECT(&s->graphics_fabric), &error_fatal);
-        sysbus_realize(SYS_BUS_DEVICE(board), &error_fatal);
+        if (!object_property_set_link(OBJECT(board), "fabric",
+                                      OBJECT(&s->graphics_fabric), errp) ||
+            !sysbus_realize(SYS_BUS_DEVICE(board), errp)) {
+            return false;
+        }
         face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board), 0);
-        if (!sgi_xbow_attach_endpoint(crossbow, widget,
-                                      face, face, &error_fatal)) {
-            return;
+        if (!sgi_xbow_attach_endpoint(crossbow, widget, face, face, errp)) {
+            return false;
         }
         object_unref(OBJECT(board));
         links |= 1 << widget;
@@ -714,13 +773,13 @@ static void octane_init_common(MachineState *machine, bool octane2)
     qdev_prop_set_uint16(xbow, "link-reset-restore-alive", links);
     if (!sgi_xbow_attach_endpoint(crossbow, 8,
             sgi_xio_port_cpu_face(OBJECT(heart), 0),
-            sgi_xio_port_packet_face(OBJECT(heart), 0), &error_fatal) ||
+            sgi_xio_port_packet_face(OBJECT(heart), 0), errp) ||
         !sgi_xbow_attach_endpoint(crossbow, 15,
             sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
-            sgi_bridge_packet_face(SGI_BRIDGE(bridge)), &error_fatal)) {
-        return;
+            sgi_bridge_packet_face(SGI_BRIDGE(bridge)), errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(xbow), errp)) {
+        return false;
     }
-    sysbus_realize(SYS_BUS_DEVICE(xbow), &error_fatal);
 
     if (graphics) {
         /* Packet ingress exists only after Crossbow realization. */
@@ -760,17 +819,18 @@ static void octane_init_common(MachineState *machine, bool octane2)
                              SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 
-    octane_fit_pci(machine, SGI_BRIDGE(bridge), nvram, nvram_clock);
+    return octane_fit_pci(machine, SGI_BRIDGE(bridge), nvram, nvram_clock,
+                          errp);
 }
 
 static void octane_init(MachineState *machine)
 {
-    octane_init_common(machine, false);
+    octane_realize(machine, false, &error_fatal);
 }
 
 static void octane2_init(MachineState *machine)
 {
-    octane_init_common(machine, true);
+    octane_realize(machine, true, &error_fatal);
 }
 
 static char *octane_get_topology(Object *obj, Error **errp)
@@ -793,7 +853,7 @@ static void octane_instance_init_common(Object *obj, const char *product)
     OctaneMachineState *s = (OctaneMachineState *)obj;
     uint64List *default_bank;
 
-    s->model = octane_model(product, NULL);
+    s->model = octane_default_model(product);
     s->node = s->model->nodes->value;
     object_property_add_str(obj, "topology", octane_get_topology,
                             octane_set_topology);
@@ -882,7 +942,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     mc->default_cpus = 1;
     mc->max_cpus = 1;
     mc->default_ram_size = octane_model_ram(
-        octane_model("octane", NULL)->nodes->value);
+        octane_default_model("octane")->nodes->value);
     mc->no_floppy = true;
     mc->no_cdrom = true;
     mc->no_parallel = true;
@@ -897,7 +957,7 @@ static void octane2_class_init(ObjectClass *oc, const void *data)
     mc->init = octane2_init;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
     mc->default_ram_size = octane_model_ram(
-        octane_model("octane2", NULL)->nodes->value);
+        octane_default_model("octane2")->nodes->value);
 }
 
 static const TypeInfo octane2_machine = {
