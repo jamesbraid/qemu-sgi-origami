@@ -91,6 +91,7 @@ struct SGIXioBaseioState {
     char *mio_chardev_a_id;
     char *mio_chardev_b_id;
     char *parallel_chardev_id;
+    char *ioc3_mac;
 
     SGIBridgeState *bridge;
     SGIBaseioState *baseio;
@@ -206,6 +207,9 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
         qdev_prop_set_string(baseio, "parallel-chardev",
                              s->parallel_chardev_id);
     }
+    if (s->ioc3_mac) {
+        qdev_prop_set_string(baseio, "ioc3-mac", s->ioc3_mac);
+    }
     if (!qdev_realize(DEVICE(baseio), NULL, errp)) {
         return false;
     }
@@ -247,6 +251,7 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("record-b", SGIXioBaseioState, record_b_id),
     DEFINE_PROP_STRING("mio-chardev-a", SGIXioBaseioState, mio_chardev_a_id),
     DEFINE_PROP_STRING("mio-chardev-b", SGIXioBaseioState, mio_chardev_b_id),
+    DEFINE_PROP_STRING("ioc3-mac", SGIXioBaseioState, ioc3_mac),
     DEFINE_PROP_STRING("parallel-chardev", SGIXioBaseioState,
                        parallel_chardev_id),
 };

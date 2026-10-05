@@ -45,7 +45,12 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
     con = None
     try:
         vm = test.get_vm(name=f"irix_{adapter}_arp")
-        vm.set_machine(MACHINES["origin200"])
+        machine = MACHINES["origin200"]
+        if device_model is None:
+            # The onboard IOC3 takes its address from the machine's mac=,
+            # which a -nic mac= must match.
+            machine += f",mac={configured_mac.hex(':')}"
+        vm.set_machine(machine)
         vm.set_console()
         qemu_socket.set_inheritable(True)
         vm.add_args(

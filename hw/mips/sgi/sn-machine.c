@@ -1793,6 +1793,43 @@ static bool sgi_machine_nvram_backing(SGIMachineState *s,
  * carry, the same policy the Crossbow-attached BaseIO card below applies,
  * and names the port the Bridge links to.
  */
+/*
+ * Whether @board is a Hub product's onboard Ethernet: the IP29 I/O of an
+ * Origin 200 node or the BaseIO card of an Origin 2000 or Onyx2. Add-in
+ * cards such as MENET and the MediaIO's second IOC3 keep taking -nic.
+ */
+static bool sgi_machine_onboard_ethernet(const SGIModelIoBoard *board)
+{
+    switch (board->preset) {
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6G:
+        return board->populated;
+    default:
+        return false;
+    }
+}
+
+/*
+ * The station address of @t's I/O board @board_index: mac=, or the
+ * shared default, plus how many onboard Ethernets come before it, as
+ * each Bedrock node takes node 0's address plus its index.
+ */
+static char *sgi_machine_onboard_mac(SGIMachineState *s,
+                                     const SGIModelTopology *t,
+                                     unsigned int board_index, Error **errp)
+{
+    const SGIModelIoBoardList *entry = t->io_boards;
+    unsigned int ethernet = 0;
+
+    for (unsigned int i = 0; i < board_index && entry;
+         i++, entry = entry->next) {
+        ethernet += sgi_machine_onboard_ethernet(entry->value);
+    }
+    return sgi_board_mac(s->mac, ethernet, errp);
+}
+
 static bool sgi_machine_instantiate_ip29_io(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1825,9 +1862,10 @@ static bool sgi_machine_instantiate_ip29_io(
     const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
         parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
     const char *nvram, *nvram_clock;
+    g_autofree char *mac = sgi_machine_onboard_mac(s, t, board_index, errp);
 
-    if (!sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
-                                   &nvram_clock, errp)) {
+    if (!mac || !sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
+                                           &nvram_clock, errp)) {
         return false;
     }
     if (attachment->crossbar_index >= 0) {
@@ -1840,7 +1878,8 @@ static bool sgi_machine_instantiate_ip29_io(
             nvram, nvram_clock, chardev_a ? chardev_a->label : NULL,
             chardev_b ? chardev_b->label : NULL,
             record_a ? record_a->label : NULL,
-            record_b ? record_b->label : NULL, parallel_id, &bridge, errp)) {
+            record_b ? record_b->label : NULL, parallel_id, mac, &bridge,
+            errp)) {
         return false;
     }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN &&
@@ -1919,6 +1958,7 @@ static bool sgi_machine_instantiate_baseio_card(
         g_strdup_printf("sgi-baseio-flash%u", board_index);
     BlockBackend *flash_blk = blk_by_name(flash_id);
     const char *flash_backing, *nvram, *nvram_clock;
+    g_autofree char *mac = sgi_machine_onboard_mac(s, t, board_index, errp);
     static const struct {
         unsigned int offset;
         const char *prop;
@@ -1930,6 +1970,10 @@ static bool sgi_machine_instantiate_baseio_card(
     };
     size_t i;
 
+    if (!mac) {
+        object_unref(OBJECT(dev));
+        return false;
+    }
     if (!sgi_machine_io_flash_backing(s, t, record, flash_blk, &flash_backing,
                                       errp) ||
         !sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
@@ -1952,6 +1996,7 @@ static bool sgi_machine_instantiate_baseio_card(
     if (flash_backing) {
         qdev_prop_set_string(dev, "flash-drive", flash_backing);
     }
+    qdev_prop_set_string(dev, "ioc3-mac", mac);
     if (s->io_prom && sgi_baseio_preset_lookup(preset)->bridge_flash) {
         qdev_prop_set_string(dev, "firmware", s->io_prom);
         s->io_prom_used = true;
@@ -3859,7 +3904,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         !sgi_machine_validate_expansion_storage(s, t, errp)) {
         return false;
     }
-    if (sgi_machine_has_identity_records(s) || s->mac) {
+    if (sgi_machine_has_identity_records(s)) {
         g_autofree const SGIModelController **controllers = NULL;
         size_t controller_count;
         bool has_l1 = false;
@@ -3874,7 +3919,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         if (!has_l1) {
-            error_report("%s: chassis-eeprom/board-eeprom/spd-eeprom/mac "
+            error_report("%s: chassis-eeprom/board-eeprom/spd-eeprom "
                         "name an L1 identity controller, which topology '%s' "
                         "does not have", mc->name, t->name);
             exit(EXIT_FAILURE);
