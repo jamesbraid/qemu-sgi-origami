@@ -83,6 +83,32 @@ SLICE_B_START_STATUS = 0x28
 SLICE_B_VER_PREFIX = 0x30
 SLICE_B_STATE_WORDS = 7
 
+# Slice B's own PCI set-up, the part of BaseIO bring-up the stock PROM does
+# before it touches the console.  Offsets are in the Hub's small window for
+# widget 8, the base Bridge.  Device 2 is the IOC3; its 1 MB fixed window
+# starts at widget offset 0x600000, and a Bridge register is a 32-bit
+# access at the low half of its eight-byte slot.
+SLICE_B_BRIDGE_DEVICE2 = 0x08000214
+SLICE_B_BRIDGE_WINDOW_BASE = 0x00000fff
+SLICE_B_BRIDGE_MEMORY_SPACE = 0x00001000
+SLICE_B_IOC3_CONFIG = 0x08022000
+SLICE_B_IOC3_COMMAND = 0x04
+SLICE_B_IOC3_BAR0 = 0x10
+SLICE_B_IOC3_MEMORY_MASTER = 0x0006
+# Any PCI base works if the BAR and the Bridge window agree; this is the
+# one Origin 200 runs used when the machine assigned it at reset.
+SLICE_B_IOC3_PCI_BASE = 0x08600000
+# Widget 8, device 2's window, UART A at 0x20178, its scratch register at +7.
+SLICE_B_IOC3_UART_A_SCRATCH = 0x0862017f
+
+# The Hub PCF8584's own address is 0x09 plus the node's slot index.
+# Slice B's processor code is its processor number, so slot index 0.
+SLICE_B_PCF_OWN_ADDRESS = 0x09
+PCF_CONTROL_PIN = 0x80
+PCF_CONTROL_PIN_ES1 = 0xa0
+PCF_CONTROL_PIN_ESO = 0xc0
+PCF_CLOCK_12MHZ_90KHZ = 0x1c
+
 ELSC_HOLD_TICKS = 313
 ELSC_PRESTART_TICKS = 625
 PCF_LRB = 0x08
@@ -734,11 +760,29 @@ def build_slice_b_console_boundary():
     program.emit(mips_i(0x3f, R_S0, R_S3, SLICE_B_PROCESSOR_NUMBER))
 
     # Traverse slice B's local xTalk path to IOC3 configuration and UART A.
-    load_xkphys_address(program, R_T0, 0x9200, 0x08022000)
+    load_xkphys_address(program, R_T0, 0x9200, SLICE_B_IOC3_CONFIG)
     program.emit(mips_i(0x23, R_T0, R_T1, 0))
     program.emit(mips_i(0x3f, R_S0, R_T1, SLICE_B_IOC3_ID))
 
-    load_xkphys_address(program, R_T0, 0x9200, 0x0862017f)
+    # Nothing decodes UART A until firmware assigns the IOC3 a PCI base:
+    # aim Bridge device 2's window at it in memory space, keeping the
+    # register's other fields, then set the BAR and the memory and
+    # bus-master enables.
+    load_xkphys_address(program, R_T3, 0x9200, SLICE_B_BRIDGE_DEVICE2)
+    program.emit(mips_i(0x23, R_T3, R_T1, 0))
+    load_u32(program, R_T2, ~(SLICE_B_BRIDGE_WINDOW_BASE |
+                               SLICE_B_BRIDGE_MEMORY_SPACE) & 0xffffffff)
+    program.emit(mips_r(R_T1, R_T2, R_T1, 0, 0x24))  # and t1, t1, t2
+    program.emit(mips_i(0x0d, R_T1, R_T1,
+                        SLICE_B_BRIDGE_MEMORY_SPACE |
+                        SLICE_B_IOC3_PCI_BASE >> 20))
+    program.emit(mips_i(0x2b, R_T3, R_T1, 0))
+    load_u32(program, R_T2, SLICE_B_IOC3_PCI_BASE)
+    program.emit(mips_i(0x2b, R_T0, R_T2, SLICE_B_IOC3_BAR0))
+    program.emit(mips_i(0x19, R_ZERO, R_T2, SLICE_B_IOC3_MEMORY_MASTER))
+    program.emit(mips_i(0x2b, R_T0, R_T2, SLICE_B_IOC3_COMMAND))
+
+    load_xkphys_address(program, R_T0, 0x9200, SLICE_B_IOC3_UART_A_SCRATCH)
     program.emit(mips_i(0x19, R_ZERO, R_T1, 0x5a))
     program.emit(mips_i(0x28, R_T0, R_T1, 0))
     program.emit(mips_i(0x24, R_T0, R_T1, 0))
@@ -748,8 +792,18 @@ def build_slice_b_console_boundary():
     load_xkphys_address(program, R_S2, 0x9200, 0x01220000)
     program.emit(mips_i(0x19, R_S2, R_S1, 8))
     load_xkphys_address(program, R_T4, 0x9200, 0x01030100)
-    program.emit(mips_i(0x19, R_ZERO, R_T0, 0xc0))
-    program.emit(mips_i(0x3f, R_S1, R_T0, 0))
+
+    # The PROM's PCF8584 initialization: clock control, then the node's own
+    # address, then the serial interface.  The ELSC grant address is only
+    # readable through an adapter whose own address is nonzero.
+    for register, value in ((R_S1, PCF_CONTROL_PIN),
+                            (R_S1, PCF_CONTROL_PIN_ES1),
+                            (R_S2, PCF_CLOCK_12MHZ_90KHZ),
+                            (R_S1, PCF_CONTROL_PIN),
+                            (R_S2, SLICE_B_PCF_OWN_ADDRESS),
+                            (R_S1, PCF_CONTROL_PIN_ESO)):
+        program.emit(mips_i(0x19, R_ZERO, R_T0, value))
+        program.emit(mips_i(0x3f, register, R_T0, 0))
 
     # Derive code 1 from PI_PROCESSOR_NUMBER, then require absence, signal,
     # and an uninterrupted hold beyond the controller's 250 us threshold.
