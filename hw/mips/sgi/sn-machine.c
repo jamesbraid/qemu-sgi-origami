@@ -3389,26 +3389,28 @@ static bool sgi_machine_load_bedrock_flash(MachineState *machine,
     SN1NodeState *first = SN1_NODE(s->bedrock_nodes[0]);
     g_autoptr(SGIPromImage) image = NULL;
     g_autofree char *path = NULL;
-    const uint8_t *contents;
-    size_t length;
+    const uint8_t *contents = NULL;
+    size_t length = 0;
     unsigned int node_index;
 
-    if (!machine->firmware) {
-        error_setg(errp, "%s requires -bios with a stock PROM image",
-                   MACHINE_GET_CLASS(machine)->name);
-        return false;
+    /*
+     * Without -bios every node must boot from its own bound or pflash
+     * flash; sn1_node_attach_prom() refuses a node that has neither.
+     */
+    if (machine->firmware) {
+        path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        if (!path) {
+            error_setg(errp, "%s: cannot find PROM image '%s'",
+                       MACHINE_GET_CLASS(machine)->name, machine->firmware);
+            return false;
+        }
+        image = sgi_prom_image_load(path, first->model_node->flash->size,
+                                    errp);
+        if (!image) {
+            return false;
+        }
+        contents = g_bytes_get_data(image->payload, &length);
     }
-    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-    if (!path) {
-        error_setg(errp, "%s: cannot find PROM image '%s'",
-                  MACHINE_GET_CLASS(machine)->name, machine->firmware);
-        return false;
-    }
-    image = sgi_prom_image_load(path, first->model_node->flash->size, errp);
-    if (!image) {
-        return false;
-    }
-    contents = g_bytes_get_data(image->payload, &length);
 
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);

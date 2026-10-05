@@ -928,7 +928,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     MemoryRegion *stored;
     size_t i;
 
-    if (length != prom_size) {
+    if (contents && length != prom_size) {
         error_setg(errp, "%s: PROM image must be exactly %" PRIu64 " bytes",
                    MACHINE_GET_CLASS(qdev_get_machine())->name, prom_size);
         return false;
@@ -936,6 +936,12 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
 
     stored = sn1_node_create_boot_flash(node, node_index, errp);
     if (errp && *errp) {
+        return false;
+    }
+    if (!stored && !contents) {
+        error_setg(errp, "%s requires -bios with a stock PROM image, or a "
+                   "boot flash for node %u",
+                   MACHINE_GET_CLASS(qdev_get_machine())->name, node_index);
         return false;
     }
     if (stored) {

@@ -325,6 +325,16 @@ static void test_sn1_node_flash_refusals(void)
                            "if=pflash,unit=0 both back node 0's flash");
     assert_launch_rejected(extra, "origin300 accepts one 16 MiB pflash "
                            "image per node");
+    {
+        const char *nothing[] = {
+            qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+            "-smp", "2", "-display", "none", "-S", "-qmp", "stdio", NULL,
+        };
+
+        assert_launch_rejected(nothing, "origin300 requires -bios with a "
+                               "stock PROM image, or a boot flash for "
+                               "node 0");
+    }
     g_assert_cmpint(g_unlink(small), ==, 0);
     g_assert_cmpint(g_unlink(right), ==, 0);
     g_assert_cmpint(g_unlink(prom), ==, 0);

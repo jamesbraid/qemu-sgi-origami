@@ -211,9 +211,11 @@ void sn1_node_reset_cpus(SN1NodeState *node);
 void sn1_node_release_cpus(SN1NodeState *node);
 
 /*
- * Attaches the node's boot flash: a pflash part from -drive if=pflash at unit
- * node_index if one was given, else an immutable ROM holding contents
- * (exactly length bytes, checked against the node's descriptor flash size),
+ * Attaches the node's boot flash: a part over the node's node<N>-flash
+ * binding or -drive if=pflash at unit node_index if one was given, else an
+ * immutable ROM holding contents (exactly length bytes, checked against the
+ * node's descriptor flash size). contents may be NULL, with no -bios, only
+ * when the node has such a part,
  * and maps every PROM view either backs. The machine calls this once every
  * node this run builds has realized (sgi_machine_load_flash() in
  * sn-machine.c), after resolving -bios and the per-node pflash override the

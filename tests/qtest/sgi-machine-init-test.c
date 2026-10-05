@@ -218,8 +218,8 @@ static void test_origin2000(void)
 }
 
 /*
- * Origin 300 still requires -bios with flash attached and then boots
- * from the flash, so both runs pass it.
+ * A created Origin 300 starts from its flash alone, as a launcher starts
+ * it, with no -bios; the unbacked machine needs -bios.
  */
 static void test_origin300(void)
 {
@@ -231,7 +231,7 @@ static void test_origin300(void)
     QTestState *qts;
     uint8_t **created, **unbacked;
 
-    qts = qtest_initf("%s " SN1_MACHINE " -bios %s", attached, prom);
+    qts = qtest_initf("%s " SN1_MACHINE, attached);
     created = read_nodes(qts, cpus, 1, IP35_PROM_SIZE);
     qtest_quit(qts);
     qts = qtest_initf("-M %s " SN1_MACHINE " -bios %s", machine, prom);

@@ -187,7 +187,10 @@ be backed by a 16 MiB raw ``-drive if=pflash,unit=0`` image of the real
 chip's own content, in which case the machine's execution and
 maintenance views answer through that storage -- including any write
 the guest's own PROM has just made -- rather than the immutable
-template ``-bios`` alone produces. Without that backing part, the
+template ``-bios`` alone produces. When every node's flash is backed this
+way, or through its ``node<N>-flash`` property, ``-bios`` may be left
+out: the machine boots from the flash, as a machine created by
+``qemu-sgi-machine-init`` is started. Without that backing part, the
 guest's own environment and self-test writes to its boot flash are
 accepted and logged but never persist: a run that only supplies
 ``-bios`` reaches the L1's own banner and then the IP35 PROM's first
