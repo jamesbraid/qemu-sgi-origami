@@ -84,6 +84,32 @@ class CheckSgiTestResults(unittest.TestCase):
         </testsuites>''')
         validate(read_report(self.junit), ['func-mips64-lib_prom'])
 
+    def test_accepts_parent_suite_named_by_newer_meson(self):
+        suite = ('qemu.func-quick+func-mips64+sgi+sgi-functional - '
+                 'qemu:func-mips64-sn0_smp')
+        case = ('1 test_sn0_smp.SN0SMPMachine.'
+                'test_rtc_poll_allows_peer_progress')
+        self.write_report(f'''<testsuites tests="1" failures="0"
+            errors="0" skipped="0">
+          <testsuite name="{suite}"
+                     tests="1" failures="0" errors="0" skipped="0">
+            <testcase classname="{suite}"
+              name="{case}"/>
+          </testsuite>
+        </testsuites>''')
+        validate(read_report(self.junit),
+                 ['func-mips64-sn0_smp',
+                  'SN0SMPMachine.test_rtc_poll_allows_peer_progress'])
+
+    def test_accepts_native_exitcode_identity_named_by_newer_meson(self):
+        self.write_report('''<testsuites tests="1">
+          <testsuite name="qemu" tests="1">
+            <testcase classname="qemu"
+              name="func-quick+func-mips64 - qemu:func-mips64-lib_prom"/>
+          </testsuite>
+        </testsuites>''')
+        validate(read_report(self.junit), ['func-mips64-lib_prom'])
+
     def test_rejects_empty_or_missing_report(self):
         self.write_report('<testsuites tests="0"/>')
         self.write_expected('case\n')
