@@ -2195,6 +2195,19 @@ def _compile_pic_io_records(model: dict, graph: dict,
         if bus is not None and bus["kind"] == "pci":
             downstream.setdefault(bus["id"], []).append(connection)
 
+    fresh_year_bases = {}
+    for link in model.get("links", []):
+        if link.get("kind") != "ioc4-clock":
+            continue
+        rtc = components[link["source"]]
+        if "ds1742_fresh_year_base" not in rtc:
+            continue
+        board = _board_ancestor(components, rtc)
+        if board is None or board.get("hardware_kind") != "io9":
+            raise CompileError(
+                f"DS1742 clock '{rtc['id']}' has no owning IO9 board")
+        fresh_year_bases[board["id"]] = rtc["ds1742_fresh_year_base"]
+
     host_records = []
     host_attachments = []
     for cid in pic_ids:
@@ -2465,6 +2478,9 @@ def _compile_pic_io_records(model: dict, graph: dict,
         }
         if board["id"] in ds1742_boards:
             record["ds1742"] = True
+        if board["id"] in fresh_year_bases:
+            record["ds1742_fresh_year_base"] = (
+                fresh_year_bases[board["id"]])
         io9_boards.append(record)
 
     return host_records, io9_boards, host_attachments

@@ -11,6 +11,7 @@ sources:
   ip53-platform-review: "docs/reviews/ip53-platform-identity-evidence-review-20261003.md: clearance for the inferred 0x2001 software input"
   ip53-l1-contract: "docs/datasheets/ip53-l1-identity-experiment.md: selected local controller input and limits"
   ip53-l1-review: "docs/reviews/ip53-l1-product-identity-evidence-review-20261003.md: clearance for the product-specific 0x37 software input"
+  ip53-clock-year-review: "docs/reviews/chimera-ip53-clock-identity-policy-review-20261005.md: cleared fresh-seed policy and limits"
 layer:
   kind: product
   id: origin350-ip53-experiment

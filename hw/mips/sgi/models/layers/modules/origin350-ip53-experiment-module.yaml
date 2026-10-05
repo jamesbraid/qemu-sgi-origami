@@ -175,7 +175,8 @@ layer:
           - docs/datasheets/ds1742-ioc4.md
         parent: io9
         provenance: derived
-        sources: [ip53-runtime-review]
+        ds1742_fresh_year_base: 1968
+        sources: [ip53-runtime-review, ip53-clock-year-review]
         notes: >-
           Synthetic linked IOC4 clock resource selected by the reviewed software
           construction contract. The link does not assert physical address lines

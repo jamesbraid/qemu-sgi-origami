@@ -300,6 +300,8 @@ def _io_board(raw: dict) -> dict:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
     if raw.get("ds1742") is True:
         board["ds1742"] = True
+    if "ds1742_fresh_year_base" in raw:
+        board["ds1742-fresh-year-base"] = raw["ds1742_fresh_year_base"]
 
     for key in ("ioc3_subsystem_id", "mac_source"):
         if key in raw:

@@ -3046,7 +3046,11 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             rtc = qdev_new("ds1742");
             object_property_add_child(OBJECT(s), child_name, OBJECT(rtc));
             object_unref(OBJECT(rtc));
-            if (!qdev_prop_set_drive_err(rtc, "drive", data, errp) ||
+            if (!object_property_set_uint(
+                    OBJECT(rtc), "fresh-year-base",
+                    board->has_ds1742_fresh_year_base ?
+                    board->ds1742_fresh_year_base : 0, errp) ||
+                !qdev_prop_set_drive_err(rtc, "drive", data, errp) ||
                 !qdev_prop_set_drive_err(rtc, "clock-drive", clock, errp) ||
                 !sysbus_realize(SYS_BUS_DEVICE(rtc), errp)) {
                 return false;

@@ -1076,6 +1076,9 @@
 #
 # @ds1742: this board has an explicitly linked IOC4 clock resource
 #
+# @ds1742-fresh-year-base: year base for a fresh DS1742 seed;
+#     absent means zero
+#
 # @pci-functions: fitted Bedrock assembly parts and their supported
 #     revisions
 #
@@ -1106,6 +1109,7 @@
             '*serial': 'uint64',
             '*ioc3-serial': 'uint64',
             '*ds1742': 'bool',
+            '*ds1742-fresh-year-base': 'uint32',
             '*system-timekeeper': 'SGIModelSystemTimekeeper',
             'populated': 'bool',
             '*pci-functions': ['SGIModelPciFunction'],
