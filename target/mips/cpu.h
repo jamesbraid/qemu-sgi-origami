@@ -142,6 +142,12 @@ typedef struct MIPSCPUConfig {
     bool status_re_logs_unimp;
     /* Writable bits in the Cause register. */
     uint32_t cause_rw_bitmask;
+    /*
+     * Not a processor behaviour: lets mips_cpu_exec_interrupt() drop
+     * CPU_INTERRUPT_HARD while every pending line is masked, so a line the
+     * guest never unmasks keeps no vCPU on the big lock.
+     */
+    bool drops_masked_interrupt_flag;
 } MIPSCPUConfig;
 
 /* MSA Context */
