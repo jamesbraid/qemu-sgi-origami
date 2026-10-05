@@ -12663,14 +12663,14 @@
           "attachment": 0,
           "carrier": "onboard",
           "id": "ip30-board",
-          "ioc3-serial": 103835129348097,
+          "ioc3-serial": 103853732483072,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0887-003",
           "populated": true,
           "preset": "ip30",
           "revision": 3,
-          "serial": 134346593796098,
+          "serial": 89358092029440,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "ds1685"
@@ -12760,36 +12760,36 @@
           "heart": {
             "board-records": [
               {
-                "barcode": "SIM3010001",
+                "barcode": "EMUU00",
                 "name": "PM10",
                 "part": "030-0888-004",
                 "revision": "B",
                 "role": "processor",
-                "serial": 134346593796097
+                "serial": 89358092031232
               },
               {
-                "barcode": "SIM3010002",
+                "barcode": "EMUN00",
                 "name": "IP30",
                 "part": "030-0887-003",
                 "revision": "F",
                 "role": "system-board",
-                "serial": 134346593796098
+                "serial": 89358092029440
               },
               {
-                "barcode": "SIM3010003",
+                "barcode": "EMUF00",
                 "name": "FP1",
                 "part": "030-0891-003",
                 "revision": "A",
                 "role": "frontplane",
-                "serial": 134346593796099
+                "serial": 89358092027392
               },
               {
-                "barcode": "SIM3010004",
+                "barcode": "EMUS00",
                 "name": "PWR.SPPLY.SR",
                 "part": "060-0028-003",
                 "revision": "A",
                 "role": "power-supply",
-                "serial": 134346593796100
+                "serial": 89358092030720
               }
             ],
             "gpio-classic": true,
@@ -12838,14 +12838,14 @@
           "attachment": 0,
           "carrier": "onboard",
           "id": "ip30-board",
-          "ioc3-serial": 103835129348097,
+          "ioc3-serial": 103853732483072,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1467-001",
           "populated": true,
           "preset": "ip30",
           "revision": 3,
-          "serial": 134346610573314,
+          "serial": 89358092029440,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "ds1685"
@@ -12945,36 +12945,36 @@
           "heart": {
             "board-records": [
               {
-                "barcode": "SIM3020001",
+                "barcode": "EMUU00",
                 "name": "PM10360MHZ",
                 "part": "030-1590-002",
                 "revision": "B",
                 "role": "processor",
-                "serial": 134346610573313
+                "serial": 89358092031232
               },
               {
-                "barcode": "SIM3020002",
+                "barcode": "EMUN00",
                 "name": "IP30",
                 "part": "030-1467-001",
                 "revision": "B",
                 "role": "system-board",
-                "serial": 134346610573314
+                "serial": 89358092029440
               },
               {
-                "barcode": "SIM3020003",
+                "barcode": "EMUF00",
                 "name": "FP1",
                 "part": "030-0891-003",
                 "revision": "H",
                 "role": "frontplane",
-                "serial": 134346610573315
+                "serial": 89358092027392
               },
               {
-                "barcode": "SIM3020004",
+                "barcode": "EMUS00",
                 "name": "PWR.SPPLY.ER",
                 "part": "060-0035-002",
                 "revision": "A",
                 "role": "power-supply",
-                "serial": 134346610573316
+                "serial": 89358092030720
               }
             ],
             "gpio-classic": false,

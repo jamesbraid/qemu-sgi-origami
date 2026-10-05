@@ -73,11 +73,11 @@ layer:
             - 0
         synthetic_identities:
         - component: bridge
-          serial: '0x7a3001000002'
-          reason: Reviewed virtual system-board identity.
+          serial: '0x51454d554e00'
+          reason: The system-board record's marked synthetic serial; the Bridge part holds that record.
         - component: ioc3
-          serial: '0x5e7000000001'
-          reason: Existing virtual IOC3 identity; not a physical serial.
+          serial: '0x5e7454d55000'
+          reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
       harness:
         console: ioc3-serial-a
         prom_dialogue: none

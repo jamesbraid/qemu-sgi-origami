@@ -136,11 +136,11 @@ layer:
       parent: ip30-board
       board_record:
         role: processor
-        barcode: SIM3020001
+        barcode: EMUU00
         part: 030-1590-002
         revision: B
         name: PM10360MHZ
-        serial: '0x7a3002000001'
+        serial: '0x51454d555500'
     - id: record-1
       name: record-1
       kind: identity
@@ -150,11 +150,11 @@ layer:
       parent: ip30-board
       board_record:
         role: system-board
-        barcode: SIM3020002
+        barcode: EMUN00
         part: 030-1467-001
         revision: B
         name: IP30
-        serial: '0x7a3002000002'
+        serial: '0x51454d554e00'
     - id: record-2
       name: record-2
       kind: identity
@@ -164,11 +164,11 @@ layer:
       parent: ip30-board
       board_record:
         role: frontplane
-        barcode: SIM3020003
+        barcode: EMUF00
         part: 030-0891-003
         revision: H
         name: FP1
-        serial: '0x7a3002000003'
+        serial: '0x51454d554600'
     - id: record-3
       name: record-3
       kind: identity
@@ -178,11 +178,11 @@ layer:
       parent: ip30-board
       board_record:
         role: power-supply
-        barcode: SIM3020004
+        barcode: EMUS00
         part: 060-0035-002
         revision: A
         name: PWR.SPPLY.ER
-        serial: '0x7a3002000004'
+        serial: '0x51454d555300'
     buses:
     - id: sysad
       kind: sysad
