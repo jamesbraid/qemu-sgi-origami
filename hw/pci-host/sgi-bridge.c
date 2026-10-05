@@ -2053,9 +2053,9 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
 }
 
 /*
- * The placement the requesting slot's swap bit asks for. The window is
- * chosen on the PCI address the device issued, since it selects between the
- * two swap bits.
+ * The placement the requesting slot's swap bit and data-phase width ask
+ * for. The window is chosen on the PCI address the device issued, since it
+ * selects between the two swap bits.
  */
 static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
                                                 unsigned int slot,
@@ -2071,7 +2071,7 @@ static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
     return sgi_dma_placement_select(
         dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
                                             : DEV_SWAP_DIRECT),
-        false);
+        s->dma_64bit_slots & (1U << slot));
 }
 
 /*
@@ -2682,7 +2682,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 
     /* One set of placements for the chip: per-slot decision, shared action. */
     sgi_dma_placement_init(&s->placement, obj, "sgi-bridge.placement",
-                           &s->fabric_as, BIT(SGI_DMA_PLACEMENT_WORD));
+                           &s->fabric_as,
+                           (s->dma_64bit_slots != 0xff ?
+                            BIT(SGI_DMA_PLACEMENT_WORD) : 0) |
+                           (s->dma_64bit_slots ?
+                            BIT(SGI_DMA_PLACEMENT_DOUBLEWORD) : 0));
 
     /* One IOMMU region per slot: the swap bits belong to the issuer. */
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
@@ -2814,6 +2818,12 @@ static const Property sgi_bridge_properties[] = {
      * themselves; this is the override, not the mechanism.
      */
     DEFINE_PROP_UINT32("byte-lane-exempt", SGIBridgeState, byte_lane_exempt, 0),
+    /*
+     * Slots whose DMA runs 64-bit data phases, one bit per slot. PCI
+     * negotiates width per transaction; a board-level static width stands
+     * in for that, set by whoever fits the card.
+     */
+    DEFINE_PROP_UINT8("dma-64bit-slots", SGIBridgeState, dma_64bit_slots, 0),
 };
 
 /*
