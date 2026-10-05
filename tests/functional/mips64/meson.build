@@ -27,6 +27,11 @@ test_mips64_timeouts = {
   # boot passed three runs in a row. Keep 240s until the shorter script
   # is measured in CI.
   'origin300_prom' : 240,
+  # One-processor Origin 200 PROM under record/replay: a record and replay
+  # to the menu (20-30s each when measured on 2026-10-04), a partial
+  # record with a seek, and a short gdb reverse-debugging session. Each
+  # wait inside the script is bounded at 600s or less.
+  'origin200_record_replay' : 1500,
   # One stock-PROM boot of the two-chassis pair to the menu: 364 s measured
   # against the debug build at host load 60 (test_origin300_two_chassis_
   # prom.py's own docstring); 1200 is that script's own class budget.
@@ -276,6 +281,7 @@ tests_mips64_system_quick = [
 
 tests_mips64_system_thorough = [
   'origin200_prom',
+  'origin200_record_replay',
   'origin200_gigachannel_prom',
   'onyx2_deskside_prom',
   'onyx2_rack_prom',
