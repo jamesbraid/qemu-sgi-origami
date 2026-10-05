@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Compile the selected IP30 populations without borrowing SN node facts."""
 
+from . import synthetic_serial
 from .model_shared import _integer, _required, _validate_integer, num
 
 # R12000 Config fields (NEC VR10000 Series User's Manual, U10278EJ4V0UM00,
@@ -110,6 +111,11 @@ def compile_heart_node(model, components, entry):
             raise CompileError(f"invalid or repeated IP30 board record '{role}'")
         record["serial"] = num(record["serial"])
         _validate_integer(record["serial"], 48, "IP30 virtual board ROM serial")
+        if (not synthetic_serial.onewire_serial_marked(record["serial"]) or
+                not synthetic_serial.text_serial_marked(record["barcode"])):
+            raise CompileError(
+                f"IP30 board record '{role}' serial and barcode must carry "
+                "the synthetic-serial marker")
         if any(other["serial"] == record["serial"] for other in records.values()):
             raise CompileError("IP30 virtual board ROM serials must be distinct")
         records[role] = record

@@ -25,7 +25,6 @@ from collections.abc import Callable
 from .model_composition import validate_initialization_policy
 
 from . import synthetic_serial
-
 from .model_shared import (
     _compile_r10000_reset_mode, _integer, _required, _validate_integer, num,
 )
@@ -683,20 +682,32 @@ def _synthetic_serial(model: dict, component_id: str, kind: str, node_index: int
     (`machine.emulation.synthetic_serials`); the Origin 2000 family names
     one explicit value per component (`machine.emulation.synthetic_identities`).
     Both are emulator-assigned identities, never hardware evidence -- see
-    each field's own `reason`/provenance in the resolved model.
+    each field's own `reason`/provenance in the resolved model -- so each
+    must carry the synthetic-serial marker (synthetic_serial.py).
     """
     emulation = model["machine"].get("emulation", {})
     explicit = emulation.get("synthetic_identities")
+    serial = None
     if isinstance(explicit, list):
         for entry in explicit:
             if entry.get("component") == component_id:
-                return num(entry["serial"])
+                if serial is not None:
+                    raise CompileError(
+                        f"component '{component_id}' has more than one "
+                        "synthetic identity")
+                serial = num(entry["serial"])
     bases = emulation.get("synthetic_serials")
-    if isinstance(bases, dict) and kind in bases:
+    if serial is None and isinstance(bases, dict) and kind in bases:
         entry = bases[kind]
-        return num(entry["base"]) + node_index * _integer(
+        serial = num(entry["base"]) + node_index * _integer(
             entry, "per_node_stride", f"synthetic_serials.{kind}")
-    raise CompileError(f"component '{component_id}' has no synthetic serial")
+    if serial is None:
+        raise CompileError(f"component '{component_id}' has no synthetic serial")
+    if not synthetic_serial.onewire_serial_marked(serial):
+        raise CompileError(
+            f"component '{component_id}' synthetic serial {serial:#014x} "
+            "carries no synthetic-serial marker")
+    return serial
 
 
 def _module_responder_serial(model: dict, component_id: str) -> int | None:
@@ -2004,6 +2015,10 @@ def _compile_module(model: dict, module_id: str, module_index: int,
     for item in emulation.get("module_semantic_serials", []) or []:
         if item.get("component") == module_id:
             serial = item["serial"]
+            if not synthetic_serial.text_serial_marked(serial):
+                raise CompileError(
+                    f"module '{module_id}' serial '{serial}' carries no "
+                    "synthetic-serial marker")
     initial_number = 0
     for item in emulation.get("initial_module_numbers", []) or []:
         if item.get("component") == module_id:
