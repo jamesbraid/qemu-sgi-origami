@@ -5278,15 +5278,16 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
     return false;
 }
 
-/* One property per bindable item any of the product's offerings lists. */
-static void sgi_machine_add_storage_properties(Object *obj)
+/*
+ * One class property per bindable item any of @oc's product offerings
+ * lists. Each product class calls this once its product is set.
+ */
+void sgi_machine_class_add_storage(ObjectClass *oc)
 {
-    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const SGIModelOfferingList *entry;
 
-    if (!smc->product) {
-        return;
-    }
+    g_assert(smc->product);
     for (entry = sgi_machines()->offerings; entry; entry = entry->next) {
         const SGIModelStorageItemList *item;
 
@@ -5296,11 +5297,12 @@ static void sgi_machine_add_storage_properties(Object *obj)
         for (item = entry->value->storage; item; item = item->next) {
             const char *name = item->value->name;
 
-            if (object_property_find(obj, name) ||
+            if (object_class_property_find(oc, name) ||
                 !sgi_machine_storage_bindable(smc, name)) {
                 continue;
             }
-            sgi_storage_add_property(obj, &SGI_MACHINE(obj)->storage, name);
+            sgi_storage_class_add_property(
+                oc, offsetof(SGIMachineState, storage), name);
         }
     }
 }
@@ -5313,7 +5315,6 @@ static void sgi_machine_instance_init(Object *obj)
         sgi_model_find_topology(smc->default_topology) : NULL;
 
     SGI_MACHINE(obj)->debug_leds = true;
-    sgi_machine_add_storage_properties(obj);
     /*
      * With no -smp at all QEMU leaves smp.sockets at 1 beside the class's
      * default_cpus; the product's default population is that many
@@ -5574,6 +5575,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = sgi_machine_product_max_cpus("origin200");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn0.node0.ram";
+    sgi_machine_class_add_storage(oc);
 }
 
 static void origin2000_class_init(ObjectClass *oc, const void *data)
@@ -5600,6 +5602,7 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
         "Select the BaseIO card variant this product's I/O board builds: "
         "'io6' (the plain card, the default) or 'io6g' (adds the MediaIO "
         "daughtercard's second IOC3 and both chips' keyboard/mouse pair).");
+    sgi_machine_class_add_storage(oc);
 }
 
 /*
@@ -5624,6 +5627,7 @@ static void onyx2_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = sgi_machine_product_max_cpus("onyx2");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn0.ram";
+    sgi_machine_class_add_storage(oc);
 }
 
 /*

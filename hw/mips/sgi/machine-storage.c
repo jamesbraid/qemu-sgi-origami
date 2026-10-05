@@ -14,11 +14,10 @@
 #include "hw/core/qdev.h"
 #include "hw/mips/sgi/sgi-storage.h"
 
-static void sgi_storage_get(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
+static void sgi_storage_visit_get(GHashTable *bindings, Visitor *v,
+                                  const char *name, Error **errp)
 {
-    GHashTable **bindings = opaque;
-    g_autofree char *value = g_strdup(sgi_storage_node(*bindings, name));
+    g_autofree char *value = g_strdup(sgi_storage_node(bindings, name));
 
     if (!value) {
         value = g_strdup("");
@@ -26,10 +25,9 @@ static void sgi_storage_get(Object *obj, Visitor *v, const char *name,
     visit_type_str(v, name, &value, errp);
 }
 
-static void sgi_storage_set(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
+static void sgi_storage_visit_set(GHashTable **bindings, Visitor *v,
+                                  const char *name, Error **errp)
 {
-    GHashTable **bindings = opaque;
     char *value;
 
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
@@ -51,16 +49,65 @@ static void sgi_storage_set(Object *obj, Visitor *v, const char *name,
     }
 }
 
+/* An instance property's opaque is the bindings table itself. */
+static void sgi_storage_get(Object *obj, Visitor *v, const char *name,
+                            void *opaque, Error **errp)
+{
+    sgi_storage_visit_get(*(GHashTable **)opaque, v, name, errp);
+}
+
+static void sgi_storage_set(Object *obj, Visitor *v, const char *name,
+                            void *opaque, Error **errp)
+{
+    sgi_storage_visit_set(opaque, v, name, errp);
+}
+
+/* A class property's opaque is the table's offset in the instance. */
+static GHashTable **sgi_storage_class_bindings(Object *obj, void *opaque)
+{
+    return (GHashTable **)((char *)obj + (uintptr_t)opaque);
+}
+
+static void sgi_storage_class_get(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    sgi_storage_visit_get(*sgi_storage_class_bindings(obj, opaque), v, name,
+                          errp);
+}
+
+static void sgi_storage_class_set(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    sgi_storage_visit_set(sgi_storage_class_bindings(obj, opaque), v, name,
+                          errp);
+}
+
+static char *sgi_storage_description(const char *name)
+{
+    return g_strdup_printf("Block node or drive backing %s; it must be "
+                           "exactly the size query-sgi-machines lists for "
+                           "the configuration", name);
+}
+
 void sgi_storage_add_property(Object *obj, GHashTable **bindings,
                               const char *name)
 {
-    g_autofree char *description = g_strdup_printf(
-        "Block node or drive backing %s; it must be exactly the size "
-        "query-sgi-machines lists for the configuration", name);
+    g_autofree char *description = sgi_storage_description(name);
 
     object_property_add(obj, name, "str", sgi_storage_get, sgi_storage_set,
                         NULL, bindings);
     object_property_set_description(obj, name, description);
+}
+
+void sgi_storage_class_add_property(ObjectClass *oc, size_t offset,
+                                    const char *name)
+{
+    g_autofree char *description = sgi_storage_description(name);
+
+    object_class_property_add(oc, name, "str", sgi_storage_class_get,
+                              sgi_storage_class_set, NULL,
+                              (void *)(uintptr_t)offset);
+    object_class_property_set_description(oc, name, description);
 }
 
 const char *sgi_storage_node(GHashTable *bindings, const char *name)

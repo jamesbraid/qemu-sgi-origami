@@ -56,6 +56,12 @@ struct SGIMachineClass {
 void sgi_machine_init(MachineState *machine);
 
 /*
+ * Register the storage properties (node<N>-flash, io<N>-flash, nvram<N>,
+ * nvram<N>-clock) a product class binds. Call once smc->product is set.
+ */
+void sgi_machine_class_add_storage(ObjectClass *oc);
+
+/*
  * Exposed for each product class file (sn0.c's origin200/origin2000, sn1.c's
  * origin300): default_cpus, max_cpus and default_ram_size for
  * mc->default_cpus/max_cpus/default_ram_size, derived from the same topology
