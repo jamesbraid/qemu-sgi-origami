@@ -2050,7 +2050,7 @@ static void test_flash_backend_error(void)
         "errno = \"5\"\nonce = \"on\"\n", -1, NULL));
     g_setenv("OCTANE_WORKING_IMAGE", path, true);
     g_setenv("OCTANE_DEBUG_CONFIG", config, true);
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_passed();
     g_test_trap_assert_stderr("*Could not update PFLASH:*");
     g_unsetenv("OCTANE_WORKING_IMAGE");

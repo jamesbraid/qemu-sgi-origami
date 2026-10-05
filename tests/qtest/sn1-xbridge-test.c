@@ -5,6 +5,7 @@
 #include "exec/memattrs.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "sgi-test.h"
 
 #define BASE 0x10000000ULL
@@ -829,7 +830,7 @@ static void test_requester_bounds(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*slot 8 function 0 not available*reserved*");
 }

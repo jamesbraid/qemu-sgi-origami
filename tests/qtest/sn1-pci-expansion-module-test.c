@@ -6,6 +6,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define CHASSIS "/machine/peripheral/wrap/board"
 #define FIXTURE "-M none -cpu R10000 -S " \
@@ -256,7 +257,7 @@ static void test_invalid_revision(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*explicit inferred revision 2*");
 }
@@ -269,7 +270,7 @@ static void test_missing_revision(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*explicit inferred revision 2*");
 }
@@ -284,7 +285,7 @@ static void test_missing_placement(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*explicit placement and node number below 128*");
 }
@@ -297,7 +298,7 @@ static void test_missing_pairing(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*needs an explicit U0 port*");
 }
@@ -311,7 +312,7 @@ static void test_duplicate_pairing(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*head links share U0 port 8*");
 }
@@ -325,7 +326,7 @@ static void test_unwired_port(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*needs an explicit U0 port from 8, 9, c or d*");
 }
@@ -340,7 +341,7 @@ static void test_invalid_placement(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*explicit placement and node number below 128*");
 }
@@ -355,7 +356,7 @@ static void test_missing_bus_prefix(void)
         qtest_quit(qts);
         return;
     }
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*needs a bus-prefix for its six buses*");
 }

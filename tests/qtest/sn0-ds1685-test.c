@@ -14,6 +14,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "sgi-launch.h"
 #include "sgi-test.h"
 
@@ -1080,7 +1081,7 @@ static void test_storage_write_error(const void *data)
     g_setenv("DS1685_ERROR_IMAGE", strstr(kind, "main") ? store : clock, true);
     g_setenv("DS1685_MAIN", store, true);
     g_setenv("DS1685_CLOCK", clock, true);
-    g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_passed();
     g_test_trap_assert_stderr("*ds1685:*failed*Input/output error*"
                              "persistent storage recovered*");
@@ -1382,7 +1383,7 @@ static void test_storage_migration(const void *data)
     QTestState *from, *to;
 
     if (paused && !g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_subprocess(NULL, SGI_WAIT_S * G_TIME_SPAN_SECOND, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr(
             "*ds1685: persistent storage deferred while backing is inactive*");
