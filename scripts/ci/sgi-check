@@ -293,14 +293,18 @@ def smoke(args):
     rom_suite(build, 'smoke-rom')
 
 
-# Functional test classes whose every test_ method the full run requires.
+# The functional tests the full run requires: the Meson test, its log
+# base, the module and class whose test_ methods it lists, and the cases to
+# run, or None for every case. The two- and four-CPU Linux boots took
+# about 14 of the 18 minutes of the Linux test in the full run, so they run
+# only in the nightly's Monday, Wednesday and Friday matrix workload.
 FULL_FUNCTIONAL = [
     ('func-mips64-origin200_prom', 'full-prom',
-     'test_origin200_prom', 'OriginPromMatrix'),
+     'test_origin200_prom', 'OriginPromMatrix', None),
     ('func-mips64-linux_kernel', 'full-linux',
-     'test_linux_kernel', 'LinuxKernel'),
+     'test_linux_kernel', 'LinuxKernel', ['test_one_cpu']),
     ('func-mips64-irix_miniroot', 'full-irix',
-     'test_irix_miniroot', 'IrixMiniroot'),
+     'test_irix_miniroot', 'IrixMiniroot', None),
 ]
 
 
@@ -317,26 +321,40 @@ def list_cases(args):
     print('\n'.join(cases))
 
 
-def required_cases(build, module, test_class, dest):
-    """Import the test class in the build's Python, as Meson would."""
+def required_cases(build, module, test_class, dest, selected=None):
+    """Import the test class in the build's Python, as Meson would.
+
+    Write every case of the class to dest, or only the selected ones,
+    which must all exist, and return the Meson arguments that run them.
+    """
     env = dict(os.environ, MESON_BUILD_ROOT=str(build.path),
                PYTHONPATH=':'.join(str(SOURCE / part) for part in (
                    'python', 'tests/functional', 'tests/functional/mips64')))
-    with open(dest, 'w', encoding='utf-8') as out:
-        run([build.python, __file__, 'list-cases', module, test_class],
-            env=env, stdout=out)
+    cases = output([build.python, __file__, 'list-cases', module, test_class],
+                   env=env).split()
+    if selected is None:
+        dest.write_text('\n'.join(cases) + '\n', encoding='utf-8')
+        return []
+    selected = [f'{test_class}.{name}' for name in selected]
+    missing = sorted(set(selected) - set(cases))
+    if missing:
+        sys.exit(f'{test_class} has no case {", ".join(missing)}')
+    dest.write_text('\n'.join(selected) + '\n', encoding='utf-8')
+    return ['--test-args', ' '.join(selected)]
 
 
 def full(args):
     build = Build(args.build)
     build.ninja(*(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
                   '.tstamp' for target, *_ in FULL_FUNCTIONAL))
-    for target, logbase, module, test_class in FULL_FUNCTIONAL:
-        required_cases(build, module, test_class,
-                       build.path / f'{logbase}.expected')
-    for target, logbase, *_ in FULL_FUNCTIONAL:
-        build.meson_test(logbase, [target],
-                         build.path / f'{logbase}.expected')
+    runs = []
+    for target, logbase, module, test_class, selected in FULL_FUNCTIONAL:
+        expected = build.path / f'{logbase}.expected'
+        runs.append((logbase, required_cases(build, module, test_class,
+                                             expected, selected) + [target],
+                     expected))
+    for logbase, meson_args, expected in runs:
+        build.meson_test(logbase, meson_args, expected)
 
     rom_suite(build, 'full-rom')
 
@@ -387,7 +405,8 @@ def main(argv=None):
     mode.set_defaults(func=smoke)
 
     mode = modes.add_parser(
-        'full', help='the merge-queue checks: every qtest, boot and ROM')
+        'full', help='the merge-queue checks: every qtest, the PROM, '
+                     'one-CPU Linux and IRIX boots, and every ROM')
     mode.set_defaults(func=full)
 
     mode = modes.add_parser('list-cases', help=argparse.SUPPRESS)
