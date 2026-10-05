@@ -110,8 +110,16 @@
 #define R_INTCSR        0x68
 #define R_SERIAL        0x6c
 
-#define INTCSR_PENDING  (1u << 15)
-#define INTCSR_ENABLE   (1u << 8)
+/* INTCSR bits, PLX PCI 9060 Data Sheet (Version 1.2, 1995) Table 45. */
+#define INTCSR_ENABLE           (1u << 8)
+#define INTCSR_LOCAL_IN_ENABLE  (1u << 11)
+#define INTCSR_PENDING          (1u << 15)
+#define INTCSR_LOCAL_OUT_ENABLE (1u << 16)
+#define INTCSR_DMA0_ENABLE      (1u << 18)
+#define INTCSR_DMA0_ACTIVE      (1u << 21)
+/* What the shipped driver's attach routine sets. */
+#define INTCSR_DRIVER_ENABLES   (INTCSR_ENABLE | INTCSR_LOCAL_IN_ENABLE | \
+                                 INTCSR_LOCAL_OUT_ENABLE | INTCSR_DMA0_ENABLE)
 
 #define SERIAL_CLOCK    (1u << 24)
 #define SERIAL_CS       (1u << 25)
@@ -208,6 +216,7 @@
 
 #define DMA_CMD_START           0x3u    /* ENABLE | START */
 #define DMA_CMD_ABORT           0x4u
+#define DMA_CMD_CLEAR_INT       0x8u
 #define DMA_STATUS_DONE         0x10u
 
 /* Descriptor pointer / next-descriptor-pointer low flag bits. */
@@ -1588,32 +1597,155 @@ static void test_overlay_index_compat_off(void)
     qtest_quit(qts);
 }
 
-/*
- * DMAMODE0's Done Interrupt Enable bit (0x400) routes transfer completion
- * into this file's existing shared interrupt-pending convention
- * (test_interrupt_acknowledge), the same one the frame timer uses.
- */
-static void test_dma_done_interrupt_when_enabled(void)
+static bool rad4_pci_irq(QTestState *qts)
 {
-    QTestState *qts = rad4_init();
-    static const uint32_t payload[1] = { 0x00abcdefu };
+    return qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
+           PCI_STATUS_INTERRUPT;
+}
 
-    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+/* Upload one word with the given mode and first-descriptor flags. */
+static void dma_one_word(QTestState *qts, uint32_t mode, uint32_t flags)
+{
+    static const uint32_t payload[1] = { 0x00abcdefu };
 
     dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
                          0x000030u, sizeof(payload), 0);
-    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE,
-               DMA_MODE_SCATTER_GATHER | DMA_MODE_DONE_IRQ);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, mode);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN);
+               DMA_DESC_END_OF_CHAIN | flags);
     dma_start(qts, DMA_CMD_START);
+    g_assert_cmphex(bar2_read(qts, 0x000030), ==, payload[0]);
+}
 
-    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
-                    INTCSR_PENDING);
+/*
+ * DMA channel 0's done interrupt (PCI 9060 Data Sheet sections 3.10.2.3 and
+ * 3.6.1, Tables 45, 47 and 57): the mode register's Done Interrupt Enable
+ * makes completion set INTCSR bit 21, the PLX local interrupt output
+ * carries it to the local input on this board, so bit 15 and the PCI line
+ * follow, and writing DMACSR0 bit 3 clears all three. The second write is
+ * the one the shipped driver's interrupt handler makes: Done and Clear set,
+ * Enable clear, so it starts nothing.
+ */
+static void test_dma_done_interrupt_when_enabled(void)
+{
+    QTestState *qts = rad4_init();
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    dma_one_word(qts, 0x7c3u, 0);
+
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==,
+                    INTCSR_DMA0_ACTIVE | INTCSR_PENDING);
+    g_assert_true(rad4_pci_irq(qts));
+
+    /* Status bits ignore writes: writing the value back changes nothing. */
+    bar0_write(qts, R_INTCSR, bar0_read(qts, R_INTCSR));
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_DMA0_ACTIVE, ==,
+                    INTCSR_DMA0_ACTIVE);
+
+    /* The handler masks the PCI line while it works, then clears. */
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES & ~INTCSR_ENABLE);
+    g_assert_false(rad4_pci_irq(qts));
+    dma_start(qts, DMA_STATUS_DONE | DMA_CMD_CLEAR_INT | 0x2u);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==, 0);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    g_assert_false(rad4_pci_irq(qts));
 
     qtest_quit(qts);
+}
+
+/*
+ * Without the Done Interrupt Enable mode bit, completion raises nothing.
+ * The interrupt's status still follows completion when it is enabled but
+ * the local output or its DMA source is masked; only the line stays quiet.
+ */
+static void test_dma_interrupt_enables(void)
+{
+    QTestState *qts = rad4_init();
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    dma_one_word(qts, DMA_MODE_SCATTER_GATHER, 0);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES & ~INTCSR_DMA0_ENABLE);
+    dma_one_word(qts, DMA_MODE_SCATTER_GATHER | DMA_MODE_DONE_IRQ, 0);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==,
+                    INTCSR_DMA0_ACTIVE);
+    g_assert_false(rad4_pci_irq(qts));
+
+    /* Enabling the source later lets the held interrupt through. */
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
+                    INTCSR_PENDING);
+    g_assert_true(rad4_pci_irq(qts));
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES & ~INTCSR_LOCAL_OUT_ENABLE);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A descriptor's own interrupt request (next-pointer bit 2) raises the
+ * channel interrupt with the mode's Done Interrupt Enable clear (PCI 9060
+ * Data Sheet section 3.10.2.3).
+ */
+static void test_dma_descriptor_interrupt(void)
+{
+    QTestState *qts = rad4_init();
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    dma_one_word(qts, DMA_MODE_SCATTER_GATHER, DMA_DESC_INTR_ON_TC);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==,
+                    INTCSR_DMA0_ACTIVE | INTCSR_PENDING);
+    g_assert_true(rad4_pci_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/* An active channel interrupt crosses migration and goes on reset. */
+static void test_dma_interrupt_migration_and_reset(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("psitech-rad4-dmairq-XXXXXX",
+                                          NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = rad4_init();
+    QTestState *to = qtest_init(MACHINE_WITH_BRIDGE " -incoming defer");
+
+    bar0_write(from, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    dma_one_word(from, 0x7c3u, 0);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(bar0_read(to, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==,
+                    INTCSR_DMA0_ACTIVE | INTCSR_PENDING);
+    g_assert_true(rad4_pci_irq(to));
+
+    qtest_system_reset(to);
+    rad4_configure_bars(to);
+    g_assert_cmphex(bar0_read(to, R_INTCSR) &
+                    (INTCSR_DMA0_ACTIVE | INTCSR_PENDING), ==, 0);
+    g_assert_false(rad4_pci_irq(to));
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 /*
@@ -3133,6 +3265,12 @@ int main(int argc, char **argv)
                    test_dma_single_descriptor_upload);
     qtest_add_func("/psitech-rad4/dma-upload-honors-mask",
                    test_dma_upload_honors_mask);
+    qtest_add_func("/psitech-rad4/dma-interrupt-enables",
+                   test_dma_interrupt_enables);
+    qtest_add_func("/psitech-rad4/dma-descriptor-interrupt",
+                   test_dma_descriptor_interrupt);
+    qtest_add_func("/psitech-rad4/dma-interrupt-migration-and-reset",
+                   test_dma_interrupt_migration_and_reset);
     qtest_add_func("/psitech-rad4/dma-done-interrupt-when-enabled",
                    test_dma_done_interrupt_when_enabled);
     qtest_add_func("/psitech-rad4/dma-descriptor-chain",
