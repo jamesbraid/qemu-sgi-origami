@@ -287,6 +287,22 @@ static void bar2_write(QTestState *qts, uint32_t off, uint32_t val)
     rad4_writel(qts, RAD4_BAR2_PCI + off, val);
 }
 
+/*
+ * The driver's request for an interrupt at the next frame: control bit 1,
+ * with the mode-programming bit 0x20 kept set.
+ */
+static void frame_request(QTestState *qts)
+{
+    bar2_write(qts, B_CTRL, CTRL_MODE_CMD | CTRL_STORED_BIT);
+}
+
+/* Whether this device drives its PCI interrupt line. */
+static bool rad4_pci_irq(QTestState *qts)
+{
+    return qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
+           PCI_STATUS_INTERRUPT;
+}
+
 /* Points the RGB561 index registers at a given 16-bit index. */
 static void rgb_set_index(QTestState *qts, uint16_t index)
 {
@@ -1237,6 +1253,7 @@ static void test_mode_recognition_rejects_mutation(void)
         bar2_write(qts, rad4_mode0_events[i].bar2_offset, value);
     }
 
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000);
     uint32_t status = bar2_read(qts, B_CTRL);
     g_assert_cmphex(status & STATUS_FRAME, ==, 0);
@@ -1428,6 +1445,7 @@ static void test_interrupt_acknowledge(void)
     rad4_play_mode0(qts);
     bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
 
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000 / 60 + 1000);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
                     INTCSR_PENDING);
@@ -1449,6 +1467,42 @@ static void test_interrupt_acknowledge(void)
     g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
     g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
                     PCI_STATUS_INTERRUPT, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A frame raises the frame event only while control bit 1 requests one,
+ * as the shipped driver uses the bit: set to wait for the next frame,
+ * cleared by its interrupt handler, and cleared around every DMA transfer.
+ * Unrequested frames pass with no status and no interrupt; a request is
+ * answered at the next frame, once.
+ */
+static void test_frame_interrupt_needs_request(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t frame = 1000000000 / 60;
+
+    rad4_play_mode0(qts);
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+
+    qtest_clock_step(qts, 3 * frame);
+    g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
+
+    frame_request(qts);
+    qtest_clock_step(qts, frame + 1000);
+    g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, STATUS_FRAME);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
+                    INTCSR_PENDING);
+    g_assert_true(rad4_pci_irq(qts));
+
+    bar2_write(qts, B_CTRL, CTRL_MODE_CMD);
+    g_assert_false(rad4_pci_irq(qts));
+    qtest_clock_step(qts, 3 * frame);
+    g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
 
     qtest_quit(qts);
 }
@@ -1595,12 +1649,6 @@ static void test_overlay_index_compat_off(void)
     rad4_configure_bars(qts);
     check_overlay_index_compat(qts, false);
     qtest_quit(qts);
-}
-
-static bool rad4_pci_irq(QTestState *qts)
-{
-    return qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
-           PCI_STATUS_INTERRUPT;
 }
 
 /* Upload one word with the given mode and first-descriptor flags. */
@@ -2712,11 +2760,13 @@ static void check_frame_cadence(QTestState *qts, unsigned hz)
     int64_t period = 1000000000 / hz;
 
     g_assert_false(frame_pending(qts));
+    frame_request(qts);
     qtest_clock_step(qts, period - 1000);
     g_assert_false(frame_pending(qts));
     qtest_clock_step(qts, 2000);
     g_assert_true(frame_pending(qts));
     frame_acknowledge(qts);
+    frame_request(qts);
     qtest_clock_step(qts, period - 2000);
     g_assert_false(frame_pending(qts));
     qtest_clock_step(qts, 2000);
@@ -2761,6 +2811,7 @@ static void check_mode_active(QTestState *qts, int mode)
 /* No frame arrives for a whole second: no mode is active. */
 static void check_no_mode(QTestState *qts)
 {
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000);
     g_assert_false(frame_pending(qts));
 }
@@ -2867,10 +2918,12 @@ static void test_mode_switch_rad4setres(void)
     bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
     play_mode(qts, 0);
     check_mode_active(qts, 0);
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000 / rad4_modes[0].refresh_hz + 1000);
     g_assert_true(frame_pending(qts));
     play_events(qts, nine);
     check_mode_active(qts, 9);
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000 / rad4_modes[9].refresh_hz + 1000);
     g_assert_true(frame_pending(qts));
     play_events(qts, zero);
@@ -3114,12 +3167,14 @@ static void test_mode_switch_with_frame_pending(void)
     play_mode(qts, 0);
     check_mode_active(qts, 0);
 
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000 / rad4_modes[0].refresh_hz + 1000);
     g_assert_true(frame_pending(qts));
     play_mode(qts, 11);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
     check_mode_active(qts, 11);
 
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000 / rad4_modes[11].refresh_hz + 1000);
     g_assert_true(frame_pending(qts));
     event_at(back, 0)->value = CTRL_STORED_BIT;
@@ -3151,6 +3206,7 @@ static void test_reset(void)
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0);
     g_assert_cmphex(bar2_read(qts, B_MASK), ==, 0xffffffffu);
 
+    frame_request(qts);
     qtest_clock_step(qts, 1000000000);
     g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
 
@@ -3259,6 +3315,8 @@ int main(int argc, char **argv)
                    test_gfx_update_palette_change_without_fb_write);
     qtest_add_func("/psitech-rad4/interrupt-acknowledge",
                    test_interrupt_acknowledge);
+    qtest_add_func("/psitech-rad4/frame-interrupt-needs-request",
+                   test_frame_interrupt_needs_request);
     qtest_add_func("/psitech-rad4/dma-registers-before-start",
                    test_dma_registers_before_start);
     qtest_add_func("/psitech-rad4/dma-single-descriptor-upload",
