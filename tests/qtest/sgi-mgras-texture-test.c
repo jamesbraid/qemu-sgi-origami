@@ -4373,6 +4373,33 @@ static void test_tram_open_save_ends_at_other_kick(void)
     qtest_quit(t);
 }
 
+/*
+ * Register a texture case on each board with texture. si-t and mxi, a board
+ * with one RE and one with two, run in every setup; their E-series
+ * counterparts differ from them in GE and PP1 revision, so the thorough
+ * setup adds them.
+ */
+static void add_texture_board_cases(const char *path, GTestDataFunc fn)
+{
+    static const struct {
+        const char *board;
+        bool quick;
+    } boards[] = {
+        { "si-t", true }, { "esi-t", false }, { "mxi", true },
+        { "emxi", false },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(boards); i++) {
+        g_autofree char *name = NULL;
+
+        if (!boards[i].quick && !g_test_slow()) {
+            continue;
+        }
+        name = g_strdup_printf("%s/%s", path, boards[i].board);
+        qtest_add_data_func(name, boards[i].board, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -4397,146 +4424,46 @@ int main(int argc, char **argv)
                         "mxi", test_gl_texture_color_table);
     qtest_add_data_func("sn0/origin2000/mgras/gl-texture-color-table/emxi",
                         "emxi", test_gl_texture_color_table);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/migration/si-t",
-        "si-t", test_gl_texture_color_table_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/migration/esi-t",
-        "esi-t", test_gl_texture_color_table_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/migration/mxi",
-        "mxi", test_gl_texture_color_table_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/migration/emxi",
-        "emxi", test_gl_texture_color_table_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/si-t",
-        "si-t", test_gl_texture_color_table_full_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/esi-t",
-        "esi-t", test_gl_texture_color_table_full_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/mxi",
-        "mxi", test_gl_texture_color_table_full_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/emxi",
-        "emxi", test_gl_texture_color_table_full_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/si-t",
-        "si-t", test_gl_texture_color_table_reset_partial);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/esi-t",
-        "esi-t", test_gl_texture_color_table_reset_partial);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/mxi",
-        "mxi", test_gl_texture_color_table_reset_partial);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/emxi",
-        "emxi", test_gl_texture_color_table_reset_partial);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-color-table/migration",
+        test_gl_texture_color_table_migration);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-color-table/full-migration",
+        test_gl_texture_color_table_full_migration);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial",
+        test_gl_texture_color_table_reset_partial);
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
         "esi-t", test_gl_texture_load_draws_the_level);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/si-t",
-        "si-t", test_gl_texture_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/esi-t",
-        "esi-t", test_gl_texture_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/mxi",
-        "mxi", test_gl_texture_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/emxi",
-        "emxi", test_gl_texture_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/si-t",
-        "si-t", test_gl_texture_rectangular_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/esi-t",
-        "esi-t", test_gl_texture_rectangular_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/mxi",
-        "mxi", test_gl_texture_rectangular_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/emxi",
-        "emxi", test_gl_texture_rectangular_volume_pixel_rgba);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/si-t",
-        "si-t", test_gl_texture_captured_boundary_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/esi-t",
-        "esi-t", test_gl_texture_captured_boundary_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/mxi",
-        "mxi", test_gl_texture_captured_boundary_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/emxi",
-        "emxi", test_gl_texture_captured_boundary_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/si-t",
-        "si-t", test_gl_texture_captured_boundary_volumes_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/esi-t",
-        "esi-t", test_gl_texture_captured_boundary_volumes_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/mxi",
-        "mxi", test_gl_texture_captured_boundary_volumes_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/emxi",
-        "emxi", test_gl_texture_captured_boundary_volumes_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/si-t",
-        "si-t", test_gl_texture_captured_deep_volume);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/esi-t",
-        "esi-t", test_gl_texture_captured_deep_volume);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/mxi",
-        "mxi", test_gl_texture_captured_deep_volume);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/emxi",
-        "emxi", test_gl_texture_captured_deep_volume);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/si-t",
-        "si-t", test_gl_texture_captured_deep_volume_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/esi-t",
-        "esi-t", test_gl_texture_captured_deep_volume_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/mxi",
-        "mxi", test_gl_texture_captured_deep_volume_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/emxi",
-        "emxi", test_gl_texture_captured_deep_volume_pixel);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/si-t",
-        "si-t", test_gl_texture_ordinary_volume_point);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/esi-t",
-        "esi-t", test_gl_texture_ordinary_volume_point);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/mxi",
-        "mxi", test_gl_texture_ordinary_volume_point);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/emxi",
-        "emxi", test_gl_texture_ordinary_volume_point);
+    add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
+                            test_gl_texture_volume_pixel_rgba);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba",
+        test_gl_texture_rectangular_volume_pixel_rgba);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes",
+        test_gl_texture_captured_boundary_volumes);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel",
+        test_gl_texture_captured_boundary_volumes_pixel);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume",
+        test_gl_texture_captured_deep_volume);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel",
+        test_gl_texture_captured_deep_volume_pixel);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point",
+        test_gl_texture_ordinary_volume_point);
     qtest_add_func(
         "sn0/origin2000/mgras/gl-texture-ordinary-rectangular-volume",
         test_gl_texture_ordinary_rectangular_volume);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-captured-large-volumes",
                    test_gl_texture_captured_large_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/si-t",
-        "si-t", test_gl_texture_ordinary_captured_large_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/esi-t",
-        "esi-t", test_gl_texture_ordinary_captured_large_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/mxi",
-        "mxi", test_gl_texture_ordinary_captured_large_volumes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/emxi",
-        "emxi", test_gl_texture_ordinary_captured_large_volumes);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes",
+        test_gl_texture_ordinary_captured_large_volumes);
     qtest_add_func(
         "sn0/origin2000/mgras/gl-texture-captured-volume-unknown-selector",
         test_gl_texture_captured_volume_rejects_unknown_selector);
