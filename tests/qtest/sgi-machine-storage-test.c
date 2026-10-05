@@ -197,6 +197,35 @@ static void test_sn0_node_flash_refusals(void)
     g_assert_cmpint(g_unlink(right), ==, 0);
 }
 
+/* "-M <machine>,help" lists the storage properties, as it lists io-prom. */
+static void test_machine_help_lists_storage(void)
+{
+    static const char *const expected[][2] = {
+        { "origin200", "node0-flash=" },
+        { "origin2000", "io0-flash=" },
+        { "onyx2", "nvram0-clock=" },
+        { "origin300", "node1-flash=" },
+        { "fuel", "nvram0=" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(expected); i++) {
+        g_autofree char *machine = g_strdup_printf("%s,help", expected[i][0]);
+        const char *argv[] = {
+            qtest_qemu_binary(NULL), "-M", machine, NULL,
+        };
+        g_autofree char *out = NULL;
+        g_autoptr(GError) error = NULL;
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)argv, NULL,
+                                   G_SPAWN_STDERR_TO_DEV_NULL, NULL, NULL,
+                                   &out, NULL, &status, &error));
+        g_assert_no_error(error);
+        g_assert_true(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(out, expected[i][1]));
+    }
+}
+
 /* One block node cannot back two stores. */
 static void test_shared_node_refused(void)
 {
@@ -631,6 +660,8 @@ int main(int argc, char **argv)
                    test_sn0_node_flash_legacy_drive);
     qtest_add_func("/sgi-machine-storage/sn0-node-flash/refusals",
                    test_sn0_node_flash_refusals);
+    qtest_add_func("/sgi-machine-storage/machine-help",
+                   test_machine_help_lists_storage);
     qtest_add_func("/sgi-machine-storage/shared-node-refused",
                    test_shared_node_refused);
     qtest_add_func("/sgi-machine-storage/sn1-node-flash/bound",
