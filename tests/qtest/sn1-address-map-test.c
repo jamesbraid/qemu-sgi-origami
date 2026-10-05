@@ -3419,15 +3419,14 @@ static void remove_flash_image(const char *flash)
     g_assert_cmpint(g_unlink(flash), ==, 0);
 }
 
+/* The bound flash holds the PROM, so the launch takes no -bios. */
 static QTestState *machine_start_with_flash(const char *flash,
                                             const char *extra)
 {
-    g_autofree char *prom_quoted = g_shell_quote(prom_path);
     g_autofree char *flash_quoted = g_shell_quote(flash);
 
-    return qtest_initf(MACHINE_ARGS " -bios %s "
-                       "-drive if=pflash,file=%s,format=raw %s",
-                       prom_quoted, flash_quoted, extra);
+    return qtest_initf(MACHINE_ARGS " -drive if=pflash,file=%s,format=raw %s",
+                       flash_quoted, extra);
 }
 
 /* One 16-bit word per bus cycle, at the bus offset four times its byte. */
@@ -4027,19 +4026,20 @@ static void test_boot_flash_image_contract(const void *data)
         g_strdup_printf("if=pflash,index=1,file=%s,format=raw", first);
     const char *short_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
-        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-smp", "2", "-display", "none", "-S",
         "-drive", short_drive, NULL,
     };
     const char *long_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
-        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-smp", "2", "-display", "none", "-S",
         "-drive", long_drive, NULL,
     };
     const char *two_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
-        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-smp", "2", "-display", "none", "-S",
         "-drive", first_drive, "-drive", second_drive, NULL,
     };
+    /* Node 0 has no flash of its own here, so -bios still fills it. */
     const char *index1_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
@@ -4069,7 +4069,7 @@ static void test_boot_flash_nonraw_image(const void *data)
     g_autofree char *drive = NULL;
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
-        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-smp", "2", "-display", "none", "-S",
         "-drive", NULL, NULL,
     };
 
@@ -4083,7 +4083,7 @@ static void test_boot_flash_nonraw_image(const void *data)
     path = g_build_filename(directory, "flash.qcow2", NULL);
     g_assert_true(mkimg(path, "qcow2", SGI_BEDROCK_FLASH_SIZE / MiB));
     drive = g_strdup_printf("if=pflash,file=%s,format=qcow2", path);
-    args[13] = drive;
+    args[11] = drive;
 
     assert_qemu_rejects(args, "pflash image must use raw format");
 

@@ -1930,10 +1930,13 @@ static void test_expansion_storage_backend_refusals(void)
             "if=%s,id=cfg,file=%s,format=%s,readonly=%s", cases[i].interface,
             cases[i].path, cases[i].format,
             readonly);
+        /* A pflash drive is node 0's boot flash, which then takes no -bios. */
+        bool pflash = g_str_equal(cases[i].interface, "pflash");
         const char *args[] = { qtest_qemu_binary(NULL), "-M",
             STORAGE_TOPOLOGY "," STORAGE_BINDING, "-cpu", "R14000",
             "-smp", "2", "-m", "512M", "-S", "-drive", drive,
-            "-bios", prom, "-nodefaults", "-display", "none", NULL };
+            "-nodefaults", "-display", "none", pflash ? NULL : "-bios",
+            prom, NULL };
 
         assert_qemu_rejects(args, cases[i].message);
     }
@@ -2169,10 +2172,12 @@ static void test_expansion_compute_remote_boot(const void *data)
                         ==, sizeof(bytes));
     }
     g_assert_cmpint(close(fd), ==, 0);
+    /* A bound flash holds the PROM itself, so it takes no -bios. */
     qts = qtest_initf(
         "-M origin300,topology=origin300-pci-expansion-experiment "
-        "-cpu R14000 -smp 2 -m 512M -S -bios %s %s "
-        "-nodefaults -display none", prom, drive);
+        "-cpu R14000 -smp 2 -m 512M -S %s%s %s "
+        "-nodefaults -display none", pflash ? "" : "-bios ",
+        pflash ? "" : prom, drive);
     /* Before peer activation, the CPU claim reaches the global boot alias. */
     g_assert_cmphex(qtest_readq(qts, remote), ==, value);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
@@ -2225,8 +2230,9 @@ static void test_expansion_compute_remote_boot(const void *data)
     }
     to = qtest_initf(
         "-M origin300,topology=origin300-pci-expansion-experiment "
-        "-cpu R14000 -smp 2 -m 512M -S -bios %s %s "
-        "-nodefaults -display none -incoming defer", prom, destination_drive);
+        "-cpu R14000 -smp 2 -m 512M -S %s%s %s "
+        "-nodefaults -display none -incoming defer", pflash ? "" : "-bios ",
+        pflash ? "" : prom, destination_drive);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(qts, uri);
@@ -3033,8 +3039,8 @@ static void test_expansion_storage_composed_read(void)
     qts = qtest_initf("-M %s,%s -cpu R14000 -smp 2 -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-drive if=pflash,file=%s,format=raw,readonly=off "
-        "-bios %s -nodefaults -display none", STORAGE_TOPOLOGY,
-        STORAGE_BINDING, image, compute, prom);
+        "-nodefaults -display none", STORAGE_TOPOLOGY,
+        STORAGE_BINDING, image, compute);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     g_assert_cmphex(qtest_readq(qts, UINT64_C(0x23a1e0000)), ==,
                     UINT64_C(0xfedcba9876543210));
@@ -3179,10 +3185,10 @@ static QTestState *expansion_lifecycle_start(const char *prom,
         ",controller-brick-serial.0=1=EXP-LIFECYCLE "
         "-device sgi-l1-uart,id=serial-expansion,controller=/machine/module1/l1 "
         "-device sgi-bridge-dma-test,bus=expansion0-u0-head-e.0,addr=1 "
-        "-cpu R14000 -smp 2 -m 512M -S -bios %s "
+        "-cpu R14000 -smp 2 -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-drive if=pflash,file=%s,format=raw,readonly=off "
-        "-nodefaults -display none %s", prom, storage, compute, extra);
+        "-nodefaults -display none %s", storage, compute, extra);
 
     qtest_sysbus_mmio_map(qts, "/machine/node0/l1-uart", 0,
                           SERIAL_UART_BASE);

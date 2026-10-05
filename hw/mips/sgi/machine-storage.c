@@ -222,3 +222,27 @@ bool sgi_storage_check(GHashTable *bindings, const char *machine,
     }
     return true;
 }
+
+bool sgi_storage_check_boot_prom(const char *machine, bool bios,
+                                 unsigned int bound, unsigned int flashes,
+                                 bool allow_blank, Error **errp)
+{
+    if (bios && bound == flashes) {
+        error_setg(errp, "%s: -bios has no unbound boot flash to fill; the "
+                   "bound boot flash already holds the PROM", machine);
+        return false;
+    }
+    if (!bios && !bound && !allow_blank) {
+        error_setg(errp, "%s: no boot PROM: pass -bios, or bind "
+                   "node<N>-flash for every node", machine);
+        return false;
+    }
+    /* An unbound node would otherwise boot a flash with no PROM in it. */
+    if (!bios && bound < flashes && !allow_blank) {
+        error_setg(errp, "%s: %u of %u boot flashes are bound; pass -bios "
+                   "to fill the rest, or bind node<N>-flash for every node",
+                   machine, bound, flashes);
+        return false;
+    }
+    return true;
+}

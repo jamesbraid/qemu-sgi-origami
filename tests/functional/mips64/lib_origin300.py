@@ -7,7 +7,8 @@ origin300 takes only a raw stock PROM image as -bios and refuses -kernel
 outright, with no synthesized-firmware bypass (test_origin300_prom.py's
 own module docstring); reaching the System Maintenance Menu -- the path
 the installed IRIX disk boots through -- also needs a writable boot flash,
-not just the -bios image the first-line smoke test uses.
+not just the -bios image the first-line smoke test uses. With that flash
+bound the machine boots from it alone and refuses -bios.
 
 This helper builds that boot flash. It uses plain Python and has no
 qemu_test dependency, as in lib_prom.py. The machine builds the node and
@@ -138,7 +139,6 @@ def launch_args(firmware_path, cpus, scratch):
     argv = [
         '-cpu', 'R14000',
         '-m', '512M',
-        '-bios', str(firmware_path),
         '-drive',
         f'if=pflash,index=0,file={boot_flash},format=raw',
         '-smp', str(cpus),

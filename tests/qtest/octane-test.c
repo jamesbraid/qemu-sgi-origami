@@ -3211,8 +3211,8 @@ static void test_firmware_rejections(void)
     g_test_message("no firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
     g_assert_nonnull(strstr(error_output,
-                           "requires one of -bios, node0-flash or "
-                           "flash-drive"));
+                           "octane: no boot PROM: pass -bios, or bind "
+                           "node<N>-flash for every node"));
     g_clear_pointer(&error_output, g_free);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, MiB + 1), ==, 0);
@@ -3451,8 +3451,9 @@ static void test_storage_refusals(void)
     g_free(extra);
     extra = g_strdup_printf("-blockdev %s -bios %s", right_node, flash_path);
     octane_storage_rejected("octane,node0-flash=flash", extra,
-                            "octane requires one of -bios, node0-flash or "
-                            "flash-drive");
+                            "octane: -bios has no unbound boot flash to "
+                            "fill; the bound boot flash already holds the "
+                            "PROM");
     g_free(extra);
     extra = g_strdup_printf("-bios %s -blockdev %s", flash_path, large_nvram);
     octane_storage_rejected("octane,nvram0=nv", extra,

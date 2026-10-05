@@ -144,6 +144,46 @@ static void test_sn0_node_flash_per_node(void)
     g_assert_cmpint(g_unlink(path1), ==, 0);
 }
 
+/*
+ * With some node flash bound, -bios fills the rest: node 1 holds the -bios
+ * payload while node 0 reads its own bound file.
+ */
+static void test_sn0_node_flash_partly_bound(void)
+{
+    g_autofree char *path0 = make_store("o2k-part0", SN0_FLASH_SIZE, 0x10);
+    g_autofree char *prom = make_store("o2k-part-prom", 4096, 0x33);
+    g_autofree char *node0 = blockdev("n0", path0);
+    QTestState *qts = qtest_initf(
+        "-M " O2K_DESKSIDE ",node0-flash=n0 " O2K_DESKSIDE_SIZE " "
+        "-blockdev %s -bios %s", node0, prom);
+
+    g_assert_cmphex(sn0_flash_read(qts, 0, SN0_FLASH_MARK), ==, 0x10);
+    g_assert_cmphex(sn0_flash_read(qts, 2, SN0_FLASH_MARK), ==, 0x33);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path0), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/*
+ * The same binding without -bios is refused: node 1 would boot a flash
+ * with no PROM in it.
+ */
+static void test_sn0_node_flash_partly_bound_needs_bios(void)
+{
+    g_autofree char *path0 = make_store("o2k-part1", SN0_FLASH_SIZE, 0x10);
+    g_autofree char *node0 = blockdev("n0", path0);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", O2K_DESKSIDE ",node0-flash=n0",
+        "-smp", "4", "-m", "512M", "-display", "none", "-S", "-qmp", "stdio",
+        "-blockdev", node0, NULL,
+    };
+
+    assert_launch_rejected(args, "origin2000: 1 of 2 boot flashes are bound; "
+                           "pass -bios to fill the rest, or bind "
+                           "node<N>-flash for every node");
+    g_assert_cmpint(g_unlink(path0), ==, 0);
+}
+
 /* The legacy pflash drive still backs the node flash. */
 static void test_sn0_node_flash_legacy_drive(void)
 {
@@ -181,6 +221,12 @@ static void test_sn0_node_flash_refusals(void)
         "-display", "none", "-S", "-qmp", "stdio",
         "-blockdev", right_node, "-drive", legacy, NULL,
     };
+    /* With the only boot flash bound, -bios has nothing to fill. */
+    const char *bios[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,node0-flash=flash",
+        "-display", "none", "-S", "-qmp", "stdio",
+        "-blockdev", right_node, "-bios", small, NULL,
+    };
 
     assert_rejected("origin200,node0-flash=flash", "-blockdev", small_node,
                     "origin200: node0-flash is 524288 bytes; it must be "
@@ -193,6 +239,9 @@ static void test_sn0_node_flash_refusals(void)
                     "no node1-flash");
     assert_launch_rejected(both, "node0-flash and -drive if=pflash,unit=0 "
                            "both back node 0's flash");
+    assert_launch_rejected(bios, "origin200: -bios has no unbound boot flash "
+                           "to fill; the bound boot flash already holds the "
+                           "PROM");
     g_assert_cmpint(g_unlink(small), ==, 0);
     g_assert_cmpint(g_unlink(right), ==, 0);
 }
@@ -266,56 +315,49 @@ static char *make_sn1_flash(const char *name, size_t size, uint8_t mark)
     return path;
 }
 
-/* The reset view answers from the bound flash, not the -bios image. */
+/* The reset view answers from the bound flash, with no -bios. */
 static void test_sn1_node_flash_bound(void)
 {
-    g_autofree char *prom = make_sn1_prom();
     g_autofree char *path = make_sn1_flash("o300-node0", SN1_FLASH_SIZE,
                                            0x35);
     g_autofree char *node = blockdev("flash", path);
     QTestState *qts = qtest_initf("-M origin300,node0-flash=flash "
-                                  SN1_MACHINE " -bios %s -blockdev %s",
-                                  prom, node);
+                                  SN1_MACHINE " -blockdev %s", node);
 
     g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
                     0x35);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
 /* A protocol node backs the flash as well as a raw one, as on the Hub. */
 static void test_sn1_node_flash_protocol_node(void)
 {
-    g_autofree char *prom = make_sn1_prom();
     g_autofree char *path = make_sn1_flash("o300-file", SN1_FLASH_SIZE,
                                            0x36);
     QTestState *qts = qtest_initf("-M origin300,node0-flash=flash "
-                                  SN1_MACHINE " -bios %s -blockdev "
+                                  SN1_MACHINE " -blockdev "
                                   "driver=file,node-name=flash,filename=%s",
-                                  prom, path);
+                                  path);
 
     g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
                     0x36);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
 static void test_sn1_node_flash_legacy_drive(void)
 {
-    g_autofree char *prom = make_sn1_prom();
     g_autofree char *path = make_sn1_flash("o300-legacy", SN1_FLASH_SIZE,
                                            0x53);
-    QTestState *qts = qtest_initf("-M origin300 " SN1_MACHINE " -bios %s "
-                                  "-drive if=pflash,file=%s,format=raw",
-                                  prom, path);
+    QTestState *qts = qtest_initf("-M origin300 " SN1_MACHINE
+                                  " -drive if=pflash,file=%s,format=raw",
+                                  path);
 
     g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
                     0x53);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
 static void test_sn1_node_flash_refusals(void)
@@ -330,12 +372,12 @@ static void test_sn1_node_flash_refusals(void)
                                               right);
     const char *wrong_size[] = {
         qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
-        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-cpu", "R14000", "-smp", "2", "-display", "none",
         "-S", "-qmp", "stdio", "-blockdev", small_node, NULL,
     };
     const char *both[] = {
         qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
-        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-cpu", "R14000", "-smp", "2", "-display", "none",
         "-S", "-qmp", "stdio", "-blockdev", right_node, "-drive", legacy,
         NULL,
     };
@@ -343,9 +385,15 @@ static void test_sn1_node_flash_refusals(void)
                                              "format=raw", right);
     const char *extra[] = {
         qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
-        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-cpu", "R14000", "-smp", "2", "-display", "none",
         "-S", "-qmp", "stdio", "-blockdev", right_node, "-drive", stray,
         NULL,
+    };
+    /* With the one boot flash bound, -bios has nothing to fill. */
+    const char *bios[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
+        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-S", "-qmp", "stdio", "-blockdev", right_node, NULL,
     };
 
     assert_launch_rejected(wrong_size, "origin300: node0-flash is 8388608 "
@@ -354,15 +402,17 @@ static void test_sn1_node_flash_refusals(void)
                            "if=pflash,unit=0 both back node 0's flash");
     assert_launch_rejected(extra, "origin300 accepts one 16 MiB pflash "
                            "image per node");
+    assert_launch_rejected(bios, "origin300: -bios has no unbound boot flash "
+                           "to fill; the bound boot flash already holds the "
+                           "PROM");
     {
         const char *nothing[] = {
             qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
             "-smp", "2", "-display", "none", "-S", "-qmp", "stdio", NULL,
         };
 
-        assert_launch_rejected(nothing, "origin300 requires -bios with a "
-                               "stock PROM image, or a boot flash for "
-                               "node 0");
+        assert_launch_rejected(nothing, "origin300: no boot PROM: pass -bios, "
+                               "or bind node<N>-flash for every node");
     }
     g_assert_cmpint(g_unlink(small), ==, 0);
     g_assert_cmpint(g_unlink(right), ==, 0);
@@ -656,6 +706,10 @@ int main(int argc, char **argv)
                    test_sn0_node_flash_persists);
     qtest_add_func("/sgi-machine-storage/sn0-node-flash/per-node",
                    test_sn0_node_flash_per_node);
+    qtest_add_func("/sgi-machine-storage/sn0-node-flash/partly-bound",
+                   test_sn0_node_flash_partly_bound);
+    qtest_add_func("/sgi-machine-storage/sn0-node-flash/partly-bound-no-bios",
+                   test_sn0_node_flash_partly_bound_needs_bios);
     qtest_add_func("/sgi-machine-storage/sn0-node-flash/legacy-drive",
                    test_sn0_node_flash_legacy_drive);
     qtest_add_func("/sgi-machine-storage/sn0-node-flash/refusals",

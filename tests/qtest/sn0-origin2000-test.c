@@ -1805,8 +1805,8 @@ static void test_missing_firmware(void)
     };
 
     /* A normal launch must fail; qtest deliberately permits empty flash. */
-    assert_launch_rejected(args, "stock-PROM boot only: pass -bios or a "
-                                 "pflash drive per node");
+    assert_launch_rejected(args, "origin2000: no boot PROM: pass -bios, or "
+                                 "bind node<N>-flash for every node");
 }
 
 static void test_flash_fixture_isolation(void)

@@ -3391,8 +3391,18 @@ static bool sgi_machine_load_bedrock_flash(MachineState *machine,
     g_autofree char *path = NULL;
     const uint8_t *contents = NULL;
     size_t length = 0;
-    unsigned int node_index;
+    unsigned int node_index, bound = 0;
 
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+
+        bound += node->flash_node || drive_get(IF_PFLASH, 0, node_index);
+    }
+    if (!sgi_storage_check_boot_prom(MACHINE_GET_CLASS(machine)->name,
+                                     machine->firmware, bound, s->num_nodes,
+                                     false, errp)) {
+        return false;
+    }
     /*
      * Without -bios every node must boot from its own bound or pflash
      * flash; sn1_node_attach_prom() refuses a node that has neither.
@@ -4308,9 +4318,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             flash_count++;
         }
     }
-    if (!machine->firmware && !flash_count && !qtest_enabled()) {
-        error_setg(errp, "%s: supports stock-PROM boot only: pass -bios or "
-                  "a pflash drive per node", mc->name);
+    /* A qtest of the Hub's registers may start with no PROM at all. */
+    if (!sgi_storage_check_boot_prom(mc->name, machine->firmware, flash_count,
+                                     node_count, qtest_enabled(), errp)) {
         return false;
     }
 
