@@ -395,6 +395,72 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
 }
 
 /*
+ * A Compare write that directly follows a Count write is recovered by the
+ * timer code (cpu_mips_store_compare()) on processors that select
+ * count_compare_adjacent_recovery. The Count write saves the PC of the
+ * instruction that executes next, following a branch delay slot to the
+ * branch's destination, so the timer code can recognise the Compare write
+ * by its PC.
+ */
+void gen_mtc0_count_r10k(DisasContext *ctx)
+{
+    if (!ctx->count_compare_adjacent_recovery) {
+        return;
+    }
+    switch (ctx->hflags & MIPS_HFLAG_BMASK_BASE) {
+    case MIPS_HFLAG_BR:
+        tcg_gen_mov_tl(cpu_PC, btarget);
+        break;
+    case MIPS_HFLAG_BC:
+        tcg_gen_movcond_tl(TCG_COND_NE, cpu_PC, bcond, tcg_constant_tl(0),
+                           tcg_constant_tl(ctx->btarget),
+                           tcg_constant_tl(ctx->base.pc_next + 4));
+        break;
+    case MIPS_HFLAG_B:
+    case MIPS_HFLAG_BL:
+        tcg_gen_movi_tl(cpu_PC, ctx->btarget);
+        break;
+    default:
+        tcg_gen_movi_tl(cpu_PC, ctx->base.pc_next + 4);
+        break;
+    }
+}
+
+void gen_mtc0_compare_r10k(DisasContext *ctx)
+{
+    if (ctx->count_compare_adjacent_recovery) {
+        tcg_gen_movi_tl(cpu_PC, ctx->base.pc_next);
+    }
+}
+
+/* MTC0 and DMTC0 to Compare, selector 0, with the rt field cleared. */
+#define R10K_MTC0_COMPARE   ((0x10 << 26) | (0x04 << 21) | \
+                             (CP0_REGISTER_11 << 11))
+#define R10K_DMTC0_COMPARE  ((0x10 << 26) | (0x05 << 21) | \
+                             (CP0_REGISTER_11 << 11))
+
+/*
+ * Called before decoding each 32-bit instruction. Every MTC0 and DMTC0
+ * ends its TB (translator_io_start() forces the exit), so a Count write is
+ * always the last instruction of its TB and the pending recovery can only
+ * apply to the first instruction of the next one. Anything other than a
+ * Compare write there drops it.
+ */
+void gen_count_compare_adjacency_r10k(DisasContext *ctx)
+{
+    uint32_t op;
+
+    if (!ctx->count_compare_adjacent_recovery || ctx->base.num_insns != 1) {
+        return;
+    }
+    op = ctx->opcode & ~((uint32_t)0x1f << 16);
+    if (op != R10K_MTC0_COMPARE && op != R10K_DMTC0_COMPARE) {
+        tcg_gen_st8_i32(tcg_constant_i32(0), tcg_env,
+                        offsetof(CPUMIPSState, timer_adjacent_pending));
+    }
+}
+
+/*
  * PREF and PREFX. The R10000 family moves the block into its caches, which
  * the model has none of, but the read or read-exclusive it issues for a
  * block it does not hold is a request the rest of the system sees (R10000

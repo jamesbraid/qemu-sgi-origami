@@ -1173,7 +1173,8 @@ TCGv cpu_gpr[32], cpu_PC;
  */
 TCGv_i64 cpu_gpr_hi[32];
 TCGv cpu_HI[MIPS_DSP_ACC], cpu_LO[MIPS_DSP_ACC];
-static TCGv cpu_dspctrl, btarget;
+static TCGv cpu_dspctrl;
+TCGv btarget;
 TCGv bcond;
 static TCGv cpu_lladdr, cpu_llval;
 static TCGv_i32 hflags;
@@ -1275,28 +1276,6 @@ static inline void gen_store_srsgpr(int from, int to)
 static inline void gen_save_pc(target_ulong pc)
 {
     tcg_gen_movi_tl(cpu_PC, pc);
-}
-
-/* Count recovery follows execution order through a branch delay slot. */
-static void gen_save_count_next_pc(DisasContext *ctx)
-{
-    switch (ctx->hflags & MIPS_HFLAG_BMASK_BASE) {
-    case MIPS_HFLAG_BR:
-        tcg_gen_mov_tl(cpu_PC, btarget);
-        break;
-    case MIPS_HFLAG_BC:
-        tcg_gen_movcond_tl(TCG_COND_NE, cpu_PC, bcond, tcg_constant_tl(0),
-                           tcg_constant_tl(ctx->btarget),
-                           tcg_constant_tl(ctx->base.pc_next + 4));
-        break;
-    case MIPS_HFLAG_B:
-    case MIPS_HFLAG_BL:
-        gen_save_pc(ctx->btarget);
-        break;
-    default:
-        gen_save_pc(ctx->base.pc_next + 4);
-        break;
-    }
 }
 
 void save_cpu_state(DisasContext *ctx, int do_save_pc)
@@ -6256,9 +6235,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_09:
         switch (sel) {
         case CP0_REG09__COUNT:
-            if (ctx->count_compare_adjacent_recovery) {
-                gen_save_count_next_pc(ctx);
-            }
+            gen_mtc0_count_r10k(ctx);
             gen_helper_mtc0_count(tcg_env, arg);
             register_name = "Count";
             break;
@@ -6279,9 +6256,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_11:
         switch (sel) {
         case CP0_REG11__COMPARE:
-            if (ctx->count_compare_adjacent_recovery) {
-                gen_save_pc(ctx->base.pc_next);
-            }
+            gen_mtc0_compare_r10k(ctx);
             gen_helper_mtc0_compare(tcg_env, arg);
             register_name = "Compare";
             break;
@@ -7723,9 +7698,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_09:
         switch (sel) {
         case CP0_REG09__COUNT:
-            if (ctx->count_compare_adjacent_recovery) {
-                gen_save_count_next_pc(ctx);
-            }
+            gen_mtc0_count_r10k(ctx);
             gen_helper_mtc0_count(tcg_env, arg);
             ctx->base.is_jmp = DISAS_STOP;
             register_name = "Count";
@@ -7747,9 +7720,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_11:
         switch (sel) {
         case CP0_REG11__COMPARE:
-            if (ctx->count_compare_adjacent_recovery) {
-                gen_save_pc(ctx->base.pc_next);
-            }
+            gen_mtc0_compare_r10k(ctx);
             gen_helper_mtc0_compare(tcg_env, arg);
             register_name = "Compare";
             break;
@@ -15428,17 +15399,7 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         ctx->opcode = translator_ldl_end(env, &ctx->base, ctx->base.pc_next,
                                          mo_endian(ctx));
         insn_bytes = 4;
-        if (ctx->count_compare_adjacent_recovery &&
-            ctx->base.num_insns == 1) {
-            uint32_t op = ctx->opcode & ~((uint32_t)0x1f << 16);
-
-            /* Count ends its TB, limiting recovery to this instruction. */
-            if (op != (OPC_MTC0 | (CP0_REGISTER_11 << 11)) &&
-                op != (OPC_DMTC0 | (CP0_REGISTER_11 << 11))) {
-                tcg_gen_st8_i32(tcg_constant_i32(0), tcg_env,
-                    offsetof(CPUMIPSState, timer_adjacent_pending));
-            }
-        }
+        gen_count_compare_adjacency_r10k(ctx);
         decode_opc(env, ctx);
     } else if (ctx->insn_flags & ASE_MICROMIPS) {
         ctx->opcode = translator_lduw_end(env, &ctx->base, ctx->base.pc_next,

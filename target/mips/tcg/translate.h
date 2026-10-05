@@ -183,6 +183,9 @@ void gen_movcf_s_r10k(DisasContext *ctx, int fs, int fd, int cc, int tf);
 void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft, bool on_zero);
 void gen_pref_r10k(DisasContext *ctx, int hint, int base, int16_t offset);
 void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index);
+void gen_mtc0_count_r10k(DisasContext *ctx);
+void gen_mtc0_compare_r10k(DisasContext *ctx);
+void gen_count_compare_adjacency_r10k(DisasContext *ctx);
 
 /*
  * The R10000 family's implementation-dependent coprocessor 0 registers,
@@ -247,6 +250,7 @@ extern TCGv_i64 oct_p[OCTEON_MULTIPLIER_REGS];
 extern TCGv cpu_HI[MIPS_DSP_ACC], cpu_LO[MIPS_DSP_ACC];
 extern TCGv_i32 fpu_fcr0, fpu_fcr31;
 extern TCGv_i64 fpu_f64[32];
+extern TCGv btarget;
 extern TCGv bcond;
 
 #define LOG_DISAS(...)                                                        \
