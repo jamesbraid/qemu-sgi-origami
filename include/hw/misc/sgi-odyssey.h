@@ -226,8 +226,7 @@ struct SGIOdysseyState {
     /*
      * The second colour buffer: buffer 1 in the displayed-buffer bits'
      * sense, mem above being buffer 0. A board memory of its own, the same
-     * shape as mem, so a stream from before it existed still loads with
-     * buffer 1 at its reset value. Model storage only: where the board
+     * shape as mem. Model storage only: where the board
      * keeps its two buffers, and how it packs them, is unknown
      * (docs/datasheets/odyssey.md, "Buffer-selection software contract").
      */

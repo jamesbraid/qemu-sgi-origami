@@ -1768,8 +1768,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * How many operand words cmd_operand[] retains: every one a register-select
  * word can carry, up to the 16 of a burst. The window-clip register reads all
- * eight of its operands. Before that register was decoded only five were
- * kept, and a migration stream from then carries only those five.
+ * eight of its operands. The migration stream carries the first five apart
+ * from the rest.
  */
 #define ODSY_CMD_MAX_OPERANDS SGI_ODYSSEY_CMD_OPERANDS
 #define ODSY_CMD_OLD_OPERANDS 5
@@ -10331,19 +10331,12 @@ DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_mem, "sgi-odyssey/board-memory",
  * presented frame itself is not migrated -- a loaded scanout marks every line
  * dirty and repaints from the colour plane.
  */
-/*
- * The depth plane, a subsection of its own so a stream from before it existed
- * still loads, leaving the plane at its reset value.
- */
+/* The depth plane. */
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_depth,
                                 "sgi-odyssey/depth-memory",
                                 SGIOdysseyState, depth_mem);
 
-/*
- * Colour buffer 1 and the buffer-selection words, subsections so a stream
- * from before two buffers existed still loads: buffer 1 stays clear and the
- * drawing mask at its reset value, buffer 0.
- */
+/* Colour buffer 1 and the buffer-selection words. */
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_buffer1,
                                 "sgi-odyssey/buffer1-memory",
                                 SGIOdysseyState, buffer1_mem);
@@ -10360,25 +10353,13 @@ static const VMStateDescription vmstate_odyssey_buffer_select = {
     },
 };
 
-/* The object store's words, a subsection for the same reason (v21). */
+/* The object store's words. */
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_objects,
                                 "sgi-odyssey/object-memory",
                                 SGIOdysseyState, obj_mem);
 
 DEFINE_VMSTATE_SGI_SCANOUT(vmstate_odyssey_scanout, "sgi-odyssey/scanout",
                            SGIOdysseyState, scanout);
-
-/* Streams 14 to 22 held up to 128 integer vertices (v23 streams them). */
-static bool odyssey_stream_had_vertex_buffer(void *opaque, int version_id)
-{
-    return version_id >= 14 && version_id < 23;
-}
-
-/* Only version 25 kept a program window per context. */
-static bool odyssey_stream_had_context_windows(void *opaque, int version_id)
-{
-    return version_id == 25;
-}
 
 /* An open integer POLYGON's crossing marks, sent only while one is open. */
 static bool odyssey_polygon_needed(void *opaque)
@@ -10443,9 +10424,6 @@ static int odyssey_pre_load(void *opaque)
 
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
-    /* Before version 29 the records were not sent: load their defaults. */
-    odyssey_query_records_reset(opaque);
-    memset(s->gl_fog, 0, sizeof(s->gl_fog));
     s->gl_begin_open = false;
     s->gl_integer_prim = false;
     s->gl_open_r = s->gl_open_c = 0;
@@ -10483,54 +10461,6 @@ static int odyssey_post_load(void *opaque, int version_id)
         }
     }
 
-    if (version_id < 28) {
-        memset(s->gl_texture_matrix, 0, sizeof(s->gl_texture_matrix));
-        for (unsigned i = 0; i < 4; i++) {
-            s->gl_texture_matrix[i * 5] = ODSY_F32_ONE;
-        }
-    }
-    if (version_id < 40) {
-        memset(s->obj_valid, 0, sizeof(s->obj_valid));
-        odyssey_object_valid_range(s, 0,
-                                   MIN(s->obj_used, ODSY_OBJ_POOL_WORDS),
-                                   true);
-    }
-    if (version_id < 41) {
-        memset(s->tex_detail_function, 0, sizeof(s->tex_detail_function));
-        s->tex_detail_function_valid = 0;
-    }
-    if (version_id < 14) {
-        s->line_stipple[0] = s->line_stipple[1] = 0xffff;
-        s->line_stipple[2] = 0;
-    }
-    if (version_id < 39) {
-        memset(s->tex_linear_plane_q, 0, sizeof(s->tex_linear_plane_q));
-        s->tex_linear_valid &= 7;
-    }
-    if (version_id < 38) {
-        memset(s->tex_linear_plane_r, 0, sizeof(s->tex_linear_plane_r));
-        s->tex_linear_valid &= 3;
-    }
-    if (version_id < 37) {
-        s->tex_coord_q = ODSY_F32_ONE;
-    }
-    if (version_id < 36) {
-        memset(s->tex_linear_plane, 0, sizeof(s->tex_linear_plane));
-        s->tex_linear_valid = 0;
-    }
-    if (version_id < 35) {
-        memset(s->tex_colour_table, 0, sizeof(s->tex_colour_table));
-        memset(s->tex_colour_table_valid, 0,
-               sizeof(s->tex_colour_table_valid));
-    }
-    if (version_id < 31) {
-        s->tex_lod[0] = s->tex_lod[1] = 0;
-        s->tex_lod[2] = 0x3100;
-        s->tex_lod[3] = 0x0f00;
-    }
-    if (version_id < 32) {
-        memcpy(s->read_origin, s->win_origin, sizeof(s->read_origin));
-    }
     odyssey_clip_update(s);
     {
         SGIGLSink sink = odyssey_gl_sink(s);
@@ -10541,22 +10471,13 @@ static int odyssey_post_load(void *opaque, int version_id)
     odyssey_gl_apply_line_stipple(s);
     /*
      * The shared context's scissor box and clip-plane enables are transient
-     * render state, not migrated; reset already gave gl_clip_box its
-     * full-window default before this runs, so a pre-v30 sender with no
-     * clip box in its stream still re-applies that default correctly here.
+     * render state, not migrated; re-apply them from the migrated words.
      */
     odyssey_gl_apply_clip_box(s);
     odyssey_gl_apply_clip_planes(s);
     odyssey_gl_apply_depth(s);
     odyssey_gl_reload_combined(s);
     odyssey_gl_program(s);
-    /*
-     * Before version 23 the held vertices were the first four of a buffer,
-     * not what a streaming primitive holds: drop a primitive left open.
-     */
-    if (version_id < 23) {
-        s->gl_vertex_count = 0;
-    }
     /* The shared context's current colour restarts white: restore gl_colour. */
     s->gl_colour_overridden = true;
     return 0;
@@ -10565,7 +10486,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
     .version_id = 41,
-    .minimum_version_id = 5,
+    .minimum_version_id = 41,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
     .fields = (const VMStateField[]) {
@@ -10610,19 +10531,13 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY(gl_vertex_y, SGIOdysseyState,
                              SGI_ODYSSEY_GL_HELD_VERTICES),
         VMSTATE_UINT32(gl_vertex_count, SGIOdysseyState),
-        /*
-         * Streams from 14 to 22 carry the retired 128-vertex buffer's other
-         * 124 x and 124 y words and its overflow flag.
-         */
-        VMSTATE_UNUSED_BUFFER(odyssey_stream_had_vertex_buffer, 0,
-                              2 * 124 * sizeof(uint32_t) + 1),
-        VMSTATE_UINT32_ARRAY_V(line_stipple, SGIOdysseyState, 3, 14),
-        /* The fill colour source and drawable-id plane write state (v12). */
-        VMSTATE_UINT32_V(gl_color_index, SGIOdysseyState, 12),
-        VMSTATE_BOOL_V(gl_color_is_index, SGIOdysseyState, 12),
-        VMSTATE_UINT32_V(dest_buffer_word, SGIOdysseyState, 12),
-        VMSTATE_UINT32_V(plane_write_mask, SGIOdysseyState, 12),
-        VMSTATE_BUFFER_POINTER_UNSAFE(did, SGIOdysseyState, 12,
+        VMSTATE_UINT32_ARRAY(line_stipple, SGIOdysseyState, 3),
+        /* The fill colour source and drawable-id plane write state. */
+        VMSTATE_UINT32(gl_color_index, SGIOdysseyState),
+        VMSTATE_BOOL(gl_color_is_index, SGIOdysseyState),
+        VMSTATE_UINT32(dest_buffer_word, SGIOdysseyState),
+        VMSTATE_UINT32(plane_write_mask, SGIOdysseyState),
+        VMSTATE_BUFFER_POINTER_UNSAFE(did, SGIOdysseyState, 0,
                                       SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT),
         VMSTATE_UINT32(copy_src, SGIOdysseyState),
         VMSTATE_UINT32(copy_size, SGIOdysseyState),
@@ -10645,118 +10560,106 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(image_group_painted, SGIOdysseyState),
         /* The one modeled source's transition state (see the packet code). */
         VMSTATE_BOOL(interrupt_asserted, SGIOdysseyState),
-        /* The swap-control bank and displayed-buffer status (v13). */
-        VMSTATE_UINT32_V(swap_arm, SGIOdysseyState, 13),
-        VMSTATE_UINT32_V(swap_pending, SGIOdysseyState, 13),
-        VMSTATE_UINT32_V(swap_control, SGIOdysseyState, 13),
-        VMSTATE_UINT32_V(swap_control_companion, SGIOdysseyState, 13),
-        VMSTATE_UINT32_V(displayed_buffer, SGIOdysseyState, 13),
+        /* The swap-control bank and displayed-buffer status. */
+        VMSTATE_UINT32(swap_arm, SGIOdysseyState),
+        VMSTATE_UINT32(swap_pending, SGIOdysseyState),
+        VMSTATE_UINT32(swap_control, SGIOdysseyState),
+        VMSTATE_UINT32(swap_control_companion, SGIOdysseyState),
+        VMSTATE_UINT32(displayed_buffer, SGIOdysseyState),
         /*
-         * The rest of a burst's operands and the window placement registers
-         * (v15). The kept clip rectangles are rebuilt in post_load.
+         * The rest of a burst's operands and the window placement registers.
+         * The kept clip rectangles are rebuilt in post_load.
          */
         VMSTATE_SUB_ARRAY(cmd_operand, SGIOdysseyState, ODSY_CMD_OLD_OPERANDS,
-                          ODSY_CMD_MAX_OPERANDS - ODSY_CMD_OLD_OPERANDS, 15,
+                          ODSY_CMD_MAX_OPERANDS - ODSY_CMD_OLD_OPERANDS, 0,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_INT32_ARRAY_V(win_origin, SGIOdysseyState, 2, 15),
-        VMSTATE_INT32_ARRAY_V(read_origin, SGIOdysseyState, 2, 32),
-        VMSTATE_UINT32_ARRAY_V(clip_words, SGIOdysseyState,
-                               2 * SGI_ODYSSEY_CLIP_RECTS, 15),
-        VMSTATE_UINT32_V(did_compare, SGIOdysseyState, 15),
-        /* The colour buffer's base a DMA header names (v16). */
-        VMSTATE_UINT32_V(dma_colour_base, SGIOdysseyState, 16),
-        /* The GL depth state and the matrices it is rebuilt from (v17). */
-        VMSTATE_UINT32_V(gl_depth_func, SGIOdysseyState, 17),
-        VMSTATE_UINT32_V(gl_write_mask, SGIOdysseyState, 17),
-        VMSTATE_UINT32_ARRAY_V(gl_combined, SGIOdysseyState, 16, 17),
-        VMSTATE_UINT32_ARRAY_V(gl_block16, SGIOdysseyState, 4, 17),
-        /* The geometry program and the lighting data (v18). */
-        VMSTATE_UINT32_ARRAY_V(gl_const, SGIOdysseyState,
-                               SGI_ODYSSEY_GL_CONSTANTS, 18),
-        VMSTATE_UINT32_V(gl_const_index, SGIOdysseyState, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_entry, SGIOdysseyState,
-                               SGI_ODYSSEY_GL_ENTRIES, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_light_colour, SGIOdysseyState,
-                               SGI_ODYSSEY_GL_LIGHT_COLOURS * 4, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_light_vec, SGIOdysseyState,
-                               SGI_ODYSSEY_GL_LIGHTS * 16, 18),
-        VMSTATE_UINT32_V(gl_light_colour_sel, SGIOdysseyState, 18),
-        VMSTATE_UINT32_V(gl_light_vec_sel, SGIOdysseyState, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_material, SGIOdysseyState, 16, 18),
-        VMSTATE_UINT32_V(gl_shininess_sqrt, SGIOdysseyState, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_normal, SGIOdysseyState, 3, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_normal_matrix, SGIOdysseyState, 16, 18),
-        VMSTATE_UINT32_ARRAY_V(gl_colour, SGIOdysseyState, 4, 18),
-        /* The kernel-committed window the restore word brings back (v19). */
-        VMSTATE_INT32_ARRAY_V(win_committed_origin, SGIOdysseyState, 2, 19),
-        VMSTATE_UINT32_ARRAY_V(win_committed_clip, SGIOdysseyState,
-                               2 * SGI_ODYSSEY_CLIP_RECTS, 19),
-        VMSTATE_UINT32_V(win_committed_did, SGIOdysseyState, 19),
-        /* The image source format and a pixel split across words (v20). */
-        VMSTATE_UINT32_V(image_code, SGIOdysseyState, 20),
-        VMSTATE_UINT32_V(image_bytes, SGIOdysseyState, 20),
-        VMSTATE_UINT32_V(image_nbytes, SGIOdysseyState, 20),
-        /* The board-memory object table; the words are a subsection (v21). */
-        VMSTATE_UINT32_V(dest_base, SGIOdysseyState, 21),
-        VMSTATE_UINT32_V(obj_count, SGIOdysseyState, 21),
-        VMSTATE_UINT32_V(obj_used, SGIOdysseyState, 21),
-        VMSTATE_UINT32_ARRAY_V(obj_base, SGIOdysseyState,
-                               SGI_ODYSSEY_OBJECTS, 21),
-        VMSTATE_UINT32_ARRAY_V(obj_width, SGIOdysseyState,
-                               SGI_ODYSSEY_OBJECTS, 21),
-        VMSTATE_UINT32_ARRAY_V(obj_offset, SGIOdysseyState,
-                               SGI_ODYSSEY_OBJECTS, 21),
-        VMSTATE_UINT32_ARRAY_V(obj_rows, SGIOdysseyState,
-                               SGI_ODYSSEY_OBJECTS, 21),
-        VMSTATE_UINT8_ARRAY_V(obj_valid, SGIOdysseyState,
-                              SGI_ODYSSEY_OBJ_VALID_BYTES, 40),
-        /* The texture state words and coordinate (v22). */
-        VMSTATE_UINT32_V(tex_mode, SGIOdysseyState, 22),
-        VMSTATE_UINT32_ARRAY_V(tex_sampler, SGIOdysseyState, 7, 22),
-        VMSTATE_UINT32_2DARRAY_V(tex_colour_table, SGIOdysseyState,
-                                 2, SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES, 35),
-        VMSTATE_UINT32_ARRAY_V(tex_colour_table_valid, SGIOdysseyState, 2, 35),
-        VMSTATE_UINT32_ARRAY_V(tex_detail_function, SGIOdysseyState,
-                               SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES, 41),
-        VMSTATE_UINT32_V(tex_detail_function_valid, SGIOdysseyState, 41),
-        VMSTATE_UINT32_ARRAY_V(tex_env, SGIOdysseyState, 5, 22),
-        VMSTATE_UINT32_ARRAY_V(tex_levels, SGIOdysseyState,
-                               SGI_ODYSSEY_TEX_LEVELS * 3, 22),
-        VMSTATE_UINT32_V(tex_level0, SGIOdysseyState, 22),
-        VMSTATE_UINT32_ARRAY_V(tex_lod, SGIOdysseyState, 4, 31),
-        VMSTATE_UINT32_ARRAY_V(tex_coord, SGIOdysseyState, 2, 22),
-        VMSTATE_UINT32_V(tex_coord_r, SGIOdysseyState, 34),
-        VMSTATE_UINT32_V(tex_coord_q, SGIOdysseyState, 37),
-        VMSTATE_UINT32_2DARRAY_V(tex_linear_plane, SGIOdysseyState, 2, 4, 36),
-        VMSTATE_UINT32_V(tex_linear_valid, SGIOdysseyState, 36),
-        VMSTATE_UINT32_ARRAY_V(tex_linear_plane_r, SGIOdysseyState, 4, 38),
-        VMSTATE_UINT32_ARRAY_V(tex_linear_plane_q, SGIOdysseyState, 4, 39),
-        /* The colour-mode words (v24). */
-        VMSTATE_UINT32_ARRAY_V(colour_mode, SGIOdysseyState, 2, 24),
-        /* Program memory and the per-context windows (v25). */
-        VMSTATE_UINT16_ARRAY_V(gl_program_mem, SGIOdysseyState,
-                               SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6, 25),
-        VMSTATE_UINT32_V(gl_program_addr, SGIOdysseyState, 25),
-        VMSTATE_UINT32_V(gl_program_half, SGIOdysseyState, 25),
+        VMSTATE_INT32_ARRAY(win_origin, SGIOdysseyState, 2),
+        VMSTATE_INT32_ARRAY(read_origin, SGIOdysseyState, 2),
+        VMSTATE_UINT32_ARRAY(clip_words, SGIOdysseyState,
+                             2 * SGI_ODYSSEY_CLIP_RECTS),
+        VMSTATE_UINT32(did_compare, SGIOdysseyState),
+        /* The colour buffer's base a DMA header names. */
+        VMSTATE_UINT32(dma_colour_base, SGIOdysseyState),
+        /* The GL depth state and the matrices it is rebuilt from. */
+        VMSTATE_UINT32(gl_depth_func, SGIOdysseyState),
+        VMSTATE_UINT32(gl_write_mask, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(gl_combined, SGIOdysseyState, 16),
+        VMSTATE_UINT32_ARRAY(gl_block16, SGIOdysseyState, 4),
+        /* The geometry program and the lighting data. */
+        VMSTATE_UINT32_ARRAY(gl_const, SGIOdysseyState,
+                             SGI_ODYSSEY_GL_CONSTANTS),
+        VMSTATE_UINT32(gl_const_index, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(gl_entry, SGIOdysseyState, SGI_ODYSSEY_GL_ENTRIES),
+        VMSTATE_UINT32_ARRAY(gl_light_colour, SGIOdysseyState,
+                             SGI_ODYSSEY_GL_LIGHT_COLOURS * 4),
+        VMSTATE_UINT32_ARRAY(gl_light_vec, SGIOdysseyState,
+                             SGI_ODYSSEY_GL_LIGHTS * 16),
+        VMSTATE_UINT32(gl_light_colour_sel, SGIOdysseyState),
+        VMSTATE_UINT32(gl_light_vec_sel, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(gl_material, SGIOdysseyState, 16),
+        VMSTATE_UINT32(gl_shininess_sqrt, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(gl_normal, SGIOdysseyState, 3),
+        VMSTATE_UINT32_ARRAY(gl_normal_matrix, SGIOdysseyState, 16),
+        VMSTATE_UINT32_ARRAY(gl_colour, SGIOdysseyState, 4),
+        /* The kernel-committed window the restore word brings back. */
+        VMSTATE_INT32_ARRAY(win_committed_origin, SGIOdysseyState, 2),
+        VMSTATE_UINT32_ARRAY(win_committed_clip, SGIOdysseyState,
+                             2 * SGI_ODYSSEY_CLIP_RECTS),
+        VMSTATE_UINT32(win_committed_did, SGIOdysseyState),
+        /* The image source format and a pixel split across words. */
+        VMSTATE_UINT32(image_code, SGIOdysseyState),
+        VMSTATE_UINT32(image_bytes, SGIOdysseyState),
+        VMSTATE_UINT32(image_nbytes, SGIOdysseyState),
+        /* The board-memory object table; the words are a subsection. */
+        VMSTATE_UINT32(dest_base, SGIOdysseyState),
+        VMSTATE_UINT32(obj_count, SGIOdysseyState),
+        VMSTATE_UINT32(obj_used, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(obj_base, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT32_ARRAY(obj_width, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT32_ARRAY(obj_offset, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT32_ARRAY(obj_rows, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT8_ARRAY(obj_valid, SGIOdysseyState,
+                            SGI_ODYSSEY_OBJ_VALID_BYTES),
+        /* The texture state words and coordinate. */
+        VMSTATE_UINT32(tex_mode, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(tex_sampler, SGIOdysseyState, 7),
+        VMSTATE_UINT32_2DARRAY(tex_colour_table, SGIOdysseyState, 2,
+                               SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES),
+        VMSTATE_UINT32_ARRAY(tex_colour_table_valid, SGIOdysseyState, 2),
+        VMSTATE_UINT32_ARRAY(tex_detail_function, SGIOdysseyState,
+                             SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES),
+        VMSTATE_UINT32(tex_detail_function_valid, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(tex_env, SGIOdysseyState, 5),
+        VMSTATE_UINT32_ARRAY(tex_levels, SGIOdysseyState,
+                             SGI_ODYSSEY_TEX_LEVELS * 3),
+        VMSTATE_UINT32(tex_level0, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(tex_lod, SGIOdysseyState, 4),
+        VMSTATE_UINT32_ARRAY(tex_coord, SGIOdysseyState, 2),
+        VMSTATE_UINT32(tex_coord_r, SGIOdysseyState),
+        VMSTATE_UINT32(tex_coord_q, SGIOdysseyState),
+        VMSTATE_UINT32_2DARRAY(tex_linear_plane, SGIOdysseyState, 2, 4),
+        VMSTATE_UINT32(tex_linear_valid, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(tex_linear_plane_r, SGIOdysseyState, 4),
+        VMSTATE_UINT32_ARRAY(tex_linear_plane_q, SGIOdysseyState, 4),
+        /* The colour-mode words. */
+        VMSTATE_UINT32_ARRAY(colour_mode, SGIOdysseyState, 2),
+        /* Program memory. */
+        VMSTATE_UINT16_ARRAY(gl_program_mem, SGIOdysseyState,
+                             SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6),
+        VMSTATE_UINT32(gl_program_addr, SGIOdysseyState),
+        VMSTATE_UINT32(gl_program_half, SGIOdysseyState),
+        /* The model-view lighting reads. */
+        VMSTATE_UINT32_ARRAY(gl_modelview, SGIOdysseyState, 16),
+        VMSTATE_UINT32_ARRAY(gl_texture_matrix, SGIOdysseyState, 16),
         /*
-         * Version 25 streams carry the retired per-context windows: an owner
-         * word, eight context ids, eight 0xc7-entry windows and a next-slot
-         * word.
+         * The retained current-attribute records and their support mask:
+         * the context save writes records 0 and 1 back to the page.
          */
-        VMSTATE_UNUSED_BUFFER(odyssey_stream_had_context_windows, 0,
-                              4 + 8 * 4 + 8 * 0xc7 * 6 * 2 + 4),
-        /* The model-view lighting reads (v27). */
-        VMSTATE_UINT32_ARRAY_V(gl_modelview, SGIOdysseyState, 16, 27),
-        VMSTATE_UINT32_ARRAY_V(gl_texture_matrix, SGIOdysseyState, 16, 28),
-        /*
-         * The retained current-attribute records and their support mask
-         * (v29): the context save writes records 0 and 1 back to the page.
-         */
-        VMSTATE_UINT32_2DARRAY_V(query_current, SGIOdysseyState, 5, 5, 29),
-        VMSTATE_UINT32_V(query_current_valid, SGIOdysseyState, 29),
-        /* The 0x81d clip box, window-relative min/max pairs (v30). */
-        VMSTATE_UINT32_ARRAY_V(gl_clip_box, SGIOdysseyState, 2, 30),
-        VMSTATE_UINT32_ARRAY_V(gl_fog, SGIOdysseyState, 6, 33),
+        VMSTATE_UINT32_2DARRAY(query_current, SGIOdysseyState, 5, 5),
+        VMSTATE_UINT32(query_current_valid, SGIOdysseyState),
+        /* The 0x81d clip box, window-relative min/max pairs. */
+        VMSTATE_UINT32_ARRAY(gl_clip_box, SGIOdysseyState, 2),
+        VMSTATE_UINT32_ARRAY(gl_fog, SGIOdysseyState, 6),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
