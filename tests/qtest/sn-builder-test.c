@@ -1992,6 +1992,125 @@ static void ip53_route_interrupt(QTestState *qts, unsigned head)
     ip53_route_interrupt_to_input(qts, head, 0);
 }
 
+static void test_ip53_two_pic_hosts_keep_widget_state_and_reset(void)
+{
+    const uint64_t widget_b = IP53_IO_SPACE + UINT64_C(11) * 0x1000000;
+    const uint64_t widget_f = IP53_IO_SPACE + UINT64_C(15) * 0x1000000;
+    const uint64_t head_b0 = widget_b;
+    const uint64_t head_f1 = widget_f + UINT64_C(0x800000);
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(0x100000);
+    g_autofree char *bios = NULL;
+    QTestState *qts;
+    g_autofree char *pic_b = NULL;
+    g_autofree char *pic_f = NULL;
+    uint64_t value;
+    int fd;
+
+    fd = g_file_open_tmp("sn-builder-two-pic-prom-XXXXXX.bin", &bios, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, 0x100000), ==, 0x100000);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M sn-builder-bedrock-test,construction-fault=ip53-two-pic-hosts "
+        "-m 64M -smp 1 -cpu R14000 -bios %s -nodefaults -display none -S",
+        bios);
+    pic_b = qom_child_type(qts, "/machine", "pic-pic-xio-b");
+    pic_f = qom_child_type(qts, "/machine", "pic-pic-xio-f");
+
+    g_assert_cmpstr(pic_b, ==, "sgi-pic");
+    g_assert_cmpstr(pic_f, ==, "sgi-pic");
+    g_assert_null(qom_child_type(qts, "/machine", "io9-fixture-io9-d1-f0"));
+    g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b, &value));
+    g_assert_cmphex((value >> 12) & 0xffff, ==, 0xd102);
+    g_assert_true(nasid_test_cpu_readq(qts, 0, head_f1, &value));
+    g_assert_cmphex((value >> 12) & 0xffff, ==, 0xd112);
+
+    qtest_writeq(qts, head_b0 + 0x20, 0x3);
+    qtest_writeq(qts, head_f1 + 0x20, 0xc);
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x20), ==, 0x3);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x20), ==, 0xc);
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x100), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x100), ==, 0);
+
+    qtest_set_irq_in(qts, "/machine/pic-pic-xio-b/head-0", NULL, 1, true);
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x100), ==, 1U << 1);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x100), ==, 0);
+    qtest_set_irq_in(qts, "/machine/pic-pic-xio-f/head-1", NULL, 2, true);
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x100), ==, 1U << 1);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x100), ==, 1U << 2);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, head_b0 + 0x100), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, head_f1 + 0x100), ==, 0);
+    qtest_quit(qts);
+    g_unlink(bios);
+}
+
+static void test_ip53_two_pic_hosts_migrate_independent_state(void)
+{
+    const uint64_t widget_b = IP53_IO_SPACE + UINT64_C(11) * 0x1000000;
+    const uint64_t widget_f = IP53_IO_SPACE + UINT64_C(15) * 0x1000000;
+    const uint64_t head_b0 = widget_b;
+    const uint64_t head_f1 = widget_f + UINT64_C(0x800000);
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(0x100000);
+    g_autofree char *bios = NULL;
+    g_autofree char *dir = g_dir_make_tmp(
+        "sn-builder-two-pic-migrate-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from, *to;
+    int fd;
+
+    g_assert_no_error(error);
+    fd = g_file_open_tmp("sn-builder-two-pic-migration-prom-XXXXXX.bin",
+                         &bios, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, 0x100000), ==, 0x100000);
+    g_assert_cmpint(close(fd), ==, 0);
+    from = qtest_initf("-M sn-builder-bedrock-test,"
+                      "construction-fault=ip53-two-pic-hosts "
+                      "-m 64M -smp 1 -cpu R14000 -bios %s "
+                      "-nodefaults -display none -S", bios);
+    to = qtest_initf("-M sn-builder-bedrock-test,"
+                    "construction-fault=ip53-two-pic-hosts "
+                    "-m 64M -smp 1 -cpu R14000 -bios %s "
+                    "-nodefaults -display none -S -incoming defer", bios);
+
+    qtest_writeq(from, head_b0 + 0x20, 0x3);
+    qtest_writeq(from, head_f1 + 0x20, 0xc);
+    qtest_set_irq_in(from, "/machine/pic-pic-xio-b/head-0", NULL, 1, true);
+    qtest_set_irq_in(from, "/machine/pic-pic-xio-f/head-1", NULL, 2, true);
+    g_assert_cmphex(qtest_readq(from, head_b0 + 0x100), ==, 1U << 1);
+    g_assert_cmphex(qtest_readq(from, head_f1 + 0x100), ==, 1U << 2);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(qtest_readq(to, head_b0 + 0x20), ==, 0x3);
+    g_assert_cmphex(qtest_readq(to, head_f1 + 0x20), ==, 0xc);
+    g_assert_cmphex(qtest_readq(to, head_b0 + 0x100), ==, 1U << 1);
+    g_assert_cmphex(qtest_readq(to, head_f1 + 0x100), ==, 1U << 2);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(to, head_b0 + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(to, head_f1 + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(to, head_b0 + 0x100), ==, 0);
+    g_assert_cmphex(qtest_readq(to, head_f1 + 0x100), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(bios);
+    g_rmdir(dir);
+}
+
 static void test_ip53_builds_linked_pic_and_io9(const void *data)
 {
     const char *fault = data;
@@ -4124,8 +4243,8 @@ static void test_ip53_pxbow_pic_memory_windows(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start(
         "origin350,ip53-experimental=on",
-        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2 "
-        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1");
+        "-device sgi-bridge-dma-test,bus=pic-pic-head-0.0,addr=2 "
+        "-device sgi-bridge-dma-test,bus=pic-pic-head-1.0,addr=1");
     uint64_t pic_widget = IP53_IO_SPACE + UINT64_C(15) * UINT64_C(0x1000000);
     uint64_t io_registers = IP53_IO_SPACE + UINT64_C(0x1400000);
     const uint64_t pci_offset = UINT64_C(0x01000000);
@@ -7081,6 +7200,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/ip53-builds-linked-pic-and-io9-d4-h1",
                         "ip53-pic-io9-d4-h1",
                         test_ip53_builds_linked_pic_and_io9);
+    qtest_add_func("sn/builder/ip53-two-pic-hosts-keep-widget-state-and-reset",
+                   test_ip53_two_pic_hosts_keep_widget_state_and_reset);
+    qtest_add_func("sn/builder/ip53-two-pic-hosts-migrate-independent-state",
+                   test_ip53_two_pic_hosts_migrate_independent_state);
     qtest_add_data_func("sn/builder/ip53-identical-fingerprint-migration",
                         "ip53-pic-io9", test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-fingerprint-ioc4-route-mismatch",

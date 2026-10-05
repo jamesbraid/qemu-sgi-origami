@@ -1328,8 +1328,17 @@ static const VMStateDescription vmstate_pic_head = {
 static void pic_head_realize(DeviceState *dev, Error **errp)
 {
     SGIPICHead *s = SGI_PIC_HEAD(dev);
-    g_autofree char *name = g_strdup_printf("pic-head-%u.0", s->head);
+    const char *pic_component = object_get_canonical_path_component(
+        OBJECT(s->pic));
+    g_autofree char *name = NULL;
     unsigned i;
+
+    if (!pic_component || !*pic_component) {
+        error_setg(errp, "PIC head %u has no stable parent component",
+                   s->head);
+        return;
+    }
+    name = g_strdup_printf("%s-head-%u.0", pic_component, s->head);
 
     qdev_init_gpio_in(dev, pic_set_pin, PIC_PIN_COUNT);
     qdev_init_gpio_out_named(dev, s->pci_irq, "pci-intx", 32);

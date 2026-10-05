@@ -956,6 +956,14 @@ static SGIModelPciHostBridge ip53_test_pic = {
     .compatibility_profile =
         SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK,
 };
+static SGIModelPciHostBridge ip53_test_pic_second = {
+    .id = (char *)"pic-xio-f",
+    .kind = SGI_MODEL_PCI_HOST_KIND_PIC,
+    .xio_attachment_index = 1,
+    .has_compatibility_profile = true,
+    .compatibility_profile =
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK,
+};
 static uint64_t ip53_test_bank_mib[] = { 0, 0, 64, 0, 0, 0, 0, 0 };
 static SGIModelNode ip53_test_node;
 static SGIModelBedrockConfig ip53_test_bedrock_config;
@@ -964,6 +972,11 @@ static uint64List *ip53_test_bank_mib_list;
 static SGIModelXioAttachment ip53_test_xio = {
     .crossbar_index = -1,
     .widget = 9,
+    .node_index = 0,
+};
+static SGIModelXioAttachment ip53_test_xio_second = {
+    .crossbar_index = -1,
+    .widget = 15,
     .node_index = 0,
 };
 static SGIModelXioAttachment ip53_test_unowned_xio = {
@@ -1015,6 +1028,14 @@ static void bedrock_test_install_ip53_descriptor(bool include_profile)
     static SGIModelPciHostBridgeList host_entry;
     static SGIModelIoBoardList board_entry;
 
+    ip53_test_pic.id = (char *)"fixture-pic";
+    ip53_test_pic.xio_attachment_index = 0;
+    ip53_test_xio.widget = 9;
+    ip53_test_io9.populated = true;
+    ip53_test_io9.has_ds1742 = true;
+    ip53_test_io9.ds1742 = true;
+    ip53_test_io9.pci_host_index = 0;
+    ip53_test_io9.pci_head = 0;
     ip53_test_node = bedrock_test_nodes[0];
     ip53_test_bedrock_config = bedrock_test_config;
     ip53_test_bedrock_config.installed_bank_mask = 0x04;
@@ -1077,6 +1098,25 @@ static void bedrock_test_set_construction_fault(Object *obj,
 {
     if (!strcmp(value, "ip53")) {
         bedrock_test_install_ip53_descriptor(false);
+    } else if (!strcmp(value, "ip53-two-pic-hosts")) {
+        static SGIModelPciHostBridge hosts[2];
+        static SGIModelXioAttachment attachments[2];
+
+        bedrock_test_install_ip53_descriptor(true);
+        hosts[0] = ip53_test_pic;
+        hosts[0].id = (char *)"pic-xio-b";
+        hosts[1] = ip53_test_pic_second;
+        attachments[0] = ip53_test_xio;
+        attachments[0].widget = 11;
+        attachments[1] = ip53_test_xio_second;
+        bedrock_test_topology.pci_host_bridges = pci_host_bridge_list(
+            hosts, ARRAY_SIZE(hosts));
+        bedrock_test_topology.xio_attachments = xio_attachment_list(
+            attachments, ARRAY_SIZE(attachments));
+        ip53_test_io9.populated = false;
+        ip53_test_io9.has_ds1742 = false;
+        ip53_test_io9.ds1742 = false;
+        ip53_test_io9.pci_host_index = 1;
     } else if (!strcmp(value, "ip53-pic-io9") ||
                !strcmp(value, "ip53-pic-io9-d1-h0")) {
         bedrock_test_install_ip53_descriptor(true);
