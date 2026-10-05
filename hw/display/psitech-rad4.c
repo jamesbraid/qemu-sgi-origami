@@ -2351,7 +2351,15 @@ static void rad4_dma_desc_done(PsitechRad4State *s)
     rad4_update_irq(s);
 }
 
-/* Bus time has passed since the last expiry: move what fits in it. */
+/*
+ * Bus time has passed since the last expiry: move what fits in it.
+ *
+ * QEMU's MMIO reentrancy guard does not cover timer context, so a transfer
+ * aimed at this card's own BARs could reach rad4_dma_command_write() from
+ * inside rad4_dma_move(). A stop or start there clears dma_have_desc; the
+ * loop then neither counts the move against the descriptor it dropped nor
+ * completes it, and either ends or loads a fresh descriptor.
+ */
 static void rad4_dma_timer_cb(void *opaque)
 {
     PsitechRad4State *s = opaque;
@@ -2379,6 +2387,9 @@ static void rad4_dma_timer_cb(void *opaque)
                            s->dma_local + s->dma_moved, len)) {
             rad4_dma_stop(s);
             return;
+        }
+        if (!s->dma_have_desc) {
+            continue;
         }
         s->dma_moved += len;
         budget -= len;
