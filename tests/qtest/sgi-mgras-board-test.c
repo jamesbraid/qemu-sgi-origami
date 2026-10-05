@@ -613,26 +613,40 @@ static void test_two_re_board_draws_one_set_of_planes(gconstpointer data)
     qtest_quit(s);
 }
 
+/*
+ * Each register's own access width, and the one wrong width the quick setup
+ * tries on it. Between them the four registers try every wrong width once;
+ * the thorough setup tries every wrong width on every register.
+ */
 typedef struct SIVisualRegisterWidth {
     uint64_t addr;
     unsigned int width;
+    unsigned int quick_wrong_width;
 } SIVisualRegisterWidth;
 
 static const SIVisualRegisterWidth mgras_visual_register_widths[] = {
-    { REG_XMAP_INDEX, 1 },
-    { REG_XMAP_MAIN_MODE, 4 },
-    { REG_CMAP_WRITE_INDEX, 2 },
-    { REG_CMAP_DATA, 4 },
+    { REG_XMAP_INDEX, 1, 8 },
+    { REG_XMAP_MAIN_MODE, 4, 1 },
+    { REG_CMAP_WRITE_INDEX, 2, 4 },
+    { REG_CMAP_DATA, 4, 2 },
 };
 
 static const unsigned int mgras_access_widths[] = { 1, 2, 4, 8 };
+
+static bool visual_register_width_runs(const SIVisualRegisterWidth *reg,
+                                       unsigned int width)
+{
+    return width != reg->width &&
+           (g_test_slow() || width == reg->quick_wrong_width);
+}
 
 static void test_visual_register_read_widths(void)
 {
     for (int reg = 0; reg < ARRAY_SIZE(mgras_visual_register_widths); reg++) {
         for (int width = 0; width < ARRAY_SIZE(mgras_access_widths); width++) {
-            if (mgras_access_widths[width] ==
-                mgras_visual_register_widths[reg].width) {
+            if (!visual_register_width_runs(
+                    &mgras_visual_register_widths[reg],
+                    mgras_access_widths[width])) {
                 continue;
             }
             mgras_reset();
@@ -648,8 +662,9 @@ static void test_visual_register_write_widths(void)
 {
     for (int reg = 0; reg < ARRAY_SIZE(mgras_visual_register_widths); reg++) {
         for (int width = 0; width < ARRAY_SIZE(mgras_access_widths); width++) {
-            if (mgras_access_widths[width] ==
-                mgras_visual_register_widths[reg].width) {
+            if (!visual_register_width_runs(
+                    &mgras_visual_register_widths[reg],
+                    mgras_access_widths[width])) {
                 continue;
             }
             mgras_reset();
@@ -2009,6 +2024,13 @@ int main(int argc, char **argv)
     }
     for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
         const MgrasBoardExpect *e = &mgras_board_expect[i];
+        /*
+         * Every board answers its own identity. The other cases follow from
+         * the RE count alone, so the quick setup runs them on si and ssi,
+         * one board with each count, and refuses only si-t.
+         */
+        bool every = g_test_slow() || !strcmp(e->board, "si") ||
+                     !strcmp(e->board, "ssi");
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/board-identity/%s", e->board);
         g_autofree char *screen = g_strdup_printf(
@@ -2019,11 +2041,14 @@ int main(int argc, char **argv)
             "sn0/origin2000/mgras/board-pp1s-follow-re-count/%s", e->board);
 
         qtest_add_data_func(path, e, test_board_identity);
-        qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
-        qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
-        if (e->implemented && (!strcmp(e->board, "si") ||
-                               !strcmp(e->board, "ssi") ||
-                               !strcmp(e->board, "esi"))) {
+        if (every) {
+            qtest_add_data_func(screen, e,
+                                test_board_screen_fits_row_buffers);
+            qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
+        }
+        if (every && e->implemented && (!strcmp(e->board, "si") ||
+                                        !strcmp(e->board, "ssi") ||
+                                        !strcmp(e->board, "esi"))) {
             g_autofree char *rdram = g_strdup_printf(
                 "sn0/origin2000/mgras/rdram-data-same-for-each-re/%s",
                 e->board);
@@ -2031,10 +2056,10 @@ int main(int argc, char **argv)
             qtest_add_data_func(rdram, e,
                                 test_board_rdram_data_same_for_each_re);
         }
-        if (e->implemented && (!strcmp(e->board, "si") ||
-                               !strcmp(e->board, "ssi") ||
-                               !strcmp(e->board, "esi") ||
-                               !strcmp(e->board, "essi"))) {
+        if (every && e->implemented && (!strcmp(e->board, "si") ||
+                                        !strcmp(e->board, "ssi") ||
+                                        !strcmp(e->board, "esi") ||
+                                        !strcmp(e->board, "essi"))) {
             g_autofree char *re4 = g_strdup_printf(
                 "sn0/origin2000/mgras/re4-status-reports-selected-re/%s",
                 e->board);
@@ -2047,7 +2072,8 @@ int main(int argc, char **argv)
             qtest_add_data_func(mapping, e,
                                 test_board_mapping_port_raster_write);
         }
-        if (!e->implemented) {
+        if (!e->implemented &&
+            (g_test_slow() || !strcmp(e->board, "si-t"))) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);
 
