@@ -36,6 +36,7 @@
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "hw/block/flash.h"
 #include "migration/blocker.h"
 #include "migration/register.h"
@@ -1056,6 +1057,9 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     mc->default_cpus = 1;
     mc->max_cpus = octane_max_cpus(product);
     mc->default_ram_size = octane_model_ram(t->nodes->value);
+    /* -nic and an unqualified -drive reach the onboard IOC3 and ISP. */
+    mc->default_nic = "sgi-ioc3-eth";
+    mc->block_default_type = IF_SCSI;
     mc->no_floppy = true;
     mc->no_cdrom = true;
     mc->no_parallel = true;
