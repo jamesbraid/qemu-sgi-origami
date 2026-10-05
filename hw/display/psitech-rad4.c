@@ -1319,6 +1319,16 @@ static void rad4_disable_scanout(PsitechRad4State *s)
     }
 }
 
+/*
+ * A frame raises the board's frame event only while board-control bit 1
+ * asks for one. That bit is read from the shipped driver, not a
+ * schematic: it sets the bit, with a 400 ms fallback timer, whenever it
+ * defers work to the next frame; its interrupt handler clears it when the
+ * frame arrives; and before every DMA transfer it clears the bit if set and
+ * restores it afterwards, because its handler does not service frames while
+ * a transfer is in flight. A frame event the bit did not request would
+ * leave that handler unable to clear the interrupt.
+ */
 static void rad4_frame_timer_cb(void *opaque)
 {
     PsitechRad4State *s = opaque;
@@ -1327,8 +1337,10 @@ static void rad4_frame_timer_cb(void *opaque)
         return;
     }
 
-    s->frame_pending = true;
-    rad4_update_irq(s);
+    if (s->bar2_ctrl_bit & RAD4_CTRL_STORED_BIT) {
+        s->frame_pending = true;
+        rad4_update_irq(s);
+    }
 
     timer_mod(s->frame_timer,
              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
