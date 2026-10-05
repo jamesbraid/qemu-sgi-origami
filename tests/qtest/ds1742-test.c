@@ -12,6 +12,17 @@
 #define REG(n) (BASE + (n))
 #define NS_PER_SEC UINT64_C(1000000000)
 
+static QTestState *start_at(const char *base, const char *device_extra,
+                             const char *extra)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+                                  "-rtc base=%s,clock=vm "
+                                  "-device ds1742,id=clock%s %s",
+                                  base, device_extra, extra);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    return qts;
+}
+
 static QTestState *start(const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
@@ -31,19 +42,280 @@ static void wr(QTestState *qts, unsigned offset, uint8_t value)
     qtest_writeb(qts, REG(offset), value);
 }
 
-static void set_time(QTestState *qts, uint8_t second, uint8_t minute,
-                     uint8_t hour, uint8_t date, uint8_t month,
-                     uint8_t year, uint8_t century)
+static void set_time_weekday(QTestState *qts, uint8_t second,
+                             uint8_t minute, uint8_t hour, uint8_t date,
+                             uint8_t month, uint8_t year, uint8_t century,
+                             uint8_t weekday)
 {
     wr(qts, 0x7f8, 0x80);
     wr(qts, 0x7f9, second);
     wr(qts, 0x7fa, minute);
     wr(qts, 0x7fb, hour);
-    wr(qts, 0x7fc, 0x02);
+    wr(qts, 0x7fc, weekday);
     wr(qts, 0x7fd, date);
     wr(qts, 0x7fe, month);
     wr(qts, 0x7ff, year);
     wr(qts, 0x7f8, century);
+}
+
+static void set_time(QTestState *qts, uint8_t second, uint8_t minute,
+                     uint8_t hour, uint8_t date, uint8_t month,
+                     uint8_t year, uint8_t century)
+{
+    set_time_weekday(qts, second, minute, hour, date, month, year,
+                     century, 0x02);
+}
+
+static void test_fresh_seed(void)
+{
+    QTestState *qts = start_at("2024-02-28T23:59:59",
+                               ",fresh-year-base=1968", "");
+
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x28);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 4);
+    qtest_clock_step(qts, 2 * NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7f8) & 0x3f, ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    qtest_quit(qts);
+}
+
+static void test_fresh_seed_default(void)
+{
+    QTestState *qts = start_at("2024-02-28T23:59:59", "", "");
+
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x24);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x28);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 4);
+    qtest_quit(qts);
+}
+
+static void test_fresh_seed_year_boundary(void)
+{
+    QTestState *qts = start_at("2067-12-31T23:59:59",
+                               ",fresh-year-base=1968", "");
+
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x99);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x31);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 7);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x21);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x00);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_fresh_seed_reset(void)
+{
+    QTestState *qts = start_at("2024-02-28T23:59:59",
+                               ",fresh-year-base=1968", "");
+
+    wr(qts, 0x100, 0xa5);
+    qtest_clock_step(qts, 2 * NS_PER_SEC);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(rd(qts, 0x100), ==, 0xa5);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    qtest_quit(qts);
+}
+
+static void test_fresh_seed_rejects(const void *data)
+{
+    g_auto(GStrv) arguments = g_strsplit(data, "|", 3);
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(arguments[2]);
+        return;
+    }
+    qtest_quit(start_at(arguments[0], arguments[1], ""));
+}
+
+static void run_invalid_saved_seed(const char *directory, unsigned int base)
+{
+    g_autofree char *image = g_build_filename(directory, "clock.img", NULL);
+    g_autofree char *log = g_build_filename(directory, "qemu.log", NULL);
+    g_autofree char *contents = g_malloc0(0x800);
+    g_autofree char *output = NULL;
+    gsize output_len;
+    QTestState *qts;
+
+    contents[0x7f8] = 0x20;
+    contents[0x7fc] = 0x01;
+    contents[0x7fd] = 0x30;
+    contents[0x7fe] = 0x02;
+    contents[0x7ff] = 0x24;
+    g_assert_true(g_file_set_contents(image, contents, 0x800, NULL));
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2024-01-01T00:00:00,clock=vm "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-device ds1742,id=clock,drive=nvram,"
+                      "fresh-year-base=%u -d unimp -D %s",
+                      image, base, log);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x24);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &output, &output_len, NULL));
+    g_assert_nonnull(g_strstr_len(output, output_len,
+                                  "invalid saved calendar; using RTC seed"));
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
+static void test_invalid_saved_seed(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1742-invalid-seed-XXXXXX",
+                                                 NULL);
+
+    g_assert_nonnull(directory);
+    run_invalid_saved_seed(directory, 0);
+    run_invalid_saved_seed(directory, 1968);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_fresh_seed_reopen(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1742-fresh-reopen-XXXXXX",
+                                                 NULL);
+    g_autofree char *image = g_build_filename(directory, "clock.img", NULL);
+    g_autofree char *reference =
+        g_build_filename(directory, "reference.img", NULL);
+    char zero_image[0x800] = { 0 }, zero_reference[512] = { 0 };
+    QTestState *qts;
+
+    g_assert_nonnull(directory);
+    g_assert_true(g_file_set_contents(image, zero_image, sizeof(zero_image),
+                                      NULL));
+    g_assert_true(g_file_set_contents(reference, zero_reference,
+                                      sizeof(zero_reference), NULL));
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2024-02-28T23:59:59,clock=vm "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-drive if=none,id=reference,file=%s,format=raw "
+                      "-device ds1742,id=clock,drive=nvram,clock-drive=reference,"
+                      "fresh-year-base=1968",
+                      image, reference);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    wr(qts, 0x100, 0xa5);
+    qtest_clock_step(qts, 2 * NS_PER_SEC);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2040-05-06T07:08:09,clock=vm "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-drive if=none,id=reference,file=%s,format=raw "
+                      "-device ds1742,id=clock,drive=nvram,clock-drive=reference",
+                      image, reference);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    g_assert_cmphex(rd(qts, 0x100), ==, 0xa5);
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    {
+        uint8_t second = from_bcd(rd(qts, 0x7f9));
+
+        qtest_clock_step(qts, NS_PER_SEC);
+        g_assert_cmpuint(from_bcd(rd(qts, 0x7f9)), ==, (second + 1) % 60);
+    }
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2068-05-06T07:08:09,clock=vm "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-drive if=none,id=reference,file=%s,format=raw "
+                      "-device ds1742,id=clock,drive=nvram,clock-drive=reference,"
+                      "fresh-year-base=1968",
+                      image, reference);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    g_assert_cmphex(rd(qts, 0x100), ==, 0xa5);
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(reference), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_fresh_seed_guest_write_migration(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1742-seed-migrate-XXXXXX",
+                                                 NULL);
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from, *to;
+
+    g_assert_nonnull(directory);
+    from = start_at("2024-02-28T23:59:59", ",fresh-year-base=1968", "");
+    to = start_at("2024-02-28T23:59:59", "", "-incoming defer");
+    set_time_weekday(from, 0x59, 0x59, 0x23, 0x28, 0x02, 0x24, 0x20, 0x04);
+    g_assert_cmphex(rd(from, 0x7ff), ==, 0x24);
+    qtest_clock_step(from, 2 * NS_PER_SEC);
+    g_assert_cmphex(rd(from, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(from, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(from, 0x7fc) & 7, ==, 5);
+
+    wr(from, 0x7f8, 0x40);
+    qtest_clock_step(from, 2 * NS_PER_SEC);
+    wr(from, 0x7f8, 0xc0);
+    wr(from, 0x7f9, 0x56);
+    wr(from, 0x7fa, 0x34);
+    wr(from, 0x7fb, 0x12);
+    wr(from, 0x7fc, 0x06);
+    wr(from, 0x7fd, 0x01);
+    wr(from, 0x7fe, 0x03);
+    wr(from, 0x7ff, 0x25);
+    g_assert_cmphex(rd(from, 0x7ff), ==, 0x25);
+    g_assert_cmphex(rd(from, 0x7fc) & 7, ==, 6);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(rd(to, 0x7ff), ==, 0x25);
+    g_assert_cmphex(rd(to, 0x7fc) & 7, ==, 6);
+    wr(to, 0x7f8, 0x60);
+    g_assert_cmphex(rd(to, 0x7f9), ==, 0x01);
+    g_assert_cmphex(rd(to, 0x7fd), ==, 0x29);
+    g_assert_cmphex(rd(to, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(to, 0x7fc) & 7, ==, 5);
+    wr(to, 0x7f8, 0x20);
+    g_assert_cmphex(rd(to, 0x7ff), ==, 0x25);
+    g_assert_cmphex(rd(to, 0x7f9), ==, 0x56);
+    g_assert_cmphex(rd(to, 0x7fa), ==, 0x34);
+    g_assert_cmphex(rd(to, 0x7fb), ==, 0x12);
+    g_assert_cmphex(rd(to, 0x7fd), ==, 0x01);
+    g_assert_cmphex(rd(to, 0x7fe), ==, 0x03);
+    g_assert_cmphex(rd(to, 0x7fc) & 7, ==, 6);
+    qtest_clock_step(to, NS_PER_SEC);
+    g_assert_cmphex(rd(to, 0x7f9), ==, 0x57);
+    g_assert_cmphex(rd(to, 0x7fc) & 7, ==, 6);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static void test_calendar(void)
@@ -583,6 +855,27 @@ int main(int argc, char **argv)
     qtest_add_data_func("/ds1742/backing-noop", NULL, test_backing_noop);
     qtest_add_data_func("/ds1742/backing-retry", GUINT_TO_POINTER(true),
                         test_backing_noop);
+    qtest_add_func("/ds1742/fresh-seed", test_fresh_seed);
+    qtest_add_func("/ds1742/fresh-seed-default", test_fresh_seed_default);
+    qtest_add_func("/ds1742/fresh-seed-year-boundary",
+                   test_fresh_seed_year_boundary);
+    qtest_add_func("/ds1742/fresh-seed-reset", test_fresh_seed_reset);
+    qtest_add_data_func("/ds1742/fresh-seed-invalid-property",
+                        "2024-01-01T00:00:00|,fresh-year-base=1980|"
+                        "*fresh-year-base must be 0 or 1968*",
+                        test_fresh_seed_rejects);
+    qtest_add_data_func("/ds1742/fresh-seed-range-before",
+                        "1967-12-31T23:59:59|,fresh-year-base=1968|"
+                        "*fresh-year-base=1968 cannot seed RTC year 1967*",
+                        test_fresh_seed_rejects);
+    qtest_add_data_func("/ds1742/fresh-seed-range-after",
+                        "2068-01-01T00:00:00|,fresh-year-base=1968|"
+                        "*fresh-year-base=1968 cannot seed RTC year 2068*",
+                        test_fresh_seed_rejects);
+    qtest_add_func("/ds1742/invalid-saved-seed", test_invalid_saved_seed);
+    qtest_add_func("/ds1742/fresh-seed-reopen", test_fresh_seed_reopen);
+    qtest_add_func("/ds1742/fresh-seed-guest-write-migration",
+                   test_fresh_seed_guest_write_migration);
     qtest_add_func("/ds1742/calendar", test_calendar);
     qtest_add_func("/ds1742/invalid-dates", test_invalid_dates);
     qtest_add_func("/ds1742/reset-with-write", test_reset_with_write);
