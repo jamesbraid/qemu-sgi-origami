@@ -1390,6 +1390,53 @@ static void test_pio_fifo(void)
     qtest_quit(qts);
 }
 
+static void test_dma_chardev_reconnect(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts;
+    QDict *reply;
+    const uint8_t pio_data = 0x70;
+    const uint8_t dma_data[4] = { 0x61, 0x62, 0, 0 };
+    const uint8_t dma_control[4] = { TX_VALID, TX_VALID, 0, 0 };
+    g_autofree char *contents = NULL;
+    int sv[2];
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+
+    qtest_qmp_assert_success(qts,
+        "{'execute':'chardev-change','arguments':{'id':'serial',"
+        "'backend':{'type':'ringbuf','data':{'size':4096}}}}");
+    qtest_qmp_assert_success(qts,
+        "{'execute':'chardev-change','arguments':{'id':'serial',"
+        "'backend':{'type':'ringbuf','data':{'size':4096}}}}");
+
+    qtest_writeb(qts, UART(0), pio_data);
+    qtest_clock_step(qts, 2 * 1000000);
+    reply = qtest_qmp(qts,
+        "{'execute':'ringbuf-read','arguments':{'device':'serial',"
+        "'size':16}}");
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "p");
+    qobject_unref(reply);
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, dma_data, dma_control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
+    reply = qtest_qmp(qts,
+        "{'execute':'ringbuf-read','arguments':{'device':'serial',"
+        "'size':16}}");
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "ab");
+    qobject_unref(reply);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
 static void test_xbridge_unaligned_split(void)
 {
     QTestState *qts = ioc4_start(33333333);
@@ -1965,6 +2012,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/interrupts", test_interrupts);
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);
+    qtest_add_func("/sgi-ioc4/dma-chardev-reconnect",
+                   test_dma_chardev_reconnect);
     qtest_add_func("/sgi-ioc4/xbridge-unaligned-split",
                    test_xbridge_unaligned_split);
     qtest_add_func("/sgi-ioc4/rtc-absent", test_rtc_absent);
