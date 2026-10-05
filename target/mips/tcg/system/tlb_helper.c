@@ -102,15 +102,11 @@ void r4k_fill_tlb(CPUMIPSState *env, int idx)
     tlb = &env->tlb->mmu.r4k.tlb[idx];
     if (env->CP0_EntryHi & (1 << CP0EnHi_EHINV)) {
         tlb->EHINV = 1;
-        if (idx < 64) {
-            env->tlb_active_mask &= ~(1ULL << idx);
-        }
+        r10k_tlb_note_active(env, idx, false);
         return;
     }
     tlb->EHINV = 0;
-    if (idx < 64) {
-        env->tlb_active_mask |= (1ULL << idx);
-    }
+    r10k_tlb_note_active(env, idx, true);
     tlb->VPN = env->CP0_EntryHi & (TARGET_PAGE_MASK << 1);
 #if defined(TARGET_MIPS64)
     tlb->VPN &= env->SEGMask;
@@ -168,9 +164,7 @@ static void r4k_helper_tlbinv(CPUMIPSState *env)
         tlb_mmid = mi ? tlb->MMID : (uint32_t) tlb->ASID;
         if (!tlb->G && tlb_mmid == MMID) {
             tlb->EHINV = 1;
-            if (idx < 64) {
-                env->tlb_active_mask &= ~(1ULL << idx);
-            }
+            r10k_tlb_note_active(env, idx, false);
         }
     }
     cpu_mips_tlb_flush(env);

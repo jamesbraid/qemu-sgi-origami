@@ -199,6 +199,8 @@ void mips_r10k_cpu_realize(MIPSCPU *cpu);
 void mips_r10k_cpu_reset(MIPSCPU *cpu);
 void mips_r10k_cpu_unrealize(MIPSCPU *cpu);
 void mips_r10k_cpu_finalize(MIPSCPU *cpu);
+void r10k_tlb_note_active(CPUMIPSState *env, int idx, bool active);
+void r10k_tlb_rebuild_active_mask(CPUMIPSState *env);
 
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
 extern const VMStateDescription mips_vmstate_r10k;
