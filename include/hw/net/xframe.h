@@ -149,8 +149,6 @@ struct XframeState {
     uint64_t gpio_int_reg;      /* GPIO_INT_REG: PIC/GPIO-block link-state */
     uint64_t mac_cfg;           /* TMAC/RMAC config, key-locked */
     bool rmac_cfg_unlocked;     /* RMAC_CFG_KEY unlocks a MAC_CFG write */
-    /* Preserve version-7 interrupt-mask behavior after incoming migration. */
-    bool legacy_interrupt_masking;
     /*
      * The statistics block: the card DMAs a structure of hardware counters to
      * the physical address in STAT_ADDR while STAT_CFG enables it, and the
@@ -260,11 +258,8 @@ struct XframeState {
 
     /*
      * link_up_timer presents a delayed UP event without requiring a preceding
-     * synthetic DOWN. link_down_timer remains allocated and migrated only so
-     * existing version-2-or-newer streams with that old timer pending can
-     * load without changing the VMState layout.
+     * synthetic DOWN.
      */
-    QEMUTimer *link_down_timer;
     QEMUTimer *link_up_timer;
 
     /*
@@ -281,7 +276,7 @@ struct XframeState {
      * SCHED_INT_CTRL write with TIMER_EN set, re-armed each period, cancelled
      * on soft reset, on ADAPTER_EN 1->0, and on a SCHED_INT_CTRL write
      * clearing TIMER_EN. Its pending expiry is migrated
-     * (VMSTATE_TIMER_PTR_V); the VMState post_load re-arms it if
+     * (VMSTATE_TIMER_PTR); the VMState post_load re-arms it if
      * sched_int_armed is still set on load, not merely TIMER_EN, which
      * stays set across a fired ONE_SHOT interrupt that must NOT be re-armed
      * (see xframe_post_load and xframe_sched_int_cb).
@@ -289,7 +284,7 @@ struct XframeState {
     uint64_t sched_int_ctrl;    /* scheduled_int_ctrl (0x918): read/arm */
     bool sched_int_pending;     /* scheduled IRQ latched until ack */
     /*
-     * Whether an arm is actually outstanding, migrated (VMSTATE_BOOL_V) so
+     * Whether an arm is actually outstanding, migrated (VMSTATE_BOOL) so
      * post_load can tell a still-armed periodic/pending timer from a ONE_SHOT
      * that already fired and must not be re-armed; see
      * xframe_sched_int_arm, xframe_sched_int_cb and xframe_post_load in

@@ -253,7 +253,6 @@ static int sgi_net_rx_latency_pre_save(void *opaque)
  * additive version.
  */
 const VMStateDescription vmstate_sgi_net_rx_latency = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-net-rx-latency",
     .version_id = 2,
     .minimum_version_id = 2,

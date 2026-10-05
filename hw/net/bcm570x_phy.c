@@ -265,16 +265,10 @@ static void bcm570x_phy_finalize(Object *obj)
     timer_free(s->settle_timer);
 }
 
-static bool bcm570x_phy_compat_needed(void *opaque)
-{
-    return false;
-}
-
 const VMStateDescription vmstate_bcm570x_phy = {
     .name = "bcm570x-phy",
     .version_id = 1,
     .minimum_version_id = 1,
-    .needed = bcm570x_phy_compat_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(bmcr, Bcm570xPhyState),
         VMSTATE_UINT16(anar, Bcm570xPhyState),
