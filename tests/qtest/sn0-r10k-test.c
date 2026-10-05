@@ -570,17 +570,28 @@ typedef enum LinkBreaker {
 } LinkBreaker;
 
 typedef struct CPUCase {
-    const char *name;
+    const char *path;
+    const char *machine;
+    const char *cpu;
     bool has_pref;
     uint32_t success_mask;
 } CPUCase;
 
+#define LLSC_COMMON_SUCCESS_MASK \
+    ((1u << BREAK_LOAD) | (1u << BREAK_STORE) | (1u << BREAK_SYNC) | \
+     (1u << BREAK_CACHE) | (1u << BREAK_PREF))
+
 static const CPUCase cpu_cases[] = {
     {
-        "R10000",
-        true,
-        (1u << BREAK_LOAD) | (1u << BREAK_STORE) | (1u << BREAK_SYNC) |
-        (1u << BREAK_CACHE) | (1u << BREAK_PREF),
+        "/r10k-llsc/r10000", "origin200", "R10000", true,
+        LLSC_COMMON_SUCCESS_MASK,
+    },
+    {
+        "/r10k-llsc/r12000", "malta",
+        "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+        "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
+        "r12000-scache-block-words=16",
+        true, LLSC_COMMON_SUCCESS_MASK,
     },
 };
 
@@ -757,9 +768,10 @@ static void test_cpu(gconstpointer opaque)
     llsc_write_guest_image(fd, cpu_case->has_pref);
     close(fd);
 
-    qts = qtest_initf("-M origin200 -m 64M "
+    qts = qtest_initf("-M %s -m 64M "
                       "-cpu %s -bios %s -accel tcg "
-                      "-no-reboot -no-shutdown", cpu_case->name, image);
+                      "-no-reboot -no-shutdown", cpu_case->machine,
+                      cpu_case->cpu, image);
     unlink(image);
     wait_for_done(qts);
 
@@ -770,7 +782,7 @@ static void test_cpu(gconstpointer opaque)
                                      breaker * RESULT_STRIDE + 8);
         uint64_t expected_value;
 
-        g_test_message("%s after %s", cpu_case->name,
+        g_test_message("%s after %s", cpu_case->cpu,
                        breaker_names[breaker]);
         if (result > 1) {
             invalid_mask |= 1u << breaker;
@@ -1906,7 +1918,9 @@ int main(int argc, char **argv)
                    test_r16000_nmi_reset_rearms);
     qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
     qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
-    g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
+    for (unsigned int i = 0; i < ARRAY_SIZE(cpu_cases); i++) {
+        g_test_add_data_func(cpu_cases[i].path, &cpu_cases[i], test_cpu);
+    }
     qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
                    test_indirect_and_unmapped_chaining);
     qtest_add_func("/sn0/tcg/unmapped-cpu-relative-destination",
