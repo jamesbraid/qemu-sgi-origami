@@ -154,7 +154,6 @@ def select_qtests(build, base):
 
 def smoke(args):
     build = Build(args.build)
-    model(argparse.Namespace(python=build.python))
     build.ninja('tests/functional/mips64-linux_kernel.tstamp')
 
     qtests, _ = select_qtests(build, args.base)
@@ -256,8 +255,8 @@ def main(argv=None):
     mode.set_defaults(func=model)
 
     mode = modes.add_parser(
-        'smoke', help='the pull-request checks: model suites, the qtests a '
-                      'change selects, one Linux boot and the unit tests')
+        'smoke', help='the pull-request checks: the qtests a change '
+                      'selects, one Linux boot and the unit tests')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
                       help='select qtests changed since this commit '
                            '(default: $PR_BASE_SHA; none selects only the '
