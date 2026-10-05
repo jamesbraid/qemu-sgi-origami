@@ -3,6 +3,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define CONTROL 0x10000000ULL
 #define CPU (1ULL << 54)
@@ -160,21 +162,7 @@ static void test_migration(gconstpointer opaque)
     qtest_writeq(from, address, 0xaabbccdd);
     qtest_writeq(from, cpu_address, 0x99887766);
     health(from, GPOINTER_TO_UINT(opaque));
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpfloat(g_test_timer_elapsed(), <, 30);
-        g_usleep(1000);
-    }
+    sgi_migrate_stopped(from, uri);
     qtest_writeq(to, address, 0x11223344);
     qtest_writeq(to, cpu_address, 0x55667788);
     qtest_readq(to, address);
@@ -331,8 +319,9 @@ static void test_default_reset_load(void)
 
 static void wait_status(QTestState *qts, const char *status)
 {
-    int64_t deadline = g_get_monotonic_time() + 5000000;
+    SgiWait w;
 
+    sgi_wait_start(&w, "run state %s", status);
     for (;;) {
         QDict *reply = qtest_qmp(qts, "{ 'execute': 'query-status' }");
         bool matches = !strcmp(qdict_get_str(qdict_get_qdict(reply, "return"),
@@ -341,8 +330,7 @@ static void wait_status(QTestState *qts, const char *status)
         if (matches) {
             return;
         }
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 
@@ -357,17 +345,18 @@ static void test_running_refusal(void)
         0xad090100, 0x1000fffc, 0,
     };
     unsigned i, pass;
+    SgiWait w;
 
     /* Public MIPS instructions increment RAM, proving CPU execution. */
     for (i = 0; i < G_N_ELEMENTS(program); i++) {
         qtest_writel(qts, i * 4, program[i]);
     }
     for (pass = 0; pass < 2; pass++) {
-        int64_t deadline = g_get_monotonic_time() + 5000000;
         qtest_writel(qts, 0x100, 0);
         qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+        sgi_wait_start(&w, "guest store to RAM");
         while (!qtest_readl(qts, 0x100)) {
-            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+            sgi_wait_pause(&w, 1000);
         }
         reset_write(qts, pass, pass);
         g_assert_cmphex(qtest_readq(qts, CONTROL + 0x80), !=, 0);
@@ -382,15 +371,15 @@ static void test_lifetime(void)
 {
     QTestState *qts = start("");
     unsigned cycle;
+    SgiWait w;
 
     for (cycle = 0; cycle < 2; cycle++) {
-        int64_t deadline = g_get_monotonic_time() + 5000000;
         qtest_writeq(qts, CONTROL + 0xe0, 1);
         g_assert_cmpuint(qtest_readq(qts, CONTROL + 0xe0), ==, cycle);
         qtest_writeq(qts, CONTROL + 0xe0, 0);
+        sgi_wait_start(&w, "endpoint finalization %u", cycle + 1);
         while (qtest_readq(qts, CONTROL + 0xe0) != cycle + 1) {
-            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-            g_usleep(1000);
+            sgi_wait_pause(&w, 1000);
         }
     }
     qtest_writeq(qts, CONTROL + 0xe8, 1);

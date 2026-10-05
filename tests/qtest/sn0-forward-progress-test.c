@@ -31,6 +31,7 @@
 #include "libqtest.h"
 #include "sn0-user-image.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /*
  * On SN machines, state words sit in plain node memory at physical
@@ -117,7 +118,6 @@
 #define R_S7                23
 
 #define POLL_INTERVAL_US    5000
-#define POLL_TRIES          6000
 
 typedef enum {
     PROGRAM_COUNT_WRAP,
@@ -723,13 +723,16 @@ static uint64_t sum_over_views(Run *r, unsigned int off)
 
 static bool wait_for_sum(Run *r, unsigned int off, uint64_t want)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest sum");
+    for (;;) {
         if (sum_over_views(r, off) >= want) {
             return true;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     return false;
 }
@@ -737,13 +740,16 @@ static bool wait_for_sum(Run *r, unsigned int off, uint64_t want)
 static bool wait_for_slot_word(Run *r, unsigned int view, unsigned int slot,
                                unsigned int off, uint64_t want)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest slot word");
+    for (;;) {
         if (slot_word(r, view, slot, off) == want) {
             return true;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     return false;
 }

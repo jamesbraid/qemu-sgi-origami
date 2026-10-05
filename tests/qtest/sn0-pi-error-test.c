@@ -13,6 +13,7 @@
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define CAUSE_A                0x50000
 #define CAUSE_B                0x50008
@@ -210,14 +211,14 @@ static void build_probe_image(SN0Image *p)
 
 static void wait_for_marker(QTestState *qts, uint64_t addr)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < 2000; tries++) {
+    sgi_wait_start(&w, "guest marker at 0x%" PRIx64, addr);
+    do {
         if (qtest_readq(qts, addr) == MARKER) {
             return;
         }
-        g_usleep(1000);
-    }
+    } while (sgi_wait_continue(&w, 1000));
     g_error("guest did not write marker at 0x%" PRIx64
             " (cause B 0x%" PRIx64 ", status B 0x%" PRIx64 ")",
             addr, qtest_readq(qts, CAUSE_B),
@@ -360,14 +361,14 @@ static GPtrArray *write_origin2000_probe_roms(void)
 
 static void wait_for_origin2000_marker(QTestState *qts)
 {
-    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
-    while (g_get_monotonic_time() < deadline) {
+    sgi_wait_start(&w, "CPU 4 guarded bus-error probe");
+    do {
         if (cpu_readq(qts, ORIGIN2000_CPU, ORIGIN2000_MARKER) == MARKER) {
             return;
         }
-        g_usleep(1000);
-    }
+    } while (sgi_wait_continue(&w, 1000));
     g_error("CPU 4 did not complete the guarded bus-error probe");
 }
 

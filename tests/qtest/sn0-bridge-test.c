@@ -13,6 +13,7 @@
 #include "libqtest.h"
 #include "sn0-user-image.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
@@ -259,8 +260,8 @@ static void test_reserved_data_half_store_completes(const void *data)
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
     QTestState *qts;
-    uint32_t marker = 0;
-    int64_t deadline;
+    uint32_t marker;
+    SgiWait w;
 
     build_reserved_store_image(image);
     path = sn0_image_write(image, "sn0-bridge-guest");
@@ -271,16 +272,13 @@ static void test_reserved_data_half_store_completes(const void *data)
     unlink(path);
 
     /*
-     * This case runs the guest, so the wait is on the wall clock: stepping
-     * the virtual clock executes no instructions. The deadline was one
-     * second, which a busy host can miss for a fragment that has run
-     * correctly; five is still far inside the suite's budget because the
-     * loop leaves as soon as the marker lands.
+     * This case runs the guest, so the wait is on the host clock: stepping
+     * the virtual clock executes no instructions. The loop leaves as soon
+     * as the marker lands.
      */
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
-    while (marker != GUEST_MARKER && g_get_monotonic_time() < deadline) {
-        marker = qtest_readl(qts, GUEST_MARKER_ADDR);
-        g_usleep(1000);
+    sgi_wait_start(&w, "guest marker");
+    while ((marker = qtest_readl(qts, GUEST_MARKER_ADDR)) != GUEST_MARKER) {
+        sgi_wait_pause(&w, 1000);
     }
 
     g_assert_cmphex(marker, ==, GUEST_MARKER);

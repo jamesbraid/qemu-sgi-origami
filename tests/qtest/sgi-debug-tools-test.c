@@ -82,7 +82,7 @@ static void test_info_registers_cp0(void)
     unlink(path);
 
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX, 30), ==, 1);
+    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX), ==, 1);
     qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
     registers = qtest_hmp(qts, "info registers");
     qtest_quit(qts);
@@ -235,7 +235,7 @@ static void test_syscall_trace(void)
     unlink(path);
     qtest_memwrite(qts, SN0_USER_CODE, user->bytes, user->pos);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX + MB_STATUS, 30),
+    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX + MB_STATUS),
                      ==, STATUS_DONE);
     qtest_memread(qts, SN0_USER_MAILBOX, mailbox, sizeof(mailbox));
     g_assert_cmpuint(ldl_be_p(mailbox + MB_COUNT), ==, 1);
@@ -482,10 +482,10 @@ static void run_query(bool four_cpu)
         tlb_query_seed_node(qts, 2, 2);
     }
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    g_assert_cmpuint(sn0_wait_word(qts, 0, mailbox_of(0), 30), ==, 1);
+    g_assert_cmpuint(sn0_wait_word(qts, 0, mailbox_of(0)), ==, 1);
     check_tlb(qts, 0);
     if (four_cpu) {
-        g_assert_cmpuint(sn0_wait_word(qts, 2, mailbox_of(2), 30), ==, 1);
+        g_assert_cmpuint(sn0_wait_word(qts, 2, mailbox_of(2)), ==, 1);
         check_tlb(qts, 2);
     }
 
@@ -779,14 +779,15 @@ static void run_filtered_stop(bool four_cpu)
     g_assert_cmpuint(qlist_size(table), ==, 0);
     qobject_unref(response);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    g_assert_cmpuint(sn0_wait_word(qts, target, mailbox_of(target) + MB_STATUS,
-                                   30), ==, STATUS_DONE);
+    g_assert_cmpuint(sn0_wait_word(qts, target,
+                                   mailbox_of(target) + MB_STATUS),
+                     ==, STATUS_DONE);
     read_mailbox(qts, target, &count, &status);
     g_assert_cmpuint(count, ==, 5);
     if (four_cpu) {
         for (unsigned int cpu = 0; cpu < 2; cpu++) {
             g_assert_cmpuint(sn0_wait_word(qts, cpu,
-                                           mailbox_of(cpu) + MB_STATUS, 30),
+                                           mailbox_of(cpu) + MB_STATUS),
                              ==, STATUS_DONE);
         }
     }

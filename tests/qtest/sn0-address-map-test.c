@@ -13,6 +13,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* Node zero's window, and the space the Hub answers uncached references
  * in. */
@@ -402,6 +403,7 @@ static void test_flash_wide_read_in_command_mode(const void *data)
     QTestState *qts;
     unsigned int at = 0;
     int fd;
+    SgiWait w;
 
     /* Jump clear of the configuration block installed at offset 0x60. */
     flash_cpu_emit(image, &at,
@@ -443,12 +445,13 @@ static void test_flash_wide_read_in_command_mode(const void *data)
     /* Leave the shared x8 flash in its I/O path before the CPU loads it. */
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    for (unsigned int i = 0; i < 10000; i++) {
+    sgi_wait_start(&w, "guest flash state");
+    for (;;) {
         qtest_memread(qts, FLASH_CPU_STATE, state, sizeof(state));
         if (ldq_be_p(state) != 0) {
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_quit(qts);
 

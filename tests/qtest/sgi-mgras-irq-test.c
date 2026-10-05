@@ -19,6 +19,7 @@
 #include "sgi-test.h"
 #include "sn0-user-image.h"
 #include "sgi-mgras-test.h"
+#include "sgi-wait.h"
 
 
 #define MGRAS_PENDING_ERROR         0x00000002
@@ -524,13 +525,13 @@ static void credit_run(QTestState *s)
 /* Processor 0 makes 'count' doubleword stores at 'addr'. */
 static void credit_stores(QTestState *s, uint64_t addr, uint64_t count)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
     qtest_writeq(s, CREDIT_MAILBOX + 8, addr);
     qtest_writeq(s, CREDIT_MAILBOX, count);
+    sgi_wait_start(&w, "guest credit store");
     while (qtest_readq(s, CREDIT_MAILBOX)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 

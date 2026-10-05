@@ -7,6 +7,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define MAILBOX 0x1000
 
@@ -24,15 +25,15 @@ static QTestState *start(const char *machine, const char *cpu,
 
 static void read_identity(QTestState *qts, uint32_t expected)
 {
-    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
     /* Clear completion while stopped to require a new executed CP0 read. */
     qtest_writel(qts, MAILBOX + 8, 0);
     qtest_writel(qts, MAILBOX + 12, 1);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    sgi_wait_start(&w, "guest CP0 identity read");
     while (!qtest_readl(qts, MAILBOX + 8)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     g_assert_cmphex(qtest_readl(qts, MAILBOX), ==, expected);
@@ -128,14 +129,14 @@ static void test_migration(gconstpointer data)
 
     read_identity(from, 0x927);
     if (mismatch) {
-        int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+        SgiWait w;
 
         qtest_set_expected_status(to, 1);
         qtest_qmp_assert_success(from,
             "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        sgi_wait_start(&w, "destination exit after a refused migration");
         while (qtest_probe_child(to)) {
-            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-            g_usleep(1000);
+            sgi_wait_pause(&w, 1000);
         }
     } else {
         sgi_migrate_stopped(from, uri);

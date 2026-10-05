@@ -12,13 +12,13 @@
 #include "sgi-migrate.h"
 #include "sgi-mips-emit.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* Guest images share one fixed-size flash window and result area. */
 #define IMAGE_SIZE          0x1000
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010
 #define POLL_INTERVAL_US    1000
-#define POLL_TRIES          10000
 #define R16000_CPU "R16000,big-endian=on,r16000-experimental=on," \
     "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
 
@@ -214,11 +214,12 @@ static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
      * next state. A guest state machine that never advances still fails, just
      * not on host contention alone.
      */
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
+    sgi_wait_start(&w, "guest state 0x%" PRIx64 " at 0x%" PRIx64,
+                   expected, off);
     while (state_word(qts, off) != expected) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 }
 
@@ -476,7 +477,7 @@ static char *run_fragment(void)
     g_autofree char *image = NULL;
     g_autofree char *log_path = NULL;
     QTestState *qts;
-    unsigned int tries;
+    SgiWait w;
     uint64_t done = 0, fault = 0;
     char *log = NULL;
     int fd;
@@ -496,13 +497,14 @@ static char *run_fragment(void)
                       image, log_path);
     unlink(image);
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         done = qtest_readq(qts, STATE_PHYS + SRE_DONE_OFF);
         fault = qtest_readq(qts, STATE_PHYS + SRE_FAULT_OFF);
         if (done || fault) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(fault, ==, 0);
     g_assert_cmphex(done, ==, SRE_DONE_MAGIC);
@@ -736,9 +738,10 @@ static void llsc_write_guest_image(int fd, bool has_pref)
 
 static void wait_for_done(QTestState *qts)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + LLSC_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + LLSC_FAULT_OFF);
 
@@ -747,7 +750,7 @@ static void wait_for_done(QTestState *qts)
             g_assert_cmphex(done, ==, LLSC_DONE_MAGIC);
             return;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + LLSC_DONE_OFF), ==,
                     LLSC_DONE_MAGIC);
@@ -962,6 +965,7 @@ static void test_indirect_and_unmapped_chaining(void)
     g_autofree char *image = NULL;
     QTestState *qts;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-chain-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -973,7 +977,8 @@ static void test_indirect_and_unmapped_chaining(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + CHAIN_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + CHAIN_FAULT_OFF);
 
@@ -982,7 +987,7 @@ static void test_indirect_and_unmapped_chaining(void)
             g_assert_cmphex(done, ==, (uint64_t)CHAIN_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + CHAIN_DONE_OFF), ==,
@@ -1056,6 +1061,7 @@ static void test_r10k_prefetch_hints(void)
     g_autofree char *image = NULL;
     QTestState *qts;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-pref-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -1067,7 +1073,8 @@ static void test_r10k_prefetch_hints(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + PREF_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + PREF_FAULT_OFF);
 
@@ -1076,7 +1083,7 @@ static void test_r10k_prefetch_hints(void)
             g_assert_cmphex(done, ==, (uint64_t)PREF_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + PREF_DONE_OFF), ==,
@@ -1127,6 +1134,7 @@ static void test_unmapped_cpu_relative_destination(void)
     GuestImage img = { .code = image };
     QTestState *qts;
     int fd = g_file_open_tmp("r10k-cpu-relative-XXXXXX", &path, NULL);
+    SgiWait w;
 
     g_assert_cmpint(fd, >=, 0);
     emit_mfc0(&img, R_T0, CP0_STATUS);
@@ -1164,11 +1172,12 @@ static void test_unmapped_cpu_relative_destination(void)
         qtest_memwrite(qts, 0x1000 + cpu * 0x10000, dest, sizeof(dest));
     }
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         if (qtest_readq(qts, 0x180000) && qtest_readq(qts, 0x180008)) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmpuint(qtest_readq(qts, 0x180000), ==, 1);
     g_assert_cmpuint(qtest_readq(qts, 0x180008), ==, 2);
@@ -1304,6 +1313,7 @@ static void test_r10k_tlb_interleaved(void)
     g_autofree char *image = NULL;
     QTestState *qts;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-tlb-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -1315,7 +1325,8 @@ static void test_r10k_tlb_interleaved(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + TLB_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF);
 
@@ -1324,7 +1335,7 @@ static void test_r10k_tlb_interleaved(void)
             g_assert_cmphex(done, ==, (uint64_t)TLB_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + TLB_DONE_OFF), ==,
@@ -1410,6 +1421,7 @@ static void test_r10k_count_chaining(void)
     g_autofree char *image = NULL;
     QTestState *qts;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-count-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -1421,7 +1433,8 @@ static void test_r10k_count_chaining(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + COUNT_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + COUNT_FAULT_OFF);
 
@@ -1430,7 +1443,7 @@ static void test_r10k_count_chaining(void)
             g_assert_cmphex(done, ==, (uint64_t)COUNT_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + COUNT_DONE_OFF), ==,
@@ -1567,6 +1580,7 @@ static void test_r10k_count_interrupt_delivery(void)
     QTestState *qts;
     uint32_t expected_epc = 0;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-count-int-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -1578,7 +1592,8 @@ static void test_r10k_count_interrupt_delivery(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + COUNT_INT_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + COUNT_INT_FAULT_OFF);
 
@@ -1587,7 +1602,7 @@ static void test_r10k_count_interrupt_delivery(void)
             g_assert_cmphex(done, ==, (uint64_t)COUNT_INT_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + COUNT_INT_FAULT_OFF), ==, 0);
@@ -1723,6 +1738,7 @@ static void test_r10k_fpu_fast_path(void)
     g_autofree char *image = NULL;
     QTestState *qts;
     int fd;
+    SgiWait w;
 
     fd = g_file_open_tmp("mips64-r10k-fpu-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
@@ -1734,7 +1750,8 @@ static void test_r10k_fpu_fast_path(void)
                       "-no-reboot -no-shutdown", image);
     unlink(image);
 
-    for (int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "guest done or fault");
+    for (;;) {
         uint64_t done = qtest_readq(qts, STATE_PHYS + FPU_DONE_OFF);
         uint64_t fault = qtest_readq(qts, STATE_PHYS + FPU_FAULT_OFF);
 
@@ -1743,7 +1760,7 @@ static void test_r10k_fpu_fast_path(void)
             g_assert_cmphex(done, ==, (uint64_t)FPU_DONE_MAGIC);
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(qtest_readq(qts, STATE_PHYS + FPU_DONE_OFF), ==,

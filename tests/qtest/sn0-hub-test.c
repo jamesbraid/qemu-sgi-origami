@@ -15,6 +15,7 @@
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* The half of the crossbar's widget 1 window addressed by node. */
 #define HUB_BY_NODE     (SPACE_IO + 0x01800000)
@@ -418,8 +419,7 @@ static void assert_origin2000_identities(QTestState *qts)
         uint32_t processor;
 
         g_assert_cmpuint(sn0_wait_word(qts, cpu,
-                                      SN0_USER_MAILBOX + 8 + slice * 4,
-                                      30), ==, 1);
+                                      SN0_USER_MAILBOX + 8 + slice * 4), ==, 1);
         g_assert_true(qtest_memread_cpu(qts, cpu,
                                        SN0_USER_MAILBOX + slice * 4,
                                        bytes, sizeof(bytes)));
@@ -1904,16 +1904,16 @@ static uint64_t cpu_heartbeat(QTestState *qts, unsigned int cpu)
 static uint64_t wait_for_cpu_heartbeat(QTestState *qts, unsigned int cpu,
                                        uint64_t previous)
 {
-    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
     uint64_t heartbeat;
+    SgiWait w;
 
+    sgi_wait_start(&w, "CPU %u heartbeat", cpu);
     do {
         heartbeat = cpu_heartbeat(qts, cpu);
         if (heartbeat != previous) {
             return heartbeat;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
 
     return heartbeat;
 }
@@ -2020,7 +2020,7 @@ static void test_loadvm_keeps_a_disabled_processor_halted(const void *data)
     uint64_t stopped;
     uint64_t start;
     uint64_t now;
-    int64_t deadline;
+    SgiWait w;
     char *ret;
 
     if (!qtest_has_accel("tcg")) {
@@ -2064,16 +2064,12 @@ static void test_loadvm_keeps_a_disabled_processor_halted(const void *data)
 
     /*
      * Give a released processor ample time to show itself: the running one
-     * has to complete a million loop passes, or five seconds pass.
+     * has to complete a million loop passes, however long the host takes.
      */
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
-    do {
-        now = cpu_heartbeat(qts, 0);
-        if (now - start >= 1000000) {
-            break;
-        }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    sgi_wait_start(&w, "CPU 0 to complete a million passes");
+    while ((now = cpu_heartbeat(qts, 0)) - start < 1000000) {
+        sgi_wait_pause(&w, 1000);
+    }
     g_assert_cmphex(now, !=, start);
     g_assert_cmphex(cpu_heartbeat(qts, 1), ==, stopped);
 
@@ -2194,16 +2190,16 @@ static void build_comparator_rendezvous_image(SN0Image *p)
 
 static uint64_t wait_for_rendezvous_result(QTestState *qts, unsigned int cpu)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
     uint64_t result;
+    SgiWait w;
 
+    sgi_wait_start(&w, "CPU %u rendezvous result", cpu);
     do {
         result = cpu_heartbeat(qts, cpu);
         if (result) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
 
     return result;
 }
@@ -2489,16 +2485,15 @@ static void emit_wait_for_go(SN0Image *p)
  */
 static void wait_for_register(QTestState *qts, uint64_t addr, uint64_t value)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
     uint64_t seen;
+    SgiWait w;
 
+    sgi_wait_start(&w, "0x%" PRIx64 " to hold 0x%" PRIx64, addr, value);
     while ((seen = qtest_readq(qts, addr)) != value) {
-        if (g_get_monotonic_time() >= deadline) {
-            g_test_message("0x%" PRIx64 " held 0x%" PRIx64 " for 30 s, "
-                           "waiting for 0x%" PRIx64, addr, seen, value);
+        if (!sgi_wait_continue(&w, 1000)) {
+            g_test_message("0x%" PRIx64 " held 0x%" PRIx64, addr, seen);
             g_assert_not_reached();
         }
-        g_usleep(1000);
     }
 }
 

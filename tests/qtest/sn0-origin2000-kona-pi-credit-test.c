@@ -135,15 +135,15 @@ static QTestState *start(void)
 static void store(QTestState *qts, uint64_t addr, uint64_t value,
                   unsigned width)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
     qtest_writeq(qts, MAILBOX + 8, addr);
     qtest_writeq(qts, MAILBOX + 16, value);
     qtest_writeq(qts, MAILBOX + 24, width);
     qtest_writeq(qts, MAILBOX, 1);
+    sgi_wait_start(&w, "guest store");
     while (qtest_readq(qts, MAILBOX)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 
