@@ -1980,7 +1980,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     if (!sgi_machine_set_l1_identity_records(
             machine, node->l1,
             sgi_machine_bedrock_node_index(machine, DEVICE(node)), errp)) {
-        return false;
+        goto fail_l1;
     }
     /*
      * The chassis's brick slot, the operator's setting the L1 keeps in its
@@ -1993,18 +1993,30 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
     qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
     qdev_prop_set_int32(node->l1, "revision-patch", node->l1_revision[2]);
-    qdev_realize(node->l1, NULL, &error_fatal);
-    object_unref(OBJECT(node->l1));
+    if (!qdev_realize(node->l1, NULL, errp)) {
+        goto fail_l1;
+    }
 
     l1_uart_dev = qdev_new(TYPE_SGI_L1_UART);
     object_property_add_child(OBJECT(node), "l1-uart", OBJECT(l1_uart_dev));
     object_property_set_link(OBJECT(l1_uart_dev), "controller",
                              OBJECT(node->l1), &error_abort);
-    sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), &error_fatal);
+    if (!sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), errp)) {
+        object_unparent(OBJECT(l1_uart_dev));
+        object_unref(OBJECT(l1_uart_dev));
+        goto fail_l1;
+    }
     object_unref(OBJECT(l1_uart_dev));
+    object_unref(OBJECT(node->l1));
     *l1_uart_region = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
     *l1_uart_out = l1_uart_dev;
     return true;
+
+fail_l1:
+    object_unparent(OBJECT(node->l1));
+    object_unref(OBJECT(node->l1));
+    node->l1 = NULL;
+    return false;
 }
 
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
