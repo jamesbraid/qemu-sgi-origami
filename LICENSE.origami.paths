@@ -710,6 +710,7 @@ tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c
 tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-replay-test.c
+tests/qtest/sgi-synthetic-serial-test.c
 tests/qtest/sgi-test.h
 tests/qtest/sn-builder-fault-test.c
 tests/qtest/sn-builder-test.c

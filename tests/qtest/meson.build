@@ -39,6 +39,9 @@ slow_qtests = {
   'sgi-migration-roundtrip-test': 170,
   'sgi-pci-expansion-ni-test': 2050,
   'sgi-replay-test': 330,
+  # Not measured the way the entries above were: it starts every catalogue
+  # topology at its largest offering, 171s alone at host load 100.
+  'sgi-synthetic-serial-test': 360,
   'sn-builder-test': 810,
   'sn0-address-map-test': 110,
   'sn0-bridge-identity-test': 80,
@@ -440,6 +443,7 @@ sn0_machine_qtests = \
                                                    'sn0-qtest-cpu-test',
                                                    'sgi-debug-tools-test',
                                                    'sn-builder-test',
+                                                   'sgi-synthetic-serial-test',
                                                    'sn-node-population-test',
                                                    'sgi-machine-storage-test',
                                                    'sn0-pci-shoehorn-test',
