@@ -785,8 +785,11 @@ static void test_board_identity_migration(gconstpointer data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-/* The station address the IOC3 bus's Ethernet-address part holds. */
-static void octane_station_address(QTestState *qts, uint8_t mac[6])
+/*
+ * The station address the IOC3 bus's Ethernet-address part holds, and
+ * the part's own 48-bit serial.
+ */
+static uint64_t octane_station_address(QTestState *qts, uint8_t mac[6])
 {
     uint8_t page[11];
     uint64_t found[3], ethernet = 0;
@@ -811,6 +814,7 @@ static void octane_station_address(QTestState *qts, uint8_t mac[6])
     for (unsigned int i = 0; i < 6; i++) {
         mac[i] = page[10 - i];
     }
+    return (ethernet >> 8) & 0xffffffffffffULL;
 }
 
 static void octane_storage_rejected(const char *machine, const char *extra,
@@ -838,7 +842,8 @@ static void test_octane_mac(gconstpointer data)
 
     qts = octane2 ? octane2_start_args("-nic user") :
                     octane_start_args("-nic user");
-    octane_station_address(qts, mac);
+    /* The part's serial is the catalogue io-board's ioc3-serial. */
+    g_assert_cmphex(octane_station_address(qts, mac), ==, 0x5e7000000001ULL);
     g_assert_cmpmem(mac, 6, fallback, 6);
     qtest_quit(qts);
     qts = octane2 ?
