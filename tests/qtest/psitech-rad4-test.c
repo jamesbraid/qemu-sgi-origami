@@ -1966,6 +1966,59 @@ static void test_dma_driver_chain_layout(void)
 }
 
 /*
+ * A chain as long as the shipped driver's first full-screen upload, one
+ * descriptor per scanline, completes. The model once gave up after 256
+ * descriptors and left Done clear.
+ */
+static void test_dma_long_chain(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t word[1] = { 0x00a5a5a5u };
+    const unsigned rows = 1024;
+    uint32_t top = FB_SIZE - 16;
+
+    dma_write_payload(qts, DMA_SRC_PHYS, word, 1);
+    for (unsigned i = 0; i < rows; i++) {
+        uint32_t desc = top - 16 * i;
+        bool last = i == rows - 1;
+
+        bar2_write(qts, desc, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+        bar2_write(qts, desc + 4, i * TEST_FB_STRIDE);
+        bar2_write(qts, desc + 8, 4);
+        bar2_write(qts, desc + 12, last ? DMA_DESC_END_OF_CHAIN : desc - 16);
+    }
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, top);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    g_assert_cmphex(bar2_read(qts, 0), ==, word[0]);
+    g_assert_cmphex(bar2_read(qts, (rows - 1) * TEST_FB_STRIDE), ==,
+                    word[0]);
+
+    qtest_quit(qts);
+}
+
+/* A chain that loops back on itself ends the walk with Done clear. */
+static void test_dma_looping_chain(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t desc = FB_SIZE - 16;
+
+    bar2_write(qts, desc, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, desc + 4, 0);
+    bar2_write(qts, desc + 8, 0);
+    bar2_write(qts, desc + 12, desc);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * A Local-space descriptor pointer at or past the framebuffer's own end
  * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
  * clear, the same failure convention test_dma_abort_recovers_a_failed_
@@ -3393,6 +3446,8 @@ int main(int argc, char **argv)
                    test_dma_local_descriptor_chain);
     qtest_add_func("/psitech-rad4/dma-driver-chain-layout",
                    test_dma_driver_chain_layout);
+    qtest_add_func("/psitech-rad4/dma-long-chain", test_dma_long_chain);
+    qtest_add_func("/psitech-rad4/dma-looping-chain", test_dma_looping_chain);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
                    test_dma_local_descriptor_out_of_bounds);
     qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",
