@@ -127,10 +127,7 @@ struct SGIElscState {
     uint8_t dip_switches;
     uint32_t arb_code;    /* next encoded ring position */
     uint32_t arb_rev;     /* full rotations completed */
-    bool arb_present;     /* legacy pre-v12 gap state, migrated only */
-    bool arb_held;        /* legacy pre-v12 hold state, migrated only */
     uint8_t arb_signal;   /* most recently published grant */
-    int64_t arb_hold_until;   /* legacy pre-v12 deadline, migrated only */
 
     /*
      * The AUX serial port, multiplexed with the command channel by one input

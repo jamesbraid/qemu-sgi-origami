@@ -2021,7 +2021,7 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
     .version_id = 5,
-    .minimum_version_id = 3,
+    .minimum_version_id = 5,
     .pre_save = sgi_xbow_pre_save,
     .pre_load = sgi_xbow_pre_load,
     .post_load = sgi_xbow_post_load,
@@ -2054,10 +2054,10 @@ static const VMStateDescription vmstate_sgi_xbow = {
         VMSTATE_BOOL(interrupt_asserted, SGIXbowState),
         VMSTATE_INT64_ARRAY(link_reset_remaining, SGIXbowState,
                             SGI_XBOW_LINKS),
-        VMSTATE_INT64_V(warm_reset_quiet_until, SGIXbowState, 4),
-        VMSTATE_UINT8_V(fence, SGIXbowState, 5),
-        VMSTATE_UINT8_ARRAY_V(link_fence, SGIXbowState, SGI_XBOW_LINKS, 5),
-        VMSTATE_UINT8_V(lock, SGIXbowState, 5),
+        VMSTATE_INT64(warm_reset_quiet_until, SGIXbowState),
+        VMSTATE_UINT8(fence, SGIXbowState),
+        VMSTATE_UINT8_ARRAY(link_fence, SGIXbowState, SGI_XBOW_LINKS),
+        VMSTATE_UINT8(lock, SGIXbowState),
         VMSTATE_END_OF_LIST()
     }
 };

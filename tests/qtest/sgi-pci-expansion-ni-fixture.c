@@ -585,7 +585,6 @@ static uint64_t fixture_pi_compatibility(NIFixtureState *s, unsigned kind)
     PICompatibilityObserver observer = {
         .notifier.notify = fixture_pi_post_load,
     };
-    int version = 7;
 
     pi->pending[0] = incoming[0];
     pi->pending[1] = incoming[1];
@@ -596,19 +595,15 @@ static uint64_t fixture_pi_compatibility(NIFixtureState *s, unsigned kind)
     pi->pending[0] = pending[0];
     pi->pending[1] = pending[1];
     pi->io_protect = protect;
-    if (kind == 0 || kind == 3) {
-        memmove(channel->data, channel->data + 5, channel->usage - 5);
-        channel->usage -= 5;
-        version = 6;
-    } else if (kind == 1) {
+    if (kind == 1) {
         channel->data[0] ^= 1;
-    } else {
+    } else if (kind == 2) {
         stl_be_p(channel->data + 1, pi->pending_route_origins == 2 ? 4 : 2);
     }
     channel->offset = 0;
     file = qemu_file_new_input(QIO_CHANNEL(channel));
     sgi_bedrock_pi_add_cached_alias_notifier(pi, &observer.notifier);
-    loaded = vmstate_load_vmsd(file, vmsd, pi, version, &error);
+    loaded = vmstate_load_vmsd(file, vmsd, pi, vmsd->version_id, &error);
     notifier_remove(&observer.notifier);
     unchanged = pi->pending[0] == pending[0] && pi->pending[1] == pending[1] &&
                 pi->io_protect == protect;

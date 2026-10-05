@@ -947,7 +947,6 @@ static int mgmt_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_sgi_sn0_module_management = {
-    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-o2000-module-management",
     .version_id = 1,
     .minimum_version_id = 1,

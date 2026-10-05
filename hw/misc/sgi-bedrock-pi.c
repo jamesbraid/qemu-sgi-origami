@@ -857,24 +857,15 @@ bool sgi_bedrock_pi_select_pending_route(SGIBedrockPIState *s,
     return true;
 }
 
-static bool pi_route_version(void *opaque, int version)
-{
-    SGIBedrockPIState *s = opaque;
-
-    return !s->pending_route_selected || version >= 7;
-}
-
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
     .version_id = 7,
-    .minimum_version_id = 5,
+    .minimum_version_id = 7,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_VALIDATE("pending route version", pi_route_version),
-        VMSTATE_SINGLE(pending_route_selected, SGIBedrockPIState, 7,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_UINT32_EQUAL_V(pending_route_origins, SGIBedrockPIState, 7),
+        VMSTATE_UINT8_EQUAL(pending_route_selected, SGIBedrockPIState),
+        VMSTATE_UINT32_EQUAL(pending_route_origins, SGIBedrockPIState),
         VMSTATE_UINT64(cpu_protect, SGIBedrockPIState),
         VMSTATE_UINT64(io_protect, SGIBedrockPIState),
         VMSTATE_UINT64(region_present, SGIBedrockPIState),
@@ -910,9 +901,8 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIBedrockPIState, 2),
         VMSTATE_TIMER_PTR(profile_timer, SGIBedrockPIState),
         VMSTATE_BOOL_ARRAY(rt_timer_match, SGIBedrockPIState, 2),
-        VMSTATE_STRUCT(gfx, SGIBedrockPIState, 6, vmstate_sgi_pi_gfx,
-                       SGIPIGfx),
-        VMSTATE_UINT8_V(gfx_credit_mode, SGIBedrockPIState, 6),
+        VMSTATE_STRUCT(gfx, SGIBedrockPIState, 0, vmstate_sgi_pi_gfx, SGIPIGfx),
+        VMSTATE_UINT8(gfx_credit_mode, SGIBedrockPIState),
         VMSTATE_END_OF_LIST()
     },
 };
