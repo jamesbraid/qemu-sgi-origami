@@ -601,49 +601,6 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
     sgi_bridge_aim_window(s, slot);
 }
 
-/*
- * DMA endpoint traits are collected when PCI devices are plugged.
- * byte_lane_exempt remains a test override.
- */
-static bool sgi_bridge_dma_slot_needs_correction(SGIBridgeState *s,
-                                                 unsigned int slot)
-{
-    return !((s->dma_self_ordered_slots | s->byte_lane_exempt) &
-             (1u << slot));
-}
-
-bool sgi_bridge_device_byte_lane_traits(Object *obj, bool *pio_self_ordered,
-                                        bool *dma_self_ordered, Error **errp)
-{
-    Error *local_err = NULL;
-    bool pio = false, dma;
-
-    if (object_property_find(obj, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED)) {
-        pio = object_property_get_bool(obj,
-                                       SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
-                                       &local_err);
-        if (local_err) {
-            error_propagate(errp, local_err);
-            return false;
-        }
-    }
-
-    if (object_property_find(obj, SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED)) {
-        dma = object_property_get_bool(
-            obj, SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED, &local_err);
-        if (local_err) {
-            error_propagate(errp, local_err);
-            return false;
-        }
-    } else {
-        dma = pio;
-    }
-
-    *pio_self_ordered = pio;
-    *dma_self_ordered = dma;
-    return true;
-}
-
 /* Only the low two bits move: lanes are defined within one word. */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
@@ -1325,15 +1282,6 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         old = *held;
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
-            /* Swap on an exempt slot is not reproduced; say so. */
-            if ((*held & (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED)) &&
-                !sgi_bridge_dma_slot_needs_correction(s, slot)) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-bridge: slot %u holds a device this model "
-                              "exempts from the DMA byte swap, and the guest "
-                              "enabled swapping for it; the transfer will not "
-                              "be permuted\n", slot);
-            }
             sgi_bridge_aim_window(s, slot);
         } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
             sgi_bridge_onewire_slot(s, (uint32_t)val);
@@ -2033,8 +1981,7 @@ static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
 
     /* Local space never crosses the swapper. */
-    if (pci_addr < BRIDGE_PCI_TRANSLATED ||
-        !sgi_bridge_dma_slot_needs_correction(s, slot)) {
+    if (pci_addr < BRIDGE_PCI_TRANSLATED) {
         return SGI_DMA_PLACEMENT_IDENTITY;
     }
     return sgi_dma_placement_select(
@@ -2313,45 +2260,6 @@ static void sgi_bridge_link_reset(void *opaque, int line, int level)
                   "and released, not held until the link connection is "
                   "determined: no reviewed source says what a core held in "
                   "reset answers\n");
-}
-
-/*
- * Read both endpoint traits at plug time into slot masks, so later accesses
- * need only a mask test. The traits follow the card into whichever slot it
- * occupies.
- */
-static void sgi_bridge_plug(const HotplugHandler *handler, DeviceState *dev,
-                            Error **errp)
-{
-    SGIBridgeState *s = SGI_BRIDGE(handler);
-    Object *obj = OBJECT(dev);
-    Error *local_err = NULL;
-    bool pio_self_ordered, dma_self_ordered;
-
-    /* Saying nothing is the answer an ordinary card gives: correct it. */
-    if (!object_dynamic_cast(obj, TYPE_PCI_DEVICE)) {
-        return;
-    }
-
-    if (!sgi_bridge_device_byte_lane_traits(obj, &pio_self_ordered,
-                                            &dma_self_ordered, &local_err)) {
-        error_propagate(errp, local_err);
-        return;
-    }
-
-    if (pio_self_ordered || dma_self_ordered) {
-        /*
-         * Folded the way the DMA attributes are, for a slot past the eight.
-         */
-        unsigned slot = PCI_SLOT(PCI_DEVICE(dev)->devfn) % SGI_BRIDGE_DEVICES;
-
-        if (pio_self_ordered) {
-            s->pio_self_ordered_slots |= 1u << slot;
-        }
-        if (dma_self_ordered) {
-            s->dma_self_ordered_slots |= 1u << slot;
-        }
-    }
 }
 
 /*
@@ -2793,7 +2701,6 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
      * constants standing between the test and the answer.
      */
     dc->user_creatable = true;
-    hc->plug = sgi_bridge_plug;
     hc->is_hotpluggable_bus = sgi_bridge_is_hotpluggable_bus;
     rc->phases.hold = sgi_bridge_reset_hold;
     rc->phases.exit = sgi_bridge_reset_exit;

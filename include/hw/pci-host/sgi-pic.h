@@ -9,6 +9,7 @@
 
 #define TYPE_SGI_PIC "sgi-pic"
 #define TYPE_SGI_PIC_V5_TEST "sgi-pic-v5-test"
+#define SGI_PIC_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPICState, SGI_PIC)
 
 /* One PIC occupies one XIO widget and exposes two independent PCI heads. */

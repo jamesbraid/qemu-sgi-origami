@@ -14,7 +14,7 @@
 #include "hw/char/serial.h"
 #include "hw/core/irq.h"
 #include "hw/core/resettable.h"
-#include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci-host/sgi-pic.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -1241,11 +1241,6 @@ static bool ioc4_byte_lane_self_ordered(Object *obj, Error **errp)
     return true;
 }
 
-static bool ioc4_dma_byte_lane_self_ordered(Object *obj, Error **errp)
-{
-    return false;
-}
-
 static void ioc4_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1253,10 +1248,8 @@ static void ioc4_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     SGIIOC4Class *ic = (SGIIOC4Class *)klass;
 
-    object_class_property_add_bool(klass, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+    object_class_property_add_bool(klass, SGI_PIC_BYTE_LANE_SELF_ORDERED,
                                    ioc4_byte_lane_self_ordered, NULL);
-    object_class_property_add_bool(klass, SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED,
-                                   ioc4_dma_byte_lane_self_ordered, NULL);
     pc->realize = ioc4_realize;
     pc->exit = ioc4_exit;
     pc->vendor_id = 0x10a9;

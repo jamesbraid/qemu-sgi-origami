@@ -117,20 +117,6 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
 AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 
 /*
- * Native endpoint PIO ordering. This is also the default DMA declaration when
- * a device has no explicit DMA trait.
- */
-#define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
-#define SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED "dma-byte-lane-self-ordered"
-
-/*
- * Read endpoint PIO and DMA declarations. DMA inherits PIO only when the
- * optional DMA property is absent.
- */
-bool sgi_bridge_device_byte_lane_traits(Object *obj, bool *pio_self_ordered,
-                                        bool *dma_self_ordered, Error **errp);
-
-/*
  * The whole of the widget's XIO space belongs to this chip. Sized to
  * reach the PIO translated window below, not just the low CSR/cfg0/ssram/
  * small-window region.
@@ -281,10 +267,6 @@ struct SGIBridgeState {
 
     /* Where each window aims: an I/O region cannot hold an alias offset. */
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
-
-    /* Derived at plug time from immutable endpoint traits. Not migrated. */
-    uint32_t pio_self_ordered_slots;
-    uint32_t dma_self_ordered_slots;
 
     /* Slots forced exempt whatever is plugged in them: a test override. */
     uint32_t byte_lane_exempt;
