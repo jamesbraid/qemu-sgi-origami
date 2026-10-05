@@ -149,6 +149,7 @@ int get_physical_address(const CPUMIPSState *env, hwaddr *physical,
     int ret = TLBRET_MATCH;
     target_ulong address = real_address;
 
+    attrs->mips_kseg1 = false;
     if (address <= USEG_LIMIT) {
         /* useg */
         uint16_t segctl;
@@ -262,7 +263,8 @@ int get_physical_address(const CPUMIPSState *env, hwaddr *physical,
                                           access_type, mmu_idx,
                                           segctl, 0x1FFFFFFF, attrs);
     } else if (address < KSEG2_BASE) {
-        /* kseg1 */
+        /* Preserve the segment origin separately from its cache algorithm. */
+        attrs->mips_kseg1 = env->cfg.uncached_attribute;
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
                                           env->CP0_SegCtl1, 0x1FFFFFFF,
@@ -298,10 +300,11 @@ bool mips_cpu_translate_for_debug(CPUState *cs, vaddr addr,
                              mips_env_mmu_index(env), &attrs) != 0) {
         return false;
     }
+    attrs.debug = true;
     *result = (TranslateForDebugResult) {
         .physaddr = phys_addr,
         .lg_page_size = TARGET_PAGE_BITS,
-        .attrs.debug = 1,
+        .attrs = attrs,
     };
     return true;
 }

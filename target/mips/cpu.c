@@ -26,6 +26,7 @@
 #include "qapi/error.h"
 #include "cpu.h"
 #include "internal.h"
+#include "exec/target_page.h"
 #include "qemu/module.h"
 #include "qemu/qtree.h"
 #include "system/qtest.h"

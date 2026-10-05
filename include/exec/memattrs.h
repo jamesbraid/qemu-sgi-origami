@@ -70,7 +70,9 @@ typedef struct MemTxAttrs {
     uint8_t mips_uncached:1;
     /* MIPS: the reference's cache algorithm, zero for none recorded. */
     uint8_t mips_cca:3;
-    uint8_t _reserved1:4;
+    /* MIPS: reference originated in the uncached compatibility segment. */
+    uint8_t mips_kseg1:1;
+    uint8_t _reserved1:3;
     uint16_t _reserved2;
 } MemTxAttrs;
 

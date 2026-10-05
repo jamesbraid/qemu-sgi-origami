@@ -700,6 +700,20 @@ bool qtest_memread_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
                        void *data, size_t size);
 
 /**
+ * qtest_memread_cpu_debug:
+ * @s: QTestState instance to operate on.
+ * @cpu_index: CPU whose virtual address space is accessed.
+ * @addr: Virtual address to read from using the CPU debug translation.
+ * @data: Buffer receiving the raw bytes.
+ * @size: Number of bytes to read.
+ *
+ * Returns false if the CPU is invalid or the debug translation/access fails.
+ * A zero-size operation succeeds without sending a command.
+ */
+bool qtest_memread_cpu_debug(QTestState *s, unsigned int cpu_index,
+                             uint64_t addr, void *data, size_t size);
+
+/**
  * qtest_rtas_call:
  * @s: #QTestState instance to operate on.
  * @name: name of the command to call.
@@ -763,6 +777,20 @@ void qtest_memwrite(QTestState *s, uint64_t addr, const void *data, size_t size)
  */
 bool qtest_memwrite_cpu(QTestState *s, unsigned int cpu_index, uint64_t addr,
                         const void *data, size_t size);
+
+/**
+ * qtest_memwrite_cpu_debug:
+ * @s: QTestState instance to operate on.
+ * @cpu_index: CPU whose virtual address space is accessed.
+ * @addr: Virtual address to write using the CPU debug translation.
+ * @data: Buffer containing the raw bytes.
+ * @size: Number of bytes to write.
+ *
+ * Returns false if the CPU is invalid or the debug translation/access fails.
+ * A zero-size operation succeeds without sending a command.
+ */
+bool qtest_memwrite_cpu_debug(QTestState *s, unsigned int cpu_index,
+                              uint64_t addr, const void *data, size_t size);
 
 /**
  * qtest_bufwrite:
