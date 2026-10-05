@@ -605,6 +605,8 @@ struct PsitechRad4State {
     uint32_t dma_moved;
     uint32_t dma_next;
     uint32_t dma_descs;
+    /* Virtual time up to which the transfer's bus time has been spent. */
+    int64_t dma_paid_ns;
 
     /* BAR2 framebuffer and mask. */
     uint8_t *framebuffer;
@@ -2052,10 +2054,15 @@ static const MemoryRegionOps rad4_bar0_ops = {
 /*
  * DMA channel 0 runs alongside the processor, as the PLX part does: the
  * DMACSR0 store that starts it only latches the transfer, and a virtual-clock
- * timer moves it (the pattern of hw/dma/pl330.c). Each expiry stands for one
- * slot of bus time just past and moves at most RAD4_DMA_SLICE bytes in it,
- * so a callback's work stays bounded however long the chain (as
- * hw/dma/i8257.c bounds each run of its bottom half).
+ * timer moves it (the pattern of hw/dma/pl330.c). Progress follows virtual
+ * time: each expiry moves what the bus could have moved since the last one,
+ * at least RAD4_DMA_SLICE bytes and at most RAD4_DMA_CATCHUP, so a callback
+ * the host ran late catches up instead of stretching the transfer, and a
+ * callback's work stays bounded however long the chain (as hw/dma/i8257.c
+ * bounds each run of its bottom half). Stretched transfers matter: the
+ * shipped driver times a transfer out after about 0.4 s and its recovery
+ * path then deadlocks a uniprocessor guest, which real hardware, finishing
+ * a 200 KB chain in about 1.5 ms, never reaches.
  *
  * The rate is an approximation: the PCI 9060 Data Sheet (Version 1.2,
  * December 1995, page 1) gives "PCI Bus Master transfers up to 132
@@ -2069,6 +2076,7 @@ static const MemoryRegionOps rad4_bar0_ops = {
 #define RAD4_DMA_RATE           132000000   /* bytes per second */
 #define RAD4_DMA_DESC_BYTES     16
 #define RAD4_DMA_SLICE          4096
+#define RAD4_DMA_CATCHUP        (256 * KiB)
 #define RAD4_DMA_SLOT_NS \
     ((int64_t)RAD4_DMA_SLICE * NANOSECONDS_PER_SECOND / RAD4_DMA_RATE)
 
@@ -2275,8 +2283,9 @@ static void rad4_dma_schedule(PsitechRad4State *s)
     if (!s->dma_running || !(s->rom_command & RAD4_DMA_CMD_ENABLE)) {
         timer_del(s->dma_timer);
     } else if (!timer_pending(s->dma_timer)) {
-        timer_mod(s->dma_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + RAD4_DMA_SLOT_NS);
+        /* Starting or resuming: bus time counts from now. */
+        s->dma_paid_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        timer_mod(s->dma_timer, s->dma_paid_ns + RAD4_DMA_SLOT_NS);
     }
 }
 
@@ -2311,11 +2320,15 @@ static void rad4_dma_desc_done(PsitechRad4State *s)
     rad4_update_irq(s);
 }
 
-/* One slot of bus time has passed: move what fits in it. */
+/* Bus time has passed since the last expiry: move what fits in it. */
 static void rad4_dma_timer_cb(void *opaque)
 {
     PsitechRad4State *s = opaque;
-    uint32_t budget = RAD4_DMA_SLICE;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t owed = muldiv64(MAX(now - s->dma_paid_ns, 0), RAD4_DMA_RATE,
+                            NANOSECONDS_PER_SECOND);
+    uint32_t budget = MIN(MAX(owed, RAD4_DMA_SLICE), RAD4_DMA_CATCHUP);
+    uint32_t start = budget;
 
     while (s->dma_running && budget) {
         uint32_t len;
@@ -2328,7 +2341,7 @@ static void rad4_dma_timer_cb(void *opaque)
             budget -= MIN(budget, RAD4_DMA_DESC_BYTES);
             continue;
         }
-        len = MIN(budget, s->dma_size - s->dma_moved);
+        len = MIN(MIN(budget, s->dma_size - s->dma_moved), RAD4_DMA_SLICE);
         if (len &&
             !rad4_dma_move(s, s->dma_next & RAD4_DMA_DESC_LOCAL_TO_PCI,
                            s->dma_pci + s->dma_moved,
@@ -2342,7 +2355,13 @@ static void rad4_dma_timer_cb(void *opaque)
             rad4_dma_desc_done(s);
         }
     }
-    rad4_dma_schedule(s);
+    if (!s->dma_running) {
+        return;
+    }
+    s->dma_paid_ns += muldiv64(start - budget, NANOSECONDS_PER_SECOND,
+                               RAD4_DMA_RATE);
+    /* Still behind after a capped run: go again at once. */
+    timer_mod(s->dma_timer, MAX(s->dma_paid_ns + RAD4_DMA_SLOT_NS, now));
 }
 
 /*
