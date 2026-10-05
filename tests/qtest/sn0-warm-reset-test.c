@@ -151,6 +151,7 @@ static void wait_for_generation(QTestState *qts, unsigned int generation)
 static void test_warm_reset_rendezvous(void)
 {
     g_autofree char *image = NULL;
+    unsigned int cycles;
     QTestState *qts;
     int fd;
 
@@ -179,8 +180,13 @@ static void test_warm_reset_rendezvous(void)
     qtest_writeq(qts, MAILBOX + RESET_REQUEST, 0);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     wait_for_generation(qts, 1);
-    for (unsigned int generation = 1;
-         generation <= RESET_CYCLES; generation++) {
+    /*
+     * Repeated resets look for a processor that misses re-entry only now
+     * and then; the quick setup makes two, enough to re-enter from a reset
+     * that itself followed one.
+     */
+    cycles = g_test_slow() ? RESET_CYCLES : 2;
+    for (unsigned int generation = 1; generation <= cycles; generation++) {
         qtest_writeq(qts, MAILBOX + RESET_REQUEST, generation);
         qtest_qmp_eventwait(qts, "RESET");
         sn0_program_nasid(qts, 1);
