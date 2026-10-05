@@ -3051,6 +3051,105 @@ static void test_dma_buffer_prefix_pages(const void *data)
     }
 }
 
+/*
+ * The chip's conversion takes a long transfer as one buffer when what lies
+ * beyond it is RAM: behind a swap-set slot the Bridge passes bytes straight
+ * to memory, so the whole words go in one onward transfer and only a
+ * partial word at either end goes one access at a time. Behind a swap-clear
+ * slot the Bridge's placement is a callback region, so the conversion
+ * declines and the placement sees the same 4-byte accesses as before. The
+ * bytes are the per-access rule's either way.
+ */
+static void test_pci_dma_buffer_route(const void *data)
+{
+    const uint32_t dest = 0x02004000, source = 0x02008000;
+    const unsigned length = 1500;
+    uint8_t bytes[1536], seen[1536], expected[1536];
+
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = i * 7 + 0x11;
+    }
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool swap = mode & 1;
+        unsigned start = mode & 2 ? 2 : 0;
+        unsigned whole = (length - (start ? 4 - start : 0)) & ~3U;
+        g_autofree char *path = g_strdup_printf(
+            "ioc3-pci-dma-buffer-%u-%u.trace", (unsigned)getpid(),
+            g_random_int());
+        g_autofree char *extra = g_strdup_printf(
+            "-trace enable=sgi_ioc3_pci_dma_buffer "
+            "-trace enable=sgi_dma_placement_*,file=%s", path);
+        g_autofree char *trace = NULL;
+        g_autofree char *buffer_write = g_strdup_printf(
+            "write addr 0x%x len %u", 0x80000000 | ((dest + start + 3) & ~3U),
+            whole);
+        g_autofree char *buffer_read = g_strdup_printf(
+            "read addr 0x%x len %u", 0x80000000 | ((source + start + 3) & ~3U),
+            whole);
+        g_autofree char *copy_write = g_strdup_printf(
+            "write addr 0x%x len %u", 0x80000000 | dest, length);
+        IOC3DMATest s;
+        unsigned buffers, narrow = 0;
+        g_auto(GStrv) lines = NULL;
+
+        g_test_message("swap=%d start=%u", swap, start);
+        ioc3_dma_test_start(&s, true, false, false, extra);
+        qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
+
+        memset(expected, 0xee, sizeof(expected));
+        for (unsigned i = 0; i < length; i++) {
+            expected[(start + i) ^ (swap ? 3 : 0)] = 0x30 + i;
+        }
+        qtest_memset(s.qts, dest, 0xee, sizeof(seen));
+        ioc3_dma_test_transfer(&s, 0x80000000 | (dest + start), length, 0);
+        g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==, 0);
+        qtest_memread(s.qts, dest, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+
+        qtest_memwrite(s.qts, source, bytes, sizeof(bytes));
+        memset(expected, 0xee, sizeof(expected));
+        for (unsigned i = 0; i < length; i++) {
+            expected[i ^ (swap ? 3 : 0)] = bytes[(start + i) ^ (swap ? 3 : 0)];
+        }
+        qtest_memset(s.qts, dest, 0xee, sizeof(seen));
+        ioc3_dma_test_transfer(&s, 0x80000000 | dest, length,
+                               0x80000000 | (source + start));
+        g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==, 0);
+        qtest_memread(s.qts, dest, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+        ioc3_dma_test_stop(&s);
+
+        g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+        g_assert_cmpint(g_unlink(path), ==, 0);
+        lines = g_strsplit(trace, "\n", -1);
+        buffers = 0;
+        for (unsigned i = 0; lines[i]; i++) {
+            unsigned size;
+
+            if (strstr(lines[i], "sgi_ioc3_pci_dma_buffer")) {
+                buffers++;
+                if (swap) {
+                    g_assert_true(strstr(lines[i], buffer_write) ||
+                                  strstr(lines[i], buffer_read) ||
+                                  strstr(lines[i], copy_write));
+                }
+            } else if (sscanf(lines[i], "sgi_dma_placement_access %*s %*s "
+                              "addr 0x%*x host 0x%*x size %u", &size) == 1) {
+                g_assert_cmpuint(size, <=, 4);
+                narrow += size;
+            }
+        }
+        if (swap) {
+            /* The write, the copy's read and the copy's write. */
+            g_assert_cmpuint(buffers, ==, 3);
+            g_assert_cmpuint(narrow, ==, 0);
+        } else {
+            g_assert_cmpuint(buffers, ==, 0);
+            g_assert_cmpuint(narrow, ==, 3 * length);
+        }
+    }
+}
+
 /* The one-byte overlap must not split the native prefix or four-byte body. */
 static void test_dma_buffer_prefix_mmio(const void *data)
 {
@@ -6490,6 +6589,8 @@ int main(int argc, char **argv)
                         test_dma_buffer_prefix_pages);
     qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-mmio", NULL,
                         test_dma_buffer_prefix_mmio);
+    qtest_add_data_func("sn0/ioc3/pci-dma-buffer-route", NULL,
+                        test_pci_dma_buffer_route);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-inserts-udp-checksum",

@@ -12,6 +12,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
+#include "qemu/rcu.h"
 #include "qapi/error.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
@@ -56,9 +57,94 @@ static MemTxResult sgi_ioc3_pci_dma_write(void *opaque, hwaddr addr,
                                addr ^ (4 - size), attrs, bytes, size);
 }
 
+/* Bounds the stack a buffer write converts into before sending it on. */
+#define SGI_IOC3_DMA_SCRATCH    1024
+
+static void sgi_ioc3_dma_reverse_words(uint8_t *dst, const uint8_t *src,
+                                       hwaddr len)
+{
+    hwaddr i;
+
+    for (i = 0; i < len; i += 4) {
+        stl_le_p(dst + i, ldl_be_p(src + i));
+    }
+}
+
+/*
+ * The whole words of a long transfer, in one onward transfer and one
+ * conversion. A word is what one aligned 4-byte access converts, so the
+ * bytes match the per-access path; a partial word at either end is left
+ * to it. Only an onward range that is RAM is taken, so whatever sits on
+ * the PCI side sees exactly the accesses it would see otherwise. Behind a
+ * swap-clear Bridge slot the onward range is the Bridge's placement region,
+ * so the check declines, at the price of one extra translation per step.
+ */
+static hwaddr sgi_ioc3_pci_dma_buffer_span(SGIIOC3State *s, hwaddr addr,
+                                           hwaddr len, bool is_write,
+                                           MemTxAttrs attrs)
+{
+    AddressSpace *pci = pci_get_address_space(PCI_DEVICE(s));
+    hwaddr span = QEMU_ALIGN_DOWN(len, 4);
+    hwaddr ram = span;
+    hwaddr xlat;
+    MemoryRegion *mr;
+
+    if ((addr & 3) || !span) {
+        return 0;
+    }
+    RCU_READ_LOCK_GUARD();
+    mr = address_space_translate(pci, addr, &xlat, &ram, is_write, attrs);
+    if (!memory_access_is_direct(mr, is_write, attrs)) {
+        return 0;
+    }
+    span = QEMU_ALIGN_DOWN(MIN(span, ram), 4);
+    if (span) {
+        trace_sgi_ioc3_pci_dma_buffer(s, is_write ? "write" : "read", addr,
+                                      span);
+    }
+    return span;
+}
+
+static hwaddr sgi_ioc3_pci_dma_read_buffer(void *opaque, hwaddr addr,
+                                           void *buffer, hwaddr len,
+                                           MemTxAttrs attrs,
+                                           MemTxResult *result)
+{
+    SGIIOC3State *s = opaque;
+    hwaddr span = sgi_ioc3_pci_dma_buffer_span(s, addr, len, false, attrs);
+
+    if (span) {
+        *result = address_space_read(pci_get_address_space(PCI_DEVICE(s)),
+                                     addr, attrs, buffer, span);
+        sgi_ioc3_dma_reverse_words(buffer, buffer, span);
+    }
+    return span;
+}
+
+static hwaddr sgi_ioc3_pci_dma_write_buffer(void *opaque, hwaddr addr,
+                                            const void *buffer, hwaddr len,
+                                            MemTxAttrs attrs,
+                                            MemTxResult *result)
+{
+    SGIIOC3State *s = opaque;
+    AddressSpace *pci = pci_get_address_space(PCI_DEVICE(s));
+    hwaddr span = sgi_ioc3_pci_dma_buffer_span(s, addr, len, true, attrs);
+    uint8_t scratch[SGI_IOC3_DMA_SCRATCH];
+    hwaddr off, n;
+
+    for (off = 0; off < span; off += n) {
+        n = MIN(span - off, sizeof(scratch));
+        sgi_ioc3_dma_reverse_words(scratch, (const uint8_t *)buffer + off, n);
+        *result |= address_space_write(pci, addr + off, attrs, scratch, n);
+    }
+    return span;
+}
+
 static const MemoryRegionOps sgi_ioc3_pci_dma_ops = {
     .read_with_attrs = sgi_ioc3_pci_dma_read,
     .write_with_attrs = sgi_ioc3_pci_dma_write,
+    .read_buffer = sgi_ioc3_pci_dma_read_buffer,
+    .write_buffer = sgi_ioc3_pci_dma_write_buffer,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
