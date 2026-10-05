@@ -513,6 +513,35 @@ static MemTxResult memory_region_write_with_attrs_accessor(MemoryRegion *mr,
     return mr->ops->write_with_attrs(mr->opaque, addr, tmp, size, attrs);
 }
 
+/*
+ * Engage the owning device's reentrancy guard for an access to @mr. Returns
+ * false, having warned, if the device is already in the middle of an access.
+ */
+static bool memory_region_enter_io(MemoryRegion *mr, hwaddr addr,
+                                   bool *applied)
+{
+    *applied = false;
+    if (mr->dev && !mr->disable_reentrancy_guard &&
+        !mr->ram_device && !mr->ram && !mr->rom_device && !mr->readonly) {
+        if (mr->dev->mem_reentrancy_guard.engaged_in_io) {
+            warn_report_once("Blocked re-entrant IO on MemoryRegion: "
+                             "%s at addr: 0x%" HWADDR_PRIX,
+                             memory_region_name(mr), addr);
+            return false;
+        }
+        mr->dev->mem_reentrancy_guard.engaged_in_io = true;
+        *applied = true;
+    }
+    return true;
+}
+
+static void memory_region_exit_io(MemoryRegion *mr, bool applied)
+{
+    if (mr->dev && applied) {
+        mr->dev->mem_reentrancy_guard.engaged_in_io = false;
+    }
+}
+
 static MemTxResult access_with_adjusted_size(hwaddr addr,
                                       uint64_t *value,
                                       unsigned size,
@@ -543,16 +572,8 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
     }
 
     /* Do not allow more than one simultaneous access to a device's IO Regions */
-    if (mr->dev && !mr->disable_reentrancy_guard &&
-        !mr->ram_device && !mr->ram && !mr->rom_device && !mr->readonly) {
-        if (mr->dev->mem_reentrancy_guard.engaged_in_io) {
-            warn_report_once("Blocked re-entrant IO on MemoryRegion: "
-                             "%s at addr: 0x%" HWADDR_PRIX,
-                             memory_region_name(mr), addr);
-            return MEMTX_ACCESS_ERROR;
-        }
-        mr->dev->mem_reentrancy_guard.engaged_in_io = true;
-        reentrancy_guard_applied = true;
+    if (!memory_region_enter_io(mr, addr, &reentrancy_guard_applied)) {
+        return MEMTX_ACCESS_ERROR;
     }
 
     /* FIXME: support unaligned access? */
@@ -569,9 +590,7 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
                         access_mask, attrs);
         }
     }
-    if (mr->dev && reentrancy_guard_applied) {
-        mr->dev->mem_reentrancy_guard.engaged_in_io = false;
-    }
+    memory_region_exit_io(mr, reentrancy_guard_applied);
     return r;
 }
 
@@ -1498,6 +1517,60 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
                                       memory_region_write_with_attrs_accessor,
                                       mr, attrs);
     }
+}
+
+static bool memory_region_takes_buffer(MemoryRegion *mr, hwaddr len,
+                                       bool present)
+{
+    return len > 8 && present && !mr->ops->valid.accepts && !mr->ioeventfd_nb;
+}
+
+hwaddr memory_region_dispatch_read_buffer(MemoryRegion *mr, hwaddr addr,
+                                          void *buffer, hwaddr len,
+                                          MemTxAttrs attrs, MemTxResult *result)
+{
+    bool guarded;
+    hwaddr consumed;
+
+    *result = MEMTX_OK;
+    if (!memory_region_takes_buffer(mr, len, mr->ops->read_buffer)) {
+        return 0;
+    }
+    if (!memory_region_enter_io(mr, addr, &guarded)) {
+        memset(buffer, 0, len);
+        *result = MEMTX_ACCESS_ERROR;
+        return len;
+    }
+    consumed = mr->ops->read_buffer(mr->opaque, addr, buffer, len, attrs,
+                                    result);
+    memory_region_exit_io(mr, guarded);
+    assert(consumed <= len);
+    assert(consumed || *result == MEMTX_OK);
+    return consumed;
+}
+
+hwaddr memory_region_dispatch_write_buffer(MemoryRegion *mr, hwaddr addr,
+                                           const void *buffer, hwaddr len,
+                                           MemTxAttrs attrs,
+                                           MemTxResult *result)
+{
+    bool guarded;
+    hwaddr consumed;
+
+    *result = MEMTX_OK;
+    if (!memory_region_takes_buffer(mr, len, mr->ops->write_buffer)) {
+        return 0;
+    }
+    if (!memory_region_enter_io(mr, addr, &guarded)) {
+        *result = MEMTX_ACCESS_ERROR;
+        return len;
+    }
+    consumed = mr->ops->write_buffer(mr->opaque, addr, buffer, len, attrs,
+                                     result);
+    memory_region_exit_io(mr, guarded);
+    assert(consumed <= len);
+    assert(consumed || *result == MEMTX_OK);
+    return consumed;
 }
 
 static void memory_region_set_ops(MemoryRegion *mr,

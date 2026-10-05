@@ -313,6 +313,21 @@ struct MemoryRegionOps {
                                     unsigned size,
                                     MemTxAttrs attrs);
 
+    /*
+     * Optional: take a transfer longer than 8 bytes in one call.  @len is
+     * bounded by the current section and IOMMU entry.  Return the prefix
+     * consumed and set *@result; return 0 to decline with no effect and
+     * *@result MEMTX_OK.  Bytes are in address order.  Not offered to
+     * regions with valid.accepts or ioeventfds, and never in place of the
+     * ordinary callbacks, which must stay complete on their own.  See
+     * docs/devel/memory.rst.
+     */
+    hwaddr (*read_buffer)(void *opaque, hwaddr addr, void *buffer,
+                          hwaddr len, MemTxAttrs attrs, MemTxResult *result);
+    hwaddr (*write_buffer)(void *opaque, hwaddr addr, const void *buffer,
+                           hwaddr len, MemTxAttrs attrs,
+                           MemTxResult *result);
+
     enum device_endian endianness;
     /* Guest-visible constraints: */
     struct {
@@ -2404,6 +2419,19 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
                                          MemOp op,
                                          MemTxAttrs attrs);
 
+/*
+ * Offer @len bytes to read_buffer or write_buffer; 0 means use ordinary
+ * dispatch instead.
+ */
+hwaddr memory_region_dispatch_read_buffer(MemoryRegion *mr, hwaddr addr,
+                                          void *buffer, hwaddr len,
+                                          MemTxAttrs attrs,
+                                          MemTxResult *result);
+hwaddr memory_region_dispatch_write_buffer(MemoryRegion *mr, hwaddr addr,
+                                           const void *buffer, hwaddr len,
+                                           MemTxAttrs attrs,
+                                           MemTxResult *result);
+
 /**
  * address_space_init: initializes an address space
  *
@@ -2574,6 +2602,15 @@ MemoryRegion *flatview_translate(FlatView *fv,
                                  hwaddr *len, bool is_write,
                                  MemTxAttrs attrs);
 
+/*
+ * As flatview_translate(), also returning in *buffer_len how much of *len
+ * a buffer callback may be offered: the rest of the section.
+ */
+MemoryRegion *flatview_translate_with_buffer(FlatView *fv, hwaddr addr,
+                                             hwaddr *xlat, hwaddr *len,
+                                             hwaddr *buffer_len, bool is_write,
+                                             MemTxAttrs attrs);
+
 static inline MemoryRegion *address_space_translate(AddressSpace *as,
                                                     hwaddr addr, hwaddr *xlat,
                                                     hwaddr *len, bool is_write,
@@ -2706,7 +2743,7 @@ MemTxResult address_space_read_full(const AddressSpace *as, hwaddr addr,
 MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
                                    MemTxAttrs attrs, void *buf,
                                    hwaddr len, hwaddr addr1, hwaddr l,
-                                   MemoryRegion *mr);
+                                   hwaddr buffer_len, MemoryRegion *mr);
 void *qemu_map_ram_ptr(RAMBlock *ram_block, ram_addr_t addr);
 
 int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr);
@@ -2754,7 +2791,7 @@ MemTxResult address_space_read(const AddressSpace *as, hwaddr addr,
                                hwaddr len)
 {
     MemTxResult result = MEMTX_OK;
-    hwaddr l, addr1;
+    hwaddr l, addr1, buffer_len;
     void *ptr;
     MemoryRegion *mr;
     FlatView *fv;
@@ -2764,13 +2801,14 @@ MemTxResult address_space_read(const AddressSpace *as, hwaddr addr,
             RCU_READ_LOCK_GUARD();
             fv = address_space_to_flatview(as);
             l = len;
-            mr = flatview_translate(fv, addr, &addr1, &l, false, attrs);
+            mr = flatview_translate_with_buffer(fv, addr, &addr1, &l,
+                                                &buffer_len, false, attrs);
             if (len == l && memory_access_is_direct(mr, false, attrs)) {
                 ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
                 qemu_ram_move(buf, ptr, len);
             } else {
                 result = flatview_read_continue(fv, addr, attrs, buf, len,
-                                                addr1, l, mr);
+                                                addr1, l, buffer_len, mr);
             }
         }
     } else {

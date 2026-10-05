@@ -362,7 +362,8 @@ static MemoryRegionSection *address_space_lookup_region(AddressSpaceDispatch *d,
 /* Called from RCU critical section */
 static MemoryRegionSection *
 address_space_translate_internal(AddressSpaceDispatch *d, hwaddr addr, hwaddr *xlat,
-                                 hwaddr *plen, bool resolve_subpage)
+                                 hwaddr *plen, hwaddr *buffer_len,
+                                 bool resolve_subpage)
 {
     MemoryRegionSection *section;
     MemoryRegion *mr;
@@ -376,6 +377,11 @@ address_space_translate_internal(AddressSpaceDispatch *d, hwaddr addr, hwaddr *x
     *xlat = addr + section->offset_within_region;
 
     mr = section->mr;
+    if (buffer_len) {
+        diff = int128_sub(section->size, int128_make64(addr));
+        *buffer_len = int128_get64(int128_min(diff,
+                                             int128_make64(*buffer_len)));
+    }
 
     /* MMIO registers can be expected to perform full-width accesses based only
      * on their address, without considering adjacent registers that could
@@ -420,6 +426,7 @@ address_space_translate_internal(AddressSpaceDispatch *d, hwaddr addr, hwaddr *x
 static MemoryRegionSection address_space_translate_iommu(IOMMUMemoryRegion *iommu_mr,
                                                          hwaddr *xlat,
                                                          hwaddr *plen_out,
+                                                         hwaddr *buffer_len,
                                                          hwaddr *page_mask_out,
                                                          bool is_write,
                                                          bool is_mmio,
@@ -454,7 +461,7 @@ static MemoryRegionSection address_space_translate_iommu(IOMMUMemoryRegion *iomm
 
         section = address_space_translate_internal(
                 address_space_to_dispatch(iotlb.target_as), addr, xlat,
-                plen_out, is_mmio);
+                plen_out, buffer_len, is_mmio);
 
         iommu_mr = memory_region_get_iommu(section->mr);
     } while (unlikely(iommu_mr));
@@ -492,6 +499,7 @@ static MemoryRegionSection flatview_do_translate(FlatView *fv,
                                                  hwaddr addr,
                                                  hwaddr *xlat,
                                                  hwaddr *plen_out,
+                                                 hwaddr *buffer_len,
                                                  hwaddr *page_mask_out,
                                                  bool is_write,
                                                  bool is_mmio,
@@ -508,12 +516,13 @@ static MemoryRegionSection flatview_do_translate(FlatView *fv,
 
     section = address_space_translate_internal(
             flatview_to_dispatch(fv), addr, xlat,
-            plen_out, is_mmio);
+            plen_out, buffer_len, is_mmio);
 
     iommu_mr = memory_region_get_iommu(section->mr);
     if (unlikely(iommu_mr)) {
         return address_space_translate_iommu(iommu_mr, xlat,
-                                             plen_out, page_mask_out,
+                                             plen_out, buffer_len,
+                                             page_mask_out,
                                              is_write, is_mmio,
                                              target_as, attrs);
     }
@@ -537,8 +546,8 @@ IOMMUTLBEntry address_space_get_iotlb_entry(AddressSpace *as, hwaddr addr,
      * but page mask.
      */
     section = flatview_do_translate(address_space_to_flatview(as), addr, &xlat,
-                                    NULL, &page_mask, is_write, false, &as,
-                                    attrs);
+                                    NULL, NULL, &page_mask, is_write, false,
+                                    &as, attrs);
 
     /* Illegal translation */
     if (section.mr == &io_mem_unassigned) {
@@ -563,16 +572,20 @@ iotlb_fail:
 }
 
 /* Called from RCU critical section */
-MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
-                                 hwaddr *plen, bool is_write,
-                                 MemTxAttrs attrs)
+MemoryRegion *flatview_translate_with_buffer(FlatView *fv, hwaddr addr,
+                                             hwaddr *xlat, hwaddr *plen,
+                                             hwaddr *buffer_len, bool is_write,
+                                             MemTxAttrs attrs)
 {
     MemoryRegion *mr;
     MemoryRegionSection section;
     AddressSpace *as = NULL;
 
     /* This can be MMIO, so setup MMIO bit. */
-    section = flatview_do_translate(fv, addr, xlat, plen, NULL,
+    if (buffer_len) {
+        *buffer_len = *plen;
+    }
+    section = flatview_do_translate(fv, addr, xlat, plen, buffer_len, NULL,
                                     is_write, true, &as, attrs);
     mr = section.mr;
 
@@ -583,7 +596,18 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
         *plen = MIN(page, *plen);
     }
 
+    if (buffer_len) {
+        *buffer_len = MIN(*buffer_len, *plen);
+    }
+
     return mr;
+}
+
+MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+                                 hwaddr *plen, bool is_write, MemTxAttrs attrs)
+{
+    return flatview_translate_with_buffer(fv, addr, xlat, plen, NULL,
+                                         is_write, attrs);
 }
 
 #ifdef CONFIG_TCG
@@ -694,7 +718,8 @@ address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr orig_addr,
     AddressSpaceDispatch *d = address_space_to_dispatch(cpu->cpu_ases[asidx].as);
 
     for (;;) {
-        section = address_space_translate_internal(d, addr, &addr, plen, false);
+        section = address_space_translate_internal(d, addr, &addr, plen,
+                                                    NULL, false);
 
         iommu_mr = memory_region_get_iommu(section->mr);
         if (!iommu_mr) {
@@ -3277,7 +3302,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
 static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                 const uint8_t *buf,
                                                 hwaddr len, hwaddr mr_addr,
-                                                hwaddr *l, MemoryRegion *mr)
+                                                hwaddr *l, hwaddr buffer_len,
+                                                MemoryRegion *mr)
 {
     if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
         return MEMTX_ACCESS_ERROR;
@@ -3287,7 +3313,20 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
         uint64_t val;
         MemTxResult result;
         bool release_lock = prepare_mmio_access(mr);
+        hwaddr consumed = 0;
 
+        if (buffer_len > 8 && mr->ops->write_buffer) {
+            consumed = memory_region_dispatch_write_buffer(mr, mr_addr, buf,
+                                                           buffer_len, attrs,
+                                                           &result);
+        }
+        if (consumed) {
+            *l = consumed;
+            if (release_lock) {
+                bql_unlock();
+            }
+            return result;
+        }
         *l = memory_access_size(mr, *l, mr_addr);
         /*
          * XXX: could force current_cpu to NULL to avoid
@@ -3329,14 +3368,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                            MemTxAttrs attrs,
                                            const void *ptr,
                                            hwaddr len, hwaddr mr_addr,
-                                           hwaddr l, MemoryRegion *mr)
+                                           hwaddr l, hwaddr buffer_len,
+                                           MemoryRegion *mr)
 {
     MemTxResult result = MEMTX_OK;
     const uint8_t *buf = ptr;
 
     for (;;) {
         result |= flatview_write_continue_step(attrs, buf, len, mr_addr, &l,
-                                               mr);
+                                               buffer_len, mr);
 
         len -= l;
         buf += l;
@@ -3347,7 +3387,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
         }
 
         l = len;
-        mr = flatview_translate(fv, addr, &mr_addr, &l, true, attrs);
+        mr = flatview_translate_with_buffer(fv, addr, &mr_addr, &l,
+                                         &buffer_len, true, attrs);
     }
 
     return result;
@@ -3357,22 +3398,23 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
 static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
                                   const void *buf, hwaddr len)
 {
-    hwaddr l;
+    hwaddr l, buffer_len;
     hwaddr mr_addr;
     MemoryRegion *mr;
 
     l = len;
-    mr = flatview_translate(fv, addr, &mr_addr, &l, true, attrs);
+    mr = flatview_translate_with_buffer(fv, addr, &mr_addr, &l,
+                                         &buffer_len, true, attrs);
     if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
         return MEMTX_ACCESS_ERROR;
     }
     return flatview_write_continue(fv, addr, attrs, buf, len,
-                                   mr_addr, l, mr);
+                                   mr_addr, l, buffer_len, mr);
 }
 
 static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
                                                hwaddr len, hwaddr mr_addr,
-                                               hwaddr *l,
+                                               hwaddr *l, hwaddr buffer_len,
                                                MemoryRegion *mr)
 {
     if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
@@ -3384,7 +3426,20 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
         uint64_t val;
         MemTxResult result;
         bool release_lock = prepare_mmio_access(mr);
+        hwaddr consumed = 0;
 
+        if (buffer_len > 8 && mr->ops->read_buffer) {
+            consumed = memory_region_dispatch_read_buffer(mr, mr_addr, buf,
+                                                          buffer_len, attrs,
+                                                          &result);
+        }
+        if (consumed) {
+            *l = consumed;
+            if (release_lock) {
+                bql_unlock();
+            }
+            return result;
+        }
         *l = memory_access_size(mr, *l, mr_addr);
         result = memory_region_dispatch_read(mr, mr_addr, &val, size_memop(*l),
                                              attrs);
@@ -3420,14 +3475,15 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
 MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
                                    MemTxAttrs attrs, void *ptr,
                                    hwaddr len, hwaddr mr_addr, hwaddr l,
-                                   MemoryRegion *mr)
+                                   hwaddr buffer_len, MemoryRegion *mr)
 {
     MemTxResult result = MEMTX_OK;
     uint8_t *buf = ptr;
 
     fuzz_dma_read_cb(addr, len, mr);
     for (;;) {
-        result |= flatview_read_continue_step(attrs, buf, len, mr_addr, &l, mr);
+        result |= flatview_read_continue_step(attrs, buf, len, mr_addr, &l,
+                                              buffer_len, mr);
 
         len -= l;
         buf += l;
@@ -3438,7 +3494,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
         }
 
         l = len;
-        mr = flatview_translate(fv, addr, &mr_addr, &l, false, attrs);
+        mr = flatview_translate_with_buffer(fv, addr, &mr_addr, &l,
+                                         &buffer_len, false, attrs);
     }
 
     return result;
@@ -3448,17 +3505,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
 static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
                                  MemTxAttrs attrs, void *buf, hwaddr len)
 {
-    hwaddr l;
+    hwaddr l, buffer_len;
     hwaddr mr_addr;
     MemoryRegion *mr;
 
     l = len;
-    mr = flatview_translate(fv, addr, &mr_addr, &l, false, attrs);
+    mr = flatview_translate_with_buffer(fv, addr, &mr_addr, &l,
+                                         &buffer_len, false, attrs);
     if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
         return MEMTX_ACCESS_ERROR;
     }
     return flatview_read_continue(fv, addr, attrs, buf, len,
-                                  mr_addr, l, mr);
+                                  mr_addr, l, buffer_len, mr);
 }
 
 MemTxResult address_space_read_full(const AddressSpace *as, hwaddr addr,
@@ -3889,7 +3947,8 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
     l = len;
     cache->fv = address_space_get_flatview(as);
     d = flatview_to_dispatch(cache->fv);
-    cache->mrs = *address_space_translate_internal(d, addr, &cache->xlat, &l, true);
+    cache->mrs = *address_space_translate_internal(d, addr, &cache->xlat, &l,
+                                                  NULL, true);
 
     /*
      * cache->xlat is now relative to cache->mrs.mr, not to the section itself.
@@ -3971,7 +4030,7 @@ static inline MemoryRegion *address_space_translate_cached(
     }
 
     section = address_space_translate_iommu(iommu_mr, xlat, plen,
-                                            NULL, is_write, true,
+                                            NULL, NULL, is_write, true,
                                             &target_as, attrs);
     return section.mr;
 }
@@ -3989,7 +4048,7 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
 
     for (;;) {
         result |= flatview_write_continue_step(attrs, buf, len, mr_addr, &l,
-                                               mr);
+                                               0, mr);
 
         len -= l;
         buf += l;
@@ -4015,7 +4074,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
     uint8_t *buf = ptr;
 
     for (;;) {
-        result |= flatview_read_continue_step(attrs, buf, len, mr_addr, &l, mr);
+        result |= flatview_read_continue_step(attrs, buf, len, mr_addr, &l,
+                                              0, mr);
         len -= l;
         buf += l;
         mr_addr += l;
