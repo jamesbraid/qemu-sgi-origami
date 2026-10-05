@@ -1374,6 +1374,17 @@ static void rad4_disable_scanout(PsitechRad4State *s)
  * restores it afterwards, because its handler does not service frames while
  * a transfer is in flight. A frame event the bit did not request would
  * leave that handler unable to clear the interrupt.
+ *
+ * The readable frame status (RAD4_STATUS_FRAME) follows the same request,
+ * which is part of the same inference: nothing shows whether the board
+ * latches the status of an unrequested frame and gates only the interrupt.
+ * Nothing in the shipped software would see the difference. The only
+ * driver code testing status bit 0x20 is its interrupt handler, which runs
+ * on a requested frame. A scan of the standalone X server's and rad4d's
+ * disassembly finds no instruction loading the control register's BAR2
+ * offset (0xf00000) as a constant, so neither appears to poll it. Were
+ * the status latched regardless and only the interrupt gated, setting bit
+ * 1 to wait for a frame would raise a stale interrupt at once.
  */
 static void rad4_frame_timer_cb(void *opaque)
 {
