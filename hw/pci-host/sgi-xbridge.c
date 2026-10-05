@@ -268,7 +268,8 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
-    *placement = sgi_dma_placement_select(swap, false);
+    *placement = sgi_dma_placement_select(
+        swap, s->dma_64bit_slots & (1U << dma->slot));
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
         *onward = NULL;
@@ -1026,7 +1027,10 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         /* Packet mode places through each slot's sender instead. */
         sgi_dma_placement_init(&endpoint->placement, OBJECT(s), name,
                                &endpoint->as, s->packet_sender ? 0 :
-                               BIT(SGI_DMA_PLACEMENT_WORD));
+                               (s->dma_64bit_slots != 0xff ?
+                                BIT(SGI_DMA_PLACEMENT_WORD) : 0) |
+                               (s->dma_64bit_slots ?
+                                BIT(SGI_DMA_PLACEMENT_DOUBLEWORD) : 0));
     }
     memory_region_init(&s->denied, OBJECT(s), "xbridge.denied", UINT64_MAX);
     address_space_init(&s->denied_as, &s->denied, "xbridge.denied");
@@ -1049,7 +1053,9 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
                                         source_name,
                                         SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE,
                                         BIT(SGI_DMA_PLACEMENT_IDENTITY) |
-                                        BIT(SGI_DMA_PLACEMENT_WORD),
+                                        BIT(s->dma_64bit_slots & BIT(i) ?
+                                            SGI_DMA_PLACEMENT_DOUBLEWORD :
+                                            SGI_DMA_PLACEMENT_WORD),
                                         xbridge_source_send, &s->dma[i]);
         }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
@@ -1154,6 +1160,9 @@ static const Property xbridge_properties[] = {
     DEFINE_PROP_UINT8("pci-speed", SGIXBridgeHeadState, speed, 0),
     DEFINE_PROP_STRING("board-part", SGIXBridgeHeadState, board_part),
     DEFINE_PROP_STRING("bus-name", SGIXBridgeHeadState, bus_name),
+    /* As on the Bridge: slots whose DMA runs 64-bit data phases. */
+    DEFINE_PROP_UINT8("dma-64bit-slots", SGIXBridgeHeadState,
+                      dma_64bit_slots, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIXBridgeHeadState, onewire_serial,
                        SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
