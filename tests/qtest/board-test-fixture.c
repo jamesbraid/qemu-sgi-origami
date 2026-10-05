@@ -290,7 +290,7 @@ static bool board_test_fixture_realize_baseio(SGIBoardTestFixtureState *s,
     return qdev_realize(board, NULL, errp);
 }
 
-static void board_test_fixture_realize(DeviceState *dev, Error **errp)
+static void board_test_fixture_build(DeviceState *dev, Error **errp)
 {
     SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(dev);
     DeviceState *board;
@@ -386,6 +386,14 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_string(board, "nvram-drive", s->nvram_drive_id);
     }
     sysbus_realize(SYS_BUS_DEVICE(board), errp);
+}
+
+/* Build the fixture in one memory transaction, as a machine's builder does. */
+static void board_test_fixture_realize(DeviceState *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    board_test_fixture_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 static const Property board_test_fixture_properties[] = {
