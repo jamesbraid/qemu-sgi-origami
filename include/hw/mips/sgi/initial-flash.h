@@ -71,6 +71,25 @@ void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size);
 
 /*
+ * What a product and its processor module put into the IP35 configuration
+ * block, which sits where the IP27 one does and has its layout.
+ */
+typedef struct SGIIP35FlashValues {
+    uint32_t machine_type;
+    uint32_t cpu_mode_word;
+    uint32_t cpu_clock_hz;
+} SGIIP35FlashValues;
+
+/*
+ * Write @values into the IP35 configuration block of the PROM image at
+ * @flash, with a flash program count of one, and set the block's
+ * check_sum_adj so its byte sum is what it was: the PROM checks that sum,
+ * as IP27 firmware does. The image need not carry the block's magic.
+ */
+void sgi_ip35_flash_configure(uint8_t *flash,
+                              const SGIIP35FlashValues *values);
+
+/*
  * Fill @flash_size bytes at @flash as a blank IP35 boot flash holding
  * @payload in position zero and the formatter's outer label in position
  * one, everything else erased.

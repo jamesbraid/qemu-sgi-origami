@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "e6332bf4bc5f2e45bd7a72dcf6b46591b834db362ad74346c3ef518a7af41e34"
+    "29ac2fa7b1c0e6e186857612033046e22181773bf4b489b27c0b5d3c71ea4c60"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -339,6 +339,20 @@ class FuelTests(unittest.TestCase):
             with self.subTest(topology=row["topology"]):
                 self.assertEqual(row["console"], "l1-uart")
                 self.assertEqual(row["consoles"], expected)
+
+    def test_ip35_firmware_names_each_product_machine_type(self):
+        """Origin 300's IP35 configuration block says SN10 (1) and Fuel's
+        SN11 (2), each with the 500 MHz, 2 MiB module's mode word."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for topology in catalogue["topologies"]:
+            if topology["product"] not in ("origin300", "fuel"):
+                self.assertNotIn("ip35-firmware", topology)
+                continue
+            with self.subTest(topology=topology["name"]):
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 2 if topology["product"] == "fuel" else 1,
+                    "cpu-mode-word": 0x549aa985})
 
     def test_overrides_follow_what_each_machine_binds(self):
         """The Bedrock board values are listed only where a Bedrock, an L1

@@ -150,6 +150,28 @@ static uint8_t **read_nodes(QTestState *qts, const unsigned int *cpus,
     return windows;
 }
 
+/*
+ * The IP35 configuration block at offset 0x60: the product's machine type
+ * at +0x30, and the block's byte sum the same as the image's, which
+ * check_sum_adj keeps so the PROM's checksum holds.
+ */
+static void assert_ip35_config(const uint8_t *flash, const char *prom,
+                               uint32_t machine_type)
+{
+    g_autofree char *image = NULL;
+    uint8_t flash_sum = 0, image_sum = 0;
+    gsize size;
+    unsigned int i;
+
+    g_assert_true(g_file_get_contents(prom, &image, &size, NULL));
+    for (i = 0x60; i < 0xb0; i++) {
+        flash_sum += flash[i];
+        image_sum += (uint8_t)image[i];
+    }
+    g_assert_cmpuint(ldl_be_p(flash + 0x90), ==, machine_type);
+    g_assert_cmphex(flash_sum, ==, image_sum);
+}
+
 static void free_nodes(uint8_t **windows, unsigned int nodes)
 {
     unsigned int i;
@@ -247,6 +269,8 @@ static void test_origin300(void)
     qtest_quit(qts);
 
     assert_nodes_equal(created, unbacked, 1, IP35_PROM_SIZE);
+    /* Origin 300's configuration block names machine type 1, SN10. */
+    assert_ip35_config(created[0], prom, 1);
     free_nodes(created, 1);
     free_nodes(unbacked, 1);
     remove_state(dir);
@@ -272,6 +296,8 @@ static void test_fuel(void)
     qtest_quit(qts);
 
     assert_nodes_equal(created, unbacked, 1, IP35_PROM_SIZE);
+    /* Fuel's names machine type 2, SN11, which its PROM table expects. */
+    assert_ip35_config(created[0], prom, 2);
     free_nodes(created, 1);
     free_nodes(unbacked, 1);
     remove_state(dir);

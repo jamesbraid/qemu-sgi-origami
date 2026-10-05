@@ -2372,7 +2372,24 @@ def compile_model(model: dict) -> dict:
         topology["l1_management"] = management
     if generation == "SN0":
         topology["ip27_firmware"] = _compile_ip27_firmware(model)
+    if generation == "SN1":
+        topology["ip35_firmware"] = _compile_ip35_firmware(model)
     return topology
+
+
+def _compile_ip35_firmware(model: dict) -> dict:
+    """The product values an IP35 PROM's flash configuration block
+    carries, from the product's own `machine.emulation.ip35_firmware`.
+    Every SN1 product authors them; Origin 300 and Fuel differ in machine
+    type, so neither may default to the other's.
+    """
+    firmware = model["machine"].get("emulation", {}).get("ip35_firmware")
+    if not isinstance(firmware, dict):
+        raise CompileError(
+            "machine.emulation.ip35_firmware is absent; an SN1 configuration "
+            "needs its IP35 flash configuration values")
+    return {"machine_type": firmware["machine_type"],
+            "cpu_mode_word": firmware["cpu_mode_word"]}
 
 
 def _compile_ip27_firmware(model: dict) -> dict:

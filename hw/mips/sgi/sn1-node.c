@@ -55,6 +55,7 @@
 #include "cpu-qom.h"
 #include "sn1-node.h"
 #include "sn1-topology.h"
+#include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 
 /*
@@ -689,14 +690,19 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
     return SGI_BEDROCK_FLASH(node->boot_flash)->flash_mmio[0];
 }
 
-/* Match the loaded CPU-module image to this machine's reset configuration. */
-static void sn1_apply_cpu_config(uint8_t *payload)
+/*
+ * Match the loaded image's configuration block to this node's product and
+ * processor module, as qemu-sgi-machine-init does for a new machine.
+ */
+static void sn1_apply_cpu_config(SN1NodeState *node, uint8_t *payload)
 {
-    stl_be_p(payload + 0x64, UINT32_C(0x549aa985));
-    stl_be_p(payload + 0x74, UINT32_C(500000000));
-    stl_be_p(payload + 0x90, 1);
-    stl_be_p(payload + 0x94, UINT32_C(0x9c));
-    stl_be_p(payload + 0x98, 1);
+    SGIIP35FlashValues values = {
+        .machine_type = node->firmware_machine_type,
+        .cpu_mode_word = node->firmware_mode_word,
+        .cpu_clock_hz = sn1_cpu_processor(node->model_node, 0)->clock_hz,
+    };
+
+    sgi_ip35_flash_configure(payload, &values);
 }
 
 static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
@@ -952,7 +958,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
          * monitor has just programmed, and refuse a write instead of passing
          * it to the part as a command cycle.
          */
-        sn1_apply_cpu_config(memory_region_get_ram_ptr(stored));
+        sn1_apply_cpu_config(node, memory_region_get_ram_ptr(stored));
         memory_region_set_log(stored, true, DIRTY_MEMORY_VGA);
         /* Node 0 keeps the RAM names its snapshots carry. */
         node->prom_view_names[0] = node->nasid ?
@@ -1005,7 +1011,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     /* The stock PROM bytes are part of snapshots despite being immutable. */
     vmstate_register_ram_global(&node->prom);
     memcpy(memory_region_get_ram_ptr(&node->prom), contents, prom_size);
-    sn1_apply_cpu_config(memory_region_get_ram_ptr(&node->prom));
+    sn1_apply_cpu_config(node, memory_region_get_ram_ptr(&node->prom));
     memory_region_set_dirty(&node->prom, 0, prom_size);
 
     /*
@@ -2121,6 +2127,14 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
     DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
     DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word, 0),
+    /*
+     * The machine sets both from the catalogue's ip35-firmware record;
+     * these defaults, Origin 300's, serve only builder test fixtures.
+     */
+    DEFINE_PROP_UINT32("firmware-machine-type", SN1NodeState,
+                       firmware_machine_type, 1),
+    DEFINE_PROP_UINT32("firmware-mode-word", SN1NodeState,
+                       firmware_mode_word, 0x549aa985),
     DEFINE_PROP_UINT32("l1-type-code", SN1NodeState, l1_type_code, 0),
     DEFINE_PROP_INT32("l1-revision-major", SN1NodeState, l1_revision[0], -1),
     DEFINE_PROP_INT32("l1-revision-minor", SN1NodeState, l1_revision[1], -1),

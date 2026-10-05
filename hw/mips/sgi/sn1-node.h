@@ -62,6 +62,9 @@ typedef struct SN1NodeState {
     uint32_t nasid;
     uint32_t l1_bay;
     uint64_t board_id_word;
+    /* The catalogue's IP35 configuration-block machine type and mode. */
+    uint32_t firmware_machine_type;
+    uint32_t firmware_mode_word;
     uint32_t l1_type_code;
     int32_t l1_revision[3];
     char *l1_mac_eeprom;

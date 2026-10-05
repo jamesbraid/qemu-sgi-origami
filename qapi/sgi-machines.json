@@ -1207,6 +1207,25 @@
             'flash-write-cycles': 'uint32' } }
 
 ##
+# @SGIModelIp35FirmwareConfig:
+#
+# The product values an IP35 PROM's flash configuration block
+# carries, which the PROM compares with the row its CPU-configuration
+# table gives for the board's PIMM speed code.
+#
+# @machine-type: the configuration block's machine type: 1 (SN10) for
+#     Origin 300, 2 (SN11) for Fuel
+#
+# @cpu-mode-word: the whole reset-mode word the block records for the
+#     fitted processor module
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIp35FirmwareConfig',
+  'data': { 'machine-type': 'uint32',
+            'cpu-mode-word': 'uint32' } }
+
+##
 # @SGIModelTopology:
 #
 # One chassis a product ships in: its wiring with every node slot
@@ -1267,6 +1286,9 @@
 # @ip27-firmware: the product values for the IP27 flash configuration
 #     block; present exactly when the node boards are SN0
 #
+# @ip35-firmware: the product values for the IP35 flash configuration
+#     block; present exactly when the node boards are SN1
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -1289,7 +1311,8 @@
             'console': 'int',
             'junk-uart': 'int',
             'node-populations': ['SGIModelNodePopulation'],
-            '*ip27-firmware': 'SGIModelIp27FirmwareConfig' } }
+            '*ip27-firmware': 'SGIModelIp27FirmwareConfig',
+            '*ip35-firmware': 'SGIModelIp35FirmwareConfig' } }
 
 ##
 # @SGIModelConsole:

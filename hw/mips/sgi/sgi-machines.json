@@ -12346,6 +12346,10 @@
           "serial": 47413004298
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 2
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -12520,6 +12524,10 @@
           }
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 2
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -16843,6 +16851,10 @@
           "slot": 0
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "l1-management": {
         "associations": [
@@ -17219,6 +17231,10 @@
           "slot": 0
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "l1-management": {
         "associations": [
@@ -17598,6 +17614,10 @@
           "slot": 0
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "l1-management": {
         "associations": [
@@ -17976,6 +17996,10 @@
           "slot": 0
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "l1-management": {
         "associations": [
@@ -18316,6 +18340,10 @@
           }
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -18678,6 +18706,10 @@
           "serial": 47413004297
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -18919,6 +18951,10 @@
           "serial": 47413004298
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -19149,6 +19185,10 @@
           }
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "modules": [
         {

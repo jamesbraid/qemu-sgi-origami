@@ -205,6 +205,51 @@ static void test_ip30(void)
     }
 }
 
+/*
+ * The IP35 configuration block: the stock image's factory block (400 MHz
+ * mode word 0x5219a785, machine type 0, check_sum_adj 0) configured for
+ * Origin 300 gets check_sum_adj 0x9c, the value Origin 300 runs have
+ * always flashed and the PROM accepts; for Fuel's machine type 2 it gets
+ * 0x9b. Either way the block's byte sum is unchanged.
+ */
+static void test_ip35_configure(void)
+{
+    static const struct {
+        uint32_t machine_type;
+        uint32_t adjustment;
+    } cases[] = { { 1, 0x9c }, { 2, 0x9b } };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree uint8_t *flash = g_malloc0(0x200);
+        const SGIIP35FlashValues values = {
+            .machine_type = cases[i].machine_type,
+            .cpu_mode_word = 0x549aa985,
+            .cpu_clock_hz = 500000000,
+        };
+        uint8_t before = 0, after = 0;
+        size_t j;
+
+        stl_be_p(flash + CONFIG + 0x04, 0x5219a785);
+        stq_be_p(flash + CONFIG + 0x08, CONFIG_MAGIC);
+        stq_be_p(flash + CONFIG + 0x10, 400000000);
+        for (j = 0; j < CONFIG_SIZE; j++) {
+            before += flash[CONFIG + j];
+        }
+        sgi_ip35_flash_configure(flash, &values);
+        for (j = 0; j < CONFIG_SIZE; j++) {
+            after += flash[CONFIG + j];
+        }
+        g_assert_cmphex(ldl_be_p(flash + CONFIG + 0x04), ==, 0x549aa985);
+        g_assert_cmpuint(ldq_be_p(flash + CONFIG + 0x10), ==, 500000000);
+        g_assert_cmpuint(ldl_be_p(flash + CONFIG + CONFIG_MACHINE_TYPE), ==,
+                         cases[i].machine_type);
+        g_assert_cmpuint(ldl_be_p(flash + CONFIG + 0x38), ==, 1);
+        g_assert_cmphex(ldl_be_p(flash + CONFIG + CONFIG_CHECKSUM), ==,
+                        cases[i].adjustment);
+        g_assert_cmphex(after, ==, before);
+    }
+}
+
 /* The I/O PROM part holds the file as given, then erased bytes. */
 static void test_io6(void)
 {
@@ -228,6 +273,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-initial-flash/ip27-no-magic", test_ip27_no_magic);
     g_test_add_func("/sgi-initial-flash/ip30", test_ip30);
     g_test_add_func("/sgi-initial-flash/ip35", test_ip35);
+    g_test_add_func("/sgi-initial-flash/ip35-configure", test_ip35_configure);
     g_test_add_func("/sgi-initial-flash/io6", test_io6);
     return g_test_run();
 }
