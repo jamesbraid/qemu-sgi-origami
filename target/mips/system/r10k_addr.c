@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The R10000 family's xkphys uncached-attribute window, split out of the
- * shared address translation. get_physical_address() calls it for an
- * unmapped xkphys reference; it is inert on any processor whose definition
- * does not carry the feature.
+ * The R10000 family's uncached-attribute windows, split out of the shared
+ * address translation. get_physical_address() calls one for an unmapped
+ * xkphys reference and the R4000-style TLB lookup the other for a mapped
+ * one; both are inert on any processor whose definition does not carry the
+ * feature.
  */
 
 #include "qemu/osdep.h"
@@ -45,4 +46,32 @@ hwaddr mips_r10k_xkphys_uncached_window(CPUMIPSState *env, target_ulong address,
     attr = ((uint64_t)address >> 57) & 3;
     *pa &= ~(3ULL << 57);
     return (hwaddr)((attr + 1) & 3) << MIPS_UNCACHED_WINDOW_SHIFT;
+}
+
+/*
+ * A mapped reference carries the same uncached attribute an unmapped one
+ * does, taken from the TLB entry's UC field rather than from the address,
+ * and only when the entry's cache algorithm is uncached or uncached
+ * accelerated. Without it a mapped uncached page aimed at the Hub or a
+ * crossbar widget would read node memory instead. The access is also
+ * marked uncached, so the machine can tell an uncached reference to memory
+ * from a cached one: both have the same physical address, since the
+ * attribute that names memory is window zero.
+ *
+ * Also stamps the requester on every reference from a processor with the
+ * feature. Returns the window offset to place above the entry's physical
+ * address, or zero.
+ */
+hwaddr mips_r10k_mapped_uncached_window(CPUMIPSState *env, unsigned int cca,
+                                        unsigned int uc, MemTxAttrs *attrs)
+{
+    if (!env->cfg.uncached_attribute) {
+        return 0;
+    }
+    attrs->requester_id = env->r10k->requester_id;
+    if (cca != 2 && cca != 7) {
+        return 0;
+    }
+    attrs->mips_uncached = 1;
+    return (hwaddr)((uc + 1) & 3) << MIPS_UNCACHED_WINDOW_SHIFT;
 }

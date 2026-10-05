@@ -704,31 +704,8 @@ match:
         }
         if (access_type != MMU_DATA_STORE || (n ? tlb->D1 : tlb->D0)) {
             unsigned int cca = n ? tlb->C1 : tlb->C0;
-            hwaddr window = 0;
-
-            /*
-             * A mapped reference carries the same uncached attribute an
-             * unmapped one does, taken from the entry rather than from the
-             * address, and only when the entry's cache algorithm is
-             * uncached or uncached accelerated. Without this a mapped
-             * uncached page aimed at the Hub or a crossbar widget would
-             * quietly read node memory instead. The access is also marked
-             * uncached, so the machine can tell an uncached reference to
-             * memory from a cached one — the two have the same physical
-             * address, since the attribute that names memory is window
-             * zero.
-             */
-            if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
-                unsigned int uc = n ? tlb->UC1 : tlb->UC0;
-
-                window = (hwaddr)((uc + 1) & 3) <<
-                         MIPS_UNCACHED_WINDOW_SHIFT;
-                attrs->mips_uncached = 1;
-            }
-            if (env->cfg.uncached_attribute) {
-                attrs->mips_cca = cca;
-                attrs->requester_id = env->r10k->requester_id;
-            }
+            hwaddr window = mips_r10k_mapped_uncached_window(env, cca,
+                                n ? tlb->UC1 : tlb->UC0, attrs);
 
             attrs->mips_cca = cca;
             *physical = window | tlb->PFN[n] | (address & (mask >> 1));
