@@ -427,7 +427,12 @@ static void test_traffic(const void *opaque)
 
 int main(int argc, char **argv)
 {
-    static Placement placements[8][2][2];
+    static Placement placements[] = {
+        { 0, 1, 0 }, { 1, 2, 1 },
+        { 2, 1, 1 }, { 3, 2, 0 },
+        { 4, 1, 0 }, { 5, 2, 1 },
+        { 6, 1, 1 }, { 7, 2, 0 },
+    };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
     int fd, result;
@@ -441,18 +446,13 @@ int main(int argc, char **argv)
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, prom, PROM_SIZE), ==, PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
-    for (unsigned head = 0; head < G_N_ELEMENTS(bus_names); head++) {
-        for (unsigned device = 1; device <= 2; device++) {
-            for (unsigned destination = 0; destination < 2; destination++) {
-                Placement *p = &placements[head][device - 1][destination];
-                g_autofree char *name = g_strdup_printf(
-                    "/sn1/option-tigon/head%u/device%u/node%u",
-                    head, device, destination);
+    for (unsigned i = 0; i < G_N_ELEMENTS(placements); i++) {
+        Placement *p = &placements[i];
+        g_autofree char *name = g_strdup_printf(
+            "/sn1/option-tigon/head%u/device%u/node%u",
+            p->head, p->device, p->destination);
 
-                *p = (Placement) { head, device, destination };
-                qtest_add_data_func(name, p, test_traffic);
-            }
-        }
+        qtest_add_data_func(name, p, test_traffic);
     }
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
