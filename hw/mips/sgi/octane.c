@@ -44,6 +44,7 @@
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
+#include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-storage.h"
@@ -492,42 +493,6 @@ static bool octane_storage_backing(OctaneMachineState *s, const char *product,
     return true;
 }
 
-/*
- * The R12000 identity and reset word from the catalogue, each kept only
- * where -cpu R12000,<property>= did not already give one. PRId and FPU
- * identification are inferred from one kernel's inventory record; the
- * reset word, and the cache geometry its SS and SB fields select, are an
- * emulator approximation (docs/datasheets/ip30-r12000.md).
- */
-static bool octane_r12000_profile(DeviceState *dev,
-                                  const SGIModelProcessor *processor,
-                                  Error **errp)
-{
-    uint32_t mode = processor->mode_bits;
-    const struct {
-        const char *name;
-        uint32_t value;
-    } fields[] = {
-        { "r12000-prid", processor->prid },
-        { "r12000-fpu-id", processor->fpu_prid },
-        { "r12000-reset-mode", mode },
-        { "r12000-scache-bytes", processor->cache_mib * MiB },
-        /* Config SB, bit 13, selects 32-word rather than 16-word blocks. */
-        { "r12000-scache-block-words", mode & (1u << 13) ? 32 : 16 },
-    };
-
-    g_assert(processor->has_prid && processor->has_fpu_prid &&
-             processor->has_mode_bits);
-    for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
-        if (!qdev_find_global_prop(OBJECT(dev), fields[i].name) &&
-            !object_property_set_uint(OBJECT(dev), fields[i].name,
-                                      fields[i].value, errp)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 /* Build the machine; every refusal is returned through @errp. */
 static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 {
@@ -656,24 +621,18 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(cpuclk, processor->clock_hz);
-    if (octane2) {
+    {
         DeviceState *dev = qdev_new(machine->cpu_type);
 
         qdev_connect_clock_in(dev, "clk-in", cpuclk);
+        /*
+         * The catalogue's processor part: PRId, inferred from kernel
+         * inventory records, and on the R12000 the FPU identification and
+         * the approximated reset word with the cache it selects
+         * (Origami docs/datasheets/ip30-r10000.md and ip30-r12000.md).
+         */
         if (!object_property_set_bool(OBJECT(dev), "big-endian", true, errp) ||
-            !octane_r12000_profile(dev, processor, errp) ||
-            !qdev_realize(dev, NULL, errp)) {
-            return false;
-        }
-        cpu = MIPS_CPU(dev);
-    } else {
-        DeviceState *dev = qdev_new(machine->cpu_type);
-
-        qdev_connect_clock_in(dev, "clk-in", cpuclk);
-        if (!object_property_set_bool(OBJECT(dev), "big-endian",
-                                      TARGET_BIG_ENDIAN, errp) ||
-            !object_property_set_uint(OBJECT(dev), "r10000-prid",
-                                      processor->prid, errp) ||
+            !sgi_cpu_apply_processor(dev, processor, errp) ||
             !qdev_realize(dev, NULL, errp)) {
             return false;
         }
