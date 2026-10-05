@@ -28,6 +28,8 @@ from lib_translation_health import assert_translation_healthy
 # QEMU_TEST_SGI_ASSET_DIR points directly at this root-relative asset tree.
 FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                             'ip27prom.payload.bin')
+FIRMWARE_SHA256 = ('c2c69bf33c375b43ec7ac511fab41ddf'
+                   '595be1b6838ae717e58a9a1273437fdd')
 
 # This checkout's own root, four directories above
 # tests/functional/mips64 -- the tree run_record() below records the
