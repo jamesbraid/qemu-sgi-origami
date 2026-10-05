@@ -4639,7 +4639,19 @@ void sgi_machine_init(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
 
+    /*
+     * Every device the builder realizes maps its regions with a commit of
+     * its own, and each commit re-renders the flat view of every address
+     * space built so far, so start-up cost grows with the square of the
+     * board: 2.2 CPU seconds and 859 MB to start an Origin 2000.
+     * One transaction defers that to its commit. Until then, an access
+     * through an address space resolves against its view from before the
+     * transaction; nothing the builder runs makes one, and the board's
+     * first accesses come after machine init has returned.
+     */
+    memory_region_transaction_begin();
     sgi_machine_realize(machine, &error_fatal);
+    memory_region_transaction_commit();
     s->machine_done.notify = sgi_machine_done;
     qemu_add_machine_init_done_notifier(&s->machine_done);
 }
