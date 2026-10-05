@@ -2030,6 +2030,93 @@ static const MemoryRegionOps rad4_bar0_ops = {
 };
 
 /*
+ * Each descriptor's span moves in chunks of up to RAD4_DMA_CHUNK bytes, one
+ * PCI access per chunk rather than per dword; the Bridge still translates
+ * and lane-swaps every dword of it. When a chunk fails, the chunk is redone
+ * a dword at a time so the transfer stops with exactly the dwords before
+ * the failing one moved.
+ */
+#define RAD4_DMA_CHUNK  4096
+
+/*
+ * Merge @len bytes of little-endian PCI dwords into the framebuffer under
+ * the plane mask (RAD4_BAR2_MASK), as a CPU pixel write is: the mask register
+ * is documented as programmed "before CPU transfer/fill and restored
+ * afterward" and both driver DMA render paths (bigx_update and
+ * rad4_rect_dma_move/fill/copy) share the same threshold logic deciding
+ * between them, so it is the memory controller's masked write, not a
+ * CPU-only feature.
+ */
+static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
+                           const uint8_t *buf, uint32_t len)
+{
+    uint32_t off;
+
+    for (off = 0; off < len; off += 4) {
+        uint8_t *dst = s->framebuffer + local_addr + off;
+        uint32_t old = ldl_be_p(dst);
+
+        stl_be_p(dst, rad4_masked_store(s, old, ldl_le_p(buf + off)));
+    }
+    rad4_mark_dirty_range(s, local_addr, len);
+}
+
+static bool rad4_dma_upload(PsitechRad4State *s, uint32_t pci_addr,
+                            uint32_t local_addr, uint32_t size)
+{
+    uint8_t buf[RAD4_DMA_CHUNK];
+    uint32_t done, len, off;
+
+    for (done = 0; done < size; done += len) {
+        len = MIN(size - done, sizeof(buf));
+        if (pci_dma_read(&s->pci, pci_addr + done, buf, len) == MEMTX_OK) {
+            rad4_dma_merge(s, local_addr + done, buf, len);
+            continue;
+        }
+        for (off = 0; off < len; off += 4) {
+            if (pci_dma_read(&s->pci, pci_addr + done + off, buf + off,
+                             4) != MEMTX_OK) {
+                rad4_dma_merge(s, local_addr + done, buf, off);
+                qemu_log_mask(LOG_GUEST_ERROR,
+                             "psitech-rad4: DMA payload read failed at "
+                             "0x%x\n", pci_addr + done + off);
+                return false;
+            }
+        }
+        rad4_dma_merge(s, local_addr + done, buf, len);
+    }
+    return true;
+}
+
+static bool rad4_dma_readback(PsitechRad4State *s, uint32_t pci_addr,
+                              uint32_t local_addr, uint32_t size)
+{
+    uint8_t buf[RAD4_DMA_CHUNK];
+    uint32_t done, len, off;
+
+    for (done = 0; done < size; done += len) {
+        len = MIN(size - done, sizeof(buf));
+        for (off = 0; off < len; off += 4) {
+            stl_le_p(buf + off,
+                     ldl_be_p(s->framebuffer + local_addr + done + off));
+        }
+        if (pci_dma_write(&s->pci, pci_addr + done, buf, len) == MEMTX_OK) {
+            continue;
+        }
+        for (off = 0; off < len; off += 4) {
+            if (pci_dma_write(&s->pci, pci_addr + done + off, buf + off,
+                              4) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                             "psitech-rad4: DMA readback write failed at "
+                             "0x%x\n", pci_addr + done + off);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/*
  * Run one PLX9054-family scatter/gather DMA transfer to completion, starting
  * from the descriptor chain DMADPR0
  * (RAD4_ROM_DESC) names. Real PCI9060/9054 hardware overlaps this with the
@@ -2153,51 +2240,9 @@ static bool rad4_dma_run(PsitechRad4State *s)
          * 32-bit little-endian PCI dword, the same value a CPU store
          * through the little-endian BAR2 window delivers.
          */
-        if (local_to_pci) {
-            uint32_t off;
-
-            for (off = 0; off < size; off += 4) {
-                uint8_t word[4];
-
-                stl_le_p(word, ldl_be_p(s->framebuffer + local_addr + off));
-                if (pci_dma_write(&s->pci, pci_addr + off, word,
-                                  sizeof(word)) != MEMTX_OK) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                 "psitech-rad4: DMA readback write failed "
-                                 "at 0x%x\n", pci_addr + off);
-                    return false;
-                }
-            }
-        } else {
-            /*
-             * Upload into the framebuffer, honoring the same plane mask
-             * (RAD4_BAR2_MASK) a CPU pixel write does:
-             * the mask register is documented as programmed "before CPU
-             * transfer/fill and restored afterward" and
-             * both driver DMA render paths (bigx_update and
-             * rad4_rect_dma_move/fill/copy) share the same threshold
-             * logic deciding between them, so it is the memory controller's
-             * masked write, not a CPU-only feature.
-             */
-            uint32_t off;
-
-            for (off = 0; off < size; off += 4) {
-                uint8_t word[4];
-                uint32_t old, incoming;
-
-                if (pci_dma_read(&s->pci, pci_addr + off, word,
-                                 sizeof(word)) != MEMTX_OK) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                 "psitech-rad4: DMA payload read failed at "
-                                 "0x%x\n", pci_addr + off);
-                    return false;
-                }
-                incoming = ldl_le_p(word);
-                old = ldl_be_p(s->framebuffer + local_addr + off);
-                stl_be_p(s->framebuffer + local_addr + off,
-                        rad4_masked_store(s, old, incoming));
-                rad4_mark_dirty_range(s, local_addr + off, 4);
-            }
+        if (!(local_to_pci ? rad4_dma_readback(s, pci_addr, local_addr, size)
+                           : rad4_dma_upload(s, pci_addr, local_addr, size))) {
+            return false;
         }
 
         /*
