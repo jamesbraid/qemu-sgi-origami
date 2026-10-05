@@ -3292,6 +3292,47 @@ static void test_cpu_type(void)
                             "Invalid CPU model: R10000");
 }
 
+static void octane_make_store(const char *path, size_t size, uint8_t fill,
+                              uint16_t mark);
+
+/*
+ * As on the SN machines, -nic with no model reaches the onboard IOC3 and
+ * a -drive with no interface lands on the internal SCSI bus.
+ */
+static void test_default_nic_and_disk(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("octane-defaults-XXXXXX", NULL);
+    g_autofree char *disk = g_build_filename(dir, "disk.raw", NULL);
+    g_autofree char *extra = NULL;
+    g_autofree char *network = NULL;
+    g_autoptr(QDict) blocks = NULL;
+    QTestState *qts;
+    const QListEntry *entry;
+    bool attached = false;
+
+    octane_make_store(disk, MiB, 0, 0);
+    extra = g_strdup_printf("-nic user -drive id=disk0,file=%s,format=raw",
+                            disk);
+    qts = octane_start_args(extra);
+    network = qtest_hmp(qts, "info network");
+    g_test_message("info network: %s", network);
+    g_assert_nonnull(strstr(network, "model=sgi-ioc3-eth"));
+    blocks = qtest_qmp(qts, "{'execute': 'query-block'}");
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(blocks, "return"), entry) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(block, "device"), "disk0")) {
+            g_test_message("disk0 is on %s", qdict_get_str(block, "qdev"));
+            attached = strstr(qdict_get_str(block, "qdev"),
+                              "internal-scsi") != NULL;
+        }
+    }
+    g_assert_true(attached);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(disk), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 /*
  * topology= and nodes= resolve through the shared catalogue resolver, so
  * Octane refuses a node count or topology its catalogue does not list as
@@ -4557,6 +4598,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/storage/refusals", test_storage_refusals);
     qtest_add_func("/octane/topology-and-nodes", test_topology_and_nodes);
     qtest_add_func("/octane/cpu-type", test_cpu_type);
+    qtest_add_func("/octane/default-nic-and-disk", test_default_nic_and_disk);
     qtest_add_func("/octane/catalogue-machine-options",
                    test_catalogue_machine_options);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
