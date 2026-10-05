@@ -87,15 +87,8 @@
 #define BCM_HCC_ENABLE          0x00000002u
 #define BCM_MISCCFG_RESET       0x00000001u
 
-/*
- * The buffer-manager mode register (BUFMGR_MODE in tg3, BGE_BMAN_MODE in
- * bge). ENABLE is the enable-request bit; ATTN_ENABLE arms its attention. The
- * public drivers set ENABLE and poll for it to stay SET, but IRIX tg sets
- * ENABLE and polls for it to CLEAR. The chip acknowledges the request by
- * dropping the bit, so the model self-clears ENABLE while ATTN_ENABLE
- * persists.
- */
 #define BCM_BUFMGR_MODE         0x4400u
+#define BCM_BUFMGR_STATUS       0x4404u
 #define BCM_BUFMGR_ENABLE       0x00000002u
 #define BCM_BUFMGR_ATTN         0x00000004u
 #define BCM_BUFMGR_START_NS     1000000
@@ -130,6 +123,7 @@
 #define MII_PHYIDR1             0x02u
 #define MII_PHYIDR2             0x03u
 #define MII_ANAR                0x04u
+#define MII_ANAR_10_HALF        0x0020u
 #define MII_BMCR_AUTOEN         0x1000u
 #define MII_BMCR_STARTNEG       0x0200u
 #define MII_BMSR_ANEGDONE       0x0020u
@@ -985,15 +979,31 @@ static void test_hcc_mode_idle_poll(const void *data)
 }
 
 /* ENABLE stays clear until buffer-manager startup completes. */
-static void test_bufmgr_startup(const void *data)
+static void test_bufmgr_registers(const void *data)
 {
     Bcm b;
+    g_autoptr(GError) err = NULL;
+    g_autofree char *log_dir = g_dir_make_tmp("bcm570x-bufmgr-log-XXXXXX",
+                                               &err);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_auto(GStrv) log_entries = NULL;
+    const char *model_args = data;
     uint32_t (*read_reg)(Bcm *, uint32_t);
     void (*write_reg)(Bcm *, uint32_t, uint32_t);
     unsigned int path;
+    QTestState *qts;
 
-    bcm_open(&b, bcm_init());
+    g_assert_no_error(err);
+    g_assert_nonnull(log_dir);
+    log_path = g_build_filename(log_dir, "guest-errors.log", NULL);
+    qts = qtest_initf(BCM_MACHINE
+                      " -d guest_errors -D %s"
+                      " -netdev user,id=n0"
+                      " -device bcm570x,%saddr=%02x.0,netdev=n0",
+                      log_path, model_args, BCM_SLOT);
 
+    bcm_open(&b, qts);
     for (path = 0; path < 2; path++) {
         read_reg = path ? ind_reg_readl : bar_readl;
         write_reg = path ? ind_reg_writel : bar_writel;
@@ -1011,24 +1021,35 @@ static void test_bufmgr_startup(const void *data)
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==,
                         BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
 
-        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
-        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
-        write_reg(&b, BCM_BUFMGR_MODE,
-                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
-        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
-        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
-        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
-
-        write_reg(&b, BCM_BUFMGR_MODE,
-                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        /* Reset cancels startup, then the new request starts a fresh interval. */
         write_reg(&b, BCM_BUFMGR_MODE,
                   BCM_MODE_RESET | BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
         qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==,
                         BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
-    }
 
+        /* The model has no outstanding allocator work to delay halt. */
+        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+
+        write_reg(&b, BCM_BUFMGR_STATUS,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_STATUS), ==, 0);
+    }
+    wait_for_log_marker(b.qts, log_path,
+                        "write to read-only BUFMGR_STATUS");
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &err));
+    g_assert_no_error(err);
+    log_entries = g_strsplit(log, "write to read-only BUFMGR_STATUS", -1);
+    g_assert_cmpuint(g_strv_length(log_entries) - 1, >=, 2);
+
+    /* A global reset cancels a pending startup. */
     bar_writel(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
     qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2);
     bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
@@ -1036,6 +1057,8 @@ static void test_bufmgr_startup(const void *data)
     g_assert_cmphex(bar_readl(&b, BCM_BUFMGR_MODE), ==, 0);
 
     bcm_close(&b);
+    g_unlink(log_path);
+    g_rmdir(log_dir);
 }
 
 /*
@@ -1068,31 +1091,121 @@ static void test_hcc_mode_clears_to_zero(const void *data)
  */
 static void test_mi_busy_clears(const void *data)
 {
+    g_autoptr(GError) err = NULL;
+    g_autofree char *log_dir = g_dir_make_tmp("bcm570x-mi-comm-XXXXXX",
+                                               &err);
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_auto(GStrv) log_entries = NULL;
+    static const uint32_t unsupported_opcodes[] = {
+        0, BCM_MICMD_READ | BCM_MICMD_WRITE,
+    };
+    uint32_t (*read_reg)(Bcm *, uint32_t);
+    void (*write_reg)(Bcm *, uint32_t, uint32_t);
+    unsigned int path, i;
+    QTestState *qts;
     Bcm b;
-    uint32_t comm;
 
-    bcm_open(&b, bcm_init());
+    g_assert_no_error(err);
+    g_assert_nonnull(log_dir);
+    log_path = g_build_filename(log_dir, "qemu.log", NULL);
+    args = g_strdup_printf(BCM_MACHINE " -d unimp -D %s"
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0",
+                           log_path, BCM_SLOT);
+    qts = qtest_init_ext(g_getenv("QTEST_QEMU_BINARY_SRC") ?
+                         "QTEST_QEMU_BINARY_SRC" : NULL,
+                         args, NULL, true);
+    bcm_open(&b, qts);
 
-    /*
-     * A read of the PHY identity: BUSY clears and the low 16 carry the value.
-     */
-    bar_writel(&b, BCM_MI_COMM,
-               BCM_MICOMM_BUSY | BCM_MICMD_READ |
-               (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
-               (MII_PHYIDR1 << BCM_MICOMM_REG_SHIFT));
-    comm = bar_readl(&b, BCM_MI_COMM);
-    g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
-    g_assert_cmphex(comm & 0xffff, ==, BCM_PHY_IDR1_VALUE);
+    for (path = 0; path < 2; path++) {
+        uint32_t baseline_anar, expected_anar;
+        uint32_t read_command, write_command, write_value, comm;
 
-    /* A write command: BUSY clears too, so the driver's poll returns. */
-    bar_writel(&b, BCM_MI_COMM,
-               BCM_MICOMM_BUSY | BCM_MICMD_WRITE |
-               (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
-               (MII_BMCR << BCM_MICOMM_REG_SHIFT) |
-               (MII_BMCR_AUTOEN | MII_BMCR_STARTNEG));
-    g_assert_cmphex(bar_readl(&b, BCM_MI_COMM) & BCM_MICOMM_BUSY, ==, 0);
+        read_reg = path ? ind_reg_readl : bar_readl;
+        write_reg = path ? ind_reg_writel : bar_writel;
+
+        read_command = BCM_MICOMM_BUSY | BCM_MICMD_READ |
+                       (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                       (MII_ANAR << BCM_MICOMM_REG_SHIFT);
+        write_reg(&b, BCM_MI_COMM, read_command);
+        comm = read_reg(&b, BCM_MI_COMM);
+        g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+        baseline_anar = comm & 0xffff;
+        g_assert_cmphex(comm, ==, baseline_anar);
+
+        write_value = baseline_anar ^ MII_ANAR_10_HALF;
+        expected_anar = write_value;
+        write_command = BCM_MICMD_WRITE |
+                        (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                        (MII_ANAR << BCM_MICOMM_REG_SHIFT) | write_value;
+
+        write_reg(&b, BCM_MI_COMM, write_command);
+        g_assert_cmphex(read_reg(&b, BCM_MI_COMM), ==, write_command);
+        write_reg(&b, BCM_MI_COMM, write_command);
+        g_assert_cmphex(read_reg(&b, BCM_MI_COMM), ==, write_command);
+
+        read_command = BCM_MICOMM_BUSY | BCM_MICMD_READ |
+                       (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                       (MII_ANAR << BCM_MICOMM_REG_SHIFT);
+        write_reg(&b, BCM_MI_COMM, read_command);
+        comm = read_reg(&b, BCM_MI_COMM);
+        g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+        g_assert_cmphex(comm, ==, baseline_anar);
+
+        read_command = BCM_MICMD_READ |
+                       (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                       (MII_PHYIDR1 << BCM_MICOMM_REG_SHIFT);
+        write_reg(&b, BCM_MI_COMM, read_command);
+        g_assert_cmphex(read_reg(&b, BCM_MI_COMM), ==, read_command);
+
+        write_reg(&b, BCM_MI_COMM, read_command | BCM_MICOMM_BUSY);
+        comm = read_reg(&b, BCM_MI_COMM);
+        g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+        g_assert_cmphex(comm, ==, BCM_PHY_IDR1_VALUE);
+
+        write_reg(&b, BCM_MI_COMM, write_command | BCM_MICOMM_BUSY);
+        comm = read_reg(&b, BCM_MI_COMM);
+        g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+        read_command = BCM_MICOMM_BUSY | BCM_MICMD_READ |
+                       (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                       (MII_ANAR << BCM_MICOMM_REG_SHIFT);
+        write_reg(&b, BCM_MI_COMM, read_command);
+        comm = read_reg(&b, BCM_MI_COMM);
+        g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+        g_assert_cmphex(comm, ==, expected_anar);
+        g_assert_cmphex(expected_anar, !=, baseline_anar);
+
+        for (i = 0; i < G_N_ELEMENTS(unsupported_opcodes); i++) {
+            uint32_t command = BCM_MICOMM_BUSY | unsupported_opcodes[i] |
+                               (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                               (MII_ANAR << BCM_MICOMM_REG_SHIFT) | 0x5a5a;
+
+            write_reg(&b, BCM_MI_COMM, command);
+            comm = read_reg(&b, BCM_MI_COMM);
+            g_assert_cmphex(comm, ==, command & ~BCM_MICOMM_BUSY);
+
+            read_command = BCM_MICOMM_BUSY | BCM_MICMD_READ |
+                           (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
+                           (MII_ANAR << BCM_MICOMM_REG_SHIFT);
+            write_reg(&b, BCM_MI_COMM, read_command);
+            comm = read_reg(&b, BCM_MI_COMM);
+            g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
+            g_assert_cmphex(comm, ==, expected_anar);
+        }
+    }
+
+    wait_for_log_marker(b.qts, log_path, "unsupported MI_COMM opcode");
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &err));
+    g_assert_no_error(err);
+    log_entries = g_strsplit(log, "unsupported MI_COMM opcode", -1);
+    g_assert_cmpuint(g_strv_length(log_entries) - 1, ==,
+                     2 * G_N_ELEMENTS(unsupported_opcodes));
 
     bcm_close(&b);
+    g_unlink(log_path);
+    g_rmdir(log_dir);
 }
 
 /*
@@ -6423,8 +6536,13 @@ int main(int argc, char **argv)
                         test_self_clearing_reset_bits);
     qtest_add_data_func("/bcm570x/hcc-mode-idle-poll", NULL,
                         test_hcc_mode_idle_poll);
-    qtest_add_data_func("/bcm570x/bufmgr-startup", NULL,
-                        test_bufmgr_startup);
+    qtest_add_data_func("/bcm570x/bufmgr-registers/bcm5701", "",
+                        test_bufmgr_registers);
+    qtest_add_data_func("/bcm570x/bufmgr-registers/bcm5704",
+                        "model=bcm5704,", test_bufmgr_registers);
+    qtest_add_data_func("/bcm570x/bufmgr-registers/bcm5704s",
+                        "model=bcm5704,device-id=0x16a8,subsystem-id=0x8014,",
+                        test_bufmgr_registers);
     qtest_add_data_func("/bcm570x/hcc-mode-clears-to-zero", NULL,
                         test_hcc_mode_clears_to_zero);
     qtest_add_data_func("/bcm570x/mi-busy-clears", NULL,
