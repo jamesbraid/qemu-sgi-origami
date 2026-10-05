@@ -126,6 +126,45 @@ static void test_invalid_identity(void)
     }
 }
 
+/*
+ * R14000 parts differ by revision: the model's default PRId is 0x0f24 and
+ * r14000-prid selects another, across reset as r10000-prid does.
+ */
+static void test_r14000_identity(gconstpointer data)
+{
+    bool override = GPOINTER_TO_INT(data);
+    uint32_t expected = override ? 0xf23 : 0xf24;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start("malta", override ? "R14000,r14000-prid=0xf23" : "R14000",
+                "");
+    read_identity(qts, expected);
+    g_assert_cmphex(cpu_property(qts, "r14000-prid"), ==, expected);
+    qtest_system_reset(qts);
+    read_identity(qts, expected);
+    qtest_quit(qts);
+}
+
+static void test_r14000_invalid_identity(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "malta", "-cpu",
+        "R14000,r14000-prid=0x926", "-display", "none", "-S", NULL,
+    };
+    g_autofree char *error_output = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "r14000-prid requires "
+                            "implementation 0x0f"));
+}
+
 static void test_immutable_identity(void)
 {
     QTestState *qts;
@@ -237,6 +276,12 @@ int main(int argc, char **argv)
         qtest_add_data_func("/r10000/identity/default", "malta", test_identity);
         qtest_add_func("/r10000/identity/invalid", test_invalid_identity);
         qtest_add_func("/r10000/identity/immutable", test_immutable_identity);
+        qtest_add_data_func("/r10000/identity/r14000-default",
+                            GINT_TO_POINTER(0), test_r14000_identity);
+        qtest_add_data_func("/r10000/identity/r14000-override",
+                            GINT_TO_POINTER(1), test_r14000_identity);
+        qtest_add_func("/r10000/identity/r14000-invalid",
+                       test_r14000_invalid_identity);
         qtest_add_data_func("/r10000/identity/migration-mismatch",
                             GINT_TO_POINTER(1), test_migration);
     }
