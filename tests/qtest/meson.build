@@ -90,6 +90,13 @@ slow_qtests = {
   # stalled socket reports itself rather than a killed binary.
   'sn0-elsc-test': 730,
   'sn0-ioc3-serial-test': 240,
+  # Each gives a test subprocess 120s; the budget is that plus three times
+  # the longest of five runs (alone, four- and 16-process) on 2026-10-05,
+  # so a hung child reports itself rather than a killed binary.
+  'ds1742-test': 140,
+  'ics1890-test': 160,
+  'sn1-pci-expansion-module-test': 140,
+  'sn1-xbridge-test': 160,
 }
 
 qtests_generic = [
