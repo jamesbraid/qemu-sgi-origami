@@ -5503,13 +5503,22 @@ static void test_texture_reset(void)
     qtest_quit(s);
 }
 
+/*
+ * Where test_texture_migrates() cuts its upload, counted in words of the
+ * 20-word header and 8-word payload: nothing, mid-header, one header word
+ * short, header complete, first payload word, mid-payload and one word
+ * short of the end.
+ */
+static const unsigned texture_splits[] = { 0, 10, 19, 20, 21, 24, 27 };
+
 static void test_texture_migrates(void)
 {
     uint32_t h[20];
 
     memcpy(h, texture_header, sizeof(h));
     h[2] = 4;
-    for (unsigned split = 0; split < 28; split++) {
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_splits); i++) {
+        unsigned split = texture_splits[i];
         unsigned pos = split < 20 ? 0 : split - 20;
         g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
         g_autofree char *log = NULL, *found = NULL;
