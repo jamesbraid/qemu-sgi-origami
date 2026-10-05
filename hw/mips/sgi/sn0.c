@@ -40,6 +40,7 @@
 #include "trace.h"
 #include "cpu.h"
 #include "sn0.h"
+#include "hw/mips/sgi/sgi-cpu.h"
 
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
@@ -603,6 +604,24 @@ static const SN0ModelMemory *sn0_node_memory_geometry(SN0NodeState *node)
     return node->memory ? node->memory : &sn0_hub_memory;
 }
 
+/*
+ * The node board's fitted processor part, which every fitted slot holds,
+ * or NULL for a board the catalogue does not describe.
+ */
+static const SGIModelProcessor *sn0_node_processor(SN0NodeState *node)
+{
+    if (!node->model_node) {
+        return NULL;
+    }
+    for (const SGIModelCpuSlotList *slot = node->model_node->cpu_slots;
+         slot; slot = slot->next) {
+        if (slot->value->assembly) {
+            return slot->value->assembly;
+        }
+    }
+    return NULL;
+}
+
 static unsigned int sn0_node_cpu_slots(void)
 {
     return SN0_HUB_CPU_SLOTS_PER_NODE;
@@ -786,6 +805,11 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             object_property_set_uint(OBJECT(node->cpu[slice]), "reset-mode",
                 node->model_node->cpu_slots->value->assembly->mode_bits &
                 SN0_PROCESSOR_MODE_MASK, &error_abort);
+        }
+        /* The catalogue's part, unless -cpu R10000,r10000-prid= named one. */
+        if (sn0_node_processor(node)) {
+            sgi_cpu_apply_processor(DEVICE(node->cpu[slice]),
+                                    sn0_node_processor(node), &error_fatal);
         }
         qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
         cpu_mips_irq_init_cpu(node->cpu[slice]);
