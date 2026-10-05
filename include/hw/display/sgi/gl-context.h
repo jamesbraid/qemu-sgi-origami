@@ -1127,8 +1127,7 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
  * SGI_CLIP_MAX clip rectangles, and no more vertices held than the open
  * primitive keeps.
  * False, with the reason in errp, otherwise. Loading a context refuses
- * one that fails; a family that fills a context from its own older stream
- * layout checks it here too.
+ * one that fails.
  */
 bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
 
@@ -1194,18 +1193,13 @@ void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
  * nested description, a subsection puts its own name and version on the
  * stream. Its .needed may return false only while the field
  * holds what sgi_gl_init() gives it; a stream without the subsection then
- * leaves the destination's initial value, as a source that predates the
- * field had, and a binary without it refuses a stream that needs it.
- * SGI_GL_VMSTATE_VERSION does not change.
+ * leaves the destination's initial value.
  *
  * SGI_GL_VMSTATE_VERSION is the base layout's, carried by the family's
- * subsection. It changes only when a described field changes meaning,
- * type or position; the minimum version follows it, so the older layout
- * is refused by name rather than misread. The bare
+ * subsection. Migration is supported only between identical builds, so it
+ * does not change when the description does. The bare
  * VMSTATE_SGI_GL_CONTEXTS, embedded in a description of the family's own,
- * puts no GL version on the stream, which is enough while migration is
- * supported only between identical builds; the
- * DEFINE_ form carries it.
+ * puts no GL version on the stream; the DEFINE_ form carries it.
  */
 #define SGI_GL_VMSTATE_VERSION  1
 

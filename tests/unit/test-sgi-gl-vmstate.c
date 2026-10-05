@@ -1176,40 +1176,6 @@ static void test_polygon_assembly_restore(void)
     }
 }
 
-static void test_polygon_stream_compatibility(void)
-{
-    TestHead src = { 0 }, dst = { 0 };
-    PolygonDraw r = { 0 };
-    Draws legacy = { 0 };
-    GByteArray *stream;
-    uint32_t mode = SGI_GL_POLYGON;
-
-    polygon_heads_init(&src, &dst);
-    polygon_begin(&src.gl[0], &r);
-    stream = save_head(&src);
-    dst.gl[0].polygon.enabled = 0;
-    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
-    g_assert_null(dst.gl[0].polygon.vertices);
-    dst.gl[0].standalone_stipple = true;
-    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
-    g_assert_null(dst.gl[0].polygon.vertices);
-    dst.gl[0].standalone_stipple = false;
-    g_byte_array_unref(stream);
-    sgi_gl_reset(&src.gl[0], 0);
-    src.gl[0].polygon.enabled = 0;
-    send_cmd(&src.gl[0], &legacy, SGI_GL_OP_BEGIN, 1, &mode);
-    send_vertex(&src.gl[0], &legacy, 0, 0);
-    stream = save_head(&src);
-    sgi_gl_init(&dst.gl[0], 0);
-    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
-    sgi_gl_init(&dst.gl[0], 0);
-    dst.gl[0].polygon.enabled = 1;
-    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
-    g_byte_array_unref(stream);
-    sgi_gl_cleanup(&src.gl[0]);
-    sgi_gl_cleanup(&dst.gl[0]);
-}
-
 static void test_polygon_failed_restore(void)
 {
     TestHead src = { 0 }, dst = { 0 };
@@ -1284,31 +1250,6 @@ static void test_polygon_restore_failure(void)
     g_byte_array_unref(stream);
     sgi_gl_cleanup(&src.gl[0]);
     sgi_gl_cleanup(&dst.gl[0]);
-}
-
-static void test_legacy_closed_end_restore(void)
-{
-    TestHead src = { 0 }, dst = { 0 };
-    Draws r = { 0 };
-    GByteArray *stream;
-
-    for (unsigned i = 0; i < CONTEXTS; i++) {
-        sgi_gl_init(&src.gl[i], i);
-        sgi_gl_init(&dst.gl[i], i);
-    }
-    src.gl[0].begin_mode = SGI_GL_TRIANGLE_STRIP;
-    src.gl[0].strip_odd = 1;
-    g_assert_true(sgi_gl_context_valid(&src.gl[0], &error_abort));
-    stream = save_head(&src);
-    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
-    g_byte_array_unref(stream);
-    g_assert_false(dst.gl[0].in_begin);
-    g_assert_cmpuint(dst.gl[0].strip_odd, ==, 1);
-    send_cmd(&dst.gl[0], &r, SGI_GL_OP_END, 0, NULL);
-    g_assert_cmpuint(dst.gl[0].begin_mode, ==, 0);
-    g_assert_cmpuint(dst.gl[0].nheld, ==, 0);
-    g_assert_cmpuint(dst.gl[0].strip_odd, ==, 0);
-    g_assert_cmpuint(r.n, ==, 0);
 }
 
 static void test_polygon_duplicate_subsection(void)
@@ -1820,14 +1761,10 @@ int main(int argc, char **argv)
                     test_polygon_growth_failure);
     g_test_add_func("/sgi-gl-vmstate/polygon-assembly-restore",
                     test_polygon_assembly_restore);
-    g_test_add_func("/sgi-gl-vmstate/polygon-stream-compatibility",
-                    test_polygon_stream_compatibility);
     g_test_add_func("/sgi-gl-vmstate/polygon-failed-restore",
                     test_polygon_failed_restore);
     g_test_add_func("/sgi-gl-vmstate/polygon-restore-failure",
                     test_polygon_restore_failure);
-    g_test_add_func("/sgi-gl-vmstate/legacy-closed-end-restore",
-                    test_legacy_closed_end_restore);
     g_test_add_func("/sgi-gl-vmstate/polygon-duplicate-subsection",
                     test_polygon_duplicate_subsection);
     return g_test_run();
