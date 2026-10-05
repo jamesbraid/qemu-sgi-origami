@@ -1,6 +1,7 @@
 #!/bin/bash
 # The Forgejo jobs share a Docker daemon. Pass its workspace volume to
-# sibling containers instead of a path inside the job container.
+# sibling containers instead of a path inside the job container. The other
+# modes are the job-container steps every SGI build job repeats.
 set -eu
 
 # Remove child containers whose job container has gone. A job killed
@@ -29,6 +30,100 @@ reap_orphans() {
 }
 
 case "${1-}" in
+  docker)
+    # Install Docker only if absent and fail before build steps if its
+    # daemon cannot be reached.
+    command -v docker >/dev/null || {
+      apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io
+    }
+    if ! version=$(docker version --format '{{.Server.Version}}'); then
+      echo "The docker daemon is not reachable from this job. Every step"
+      echo "below drives it, so they would fail further along and for"
+      echo "reasons that do not name this as the cause."
+      exit 1
+    fi
+    echo "  daemon $version"
+    ;;
+  describe)
+    # Record host load and container state for resource-failure diagnosis.
+    echo "runner VM: $(docker info --format '{{.Name}}' 2>/dev/null || echo unknown)"
+    # Sample CPU steal over one second to record the current rate.
+    s1=$(awk '/^cpu /{print $9}' /proc/stat); sleep 1
+    s2=$(awk '/^cpu /{print $9}' /proc/stat)
+    echo "cpus: $(nproc)  load at start: $(cut -d' ' -f1-3 /proc/loadavg)  steal: $((s2-s1)) ticks/s"
+    # Include names and ages so concurrent job containers are visible.
+    echo "containers now on this VM: $(docker ps -q 2>/dev/null | wc -l)"
+    docker ps --format '{{.Names}}	{{.RunningFor}}	{{.Image}}' 2>/dev/null | head -12
+    grep -E 'MemTotal|MemAvailable' /proc/meminfo | tr -s ' '
+    ;;
+  image)
+    : "${GITHUB_ENV:?GITHUB_ENV is required}"
+    image_id=$(docker build -q -f tests/docker/dockerfiles/debian-sgi.docker \
+        tests/docker/dockerfiles)
+    test -n "$image_id"
+    echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+    ;;
+  assets)
+    # Fetch the guest assets the SGI checks boot into sgi-assets/ and verify
+    # each against its recorded SHA-256 before using it.
+    set +x
+    : "${CI_ASSET_BASE_URL:?CI_ASSET_BASE_URL is required}"
+    : "${ASSET_TOKEN:?ASSET_TOKEN is required}"
+    download_asset() {
+      path=$1 package=$2 sha=$3 name=$4
+      mkdir -p "$(dirname "$path")"
+      temp="${path}.tmp.$$"
+      curl -fsS -H "Authorization: token ${ASSET_TOKEN}" \
+        -o "$temp" \
+        "${CI_ASSET_BASE_URL%/}/${package}/${sha}/${name}"
+      printf '%s  %s\n' "$sha" "$temp" | sha256sum -c --status -
+      mv "$temp" "$path"
+    }
+    download_asset sgi-assets/firmware/6.5.30/ip27prom.payload.bin \
+      firmware-6.5.30 c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd ip27prom.payload.bin
+    download_asset sgi-assets/linux-ip27/vmlinux \
+      linux-ip27 d095c9033e2f8aeca0a75adbbdc1d0acdf764230999b63eb6261574d65c77bd4 vmlinux
+    download_asset sgi-assets/boot/6.5.30/unix.IP27 \
+      boot-6.5.30 cbdb02ea5d334ecac949a6524a363e6c945f94baf438d41e8d9248eda0377bdf unix.IP27
+    ;;
+  report-failure)
+    # Report the step name when a setup failure occurs before a check does.
+    : "${CI_STEP:?CI_STEP is required}"
+    : "${FORGE_API:?FORGE_API is required}"
+    : "${FORGE_TOKEN:?FORGE_TOKEN is required}"
+    : "${RUN_URL:?RUN_URL is required}"
+    : "${COMMIT_SHA:?COMMIT_SHA is required}"
+    step=$(cat "$CI_STEP" 2>/dev/null || echo "before any step ran")
+    echo "failing step: $step"
+    curl -sS -X POST \
+      -H "Authorization: token $FORGE_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"state\":\"failure\",\"context\":\"ci/failing-step\",\"description\":\"$step\",\"target_url\":\"$RUN_URL\"}" \
+      "$FORGE_API/statuses/$COMMIT_SHA" \
+      >/dev/null || echo "could not publish the failing step; the log is the only copy"
+    ;;
+  nudge-queue)
+    # Notify the queue after a successful build; its schedule is the
+    # fallback. An already-waiting run will see this result. If lookup
+    # fails, dispatch anyway; a duplicate notification is safer than a
+    # stalled queue.
+    : "${FORGE_API:?FORGE_API is required}"
+    : "${FORGE_TOKEN:?FORGE_TOKEN is required}"
+    waiting=$(curl -sS -H "Authorization: token $FORGE_TOKEN" \
+        "$FORGE_API/actions/runs?workflow_id=merge-queue.yml&status=waiting&limit=1" \
+        | grep -o '"total_count":[0-9]*' | cut -d: -f2)
+    if [ "${waiting:-0}" -gt 0 ] 2>/dev/null; then
+      echo "a queue run is already waiting and will see this green; not dispatching another"
+    else
+      curl -sS -X POST \
+        -H "Authorization: token $FORGE_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"ref":"sgi-origami"}' \
+        "$FORGE_API/actions/workflows/merge-queue.yml/dispatches" \
+        && echo "queue nudged" \
+        || echo "nudge failed; the scheduled backstop will advance the queue instead"
+    fi
+    ;;
   volume)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"
     reap_orphans
@@ -91,7 +186,8 @@ case "${1-}" in
     fi
     ;;
   *)
-    echo 'usage: runner-setup volume|check|run [Docker options] IMAGE_ID command' >&2
+    echo 'usage: runner-setup docker|describe|image|volume|assets|check|report-failure|nudge-queue' >&2
+    echo '       runner-setup run [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;
 esac
