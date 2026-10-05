@@ -2041,11 +2041,9 @@ static const MemoryRegionOps rad4_bar0_ops = {
  *
  * Descriptor format: 16 bytes per entry (PLX PCI9054 Data Book, Table 11-80
  * and Figure 3-16): PCI address, Local address, transfer size, and
- * next-descriptor pointer, each a big-endian 32-bit
- * word matching every other guest-visible
- * multi-byte value this file already handles
- * (rad4_bar2_read()/rad4_bar2_write()'s ldl_be_p()/stl_be_p() on the
- * framebuffer). A descriptor's next-pointer word is loaded into DMADPR0
+ * next-descriptor pointer, each a 32-bit word: a local one is read as the
+ * values the CPU stored through BAR2, a host-memory one as little-endian
+ * PCI dwords. A descriptor's next-pointer word is loaded into DMADPR0
  * with it, and its flags describe that descriptor's own transfer (PCI 9060
  * Data Sheet, Version 1.2, Table 51 and section 3.6.2): bit1 ends the chain
  * after it, bit2 asks for an interrupt once its transfer completes, and
@@ -2118,10 +2116,17 @@ static bool rad4_dma_run(PsitechRad4State *s)
             memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
         }
 
-        pci_addr = ldl_be_p(raw);
-        local_addr = ldl_be_p(raw + 4);
-        size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
-        next = ldl_be_p(raw + 12);
+        if (from_pci) {
+            pci_addr = ldl_le_p(raw);
+            local_addr = ldl_le_p(raw + 4);
+            size = ldl_le_p(raw + 8) & RAD4_DMA_SIZE_MASK;
+            next = ldl_le_p(raw + 12);
+        } else {
+            pci_addr = ldl_be_p(raw);
+            local_addr = ldl_be_p(raw + 4);
+            size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
+            next = ldl_be_p(raw + 12);
+        }
         local_to_pci = (next & RAD4_DMA_DESC_LOCAL_TO_PCI) != 0;
         end_of_chain = (next & RAD4_DMA_DESC_END_OF_CHAIN) != 0;
         intr_on_tc = (next & RAD4_DMA_DESC_INTR_ON_TC) != 0;
@@ -2134,13 +2139,34 @@ static bool rad4_dma_run(PsitechRad4State *s)
             return false;
         }
 
+        if (local_addr % 4 != 0 || size % 4 != 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
+                         " has an unaligned local address 0x%x or size "
+                         "0x%x\n", desc_addr, local_addr, size);
+            return false;
+        }
+
+        /*
+         * The PCI 9060 carries PCI byte lanes straight to the local bus;
+         * its data sheet gives it no byte swapping. A pixel moves as a
+         * 32-bit little-endian PCI dword, the same value a CPU store
+         * through the little-endian BAR2 window delivers.
+         */
         if (local_to_pci) {
-            if (pci_dma_write(&s->pci, pci_addr, s->framebuffer + local_addr,
-                              size) != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad4: DMA readback write failed at "
-                             "0x%x\n", pci_addr);
-                return false;
+            uint32_t off;
+
+            for (off = 0; off < size; off += 4) {
+                uint8_t word[4];
+
+                stl_le_p(word, ldl_be_p(s->framebuffer + local_addr + off));
+                if (pci_dma_write(&s->pci, pci_addr + off, word,
+                                  sizeof(word)) != MEMTX_OK) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                 "psitech-rad4: DMA readback write failed "
+                                 "at 0x%x\n", pci_addr + off);
+                    return false;
+                }
             }
         } else {
             /*
@@ -2155,14 +2181,6 @@ static bool rad4_dma_run(PsitechRad4State *s)
              */
             uint32_t off;
 
-            if (local_addr % 4 != 0 || size % 4 != 0) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
-                             " has an unaligned local address 0x%x or size "
-                             "0x%x\n", desc_addr, local_addr, size);
-                return false;
-            }
-
             for (off = 0; off < size; off += 4) {
                 uint8_t word[4];
                 uint32_t old, incoming;
@@ -2174,7 +2192,7 @@ static bool rad4_dma_run(PsitechRad4State *s)
                                  "0x%x\n", pci_addr + off);
                     return false;
                 }
-                incoming = ldl_be_p(word);
+                incoming = ldl_le_p(word);
                 old = ldl_be_p(s->framebuffer + local_addr + off);
                 stl_be_p(s->framebuffer + local_addr + off,
                         rad4_masked_store(s, old, incoming));
