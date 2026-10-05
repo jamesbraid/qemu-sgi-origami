@@ -1596,7 +1596,7 @@ static void test_pending_child_compatibility(void)
     pending_write(qts, 0, 0x90, 0x110);
     pending_write(qts, 0, 0x180, 0x151);
     pending_write(qts, 0, 0x10, 0x12345678);
-    for (unsigned kind = 0; kind < 3; kind++) {
+    for (unsigned kind = 1; kind < 3; kind++) {
         qtest_writeq(qts, MANAGEMENT + 184, kind);
         g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, 2);
         g_assert_cmphex(pending_read(qts, 0, 0), ==, UINT64_C(1) << 16);

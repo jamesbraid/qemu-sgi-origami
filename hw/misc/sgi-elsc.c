@@ -1093,7 +1093,6 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
     }
 }
 
-#define ELSC_ARB_TICK_US  1000
 #define ELSC_ARB_RETRY_US 20
 
 /*
@@ -1261,10 +1260,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->resp_owner = -1;
     s->arb_code = 0;
     s->arb_rev = 0;
-    s->arb_present = false;
-    s->arb_held = false;
     s->arb_signal = 0;
-    s->arb_hold_until = 0;
     s->rx_queue_len = 0;
     s->in_escape = false;
     s->supervisor = false;
@@ -1385,23 +1381,7 @@ static int elsc_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     if (s->arb_code >= s->arb_positions) {
-        if (version_id >= 13) {
-            return -EINVAL;
-        }
-        s->arb_code %= s->arb_positions;
-    }
-
-    if (version_id < 12) {
-        s->arb_present = false;
-        s->arb_held = false;
-        s->arb_hold_until = 0;
-        if (s->arbitration) {
-            timer_mod(s->arb_timer,
-                      qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) +
-                      ELSC_ARB_TICK_US);
-        } else {
-            timer_del(s->arb_timer);
-        }
+        return -EINVAL;
     }
 
     /*
@@ -1429,7 +1409,7 @@ static int elsc_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
     .version_id = 13,
-    .minimum_version_id = 2,
+    .minimum_version_id = 13,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
@@ -1439,36 +1419,20 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT32(txpos, SGIElscState),
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),
         VMSTATE_UINT32(arb_code, SGIElscState),
-        VMSTATE_BOOL(arb_present, SGIElscState),
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
         VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_BOOL(supervisor, SGIElscState),
-        VMSTATE_UINT8_V(dip_switches, SGIElscState, 3),
-        /* Retained only so version 4 through 11 streams remain readable. */
-        VMSTATE_BOOL_V(arb_held, SGIElscState, 4),
-        VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
-        VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
+        VMSTATE_UINT8(dip_switches, SGIElscState),
+        VMSTATE_UINT8(arb_signal, SGIElscState),
         /*
          * The revolution counter varies the held-slot schedule
          * (elsc_arb_step).
          */
-        VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
-        /*
-         * An older stream loads with no owner: a response in flight stays
-         * passively served, unannounced, as the model that wrote the stream
-         * behaved.
-         */
-        VMSTATE_INT32_V(resp_owner, SGIElscState, 6),
-        /* An older stream loads the display zeroed, not blank. */
-        VMSTATE_UINT8_ARRAY_V(display, SGIElscState,
-                              SGI_ELSC_DISPLAY_CHARS, 7),
-        /*
-         * A pre-version-8 stream carried no latch and never answered "pwr q";
-         * it keeps realize's value (freshly powered), so a query after such a
-         * migration reads the cold-power-on once.
-         */
-        VMSTATE_BOOL_V(cold_power_on, SGIElscState, 8),
+        VMSTATE_UINT32(arb_rev, SGIElscState),
+        VMSTATE_INT32(resp_owner, SGIElscState),
+        VMSTATE_UINT8_ARRAY(display, SGIElscState, SGI_ELSC_DISPLAY_CHARS),
+        VMSTATE_BOOL(cold_power_on, SGIElscState),
         /*
          * A deferred destructive action, whether its ack has been read, and
          * whether its bottom half has been scheduled. Migrate these so an
@@ -1476,21 +1440,18 @@ static const VMStateDescription vmstate_sgi_elsc = {
          * destination:
          * ARMED waits for the ack read, COMMITTED waits for its boundary, and
          * a SCHEDULED-but-unrun bottom half is re-armed on load
-         * (elsc_post_load). A pre-version-9 stream loads all three zeroed,
-         * with no action pending.
+         * (elsc_post_load).
          */
-        VMSTATE_UINT8_V(deferred_action, SGIElscState, 9),
-        VMSTATE_BOOL_V(deferred_committed, SGIElscState, 9),
-        VMSTATE_BOOL_V(deferred_scheduled, SGIElscState, 9),
+        VMSTATE_UINT8(deferred_action, SGIElscState),
+        VMSTATE_BOOL(deferred_committed, SGIElscState),
+        VMSTATE_BOOL(deferred_scheduled, SGIElscState),
         /*
          * The lock cell. tas_held is the occupancy and tas_lock the owner
          * byte; both are needed because any byte (NUL included) is a
-         * legal owner, so the owner value alone cannot mean "free". A
-         * pre-version-11 stream loads tas_held false (the cell free),
-         * regardless of any tas_lock byte a version-10 stream carried.
+         * legal owner, so the owner value alone cannot mean "free".
          */
-        VMSTATE_UINT8_V(tas_lock, SGIElscState, 10),
-        VMSTATE_BOOL_V(tas_held, SGIElscState, 11),
+        VMSTATE_UINT8(tas_lock, SGIElscState),
+        VMSTATE_BOOL(tas_held, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

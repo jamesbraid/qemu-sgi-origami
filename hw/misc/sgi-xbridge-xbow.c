@@ -440,11 +440,11 @@ static void xbow_unrealize(DeviceState *dev)
 static const VMStateDescription vmstate_xbow = {
     .name = TYPE_SGI_XBRIDGE_XBOW,
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIXBridgeXbowState, REG_COUNT),
         VMSTATE_UINT32(status, SGIXBridgeXbowState),
-        VMSTATE_INT64_V(warm_reset_quiet_until, SGIXBridgeXbowState, 2),
+        VMSTATE_INT64(warm_reset_quiet_until, SGIXBridgeXbowState),
         VMSTATE_END_OF_LIST()
     }
 };

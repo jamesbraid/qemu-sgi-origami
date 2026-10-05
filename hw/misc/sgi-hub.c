@@ -5230,7 +5230,7 @@ static int sgi_hub_pre_save(void *opaque)
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
     .version_id = 31,
-    .minimum_version_id = 1,
+    .minimum_version_id = 31,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -5243,85 +5243,62 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIHubState, SGI_HUB_PROCESSORS),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
-        VMSTATE_BOOL_V(pi_int_pend1_primary_credit, SGIHubState, 17),
+        VMSTATE_BOOL(pi_int_pend1_primary_credit, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
-        VMSTATE_UINT32_V(ni_meta_route_written, SGIHubState, 24),
-        VMSTATE_UINT16_V(ni_local_route_written, SGIHubState, 24),
-        VMSTATE_UINT64_ARRAY_V(ni_scratch, SGIHubState, 2, 14),
-        VMSTATE_UINT64_V(ni_vector, SGIHubState, 15),
-        VMSTATE_UINT64_V(ni_vector_data, SGIHubState, 15),
-        VMSTATE_UINT64_V(ni_vector_status, SGIHubState, 15),
-        VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
-        VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
-        VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
-        VMSTATE_UINT64_V(ni_port_error, SGIHubState, 25),
-        VMSTATE_UINT64_ARRAY_V(ni_ageing, SGIHubState, HUB_NI_AGEING_COUNT,
-                               27),
-        VMSTATE_UINT64_V(ni_io_protect, SGIHubState, 21),
-        VMSTATE_UINT64_V(ni_protection, SGIHubState, 22),
-        VMSTATE_UINT64_V(ni_diag_parms, SGIHubState, 22),
-        VMSTATE_UINT8_ARRAY_V(ni_meta_route, SGIHubState,
-                             SGI_HUB_META_ROUTES, 16),
-        VMSTATE_UINT8_ARRAY_V(ni_local_route, SGIHubState,
-                             SGI_HUB_LOCAL_ROUTES, 16),
-        VMSTATE_UINT64_V(io_link_status, SGIHubState, 3),
-        VMSTATE_UINT64_V(io_widget_control, SGIHubState, 4),
-        VMSTATE_UINT64_V(io_xtalk_timeout, SGIHubState, 4),
-        VMSTATE_UINT64_V(io_xtalk_prescale, SGIHubState, 4),
-        /* Version-gated so a stream from before the table still loads. */
-        VMSTATE_UINT32_ARRAY_V(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES, 2),
-        VMSTATE_UINT64_ARRAY_V(io_scratch, SGIHubState, 2, 8),
-        VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
-        VMSTATE_UINT64_V(md_config, SGIHubState, 9),
-        VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
-        VMSTATE_INT64_V(md_onewire_deadline_ns, SGIHubState, 26),
-        VMSTATE_UINT64_ARRAY_V(pi_err_spool, SGIHubState, 2, 13),
-        VMSTATE_UINT32_ARRAY_V(pi_err_mask, SGIHubState,
-                              SGI_HUB_PROCESSORS, 18),
-        VMSTATE_UINT8_V(pi_err_spool_size, SGIHubState, 18),
-        VMSTATE_UINT64_ARRAY_V(pi_err_status0, SGIHubState,
-                              SGI_HUB_PROCESSORS, 19),
-        VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
-        VMSTATE_BOOL_V(pi_rt_alive_seen, SGIHubState, 28),
-        /* The block's fields in the order the five arrays had here. */
-        VMSTATE_STRUCT(pi_gfx, SGIHubState, 29, vmstate_sgi_pi_gfx,
-                         SGIPIGfx),
-        VMSTATE_UINT32_ARRAY_V(io_gfx_init, SGIHubState, 2, 29),
+        VMSTATE_UINT32(ni_meta_route_written, SGIHubState),
+        VMSTATE_UINT16(ni_local_route_written, SGIHubState),
+        VMSTATE_UINT64_ARRAY(ni_scratch, SGIHubState, 2),
+        VMSTATE_UINT64(ni_vector, SGIHubState),
+        VMSTATE_UINT64(ni_vector_data, SGIHubState),
+        VMSTATE_UINT64(ni_vector_status, SGIHubState),
+        VMSTATE_UINT64(ni_return_vector, SGIHubState),
+        VMSTATE_UINT64(ni_vector_read_data, SGIHubState),
+        VMSTATE_UINT64(ni_port_parms, SGIHubState),
+        VMSTATE_UINT64(ni_port_error, SGIHubState),
+        VMSTATE_UINT64_ARRAY(ni_ageing, SGIHubState, HUB_NI_AGEING_COUNT),
+        VMSTATE_UINT64(ni_io_protect, SGIHubState),
+        VMSTATE_UINT64(ni_protection, SGIHubState),
+        VMSTATE_UINT64(ni_diag_parms, SGIHubState),
+        VMSTATE_UINT8_ARRAY(ni_meta_route, SGIHubState, SGI_HUB_META_ROUTES),
+        VMSTATE_UINT8_ARRAY(ni_local_route, SGIHubState, SGI_HUB_LOCAL_ROUTES),
+        VMSTATE_UINT64(io_link_status, SGIHubState),
+        VMSTATE_UINT64(io_widget_control, SGIHubState),
+        VMSTATE_UINT64(io_xtalk_timeout, SGIHubState),
+        VMSTATE_UINT64(io_xtalk_prescale, SGIHubState),
+        VMSTATE_UINT32_ARRAY(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES),
+        VMSTATE_UINT64_ARRAY(io_scratch, SGIHubState, 2),
+        VMSTATE_UINT64(md_perf_cnt0, SGIHubState),
+        VMSTATE_UINT64(md_config, SGIHubState),
+        VMSTATE_UINT64(md_onewire, SGIHubState),
+        VMSTATE_INT64(md_onewire_deadline_ns, SGIHubState),
+        VMSTATE_UINT64_ARRAY(pi_err_spool, SGIHubState, 2),
+        VMSTATE_UINT32_ARRAY(pi_err_mask, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT8(pi_err_spool_size, SGIHubState),
+        VMSTATE_UINT64_ARRAY(pi_err_status0, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT64(pi_rt_local_ctrl, SGIHubState),
+        VMSTATE_BOOL(pi_rt_alive_seen, SGIHubState),
+        VMSTATE_STRUCT(pi_gfx, SGIHubState, 0, vmstate_sgi_pi_gfx, SGIPIGfx),
+        VMSTATE_UINT32_ARRAY(io_gfx_init, SGIHubState, 2),
         /* The registers are the whole of an engine's state. */
-        VMSTATE_UINT64_ARRAY_V(bte_length, SGIHubState, SGI_HUB_BTES, 17),
-        VMSTATE_UINT64_ARRAY_V(bte_source, SGIHubState, SGI_HUB_BTES, 17),
-        VMSTATE_UINT64_ARRAY_V(bte_dest, SGIHubState, SGI_HUB_BTES, 17),
-        VMSTATE_UINT64_ARRAY_V(bte_control, SGIHubState, SGI_HUB_BTES, 17),
-        VMSTATE_UINT64_ARRAY_V(bte_notify, SGIHubState, SGI_HUB_BTES, 17),
-        VMSTATE_UINT64_ARRAY_V(bte_interrupt, SGIHubState, SGI_HUB_BTES, 17),
+        VMSTATE_UINT64_ARRAY(bte_length, SGIHubState, SGI_HUB_BTES),
+        VMSTATE_UINT64_ARRAY(bte_source, SGIHubState, SGI_HUB_BTES),
+        VMSTATE_UINT64_ARRAY(bte_dest, SGIHubState, SGI_HUB_BTES),
+        VMSTATE_UINT64_ARRAY(bte_control, SGIHubState, SGI_HUB_BTES),
+        VMSTATE_UINT64_ARRAY(bte_notify, SGIHubState, SGI_HUB_BTES),
+        VMSTATE_UINT64_ARRAY(bte_interrupt, SGIHubState, SGI_HUB_BTES),
         /*
          * The level the wire sampled in the slot now running, which is this
          * master's own state: it is what the timer reports when the slot's
-         * deadline arrives. The responder's protocol state used to sit beside
-         * it and now belongs to the part on the bus, travelling in the part's
-         * own stream. The unused spans keep a stream from before that move
-         * loading, in the field order it was written: phase, bit, command
-         * and match ahead of the level; address bytes, staged answer, cursor
-         * and end pair behind it. A half-finished conversation in such a
-         * stream is discarded rather than translated. Discarding is not what
-         * a bus reset does. A reset resets the master too; a load does not. A
-         * guest resumed from a stream written before the move keeps talking
-         * to a part that is now idle, and its next read slots are sampled as
-         * a command byte of all ones. This produced one "unknown ROM command
-         * 0xff" on resume, absent from every boot that did not migrate. It is
-         * benign: the guest recovers at its next reset pulse. Streams written
-         * since the move carry the part's own section and preserve the
-         * conversation intact.
-        */
-        VMSTATE_UNUSED_V(23, 11),
-        VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
-        VMSTATE_UNUSED_V(23, 51),
-        VMSTATE_UINT64_V(io_local_access, SGIHubState, 31),
-        VMSTATE_UINT64_V(io_outbound_access, SGIHubState, 31),
-        VMSTATE_UINT64_V(io_inbound_access, SGIHubState, 31),
-        VMSTATE_UINT64_V(io_device_error_mask, SGIHubState, 31),
-        VMSTATE_UINT64_V(io_int_dest, SGIHubState, 31),
+         * deadline arrives. The responder's protocol state belongs to the
+         * part on the bus and travels in the part's own section.
+         */
+        VMSTATE_BOOL(onewire_level, SGIHubState),
+        VMSTATE_UINT64(io_local_access, SGIHubState),
+        VMSTATE_UINT64(io_outbound_access, SGIHubState),
+        VMSTATE_UINT64(io_inbound_access, SGIHubState),
+        VMSTATE_UINT64(io_device_error_mask, SGIHubState),
+        VMSTATE_UINT64(io_int_dest, SGIHubState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -5335,35 +5312,6 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     sgi_hub_rt_hold_reset(s);
     if (s->ni_port_error & ~NI_PORT_ERROR_MASK) {
         return -EINVAL;
-    }
-
-    if (version_id < 17) {
-        s->pi_int_pend1_primary_credit = false;
-    }
-
-    /* An older stream cannot say; never waiting is the behaviour it had. */
-    if (version_id < 28) {
-        s->pi_rt_alive_seen = true;
-    }
-
-    if (version_id < 16) {
-        memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
-        memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
-    }
-
-    if (version_id < 24) {
-        s->ni_meta_route_written = 0;
-        s->ni_local_route_written = 0;
-    }
-
-    /*
-     * An older stream carries no down reason. Take a down link as never
-     * having come out of reset, the peerless machines' state. The
-     * sgi_hub_report_number() call below re-derives the link through
-     * sgi_hub_link_refresh(), which clears the reason for a link that is up.
-    */
-    if (version_id < 30 && !(s->ni_status & NI_STATUS_LINK_UP)) {
-        s->ni_status |= NI_STATUS_NEVER_OUT_OF_RESET;
     }
 
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {

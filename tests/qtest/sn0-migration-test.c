@@ -83,7 +83,6 @@
 #define ARB_PARTIAL_NS          (400 * 1000)
 
 #define ELSC_VMSTATE_VERSION        13
-#define ELSC_LEGACY_VERSION         12
 #define ELSC_RXBUF_VMSTATE_SIZE     97
 #define ELSC_TXBUF_VMSTATE_SIZE     96
 #define ELSC_ARB_CODE_VMSTATE_OFFSET \
@@ -372,9 +371,7 @@ static void enable_cpu_pcf_observer(QTestState *qts, unsigned int cpu)
                I2C_CTL_PIN | I2C_CTL_ESO);
 }
 
-static void patch_master_elsc_stream(const char *path,
-                                     uint32_t expected_version,
-                                     uint32_t version, uint32_t arb_code)
+static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
 {
     static const char name[] = "sgi-elsc";
     g_autofree gchar *contents = NULL;
@@ -401,8 +398,7 @@ static void patch_master_elsc_stream(const char *path,
 
         versionp = p + sizeof(name) - 1 + 4;
         datap = versionp + 4;
-        g_assert_cmpuint(ldl_be_p(versionp), ==, expected_version);
-        stl_be_p(versionp, version);
+        g_assert_cmpuint(ldl_be_p(versionp), ==, ELSC_VMSTATE_VERSION);
         stl_be_p(datap + ELSC_ARB_CODE_VMSTATE_OFFSET, arb_code);
         found = true;
         break;
@@ -831,11 +827,11 @@ static void test_staged_i2c_start_survives_migration(const void *data)
 }
 
 /*
- * Version 12 allowed all eight old rotation codes. A two-module destination
- * has five positions, so an old code 7 must resume at position 2. The same
- * value in the narrowed version 13 domain is a corrupt stream and must fail.
+ * A two-module ring has five positions. Patching the rotation code to
+ * position 2 must resume the ring there, which proves the patch lands on
+ * the code; position 7 is corrupt and must fail to load.
  */
-static void test_elsc_legacy_rotation_position_migrates(const void *data)
+static void test_elsc_rotation_position_patched(const void *data)
 {
     g_autofree gchar *tmpfs = NULL;
     g_autofree gchar *stream = NULL;
@@ -854,8 +850,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
-    patch_master_elsc_stream(stream, ELSC_VMSTATE_VERSION,
-                             ELSC_LEGACY_VERSION, 7);
+    patch_master_elsc_stream(stream, 2);
     to = qtest_init(MACHINE_DUAL " -incoming defer");
     qtest_qmp_assert_success(
         to, "{ 'execute': 'migrate-incoming', "
@@ -868,8 +863,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
                     ARB_SIGNAL1 + 2);
     qtest_quit(to);
 
-    patch_master_elsc_stream(stream, ELSC_LEGACY_VERSION,
-                             ELSC_VMSTATE_VERSION, 7);
+    patch_master_elsc_stream(stream, 7);
     to = qtest_init(MACHINE_DUAL " -incoming defer");
     qtest_set_expected_status(to, 1);
     qtest_qmp_assert_success(
@@ -1499,9 +1493,9 @@ int main(int argc, char **argv)
                         NULL, test_network_routes_survive_migration);
     qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
                         NULL, test_staged_i2c_start_survives_migration);
-    qtest_add_data_func("sn0/migration/elsc-legacy-rotation-position",
+    qtest_add_data_func("sn0/migration/elsc-rotation-position",
                         NULL,
-                        test_elsc_legacy_rotation_position_migrates);
+                        test_elsc_rotation_position_patched);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
     qtest_add_data_func("sn0/migration/bte-state-survives-migration",
