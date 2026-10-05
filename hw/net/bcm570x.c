@@ -224,6 +224,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /* PG105 p. 152: ENABLE reports buffer-manager startup completion. */
 #define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
+#define BCM570X_BUFMGR_STATUS       0x4404
 #define BCM570X_BUFMGR_START_NS     1000000
 
 /*
@@ -1669,6 +1670,11 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             val &= ~BCM570X_BUFMGR_MODE_ENABLE;
         }
         break;
+    case BCM570X_BUFMGR_STATUS:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: write to read-only BUFMGR_STATUS at 0x%04x\n",
+                      off);
+        return;
     case BCM570X_MBX_IRQ0_LO:
         /*
          * Writing 1 masks and acknowledges the current update. A later update
@@ -1812,25 +1818,37 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         return;
     }
     case BCM570X_MI_COMM: {
-        /*
-         * A PHY management access. The integrated PHY answers at any address.
-         * It is the only one on the internal bus and the driver reads a
-         * fixed address, so the address field is not decoded. A read leaves
-         * the value in the low 16 bits with BUSY clear; a write forwards the
-         * data. Either way the chip completes at once, so a poll for BUSY
-         * clear succeeds on the first read.
-         */
-        unsigned reg = (val & BCM570X_MICOMM_REG) >> BCM570X_MICOMM_REG_SHIFT;
+        unsigned reg = (val & BCM570X_MICOMM_REG) >>
+                       BCM570X_MICOMM_REG_SHIFT;
+        uint32_t command = val;
+        uint32_t opcode = command & (BCM570X_MICMD_READ |
+                                     BCM570X_MICMD_WRITE);
+        const char *op;
 
-        if (val & BCM570X_MICMD_READ) {
+        if (!(command & BCM570X_MICOMM_BUSY)) {
+            bcm570x_regfile_write(s, off, command);
+            return;
+        }
+
+        if (opcode == BCM570X_MICMD_READ) {
             val = bcm570x_phy_read(&s->phy, reg);
+            op = "read";
+        } else if (opcode == BCM570X_MICMD_WRITE) {
+            bcm570x_phy_write(&s->phy, reg,
+                              command & BCM570X_MICOMM_DATA);
+            val = command & ~BCM570X_MICOMM_BUSY;
+            op = "write";
         } else {
-            if (val & BCM570X_MICMD_WRITE) {
-                bcm570x_phy_write(&s->phy, reg, val & BCM570X_MICOMM_DATA);
-            }
-            val &= ~BCM570X_MICOMM_BUSY;
+            qemu_log_mask(LOG_UNIMP,
+                          "bcm570x: unsupported MI_COMM opcode 0x%02x "
+                          "in command 0x%08x\n", opcode >> 26, command);
+            val = command & ~BCM570X_MICOMM_BUSY;
+            op = "unsupported";
         }
         bcm570x_regfile_write(s, off, val);
+        trace_bcm570x_mi_comm_complete(
+            op, (command >> 21) & 0x1f, reg, val & BCM570X_MICOMM_DATA,
+            bcm570x_phy_link_up(&s->phy), s->phy.autoneg_done);
         return;
     }
     default:

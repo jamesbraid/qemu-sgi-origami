@@ -578,6 +578,7 @@ xframe_rx_completion_irq_recompute(void) ""
 
 # bcm570x.c
 bcm570x_rx_shortage_drop(const char *ring, uint32_t len) "%s ring empty, %u-byte frame dropped"
+bcm570x_mi_comm_complete(const char *op, unsigned phy, unsigned reg, uint16_t value, bool link_up, bool autoneg_done) "MI %s phy=%u reg=0x%02x value=0x%04x link=%u autoneg=%u"
 
 # ics1890.c
 ics1890_read(uint16_t val, unsigned reg) "val 0x%04x reg %u"
