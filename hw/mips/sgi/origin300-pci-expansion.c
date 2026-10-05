@@ -606,25 +606,7 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
-    if (version < 8 && s->pending_registers_selected) {
-        return -EINVAL;
-    }
-    if (version < 7 && s->unconnected_uart) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pci-expansion: synthetic UART requires migration "
-                      "version 7\n");
-        return -EINVAL;
-    }
-    if ((version < 6 && s->processor_absence_selected) ||
-        (version < 5 && s->storage_selected) ||
-        (version < 4 && s->power_selected) ||
-        s->requested_power > 1 || s->completed_power > 1) {
-        return -EINVAL;
-    }
-    if (version < 3 && s->board_attached) {
-        return -EINVAL;
-    }
-    if (version < 2 && s->intx_enabled) {
+    if (s->requested_power > 1 || s->completed_power > 1) {
         return -EINVAL;
     }
     if (s->intx_enabled) {
@@ -1085,60 +1067,49 @@ static bool expansion_uart_state_needed(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
-    return version >= 7 && s->unconnected_uart;
+    return s->unconnected_uart;
 }
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
     .version_id = 8,
-    .minimum_version_id = 1,
+    .minimum_version_id = 8,
     .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_SINGLE(pending_registers_selected,
-                       SGIOrigin300PciExpansionState, 8,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_UINT32_EQUAL_V(pending_origin_count,
-                              SGIOrigin300PciExpansionState, 8),
-        VMSTATE_SINGLE(unconnected_uart, SGIOrigin300PciExpansionState, 7,
+        VMSTATE_UINT8_EQUAL(pending_registers_selected,
+                            SGIOrigin300PciExpansionState),
+        VMSTATE_UINT32_EQUAL(pending_origin_count,
+                             SGIOrigin300PciExpansionState),
+        VMSTATE_SINGLE(unconnected_uart, SGIOrigin300PciExpansionState, 0,
                        vmstate_info_uint8_equal, bool),
-        VMSTATE_SINGLE(uart_origin_count, SGIOrigin300PciExpansionState, 7,
-                       vmstate_info_uint32_equal, uint32_t),
-        VMSTATE_SINGLE(processor_absence_selected,
-                       SGIOrigin300PciExpansionState, 6,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(storage_selected, SGIOrigin300PciExpansionState, 5,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(storage_size, SGIOrigin300PciExpansionState, 5,
-                       vmstate_info_uint64_equal, uint64_t),
-        VMSTATE_SINGLE(storage_part_size, SGIOrigin300PciExpansionState, 5,
-                       vmstate_info_uint64_equal, uint64_t),
-        VMSTATE_SINGLE(storage_window_size, SGIOrigin300PciExpansionState, 5,
-                       vmstate_info_uint64_equal, uint64_t),
-        VMSTATE_SINGLE(storage_stride, SGIOrigin300PciExpansionState, 5,
-                       vmstate_info_uint64_equal, uint64_t),
-        VMSTATE_SINGLE(storage_module_id_length, SGIOrigin300PciExpansionState,
-                       5, vmstate_info_uint32_equal, uint32_t),
-        VMSTATE_SINGLE(storage_controller_id_length,
-                       SGIOrigin300PciExpansionState,
-                       5, vmstate_info_uint32_equal, uint32_t),
+        VMSTATE_UINT32_EQUAL(uart_origin_count, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8_EQUAL(processor_absence_selected,
+                            SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8_EQUAL(storage_selected, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT64_EQUAL(storage_size, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT64_EQUAL(storage_part_size, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT64_EQUAL(storage_window_size,
+                             SGIOrigin300PciExpansionState),
+        VMSTATE_UINT64_EQUAL(storage_stride, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT32_EQUAL(storage_module_id_length,
+                             SGIOrigin300PciExpansionState),
+        VMSTATE_UINT32_EQUAL(storage_controller_id_length,
+                             SGIOrigin300PciExpansionState),
         VMSTATE_VARRAY_UINT32(storage_module_id, SGIOrigin300PciExpansionState,
-                             storage_module_id_length, 5,
+                             storage_module_id_length, 0,
                              vmstate_info_uint8_equal, char),
         VMSTATE_VARRAY_UINT32(storage_controller_id,
                              SGIOrigin300PciExpansionState,
-                             storage_controller_id_length, 5,
+                             storage_controller_id_length, 0,
                              vmstate_info_uint8_equal, char),
-        VMSTATE_SINGLE(power_selected, SGIOrigin300PciExpansionState, 4,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(initial_power, SGIOrigin300PciExpansionState, 4,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(power_owner_identity, SGIOrigin300PciExpansionState, 4,
-                       vmstate_info_uint64_equal, uint64_t),
-        VMSTATE_UINT8_V(requested_power, SGIOrigin300PciExpansionState, 4),
-        VMSTATE_UINT8_V(completed_power, SGIOrigin300PciExpansionState, 4),
-        VMSTATE_SINGLE(board_attached, SGIOrigin300PciExpansionState, 3,
-                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT8_EQUAL(power_selected, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8_EQUAL(initial_power, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT64_EQUAL(power_owner_identity,
+                             SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8(requested_power, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8(completed_power, SGIOrigin300PciExpansionState),
+        VMSTATE_UINT8_EQUAL(board_attached, SGIOrigin300PciExpansionState),
         VMSTATE_UINT8_EQUAL(ni_route, SGIOrigin300PciExpansionState),
         VMSTATE_UINT32_EQUAL(placement, SGIOrigin300PciExpansionState),
         VMSTATE_UINT8_EQUAL(node_number, SGIOrigin300PciExpansionState),
@@ -1146,18 +1117,17 @@ static const VMStateDescription vmstate_expansion = {
         VMSTATE_UINT8_EQUAL(xbridge_revision, SGIOrigin300PciExpansionState),
         VMSTATE_ARRAY(port, SGIOrigin300PciExpansionState, 4, 0,
                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(intx_enabled, SGIOrigin300PciExpansionState, 2,
-                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT8_EQUAL(intx_enabled, SGIOrigin300PciExpansionState),
         VMSTATE_ARRAY(intx_map, SGIOrigin300PciExpansionState,
-                      SGI_ORIGIN300_PCI_HEADS * 2 * PCI_NUM_PINS, 2,
+                      SGI_ORIGIN300_PCI_HEADS * 2 * PCI_NUM_PINS, 0,
                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_UINT32_ARRAY_V(intx_raw, SGIOrigin300PciExpansionState,
-                              SGI_ORIGIN300_PCI_HEADS, 2),
-        VMSTATE_UINT8_ARRAY_V(intx_levels, SGIOrigin300PciExpansionState,
-                             SGI_ORIGIN300_PCI_HEADS, 2),
-        VMSTATE_STRUCT_POINTER_TEST_V(uart, SGIOrigin300PciExpansionState,
-                                      expansion_uart_state_needed, 7,
-                                      vmstate_serial_mm, SerialMM),
+        VMSTATE_UINT32_ARRAY(intx_raw, SGIOrigin300PciExpansionState,
+                             SGI_ORIGIN300_PCI_HEADS),
+        VMSTATE_UINT8_ARRAY(intx_levels, SGIOrigin300PciExpansionState,
+                            SGI_ORIGIN300_PCI_HEADS),
+        VMSTATE_STRUCT_POINTER_TEST(uart, SGIOrigin300PciExpansionState,
+                                    expansion_uart_state_needed,
+                                    vmstate_serial_mm, SerialMM),
         VMSTATE_END_OF_LIST()
     },
 };
