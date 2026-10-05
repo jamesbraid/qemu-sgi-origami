@@ -364,6 +364,88 @@ static void test_decoded_ranges(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Count the inbound packet callbacks in a trace: those below 2^40 (plain
+ * memory traffic) and those at the interrupt-modify address.
+ */
+static void count_packet_callbacks(const char *path, unsigned int *memory,
+                                   unsigned int *interrupts)
+{
+    g_autofree char *trace = NULL;
+    g_auto(GStrv) lines = NULL;
+
+    *memory = *interrupts = 0;
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    lines = g_strsplit(trace, "\n", -1);
+    for (unsigned int i = 0; lines[i]; i++) {
+        const char *event = strstr(lines[i], "sgi_hub_ii_packet_access ");
+        uint64_t addr;
+        unsigned int size, write;
+
+        if (!event || sscanf(event, "sgi_hub_ii_packet_access addr=0x%"
+                             SCNx64 " size=%u write=%u",
+                             &addr, &size, &write) != 3) {
+            continue;
+        }
+        if (addr < XIO_MEMORY_END) {
+            (*memory)++;
+        } else if ((addr & ~XIO_NASID(0x1ff)) == XIO_INT_MODIFY(0)) {
+            (*interrupts)++;
+        }
+    }
+}
+
+/*
+ * Plain memory traffic takes no inbound packet callback on any route: both
+ * swap settings, both interfaces, both directions, and straight from the
+ * face. The interrupt-modify write is the trace's positive control: it is
+ * still the Hub's callback, so a trace that recorded nothing at all fails.
+ */
+static void test_memory_takes_no_callback(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-hub-inbound-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "packet.trace", NULL);
+    QTestState *qts = qtest_initf(MACHINE_SINGLE
+                                  " -trace enable=sgi_hub_ii_packet_access,"
+                                  "file=%s", path);
+    const unsigned int bridged[] = { SLOT_NATIVE, SLOT_BUFFER };
+    const unsigned int faced[] = { SLOT_FACE, SLOT_FACE_BUFFER };
+    unsigned int memory, interrupts;
+
+    cards_ready(qts, 0, 0);
+    for (unsigned int swap = 0; swap < 2; swap++) {
+        card_swap(qts, 0, swap ? 0 : DEV_SWAP_DIRECT);
+        for (unsigned int s = 0; s < G_N_ELEMENTS(bridged); s++) {
+            g_assert_cmpuint(card_run(qts, 0, bridged[s], DMA_GO_FILL,
+                                      PCI_DIRECT64(TARGET + 3), 0, 4099, 1),
+                             ==, RESULT_OK);
+            g_assert_cmpuint(card_run(qts, 0, bridged[s], DMA_GO_COPY,
+                                      PCI_DIRECT64(TARGET + 0x2001),
+                                      PCI_DIRECT64(SOURCE + 6), 1500, 0),
+                             ==, RESULT_OK);
+        }
+    }
+    for (unsigned int s = 0; s < G_N_ELEMENTS(faced); s++) {
+        g_assert_cmpuint(card_run(qts, 0, faced[s], DMA_GO_FILL, TARGET + 5,
+                                  0, 4099, 1), ==, RESULT_OK);
+        g_assert_cmpuint(card_run(qts, 0, faced[s], DMA_GO_COPY,
+                                  TARGET + 0x2001, SOURCE + 6, 1500, 0),
+                         ==, RESULT_OK);
+    }
+    qtest_writeq(qts, SOURCE, INT_MODIFY_SET | 52);
+    g_assert_cmpuint(card_run(qts, 0, SLOT_FACE, DMA_GO_COPY,
+                              XIO_INT_MODIFY(0), SOURCE, 8, 0), ==, RESULT_OK);
+    qtest_quit(qts);
+
+    count_packet_callbacks(path, &memory, &interrupts);
+    g_test_message("memory callbacks %u, interrupt-modify callbacks %u",
+                   memory, interrupts);
+    g_assert_cmpuint(memory, ==, 0);
+    g_assert_cmpuint(interrupts, ==, 1);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void renumber(QTestState *qts, unsigned int from, unsigned int to)
 {
     qtest_writeq(qts, (uint64_t)from * NODE_STRIDE + HUB_LOCAL + NI_STATUS,
@@ -500,6 +582,8 @@ int main(int argc, char **argv)
                         NULL, test_face_dma_bytes);
     qtest_add_data_func("/sn0/hub-inbound/decoded-ranges",
                         NULL, test_decoded_ranges);
+    qtest_add_data_func("/sn0/hub-inbound/memory-takes-no-callback",
+                        NULL, test_memory_takes_no_callback);
     qtest_add_data_func("/sn0/hub-inbound/node-qualified-routing",
                         NULL, test_node_qualified_routing);
     qtest_add_data_func("/sn0/hub-inbound/reset", NULL, test_reset);
