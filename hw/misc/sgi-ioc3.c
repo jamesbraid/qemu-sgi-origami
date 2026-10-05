@@ -2251,7 +2251,6 @@ static int sgi_ioc3_pre_load(void *opaque)
 {
     SGIIOC3State *s = opaque;
 
-    memset(s->sdma_tx_slot, 0, sizeof(s->sdma_tx_slot));
     /* A stream without the loopback subsection has nothing on the line. */
     memset(s->sdma_loop_due, 0, sizeof(s->sdma_loop_due));
     return 0;
@@ -2262,23 +2261,6 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     SGIIOC3State *s = opaque;
     unsigned int i;
 
-    if (version_id < 15) {
-        s->int_out_active = 0;
-        s->int_out_state = false;
-        s->int_out_pulse_end = false;
-        s->int_out_square_started = false;
-        timer_del(s->int_out_timer);
-    } else if (sgi_ioc3_int_out_periodic_has_no_low_phase(
-                   s->int_out_active) &&
-               (s->int_out_state || s->int_out_pulse_end)) {
-        /*
-         * Early version 15 streams can contain the count-two periodic mode.
-         * It has no low phase, so retain its readback and asserted level but
-         * discard the redundant timer. A not-yet-fired timer keeps its
-         * migrated deadline and makes the same conversion in its callback.
-         */
-        sgi_ioc3_int_out_hold_high(s);
-    }
     sgi_ioc3_update_irq(s);
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         sgi_ioc3_sdma_run(s, i);
@@ -2290,7 +2272,7 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
          * from the pre-divider this chip overloads the scratch register with.
          * Rederive it now that serial_predivider[] has loaded.
          * sgi_ioc3_serial_program_predivider() already treats 0 or 1 (never
-         * programmed, or absent on a pre-17 stream) as "leave it alone".
+         * programmed) as "leave it alone".
          */
         sgi_ioc3_serial_program_predivider(s, i, s->serial_predivider[i]);
     }
@@ -2336,12 +2318,12 @@ static const VMStateDescription vmstate_sgi_ioc3_sdma_loop = {
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
     .version_id = 22,
-    .minimum_version_id = 14,
+    .minimum_version_id = 22,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_EQUAL_V(pin_input_mask, SGIIOC3State, 22),
-        VMSTATE_UINT32_EQUAL_V(pin_input_values, SGIIOC3State, 22),
+        VMSTATE_UINT32_EQUAL(pin_input_mask, SGIIOC3State),
+        VMSTATE_UINT32_EQUAL(pin_input_values, SGIIOC3State),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32(int_status, SGIIOC3State),
         VMSTATE_UINT32(int_enable, SGIIOC3State),
@@ -2351,34 +2333,33 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_STRUCT_TEST(serial[1], SGIIOC3State,
                             sgi_ioc3_serial_b_needed, 0,
                             vmstate_serial, SerialState),
-        VMSTATE_UINT8_ARRAY_V(serial_predivider, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS, 17),
-        VMSTATE_UINT8_ARRAY_V(serial_mcr_autoflow, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS, 18),
-        VMSTATE_UINT8_ARRAY_V(serial_lsr_test, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS, 19),
-        VMSTATE_UINT8_ARRAY_V(serial_msr_test, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS, 20),
-        VMSTATE_UINT16_ARRAY_V(sdma_rx_idle_count, SGIIOC3State,
-                               SGI_IOC3_SERIAL_PORTS, 21),
+        VMSTATE_UINT8_ARRAY(serial_predivider, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_UINT8_ARRAY(serial_mcr_autoflow, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_UINT8_ARRAY(serial_lsr_test, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_UINT8_ARRAY(serial_msr_test, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_UINT16_ARRAY(sdma_rx_idle_count, SGIIOC3State,
+                             SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_UINT32(chip_control, SGIIOC3State),
         VMSTATE_UINT32(int_out, SGIIOC3State),
-        VMSTATE_UINT32_V(int_out_active, SGIIOC3State, 15),
-        VMSTATE_BOOL_V(int_out_state, SGIIOC3State, 15),
-        VMSTATE_BOOL_V(int_out_pulse_end, SGIIOC3State, 15),
-        VMSTATE_BOOL_V(int_out_square_started, SGIIOC3State, 15),
-        VMSTATE_TIMER_PTR_V(int_out_timer, SGIIOC3State, 15),
+        VMSTATE_UINT32(int_out_active, SGIIOC3State),
+        VMSTATE_BOOL(int_out_state, SGIIOC3State),
+        VMSTATE_BOOL(int_out_pulse_end, SGIIOC3State),
+        VMSTATE_BOOL(int_out_square_started, SGIIOC3State),
+        VMSTATE_TIMER_PTR(int_out_timer, SGIIOC3State),
         VMSTATE_UINT8_2DARRAY(sdma_packer, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS,
                               SGI_IOC3_SDMA_ENTRY_SIZE),
         VMSTATE_UINT8_ARRAY(sdma_packed, SGIIOC3State,
                             SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_UINT8_ARRAY_V(sdma_tx_slot, SGIIOC3State,
-                             SGI_IOC3_SERIAL_PORTS, 16),
+        VMSTATE_UINT8_ARRAY(sdma_tx_slot, SGIIOC3State, SGI_IOC3_SERIAL_PORTS),
         VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
                                 SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),

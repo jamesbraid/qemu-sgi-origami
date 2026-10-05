@@ -1035,27 +1035,22 @@ static int sgi_ioc3_eth_post_load(void *opaque, int version_id)
 
     s->irq_asserted = (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) &
                        sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_ENABLE)) != 0;
-    if (version_id < 4) {
-        /* No arrival line in the stream: the engine is where it published. */
-        s->rx_consume_staged = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME) &
-                               SGI_IOC3_ENET_RX_INDEX_MASK;
-    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_ioc3_eth = {
     .name = "sgi-ioc3-eth",
     .version_id = 4,
-    .minimum_version_id = 1,
+    .minimum_version_id = 4,
     .post_load = sgi_ioc3_eth_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3EthState, SGI_IOC3_ENET_REGS),
         VMSTATE_UINT16(mii_data, SGIIOC3EthState),
         VMSTATE_UINT16(mii_data_w, SGIIOC3EthState),
-        VMSTATE_BOOL_V(rx_timer_armed, SGIIOC3EthState, 2),
-        VMSTATE_UINT32_V(int_deferred, SGIIOC3EthState, 3),
-        VMSTATE_UINT32_V(rx_consume_staged, SGIIOC3EthState, 4),
-        VMSTATE_STRUCT(rx_latency, SGIIOC3EthState, 4,
+        VMSTATE_BOOL(rx_timer_armed, SGIIOC3EthState),
+        VMSTATE_UINT32(int_deferred, SGIIOC3EthState),
+        VMSTATE_UINT32(rx_consume_staged, SGIIOC3EthState),
+        VMSTATE_STRUCT(rx_latency, SGIIOC3EthState, 0,
                        vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_END_OF_LIST()
     }
