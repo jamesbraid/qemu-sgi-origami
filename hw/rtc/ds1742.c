@@ -45,6 +45,7 @@ struct DS1742State {
     uint8_t ram[CTRL];
     uint8_t control, weekday, migration_weekday, staged[8], frozen[8];
     int64_t epoch, reference_ns, migration_epoch;
+    uint32_t fresh_year_base;
     bool stopped, frozen_valid;
     /* Equal writes retry until both backing records are saved. Host-only. */
     bool storage_failed;
@@ -343,6 +344,27 @@ static void ds1742_shutdown_notifier(Notifier *notifier, void *data)
     ds1742_save_clock(s);
 }
 
+static bool ds1742_shift_fresh_seed(DS1742State *s, struct tm *tm,
+                                     Error **errp)
+{
+    int year = tm->tm_year + 1900;
+
+    if (!s->fresh_year_base) {
+        return true;
+    }
+    if (year < (int)s->fresh_year_base ||
+        year > (int)s->fresh_year_base + 99) {
+        error_setg(errp,
+                   "ds1742: fresh-year-base=%u cannot seed RTC year %d",
+                   s->fresh_year_base, year);
+        return false;
+    }
+    tm->tm_year = 2000 + (year - (int)s->fresh_year_base) % 100 - 1900;
+    s->epoch = mktimegm(tm);
+    s->control = to_bcd((tm->tm_year + 1900) / 100);
+    return true;
+}
+
 static void ds1742_realize(DeviceState *dev, Error **errp)
 {
     DS1742State *s = DS1742(dev);
@@ -350,11 +372,18 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
     struct tm tm;
     int64_t length;
 
+    if (s->fresh_year_base != 0 && s->fresh_year_base != 1968) {
+        error_setg(errp, "ds1742: fresh-year-base must be 0 or 1968");
+        return;
+    }
     qemu_get_timedate(&tm, 0);
     s->epoch = mktimegm(&tm);
     s->reference_ns = ds1742_ns();
     s->control = to_bcd((tm.tm_year + 1900) / 100);
     s->weekday = tm.tm_wday + 1;
+    if (!s->blk && !ds1742_shift_fresh_seed(s, &tm, errp)) {
+        return;
+    }
     if (s->clock_blk && !s->blk) {
         error_setg(errp, "ds1742: clock-drive requires drive");
         return;
@@ -391,6 +420,8 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
         }
         if (image[1] | image[2] | image[3] | image[5] | image[6] | image[7]) {
             ds1742_restore_clock(s, image);
+        } else if (!ds1742_shift_fresh_seed(s, &tm, errp)) {
+            return;
         }
         s->vmstate_change =
             qemu_add_vm_change_state_handler(ds1742_vm_state_change, s);
@@ -458,6 +489,7 @@ static const VMStateDescription vmstate_ds1742 = {
 static const Property ds1742_properties[] = {
     DEFINE_PROP_DRIVE("drive", DS1742State, blk),
     DEFINE_PROP_DRIVE("clock-drive", DS1742State, clock_blk),
+    DEFINE_PROP_UINT32("fresh-year-base", DS1742State, fresh_year_base, 0),
 };
 
 static void ds1742_class_init(ObjectClass *oc, const void *data)
