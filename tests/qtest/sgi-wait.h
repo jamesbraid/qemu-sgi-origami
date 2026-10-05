@@ -51,18 +51,19 @@ sgi_wait_start(SgiWait *w, const char *fmt, ...)
 }
 
 /*
- * Call once per poll while the condition is still false: fails the test
- * once the wait has run SGI_WAIT_S, logs every SGI_WAIT_LOG_S, and
- * otherwise sleeps @us microseconds of host time.
+ * Call once per poll while the condition is still false. Returns false,
+ * having logged that it gave up, once the wait has run SGI_WAIT_S; for a
+ * caller that reports its own state before failing. Otherwise logs every
+ * SGI_WAIT_LOG_S, sleeps @us microseconds of host time and returns true.
  */
-static inline void sgi_wait_pause(SgiWait *w, unsigned int us)
+static inline bool sgi_wait_continue(SgiWait *w, unsigned int us)
 {
     int64_t now = g_get_monotonic_time();
     int64_t waited_s = (now - w->start) / G_TIME_SPAN_SECOND;
 
     if (waited_s >= SGI_WAIT_S) {
         g_test_message("%s: gave up after %d s", w->what, SGI_WAIT_S);
-        g_error("%s: gave up after %d s", w->what, SGI_WAIT_S);
+        return false;
     }
     if (now >= w->next_log) {
         g_test_message("%s: still waiting after %" PRId64 " s", w->what,
@@ -70,6 +71,15 @@ static inline void sgi_wait_pause(SgiWait *w, unsigned int us)
         w->next_log = now + SGI_WAIT_LOG_S * G_TIME_SPAN_SECOND;
     }
     g_usleep(us);
+    return true;
+}
+
+/* As sgi_wait_continue(), but fails the test itself once the bound passes. */
+static inline void sgi_wait_pause(SgiWait *w, unsigned int us)
+{
+    if (!sgi_wait_continue(w, us)) {
+        g_error("%s: gave up after %d s", w->what, SGI_WAIT_S);
+    }
 }
 
 /*
