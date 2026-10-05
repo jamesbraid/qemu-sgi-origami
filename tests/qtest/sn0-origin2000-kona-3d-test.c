@@ -6770,25 +6770,36 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                             test_texture_native_detail);
     }
+    /*
+     * Every integer type converts through PIO. The quick setup sends one
+     * type each way the other transports carry it: four-byte signed by DMA
+     * and swapped DMA, and two-byte signed through swapped PIO.
+     */
     for (unsigned type = 0; type < 6; type++) {
         g_autofree char *pio = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/integer/pio-%u", type);
         g_autofree char *dma = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/integer/dma-%u", type);
-
-        qtest_add_data_func(pio, GUINT_TO_POINTER(type),
-                            test_texture_native_integer);
-        qtest_add_data_func(dma, GUINT_TO_POINTER(type | 8),
-                            test_texture_native_integer);
         g_autofree char *swap_pio = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/integer/swap-pio-%u", type);
         g_autofree char *swap_dma = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/integer/swap-dma-%u", type);
+        bool every = g_test_slow();
 
-        qtest_add_data_func(swap_pio, GUINT_TO_POINTER(type | 32),
+        qtest_add_data_func(pio, GUINT_TO_POINTER(type),
                             test_texture_native_integer);
-        qtest_add_data_func(swap_dma, GUINT_TO_POINTER(type | 32 | 8),
-                            test_texture_native_integer);
+        if (every || type == 4) {
+            qtest_add_data_func(dma, GUINT_TO_POINTER(type | 8),
+                                test_texture_native_integer);
+        }
+        if (every || type == 2) {
+            qtest_add_data_func(swap_pio, GUINT_TO_POINTER(type | 32),
+                                test_texture_native_integer);
+        }
+        if (every || type == 4) {
+            qtest_add_data_func(swap_dma, GUINT_TO_POINTER(type | 32 | 8),
+                                test_texture_native_integer);
+        }
     }
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/integer/"
                         "migrate-partial", GUINT_TO_POINTER(3 | 16),
