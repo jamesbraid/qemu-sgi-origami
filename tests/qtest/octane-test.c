@@ -863,6 +863,25 @@ static void test_ioc3_parallel_chardev(gconstpointer data)
     qtest_quit(qts);
 }
 
+/* Serial lines 2 and 3 are the IOC3 ports' transcript records. */
+static void test_ioc3_record_lines(void)
+{
+    QTestState *qts = octane_start_args(
+        "-chardev null,id=a -chardev null,id=b -chardev null,id=ra "
+        "-chardev null,id=rb -serial chardev:a -serial chardev:b "
+        "-serial chardev:ra -serial chardev:rb");
+    g_autoptr(QDict) record_a = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': "
+        "{'path': '/machine/ioc3', 'property': 'record-a'}}");
+    g_autoptr(QDict) record_b = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': "
+        "{'path': '/machine/ioc3', 'property': 'record-b'}}");
+
+    g_assert_cmpstr(qdict_get_str(record_a, "return"), ==, "ra");
+    g_assert_cmpstr(qdict_get_str(record_b, "return"), ==, "rb");
+    qtest_quit(qts);
+}
+
 static void test_ioc3_keyboard(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
@@ -4521,6 +4540,7 @@ int main(int argc, char **argv)
                         test_ioc3_parallel_chardev);
     qtest_add_data_func("/octane2/ioc3-parallel-chardev", GINT_TO_POINTER(1),
                         test_ioc3_parallel_chardev);
+    qtest_add_func("/octane/ioc3-record-lines", test_ioc3_record_lines);
     qtest_add_data_func("/octane/ioc3-keyboard", GINT_TO_POINTER(0),
                         test_ioc3_keyboard);
     qtest_add_data_func("/octane2/ioc3-keyboard", GINT_TO_POINTER(1),

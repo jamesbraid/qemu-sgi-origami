@@ -381,6 +381,16 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     if (serial_hd(1)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-b", serial_hd(1));
     }
+    /*
+     * Serial lines 2 and 3 take a write-only transcript of ports A and B,
+     * after the ports themselves, as Origin 300 places them.
+     */
+    if (serial_hd(2)) {
+        qdev_prop_set_chr(DEVICE(pci), "record-a", serial_hd(2));
+    }
+    if (serial_hd(3)) {
+        qdev_prop_set_chr(DEVICE(pci), "record-b", serial_hd(3));
+    }
     /* The populated TL16PIR552 port takes -parallel, as on the SN boards. */
     if (parallel_hds[0]) {
         qdev_prop_set_chr(DEVICE(pci), "parallel-chardev", parallel_hds[0]);
