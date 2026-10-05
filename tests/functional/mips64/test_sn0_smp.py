@@ -1157,10 +1157,16 @@ class SN0SMPMachine(QemuSystemTest):
         self.log.info('test state: %s', state)
         return state
 
-    def read_state(self, address, words):
+    def read_state(self, address, words, unmapped_ok=False):
+        """The state words at address. With unmapped_ok, None while the
+        address does not decode yet: a node's memory past the first is
+        reachable only once the firmware has numbered its node, and the
+        first poll can arrive before the firmware has run that far."""
         result = self.vm.cmd(
             'human-monitor-command',
             command_line=f'xp /{words}gx {address:#x}')
+        if unmapped_ok and 'Cannot access memory' in result:
+            return None
         state = [int(value, 16)
                  for value in re.findall(r'0x([0-9a-fA-F]{16})', result)]
         self.assertEqual(len(state), words, result)
@@ -1190,7 +1196,10 @@ class SN0SMPMachine(QemuSystemTest):
         state = []
         while time.monotonic() < deadline:
             state = self.read_state(FOUR_CPU_TEST_STATE,
-                                    FOUR_CPU_STATE_WORDS)
+                                    FOUR_CPU_STATE_WORDS, unmapped_ok=True)
+            if state is None:
+                time.sleep(0.01)
+                continue
             failures = state[FOUR_CPU_BASE_FAILURE // 8:
                              FOUR_CPU_BASE_FAILURE // 8 + FOUR_CPU_COUNT]
             failures += state[FOUR_CPU_HUB_FAILURE // 8:
@@ -1212,7 +1221,11 @@ class SN0SMPMachine(QemuSystemTest):
         deadline = time.monotonic() + timeout
         state = []
         while time.monotonic() < deadline:
-            state = self.read_state(DUAL_NODE_TEST_STATE, DUAL_STATE_WORDS)
+            state = self.read_state(DUAL_NODE_TEST_STATE, DUAL_STATE_WORDS,
+                                    unmapped_ok=True)
+            if state is None:
+                time.sleep(0.01)
+                continue
             done = state[DUAL_PHASE3_DONE // 8:
                         DUAL_PHASE3_DONE // 8 + FOUR_CPU_COUNT]
             if done == [1, 1, 1, 1]:
