@@ -845,15 +845,9 @@ void sgi_kona_dma_test_props_init(Object *obj, SGIKonaDma *d)
 }
 
 /*
- * The pending list-write record and the item sequence, which arrived with
- * the shared pixel DMA. The port's framing state is in the device's main
- * section. Always sent: a binary from before this subsection refuses
- * every stream this one saves, and one from before it loads here with no
- * record pending.
- *
- * Version 2 adds the DMA pool and a 0x170 or 0x171 still taking its
- * pairs. A version 1 source had neither, so its destination loads with
- * no pool and no invocation open.
+ * The pending list-write record, the item sequence, the DMA pool and a
+ * 0x170 or 0x171 still taking its pairs. The port's framing state is in
+ * the device's main section.
  */
 static bool sgi_kona_dma_needed(void *opaque)
 {
@@ -887,7 +881,7 @@ static int sgi_kona_dma_post_load(void *opaque, int version_id)
 const VMStateDescription vmstate_sgi_kona_dma = {
     .name = TYPE_SGI_KONA "/dma",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = sgi_kona_dma_needed,
     .post_load = sgi_kona_dma_post_load,
     .fields = (const VMStateField[]) {
@@ -895,14 +889,14 @@ const VMStateDescription vmstate_sgi_kona_dma = {
         VMSTATE_UINT32(dma.record_dest, SGIKonaState),
         VMSTATE_UINT32(dma.record_bytes, SGIKonaState),
         VMSTATE_UINT64(dma.seq, SGIKonaState),
-        VMSTATE_BOOL_V(dma.pool_valid, SGIKonaState, 2),
-        VMSTATE_UINT64_V(dma.pool_base, SGIKonaState, 2),
-        VMSTATE_UINT32_V(dma.pool_len, SGIKonaState, 2),
-        VMSTATE_UINT32_V(dma.calls_token, SGIKonaState, 2),
-        VMSTATE_UINT32_V(dma.calls_need, SGIKonaState, 2),
-        VMSTATE_UINT32_V(dma.calls_have, SGIKonaState, 2),
-        VMSTATE_UINT32_ARRAY_V(dma.calls_words, SGIKonaState,
-                               2 * SGI_KONA_DMA_LIST_MAX_RANGES, 2),
+        VMSTATE_BOOL(dma.pool_valid, SGIKonaState),
+        VMSTATE_UINT64(dma.pool_base, SGIKonaState),
+        VMSTATE_UINT32(dma.pool_len, SGIKonaState),
+        VMSTATE_UINT32(dma.calls_token, SGIKonaState),
+        VMSTATE_UINT32(dma.calls_need, SGIKonaState),
+        VMSTATE_UINT32(dma.calls_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(dma.calls_words, SGIKonaState,
+                             2 * SGI_KONA_DMA_LIST_MAX_RANGES),
         VMSTATE_END_OF_LIST()
     },
 };

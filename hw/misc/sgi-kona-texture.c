@@ -871,8 +871,7 @@ static void texture_params_save(QEMUFile *f, const SGIKonaTextureParams *p)
     qemu_put_be64(f, wide.u);
 }
 
-static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p,
-                                uint32_t version)
+static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p)
 {
     union { float f; uint32_t u; } single;
     union { double d; uint64_t u; } wide;
@@ -897,15 +896,18 @@ static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p,
         wide.u = qemu_get_be64(f);
         p->post_bias[k] = wide.d;
     }
-    p->lod_scale_s = p->lod_scale_t = 1;
-    if (version >= 4) {
-        wide.u = qemu_get_be64(f);
-        p->lod_scale_s = wide.d;
-        wide.u = qemu_get_be64(f);
-        p->lod_scale_t = wide.d;
-    }
+    wide.u = qemu_get_be64(f);
+    p->lod_scale_s = wide.d;
+    wide.u = qemu_get_be64(f);
+    p->lod_scale_t = wide.d;
     return !qemu_file_get_error(f) && texture_params(p);
 }
+
+/*
+ * The layout marker the table's own stream starts with. Migration is
+ * between identical builds only, so the loader takes this layout alone.
+ */
+#define TEXTURE_STREAM_VERSION 9
 
 static bool texture_save(QEMUFile *f, void *pv, size_t size,
                           const VMStateField *field, JSONWriter *vmdesc,
@@ -915,7 +917,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 9);
+    qemu_put_be32(f, TEXTURE_STREAM_VERSION);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -1006,14 +1008,17 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     SGIKonaTextureState tmp;
     uint32_t version = qemu_get_be32(f), count = qemu_get_be32(f);
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
+    uint32_t curves, detail_valid;
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 9) || bound > 1 ||
+    if (version != TEXTURE_STREAM_VERSION || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
     for (uint32_t i = 0; i < count; i++) {
         uint32_t id = qemu_get_be32(f), levels = qemu_get_be32(f);
+        uint32_t valid, native_count;
+        union { double d; uint64_t u; } scale_r;
         SGIKonaTextureObject *o;
 
         if (levels > SGI_GL_TEX_LEVELS_MAX || id == UINT32_MAX ||
@@ -1021,7 +1026,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
             goto invalid;
         }
         o = texture_object(&tmp, id, true);
-        if (!o || !texture_params_load(f, &o->params, version)) {
+        if (!o || !texture_params_load(f, &o->params)) {
             goto invalid;
         }
         for (uint32_t k = 0; k < levels; k++) {
@@ -1057,205 +1062,174 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 }
             }
         }
-        if (version >= 2) {
-            uint32_t valid = qemu_get_be32(f), native_count;
+        valid = qemu_get_be32(f);
 
-            if (valid > 1) {
-                goto invalid;
-            }
-            o->native_table_valid = valid;
-            for (unsigned k = 0; k < SGI_KONA_TEXTURE_TABLE_LEVELS; k++) {
-                o->native_table[k] = qemu_get_be32(f);
-            }
-            native_count = qemu_get_be32(f);
-            if (native_count > SGI_GL_TEX_LEVELS_MAX) {
-                goto invalid;
-            }
-            for (unsigned k = 0; k < native_count; k++) {
-                SGIKonaTextureNativeImage *n = &o->native[k];
-                SGIKonaTextureLevel *l = &n->image;
-                uint32_t *h = n->header;
-                uint64_t bytes;
-                bool volume;
-
-                for (unsigned j = 0; j < ARRAY_SIZE(n->header); j++) {
-                    h[j] = qemu_get_be32(f);
-                }
-                l->width = qemu_get_be32(f);
-                l->height = qemu_get_be32(f);
-                l->base_format = qemu_get_be32(f);
-                l->internal_format = qemu_get_be32(f);
-                l->depth = version >= 9 ? qemu_get_be32(f) : 1;
-                volume = h[0] == SGI_GL_TEXTURE_3D;
-
-                if (!native_volume_dimensions(l->width, l->height, l->depth) ||
-                    (!volume && l->depth != 1) ||
-                    (volume && (version < 9 || h[15] >= l->depth)) ||
-                    !(version >= 5 ? native_dimensions(l->width, l->height) :
-                      texture_dimensions(l->width, l->height)) ||
-                    !texture_format(l->base_format, l->internal_format) ||
-                    (!volume && h[0] != SGI_GL_TEXTURE_2D) || h[10] != id ||
-                    (h[17] & 0x60) != (volume ? 0x40 : 0) ||
-                    (!volume && h[18] && h[19]) ||
-                    !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
-                    (uint64_t)h[13] - h[11] + 1 != h[1] ||
-                    (uint64_t)h[14] - h[12] + 1 != h[2] ||
-                    h[13] >= l->width || h[14] >= l->height) {
-                    goto invalid;
-                }
-                for (unsigned j = 0; j < k; j++) {
-                    if (texture_native_key(o->native[j].header, h)) {
-                        goto invalid;
-                    }
-                }
-                bytes = native_bytes(n);
-                if (bytes > SGI_KONA_TEXTURE_BYTES - tmp.bytes ||
-                    qemu_file_get_error(f)) {
-                    goto invalid;
-                }
-                l->pixels = g_try_malloc(native_pixels(n) * sizeof(*l->pixels));
-                n->coverage = g_try_malloc0(native_coverage_bytes(n));
-                if (!l->pixels || !n->coverage) {
-                    g_free(l->pixels);
-                    g_free(n->coverage);
-                    l->pixels = NULL;
-                    n->coverage = NULL;
-                    goto invalid;
-                }
-                o->native_count++;
-                tmp.bytes += bytes;
-                for (uint64_t p = 0; p < native_pixels(n); p++) {
-                    l->pixels[p] = qemu_get_be32(f);
-                    if (qemu_file_get_error(f)) {
-                        goto invalid;
-                    }
-                }
-                if (version >= 5) {
-                    uint64_t pixels_count = native_pixels(n);
-
-                    if (qemu_get_buffer(f, n->coverage,
-                                        native_coverage_bytes(n)) !=
-                        native_coverage_bytes(n) ||
-                        (pixels_count % 8 &&
-                         (n->coverage[pixels_count / 8] >>
-                          (pixels_count % 8)))) {
-                        goto invalid;
-                    }
-                    for (uint64_t p = 0; p < pixels_count; p++) {
-                        if (native_covered(n->coverage, p)) {
-                            n->covered++;
-                        } else if (l->pixels[p]) {
-                            goto invalid;
-                        }
-                    }
-                    for (uint32_t y = h[12]; y <= h[14]; y++) {
-                        uint64_t row =
-                            ((uint64_t)(volume ? h[15] : 0) * l->height + y) *
-                            l->width;
-
-                        for (uint32_t x = h[11]; x <= h[13]; x++) {
-                            if (!native_covered(n->coverage, row + x)) {
-                                goto invalid;
-                            }
-                        }
-                    }
-                } else {
-                    n->covered = native_pixels(n);
-                    for (uint64_t p = 0; p < n->covered; p++) {
-                        native_cover(n->coverage, p);
-                    }
-                }
-            }
-        }
-        if (version >= 3) {
-            o->native_width = qemu_get_be32(f);
-            o->native_height = qemu_get_be32(f);
-            if ((o->native_width || o->native_height) &&
-                !texture_dimensions(o->native_width, o->native_height)) {
-                goto invalid;
-            }
-        }
-        if (version >= 5) {
-            uint32_t valid = qemu_get_be32(f);
-
-            o->native_format = qemu_get_be32(f);
-            if (valid > 1 || o->native_format > 0x7f) {
-                goto invalid;
-            }
-            o->native_format_valid = valid;
-        }
-        if (version >= 7) {
-            o->params.filter_curve_slot = qemu_get_be32(f);
-            if (o->params.filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS) {
-                goto invalid;
-            }
-        }
-        if (version >= 8) {
-            uint32_t valid = qemu_get_be32(f);
-
-            o->native_base_format = qemu_get_be32(f);
-            o->native_internal_format = qemu_get_be32(f);
-            o->params.detail_level = qemu_get_be32(f);
-            o->params.detail_mode = qemu_get_be32(f);
-            if (valid > 1 ||
-                (valid && !texture_format(o->native_base_format,
-                                          o->native_internal_format)) ||
-                !texture_params(&o->params)) {
-                goto invalid;
-            }
-            o->native_internal_valid = valid;
-        }
-        if (version >= 9) {
-            union { double d; uint64_t u; } scale_r;
-
-            o->native_depth = qemu_get_be32(f);
-            o->params.wrap_r = qemu_get_be32(f);
-            scale_r.u = qemu_get_be64(f);
-            o->params.lod_scale_r = scale_r.d;
-            if ((o->native_depth &&
-                 (!is_power_of_2(o->native_depth) ||
-                  !native_volume_dimensions(o->native_width, o->native_height,
-                                             o->native_depth))) ||
-                !texture_params(&o->params)) {
-                goto invalid;
-            }
-        }
-    }
-    if (version >= 6) {
-        uint32_t curves = qemu_get_be32(f);
-
-        if (curves > SGI_KONA_TEXTURE_CURVE_SLOTS) {
+        if (valid > 1) {
             goto invalid;
         }
-        for (unsigned i = 0; i < curves; i++) {
-            uint32_t slot = qemu_get_be32(f), words[33] = { 0 };
-
-            if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
-                sgi_kona_texture_curve(&tmp, slot)) {
-                goto invalid;
-            }
-            for (unsigned j = 0; j < 32; j++) {
-                words[j] = qemu_get_be32(f);
-            }
-            if (qemu_file_get_error(f) ||
-                !sgi_kona_texture_curve_upload(&tmp, slot, words)) {
-                goto invalid;
-            }
+        o->native_table_valid = valid;
+        for (unsigned k = 0; k < SGI_KONA_TEXTURE_TABLE_LEVELS; k++) {
+            o->native_table[k] = qemu_get_be32(f);
         }
-    }
-    if (version >= 8) {
-        uint32_t valid = qemu_get_be32(f);
-
-        for (unsigned k = 0; k < ARRAY_SIZE(tmp.detail_args); k++) {
-            tmp.detail_args[k] = qemu_get_be32(f);
-        }
-        if (valid > 1 || (valid &&
-            (tmp.detail_args[0] == UINT32_MAX ||
-             !texture_detail_args(tmp.detail_args)))) {
+        native_count = qemu_get_be32(f);
+        if (native_count > SGI_GL_TEX_LEVELS_MAX) {
             goto invalid;
         }
-        tmp.detail_bound = valid;
+        for (unsigned k = 0; k < native_count; k++) {
+            SGIKonaTextureNativeImage *n = &o->native[k];
+            SGIKonaTextureLevel *l = &n->image;
+            uint32_t *h = n->header;
+            uint64_t bytes, pixels_count;
+            bool volume;
+
+            for (unsigned j = 0; j < ARRAY_SIZE(n->header); j++) {
+                h[j] = qemu_get_be32(f);
+            }
+            l->width = qemu_get_be32(f);
+            l->height = qemu_get_be32(f);
+            l->base_format = qemu_get_be32(f);
+            l->internal_format = qemu_get_be32(f);
+            l->depth = qemu_get_be32(f);
+            volume = h[0] == SGI_GL_TEXTURE_3D;
+
+            if (!native_volume_dimensions(l->width, l->height, l->depth) ||
+                (!volume && l->depth != 1) ||
+                (volume && h[15] >= l->depth) ||
+                !native_dimensions(l->width, l->height) ||
+                !texture_format(l->base_format, l->internal_format) ||
+                (!volume && h[0] != SGI_GL_TEXTURE_2D) || h[10] != id ||
+                (h[17] & 0x60) != (volume ? 0x40 : 0) ||
+                (!volume && h[18] && h[19]) ||
+                !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
+                (uint64_t)h[13] - h[11] + 1 != h[1] ||
+                (uint64_t)h[14] - h[12] + 1 != h[2] ||
+                h[13] >= l->width || h[14] >= l->height) {
+                goto invalid;
+            }
+            for (unsigned j = 0; j < k; j++) {
+                if (texture_native_key(o->native[j].header, h)) {
+                    goto invalid;
+                }
+            }
+            bytes = native_bytes(n);
+            if (bytes > SGI_KONA_TEXTURE_BYTES - tmp.bytes ||
+                qemu_file_get_error(f)) {
+                goto invalid;
+            }
+            l->pixels = g_try_malloc(native_pixels(n) * sizeof(*l->pixels));
+            n->coverage = g_try_malloc0(native_coverage_bytes(n));
+            if (!l->pixels || !n->coverage) {
+                g_free(l->pixels);
+                g_free(n->coverage);
+                l->pixels = NULL;
+                n->coverage = NULL;
+                goto invalid;
+            }
+            o->native_count++;
+            tmp.bytes += bytes;
+            for (uint64_t p = 0; p < native_pixels(n); p++) {
+                l->pixels[p] = qemu_get_be32(f);
+                if (qemu_file_get_error(f)) {
+                    goto invalid;
+                }
+            }
+            pixels_count = native_pixels(n);
+            if (qemu_get_buffer(f, n->coverage,
+                                native_coverage_bytes(n)) !=
+                native_coverage_bytes(n) ||
+                (pixels_count % 8 &&
+                 (n->coverage[pixels_count / 8] >>
+                  (pixels_count % 8)))) {
+                goto invalid;
+            }
+            for (uint64_t p = 0; p < pixels_count; p++) {
+                if (native_covered(n->coverage, p)) {
+                    n->covered++;
+                } else if (l->pixels[p]) {
+                    goto invalid;
+                }
+            }
+            for (uint32_t y = h[12]; y <= h[14]; y++) {
+                uint64_t row =
+                    ((uint64_t)(volume ? h[15] : 0) * l->height + y) *
+                    l->width;
+
+                for (uint32_t x = h[11]; x <= h[13]; x++) {
+                    if (!native_covered(n->coverage, row + x)) {
+                        goto invalid;
+                    }
+                }
+            }
+        }
+        o->native_width = qemu_get_be32(f);
+        o->native_height = qemu_get_be32(f);
+        if ((o->native_width || o->native_height) &&
+            !texture_dimensions(o->native_width, o->native_height)) {
+            goto invalid;
+        }
+        valid = qemu_get_be32(f);
+        o->native_format = qemu_get_be32(f);
+        if (valid > 1 || o->native_format > 0x7f) {
+            goto invalid;
+        }
+        o->native_format_valid = valid;
+        o->params.filter_curve_slot = qemu_get_be32(f);
+        if (o->params.filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS) {
+            goto invalid;
+        }
+        valid = qemu_get_be32(f);
+        o->native_base_format = qemu_get_be32(f);
+        o->native_internal_format = qemu_get_be32(f);
+        o->params.detail_level = qemu_get_be32(f);
+        o->params.detail_mode = qemu_get_be32(f);
+        if (valid > 1 ||
+            (valid && !texture_format(o->native_base_format,
+                                      o->native_internal_format)) ||
+            !texture_params(&o->params)) {
+            goto invalid;
+        }
+        o->native_internal_valid = valid;
+        o->native_depth = qemu_get_be32(f);
+        o->params.wrap_r = qemu_get_be32(f);
+        scale_r.u = qemu_get_be64(f);
+        o->params.lod_scale_r = scale_r.d;
+        if ((o->native_depth &&
+             (!is_power_of_2(o->native_depth) ||
+              !native_volume_dimensions(o->native_width, o->native_height,
+                                         o->native_depth))) ||
+            !texture_params(&o->params)) {
+            goto invalid;
+        }
     }
+    curves = qemu_get_be32(f);
+    if (curves > SGI_KONA_TEXTURE_CURVE_SLOTS) {
+        goto invalid;
+    }
+    for (unsigned i = 0; i < curves; i++) {
+        uint32_t slot = qemu_get_be32(f), words[33] = { 0 };
+
+        if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
+            sgi_kona_texture_curve(&tmp, slot)) {
+            goto invalid;
+        }
+        for (unsigned j = 0; j < 32; j++) {
+            words[j] = qemu_get_be32(f);
+        }
+        if (qemu_file_get_error(f) ||
+            !sgi_kona_texture_curve_upload(&tmp, slot, words)) {
+            goto invalid;
+        }
+    }
+    detail_valid = qemu_get_be32(f);
+    for (unsigned k = 0; k < ARRAY_SIZE(tmp.detail_args); k++) {
+        tmp.detail_args[k] = qemu_get_be32(f);
+    }
+    if (detail_valid > 1 || (detail_valid &&
+        (tmp.detail_args[0] == UINT32_MAX ||
+         !texture_detail_args(tmp.detail_args)))) {
+        goto invalid;
+    }
+    tmp.detail_bound = detail_valid;
     if (qemu_file_get_error(f) ||
         (bound && !texture_object(&tmp, handle, false))) {
         goto invalid;

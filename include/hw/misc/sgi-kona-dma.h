@@ -102,13 +102,6 @@ typedef struct SGIKonaState SGIKonaState;
 #define SGI_KONA_DMA_DONE_WORD 0x100
 
 /*
- * The bytes the engine this replaces migrated for its word accumulator:
- * six words and two counts. The main migration section keeps them as an
- * unused hole so version 6 streams still load.
- */
-#define SGI_KONA_DMA_RETIRED_BYTES ((6 + 2) * 4)
-
-/*
  * The most selectors the engine's port frames: its own two and the
  * kernel FIFO table's (include/hw/misc/sgi-kona-ports.h).
  */

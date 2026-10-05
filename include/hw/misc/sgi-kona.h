@@ -1148,17 +1148,6 @@ struct SGIKonaState {
     uint32_t plane_stencil;
 
     /*
-     * Only to load a version 6 stream from before the board memory: it
-     * carries the framebuffer, resolved, top display line first, in the
-     * main section. A stream saved now carries a zero count and no
-     * pixels here; post_load moves a loaded framebuffer into the front
-     * plane and frees it.
-     */
-    uint32_t *legacy_framebuffer;
-    uint32_t legacy_framebuffer_count;
-    bool legacy_framebuffer_dirty;
-
-    /*
      * The shared scanout (hw/display/sgi/scanout.c): the console, the
      * presented frame, its dirty lines and the retrace. See
      * sgi_kona_resolve_row() for what a line resolves to.

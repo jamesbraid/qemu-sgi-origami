@@ -588,15 +588,6 @@ static void test_native_migration(void)
     g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->pyramid->count, ==, 0);
     g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
     assert_image(&dst, red, 1, 1);
-    /* Version four had complete native images and no coverage/format fields. */
-    g_byte_array_remove_range(a, 328, 4);
-    g_byte_array_remove_range(a, 332, 1);
-    g_byte_array_set_size(a, a->len - 80);
-    stl_be_p(a->data, 4);
-    g_assert_true(load(a, &dst));
-    g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
-    assert_image(&dst, red, 1, 1);
-    g_assert_cmpuint(dst.bytes, ==, src.bytes);
     g_byte_array_unref(a);
     g_assert_true(sgi_kona_texture_native_table(&src, 99, table));
     a = save(&src);
@@ -848,20 +839,7 @@ static void test_sharpen_curve_sampling(void)
     g_assert_false(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0xc0c0c0);
     g_byte_array_unref(a);
-    /* Version six restores ordinary sampler state with slot zero. */
     sgi_kona_texture_defaults(&p);
-    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
-    a = save(&src);
-    g_byte_array_set_size(a, a->len - 28);
-    g_byte_array_remove_range(a, a->len - 152, 16);
-    g_byte_array_remove_range(a, a->len - 156, 20);
-    g_byte_array_remove_range(a, a->len - 140, 4);
-    stl_be_p(a->data, 6);
-    g_assert_true(load(a, &dst));
-    im = sgi_kona_texture_resolve(&dst);
-    g_assert_cmphex(im->mag_filter, ==, SGI_GL_LINEAR);
-    g_assert_cmphex(draw(&dst, &c), ==, 0x808080);
-    g_byte_array_unref(a);
     p.filter_curve_slot = SGI_KONA_TEXTURE_CURVE_SLOTS;
     g_assert_false(sgi_kona_texture_bind(&src, 9, &p));
     sgi_gl_cleanup(&c);
@@ -926,30 +904,6 @@ static void test_native_internal_format(void)
     im = sgi_kona_texture_resolve(&dst);
     g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
     g_assert_cmpfloat_with_epsilon(out[3], 32.0 / 255, .000001);
-    /* Version eight has logical formats, but no volume or R sampler state. */
-    a = save(&src);
-    g_byte_array_remove_range(a, 328, 4);
-    g_byte_array_remove_range(a, a->len - 48, 16);
-    stl_be_p(a->data, 8);
-    g_assert_true(load(a, &dst));
-    g_assert_cmphex(texel(&dst, 0, 0), ==, 0x806040ff);
-    g_assert_false(sgi_kona_texture_resolve(&dst)->volume);
-    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->wrap_r, ==, SGI_GL_REPEAT);
-    g_assert_cmpfloat(sgi_kona_texture_resolve(&dst)->lod_scale_r, ==, 1);
-    g_byte_array_unref(a);
-    /* Version seven had no logical override or detail binding. */
-    a = save(&src);
-    g_byte_array_set_size(a, a->len - 28);
-    g_byte_array_remove_range(a, 328, 4);
-    g_byte_array_remove_range(a, a->len - 20, 16);
-    g_byte_array_remove_range(a, a->len - 24, 20);
-    stl_be_p(a->data, 7);
-    g_assert_true(load(a, &dst));
-    g_assert_cmphex(texel(&dst, 0, 0), ==, pixels[0]);
-    g_assert_false(dst.detail_bound);
-    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->detail_mode, ==,
-                     SGI_GL_MODULATE);
-    g_byte_array_unref(a);
     sgi_kona_texture_cleanup(&src);
     sgi_kona_texture_cleanup(&dst);
 }
@@ -1579,9 +1533,7 @@ static void test_filter_curve_migration(void)
     g_byte_array_unref(a);
     sgi_kona_texture_reset(&src);
     a = save(&src);
-    /* Version five has no curve count; loading it clears newer slot state. */
-    g_byte_array_set_size(a, a->len - 32);
-    stl_be_p(a->data, 5);
+    /* Loading a stream with no curves clears the destination's slots. */
     g_assert_true(load(a, &dst));
     g_assert_null(sgi_kona_texture_curve(&dst, 13));
     g_assert_cmpuint(dst.bytes, ==, 0);

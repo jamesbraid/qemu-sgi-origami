@@ -8077,7 +8077,6 @@ static void sgi_kona_instance_finalize(Object *obj)
     sgi_board_memory_cleanup(&s->mem);
     sgi_board_memory_cleanup(&s->desktop_mem);
     sgi_board_memory_cleanup(&s->x_write_mem);
-    g_free(s->legacy_framebuffer);
     g_free(s->bitmap_payload);
     g_free(s->map_ram);
     g_free(s->arm_high);
@@ -8304,46 +8303,12 @@ static const Property sgi_kona_properties[] = {
                        SGI_KONA_LIST_DEFAULT),
 };
 
-/* A version 6 stream from before the board memory, or none. */
-static bool sgi_kona_legacy_framebuffer_count_valid(void *opaque,
-                                                    int version_id)
-{
-    SGIKonaState *s = opaque;
-
-    return s->legacy_framebuffer_count == 0 ||
-           s->legacy_framebuffer_count ==
-           SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
-}
-
 static int sgi_kona_pre_save(void *opaque)
 {
     SGIKonaState *s = opaque;
 
     sgi_kona_renderer_stop(s);
-    s->legacy_framebuffer_count = 0;
-    s->legacy_framebuffer_dirty = false;
     return 0;
-}
-
-/*
- * A framebuffer from a version 6 stream saved before the board memory:
- * resolved words, top display line first. They land in the front bank
- * as direct colour, which shows exactly what the source showed; the
- * colour-map indices behind its textport pixels were never saved.
- */
-static void sgi_kona_load_legacy_framebuffer(SGIKonaState *s)
-{
-    for (uint32_t line = 0; line < SGI_KONA_FB_HEIGHT; line++) {
-        for (uint32_t x = 0; x < SGI_KONA_FB_WIDTH; x++) {
-            sgi_kona_fb_store_direct(
-                s, x, SGI_KONA_FB_HEIGHT - 1 - line,
-                s->legacy_framebuffer[line * SGI_KONA_FB_WIDTH + x]);
-        }
-    }
-    g_free(s->legacy_framebuffer);
-    s->legacy_framebuffer = NULL;
-    s->legacy_framebuffer_count = 0;
-    s->legacy_framebuffer_dirty = false;
 }
 
 static bool sgi_kona_mapram_count_valid(void *opaque, int version_id)
@@ -8362,11 +8327,7 @@ static bool sgi_kona_arm_high_count_valid(void *opaque, int version_id)
 
 /*
  * The loaded pixels replaced board memory by a path other than the
- * drawing commands, so every line is repainted. A version 6 stream from
- * before the scanout carries no scanout subsection; the destination then
- * keeps the retrace phase it started with. One from before the board
- * memory carries its framebuffer in the main section instead of the
- * board memory subsection.
+ * drawing commands, so every line is repainted.
  */
 static int sgi_kona_cursor_pre_load(void *opaque)
 {
@@ -8529,20 +8490,9 @@ static int sgi_kona_post_load(void *opaque, int version_id)
         if (!sgi_kona_x_write_state_valid(s)) {
             return -EINVAL;
         }
-    } else {
-        if (s->x_pixel_remaining > s->x_pixel_words ||
-            (s->x_pixel_remaining &&
-             (!s->x_pixel_open || !s->x_pixel_stride ||
-              s->x_pixel_bpp != sgi_kona_x_pixel_bpp(
-                  s->x_pixel_setup[SGI_KONA_X_SETUP_SRC_PACK])))) {
-            return -EINVAL;
-        }
-        if (s->x_pixel_open) {
-            /* An old stream cannot reconstruct its already consumed source. */
-            s->x_write_refused = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: loaded legacy pending X write; "
-                          "remaining payload is consumed without stores\n");
-        }
+    } else if (s->x_pixel_open || s->x_pixel_remaining) {
+        /* Opening a write always takes its snapshot. */
+        return -EINVAL;
     }
     /* The stipple cache's patterns and a store's rows stay in bounds. */
     for (unsigned e = 0; e < SGI_KONA_X_STIPPLE_ENTRIES; e++) {
@@ -8593,29 +8543,6 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     if (s->gl_sync_held &&
         (!s->gl_grammar || s->gl_port.framing || s->textport_expect_sync)) {
         return -EINVAL;
-    }
-    if (s->legacy_framebuffer) {
-        sgi_kona_load_legacy_framebuffer(s);
-    }
-    for (unsigned bank = 0; bank < 2; bank++) {
-        const SGIPlane *color = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
-        const SGIPlane *tag = sgi_kona_plane(s,
-                                sgi_kona_bank_tag_plane(s, bank));
-
-        for (unsigned y = 0; y < color->height; y++) {
-            for (unsigned x = 0; x < color->width; x++) {
-                if (sgi_plane_load(&s->mem, tag, x, y) ==
-                    SGI_KONA_TAG_X_INDEX) {
-                    uint32_t value = sgi_plane_load(&s->mem, color, x, y);
-
-                    if (value > 255) {
-                        return -EINVAL;
-                    }
-                    sgi_plane_store(&s->mem, color, x, y, value << 8);
-                    sgi_plane_store(&s->mem, tag, x, y, SGI_KONA_TAG_X_INDEX16);
-                }
-            }
-        }
     }
     sgi_scanout_invalidate_all(&s->scanout);
     sgi_kona_cursor_update(s);
@@ -8668,28 +8595,13 @@ static int sgi_kona_x_write_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
 
     s->x_write_snapshot = true;
-    if (version_id < 2 && (s->x_write_setup[SGI_KONA_X_SETUP_SRC_PACK] == 0 ||
-                          s->x_write_setup[SGI_KONA_X_SETUP_SRC_PACK] >= 4)) {
-        const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
-
-        for (unsigned y = 0; y < source->height; y++) {
-            for (unsigned x = 0; x < source->width; x++) {
-                uint32_t value = sgi_plane_load(&s->x_write_mem, source, x, y);
-
-                if (value > 255) {
-                    return -EINVAL;
-                }
-                sgi_plane_store(&s->x_write_mem, source, x, y, value << 8);
-            }
-        }
-    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_kona_x_write = {
     .name = TYPE_SGI_KONA "/desktop/write",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = sgi_kona_x_write_needed,
     .post_load = sgi_kona_x_write_post_load,
     .fields = (const VMStateField[]) {
@@ -8738,137 +8650,83 @@ DEFINE_VMSTATE_SGI_SCANOUT(vmstate_sgi_kona_scanout, TYPE_SGI_KONA "/scanout",
                            SGIKonaState, scanout);
 
 /*
- * State for the X server's commands that arrived after version 6 did: the
- * sum of an open video command's data words past its first, the graphics
- * context and a run of box words waiting for its X box. A version 6
- * stream has none of it and loads with the reset default, which is exact
- * for any video command such a stream can hold open, since none took more
- * than one data word, and for the rest, which that source never kept.
- *
- * Version 2 adds the X colour map, an open colour-map load's start, the X
- * position and clip, and the pixel setup and an open pixel write. A
- * version 1 source kept none of them: its destination has an empty map,
- * no clip and no write open, and one caught mid colour-map load resumes
- * at start 0. The subsection is always sent, so a binary from before it
- * (before d84ac60ae3) refuses every stream this one saves, and one with
- * version 1 (up to 057d09cc95) refuses version 2.
- *
- * Version 3 adds the one-bit drawing state: the scissor, the stipple
- * cache, the loaded stipple and a stipple store still taking its rows. A
- * version 2 source kept none of it, and its destination starts with no
- * scissor and an empty cache with no stipple loaded, as that source drew.
- * A binary with version 2 (up to 61b7e6c4e2) refuses version 3.
- *
- * Version 4 adds the upper half of the documented 32K palette. Older
- * sources load that half as zero; older destinations refuse version 4.
- * Version 5 gives main indexed storage the native 16-bit representation.
- * Historical byte tags and pending write sources are converted on load;
- * older destinations refuse version 5.
+ * State for the X server's commands: the sum of an open video command's
+ * data words past its first, the graphics context, a run of box words
+ * waiting for its X box, the X colour map, an open colour-map load's
+ * start, the X position and clip, the pixel setup and an open pixel
+ * write, and the one-bit drawing state (the scissor, the stipple cache,
+ * the loaded stipple and a stipple store still taking its rows).
  */
 static bool sgi_kona_x_server_needed(void *opaque)
 {
     return true;
 }
 
-static int sgi_kona_x_server_post_load(void *opaque, int version_id)
-{
-    SGIKonaState *s = opaque;
-
-    if (version_id < 4) {
-        memset(s->x_color_map + 0x4000, 0,
-               0x4000 * sizeof(s->x_color_map[0]));
-    }
-    return 0;
-}
-
 static const VMStateDescription vmstate_sgi_kona_x_server = {
     .name = TYPE_SGI_KONA "/x-server",
     .version_id = 5,
-    .minimum_version_id = 1,
-    .post_load = sgi_kona_x_server_post_load,
+    .minimum_version_id = 5,
     .needed = sgi_kona_x_server_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(video_tail_sum, SGIKonaState),
         VMSTATE_UINT32_ARRAY(x_gc, SGIKonaState, SGI_KONA_X_GC_WORDS),
         VMSTATE_UINT32_ARRAY(x_boxes, SGIKonaState, SGI_KONA_X_BOX_RUN_WORDS),
         VMSTATE_UINT32(x_boxes_have, SGIKonaState),
-        VMSTATE_UINT32_V(color_map_start, SGIKonaState, 2),
-        VMSTATE_UINT32_V(color_map_outside, SGIKonaState, 2),
-        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0, 0x4000, 2,
+        VMSTATE_UINT32(color_map_start, SGIKonaState),
+        VMSTATE_UINT32(color_map_outside, SGIKonaState),
+        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0, 0x4000, 0,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_ARRAY_V(x_position, SGIKonaState,
-                               SGI_KONA_X_POSITION_WORDS, 2),
-        VMSTATE_UINT32_V(x_clip_count, SGIKonaState, 2),
-        VMSTATE_UINT32_ARRAY_V(x_clip_rects, SGIKonaState,
-                               4 * SGI_KONA_X_CLIP_MAX_RECTS, 2),
-        VMSTATE_UINT32_ARRAY_V(x_clip_run, SGIKonaState,
-                               SGI_KONA_X_CLIP_LIST_WORDS, 2),
-        VMSTATE_UINT32_V(x_clip_run_have, SGIKonaState, 2),
-        VMSTATE_UINT32_ARRAY_V(x_pixel_setup, SGIKonaState,
-                               SGI_KONA_X_PIXEL_SETUP_WORDS, 2),
-        VMSTATE_BOOL_V(x_pixel_open, SGIKonaState, 2),
-        VMSTATE_INT32_V(x_pixel_x, SGIKonaState, 2),
-        VMSTATE_INT32_V(x_pixel_y, SGIKonaState, 2),
-        VMSTATE_UINT32_V(x_pixel_bpp, SGIKonaState, 2),
-        VMSTATE_UINT32_V(x_pixel_stride, SGIKonaState, 2),
-        VMSTATE_UINT32_V(x_pixel_words, SGIKonaState, 2),
-        VMSTATE_UINT32_V(x_pixel_remaining, SGIKonaState, 2),
-        VMSTATE_UINT32_V(x_pixel_prev, SGIKonaState, 2),
-        VMSTATE_BOOL_V(x_scissor_valid, SGIKonaState, 3),
-        VMSTATE_UINT32_ARRAY_V(x_scissor, SGIKonaState,
-                               SGI_KONA_X_SCISSOR_WORDS, 3),
-        VMSTATE_UINT32_ARRAY_V(x_stipple_width, SGIKonaState,
-                               SGI_KONA_X_STIPPLE_ENTRIES, 3),
-        VMSTATE_UINT32_ARRAY_V(x_stipple_height, SGIKonaState,
-                               SGI_KONA_X_STIPPLE_ENTRIES, 3),
-        VMSTATE_INT32_ARRAY_V(x_stipple_origin_x, SGIKonaState,
-                              SGI_KONA_X_STIPPLE_ENTRIES, 3),
-        VMSTATE_INT32_ARRAY_V(x_stipple_origin_y, SGIKonaState,
-                              SGI_KONA_X_STIPPLE_ENTRIES, 3),
-        VMSTATE_UINT32_ARRAY_V(x_stipple_rows, SGIKonaState,
-                               SGI_KONA_X_STIPPLE_ENTRIES *
-                               SGI_KONA_X_STIPPLE_MAX, 3),
-        VMSTATE_UINT32_V(x_stipple_loaded, SGIKonaState, 3),
-        VMSTATE_UINT32_V(x_stipple_store_entry, SGIKonaState, 3),
-        VMSTATE_UINT32_V(x_stipple_store_width, SGIKonaState, 3),
-        VMSTATE_UINT32_V(x_stipple_store_height, SGIKonaState, 3),
-        VMSTATE_UINT32_V(x_stipple_store_remaining, SGIKonaState, 3),
-        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0x4000, 0x4000, 4,
+        VMSTATE_UINT32_ARRAY(x_position, SGIKonaState,
+                             SGI_KONA_X_POSITION_WORDS),
+        VMSTATE_UINT32(x_clip_count, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(x_clip_rects, SGIKonaState,
+                             4 * SGI_KONA_X_CLIP_MAX_RECTS),
+        VMSTATE_UINT32_ARRAY(x_clip_run, SGIKonaState,
+                             SGI_KONA_X_CLIP_LIST_WORDS),
+        VMSTATE_UINT32(x_clip_run_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(x_pixel_setup, SGIKonaState,
+                             SGI_KONA_X_PIXEL_SETUP_WORDS),
+        VMSTATE_BOOL(x_pixel_open, SGIKonaState),
+        VMSTATE_INT32(x_pixel_x, SGIKonaState),
+        VMSTATE_INT32(x_pixel_y, SGIKonaState),
+        VMSTATE_UINT32(x_pixel_bpp, SGIKonaState),
+        VMSTATE_UINT32(x_pixel_stride, SGIKonaState),
+        VMSTATE_UINT32(x_pixel_words, SGIKonaState),
+        VMSTATE_UINT32(x_pixel_remaining, SGIKonaState),
+        VMSTATE_UINT32(x_pixel_prev, SGIKonaState),
+        VMSTATE_BOOL(x_scissor_valid, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(x_scissor, SGIKonaState, SGI_KONA_X_SCISSOR_WORDS),
+        VMSTATE_UINT32_ARRAY(x_stipple_width, SGIKonaState,
+                             SGI_KONA_X_STIPPLE_ENTRIES),
+        VMSTATE_UINT32_ARRAY(x_stipple_height, SGIKonaState,
+                             SGI_KONA_X_STIPPLE_ENTRIES),
+        VMSTATE_INT32_ARRAY(x_stipple_origin_x, SGIKonaState,
+                            SGI_KONA_X_STIPPLE_ENTRIES),
+        VMSTATE_INT32_ARRAY(x_stipple_origin_y, SGIKonaState,
+                            SGI_KONA_X_STIPPLE_ENTRIES),
+        VMSTATE_UINT32_ARRAY(x_stipple_rows, SGIKonaState,
+                             SGI_KONA_X_STIPPLE_ENTRIES *
+                               SGI_KONA_X_STIPPLE_MAX),
+        VMSTATE_UINT32(x_stipple_loaded, SGIKonaState),
+        VMSTATE_UINT32(x_stipple_store_entry, SGIKonaState),
+        VMSTATE_UINT32(x_stipple_store_width, SGIKonaState),
+        VMSTATE_UINT32(x_stipple_store_height, SGIKonaState),
+        VMSTATE_UINT32(x_stipple_store_remaining, SGIKonaState),
+        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0x4000, 0x4000, 0,
                           vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },
 };
 
 /*
- * State for graphics contexts and their clients, which arrived after the
- * device's version 6 and the X server subsection's version 3: a GL
- * texture table still taking its data words. A source without the
- * subsection kept none of it and loads with no table open. The
- * subsection is always sent, so a binary from before it (up to
- * 3432a6a7ef) refuses every stream this one saves.
- *
- * Version 2 adds the context table, the current context and whether it
- * waits for its return page. A version 1 source kept none of them: its
- * destination knows no context, so its first restore is logged and
- * answers nowhere until a context is set up again. A binary with version
- * 1 refuses version 2.
- *
- * Version 3 adds the page's GL grammar: the buffer-configuration framer,
- * whether a context has been activated and whether a 1 is held. A
- * version 2 source kept none of them, and its destination reads the page
- * in the textport grammar until the next activation. A binary with
- * version 2 refuses version 3.
- *
- * Version 4 adds each entry's GL context and its window and buffers. A
- * version 3 source drew no GL, and its destination's contexts start from
- * GL's initial state with no window, so they draw nothing until the
- * kernel next sends one. A binary with version 3 refuses version 4.
- *
- * Version 5 adds the GL framing of the whole 3D grammar: the top half of
- * the GL command word being framed, a GL data run still taking its
- * words, and each entry's pixel-store state. A version 4 source framed
- * none of the commands that use them, so the destination's reset values
- * stand.
+ * State for graphics contexts and their clients: a GL texture table still
+ * taking its data words, the context table, the current context and
+ * whether it waits for its return page, the page's GL grammar (the
+ * buffer-configuration framer, whether a context has been activated and
+ * whether a 1 is held), each entry's GL context, window and buffers, and
+ * the GL framing of the whole 3D grammar (the top half of the GL command
+ * word being framed, a GL data run still taking its words, and each
+ * entry's pixel-store state).
  */
 static bool sgi_kona_contexts_needed(void *opaque)
 {
@@ -8891,13 +8749,9 @@ static const VMStateDescription vmstate_sgi_kona_context = {
 };
 
 /*
- * The initial credit configuration the driver writes, stored since the
- * credit register began following consumption. A source without the
- * subsection loads with none written.
- *
- * Version 2 adds the processor stores whose graphics credits wait for
- * their packet's last word, which a packet part-way through a migration
- * still owes. A version 1 source returned no credits and owes none.
+ * The initial credit configuration the driver writes, and the processor
+ * stores whose graphics credits wait for their packet's last word, which
+ * a packet part-way through a migration still owes.
  */
 static bool sgi_kona_credit_needed(void *opaque)
 {
@@ -8907,19 +8761,18 @@ static bool sgi_kona_credit_needed(void *opaque)
 static const VMStateDescription vmstate_sgi_kona_credit = {
     .name = TYPE_SGI_KONA "/credit",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = sgi_kona_credit_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(credit_config, SGIKonaState),
-        VMSTATE_UINT32_V(pi_held, SGIKonaState, 2),
+        VMSTATE_UINT32(pi_held, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
 
 /*
- * The retrace tag register, since retrace requests began completing. The
- * requests still waiting are the scanout's swap records. A source without
- * the subsection loads with the register at 0.
+ * The retrace tag register. The requests still waiting are the scanout's
+ * swap records.
  */
 static bool sgi_kona_retrace_needed(void *opaque)
 {
@@ -8929,11 +8782,11 @@ static bool sgi_kona_retrace_needed(void *opaque)
 static const VMStateDescription vmstate_sgi_kona_retrace = {
     .name = TYPE_SGI_KONA "/retrace",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = sgi_kona_retrace_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(retrace_tag, SGIKonaState),
-        VMSTATE_BOOL_V(video_delivered, SGIKonaState, 2),
+        VMSTATE_BOOL(video_delivered, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -9018,7 +8871,6 @@ static int sgi_kona_gl_pipe_post_load(void *opaque, int version_id)
     return 0;
 }
 
-/* Appended separately so historical pipe descriptions keep their layout. */
 static const VMStateDescription vmstate_sgi_kona_gl_unpack = {
     .name = TYPE_SGI_KONA "/gl-unpack",
     .version_id = 1,
@@ -9059,25 +8911,14 @@ static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
  * Each GL context's drawable is the window's and the banks' (see
  * sgi_kona_gl_set_drawable()), so it is set again from them, after the
  * shared description has refused a context its own commands could not
- * have left. A version 3 source drew no GL: its contexts keep the
- * destination's reset state and no window.
+ * have left.
  */
 static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
 
-    if (version_id < 7) {
-        for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-            s->gl_pipe[i].unpack_swap_bytes = false;
-        }
-    }
-    if (version_id < 6) {
-        s->gl_tex_table_slot = 0;
-        memset(s->gl_tex_table_words, 0, sizeof(s->gl_tex_table_words));
-        /* Historical streams retained no slot or consumed prefix. */
-        s->gl_tex_table_refused = s->gl_tex_table_remaining != 0;
-    } else if (s->gl_tex_table_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS &&
-               !s->gl_tex_table_refused) {
+    if (s->gl_tex_table_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS &&
+        !s->gl_tex_table_refused) {
         return -EINVAL;
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
@@ -9101,42 +8942,41 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_kona_contexts = {
     .name = TYPE_SGI_KONA "/contexts",
     .version_id = 7,
-    .minimum_version_id = 1,
+    .minimum_version_id = 7,
     .needed = sgi_kona_contexts_needed,
     .post_load = sgi_kona_contexts_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(gl_tex_table_remaining, SGIKonaState),
-        VMSTATE_STRUCT_ARRAY(contexts, SGIKonaState, SGI_KONA_CONTEXTS, 2,
+        VMSTATE_STRUCT_ARRAY(contexts, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_context, SGIKonaContext),
-        VMSTATE_INT32_V(context_current, SGIKonaState, 2),
-        VMSTATE_BOOL_V(context_page_pending, SGIKonaState, 2),
-        VMSTATE_UINT64_V(context_clock, SGIKonaState, 2),
-        VMSTATE_UINT32_V(gl_port.kick, SGIKonaState, 3),
-        VMSTATE_BOOL_V(gl_port.framing, SGIKonaState, 3),
-        VMSTATE_UINT32_V(gl_port.selector, SGIKonaState, 3),
-        VMSTATE_UINT32_V(gl_port.argc_expected, SGIKonaState, 3),
-        VMSTATE_UINT32_V(gl_port.argc_have, SGIKonaState, 3),
-        VMSTATE_UINT32_ARRAY_V(gl_port.args, SGIKonaState,
-                               SGI_COMMAND_PORT_MAX_ARGS, 3),
-        VMSTATE_BOOL_V(gl_grammar, SGIKonaState, 3),
-        VMSTATE_BOOL_V(gl_sync_held, SGIKonaState, 3),
-        VMSTATE_STRUCT_ARRAY(gl_window, SGIKonaState, SGI_KONA_CONTEXTS, 4,
+        VMSTATE_INT32(context_current, SGIKonaState),
+        VMSTATE_BOOL(context_page_pending, SGIKonaState),
+        VMSTATE_UINT64(context_clock, SGIKonaState),
+        VMSTATE_UINT32(gl_port.kick, SGIKonaState),
+        VMSTATE_BOOL(gl_port.framing, SGIKonaState),
+        VMSTATE_UINT32(gl_port.selector, SGIKonaState),
+        VMSTATE_UINT32(gl_port.argc_expected, SGIKonaState),
+        VMSTATE_UINT32(gl_port.argc_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(gl_port.args, SGIKonaState,
+                             SGI_COMMAND_PORT_MAX_ARGS),
+        VMSTATE_BOOL(gl_grammar, SGIKonaState),
+        VMSTATE_BOOL(gl_sync_held, SGIKonaState),
+        VMSTATE_STRUCT_ARRAY(gl_window, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_window, SGIKonaGLWindow),
-        VMSTATE_STRUCT_ARRAY(gl, SGIKonaState, SGI_KONA_CONTEXTS, 4,
+        VMSTATE_STRUCT_ARRAY(gl, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_gl_context, SGIGLContext),
-        VMSTATE_UINT32_V(gl_token_high, SGIKonaState, 5),
-        VMSTATE_UINT32_V(gl_data_token, SGIKonaState, 5),
-        VMSTATE_UINT32_V(gl_data_remaining, SGIKonaState, 5),
-        VMSTATE_UINT32_V(gl_data_have, SGIKonaState, 5),
-        VMSTATE_UINT32_ARRAY_V(gl_data, SGIKonaState, SGI_KONA_GL_DATA_MAX,
-                               5),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 5,
+        VMSTATE_UINT32(gl_token_high, SGIKonaState),
+        VMSTATE_UINT32(gl_data_token, SGIKonaState),
+        VMSTATE_UINT32(gl_data_remaining, SGIKonaState),
+        VMSTATE_UINT32(gl_data_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(gl_data, SGIKonaState, SGI_KONA_GL_DATA_MAX),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_pipe, SGIKonaGLPipe),
-        VMSTATE_UINT32_V(gl_tex_table_slot, SGIKonaState, 6),
-        VMSTATE_UINT32_ARRAY_V(gl_tex_table_words, SGIKonaState,
-                               SGI_KONA_GL_TEX_TABLE_WORDS, 6),
-        VMSTATE_BOOL_V(gl_tex_table_refused, SGIKonaState, 6),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 7,
+        VMSTATE_UINT32(gl_tex_table_slot, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(gl_tex_table_words, SGIKonaState,
+                             SGI_KONA_GL_TEX_TABLE_WORDS),
+        VMSTATE_BOOL(gl_tex_table_refused, SGIKonaState),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_unpack, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
@@ -9273,7 +9113,7 @@ static int sgi_kona_x_read_post_load(void *opaque, int version_id)
            -EINVAL : 0;
 }
 
-/* Absent older-stream subsection leaves both flags at their reset defaults. */
+/* An absent subsection leaves both flags at their reset defaults. */
 static const VMStateDescription vmstate_sgi_kona_x_read = {
     .name = TYPE_SGI_KONA "/x-read-state",
     .version_id = 1,
@@ -9307,6 +9147,12 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
            SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t);
 }
 
+/*
+ * The record's own marker and layout. Migration is between identical
+ * builds only, so the loader takes this layout alone.
+ */
+#define SGI_KONA_TEXTURE_UPLOAD_STREAM_VERSION 3
+
 static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
                                          const VMStateField *field,
                                          JSONWriter *vmdesc, Error **errp)
@@ -9314,7 +9160,7 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     SGIKonaTextureUpload *u = pv;
 
     qemu_put_be32(f, UINT32_MAX);
-    qemu_put_be32(f, 3);
+    qemu_put_be32(f, SGI_KONA_TEXTURE_UPLOAD_STREAM_VERSION);
     for (unsigned k = 0; k < 20; k++) {
         qemu_put_be32(f, u->header[k]);
     }
@@ -9340,25 +9186,23 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     SGIKonaTextureUpload tmp = { 0 };
     unsigned complete, swap;
 
-    uint32_t first = qemu_get_be32(f);
-    bool extended = first == UINT32_MAX;
-    uint32_t version = extended ? qemu_get_be32(f) : 0;
+    uint32_t marker = qemu_get_be32(f);
+    uint32_t version = qemu_get_be32(f);
 
-    if (version > 3 || (extended && !version)) {
+    if (marker != UINT32_MAX ||
+        version != SGI_KONA_TEXTURE_UPLOAD_STREAM_VERSION) {
         goto invalid;
     }
     for (unsigned k = 0; k < 20; k++) {
-        tmp.header[k] = !extended && !k ? first : qemu_get_be32(f);
+        tmp.header[k] = qemu_get_be32(f);
     }
     tmp.count = qemu_get_be32(f);
-    tmp.source_stride = extended ? qemu_get_be32(f) :
-                                  (tmp.count ? tmp.header[1] * 4 : 0);
+    tmp.source_stride = qemu_get_be32(f);
     complete = qemu_get_byte(f);
-    swap = version >= 3 ? qemu_get_byte(f) : 0;
+    swap = qemu_get_byte(f);
     tmp.complete = complete;
     tmp.swap_bytes = swap;
     if (complete > 1 || swap > 1 ||
-        (version < 2 && tmp.count && tmp.header[4] != 1) ||
         !sgi_kona_texture_upload_valid(&tmp)) {
         goto invalid;
     }
@@ -9395,10 +9239,6 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
     const SGIKonaTextureUpload *u = &s->texture_upload;
 
-    if (version_id < 2) {
-        s->texture_record_token = s->texture_record_valid ?
-                                  SGI_KONA_CMD_GL_TEX_BIND_2D : 0;
-    }
     if (!s->texture_state_used || !sgi_kona_texture_upload_valid(u) ||
         (s->texture_record_valid &&
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D &&
@@ -9466,7 +9306,7 @@ static bool sgi_kona_textures_needed(void *opaque)
 static const VMStateDescription vmstate_sgi_kona_textures = {
     .name = TYPE_SGI_KONA "/textures",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = sgi_kona_textures_needed,
     .post_load = sgi_kona_textures_post_load,
     .fields = (const VMStateField[]) {
@@ -9479,7 +9319,7 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
         VMSTATE_BOOL(texture_bind_valid, SGIKonaState),
         VMSTATE_BOOL(texture_record_valid, SGIKonaState),
         VMSTATE_BOOL(texture_state_used, SGIKonaState),
-        VMSTATE_UINT32_V(texture_record_token, SGIKonaState, 2),
+        VMSTATE_UINT32(texture_record_token, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -9487,7 +9327,7 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 6,
-    .minimum_version_id = 1,
+    .minimum_version_id = 6,
     .pre_save = sgi_kona_pre_save,
     .pre_load = sgi_kona_cursor_pre_load,
     .post_load = sgi_kona_post_load,
@@ -9498,11 +9338,8 @@ static const VMStateDescription vmstate_sgi_kona = {
         /* Increment 2: register-window plain storage and the mailbox queue. */
         VMSTATE_UINT32(low_window_write, SGIKonaState),
         VMSTATE_UINT32(reset_arg, SGIKonaState),
-        /*
-         * SGI_KONA_INT_ENABLE (see its own header comment): new alongside
-         * the XG map RAM below, so it is gated the same way, at version 3.
-         */
-        VMSTATE_UINT32_V(int_enable, SGIKonaState, 3),
+        /* SGI_KONA_INT_ENABLE (see its own header comment). */
+        VMSTATE_UINT32(int_enable, SGIKonaState),
         VMSTATE_UINT32(int_cause, SGIKonaState),
         VMSTATE_UINT32_ARRAY(mailbox_queue, SGIKonaState,
                              SGI_KONA_MAILBOX_MAX_WORDS),
@@ -9556,149 +9393,93 @@ static const VMStateDescription vmstate_sgi_kona = {
          * The raster position (see the struct field's own comment):
          * persists across bitmap_state/bitmap_header/etc, which the
          * fields above already cover, so it is listed on its own here
-         * rather than beside them. Gated at version 2: vmstate_sgi_kona
-         * has carried version_id 1 since the device's introduction, and
-         * an actual v1 stream has no bytes for either field. Reading them
-         * unconditionally would misparse a genuine v1 stream's next
-         * section content as raster_x/raster_y; gating leaves both at
-         * sgi_kona_reset_hold()'s own (0, 0) default when an old stream
-         * loads, matching what a v1 source's absence of the concept
-         * always implied.
+         * rather than beside them.
          */
-        VMSTATE_INT32_V(raster_x, SGIKonaState, 2),
-        VMSTATE_INT32_V(raster_y, SGIKonaState, 2),
-
-        /*
-         * Where a version 6 stream from before the board memory carried
-         * the framebuffer. The pixels now travel in the board memory
-         * subsection, so a stream saved now has a zero count here and no
-         * words; one saved before has the full framebuffer, which
-         * post_load moves into the front plane. See the struct field
-         * comment on legacy_framebuffer. The other direction does not
-         * work: a binary from before the board memory refuses a stream
-         * saved now, failing its "sgi-kona/framebuffer length is fixed"
-         * check on the zero count.
-         */
-        VMSTATE_UINT32(legacy_framebuffer_count, SGIKonaState),
-        VMSTATE_VALIDATE("framebuffer length is zero or fixed",
-                         sgi_kona_legacy_framebuffer_count_valid),
-        VMSTATE_VARRAY_UINT32_ALLOC(legacy_framebuffer, SGIKonaState,
-                                    legacy_framebuffer_count, 0,
-                                    vmstate_info_uint32, uint32_t),
-        VMSTATE_BOOL(legacy_framebuffer_dirty, SGIKonaState),
+        VMSTATE_INT32(raster_x, SGIKonaState),
+        VMSTATE_INT32(raster_y, SGIKonaState),
 
         /*
          * Stage 4: the DMA engine's FIFO command port (same field set as
-         * textport's own above) and its kick-primed word accumulator.
-         * Gated at version 3 for the same reason raster_x/raster_y are
-         * gated at version 2: a genuine v1/v2 stream has no bytes for
-         * these, so reading them unconditionally would misparse whatever
-         * follows. An old stream loads with sgi_kona_reset_hold()'s own
-         * all-zero default, matching a v1/v2 source's absence of the
-         * concept.
+         * textport's own above). The engine's own state is the
+         * sgi-kona/dma subsection.
          */
-        VMSTATE_UINT32_V(dma.fifo_port.kick, SGIKonaState, 3),
-        VMSTATE_BOOL_V(dma.fifo_port.framing, SGIKonaState, 3),
-        VMSTATE_UINT32_V(dma.fifo_port.selector, SGIKonaState, 3),
-        VMSTATE_UINT32_V(dma.fifo_port.argc_expected, SGIKonaState, 3),
-        VMSTATE_UINT32_V(dma.fifo_port.argc_have, SGIKonaState, 3),
-        VMSTATE_UINT32_ARRAY_V(dma.fifo_port.args, SGIKonaState,
-                               SGI_COMMAND_PORT_MAX_ARGS, 3),
-        /*
-         * The accumulator of the engine the shared pixel DMA replaced:
-         * a hole, so a version 6 stream still loads. The engine's own
-         * state is the sgi-kona/dma subsection.
-         */
-        VMSTATE_UNUSED_V(3, SGI_KONA_DMA_RETIRED_BYTES),
+        VMSTATE_UINT32(dma.fifo_port.kick, SGIKonaState),
+        VMSTATE_BOOL(dma.fifo_port.framing, SGIKonaState),
+        VMSTATE_UINT32(dma.fifo_port.selector, SGIKonaState),
+        VMSTATE_UINT32(dma.fifo_port.argc_expected, SGIKonaState),
+        VMSTATE_UINT32(dma.fifo_port.argc_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(dma.fifo_port.args, SGIKonaState,
+                             SGI_COMMAND_PORT_MAX_ARGS),
 
         /*
          * The XG map RAM (see the header comment on SGI_KONA_MAPRAM_BASE):
          * canonical guest-visible state, migrated the same non-allocating
          * way arm_high is below (map_ram_count is fixed at
          * SGI_KONA_MAPRAM_ENTRIES, never guest-shrunk, so only its fixed
-         * length needs to travel through VMSTATE_VARRAY_UINT32()). Gated
-         * at version 3, alongside int_enable above: vmstate_sgi_kona
-         * reached version_id 2 for raster_x/raster_y only, and an actual
-         * v1 or v2 stream has no bytes for map_ram_count or map_ram.
-         * Reading them unconditionally would misparse a genuine older
-         * stream's next section as this table; gating leaves map_ram at
-         * sgi_kona_reset_hold()'s own all-zero default when an older
-         * stream loads, matching what that stream's absence of the
-         * concept always implied.
+         * length needs to travel through VMSTATE_VARRAY_UINT32()).
          */
-        VMSTATE_UINT32_V(map_ram_count, SGIKonaState, 3),
+        VMSTATE_UINT32(map_ram_count, SGIKonaState),
         VMSTATE_VALIDATE("map RAM length is fixed",
                          sgi_kona_mapram_count_valid),
-        VMSTATE_VARRAY_UINT32(map_ram, SGIKonaState, map_ram_count, 3,
+        VMSTATE_VARRAY_UINT32(map_ram, SGIKonaState, map_ram_count, 0,
                               vmstate_info_uint32, uint32_t),
 
         /*
          * The firmware load and its record (see the header comment on
-         * SGI_KONA_ARM_LOW_BASE). Gated at version 4 the same way the
-         * map RAM is gated at version 3: a version 1-3 stream has no
-         * bytes for any of it, so an older stream loads with
-         * sgi_kona_reset_hold()'s all-zero default, matching a source
-         * that never had the port.
+         * SGI_KONA_ARM_LOW_BASE).
          */
-        VMSTATE_UINT32_ARRAY_V(arm_low, SGIKonaState, SGI_KONA_ARM_LOW_WORDS,
-                               4),
-        VMSTATE_UINT32_V(arm_high_count, SGIKonaState, 4),
+        VMSTATE_UINT32_ARRAY(arm_low, SGIKonaState, SGI_KONA_ARM_LOW_WORDS),
+        VMSTATE_UINT32(arm_high_count, SGIKonaState),
         VMSTATE_VALIDATE("ARM memory length is fixed",
                          sgi_kona_arm_high_count_valid),
-        VMSTATE_VARRAY_UINT32(arm_high, SGIKonaState, arm_high_count, 4,
+        VMSTATE_VARRAY_UINT32(arm_high, SGIKonaState, arm_high_count, 0,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_V(icu_control, SGIKonaState, 4),
-        VMSTATE_BOOL_V(load_section_open, SGIKonaState, 4),
-        VMSTATE_UINT32_V(load_sections, SGIKonaState, 4),
-        VMSTATE_UINT32_ARRAY_V(load_section_addr, SGIKonaState,
-                               SGI_KONA_LOAD_SECTIONS_MAX, 4),
-        VMSTATE_UINT32_ARRAY_V(load_section_words, SGIKonaState,
-                               SGI_KONA_LOAD_SECTIONS_MAX, 4),
-        VMSTATE_UINT32_V(loader_3b0, SGIKonaState, 4),
-        VMSTATE_UINT32_V(loader_328, SGIKonaState, 4),
+        VMSTATE_UINT32(icu_control, SGIKonaState),
+        VMSTATE_BOOL(load_section_open, SGIKonaState),
+        VMSTATE_UINT32(load_sections, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(load_section_addr, SGIKonaState,
+                             SGI_KONA_LOAD_SECTIONS_MAX),
+        VMSTATE_UINT32_ARRAY(load_section_words, SGIKonaState,
+                             SGI_KONA_LOAD_SECTIONS_MAX),
+        VMSTATE_UINT32(loader_3b0, SGIKonaState),
+        VMSTATE_UINT32(loader_328, SGIKonaState),
 
         /*
          * The kernel command framing, the reason and return pages and the
-         * interrupt destination reasons are posted to, also version 4.
+         * interrupt destination reasons are posted to.
          */
-        VMSTATE_UINT32_V(kernel_port.kick, SGIKonaState, 4),
-        VMSTATE_BOOL_V(kernel_port.framing, SGIKonaState, 4),
-        VMSTATE_UINT32_V(kernel_port.selector, SGIKonaState, 4),
-        VMSTATE_UINT32_V(kernel_port.argc_expected, SGIKonaState, 4),
-        VMSTATE_UINT32_V(kernel_port.argc_have, SGIKonaState, 4),
-        VMSTATE_UINT32_ARRAY_V(kernel_port.args, SGIKonaState,
-                               SGI_COMMAND_PORT_MAX_ARGS, 4),
-        VMSTATE_UINT32_V(int_dest_upper, SGIKonaState, 4),
-        VMSTATE_UINT32_V(int_dest_lower, SGIKonaState, 4),
-        VMSTATE_UINT32_V(int_vectors, SGIKonaState, 4),
-        VMSTATE_BOOL_V(reason_page_valid, SGIKonaState, 4),
-        VMSTATE_UINT64_V(reason_page, SGIKonaState, 4),
-        VMSTATE_BOOL_V(return_page_valid, SGIKonaState, 4),
-        VMSTATE_UINT64_V(return_page, SGIKonaState, 4),
-        VMSTATE_BOOL_V(activity, SGIKonaState, 4),
+        VMSTATE_UINT32(kernel_port.kick, SGIKonaState),
+        VMSTATE_BOOL(kernel_port.framing, SGIKonaState),
+        VMSTATE_UINT32(kernel_port.selector, SGIKonaState),
+        VMSTATE_UINT32(kernel_port.argc_expected, SGIKonaState),
+        VMSTATE_UINT32(kernel_port.argc_have, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(kernel_port.args, SGIKonaState,
+                             SGI_COMMAND_PORT_MAX_ARGS),
+        VMSTATE_UINT32(int_dest_upper, SGIKonaState),
+        VMSTATE_UINT32(int_dest_lower, SGIKonaState),
+        VMSTATE_UINT32(int_vectors, SGIKonaState),
+        VMSTATE_BOOL(reason_page_valid, SGIKonaState),
+        VMSTATE_UINT64(reason_page, SGIKonaState),
+        VMSTATE_BOOL(return_page_valid, SGIKonaState),
+        VMSTATE_UINT64(return_page, SGIKonaState),
+        VMSTATE_BOOL(activity, SGIKonaState),
 
-        /* A video command still collecting its words, version 5. */
-        VMSTATE_BOOL_V(video_open, SGIKonaState, 5),
-        VMSTATE_UINT32_V(video_command, SGIKonaState, 5),
-        VMSTATE_UINT32_V(video_have, SGIKonaState, 5),
-        /* A one-word array until the table grew: the same bytes. */
-        VMSTATE_UINT32_V(video_first, SGIKonaState, 5),
-        /* A colour-map load still taking its entries, also version 5. */
-        VMSTATE_UINT32_V(color_map_count, SGIKonaState, 5),
-        VMSTATE_UINT32_V(color_map_remaining, SGIKonaState, 5),
-        /*
-         * The gamma table and a gamma load still taking its entries,
-         * version 6. A version 5 stream has none of them and loads with
-         * the reset default, an empty table and no load open.
-         */
-        VMSTATE_UINT16_ARRAY_V(gamma, SGIKonaState, SGI_KONA_GAMMA_ENTRIES,
-                               6),
-        VMSTATE_UINT32_V(gamma_start, SGIKonaState, 6),
-        VMSTATE_UINT32_V(gamma_count, SGIKonaState, 6),
-        VMSTATE_UINT32_V(gamma_remaining, SGIKonaState, 6),
-        VMSTATE_UINT32_V(gamma_outside, SGIKonaState, 6),
-        /* A cursor load still taking its data words, also version 6. */
-        VMSTATE_UINT32_V(cursor_remaining, SGIKonaState, 6),
+        /* A video command still collecting its words. */
+        VMSTATE_BOOL(video_open, SGIKonaState),
+        VMSTATE_UINT32(video_command, SGIKonaState),
+        VMSTATE_UINT32(video_have, SGIKonaState),
+        VMSTATE_UINT32(video_first, SGIKonaState),
+        /* A colour-map load still taking its entries. */
+        VMSTATE_UINT32(color_map_count, SGIKonaState),
+        VMSTATE_UINT32(color_map_remaining, SGIKonaState),
+        /* The gamma table and a gamma load still taking its entries. */
+        VMSTATE_UINT16_ARRAY(gamma, SGIKonaState, SGI_KONA_GAMMA_ENTRIES),
+        VMSTATE_UINT32(gamma_start, SGIKonaState),
+        VMSTATE_UINT32(gamma_count, SGIKonaState),
+        VMSTATE_UINT32(gamma_remaining, SGIKonaState),
+        VMSTATE_UINT32(gamma_outside, SGIKonaState),
+        /* A cursor load still taking its data words. */
+        VMSTATE_UINT32(cursor_remaining, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
