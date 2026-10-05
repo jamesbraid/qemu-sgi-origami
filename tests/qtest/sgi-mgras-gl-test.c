@@ -1916,29 +1916,28 @@ static void test_gl_texcoord3f_state_migrates(void)
  * its state has left what a reset gives.
  */
 enum {
-    GL_SUB_BLOCK = 1u << 0,
-    GL_SUB_READBACK = 1u << 1,
-    GL_SUB_PIXELS = 1u << 2,
-    GL_SUB_PIXEL_FLAGS = 1u << 3,
-    GL_SUB_SCISSOR = 1u << 4,
-    GL_SUB_ALPHA_TEST = 1u << 5,
-    GL_SUB_STENCIL = 1u << 6,
-    GL_SUB_CLEAR_STENCIL = 1u << 7,
-    GL_SUB_BLEND = 1u << 8,
-    GL_SUB_LOGIC_OP = 1u << 9,
-    GL_SUB_COLOUR_MASK = 1u << 10,
-    GL_SUB_FOG = 1u << 11,
-    GL_SUB_POLYGON_OFFSET = 1u << 12,
-    GL_SUB_CLIP_PLANES = 1u << 13,
-    GL_SUB_RASTERIZATION = 1u << 14,
+    GL_SUB_READBACK = 1u << 0,
+    GL_SUB_PIXELS = 1u << 1,
+    GL_SUB_PIXEL_FLAGS = 1u << 2,
+    GL_SUB_SCISSOR = 1u << 3,
+    GL_SUB_ALPHA_TEST = 1u << 4,
+    GL_SUB_STENCIL = 1u << 5,
+    GL_SUB_CLEAR_STENCIL = 1u << 6,
+    GL_SUB_BLEND = 1u << 7,
+    GL_SUB_LOGIC_OP = 1u << 8,
+    GL_SUB_COLOUR_MASK = 1u << 9,
+    GL_SUB_FOG = 1u << 10,
+    GL_SUB_POLYGON_OFFSET = 1u << 11,
+    GL_SUB_CLIP_PLANES = 1u << 12,
+    GL_SUB_RASTERIZATION = 1u << 13,
 };
 
 /* Which of those a migration stream from qts carries, as GL_SUB_ bits. */
 static unsigned gl_stream_subsections(QTestState *qts)
 {
     static const char *const names[] = {
-        "sgi-mgras/gl-block", "sgi-mgras/gl-readback",
-        "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
+        "sgi-mgras/gl-readback", "sgi-mgras/gl-pixels",
+        "sgi-mgras/gl-pixel-flags",
         "sgi-gl-draw-state/scissor", "sgi-gl-draw-state/alpha-test",
         "sgi-gl-draw-state/stencil", "sgi-gl-context/clear-stencil",
         "sgi-gl-draw-state/blend", "sgi-gl-draw-state/logic-op",
@@ -1978,8 +1977,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
  * The GL subsections' rules, each against a state that meets only it.
  * An RGBA context that drew, moved its raster position and holds a
  * vertex with a colour index other than the initial 1 sends none: all of
- * that is the shared context's base state. A glBitmap image under way
- * sends gl-block.
+ * that is the shared context's base state.
  */
 static void test_gl_subsections_follow_their_state(void)
 {
@@ -1998,15 +1996,6 @@ static void test_gl_subsections_follow_their_state(void)
     gl_vertex2f(s, -0.5f, 0);
     gl_indexs(s, 1);
     g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
-    gl_bitmap_packet(s, 16, 4, 0, 0, 0, 0);
-    gl_word(s, GL_INLINE_BLOCK | 8);
-    gl_word(s, 0xffff0000);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, GL_SUB_BLOCK);
     qtest_quit(s);
 }
 #define GL_Q_DEPTH            0x2ca

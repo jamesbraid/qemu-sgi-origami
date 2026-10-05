@@ -53,8 +53,6 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_clip_query;
  */
 bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header);
 void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word);
-/* A marker for a block under way. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_block;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0
