@@ -5,12 +5,14 @@
  * Each target is a callback region taking up to eight bytes in one call, so
  * a doubleword step costs one callback and one onward transfer whatever the
  * placement. The memory core hands it naturally aligned accesses, so the
- * host bytes of one access are always one contiguous run.
+ * host bytes of one access are always one contiguous run. A longer transfer
+ * whose onward range is RAM is taken as one buffer instead.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
 #include "qemu/bswap.h"
+#include "qemu/rcu.h"
 #include "hw/pci/pci-64bit.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci-host/sgi-dma-placement.h"
@@ -83,10 +85,106 @@ static MemTxResult sgi_dma_placement_write(void *opaque, hwaddr addr,
     return sgi_dma_placement_access(opaque, addr, pci, size, true, attrs);
 }
 
+/* Bounds the stack a buffer write reverses into before sending it on. */
+#define SGI_DMA_PLACEMENT_SCRATCH   1024
+
+/* Reverse each @unit-byte unit of @len bytes; @dst may be @src. */
+static void sgi_dma_placement_reverse(uint8_t *dst, const uint8_t *src,
+                                      hwaddr len, unsigned unit)
+{
+    hwaddr i;
+
+    if (unit == 8) {
+        for (i = 0; i < len; i += 8) {
+            stq_le_p(dst + i, ldq_be_p(src + i));
+        }
+    } else {
+        for (i = 0; i < len; i += 4) {
+            stl_le_p(dst + i, ldl_be_p(src + i));
+        }
+    }
+}
+
+/*
+ * The whole units of a long transfer, in one onward transfer and one
+ * reversal. Each unit is what one naturally aligned access of the unit's
+ * size would move, so the bytes match the per-access path exactly; partial
+ * units at either end are left to it. Only an onward range that is RAM is
+ * taken: anything else could see different access widths, and a packet
+ * leg's far end alone knows where its bytes land, so both decline. The
+ * check translates the onward range, so where it is not RAM every offered
+ * step pays one extra translation before falling back.
+ */
+static hwaddr sgi_dma_placement_buffer_span(SGIDMAPlacementTarget *t,
+                                            hwaddr addr, hwaddr len,
+                                            bool is_write, MemTxAttrs attrs)
+{
+    SGIDMAPlacementSet *set = t->set;
+    hwaddr span = QEMU_ALIGN_DOWN(len, t->unit);
+    hwaddr ram = span;
+    hwaddr xlat;
+    MemoryRegion *mr;
+
+    if (set->send || t->unit == 1 || (addr & (t->unit - 1)) || !span) {
+        return 0;
+    }
+    RCU_READ_LOCK_GUARD();
+    mr = address_space_translate(set->onward, addr, &xlat, &ram, is_write,
+                                 attrs);
+    if (!memory_access_is_direct(mr, is_write, attrs)) {
+        return 0;
+    }
+    span = QEMU_ALIGN_DOWN(MIN(span, ram), t->unit);
+    if (span) {
+        trace_sgi_dma_placement_buffer(memory_region_name(&t->mr),
+                                       is_write ? "write" : "read", addr,
+                                       span);
+    }
+    return span;
+}
+
+static hwaddr sgi_dma_placement_read_buffer(void *opaque, hwaddr addr,
+                                            void *buffer, hwaddr len,
+                                            MemTxAttrs attrs,
+                                            MemTxResult *result)
+{
+    SGIDMAPlacementTarget *t = opaque;
+    hwaddr span = sgi_dma_placement_buffer_span(t, addr, len, false, attrs);
+
+    if (span) {
+        *result = address_space_read(t->set->onward, addr, attrs, buffer,
+                                     span);
+        sgi_dma_placement_reverse(buffer, buffer, span, t->unit);
+    }
+    return span;
+}
+
+static hwaddr sgi_dma_placement_write_buffer(void *opaque, hwaddr addr,
+                                             const void *buffer, hwaddr len,
+                                             MemTxAttrs attrs,
+                                             MemTxResult *result)
+{
+    SGIDMAPlacementTarget *t = opaque;
+    hwaddr span = sgi_dma_placement_buffer_span(t, addr, len, true, attrs);
+    uint8_t scratch[SGI_DMA_PLACEMENT_SCRATCH];
+    hwaddr off, n;
+
+    for (off = 0; off < span; off += n) {
+        n = MIN(span - off, sizeof(scratch));
+        sgi_dma_placement_reverse(scratch, (const uint8_t *)buffer + off, n,
+                                  t->unit);
+        *result |= address_space_write(t->set->onward, addr + off, attrs,
+                                       scratch, n);
+    }
+    return span;
+}
+
 /* Little-endian, so a value's bytes are the PCI bytes in address order. */
 static const MemoryRegionOps sgi_dma_placement_ops = {
     .read_with_attrs = sgi_dma_placement_read,
     .write_with_attrs = sgi_dma_placement_write,
+    .read_buffer = sgi_dma_placement_read_buffer,
+    .write_buffer = sgi_dma_placement_write_buffer,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
