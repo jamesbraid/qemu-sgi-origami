@@ -1546,12 +1546,11 @@ static void test_dma_single_descriptor_upload(void)
 
     dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
-                         0x000010u, sizeof(payload), 0);
+                         0x000010u, sizeof(payload), DMA_DESC_END_OF_CHAIN);
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, DMA_MODE_SCATTER_GATHER);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN);
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_start(qts, DMA_CMD_START);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
@@ -1580,10 +1579,9 @@ static void test_dma_upload_honors_mask(void)
 
     dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
-                         0x000020u, sizeof(payload), 0);
+                         0x000020u, sizeof(payload), DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN);
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_start(qts, DMA_CMD_START);
 
     /* Only the masked low half of the incoming word took effect. */
@@ -1625,10 +1623,9 @@ static void check_overlay_index_compat(QTestState *qts, bool compat)
 
     dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
-                         0x00000cu, sizeof(payload), 0);
+                         0x00000cu, sizeof(payload), DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN);
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_start(qts, DMA_CMD_START);
     g_assert_cmphex(bar2_read(qts, 0x00000c), ==,
                     compat ? 0x05123456u : 0x00123456u);
@@ -1651,18 +1648,18 @@ static void test_overlay_index_compat_off(void)
     qtest_quit(qts);
 }
 
-/* Upload one word with the given mode and first-descriptor flags. */
+/* Upload one word with the given mode and descriptor flags. */
 static void dma_one_word(QTestState *qts, uint32_t mode, uint32_t flags)
 {
     static const uint32_t payload[1] = { 0x00abcdefu };
 
     dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
-                         0x000030u, sizeof(payload), 0);
+                         0x000030u, sizeof(payload),
+                         DMA_DESC_END_OF_CHAIN | flags);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, mode);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN | flags);
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_start(qts, DMA_CMD_START);
     g_assert_cmphex(bar2_read(qts, 0x000030), ==, payload[0]);
 }
@@ -1815,11 +1812,12 @@ static void test_dma_descriptor_chain(void)
 
     dma_write_descriptor(qts, second_desc_phys,
                          PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x1000),
-                         0x000044u, sizeof(second_word), 0);
+                         0x000044u, sizeof(second_word),
+                         DMA_DESC_END_OF_CHAIN);
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
                          0x000040u, sizeof(first_word),
                          (PCI_DMA_DIRECT | second_desc_phys) |
-                         DMA_DESC_LOC_PCI | DMA_DESC_END_OF_CHAIN);
+                         DMA_DESC_LOC_PCI);
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
@@ -1854,10 +1852,9 @@ static void test_dma_local_descriptor_upload(void)
     bar2_write(qts, desc_local, PCI_DMA_DIRECT | DMA_SRC_PHYS);
     bar2_write(qts, desc_local + 4, 0x000050u);
     bar2_write(qts, desc_local + 8, sizeof(payload));
-    bar2_write(qts, desc_local + 12, 0);
+    bar2_write(qts, desc_local + 12, DMA_DESC_END_OF_CHAIN);
 
-    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               desc_local | DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc_local);
     dma_start(qts, DMA_CMD_START);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
@@ -1890,13 +1887,12 @@ static void test_dma_local_descriptor_chain(void)
               PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x1000));
     bar2_write(qts, second_desc_local + 4, 0x000064u);
     bar2_write(qts, second_desc_local + 8, sizeof(second_word));
-    bar2_write(qts, second_desc_local + 12, 0);
+    bar2_write(qts, second_desc_local + 12, DMA_DESC_END_OF_CHAIN);
 
     bar2_write(qts, first_desc_local, PCI_DMA_DIRECT | DMA_SRC_PHYS);
     bar2_write(qts, first_desc_local + 4, 0x000060u);
     bar2_write(qts, first_desc_local + 8, sizeof(first_word));
-    bar2_write(qts, first_desc_local + 12,
-              second_desc_local | DMA_DESC_END_OF_CHAIN);
+    bar2_write(qts, first_desc_local + 12, second_desc_local);
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, first_desc_local);
     dma_start(qts, DMA_CMD_START);
@@ -1905,6 +1901,66 @@ static void test_dma_local_descriptor_chain(void)
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
     g_assert_cmphex(bar2_read(qts, 0x000060), ==, first_word[0]);
     g_assert_cmphex(bar2_read(qts, 0x000064), ==, second_word[0]);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The chain exactly as the shipped driver lays it out: entries built
+ * downwards from the top of local memory, DMADPR0 naming the first with no
+ * flags, each entry's own next-pointer word carrying its own direction, and
+ * the last entry's carrying end of chain and interrupt (0x6) with a zero
+ * address. The flags belong to the entry whose word holds them (PCI 9060
+ * Data Sheet Table 51), so the walk stops after the last entry instead of
+ * following its zero address to local address 0, and the middle entry,
+ * marked local to PCI in its own word, reads back to host memory.
+ */
+static void test_dma_driver_chain_layout(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t up[2] = { 0x00111111u, 0x00222222u };
+    uint32_t top = FB_SIZE - 16;
+    uint8_t back[4];
+
+    dma_write_payload(qts, DMA_SRC_PHYS, &up[0], 1);
+    dma_write_payload(qts, DMA_SRC_PHYS + 0x1000, &up[1], 1);
+    bar2_write(qts, 0x000070, 0x00333333u);
+    /* Garbage at local 0 that a walk past the last entry would consume. */
+    bar2_write(qts, 0x000000, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, 0x000004, 0x000078u);
+    bar2_write(qts, 0x000008, 4);
+    bar2_write(qts, 0x00000c, DMA_DESC_END_OF_CHAIN);
+
+    bar2_write(qts, top, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, top + 4, 0x000068u);
+    bar2_write(qts, top + 8, 4);
+    bar2_write(qts, top + 12, top - 16);
+
+    bar2_write(qts, top - 16, PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x2000));
+    bar2_write(qts, top - 12, 0x000070u);
+    bar2_write(qts, top - 8, 4);
+    bar2_write(qts, top - 4, (top - 32) | DMA_DESC_LOCAL_TO_PCI);
+
+    bar2_write(qts, top - 32, PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x1000));
+    bar2_write(qts, top - 28, 0x00006cu);
+    bar2_write(qts, top - 24, 4);
+    bar2_write(qts, top - 20, DMA_DESC_END_OF_CHAIN | DMA_DESC_INTR_ON_TC);
+
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, 0x7c3u & ~DMA_MODE_DONE_IRQ);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, top);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    g_assert_cmphex(bar2_read(qts, 0x000068), ==, up[0]);
+    g_assert_cmphex(bar2_read(qts, 0x00006c), ==, up[1]);
+    qtest_memread(qts, DMA_SRC_PHYS + 0x2000, back, sizeof(back));
+    g_assert_cmphex(ldl_be_p(back), ==, 0x00333333u);
+    g_assert_cmphex(bar2_read(qts, 0x000078), ==, 0);
+    /* The last entry asked for an interrupt; the mode did not. */
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_DMA0_ACTIVE, ==,
+                    INTCSR_DMA0_ACTIVE);
 
     qtest_quit(qts);
 }
@@ -1919,8 +1975,7 @@ static void test_dma_local_descriptor_out_of_bounds(void)
 {
     QTestState *qts = rad4_init();
 
-    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               FB_SIZE | DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, FB_SIZE);
     dma_start(qts, DMA_CMD_START);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
@@ -1944,10 +1999,9 @@ static void test_dma_abort_recovers_a_failed_transfer(void)
     QTestState *qts = rad4_init();
 
     dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
-                         FB_SIZE - 4, 16, 0);
+                         FB_SIZE - 4, 16, DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
-               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
-               DMA_DESC_END_OF_CHAIN);
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_start(qts, DMA_CMD_START);
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
@@ -3337,6 +3391,8 @@ int main(int argc, char **argv)
                    test_dma_local_descriptor_upload);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-chain",
                    test_dma_local_descriptor_chain);
+    qtest_add_func("/psitech-rad4/dma-driver-chain-layout",
+                   test_dma_driver_chain_layout);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
                    test_dma_local_descriptor_out_of_bounds);
     qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",

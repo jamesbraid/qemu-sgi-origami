@@ -2038,14 +2038,16 @@ static const MemoryRegionOps rad4_bar0_ops = {
  * word matching every other guest-visible
  * multi-byte value this file already handles
  * (rad4_bar2_read()/rad4_bar2_write()'s ldl_be_p()/stl_be_p() on the
- * framebuffer). The low 4 bits of a pointer, the initial DMADPR0 value for
- * the first descriptor, or a
- * descriptor's own next-pointer word for every one after it, are flags for
- * the descriptor that pointer names:
- * bit0 selects which address space the descriptor itself lives in, bit1 marks
- * the last descriptor in the chain,
- * bit2 asks for an interrupt once that descriptor's own transfer completes,
- * and bit3 picks direction.
+ * framebuffer). A descriptor's next-pointer word is loaded into DMADPR0
+ * with it, and its flags describe that descriptor's own transfer (PCI 9060
+ * Data Sheet, Version 1.2, Table 51 and section 3.6.2): bit1 ends the chain
+ * after it, bit2 asks for an interrupt once its transfer completes, and
+ * bit3 picks its direction. The shipped driver relies on this, putting each
+ * descriptor's direction in its own next-pointer word and end of chain with
+ * interrupt (0x6) in the last one's. Bit0, which a pointer carries to say
+ * whether the descriptor it names lives in host memory, is a PCI 9054
+ * addition (Data Book Table 11-80); the 9060 reserves it and keeps
+ * descriptors in local memory.
  *
  * A descriptor claiming Local Address space is read straight out of
  * s->framebuffer at the masked pointer: BAR2's
@@ -2085,9 +2087,7 @@ static bool rad4_dma_run(PsitechRad4State *s)
     for (guard = 0; guard < RAD4_DMA_MAX_DESCRIPTORS; guard++) {
         hwaddr desc_addr = ptr & RAD4_DMA_DESC_ADDR_MASK;
         bool from_pci = (ptr & RAD4_DMA_DESC_LOC_PCI) != 0;
-        bool local_to_pci = (ptr & RAD4_DMA_DESC_LOCAL_TO_PCI) != 0;
-        bool end_of_chain = (ptr & RAD4_DMA_DESC_END_OF_CHAIN) != 0;
-        bool intr_on_tc = (ptr & RAD4_DMA_DESC_INTR_ON_TC) != 0;
+        bool local_to_pci, end_of_chain, intr_on_tc;
         uint8_t raw[16];
         uint32_t pci_addr, local_addr, size, next;
 
@@ -2115,6 +2115,9 @@ static bool rad4_dma_run(PsitechRad4State *s)
         local_addr = ldl_be_p(raw + 4);
         size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
         next = ldl_be_p(raw + 12);
+        local_to_pci = (next & RAD4_DMA_DESC_LOCAL_TO_PCI) != 0;
+        end_of_chain = (next & RAD4_DMA_DESC_END_OF_CHAIN) != 0;
+        intr_on_tc = (next & RAD4_DMA_DESC_INTR_ON_TC) != 0;
 
         if (local_addr >= RAD4_FB_SIZE || size > RAD4_FB_SIZE - local_addr) {
             qemu_log_mask(LOG_GUEST_ERROR,
