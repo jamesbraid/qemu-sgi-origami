@@ -16,7 +16,6 @@
 #define HW_PCI_HOST_SGI_BRIDGE_H
 
 #include "qemu/units.h"
-#include "qapi/error.h"
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "hw/misc/sgi-pio-forward.h"
