@@ -5314,6 +5314,18 @@ static int sgi_hub_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
 
+    /*
+     * Each re-derivation below commits its own region changes (one per big
+     * window, one per Hub the fabric flood reaches, one for the cached
+     * alias), and every commit re-renders the flat view of every address
+     * space in the machine. That was most of an incoming load's time. One
+     * transaction defers them to a single commit. Until it commits, an
+     * access through an address space would resolve against the old view;
+     * nothing inside makes one. The big windows, the cached alias and the
+     * fabric flood (link bits, Router port state, every Hub's claim
+     * aliases) only move, resize and gate regions and set register state.
+     */
+    memory_region_transaction_begin();
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         sgi_hub_bwin_follow(s, n);
     }
@@ -5326,6 +5338,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     sgi_hub_report_number(s);
     /* The nameless low windows re-derive from the restored size code. */
     sgi_hub_calias_update(s);
+    memory_region_transaction_commit();
     /*
      * Re-driving outputs from post_load is sound here only because each
      * drives an idempotent level input on the CPU, whose cause bits migrate
