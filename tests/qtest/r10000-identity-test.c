@@ -144,6 +144,41 @@ static void test_origin200_prid(gconstpointer data)
     qtest_quit(qts);
 }
 
+/*
+ * Fuel's catalogue part is R14000 revision 2.3 and Origin 300's the
+ * model's 0x0f24, each applied through r14000-prid, which -cpu
+ * R14000,r14000-prid= overrides. No machine picks a CPU type by PRId.
+ * Either way the board's mode bits, the 2 MB part's 0x9aa985, still reach
+ * the CPU's reset-mode, which sizes the secondary cache.
+ */
+static void test_sn1_prid(gconstpointer data)
+{
+    const char *machine = data;
+    bool fuel = g_str_equal(machine, "fuel");
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *zero = g_malloc0(0x1686a8);
+    int fd = g_file_open_tmp("r14000-identity-prom-XXXXXX", &prom, NULL);
+    QTestState *qts;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, zero, 0x1686a8), ==, 0x1686a8);
+    close(fd);
+    qts = qtest_initf("-M %s -cpu R14000 -smp %s -m 512M -bios %s -S",
+                      machine, fuel ? "1" : "2", prom);
+    g_assert_cmphex(cpu_property(qts, "r14000-prid"), ==,
+                    fuel ? 0xf23 : 0xf24);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, 0x9aa985);
+    qtest_quit(qts);
+    qts = qtest_initf("-M %s -cpu R14000,r14000-prid=%s -smp %s -m 512M "
+                      "-bios %s -S", machine, fuel ? "0xf24" : "0xf23",
+                      fuel ? "1" : "2", prom);
+    g_assert_cmphex(cpu_property(qts, "r14000-prid"), ==,
+                    fuel ? 0xf24 : 0xf23);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, 0x9aa985);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_invalid_identity(void)
 {
     const char *profiles[] = {
@@ -232,14 +267,57 @@ static void test_immutable_identity(void)
     qtest_quit(qts);
 }
 
+/*
+ * One migration of a CPU's PRId: the source's -cpu, the destination's, and
+ * whether the destination must refuse the stream. A refused stream is one
+ * whose PRId differs from the value the destination's reset would install.
+ * The Fuel case runs the R14000 profile on its own machine, with the blank
+ * PROM the SN1 case uses, so it reads the property rather than executing.
+ */
+typedef struct MigrationCase {
+    const char *machine;
+    const char *from_cpu;
+    const char *to_cpu;
+    const char *property;
+    uint32_t prid;
+    bool mismatch;
+} MigrationCase;
+
+static const MigrationCase r10000_mismatch = {
+    "malta", "R10000,r10000-prid=0x927", "R10000", "r10000-prid", 0x927, true,
+};
+static const MigrationCase r10000_octane = {
+    "octane", "R10000,r10000-prid=0x927", "R10000", "r10000-prid", 0x927,
+    false,
+};
+static const MigrationCase r14000_mismatch = {
+    "malta", "R14000,r14000-prid=0xf23", "R14000", "r14000-prid", 0xf23, true,
+};
+static const MigrationCase r14000_fuel = {
+    "fuel", "R14000", "R14000", "r14000-prid", 0xf23, false,
+};
+
+static QTestState *start_migration_side(const MigrationCase *c,
+                                        const char *cpu, const char *prom,
+                                        const char *extra)
+{
+    if (prom) {
+        return qtest_initf("-M %s -cpu %s -smp 1 -m 512M -bios %s "
+                           "-nic none -accel tcg -S %s",
+                           c->machine, cpu, prom, extra);
+    }
+    return start(c->machine, cpu, extra);
+}
+
 static void test_migration(gconstpointer data)
 {
-    bool mismatch = GPOINTER_TO_INT(data);
+    const MigrationCase *c = data;
+    bool sn1 = g_str_equal(c->machine, "fuel");
     g_autofree char *dir = g_dir_make_tmp("r10000-identity-XXXXXX", NULL);
     g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
-    const char *machine = mismatch ? "malta" : "octane";
+    g_autofree char *prom = NULL;
     QTestState *from, *to;
 
     if (!qtest_has_accel("tcg")) {
@@ -247,11 +325,22 @@ static void test_migration(gconstpointer data)
         g_assert_cmpint(g_rmdir(dir), ==, 0);
         return;
     }
-    from = start(machine, "R10000,r10000-prid=0x927", "");
-    to = start(machine, "R10000", incoming);
+    if (sn1) {
+        g_autofree uint8_t *zero = g_malloc0(0x1686a8);
 
-    read_identity(from, 0x927);
-    if (mismatch) {
+        prom = g_build_filename(dir, "prom.bin", NULL);
+        g_assert_true(g_file_set_contents(prom, (char *)zero, 0x1686a8,
+                                          NULL));
+    }
+    from = start_migration_side(c, c->from_cpu, prom, "");
+    to = start_migration_side(c, c->to_cpu, prom, incoming);
+
+    if (sn1) {
+        g_assert_cmphex(cpu_property(from, c->property), ==, c->prid);
+    } else {
+        read_identity(from, c->prid);
+    }
+    if (c->mismatch) {
         SgiWait w;
 
         qtest_set_expected_status(to, 1);
@@ -264,13 +353,22 @@ static void test_migration(gconstpointer data)
     } else {
         sgi_migrate_stopped(from, uri);
         sgi_wait_migration(to, "completed");
-        read_identity(to, 0x927);
-        qtest_system_reset(to);
-        read_identity(to, 0x927);
+        if (sn1) {
+            g_assert_cmphex(cpu_property(to, c->property), ==, c->prid);
+            qtest_system_reset(to);
+            g_assert_cmphex(cpu_property(to, c->property), ==, c->prid);
+        } else {
+            read_identity(to, c->prid);
+            qtest_system_reset(to);
+            read_identity(to, c->prid);
+        }
     }
     qtest_quit(from);
     qtest_quit(to);
     g_unlink(socket);
+    if (prom) {
+        g_unlink(prom);
+    }
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
@@ -310,6 +408,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("/r10000/identity/octane", "octane", test_identity);
     qtest_add_func("/r10000/identity/octane-override",
                    test_octane_prid_override);
+    qtest_add_data_func("/r10000/identity/fuel", "fuel", test_sn1_prid);
+    qtest_add_data_func("/r10000/identity/origin300", "origin300",
+                        test_sn1_prid);
     qtest_add_data_func("/r10000/identity/origin200", GINT_TO_POINTER(0),
                         test_origin200_prid);
     qtest_add_data_func("/r10000/identity/origin200-override",
@@ -329,10 +430,14 @@ int main(int argc, char **argv)
         qtest_add_func("/r10000/identity/r14000-invalid",
                        test_r14000_invalid_identity);
         qtest_add_data_func("/r10000/identity/migration-mismatch",
-                            GINT_TO_POINTER(1), test_migration);
+                            &r10000_mismatch, test_migration);
+        qtest_add_data_func("/r10000/identity/r14000-migration-mismatch",
+                            &r14000_mismatch, test_migration);
     }
     qtest_add_data_func("/r10000/identity/migration",
-                        GINT_TO_POINTER(0), test_migration);
+                        &r10000_octane, test_migration);
+    qtest_add_data_func("/r10000/identity/r14000-migration-fuel",
+                        &r14000_fuel, test_migration);
     result = g_test_run();
     unlink(image_path);
     g_free(image_path);
