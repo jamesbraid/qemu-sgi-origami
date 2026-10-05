@@ -51,6 +51,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define II_SCRATCH_0 UINT64_C(0x400150)
@@ -134,7 +135,6 @@
 #define PRESENCE_PI0 0x30
 #define PRESENCE_PI1 0xc0
 
-#define POLL_TRIES 3000
 #define POLL_INTERVAL_US 10000
 
 #define R_ZERO 0
@@ -675,6 +675,7 @@ static void run_program(void (*build)(Image *p), const char *accel,
     g_autofree char *quoted = NULL;
     QTestState *s;
     uint64_t done[4] = { 0, 0, 0, 0 };
+    SgiWait w;
 
     prom = write_image(build);
     quoted = g_shell_quote(prom);
@@ -686,17 +687,17 @@ static void run_program(void (*build)(Image *p), const char *accel,
                     "-no-shutdown -S", quoted, accel);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "all four processors done");
+    for (;;) {
         bool all = true;
 
         for (unsigned int n = 0; n < 4; n++) {
             done[n] = state_word(s, n, STATE_DONE);
             all = all && done[n] == DONE_MAGIC;
         }
-        if (all) {
+        if (all || !sgi_wait_continue(&w, POLL_INTERVAL_US)) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
     }
     for (unsigned int n = 0; n < 4; n++) {
         seen[n] = state_word(s, n, STATE_SEEN);
@@ -722,6 +723,29 @@ static void run_program(void (*build)(Image *p), const char *accel,
 
     qtest_quit(s);
     g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * Whether B's late post can be told apart from A's park bound. Both are
+ * measured in the real-time counter, which follows the virtual clock. Under
+ * icount that clock counts instructions. Without icount it follows host
+ * time, and a host that deschedules B's thread for more than a second lets
+ * A's park run to its bound before B's post is due, which is what the model
+ * should do for that much guest time. So only the icount variants assert
+ * that the post released A. The others log a release by the bound and
+ * return false, so the caller skips what only a post would have done.
+ */
+static bool woken_by_post(const char *accel, uint64_t waited)
+{
+    if (accel == accel_icount) {
+        g_assert_cmpuint(waited, <, WOKEN_BY_POST_TICKS);
+    } else if (waited >= WOKEN_BY_POST_TICKS) {
+        g_test_message("A waited %" PRIu64 " ticks, long enough for the "
+                       "park bound to release it; guest time follows host "
+                       "time under this accelerator", waited);
+        return false;
+    }
+    return true;
 }
 
 static void check_first_presence_read_sees_every_interface(const char *accel)
@@ -765,17 +789,19 @@ static void check_late_partner_post_survives_liveness_poll(const char *accel)
         return;
     }
     run_program(build_liveness_program, accel, seen, live, waited);
-    /* Every processor saw its partner's post, B's late one included. */
-    for (unsigned int n = 0; n < 4; n++) {
-        g_assert_cmpuint(live[n], ==, 1);
-    }
     /*
      * A posted on time and waited for B: its progress code after the
      * barrier's release did not count as its post and park it until B's.
      */
     g_assert_cmpuint(waited[0], >=, LATE_POST_TICKS / 2);
-    /* And A was woken by that post, not by the park's bound. */
-    g_assert_cmpuint(waited[0], <, WOKEN_BY_POST_TICKS);
+    /*
+     * Every processor saw its partner's post, B's late one included, and A
+     * was woken by that post, not by the park's bound.
+     */
+    for (unsigned int n = woken_by_post(accel, waited[0]) ? 0 : 1; n < 4;
+         n++) {
+        g_assert_cmpuint(live[n], ==, 1);
+    }
 }
 
 static void check_silent_partner_releases_at_bound(const char *accel)
@@ -812,7 +838,7 @@ static void check_release_waits_for_late_first_write(const char *accel)
     run_program(build_late_join_program, accel, seen, NULL, waited);
     /* A's release did not land until B's late first write had. */
     g_assert_cmpuint(waited[0], >=, LATE_POST_TICKS / 2);
-    g_assert_cmpuint(waited[0], <, WOKEN_BY_POST_TICKS);
+    woken_by_post(accel, waited[0]);
     /* And the publication join after it still held. */
     g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
     g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
