@@ -1645,7 +1645,7 @@ static QTestState *octane_start_flash(const char *path,
 
     return qtest_initf(
         MEMTX_TEST_DEVICE "-M octane,flash-select=%u,flash-strap=%u,"
-        "flash-drive=flash0 -m 128M -cpu R10000 "
+        "node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw", select, strap, image);
 }
 
@@ -1775,7 +1775,7 @@ static void test_flash_execute(void)
     }
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+        "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S", path);
     qtest_writel(qts, RAM + 0x4008, 0x1000ffff);
@@ -1873,7 +1873,7 @@ static void test_flash_cpu_program_benchmark(void)
     }
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+        "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S -icount shift=3,align=off,sleep=off "
         "-rtc clock=host", quoted);
@@ -1901,7 +1901,7 @@ static void test_flash_cpu_program_benchmark(void)
     }
     g_assert_cmpuint(result, ==, 1);
     g_assert_cmpuint(qtest_readl(qts, RAM + 0x5004), ==, words);
-    g_test_message("TCG flash-drive, icount shift=3: %u halfword programs in %"
+    g_test_message("TCG node0-flash, icount shift=3: %u halfword programs in %"
                    PRIi64 " us, %.1f words/s, MALLOC_PERTURB_=%s",
                    words, elapsed,
                    words * (double)G_TIME_SPAN_SECOND / MAX(elapsed, 1),
@@ -1956,7 +1956,7 @@ static void test_flash_restore_rejected(void)
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     for (unsigned i = 0; i < G_N_ELEMENTS(incoming); i++) {
         const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", "octane,flash-drive=flash0", "-m",
+            qtest_qemu_binary(NULL), "-M", "octane,node0-flash=flash0", "-m",
             "128M", "-cpu", "R10000", "-drive", drive, "-incoming",
             incoming[i], "-display", "none", "-qmp", "stdio", NULL
         };
@@ -1973,7 +1973,7 @@ static void test_flash_restore_rejected(void)
     qtest_quit(qts);
     g_clear_pointer(&reply, g_free);
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+                      "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
                       "-drive %s,readonly=on %s", drive, extra);
     reply = qtest_hmp(qts, "loadvm flash-restore");
     g_test_message("snapshot load response: %s", reply);
@@ -1992,7 +1992,7 @@ static void test_flash_storage_rejections(void)
     g_autofree char *drive = g_strdup_printf(
         "if=none,id=flash0,file=%s,format=raw", path);
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "octane,flash-drive=flash0", "-m",
+        qtest_qemu_binary(NULL), "-M", "octane,node0-flash=flash0", "-m",
         "128M", "-cpu", "R10000", "-drive", drive, "-display", "none",
         "-qmp", "stdio", NULL
     };
@@ -2000,9 +2000,11 @@ static void test_flash_storage_rejections(void)
     memset(image, 0xff, MiB);
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     g_assert_cmpint(truncate(path, MiB - 512), ==, 0);
-    assert_launch_rejected(args, "exactly 1 MiB");
+    assert_launch_rejected(args, "octane: node0-flash is 1048064 bytes; it "
+                           "must be exactly 1048576");
     g_assert_cmpint(truncate(path, MiB + 512), ==, 0);
-    assert_launch_rejected(args, "exactly 1 MiB");
+    assert_launch_rejected(args, "octane: node0-flash is 1049088 bytes; it "
+                           "must be exactly 1048576");
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -2020,7 +2022,7 @@ static void test_flash_backend_error(void)
             g_getenv("OCTANE_WORKING_IMAGE"));
         g_autofree char *quoted = g_shell_quote(drive);
         QTestState *qts = qtest_initf(
-            MEMTX_TEST_DEVICE "-M octane,flash-drive=flash0 "
+            MEMTX_TEST_DEVICE "-M octane,node0-flash=flash0 "
             "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,format=raw",
             quoted);
         g_autoptr(QDict) status = NULL;
@@ -3445,9 +3447,10 @@ static void test_storage_refusals(void)
     g_free(extra);
     extra = g_strdup_printf("-blockdev %s -drive if=none,id=flash0,file=%s,"
                             "format=raw", right_node, small);
-    octane_storage_rejected("octane,node0-flash=flash,flash-drive=flash0",
-                            extra, "octane: node0-flash and flash-drive=flash0 "
-                            "both back the boot flash");
+    /* The Octane-only flash-drive spelling of node0-flash is gone. */
+    octane_storage_rejected("octane,flash-drive=flash0", extra,
+                            "Property 'octane-machine.flash-drive' not "
+                            "found");
     g_free(extra);
     extra = g_strdup_printf("-blockdev %s -bios %s", right_node, flash_path);
     octane_storage_rejected("octane,node0-flash=flash", extra,
