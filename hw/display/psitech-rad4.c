@@ -147,14 +147,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_DMA_STATUS_DONE    (1u << 4)
 
 /*
- * DMADPR0 bits (PLX PCI9054 Data Book, Table 11-80): the low 4 bits of both
- * the Descriptor Pointer Register and
- * each in-memory descriptor's own "next descriptor" word.
- * RAD4_DMA_DESC_ADDR_MASK isolates the quad-word-aligned
- * address the rest of the word carries.
+ * DMADPR0 bits (PCI 9060 Data Sheet Table 51): the low 4 bits of both
+ * the Descriptor Pointer Register and each descriptor's own "next
+ * descriptor" word. RAD4_DMA_DESC_ADDR_MASK isolates the quad-word-aligned
+ * local address the rest of the word carries. Bit 0 is reserved on the
+ * 9060; the PCI 9054 later used it to place descriptors in host memory.
  */
-/* 1: descriptor in host memory */
-#define RAD4_DMA_DESC_LOC_PCI       (1u << 0)
+#define RAD4_DMA_DESC_RESERVED      (1u << 0)
 #define RAD4_DMA_DESC_END_OF_CHAIN  (1u << 1)
 #define RAD4_DMA_DESC_INTR_ON_TC    (1u << 2)
 #define RAD4_DMA_DESC_LOCAL_TO_PCI  (1u << 3) /* 1: framebuffer -> host */
@@ -2098,17 +2097,11 @@ static const MemoryRegionOps rad4_bar0_ops = {
  * least significant byte at the lowest address, little endian. This model
  * keeps each local dword in s->framebuffer as the value a CPU store through
  * BAR2 writes, most significant byte first, so local byte A lives at
- * framebuffer[A ^ 3]. A host-memory descriptor word crosses PCI as a
- * little-endian dword for the same reason.
+ * framebuffer[A ^ 3].
  */
 static uint32_t rad4_dma_local_byte(uint32_t local_addr)
 {
     return local_addr ^ 3;
-}
-
-static uint32_t rad4_dma_from_pci(const uint8_t *bytes)
-{
-    return ldl_le_p(bytes);
 }
 
 /*
@@ -2200,38 +2193,37 @@ static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
 }
 
 /*
- * Load the descriptor s->dma_next names. Descriptor format: 16 bytes per
- * entry (PLX PCI9054 Data Book, Table 11-80 and Figure 3-16): PCI address,
- * Local address, transfer size, and next-descriptor pointer, each a 32-bit
- * word: a local one is read as the values the CPU stored through BAR2, a
- * host-memory one as PCI dwords. A descriptor's next-pointer word is loaded
- * into DMADPR0 with it, and its flags describe that descriptor's own
- * transfer (PCI 9060 Data Sheet, Version 1.2, Table 51 and section 3.6.2):
- * bit1 ends the chain after it, bit2 asks for an interrupt once its transfer
- * completes, and bit3 picks its direction. The shipped driver relies on
- * this, putting each descriptor's direction in its own next-pointer word
- * and end of chain with interrupt (0x6) in the last one's. Bit0, which a
- * pointer carries to say whether the descriptor it names lives in host
- * memory, is a PCI 9054 addition (Data Book Table 11-80); the 9060 reserves
- * it and keeps descriptors in local memory.
+ * Load the descriptor s->dma_next names. A descriptor is four 32-bit words
+ * in local memory, PCI address, local address, transfer size and
+ * next-descriptor pointer (PCI 9060 Data Sheet section 3.6.2 and figure
+ * 6), read as the values the CPU stored through BAR2: the channel loads
+ * them into its own registers (sections 3.6.3.1 and 3.6.3.2), so the
+ * next-pointer word becomes DMADPR0. Its flags describe the descriptor
+ * that holds them (section 3.10.2.3, Table 51): bit 1 ends the chain after
+ * it, bit 2 asks for an interrupt once its transfer completes, and bit 3
+ * picks its direction. The shipped driver relies on this, putting each
+ * descriptor's direction in its own next-pointer word and end of chain
+ * with interrupt (0x6) in the last one's.
  *
- * A Local-space descriptor is read straight out of s->framebuffer at the
- * masked pointer: BAR2's framebuffer memory is this model's only locally
- * addressable storage. A live capture of an IRIX 6.5.30 buffered-mode
- * transfer confirmed the shipped 1.101 driver builds its descriptor array
- * there, at the top of the 8 MiB local extent.
+ * Descriptors always come from local memory. Pointer bit 0 is reserved on
+ * the 9060 (Table 51); the PCI 9054 later used it to fetch descriptors from
+ * host memory, which the shipped driver never asks for. A pointer with the
+ * bit set is logged and the bit ignored, which is inferred: the data sheet
+ * does not say what the part does with a reserved bit set.
  *
- * A descriptor this model cannot honour (a pointer outside local memory, a
- * failed host-memory read, a span outside the framebuffer)
- * stops the channel with Done clear; the guest's own timeout and abort
- * recovery then runs.
+ * BAR2's framebuffer memory is this model's only locally addressable
+ * storage. A live capture of an IRIX 6.5.30 buffered-mode transfer
+ * confirmed the shipped 1.101 driver builds its descriptor array there, at
+ * the top of the 8 MiB local extent.
+ *
+ * A descriptor this model cannot honour (a pointer outside local memory or
+ * a span outside the framebuffer) stops the channel with Done clear; the
+ * guest's own timeout and abort recovery then runs.
  */
 static bool rad4_dma_load_desc(PsitechRad4State *s)
 {
     uint32_t ptr = s->dma_next;
     hwaddr desc_addr = ptr & RAD4_DMA_DESC_ADDR_MASK;
-    bool from_pci = (ptr & RAD4_DMA_DESC_LOC_PCI) != 0;
-    uint8_t raw[RAD4_DMA_DESC_BYTES];
     uint32_t word[4];
     int i;
 
@@ -2244,27 +2236,22 @@ static bool rad4_dma_load_desc(PsitechRad4State *s)
     }
     s->dma_descs++;
 
-    if (from_pci) {
-        if (pci_dma_read(&s->pci, desc_addr, raw, sizeof(raw)) != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: DMA descriptor read failed at "
-                         "0x%"HWADDR_PRIx"\n", desc_addr);
-            return false;
-        }
-    } else {
-        if (desc_addr >= RAD4_FB_SIZE ||
-            sizeof(raw) > RAD4_FB_SIZE - desc_addr) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: DMA descriptor at Local address "
-                         "0x%"HWADDR_PRIx" falls outside the "
-                         "framebuffer\n", desc_addr);
-            return false;
-        }
-        memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
+    if (ptr & RAD4_DMA_DESC_RESERVED) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA descriptor pointer 0x%x sets "
+                     "reserved bit 0; reading the descriptor from local "
+                     "memory\n", ptr);
+    }
+    if (desc_addr >= RAD4_FB_SIZE ||
+        RAD4_DMA_DESC_BYTES > RAD4_FB_SIZE - desc_addr) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA descriptor at Local address "
+                     "0x%"HWADDR_PRIx" falls outside the "
+                     "framebuffer\n", desc_addr);
+        return false;
     }
     for (i = 0; i < 4; i++) {
-        word[i] = from_pci ? rad4_dma_from_pci(raw + 4 * i)
-                           : ldl_be_p(raw + 4 * i);
+        word[i] = ldl_be_p(s->framebuffer + desc_addr + 4 * i);
     }
 
     s->dma_pci = word[0];
