@@ -994,7 +994,7 @@ static void test_a_blocked_backend_keeps_every_transmit_character(
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
         TX_CHARACTER | TX_INTERRUPT,
     };
-    struct timeval tv = { .tv_sec = 2 };
+    struct timeval tv = { .tv_sec = IOC3_SERIAL_SOCKET_TIMEOUT_SECS };
     uint8_t filler[512];
     uint8_t got[sizeof(out) - 1];
     size_t remaining;

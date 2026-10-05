@@ -21,6 +21,7 @@
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define BRIDGE_WIDGET           8
@@ -504,7 +505,7 @@ static void test_blocked_serial_transmit_survives_migration(const void *data)
         IOC3_TX_CHARACTER, IOC3_TX_CHARACTER,
         IOC3_TX_CHARACTER, IOC3_TX_CHARACTER,
     };
-    struct timeval tv = { .tv_sec = 2 };
+    struct timeval tv = { .tv_sec = SGI_WAIT_S };
     g_autofree gchar *tmpfs = NULL;
     g_autofree gchar *uri = NULL;
     g_autofree gchar *dest_cmdline = NULL;

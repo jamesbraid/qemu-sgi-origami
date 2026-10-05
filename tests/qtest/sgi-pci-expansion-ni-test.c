@@ -8,6 +8,7 @@
 #include "system/memory.h"
 #include "sgi-migrate.h"
 #include "sgi-l1-test.h"
+#include "sgi-wait.h"
 
 #define FIXTURE "-M none -cpu R10000 -S " \
                 "-device sgi-pci-expansion-ni-fixture,id=ni"
@@ -3117,17 +3118,14 @@ static void test_uart_migration_mismatch(gconstpointer opaque)
 static void test_teardown(void)
 {
     QTestState *qts = management_start("");
-    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
     uint64_t result;
+    SgiWait w;
 
     qtest_writeq(qts, MANAGEMENT + 232, 1);
-    do {
-        result = qtest_readq(qts, MANAGEMENT + 232);
-        if (result) {
-            break;
-        }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    sgi_wait_start(&w, "teardown result");
+    while (!(result = qtest_readq(qts, MANAGEMENT + 232))) {
+        sgi_wait_pause(&w, 1000);
+    }
     g_assert_cmphex(result, ==, 0xff);
     qtest_quit(qts);
 }

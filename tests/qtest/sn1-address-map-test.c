@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -474,7 +475,7 @@ static void expect_console_text(int fd, const char *expected)
         struct pollfd pfd = { .fd = fd, .events = POLLIN };
         ssize_t count;
 
-        g_assert_cmpint(poll(&pfd, 1, 3000), ==, 1);
+        g_assert_cmpint(poll(&pfd, 1, SGI_WAIT_S * 1000), ==, 1);
         count = read(fd, actual + offset, length - offset);
         g_assert_cmpint(count, >, 0);
         offset += count;

@@ -23,6 +23,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-wait.h"
 
 #define ORIGIN2000_MACHINE "-M origin2000 -smp 8 -display none"
 #define ORIGIN200_MACHINE "-M origin200 -m 128M -display none"
@@ -75,18 +76,18 @@ static char *logfile;
  */
 static void wait_for_log_marker(const char *marker)
 {
-    unsigned int i;
+    SgiWait w;
 
-    for (i = 0; i < 100; i++) {
+    sgi_wait_start(&w, "QEMU log marker %s", marker);
+    for (;;) {
         g_autofree char *log = NULL;
 
         if (g_file_get_contents(logfile, &log, NULL, NULL) &&
             strstr(log, marker)) {
             return;
         }
-        g_usleep(2000);
+        sgi_wait_pause(&w, 2000);
     }
-    g_error("timed out waiting for QEMU log marker: %s", marker);
 }
 
 static void truncate_log(void)

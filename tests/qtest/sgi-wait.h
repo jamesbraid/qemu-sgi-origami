@@ -74,18 +74,18 @@ static inline void sgi_wait_pause(SgiWait *w, unsigned int us)
 
 /*
  * Wait until QEMU has read everything the test wrote to @fd, its end of a
- * stream socketpair whose other end a netdev socket backend reads. On
- * Linux, TIOCOUTQ on a Unix stream socket counts the bytes the peer has
- * not consumed yet. The backend passes each frame it reads to the device
- * within the same main-loop callback, and QEMU handles the test's next
- * qtest command only after that callback returns. So once this returns,
- * a frame the device drops has been dropped, rather than still sitting in
- * the socket, and a window asserting that nothing arrived no longer
- * depends on how soon the host scheduled QEMU.
+ * stream socketpair whose other end a netdev or chardev socket backend
+ * reads. On Linux, TIOCOUTQ on a Unix stream socket counts the bytes the
+ * peer has not consumed yet. Either backend passes what it reads to the
+ * device within the same main-loop callback, and QEMU handles the test's
+ * next qtest command only after that callback returns. So once this
+ * returns, a frame or byte the device drops has been dropped, rather than
+ * still sitting in the socket, and a window asserting that nothing arrived
+ * no longer depends on how soon the host scheduled QEMU.
  *
- * This needs a backend that reads: one holding a frame the device could
- * not take stops reading, and this wait then fails. Hosts without
- * TIOCOUTQ on sockets fall back to the fixed pause these windows used.
+ * This needs a backend that reads: one holding data the device could not
+ * take stops reading, and this wait then fails. Hosts without TIOCOUTQ on
+ * sockets fall back to the fixed pause these windows used.
  */
 static inline void sgi_wait_socket_read(int fd)
 {
