@@ -933,16 +933,16 @@ def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
     return f"{machine_name},topology={topology['name']},nodes={nodes}"
 
 
-def _is_ip53_experiment(model: dict) -> bool:
+def _is_origin350_ip53_profile(model: dict) -> bool:
     return (model.get("composition", {}).get("product") ==
-            "origin350-ip53-experiment"
+            "origin350"
             and model.get("machine", {}).get("emulation", {}).get(
                 "machine_name") == "origin350"
             and model.get("machine", {}).get("harness", {}).get(
                 "launch_recipe") == "ip53-discovery")
 
 
-def _validate_ip53_experiment_consoles(model: dict, topology: dict) -> None:
+def _validate_origin350_ip53_consoles(model: dict, topology: dict) -> None:
     harness = model["machine"].get("harness", {})
     records = harness.get("console_records")
     policy = harness.get("console")
@@ -954,7 +954,7 @@ def _validate_ip53_experiment_consoles(model: dict, topology: dict) -> None:
             or any(record.get("node_id") != topology["nodes"][0]["id"]
                    for record in records)):
         raise ValueError(
-            "origin350-ip53-experiment requires five ordered single-node serial bindings"
+            "origin350 requires five ordered single-node serial bindings"
         )
     l1 = ("l1", "-serial chardev:l1")
     ports = [(f"ioc4-serial-{index}",
@@ -972,7 +972,7 @@ def _validate_ip53_experiment_consoles(model: dict, topology: dict) -> None:
                record.get("argument")) for record in records]
     if actual not in candidates:
         raise ValueError(
-            "origin350-ip53-experiment requires five ordered single-node serial bindings"
+            "origin350 requires five ordered single-node serial bindings"
         )
 
 
@@ -981,9 +981,9 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
     experimental = any(
         host.get("compatibility_profile") == "pic-rev3-bedrock-experimental"
         for host in hosts)
-    if experimental and not _is_ip53_experiment(model):
+    if experimental and not _is_origin350_ip53_profile(model):
         raise CompileError(
-            "experimental PIC profile is restricted to origin350-ip53-experiment")
+            "experimental PIC profile is restricted to origin350")
     if any("compatibility_profile" in host
            and host.get("compatibility_profile") != "pic-rev3-bedrock-experimental"
            for host in hosts):
@@ -1014,9 +1014,9 @@ def _offerings_for(model: dict, topology: dict,
         if "console" not in model_harness:
             raise ValueError("ip53-discovery requires an explicit console policy")
         launch_harness["console"] = model_harness["console"]
-    experiment = _is_ip53_experiment(model)
+    experiment = _is_origin350_ip53_profile(model)
     if experiment:
-        _validate_ip53_experiment_consoles(model, topology)
+        _validate_origin350_ip53_consoles(model, topology)
     population = model["composition"]["population"]
     dimms_per_node = tuple(population["dimms_per_node"])
     node = topology["nodes"][0]

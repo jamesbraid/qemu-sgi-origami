@@ -908,7 +908,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             raise ResolutionError(f"component '{cid}' is not a PIC host")
         experiment = (
             model.get("composition", {}).get("product") ==
-            "origin350-ip53-experiment"
+            "origin350"
             and model.get("machine", {}).get("emulation", {}).get(
                 "machine_name") == "origin350"
             and model.get("machine", {}).get("harness", {}).get(

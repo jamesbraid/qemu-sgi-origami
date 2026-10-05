@@ -32,6 +32,16 @@ layer:
             cache_mib: 2
         provenance: observed-hardware
         sources: ["108-0263-004 (Origin 300 scan tools guide), configuration names"]
+      - part: r16000
+        variants:
+          - clock_mhz: 700
+            cache_mib: 8
+            notes: >-
+              Selected software profile for the Origin 350 IP53 runtime model.
+              This tuple does not identify a processor stepping or prove a
+              physical Origin 350 configuration.
+        provenance: derived
+        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected software profile and explicit unknowns"]
 
     address_spaces:
       - id: cached

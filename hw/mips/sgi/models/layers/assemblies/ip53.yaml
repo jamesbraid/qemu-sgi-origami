@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# IP53 Origin 350 compute module board identity and documented slot capacity.
+# Shared IP53 compute-module capacity. Product layers carry their own chassis,
+# I/O board, and fitted-population facts.
 layer_version: 1
 layer:
   kind: assembly
@@ -10,13 +11,26 @@ layer:
   capacity:
     cpu_slots_per_node: 4
     dimm_slots_per_node: 8
-    provenance: vendor-document
+    memory_banks_per_node: 8
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [512, 1024]
+    provenance: derived
     sources: ["007-4566-001 p.68-75, 114-119: 2U compute module; 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 8 DIMM slots as four pairs, 512 MB or 1 GB DIMMs, 1-8 GB"]
     notes: >-
       Two or four R16000 processors; eight DIMM slots as four pairs, first pair
       required, equal density within a pair, 512 MB or 1 GB DIMMs, 1-8 GB. No
-      processors-catalogue entry for R16000 exists in the shared SN1 architecture
-      layer; adding one would change the resolved output of the existing
-      origin300 configuration, so this board's CPU components carry no clock or
-      cache identity even though the closure record names 600 and 700 MHz at
-      4 MiB as established.
+      CPU identity inputs remain product-specific. The eight single-DIMM bank
+      positions and size mapping are compiler vocabulary, not established
+      physical wiring.
+  memory_kits:
+    - id: kit-2048-at-banks-0-1-origin350-profile
+      dimms: 2
+      dimm_mib: 1024
+      banks: [1024, 1024]
+      bank_positions: [0, 1]
+      provenance: derived
+      sources: ["007-4566-001 p.68-75, 114-119: 512 MiB or 1 GiB DIMMs; 1-8 GiB node memory"]
+      notes: >-
+        Synthetic software bank placement for the selected Origin 350 profile.
+        The guide establishes capacity and matched DIMM rules but not physical
+        bank wiring or installed DIMM positions.

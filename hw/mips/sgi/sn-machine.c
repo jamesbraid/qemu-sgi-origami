@@ -1086,8 +1086,8 @@ static bool sgi_machine_ip53_experiment_policy(
     bool *allow_ip53_experiment, Error **errp)
 {
     bool origin350 = g_strcmp0(smc->product, "origin350") == 0;
-    bool experiment_topology =
-        g_strcmp0(t->name, "origin350-ip53-experiment") == 0;
+    bool origin350_topology =
+        g_strcmp0(t->name, "origin350") == 0;
 
     if (smc->test_topology && qtest_enabled()) {
         if (s->ip53_experimental) {
@@ -1099,13 +1099,13 @@ static bool sgi_machine_ip53_experiment_policy(
         return true;
     }
     if (s->ip53_experimental &&
-        (!origin350 || smc->test_topology || !experiment_topology)) {
+        (!origin350 || smc->test_topology || !origin350_topology)) {
         error_setg(errp, "ip53-experimental=on requires the origin350 "
-                   "machine and origin350-ip53-experiment topology");
+                   "machine and origin350 topology");
         return false;
     }
-    if (origin350 && experiment_topology && !s->ip53_experimental) {
-        error_setg(errp, "origin350-ip53-experiment requires "
+    if (origin350 && origin350_topology && !s->ip53_experimental) {
+        error_setg(errp, "origin350 requires "
                    "ip53-experimental=on");
         return false;
     }

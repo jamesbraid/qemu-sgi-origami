@@ -251,7 +251,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
 
     def test_origin350_experiment_r16000_projects_explicit_reset_and_cache(self):
         model = {
-            "composition": {"product": "origin350-ip53-experiment"},
+            "composition": {"product": "origin350"},
             "machine": {"emulation": {"machine_name": "origin350"}},
         }
         cpu = {
@@ -303,7 +303,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
 
     def test_r16000_projection_rejects_mismatched_and_missing_inputs(self):
         model = {
-            "composition": {"product": "origin350-ip53-experiment"},
+            "composition": {"product": "origin350"},
             "machine": {"emulation": {"machine_name": "origin350"}},
         }
         cpu = {
@@ -321,7 +321,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         missing = object()
         cases = (
             ("machine class", ("machine", "emulation", "machine_name"), "origin300"),
-            ("product class", ("composition", "product"), "origin350"),
+            ("product class", ("composition", "product"), "onyx350-base"),
             ("clock", ("identity", "clock_mhz"), 701),
             ("cache", ("identity", "cache_mib"), 4),
             ("reset mode", ("identity", "r16000_reset_mode"), 0x009aa985),
@@ -1651,7 +1651,7 @@ class PicIo9DescriptorTests(unittest.TestCase):
     def test_product_name_does_not_select_ip53_node_path(self):
         model = self.model_with_pic_io9(crossbar=True)
         baseline = compile_model(model)
-        model["composition"]["product"] = "origin350-ip53-experiment"
+        model["composition"]["product"] = "origin350"
 
         entry = compile_model(model)
         for field in ("io_boards", "xio_attachments", "xio_slots",
@@ -3425,7 +3425,7 @@ class RefusalTests(unittest.TestCase):
 class ReferenceModelTests(unittest.TestCase):
     def test_origin350_reference_keeps_unknown_ioc4_clock_absent(self):
         model = load_checked_system_model(
-            MACHINES / "origin350.yaml", model_schema=schema(MACHINES))
+            MACHINES / "origin350-reference.yaml", model_schema=schema(MACHINES))
         ioc4 = next(component for component in model["components"]
                     if component.get("hardware_kind") == "ioc4")
         self.assertNotIn("ioc4", ioc4)

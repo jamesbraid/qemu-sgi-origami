@@ -13281,12 +13281,12 @@
         4
       ],
       "default-cpu-model": "R16000",
-      "default-topology": "origin350-ip53-experiment",
+      "default-topology": "origin350",
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 350 IP53 software experiment",
+      "display-name": "Origin 350 IP53 software profile",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
@@ -13306,7 +13306,7 @@
       ],
       "install-media": [],
       "launch-recipe": "ip53-discovery",
-      "machine-options": "origin350,topology=origin350-ip53-experiment,nodes=1",
+      "machine-options": "origin350,topology=origin350,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           2048
@@ -13404,7 +13404,7 @@
       ],
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
-      "topology": "origin350-ip53-experiment"
+      "topology": "origin350"
     }
   ],
   "schema": "sgi-machines",
@@ -20588,7 +20588,7 @@
         }
       ],
       "crossbars": [],
-      "description": "SGI Origin 350 (IP53), experimental software profile",
+      "description": "SGI Origin 350 (IP53), approximate software profile",
       "generation": "sn1",
       "io-boards": [
         {
@@ -20649,7 +20649,7 @@
           "serial": ""
         }
       ],
-      "name": "origin350-ip53-experiment",
+      "name": "origin350",
       "node-populations": [
         {
           "cables": [],

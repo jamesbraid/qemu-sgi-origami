@@ -972,7 +972,7 @@ def _processor(model: dict, cpu: dict) -> dict:
     if part == "r16000":
         emulation = model.get("machine", {}).get("emulation", {})
         if (model.get("composition", {}).get("product") !=
-                "origin350-ip53-experiment" or
+                "origin350" or
                 emulation.get("machine_name") != "origin350"):
             raise CompileError(
                 "R16000 is supported for only the Origin 350 IP53 experiment"
@@ -3017,13 +3017,12 @@ def _compile_ip35_firmware(model: dict) -> dict:
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
     if (firmware is None and
-            model.get("composition", {}).get("product") ==
-            "origin350-ip53-experiment"):
+            model.get("composition", {}).get("product") == "origin350"):
         firmware = machine.get("firmware_config")
         if not isinstance(firmware, dict):
             raise CompileError(
                 "machine.firmware_config is absent; the Origin 350 IP53 "
-                "experiment needs its firmware values")
+                "profile needs its firmware values")
         return {
             "machine_type": _integer(
                 firmware, "machine_type", "machine.firmware_config", 32),
