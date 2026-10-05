@@ -214,9 +214,10 @@ test_mips64_timeouts = {
   # minutes under a heavily contended host; BOOT_TIMEOUT_SECONDS in
   # test_prom_mdk_instgen.py keeps the usual 60s margin under this.
   'prom_mdk_instgen' : 3600,
-  # Two-chassis boot plus the router link test; red on current trunk (the
-  # second hub is never discovered), bounded so the wedge costs one budget.
-  'prom_mdk_router' : 1800,
+  # Origin 2000 module boot plus all 238 passes of the router link test;
+  # BOOT_TIMEOUT_SECONDS in test_prom_mdk_router.py keeps the usual 60s
+  # margin under this.
+  'prom_mdk_router' : 5400,
   # One target per smdk-matrix row (test_prom_smdk_origin300.py and the
   # test_prom_smdk_origin300_<row>.py beside it), each the row's budget
   # plus 120s, the same shape as the irix-diag-matrix rows above. With

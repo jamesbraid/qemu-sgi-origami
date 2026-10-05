@@ -1,24 +1,41 @@
 #!/usr/bin/env python3
 #
-# MDK router package on the two-chassis machine: netboot MDK_router_sso
-# BY PATH on four CPUs across two nodes and require its link test to run
+# MDK router package on the Origin 2000 module: netboot MDK_router_sso
+# BY PATH on four nodes and two Routers and require its link test to pass
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """
-MDK_router_sso is the third MDK 1.6 package: a CrayLink link test
-written, per its release note, for a two-node system with a null
-router -- the dual-module Origin 200 this machine model also projects.
-On one node it declines by design ("EXITING router_sso test because
-there is only 1 node board in system"), so this leg boots the
-two-chassis shape the machine model demands (four CPUs as two sockets
-of two cores, one memory node each) and requires the test to run.
+MDK_router_sso is the third MDK 1.6 package, the Router simultaneous
+switching test. SGI's MDK-Based Field Diagnostics manual (108-0162-004,
+chapter 5, PDF pages 81 to 85) describes it on Router-equipped Origin
+2000 and Onyx2 systems: 238 passes in which one CPU per node reads 16 MB
+from other nodes so that traffic crosses every Router link, then reads
+each Router's per-port error registers and each Hub's network interface
+error register, failing on more than 10 checkbit errors in a pass. A
+clean run ends with "TEST RESULT: **** TEST PASSED ****" and "MDK
+Router_sso test run is complete."
 
-The test boots the two-node Origin 200 configuration, netboots
-MDK_router_sso, and checks that its router link test completes. In the
-standalone run at QEMU e9d6695e71, it discovered both nodes and entered
-the link test, which completed more than 200 numbered passes. The run
-failed after repeated checkbit errors and a timeout before completion.
-Passing requires the link test to finish.
+This test boots the Origin 2000 module the machine models (four nodes,
+eight CPUs, two Routers, 256 MB), netboots the package and requires that
+result: every node and both Routers discovered, all 238 passes, the
+diagnostic's own pass line, and none of its error, warning or failure
+lines.
+
+It used to run on the two-chassis Origin 200, which joins two nodes
+through a null router. The package's release note (MDK 1.6 on Internal
+Support Tools 2.7) says it was written for that case, but it never
+passed there and cannot pass on evidence we hold. Each pass the
+diagnostic reads the Router port error-clear registers (port number in
+bits 18:16, offset 0x88) through vector route 0, ignores the read's
+status, and takes bits 15:8 of its result buffer as the checkbit count;
+the buffer is written only on a successful read response (from the
+package's disassembly). Behind a null router, route 0 reaches the peer
+Hub, and what a real Hub answers to those addresses is not established
+by any Hub document or capture we hold. The model refuses them with an
+address error, so the diagnostic prints whatever its stack held and
+fails every pass. A capture of router_sso, or of the PROM's vector-read
+command at those addresses, on a real two-module Origin 200 would
+settle it.
 """
 
 import json
@@ -29,10 +46,9 @@ import shutil
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FIRMWARE_REL, FORK_ROOT, drive_console,
+from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
                       run_record, utc_now)
-from lib_prom_mdk import (PROM_SHA256, mdk_extra_args,
-                          payload_identity_problems)
+from lib_prom_mdk import PROM_SHA256, payload_identity_problems
 from lib_prom_mdk_router import NETBOOT_PATH, verdict
 
 
@@ -41,7 +57,11 @@ ROUTER_SSO_SHA256 = (
     "8caaf050bbf1a71caf0bb59944415e98c7ffd49242975c2b41e5d29cdd3108f2"
 )
 
-BOOT_TIMEOUT_SECONDS = 1740
+# One run of this test on the debug_tcg build at host load 75 to 80 took
+# 2847s: the router test started about 140s after launch, then about 11s a
+# pass. A run with interrupt logging on took about 19s a pass. This allows
+# close to twice the measured run; the meson timeout is 60s above it.
+BOOT_TIMEOUT_SECONDS = 5340
 
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
@@ -54,8 +74,8 @@ DRIVER_UNTIL_RE = re.compile(rb"Router_sso test run is complete")
 
 
 class PromMdkRouter(QemuSystemTest):
-    """Boots the real IP27 PROM as two chassis, netboots
-    MDK_router_sso, and requires the router test to run."""
+    """Boots the real IP27 PROM on the Origin 2000 module, netboots
+    MDK_router_sso, and requires the router test to pass."""
 
     ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
     ASSET_MDK = LocalAsset(MDK_REL, ROUTER_SSO_SHA256)
@@ -80,17 +100,21 @@ class PromMdkRouter(QemuSystemTest):
         netboot_tftp = self._stage_netboot_tftp(mdk)
 
         vm = self.get_vm(name='prom_mdk_router')
-        # No debug-leds=off: with more than one CPU that option wedged
-        # the PROM boot (test_prom_mdk_instgen.py).
-        vm.set_machine('origin200,topology=origin200-dual')
+        vm.set_machine(MACHINES['origin2000'])
         vm.set_console()
-        elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
-        extra = mdk_extra_args(prom, netboot_tftp, elsc_log, capture,
-                               netboot_path=NETBOOT_PATH)
-        extra[extra.index('-smp') + 1] = '4'
-        extra[extra.index('-m') + 1] = '128'
-        vm.add_args('-accel', 'tcg,thread=single', *extra)
+        vm.add_args(
+            '-accel', 'tcg,thread=multi',
+            '-cpu', 'R10000',
+            '-smp', '8',
+            '-m', '256',
+            '-bios', str(prom),
+            '-audio', 'none',
+            '-nic', ('user,id=net0,net=192.0.2.0/24,host=192.0.2.2,'
+                     f'dhcpstart=192.0.2.15,tftp={netboot_tftp},'
+                     f'bootfile={NETBOOT_PATH}'),
+            '-object', f'filter-dump,id=netcap,netdev=net0,file={capture}',
+        )
 
         started = utc_now()
         vm.launch()
