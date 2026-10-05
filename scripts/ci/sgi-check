@@ -75,6 +75,9 @@ QTEST_PROCESSES = 4
 # Every pull request runs this whatever it changes.
 ALWAYS_QTESTS = {'qtest-mips64/sn0-forward-progress-test'}
 
+# The suites the top-level meson.build's quick setup leaves out.
+QUICK_EXCLUDED_SUITES = ('slow', 'thorough')
+
 
 def run(cmd, **kwargs):
     print('+ ' + shlex.join(str(arg) for arg in cmd), flush=True)
@@ -96,9 +99,9 @@ class Build:
         run(['ninja', '-C', self.path, *targets])
 
     def meson_test(self, logbase, args, expect, allow_skips=None,
-                   processes=None):
+                   processes=None, setup='qemu:thorough'):
         """Run one Meson test invocation and check its JUnit report."""
-        cmd = [self.meson, 'test', '-C', self.path, '--setup', 'qemu:thorough',
+        cmd = [self.meson, 'test', '-C', self.path, '--setup', setup,
                '--logbase', logbase, '--print-errorlogs']
         if processes:
             cmd += ['--num-processes', str(processes)]
@@ -273,13 +276,23 @@ def smoke(args):
     build.ninja('tests/functional/mips64-linux_kernel.tstamp',
                 'tests/functional/mips64-sn0_smp.tstamp')
 
+    # Pull requests run the quick setup, which leaves out the slow suite
+    # and the cases a qtest registers only under g_test_slow(). The
+    # merge queue's full run keeps the thorough setup.
     qtests, _ = select_qtests(build, args.base)
+    selected = build.path / 'selected-qtests.txt'
+    selected.write_text('\n'.join(qtests) + '\n', encoding='utf-8')
     expected = build.path / 'expected-qtests.txt'
-    expected.write_text('\n'.join(qtests) + '\n', encoding='utf-8')
-    # Optional prerequisites do not depend on which binaries are selected.
-    build.meson_test('smoke-qtest', qtests, expected,
+    build.list_meson_tests(expected, '--names-from', selected,
+                           *(f'--exclude-suite={suite}'
+                             for suite in QUICK_EXCLUDED_SUITES))
+    # Name only the tests the setup keeps: Meson refuses a named test its
+    # setup leaves out as matching no test. Optional prerequisites do not
+    # depend on which binaries are selected.
+    build.meson_test('smoke-qtest',
+                     expected.read_text(encoding='utf-8').split(), expected,
                      allow_skips=OPTIONAL_QTEST_SKIPS,
-                     processes=QTEST_PROCESSES)
+                     processes=QTEST_PROCESSES, setup='qemu:quick')
 
     expected = build.path / 'expected-linux.txt'
     expected.write_text('LinuxKernel.test_one_cpu\n', encoding='utf-8')
@@ -553,8 +566,9 @@ def main(argv=None):
 
     mode = modes.add_parser(
         'smoke', help='the pull-request checks: the script tests that '
-                      'need a build, the qtests a change selects, one Linux '
-                      'boot, the unit tests and the ROM suite')
+                      'need a build, the qtests a change selects in the '
+                      'quick setup, one Linux boot, the unit tests and the '
+                      'ROM suite')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
                       help='select qtests changed since the merge base '
                            'with this commit (default: $PR_BASE_SHA; none '
@@ -562,7 +576,8 @@ def main(argv=None):
     mode.set_defaults(func=smoke)
 
     mode = modes.add_parser(
-        'full', help='the merge-queue checks: every qtest, the PROM, '
+        'full', help='the merge-queue checks: every qtest in the '
+                     'thorough setup, the PROM, '
                      'one-CPU Linux and IRIX boots, and every ROM')
     mode.add_argument('--part', type=full_part,
                       help='run one part, as each full-run job does: '
