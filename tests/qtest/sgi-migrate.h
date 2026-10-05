@@ -20,6 +20,9 @@
  */
 #define SGI_MIGRATION_WAIT_MIN_S 120
 
+/* How often a wait still in progress logs the state it is waiting in. */
+#define SGI_MIGRATION_WAIT_LOG_S 15
+
 /*
  * Block until @s reports @status, polling query-migrate against a wall-clock
  * deadline of @deadline_s seconds, or SGI_MIGRATION_WAIT_MIN_S if that is
@@ -30,9 +33,12 @@
  * capability is on, and turning it on after "migrate" is issued can still
  * race a transfer that completes before the capability change lands. Fails
  * the test immediately if migration reports "failed" before reaching
- * @status. Only logs the states it polled through when the wait is about to
- * fail; at a 1 ms poll interval, logging every poll drowned the test log
- * without telling a passing run anything new.
+ * @status. Logs the state it is waiting in every SGI_MIGRATION_WAIT_LOG_S
+ * seconds and when the wait is about to fail; at a 1 ms poll interval,
+ * logging every poll drowned the test log without telling a passing run
+ * anything new. The periodic line matters where meson's own timeout for the
+ * suite is shorter than this wait: a hang it kills still leaves its last
+ * migration state in the test log.
  */
 static inline void sgi_wait_migration_status(QTestState *s,
                                               const char *status,
@@ -41,6 +47,8 @@ static inline void sgi_wait_migration_status(QTestState *s,
     int64_t deadline = g_get_monotonic_time() +
                        MAX(deadline_s, SGI_MIGRATION_WAIT_MIN_S) *
                        G_TIME_SPAN_SECOND;
+    int64_t next_log = g_get_monotonic_time() +
+                       SGI_MIGRATION_WAIT_LOG_S * G_TIME_SPAN_SECOND;
 
     for (;;) {
         QDict *ret = qtest_qmp_assert_success_ref(s,
@@ -54,6 +62,10 @@ static inline void sgi_wait_migration_status(QTestState *s,
         }
         if (g_str_equal(seen, "failed") || now >= deadline) {
             g_test_message("migration: %s", seen);
+        } else if (now >= next_log) {
+            g_test_message("migration: still %s, waiting for %s", seen,
+                           status);
+            next_log = now + SGI_MIGRATION_WAIT_LOG_S * G_TIME_SPAN_SECOND;
         }
         g_assert_cmpstr(seen, !=, "failed");
         g_assert_cmpint(now, <, deadline);
