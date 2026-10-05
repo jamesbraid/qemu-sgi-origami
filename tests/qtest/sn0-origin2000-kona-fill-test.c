@@ -1328,7 +1328,7 @@ static void test_cursor_migration_refuses_bounds(void)
         } else {
             g_autofree uint8_t *pixels = NULL;
 
-            sgi_wait_migration_status(to, "completed", 30);
+            sgi_wait_migration(to, "completed");
             pixels = kona_screendump(to);
             g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
         }

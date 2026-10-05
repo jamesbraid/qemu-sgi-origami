@@ -139,7 +139,7 @@ static void test_migration(gconstpointer data)
         }
     } else {
         sgi_migrate_stopped(from, uri);
-        sgi_wait_migration_status(to, "completed", 30);
+        sgi_wait_migration(to, "completed");
         read_identity(to, 0x927);
         qtest_system_reset(to);
         read_identity(to, 0x927);

@@ -749,7 +749,7 @@ static void run_replay(const char *path,
         qtest_qmp_assert_success(qts,
             "{'execute': 'migrate-incoming', 'arguments': {'uri': %s}}",
             load_uri);
-        sgi_wait_migration_status(qts, "completed", 30);
+        sgi_wait_migration(qts, "completed");
     }
 
     line_count = g_strv_length(lines);

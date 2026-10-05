@@ -696,7 +696,7 @@ static void test_elsc_rotation_position_patched(const void *data)
     enable_cpu_pcf_observer(from, 0);
     enable_cpu_pcf_observer(from, 2);
     /*
-     * sgi_migrate_stopped() and sgi_wait_migration_status() give up after
+     * sgi_migrate_stopped() and sgi_wait_migration() give up after
      * 120 seconds of host wall-clock time, not guest time. On 2026-10-04,
      * under the earlier 30 s bound, this case failed once with the
      * destination's load still "active", in a four-way parallel run at host
@@ -711,7 +711,7 @@ static void test_elsc_rotation_position_patched(const void *data)
     qtest_qmp_assert_success(
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_clock_step(to, ARB_SLOT0_NS);
     g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
                     ARB_SIGNAL1 + 2);

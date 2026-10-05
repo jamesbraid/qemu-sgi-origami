@@ -4535,7 +4535,7 @@ static void test_command_fifo_gl_integer_routing_migration_reset(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     integer_routing_point(to);
     g_assert_cmphex(odsy_test_pixel(to, 42, 63), ==, 0xff00ffff);
     g_assert_cmphex(odsy_test_pixel(to, 2, 3), ==, 0);
@@ -5444,7 +5444,7 @@ static void test_command_fifo_gl_fog_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     probe_window(to);
     push_triangle_3f(to, ODSY_F_ONE, 0, 0, odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(to, 326, 340), ==, 0xbf0040ff);
@@ -6415,7 +6415,7 @@ static void test_command_fifo_gl_line_stipple_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     probe_window(to);
     push_line_3f(to, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, line);
     g_assert_cmpuint(odsy_count_yellow(to, 290, 290, 319, 321), ==, 1);
@@ -7390,7 +7390,7 @@ static void back_material_migration(bool defaults)
     push_material(to, back_material_commands, back_material_values);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     material_snapshot(to, 0x7f);
     assert_material(to, 14, back_material_commands,
                     defaults ? material_defaults : back_material_values);
@@ -7454,7 +7454,7 @@ static void query_record_migration(bool defaults)
     push_user_words(to, other, ARRAY_SIZE(other));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     material_snapshot(to, 0x7f);
 
     g_assert_cmphex(qtest_readl(to, p + ODSY_HW_INDEX_WORD), ==,
@@ -7619,7 +7619,7 @@ static void texture_current_query_short_migration(bool three)
     push_user_words(to, query_texture_4f[1], 5);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_current_query(to, record, words, 2, 8, 2);
     qtest_quit(from);
     qtest_quit(to);
@@ -7658,7 +7658,7 @@ static void texture_current_query_4f_migration(bool defaults)
     push_user_words(to, query_texture_4f[0], 5);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_current_query(to, defaults ? initial : query_texture_4f[1],
                           defaults ? 3 : 5, 2, 8, 2);
     qtest_quit(from);
@@ -12297,7 +12297,7 @@ static void test_texture_adapter_detail_rectangular_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     /* The migrated sampler and detail table must replace this sentinel. */
     odsy_test_pixel_write(to, 64, 64, 0x12345678);
@@ -12464,7 +12464,7 @@ static void test_texture_adapter_clamp_border_state_restore(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     /* Raw sampler words and backing objects survive without reupload. */
     texture_adapter_point(to, 11, 10, -0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x00ffff80);
@@ -12600,7 +12600,7 @@ static void test_texture_adapter_linear_st(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_adapter_point(to, 81, 80, 0, 0);
     g_assert_cmphex(odsy_test_pixel(to, 81, 80), ==, pixels[3]);
     texture_linear_program(to, 1);
@@ -12982,7 +12982,7 @@ static void test_texture_adapter_colour_table_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_adapter_point_rgba(to, 11, 10, 0.75f, 0.75f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0xff00ff80);
     qtest_quit(to);
@@ -13312,7 +13312,7 @@ static void test_texture_adapter_volume_mipmap_state_restore(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     volume_mipmap_native_quad(to);
     g_assert_cmphex(odsy_test_pixel(to, 64, 64), ==, 0x00ff00ff);
     qtest_system_reset(to);
@@ -13546,7 +13546,7 @@ static void test_texture_adapter_linear_r(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_adapter_current_point(to, 60, 63);
     g_assert_cmphex(odsy_test_pixel(to, 60, 64), ==, colours[1]);
 
@@ -13841,7 +13841,7 @@ static void test_texture_adapter_linear_q(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     texture_adapter_current_point(to, 36, 63);
     g_assert_cmphex(odsy_test_pixel(to, 36, 64), ==, colours[0]);
 
@@ -13958,7 +13958,7 @@ static void test_texture_adapter_3d_state_restore(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     /* The family restores R/Q with the object and sampler state. */
     texture_adapter_current_point(to, 11, 10);
@@ -14093,7 +14093,7 @@ static void test_texture_adapter_blend_state_restore(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     /* No sampler or environment reupload: family state rebuilds the draw. */
     texture_adapter_point(to, 11, 10, 0.75f, 0.75f);
@@ -14175,7 +14175,7 @@ static void test_texture_adapter_state_restore(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     /* No ST or matrix reupload: the family must restore both. */
     user_cmd_push(to, ODSY_CMD_GL_BEGIN);
     user_cmd_push(to, 0);
@@ -14447,7 +14447,7 @@ static void test_rgba_pattern_float_rectangle_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     push_native_float_quad(to, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(to, 10, 10), ==, 0xff0000ff);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x0000ffff);
@@ -15020,7 +15020,7 @@ static void test_buffers_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     g_assert_cmphex(odsy_qom_get_uint(to, "x-test-draw-word"), ==,
                     0x80002000u);
@@ -15054,7 +15054,7 @@ static void test_texture_public_border_1d_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     texture_adapter_point(to, 24, 64, 0.0f, 0.5f);
     g_assert_cmphex(odsy_test_pixel(to, 24, 64), ==, 0x203458ff);
@@ -15108,7 +15108,7 @@ static void test_texture_public_border_3d_migration(void)
     to = board_start(" -incoming defer");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
         int x = 16 + 28 * i;

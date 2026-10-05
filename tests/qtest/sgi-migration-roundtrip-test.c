@@ -1183,7 +1183,7 @@ static void test_round_trip(const void *data)
     qtest_qmp_assert_success(to, "{ 'execute': 'migrate-incoming',"
                              " 'arguments': { 'uri': %s } }", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
 
     after = rt_read_probes(to, m);
     rt_compare(m, before, after, "destination differs", false);

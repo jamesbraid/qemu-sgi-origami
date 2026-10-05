@@ -720,9 +720,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
         g_assert_cmphex(qtest_readq(to, LB_BASE + fields[i].offset), ==,
                         fields[i].expected);
@@ -769,8 +769,8 @@ static void test_microlan_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     lb_wait_for_clock_running(to);
 
     /* Nothing completed in transit: the deadline is still ahead. */

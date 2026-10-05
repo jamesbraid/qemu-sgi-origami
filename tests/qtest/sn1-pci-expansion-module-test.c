@@ -231,7 +231,7 @@ static void test_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     for (i = 0; i < 6; i++) {
         g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x24) & 0xf, ==, 8 + i);
         g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x2c), ==, 0x12340 + i);

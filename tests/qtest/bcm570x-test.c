@@ -5701,8 +5701,8 @@ static void bcm570x_migrate(QTestState *from, QTestState *to, const char *uri)
 {
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
 }
 
 /*

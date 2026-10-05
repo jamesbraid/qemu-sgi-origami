@@ -434,9 +434,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 60);
+    sgi_wait_migration(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed", 60);
+    sgi_wait_migration(to, "completed");
     for (unsigned int i = 0; i < 48; i++) {
         g_assert_cmphex(read_reg(to, 0x70000 + i * 8), ==, 0x654300 | i);
     }
@@ -849,12 +849,12 @@ static QTestState *nic_migrate(NIC *nic, int64_t now)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(nic->qts,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(nic->qts, "completed", 60);
+    sgi_wait_migration(nic->qts, "completed");
     /*
      * The source completes once its state is sent, which can be before the
      * destination has loaded it; a read in between returns reset values.
      */
-    sgi_wait_migration_status(to, "completed", 60);
+    sgi_wait_migration(to, "completed");
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
     return to;

@@ -3046,8 +3046,8 @@ static void test_dp83843_register_migration(const void *data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     g_assert_cmphex(mii_read(to, PHY_ANNPTR), ==, 0x1a34);
     g_assert_cmphex(mii_read(to, MII_LBR) & 0x0030, ==, 0x0030);
 

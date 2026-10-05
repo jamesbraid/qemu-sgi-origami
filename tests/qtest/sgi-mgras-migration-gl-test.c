@@ -513,7 +513,7 @@ static void test_gl_texture_migration_rejects_load_past_tram(void)
     qtest_qmp_assert_success(
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     qtest_quit(to);
 
     tex_patch_load_place(stream, TEX_TL_MODE_RGBA8, 0xff, 0xff);

@@ -1176,7 +1176,7 @@ static void test_storage_failed_incoming(const void *data)
     qtest_qmp_assert_success(qts,
         "{'execute':'migrate-incoming','arguments':{'uri':%s,"
         "'exit-on-error':false}}", uri);
-    sgi_wait_migration_status(qts, "failed", 30);
+    sgi_wait_migration(qts, "failed");
     if (helper) {
         QDict *status = qtest_qmp_assert_success_ref(qts,
             "{'execute':'query-migrate'}");
@@ -1471,7 +1471,7 @@ static void test_storage_migration(const void *data)
     } else {
         sgi_migrate_stopped(from, uri);
     }
-    sgi_wait_migration_status(to, "completed", 30);
+    sgi_wait_migration(to, "completed");
     if (paused) {
         char sentinel[512] = { 0 }, reference[24];
         QDict *status = qtest_qmp_assert_success_ref(to,
