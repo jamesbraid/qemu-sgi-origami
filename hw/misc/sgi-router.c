@@ -16,6 +16,7 @@
 #include "hw/core/resettable.h"
 #include "hw/misc/sgi-router.h"
 #include "migration/vmstate.h"
+#include "system/memory.h"
 #include "system/reset.h"
 
 #define RR_STATUS_REV_ID       0x00000
@@ -295,7 +296,17 @@ static void sgi_router_net_changed_at(SGIRouterState *s, uint64_t generation,
 
 static void sgi_router_changed(SGIRouterState *s)
 {
+    /*
+     * Every Hub the flood reaches may move its claim aliases in a commit of
+     * its own, and every commit re-renders the flat view of every address
+     * space in the machine, so one transaction defers them to a single
+     * commit. The flood only re-derives port state, link bits and claim
+     * aliases; nothing in it accesses an address space. The change callback
+     * runs after the commit, against the new view.
+     */
+    memory_region_transaction_begin();
     sgi_router_net_changed_at(s, sgi_net_port_flood_start(), 0);
+    memory_region_transaction_commit();
     if (s->changed) {
         s->changed(s->changed_opaque);
     }
