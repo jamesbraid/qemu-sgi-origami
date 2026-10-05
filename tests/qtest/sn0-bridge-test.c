@@ -1355,6 +1355,13 @@ static void test_dma_buffer_faults(const void *data)
                 uint8_t seen[8];
                 MemTxResult result = memory ? MEMTX_ACCESS_ERROR :
                                              MEMTX_DECODE_ERROR;
+                /*
+                 * A memory-only transfer is refused at the first device
+                 * region it meets. The card's own R32 view is one, so
+                 * nothing moves; otherwise the translated page resolves to
+                 * RAM and only the faulting second page is refused.
+                 */
+                bool refused = early || (memory && converted);
 
                 g_test_message("native=%u memory=%u early=%u",
                                native, memory, early);
@@ -1370,7 +1377,7 @@ static void test_dma_buffer_faults(const void *data)
                                 0x43424140);
                 qtest_memread(qts, TARGET_PAGE_A + PAGE_SIZE_4K - 4, seen, 4);
                 for (unsigned i = 0; i < 4; i++) {
-                    uint8_t expected = early || memory ? SWAP_SENTINEL :
+                    uint8_t expected = refused ? SWAP_SENTINEL :
                         SWAP_SEED + (converted ? i ^ 3 : i);
 
                     g_assert_cmpuint(seen[i], ==, expected);
@@ -1382,8 +1389,7 @@ static void test_dma_buffer_faults(const void *data)
                 g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
                                 result);
                 g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c), ==,
-                    (early || memory) ? (memory ? 0xa5a5a5a5 : 0) :
-                                        0x43424140);
+                    refused ? (memory ? 0xa5a5a5a5 : 0) : 0x43424140);
                 g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x30), ==,
                                 memory ? 0xa5a5a5a5 : 0);
                 qtest_memread(qts, 0x300000, seen, sizeof(seen));

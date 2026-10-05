@@ -2749,43 +2749,48 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 }
 
 
-/* Assert the dispatch sequence independently of the returned payload bytes. */
+/*
+ * Assert the route a received payload took, independently of its bytes. The
+ * Hub maps the memory view straight onto RAM, so neither of its inbound
+ * traces may see the payload. The Bridge's byte-lane swap still sees it: on
+ * the native route every payload word passes through it, while the batched
+ * interface moves whole doublewords itself and leaves only an unaligned head
+ * and a sub-doubleword tail, under two doublewords between them, to the swap.
+ */
 static void assert_dma_payload_trace(const char *path, uint32_t start,
                                      unsigned length, bool native)
 {
     g_autofree char *trace = NULL;
     g_auto(GStrv) lines = NULL;
-    unsigned consumed = 0, callbacks = 0;
+    unsigned swapped = 0, callbacks = 0;
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
     lines = g_strsplit(trace, "\n", -1);
     for (unsigned i = 0; lines[i]; i++) {
         uint64_t addr;
-        unsigned size, write, expected;
-        unsigned remaining = length - consumed;
+        unsigned size, write;
 
-        if ((sscanf(lines[i], "sgi_hub_ii_packet_access addr=0x%" SCNx64
-                    " size=%u write=%u", &addr, &size, &write) != 3 &&
-             sscanf(lines[i], "sgi_hub_ii_dma_buffer addr=0x%" SCNx64
-                    " len=%u write=%u", &addr, &size, &write) != 3) ||
-            !write || addr < start || addr >= start + length) {
+        if (sscanf(lines[i], "sgi_hub_ii_packet_access addr=0x%" SCNx64
+                   " size=%u write=%u", &addr, &size, &write) == 3 ||
+            sscanf(lines[i], "sgi_hub_ii_dma_buffer addr=0x%" SCNx64
+                   " len=%u write=%u", &addr, &size, &write) == 3) {
+            g_assert_false(addr < start + length && addr + size > start);
             continue;
         }
-        g_assert_cmphex(addr, ==, start + consumed);
-        if (!native && !(addr & 7) && remaining >= 8) {
-            expected = remaining & ~7U;
-        } else {
-            expected = 4;
-            while (expected > remaining || (addr & (expected - 1))) {
-                expected /= 2;
-            }
+        /* The swap names the word before its lanes are exchanged. */
+        if (sscanf(lines[i], "sgi_bridge_lane_swap_write lane swap write "
+                   "addr 0x%" SCNx64 " size %u", &addr, &size) == 2 &&
+            addr >= (start & ~3U) && addr < start + length) {
+            swapped += size;
+            callbacks++;
         }
-        g_assert_cmpuint(size, ==, expected);
-        consumed += size;
-        callbacks++;
     }
-    g_assert_cmpuint(consumed, ==, length);
-    g_test_message("RX offset=%u length=%u %s callbacks=%u",
+    if (native) {
+        g_assert_cmpuint(swapped, >=, length);
+    } else {
+        g_assert_cmpuint(swapped, <, 16);
+    }
+    g_test_message("RX offset=%u length=%u %s swap callbacks=%u",
                    start & 0xfff, length, native ? "native" : "buffer",
                    callbacks);
 }
@@ -3095,7 +3100,8 @@ static void test_dma_buffer_payloads(const void *data)
                     g_strdup_printf("ioc3-payload-%u-%u.trace",
                                     (unsigned)getpid(), g_random_int());
                 g_autofree char *tracing = g_strdup_printf(
-                    "-trace enable=sgi_hub_ii_*,file=%s", path);
+                    "-trace enable=sgi_hub_ii_* "
+                    "-trace enable=sgi_bridge_lane_swap_write,file=%s", path);
                 g_autofree char *extra = g_strdup_printf(
                     "-global sgi-ioc3-eth.dma-buffer=%s %s",
                     native ? "off" : "on", tracing);

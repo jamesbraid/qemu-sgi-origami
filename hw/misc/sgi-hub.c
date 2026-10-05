@@ -4521,6 +4521,11 @@ MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice)
 #define SGI_HUB_XIO_NASID_MASK      0xff
 /* The memory view carries a system memory address in bits 39:0. */
 #define SGI_HUB_XIO_MEMORY_SIZE     (1ULL << 40)
+/*
+ * The memory view's last doubleword stays with the decode, so an access
+ * straddling 2^40 reaches it whole and is refused before any of it lands.
+ */
+#define SGI_HUB_II_MEMORY_ALIAS_SIZE (SGI_HUB_XIO_MEMORY_SIZE - 8)
 /* The node-explicit Hub register window and the interrupt-modify offset. */
 #define SGI_HUB_NODE_REGISTERS      0x01800000ULL
 #define SGI_HUB_XIO_INT_MODIFY      (SGI_HUB_NODE_REGISTERS + HUB_PI_INT_MODIFY)
@@ -4632,7 +4637,9 @@ static const SGIDMABufferProvider *sgi_hub_dma_buffer_provider(Object *owner,
 {
     SGIHubState *s = SGI_HUB(owner);
 
-    return mr == &s->ii_packet_face ? &s->ii_dma_buffer : NULL;
+    /* The face as a space's root, or its decode as a transfer's target. */
+    return mr == &s->ii_packet_face || mr == &s->ii_packet_decode ?
+           &s->ii_dma_buffer : NULL;
 }
 
 static const MemoryRegionOps sgi_hub_ii_packet_ops = {
@@ -4936,6 +4943,18 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      */
     address_space_init(&s->ii_inbound_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
                        "sgi-hub.ii.inbound");
+    /*
+     * A memory-view address goes into that view unchanged, with nothing to
+     * check on the way, so the face maps it there directly: a transfer
+     * resolves to RAM with no inbound callback, and node-qualified routing
+     * stays the claim layer's.
+     */
+    memory_region_init_alias(&s->ii_packet_memory, OBJECT(dev),
+                             "sgi-hub.ii.packet-memory",
+                             s->claim_view[SGI_HUB_DEVICE_VIEW], 0,
+                             SGI_HUB_II_MEMORY_ALIAS_SIZE);
+    memory_region_add_subregion_overlap(&s->ii_packet_face, 0,
+                                        &s->ii_packet_memory, 1);
     memory_region_init_alias(&s->ii_local_register_view, OBJECT(dev),
                              "sgi-hub.ii.local-register-view", &s->regs,
                              SGI_HUB_XIO_NI_STATUS, 8);
@@ -5200,6 +5219,8 @@ static void sgi_hub_unrealize(DeviceState *dev)
         }
         s->pi_io_installed = false;
     }
+    memory_region_del_subregion(&s->ii_packet_face, &s->ii_packet_memory);
+    object_unparent(OBJECT(&s->ii_packet_memory));
     address_space_destroy(&s->ii_inbound_as);
     address_space_destroy(&s->ii_local_registers_as);
     if (s->ii_connected) {
@@ -5443,8 +5464,11 @@ static void sgi_hub_init(Object *obj)
      * to its peer before this Hub realizes. They consult the Hub's
      * realized state only when an access arrives.
      */
-    memory_region_init_io(&s->ii_packet_face, obj, &sgi_hub_ii_packet_ops, s,
-                          "sgi-hub.ii.packet", SGI_XIO_PACKET_SIZE);
+    memory_region_init(&s->ii_packet_face, obj, "sgi-hub.ii.packet",
+                       SGI_XIO_PACKET_SIZE);
+    memory_region_init_io(&s->ii_packet_decode, obj, &sgi_hub_ii_packet_ops,
+                          s, "sgi-hub.ii.packet-decode", SGI_XIO_PACKET_SIZE);
+    memory_region_add_subregion(&s->ii_packet_face, 0, &s->ii_packet_decode);
     memory_region_init_io(&s->ii_widget_face, obj, &sgi_hub_ii_widget_ops, s,
                           "sgi-hub.ii.widget", SGI_HUB_II_WIDGET_FACE_SIZE);
     memory_region_init_io(&s->ii_io_out, obj, &sgi_hub_ii_io_out_ops, s,
@@ -5456,7 +5480,7 @@ static void sgi_hub_init(Object *obj)
      * None of the three holds state the re-entrancy guard could protect,
      * so the guard is lifted for them alone; the register region keeps it.
      */
-    s->ii_packet_face.disable_reentrancy_guard = true;
+    s->ii_packet_decode.disable_reentrancy_guard = true;
     s->ii_widget_face.disable_reentrancy_guard = true;
     s->ii_io_out.disable_reentrancy_guard = true;
 }

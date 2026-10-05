@@ -172,14 +172,19 @@ struct SGIHubState {
 
     /*
      * The I/O interface's XIO port. Its two receiving faces: packet_face
-     * decodes an inbound 48-bit XIO address into the memory or I/O view,
+     * takes an inbound 48-bit XIO address into the memory or I/O view,
      * and widget_face answers a peer's programmed I/O to this Hub's own
-     * widget number. io_out carries a big window whose translation entry
-     * selects the widget's I/O space, turning its widget-addressed access
-     * into a packet on the link. The rest is what the link peer offered:
+     * widget number. Within packet_face, packet_memory maps the memory view
+     * straight onto the engines' claim view and packet_decode handles the
+     * rest: interrupt-modify writes, the identity probe and refusals.
+     * io_out carries a big window whose translation entry selects the
+     * widget's I/O space, turning its widget-addressed access into a packet
+     * on the link. The rest is what the link peer offered:
      * its processor face, placed in the XIO space, and its packet fabric.
      */
     MemoryRegion ii_packet_face;
+    MemoryRegion ii_packet_decode;
+    MemoryRegion ii_packet_memory;
     SGIDMABufferProvider ii_dma_buffer;
     MemoryRegion ii_widget_face;
     MemoryRegion ii_io_out;
