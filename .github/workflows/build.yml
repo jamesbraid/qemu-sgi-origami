@@ -47,9 +47,9 @@ jobs:
         username: ${{ vars.CI_REGISTRY_USER }}
         password: ${{ secrets.CI_BOT_TOKEN }}
     steps:
-      # Forgejo checks out the pull request head here. Fetch its event-time
-      # base commit separately so multi-commit pull requests select every
-      # changed test without downloading the branch's whole history.
+      # Forgejo checks out the pull request head here, one commit deep. The
+      # base fetch below deepens only as far as the merge base, so smoke
+      # selects every changed test without downloading the whole history.
       - uses: actions/checkout@v4
 
       - name: docker client
@@ -65,13 +65,8 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          case "$PR_BASE_SHA" in
-            ????????????????????????????????????????)
-              case "$PR_BASE_SHA" in *[!0-9a-f]*) exit 2 ;; esac ;;
-            *) echo "missing pull request base commit" >&2; exit 2 ;;
-          esac
-          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
-          git cat-file -e "$PR_BASE_SHA^{commit}"
+          echo "fetch the pull request base" > "$CI_STEP"
+          bash scripts/ci/runner-setup fetch-base
 
       - name: every qtest source is one the suite runs
         run: |

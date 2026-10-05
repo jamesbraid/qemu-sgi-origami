@@ -124,6 +124,37 @@ case "${1-}" in
         || echo "nudge failed; the scheduled backstop will advance the queue instead"
     fi
     ;;
+  fetch-base)
+    # The checkout is one commit deep. Fetch the pull request's base and
+    # deepen both histories until they meet, so smoke can diff against the
+    # merge base. Without one, smoke selects every qtest.
+    : "${PR_BASE_SHA:?PR_BASE_SHA is required}"
+    case "$PR_BASE_SHA" in
+      ????????????????????????????????????????)
+        case "$PR_BASE_SHA" in *[!0-9a-f]*) exit 2 ;; esac ;;
+      *) echo "missing pull request base commit" >&2; exit 2 ;;
+    esac
+    head=$(git rev-parse HEAD)
+    git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+    git cat-file -e "$PR_BASE_SHA^{commit}"
+    for depth in 64 256 1024; do
+      if fork=$(git merge-base "$PR_BASE_SHA" "$head" 2>/dev/null); then
+        echo "merge base: $fork"
+        exit 0
+      fi
+      git fetch --no-tags --deepen="$depth" origin "$PR_BASE_SHA" "$head" || break
+    done
+    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+      git fetch --no-tags --unshallow origin "$PR_BASE_SHA" "$head" || true
+    fi
+    if fork=$(git merge-base "$PR_BASE_SHA" "$head" 2>/dev/null); then
+      echo "merge base: $fork"
+    else
+      # Not an error here: smoke finds no merge base either and selects
+      # every qtest.
+      echo "no merge base between $PR_BASE_SHA and $head; smoke will select every qtest"
+    fi
+    ;;
   volume)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"
     reap_orphans
@@ -186,7 +217,7 @@ case "${1-}" in
     fi
     ;;
   *)
-    echo 'usage: runner-setup docker|describe|image|volume|assets|check|report-failure|nudge-queue' >&2
+    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|check|report-failure|nudge-queue' >&2
     echo '       runner-setup run [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;

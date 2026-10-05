@@ -19,6 +19,7 @@ a pass.
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -127,23 +128,101 @@ def model(args):
         run([python, '-B', SOURCE / 'scripts/tests' / suite])
 
 
+QTEST_MESON = 'tests/qtest/meson.build'
+
+# The per-test tables in tests/qtest/meson.build. Changing an entry changes
+# only how that one test is run.
+QTEST_TABLES = ('slow_qtests', 'qtest_priorities')
+QTEST_TABLE = re.compile(
+    r'^(?P<name>' + '|'.join(QTEST_TABLES) + r')\s*=\s*\{\n(?P<body>.*?)^\}\n',
+    re.M | re.S)
+QTEST_ENTRY = re.compile(
+    r"\s*'(?P<test>[^']+)'\s*:\s*(?P<value>[^,#\s][^,#]*?)\s*,\s*(#.*)?")
+
+
+def qtest_tables(text):
+    """Split meson.build into its per-test tables and everything else.
+
+    Return None for the tables when a table line is neither blank, a
+    comment nor exactly one entry, so an edit the parser cannot read
+    counts as an edit outside the tables.
+    """
+    tables = {}
+    for match in QTEST_TABLE.finditer(text):
+        entries = {}
+        for line in match['body'].splitlines():
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            entry = QTEST_ENTRY.fullmatch(line)
+            if not entry:
+                return None, text
+            entries[entry['test']] = entry['value']
+        tables[match['name']] = entries
+    return tables, QTEST_TABLE.sub('', text)
+
+
+def changed_table_tests(old_text, new_text):
+    """Name the tests whose table entries differ, or None for other edits."""
+    old_tables, old_rest = qtest_tables(old_text)
+    new_tables, new_rest = qtest_tables(new_text)
+    if (old_tables is None or new_tables is None or old_rest != new_rest or
+            set(old_tables) != set(QTEST_TABLES) or
+            set(new_tables) != set(QTEST_TABLES)):
+        return None
+    changed = set()
+    for table in QTEST_TABLES:
+        old, new = old_tables[table], new_tables[table]
+        changed |= {test for test in old.keys() | new.keys()
+                    if old.get(test) != new.get(test)}
+    return changed
+
+
+def merge_base(base):
+    try:
+        return output(['git', '-C', SOURCE, 'merge-base', base, 'HEAD'],
+                      stderr=subprocess.DEVNULL).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
 def select_qtests(build, base):
-    """Choose the qtests a pull request runs from what it changed."""
+    """Choose the qtests a pull request runs from what it changed.
+
+    Compare against the merge base, so commits that reached the base branch
+    after the pull request forked do not read as the pull request's changes.
+    A changed test source selects that test, and a change confined to
+    meson.build's per-test tables selects the tests whose entries changed.
+    Any other change under tests/qtest, or a missing merge base, selects
+    every MIPS64 qtest.
+    """
     registered = build.registered_tests()
     all_mips64 = {name for name in registered
                   if name.startswith('qtest-mips64/')}
     selected = set(ALWAYS_QTESTS)
     full = False
-    if base:
-        paths = output(['git', '-C', SOURCE, 'diff', '--name-only', base,
+    fork = merge_base(base) if base else None
+    if base and not fork:
+        print(f'no merge base between {base} and HEAD; '
+              'selecting every MIPS64 qtest', flush=True)
+        full = True
+    if fork:
+        paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
                         'HEAD', '--', 'tests/qtest']).splitlines()
         for path in paths:
             target = 'qtest-mips64/' + Path(path).stem
             if (path.endswith('.c') and (SOURCE / path).is_file() and
                     target in registered):
                 selected.add(target)
-            else:
-                full = True
+                continue
+            if path == QTEST_MESON and (SOURCE / path).is_file():
+                tests = changed_table_tests(
+                    output(['git', '-C', SOURCE, 'show',
+                            f'{fork}:{QTEST_MESON}']),
+                    (SOURCE / path).read_text(encoding='utf-8'))
+                if tests is not None:
+                    selected |= {'qtest-mips64/' + test for test in tests}
+                    continue
+            full = True
     if full:
         selected = all_mips64
     selected &= registered
@@ -260,9 +339,9 @@ def main(argv=None):
         'smoke', help='the pull-request checks: the qtests a change '
                       'selects, one Linux boot and the unit tests')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
-                      help='select qtests changed since this commit '
-                           '(default: $PR_BASE_SHA; none selects only the '
-                           'always-run set)')
+                      help='select qtests changed since the merge base '
+                           'with this commit (default: $PR_BASE_SHA; none '
+                           'selects only the always-run set)')
     mode.set_defaults(func=smoke)
 
     mode = modes.add_parser(
