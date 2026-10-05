@@ -1017,6 +1017,10 @@ foreach dir : target_dirs
                 protocol: 'tap', timeout: 0, suite: ['speed'])
     endif
 
+    # A slow_qtests entry is a timeout budget. It puts an upstream test in
+    # the slow suite, which the quick setup leaves out, but not an SGI one:
+    # those stay in the quick setup and register their exhaustive cases
+    # only under g_test_slow().
     test('qtest-@0@/@1@'.format(target_base, test),
          qtest_executables[test],
          depends: [test_deps, qtest_emulator, emulator_modules],
@@ -1026,7 +1030,8 @@ foreach dir : target_dirs
          timeout: slow_qtests.get(test, 60),
          priority: qtest_priorities.get(test, slow_qtests.get(test, 60)),
          suite: ['qtest', 'qtest-' + target_base] +
-                (slow_qtests.has_key(test) ? ['slow'] : []) +
+                (slow_qtests.has_key(test) and test not in sgi_qtests ?
+                  ['slow'] : []) +
                 (target_base == 'mips64' and test in sgi_qtests ?
                   ['sgi', 'sgi-qtest'] : []))
   endforeach
