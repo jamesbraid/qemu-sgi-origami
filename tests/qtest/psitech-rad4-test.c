@@ -69,6 +69,8 @@
 
 #define MACHINE_WITH_BRIDGE \
     "-M origin200 -device psitech-rad4,addr=" G_STRINGIFY(RAD4_SLOT)
+#define MACHINE_WITH_BRIDGE_COMPAT_OFF \
+    MACHINE_WITH_BRIDGE ",overlay-index-compat=off"
 
 /*
  * PCI addresses this test assigns the card's apertures; 1 MiB aligned so BAR0
@@ -1524,6 +1526,60 @@ static void test_dma_upload_honors_mask(void)
     /* Only the masked low half of the incoming word took effect. */
     g_assert_cmphex(bar2_read(qts, 0x000020), ==, 0x00aa2233u);
 
+    qtest_quit(qts);
+}
+
+/*
+ * Guest compatibility approximation for the shipped X server's greyed Motif
+ * menu labels: under the overlay plane mask 0x0f000000, a store whose value
+ * is a bare 4-bit index writes that index into the overlay bits 24-27,
+ * through the CPU path and through DMA. Any other value keeps plain
+ * plane-mask behaviour, and turning overlay-index-compat off restores it for
+ * bare indices too.
+ */
+static void check_overlay_index_compat(QTestState *qts, bool compat)
+{
+    static const uint32_t payload[1] = { 0x00000005u };
+
+    bar2_write(qts, 0x000000, 0x00123456u);
+    bar2_write(qts, 0x000004, 0x00123456u);
+    bar2_write(qts, 0x000008, 0x00123456u);
+    bar2_write(qts, 0x00000c, 0x00123456u);
+    bar2_write(qts, B_MASK, 0x0f000000u);
+
+    bar2_write(qts, 0x000000, 0x00000002u);
+    bar2_write(qts, 0x000004, 0x00000102u);
+    bar2_write(qts, 0x000008, 0x03000000u);
+    g_assert_cmphex(bar2_read(qts, 0x000000), ==,
+                    compat ? 0x02123456u : 0x00123456u);
+    g_assert_cmphex(bar2_read(qts, 0x000004), ==, 0x00123456u);
+    g_assert_cmphex(bar2_read(qts, 0x000008), ==, 0x03123456u);
+
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x00000cu, sizeof(payload), 0);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
+               DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+    g_assert_cmphex(bar2_read(qts, 0x00000c), ==,
+                    compat ? 0x05123456u : 0x00123456u);
+}
+
+static void test_overlay_index_compat(void)
+{
+    QTestState *qts = rad4_init();
+
+    check_overlay_index_compat(qts, true);
+    qtest_quit(qts);
+}
+
+static void test_overlay_index_compat_off(void)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE_COMPAT_OFF);
+
+    rad4_configure_bars(qts);
+    check_overlay_index_compat(qts, false);
     qtest_quit(qts);
 }
 
@@ -3106,6 +3162,10 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/gamma-tables", test_gamma_tables);
     qtest_add_func("/psitech-rad4/gamma-overlay-bypass",
                    test_gamma_overlay_bypass);
+    qtest_add_func("/psitech-rad4/overlay-index-compat",
+                   test_overlay_index_compat);
+    qtest_add_func("/psitech-rad4/overlay-index-compat-off",
+                   test_overlay_index_compat_off);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     for (int mode = 0; mode < RAD4_MODE_COUNT; mode++) {
         g_autofree char *path = g_strdup_printf(
