@@ -137,5 +137,58 @@ class ModuleResponderTests(unittest.TestCase):
         self.compile_model(self.model)
 
 
+class CatalogueMarkerTests(unittest.TestCase):
+    """The compiler refuses a catalogue serial that carries no marker."""
+
+    @classmethod
+    def setUpClass(cls):
+        from sgi_model.model_compile import CompileError, compile_model
+        from sgi_model.model_validation import load_checked_system_model, schema
+
+        cls.CompileError = CompileError
+        cls.compile_model = staticmethod(compile_model)
+        model_schema = schema(MODELS)
+        cls.models = {
+            name: load_checked_system_model(MODELS / f"{name}.yaml",
+                                            model_schema=model_schema)
+            for name in ("origin200", "origin2000-rack", "octane")}
+
+    def model(self, name):
+        return copy.deepcopy(self.models[name])
+
+    def test_catalogue_compiles_marked(self):
+        for name in self.models:
+            self.compile_model(self.model(name))
+
+    def test_unmarked_onewire_serial_is_refused(self):
+        model = self.model("origin200")
+        identity = model["machine"]["emulation"]["synthetic_identities"][0]
+        identity["serial"] = "0x0c0b0a090807"
+        with self.assertRaisesRegex(self.CompileError, "marker"):
+            self.compile_model(model)
+
+    def test_repeated_identity_is_refused(self):
+        model = self.model("origin200")
+        identities = model["machine"]["emulation"]["synthetic_identities"]
+        identities.append(dict(identities[0]))
+        with self.assertRaisesRegex(self.CompileError, "more than one"):
+            self.compile_model(model)
+
+    def test_unmarked_module_serial_is_refused(self):
+        model = self.model("origin2000-rack")
+        model["machine"]["emulation"]["module_semantic_serials"][0][
+            "serial"] = "SGIMODULE1"
+        with self.assertRaisesRegex(self.CompileError, "marker"):
+            self.compile_model(model)
+
+    def test_unmarked_board_record_barcode_is_refused(self):
+        model = self.model("octane")
+        record = next(c["board_record"] for c in model["components"]
+                      if "board_record" in c)
+        record["barcode"] = "SIM3010001"
+        with self.assertRaisesRegex(self.CompileError, "marker"):
+            self.compile_model(model)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -417,14 +417,14 @@ class RecordShapeTests(unittest.TestCase):
              "datasheet_contracts": ["docs/datasheets/bedrock-network-interface.md"]},
         ])
         model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
-            "component": "io-bedrock", "kind": "bedrock", "serial": "0x123456",
+            "component": "io-bedrock", "kind": "bedrock", "serial": "0x51454d554e05",
         })
         entry = compile_model(model)
         self.assertEqual(len(entry["nodes"]), 1)
         self.assertEqual(entry["io_peers"], [{
             "id": "io-bedrock", "module_index": 1, "slot": 0,
             "asic_kind": "BEDROCK", "identity": {
-                "ni_revision": 1, "widget_revision": 1, "serial": 0x123456,
+                "ni_revision": 1, "widget_revision": 1, "serial": 0x51454d554e05,
                 "i2c_controller": False, "system_controller": False,
             },
         }])
@@ -466,7 +466,7 @@ class RecordShapeTests(unittest.TestCase):
              "datasheet_contracts": ["docs/datasheets/bedrock-network-interface.md"]},
         ])
         model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
-            "component": "io-bedrock", "kind": "bedrock", "serial": "0x123456",
+            "component": "io-bedrock", "kind": "bedrock", "serial": "0x51454d554e05",
         })
         return model
 
@@ -1184,9 +1184,9 @@ def _fit_occupant(model: dict, *, board_kind: str = "pci-shoehorn",
             selection["occupancy"] = "occupied"
             selection["occupant"] = "io2-board"
     model["machine"]["emulation"]["synthetic_identities"] += [
-        {"component": "io2-bridge", "serial": "0x10000000000d",
+        {"component": "io2-bridge", "serial": "0x51454d55420d",
          "reason": "fixture"},
-        {"component": "io2-ioc3", "serial": "0x10000000000e", "reason": "fixture"},
+        {"component": "io2-ioc3", "serial": "0x5e7454d5500e", "reason": "fixture"},
     ]
     return model
 
@@ -1222,7 +1222,7 @@ def _fit_widget_occupant(model: dict, *, hardware_kind: str = "xg",
             selection["occupancy"] = "occupied"
             selection["occupant"] = "io2-board"
     model["machine"]["emulation"]["synthetic_identities"].append(
-        {"component": "io2-widget", "serial": "0x10000000000d", "reason": "fixture"})
+        {"component": "io2-widget", "serial": "0x51454d55470d", "reason": "fixture"})
     return model
 
 
@@ -1277,8 +1277,8 @@ class OccupiedConnectorTests(unittest.TestCase):
         self.assertEqual(board["part"], "030-1275-002")
         self.assertEqual(board["revision"], 4)
         self.assertEqual(board["slot_index"], 2)
-        self.assertEqual(board["serial"], 0x10000000000d)
-        self.assertEqual(board["ioc3_serial"], 0x10000000000e)
+        self.assertEqual(board["serial"], 0x51454d55420d)
+        self.assertEqual(board["ioc3_serial"], 0x5e7454d5500e)
         self.assertEqual(board["pci"], [{"kind": "IOC3", "ethernet": True}])
         # The connector's own placement: crossbow 0, widget 12, controlled
         # by node-board-3 (node index 2).
@@ -1397,7 +1397,7 @@ class OccupiedConnectorTests(unittest.TestCase):
         board = entry["io_boards"][1]
         self.assertEqual(board["board_kind"], "KONA")
         self.assertEqual(board["slot_index"], 2)
-        self.assertEqual(board["serial"], 0x10000000000d)
+        self.assertEqual(board["serial"], 0x51454d55470d)
         self.assertEqual(board["pci"], [])
         self.assertIsNone(board["ioc3_serial"])
         # Same connector placement `_fit_occupant`'s Bridge-carrying board
@@ -2266,7 +2266,7 @@ class NodePopulationTests(unittest.TestCase):
             {"component": "io4-bridge", "bus": "xbow0-io4",
              "role": "bridge-upstream", "provenance": "derived"})
         model["machine"]["emulation"]["synthetic_identities"].append(
-            {"component": "io4-bridge", "serial": "0x10000000000d",
+            {"component": "io4-bridge", "serial": "0x51454d55420d",
              "reason": "fixture"})
         for row in model["composition"]["topology"]["node_populations"]:
             row["xio_slots"].pop("xio-slot-4")
