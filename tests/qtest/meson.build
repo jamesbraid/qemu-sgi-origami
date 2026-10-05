@@ -113,9 +113,10 @@ slow_qtests = {
   # private-launch boots (30 total) and measured 115.09s under the same
   # parallel CI load, so keep the same three-times-measured budget.
   'sn0-origin2000-test': 350,
-  # The migration suite runs twenty sequential cases, each a pair of QEMU
+  # The migration suite runs fifteen sequential cases, each a pair of QEMU
   # processes because a destination cannot share its source's. Its
-  # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s.
+  # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s
+  # with twenty cases.
   'sn0-migration-test': 180,
   # Sixteen machine configurations, each a migrated source and destination
   # pair. Measured 53.56s alone under debug_tcg on 2026-10-04, and 85-106s

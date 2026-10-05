@@ -18,7 +18,6 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
-#include "sgi-migrate.h"
 #include "sgi-test.h"
 #include "sn0-user-image.h"
 
@@ -395,43 +394,9 @@ static void test_split_store_returns_one_credit(const void *d)
     qtest_quit(qts);
 }
 
-/* The block and the map survive migration. */
-static void test_migration(const void *d)
-{
-    g_autofree char *tmpdir = NULL;
-    g_autofree char *uri = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpdir = g_dir_make_tmp("sn0-pi-gfx-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
-
-    from = qtest_init("-M origin200 -m 64M -S");
-    qtest_writeq(from, hub(0, PI_GFX_PAGE(1)), PI_GFX_PAGE_ENABLE | PAGE);
-    qtest_writeq(from, hub(0, PI_GFX_CREDIT(1)), 0x65);
-    qtest_writeq(from, hub(0, PI_GFX_BIAS(1)), 0x44);
-    qtest_writeq(from, hub(0, IO_GFX_INIT(1)), MAP(0, 1, HEAD_WIDGET));
-    to = qtest_initf("-M origin200 -m 64M -S -incoming %s", uri);
-    sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
-
-    g_assert_cmphex(qtest_readq(to, hub(0, PI_GFX_PAGE(1))), ==,
-                    PI_GFX_PAGE_ENABLE | PAGE);
-    g_assert_cmphex(qtest_readq(to, hub(0, PI_GFX_CREDIT(1))), ==, 0x65);
-    g_assert_cmphex(qtest_readq(to, hub(0, PI_GFX_BIAS(1))), ==, 0x44);
-    g_assert_cmphex(qtest_readq(to, hub(0, IO_GFX_INIT(1))), ==,
-                    MAP(0, 1, HEAD_WIDGET));
-
-    qtest_quit(from);
-    qtest_quit(to);
-    g_rmdir(tmpdir);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("sn0/pi-gfx/migration", NULL, test_migration);
     /* Every other case runs processors. */
     if (!qtest_has_accel("tcg")) {
         return g_test_run();

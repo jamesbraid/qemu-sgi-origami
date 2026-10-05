@@ -1,7 +1,8 @@
 /*
- * Test stopped-machine device state after migration, including .post_load
- * derived state. Bridge window access must reach its card after load;
- * VMSTATE_UINT32_ARRAY alone preserves only the slot register bits.
+ * Test SN0 device mechanisms that are mid-flight when a stopped machine
+ * migrates: wound timers, blocked transmits, half-read one-wire pages,
+ * armed block transfers and partly issued flash commands. Register and
+ * RAM state at rest is compared by sgi-migration-roundtrip-test.c.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -44,10 +45,6 @@
 #define HUB_ONEWIRE_DONE        (1ULL << 1)
 #define HUB_ONEWIRE_RX          (1ULL << 0)
 #define HUB_ONEWIRE_RESET       ((0x31ULL << 27) | (0x0eULL << 20))
-#define NI_SCRATCH_0            0x600100
-#define NI_SCRATCH_1            0x600108
-#define NI_META_TABLE_LAST      0x6380f8
-#define NI_LOCAL_TABLE          0x638100
 
 /* The block transfer engines' registers and fields. */
 #define BTE_LENGTH(e)           (0x410000 + (e) * 0x10000)
@@ -101,31 +98,12 @@
     (BRIDGE_BASE_FOR_NODE(node) + BRIDGE_CFG0 + \
      (device) * CFG0_DEVICE_STRIDE)
 
-/* Any card works for a window test; this one needs no backing or net. */
-#define PROBE_SLOT              4
-#define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
-
-/* A 32-bit scratch register in the card's memory-mapped register file. */
-#define CARD_SCRATCH            0x34
-
-/* Sixteen megabytes apart, matching sn0-bridge-test.c's own layout. */
-#define CARD_MMIO(slot)         (0x10000000u + (slot) * 0x1000000u)
-
-/* Window 1 is the second 2 MB window, and is where slot 4 lands on it. */
-#define PROBE_WINDOW             1
-#define PROBE_WINDOW_OFFSET      0x400000
-#define WINDOW(offset)           (BRIDGE_BASE + (offset))
-
 #define IOC3_SLOT                2
 #define IOC3_PCI_MMIO            0x10000000u
 #define IOC3_WINDOW_OFFSET       0x600000
 #define BRIDGE_INT_STATUS         (BRIDGE_BASE + 0x100 + REG_DATA)
 #define BRIDGE_PIN_ETH            (1u << 2)
 #define IOC3_SERIAL_A            0x020178
-#define IOC3_SCRATCH             7
-#define IOC3_SCRATCH_AT(node)    (BRIDGE_BASE_FOR_NODE(node) + \
-                                  IOC3_WINDOW_OFFSET + IOC3_SERIAL_A + \
-                                  IOC3_SCRATCH)
 
 /*
  * The IOC3 serial DMA engine on node 0. The ring block sits in guest RAM;
@@ -206,18 +184,6 @@
 static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 {
     qtest_writeq(qts, FLASH_HUB + 8 * offset, value);
-}
-
-static void bridge_put_card_in_slot(QTestState *qts, int slot)
-{
-    qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_MMIO(slot));
-    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
-}
-
-static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
-{
-    qtest_writel(qts, REG(BRIDGE_DEVICE(window)),
-                DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
 }
 
 static bool module_onewire_slot(QTestState *qts, unsigned int pulse)
@@ -445,39 +411,6 @@ static void queue_ioc3_ethernet_tx(QTestState *qts, uint32_t desc,
     qtest_writel(qts, IOC3_ENET_TX_PRODUCE, produce);
 }
 
-/* Two equal devfns on different root buses must migrate independently. */
-static void test_dual_base_io_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert_nonnull(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MACHINE_DUAL);
-    sn0_program_nasid(from, 1);
-    attach_node_ioc3(from, 0);
-    attach_node_ioc3(from, 1);
-    qtest_writeb(from, IOC3_SCRATCH_AT(0), 0x5a);
-    qtest_writeb(from, IOC3_SCRATCH_AT(1), 0xa5);
-    g_assert_cmphex(qtest_readb(from, IOC3_SCRATCH_AT(0)), ==, 0x5a);
-    g_assert_cmphex(qtest_readb(from, IOC3_SCRATCH_AT(1)), ==, 0xa5);
-
-    dest_cmdline = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(0)), ==, 0x5a);
-    g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(1)), ==, 0xa5);
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
 /*
  * A wound receive timer's deadline lives in a QEMUTimer, which crosses only
  * if the timer is in the stream; lost in transit it is an interrupt that
@@ -678,91 +611,6 @@ static void test_interrupt_output_phase_survives_migration(const void *data)
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
                     ==, IOC3_INT_OUT_STATE);
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
-/*
- * Aim a window at a card, migrate, and require the same access to still reach
- * the card: without sgi_bridge_post_load() re-deriving the window's aim, the
- * destination uses the wrong PCI space and the read returns the bus's
- * unanswered value.
- */
-static void test_a_device_window_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert_nonnull(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
-    bridge_put_card_in_slot(from, PROBE_SLOT);
-    bridge_aim_window_at_card(from, PROBE_WINDOW, PROBE_SLOT);
-
-    qtest_writeq(from, HUB_LOCAL + NI_SCRATCH_0, 0x0123456789abcdefULL);
-    qtest_writeq(from, HUB_LOCAL + NI_SCRATCH_1, 0xfedcba9876543210ULL);
-
-    qtest_writel(from, WINDOW(PROBE_WINDOW_OFFSET) + CARD_SCRATCH, 0xc0ffee00);
-    g_assert_cmphex(qtest_readl(from, WINDOW(PROBE_WINDOW_OFFSET) +
-                                CARD_SCRATCH), ==, 0xc0ffee00);
-
-    /* Same devices as the source, listening before its QMP handshake. */
-    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE PROBE_CARD
-                                   " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-
-    sgi_migrate_stopped(from, uri);
-
-    /*
-     * Check: the access still reaches the card, which only holds if the
-     * derived state came back, not just the register.
-     */
-    g_assert_cmphex(qtest_readl(to, WINDOW(PROBE_WINDOW_OFFSET) +
-                                CARD_SCRATCH), ==, 0xc0ffee00);
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_SCRATCH_0), ==,
-                    0x0123456789abcdefULL);
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_SCRATCH_1), ==,
-                    0xfedcba9876543210ULL);
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
-/*
- * Route entries are guest-programmed network state. Their initial value is
- * also zero, so a migration test must write non-zero values before the move;
- * otherwise a destination that silently drops the version-16 arrays passes.
- */
-static void test_network_routes_survive_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert_nonnull(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MACHINE);
-    qtest_writeq(from, HUB_LOCAL + NI_LOCAL_TABLE, 0x1b);
-    qtest_writeq(from, HUB_LOCAL + NI_META_TABLE_LAST, 0x16);
-    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
-    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
-
-    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -1187,44 +1035,6 @@ static void test_flash_program_command_survives_migration(const void *data)
     qtest_quit(from);
 }
 
-/* Node 0's ECC and directory back-door windows in Hub-special space. */
-#define BACKDOOR_ECC_HUB        (SPACE_HUB + 0x80000000ULL)
-#define BACKDOOR_DIR_HUB        (SPACE_HUB + 0xc0000000ULL)
-
-/*
- * The back-door storage is the backing of a ROM device, so it crosses in the
- * RAM stream. If it ever stopped doing so the destination would read its
- * realize-time zero fill. The low sixteen bits are the real storage.
- */
-static void test_backdoor_storage_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert_nonnull(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MACHINE);
-    qtest_writeq(from, BACKDOOR_ECC_HUB, 0x000000000000cafeULL);
-    qtest_writeq(from, BACKDOOR_DIR_HUB, 0x000000000000babeULL);
-    g_assert_cmphex(qtest_readq(from, BACKDOOR_ECC_HUB) & 0xffff, ==, 0xcafe);
-    g_assert_cmphex(qtest_readq(from, BACKDOOR_DIR_HUB) & 0xffff, ==, 0xbabe);
-
-    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readq(to, BACKDOOR_ECC_HUB) & 0xffff, ==, 0xcafe);
-    g_assert_cmphex(qtest_readq(to, BACKDOOR_DIR_HUB) & 0xffff, ==, 0xbabe);
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
 /*
  * The Bridge restores its PCI pin state from the stream. Re-driving an
  * asserted child while that restoration is still pending increments the PCI
@@ -1478,8 +1288,6 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sn0/migration/device-window-survives-migration",
-                        NULL, test_a_device_window_survives_migration);
     qtest_add_data_func("sn0/migration/wound-receive-timer-survives",
                         NULL, test_a_wound_receive_timer_survives_migration);
     qtest_add_data_func("sn0/migration/blocked-serial-transmit-survives",
@@ -1487,10 +1295,6 @@ int main(int argc, char **argv)
                         test_blocked_serial_transmit_survives_migration);
     qtest_add_data_func("sn0/migration/interrupt-output-phase-survives",
                         NULL, test_interrupt_output_phase_survives_migration);
-    qtest_add_data_func("sn0/migration/dual-base-io-survives-migration",
-                        NULL, test_dual_base_io_survives_migration);
-    qtest_add_data_func("sn0/migration/network-routes-survive-migration",
-                        NULL, test_network_routes_survive_migration);
     qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
                         NULL, test_staged_i2c_start_survives_migration);
     qtest_add_data_func("sn0/migration/elsc-rotation-position",
@@ -1507,8 +1311,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/migration/flash-program-command-"
                         "survives-migration",
                         NULL, test_flash_program_command_survives_migration);
-    qtest_add_data_func("sn0/migration/backdoor-storage-survives-migration",
-                        NULL, test_backdoor_storage_survives_migration);
     qtest_add_data_func("sn0/migration/ethernet-interrupt-reasserts",
                         NULL,
                         test_ethernet_interrupt_reasserts_after_migration);

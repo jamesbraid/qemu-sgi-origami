@@ -4442,36 +4442,6 @@ static void test_the_buffer_ram_generates_parity_on_request(
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x00010001u);
 }
 
-static void test_the_buffer_ram_parity_survives_migration(const void *data)
-{
-    g_autofree char *uri = NULL;
-    g_autofree char *dir = NULL;
-    QTestState *from, *to;
-
-    dir = g_dir_make_tmp("sn0-ioc3-ssram-XXXXXX", NULL);
-    g_assert_nonnull(dir);
-    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
-
-    from = qtest_init("-M origin200");
-    sn0_ioc3_attach(from);
-    qtest_writel(from, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
-    qtest_writel(from, SSRAM_FIRST, 0x00020001u);
-    qtest_writel(from, SSRAM_HALFWAY, 0x00000001u);
-
-    to = qtest_initf("-M origin200 -incoming %s", uri);
-    sgi_migrate_stopped(from, uri);
-    qtest_quit(from);
-    sn0_ioc3_attach(to);
-
-    g_assert_cmphex(qtest_readl(to, MAC_CONTROL) & MAC_CONTROL_RAM_PARITY,
-                    ==, MAC_CONTROL_RAM_PARITY);
-    g_assert_cmphex(qtest_readl(to, SSRAM_FIRST), ==, 0x00010001u);
-    g_assert_cmphex(qtest_readl(to, SSRAM_HALFWAY), ==, 0x00020001u);
-
-    qtest_quit(to);
-    g_rmdir(dir);
-}
-
 static void test_the_size_probe_survives_parity_checking(const void *data)
 {
     ioc3_reset();
@@ -6526,8 +6496,6 @@ int main(int argc, char **argv)
                         test_the_buffer_ram_reports_bad_parity);
     qtest_add_data_func("sn0/ioc3/buffer-ram-generates-parity", NULL,
                         test_the_buffer_ram_generates_parity_on_request);
-    qtest_add_data_func("sn0/ioc3/buffer-ram-parity-survives-migration", NULL,
-                        test_the_buffer_ram_parity_survives_migration);
     qtest_add_data_func("sn0/ioc3/size-probe-survives-parity-checking", NULL,
                         test_the_size_probe_survives_parity_checking);
     qtest_add_data_func("sn0/ioc3/clock-backing/migration-running", NULL,
