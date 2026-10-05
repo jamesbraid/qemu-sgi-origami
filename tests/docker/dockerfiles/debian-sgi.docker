@@ -4,12 +4,14 @@ FROM docker.io/library/debian:trixie-slim
 
 # python3-jsonschema and python3-yaml are pythondeps.toml's sgi-model group,
 # installed here so the model suites run without fetching from PyPI.
+# gdb-multiarch drives the functional tests' reverse-debugging cases.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
         binutils-mips64-linux-gnuabi64 \
         build-essential \
         ca-certificates \
         gcc-mips64-linux-gnuabi64 \
+        gdb-multiarch \
         git \
         libegl-dev \
         libegl-mesa0 \

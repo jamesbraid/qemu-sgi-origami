@@ -96,7 +96,8 @@ jobs:
                 mkdir -p build-nightly
                 cd build-nightly
                 ../configure --target-list=mips64-softmmu --enable-tests \
-                    --enable-hmp --enable-slirp --enable-debug-tcg
+                    --enable-hmp --enable-slirp --enable-debug-tcg \
+                    --gdb=/usr/bin/gdb-multiarch
                 ninja
               '
 
