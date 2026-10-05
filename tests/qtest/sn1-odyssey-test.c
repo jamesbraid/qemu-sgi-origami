@@ -17092,22 +17092,37 @@ int main(int argc, char **argv)
                    test_texture_chain_integer_quads);
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-mode",
                    test_texture_one_dimensional_mode);
-    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-clamp-nearest",
-                   test_texture_one_dimensional_clamp_nearest);
+    /*
+     * The clamp cases cross the edge mode, a clamped or a stored border,
+     * with nearest and linear filtering, in one and two dimensions, and
+     * filter a wide one-dimensional stored image both ways. The quick setup
+     * takes each mode once per dimension, with the filters swapped between
+     * the two, and the wide image linear; the thorough setup takes them all.
+     */
+    if (g_test_slow()) {
+        qtest_add_func("sn1/odyssey/texture-adapter/"
+                       "one-dimensional-clamp-nearest",
+                       test_texture_one_dimensional_clamp_nearest);
+    }
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-clamp-linear",
                    test_texture_one_dimensional_clamp_linear);
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-nearest",
                    test_texture_one_dimensional_stored_nearest);
-    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-linear",
-                   test_texture_one_dimensional_stored_linear);
+    if (g_test_slow()) {
+        qtest_add_func("sn1/odyssey/texture-adapter/"
+                       "one-dimensional-stored-linear",
+                       test_texture_one_dimensional_stored_linear);
+    }
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-upload",
                    test_texture_one_dimensional_stored_upload);
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "one-dimensional-wide-stored-upload",
                    test_texture_one_dimensional_wide_stored_upload);
-    qtest_add_func("sn1/odyssey/texture-adapter/"
-                   "one-dimensional-wide-stored-nearest",
-                   test_texture_one_dimensional_wide_stored_nearest);
+    if (g_test_slow()) {
+        qtest_add_func("sn1/odyssey/texture-adapter/"
+                       "one-dimensional-wide-stored-nearest",
+                       test_texture_one_dimensional_wide_stored_nearest);
+    }
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "one-dimensional-wide-stored-linear",
                    test_texture_one_dimensional_wide_stored_linear);
@@ -17150,12 +17165,14 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "two-dimensional-clamp-nearest",
                    test_texture_two_dimensional_clamp_nearest);
-    qtest_add_func("sn1/odyssey/texture-adapter/"
-                   "two-dimensional-clamp-linear",
-                   test_texture_two_dimensional_clamp_linear);
-    qtest_add_func("sn1/odyssey/texture-adapter/"
-                   "two-dimensional-stored-nearest",
-                   test_texture_two_dimensional_stored_nearest);
+    if (g_test_slow()) {
+        qtest_add_func("sn1/odyssey/texture-adapter/"
+                       "two-dimensional-clamp-linear",
+                       test_texture_two_dimensional_clamp_linear);
+        qtest_add_func("sn1/odyssey/texture-adapter/"
+                       "two-dimensional-stored-nearest",
+                       test_texture_two_dimensional_stored_nearest);
+    }
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "two-dimensional-stored-linear",
                    test_texture_two_dimensional_stored_linear);
