@@ -43,6 +43,7 @@
 #include "system/runstate.h"
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/initial-flash.h"
+#include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-storage.h"
@@ -90,6 +91,8 @@ typedef struct OctaneMachineState {
     GHashTable *storage;
     bool flash_select;
     bool flash_strap;
+    /* mac=, or NULL for SGI_BOARD_DEFAULT_MAC. */
+    char *mac;
 } OctaneMachineState;
 
 static char *octane_get_graphics_board(Object *obj, Error **errp)
@@ -323,7 +326,12 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
+    g_autofree char *mac = sgi_board_mac(s->mac, 0, errp);
     PCIDevice *pci;
+
+    if (!mac) {
+        return false;
+    }
 
     for (unsigned slot = 0; slot < 2; slot++) {
         pci = pci_new(PCI_DEVFN(slot, 0), TYPE_QLOGIC_ISP1040);
@@ -373,6 +381,11 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         object_unref(OBJECT(pci));
         return false;
     }
+    /*
+     * The IOC3 builds its Ethernet-address part from this, and refuses a
+     * different -nic mac=.
+     */
+    qdev_prop_set_string(DEVICE(pci), "board-mac", mac);
     qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);
     qdev_prop_set_uint8(DEVICE(pci), "phy-addr", 1);
     if (serial_hd(0)) {
@@ -927,6 +940,7 @@ static void octane_instance_finalize(Object *obj)
 
     g_free(s->topology_name);
     g_free(s->graphics_board);
+    g_free(s->mac);
     unregister_savevm(NULL, "octane-flash-storage", s);
     migrate_del_blocker(&s->flash_migration_blocker);
     if (s->storage) {
@@ -1066,6 +1080,9 @@ static void octane_class_init(ObjectClass *oc, const void *data)
         "Strap the PROM to boot from Bridge flash select 1 (default from "
         "query-sgi-machines; the board's strap is unknown)");
     octane_class_add_properties(oc, product);
+    sgi_board_mac_class_add_property(oc, offsetof(OctaneMachineState, mac),
+        "Onboard Ethernet address, held in the IOC3 bus's Ethernet-address "
+        "part (default " SGI_BOARD_DEFAULT_MAC ", a placeholder)");
 
     /* The catalogue's processor part is the one CPU type the board takes. */
     cpu_types[0] = g_strconcat(processor->kind, MIPS_CPU_TYPE_SUFFIX, NULL);

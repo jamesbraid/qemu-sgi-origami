@@ -785,6 +785,74 @@ static void test_board_identity_migration(gconstpointer data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/* The station address the IOC3 bus's Ethernet-address part holds. */
+static void octane_station_address(QTestState *qts, uint8_t mac[6])
+{
+    uint8_t page[11];
+    uint64_t found[3], ethernet = 0;
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, IOC3_PIN_CONTROL_SET, 1u << 21);
+    g_assert_cmpuint(octane_onewire_search(qts, IOC3_MICROLAN, found), ==, 3);
+    for (unsigned i = 0; i < 3; i++) {
+        if ((found[i] & 0xff) == 0x91) {
+            ethernet = found[i];
+        }
+    }
+    g_assert_cmphex(ethernet, !=, 0);
+    octane_onewire_address(qts, IOC3_MICROLAN, ethernet, 0xf0, 0);
+    octane_onewire_read_byte(qts, IOC3_MICROLAN); /* Command/address CRC. */
+    for (unsigned int i = 0; i < sizeof(page); i++) {
+        page[i] = octane_onewire_read_byte(qts, IOC3_MICROLAN);
+    }
+    g_assert_cmphex(page[0], ==, 0x0a);
+    for (unsigned int i = 0; i < 6; i++) {
+        mac[i] = page[10 - i];
+    }
+}
+
+static void octane_storage_rejected(const char *machine, const char *extra,
+                                    const char *message);
+
+/*
+ * The mac property sets the station address, as on the SN1 machines; with
+ * none it is the shared 08:00:69 placeholder, and a different -nic mac= is
+ * refused rather than silently overriding the board's identity.
+ */
+static void test_octane_mac(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    static const uint8_t fallback[] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
+    static const uint8_t chosen[] = { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc };
+    const char *machine = octane2 ? "octane2" : "octane";
+    g_autofree char *conflict = g_strdup_printf(
+        "-bios %s%s -nic user,mac=52:54:00:12:34:56", flash_path,
+        octane2 ? " -m 256M" : "");
+    g_autofree char *bios = g_strdup_printf("-bios %s", flash_path);
+    g_autofree char *multicast = g_strdup_printf("%s,mac=09:00:69:00:00:01",
+                                                 machine);
+    uint8_t mac[6];
+    QTestState *qts;
+
+    qts = octane2 ? octane2_start_args("-nic user") :
+                    octane_start_args("-nic user");
+    octane_station_address(qts, mac);
+    g_assert_cmpmem(mac, 6, fallback, 6);
+    qtest_quit(qts);
+    qts = octane2 ?
+        octane2_start_args("-M octane2,mac=08:00:69:aa:bb:cc -nic user") :
+        octane_start_args("-M octane,mac=08:00:69:aa:bb:cc -nic user");
+    octane_station_address(qts, mac);
+    g_assert_cmpmem(mac, 6, chosen, 6);
+    qtest_quit(qts);
+    octane_storage_rejected(machine, conflict,
+                            "IOC3 NIC MAC conflicts with board identity");
+    octane_storage_rejected(multicast, bios,
+                            "mac must be a nonzero unicast address");
+}
+
 static void test_octane_ioc3_ethernet(bool octane2)
 {
     static const uint8_t mac[] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
@@ -3307,8 +3375,6 @@ static void test_catalogue_machine_options(void)
     qtest_quit(qts);
 }
 
-static void octane_storage_rejected(const char *machine, const char *extra,
-                                    const char *message);
 
 /*
  * Each product takes only its catalogue processor part, refused with
@@ -4532,6 +4598,8 @@ int main(int argc, char **argv)
                    test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
+    qtest_add_data_func("/octane/mac", GINT_TO_POINTER(0), test_octane_mac);
+    qtest_add_data_func("/octane2/mac", GINT_TO_POINTER(1), test_octane_mac);
     qtest_add_data_func("/octane/ioc3-parallel", GINT_TO_POINTER(0),
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),

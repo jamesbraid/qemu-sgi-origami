@@ -73,6 +73,7 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-storage.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
@@ -437,19 +438,6 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
 }
 
 /*
- * The onboard Ethernet address when mac= is not given: SGI's 08:00:69 OUI
- * with a fixed placeholder station part, the value the launcher used.
- * It is not any machine's factory address.
- */
-#define SGI_SN1_DEFAULT_MAC "08:00:69:12:34:56"
-
-static bool sgi_machine_parse_mac(const char *text, uint8_t mac[6])
-{
-    return net_parse_macaddr(mac, text) == 0 &&
-           memcmp(mac, "\0\0\0\0\0\0", 6) && !(mac[0] & 1);
-}
-
-/*
  * The onboard I/O board fitted to a Bedrock node: an IO8 or a Fuel system
  * board, each on the node's own XBridge.
  */
@@ -531,8 +519,6 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                         unsigned int node_index, Error **errp)
 {
     SGIModelIoBoardPreset preset;
-    uint8_t mac[6];
-    uint64_t value = 0;
     uint32_t processors;
     g_autofree char *address = NULL;
 
@@ -540,24 +526,10 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                                 &preset)) {
         return true;
     }
-    if (!sgi_machine_parse_mac(s->mac ? s->mac : SGI_SN1_DEFAULT_MAC, mac)) {
-        error_setg(errp, "mac must be a nonzero unicast address");
+    address = sgi_board_mac(s->mac, node_index, errp);
+    if (!address) {
         return false;
     }
-    for (unsigned int i = 0; i < 6; i++) {
-        value = value << 8 | mac[i];
-    }
-    value = (value + node_index) & MAKE_64BIT_MASK(0, 48);
-    for (unsigned int i = 0; i < 6; i++) {
-        mac[i] = value >> (40 - 8 * i);
-    }
-    if (!memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
-        error_setg(errp, "mac leaves node %u without a unicast address",
-                   node_index);
-        return false;
-    }
-    address = g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0],
-                              mac[1], mac[2], mac[3], mac[4], mac[5]);
     qdev_prop_set_string(l1, "mac", address);
     if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8) {
         qdev_prop_set_string(l1, "mac-record", "system-board");
@@ -5103,24 +5075,6 @@ static void sgi_machine_set_fuel_mac_eeprom(Object *obj, const char *value,
     s->fuel_mac_eeprom = g_strdup(value);
 }
 
-static char *sgi_machine_get_mac(Object *obj, Error **errp)
-{
-    return g_strdup(SGI_MACHINE(obj)->mac);
-}
-
-static void sgi_machine_set_mac(Object *obj, const char *value, Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(obj);
-    uint8_t mac[6];
-
-    if (!sgi_machine_parse_mac(value, mac)) {
-        error_setg(errp, "mac must be a nonzero unicast address");
-        return;
-    }
-    g_free(s->mac);
-    s->mac = g_strdup(value);
-}
-
 static void sgi_machine_get_l1_type_code(Object *obj, Visitor *v,
                                          const char *name, void *opaque,
                                          Error **errp)
@@ -5537,12 +5491,10 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Path to a 512-byte Fuel L1 MAC EEPROM image; applicability and "
         "requirements are declared by the selected model");
 
-    object_class_property_add_str(oc, "mac", sgi_machine_get_mac,
-                                  sgi_machine_set_mac);
-    object_class_property_set_description(oc, "mac",
+    sgi_board_mac_class_add_property(oc, offsetof(SGIMachineState, mac),
         "Onboard Ethernet address of node 0, carried in its L1 identity "
         "record; each further node takes the next address (default "
-        SGI_SN1_DEFAULT_MAC ", a placeholder)");
+        SGI_BOARD_DEFAULT_MAC ", a placeholder)");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
