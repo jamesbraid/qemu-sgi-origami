@@ -49,6 +49,7 @@ MODEL_SUITES = [
     'scripts/tests/test_sgi_model_compiler_contract.py',
     'scripts/tests/test_sgi_model_goldens.py',
     'scripts/tests/test_sgi_model_resolution_contract.py',
+    'scripts/tests/test_sgi_synthetic_serial.py',
 ]
 
 # The other script tests that need neither a build nor network access.
