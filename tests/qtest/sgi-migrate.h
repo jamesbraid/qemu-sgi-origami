@@ -13,8 +13,17 @@
 #include "qobject/qdict.h"
 
 /*
+ * The shortest host-time bound any wait below uses, as upstream's migration
+ * helpers do with MIGRATION_STATUS_WAIT_TIMEOUT. A migration's two QEMUs run
+ * CPU-bound on a shared host; at heavy load a source waiting on a slow
+ * destination overran the 30 s its callers asked for while still moving.
+ */
+#define SGI_MIGRATION_WAIT_MIN_S 120
+
+/*
  * Block until @s reports @status, polling query-migrate against a wall-clock
- * deadline of @deadline_s seconds. Every duplicate this header replaces
+ * deadline of @deadline_s seconds, or SGI_MIGRATION_WAIT_MIN_S if that is
+ * longer. Every duplicate this header replaces
  * polled query-migrate this way; none enabled the "events" migration
  * capability, so waiting on the MIGRATION QMP event instead would block
  * forever. migrate_generate_event() in migration.c only sends it when that
@@ -30,7 +39,8 @@ static inline void sgi_wait_migration_status(QTestState *s,
                                               int deadline_s)
 {
     int64_t deadline = g_get_monotonic_time() +
-                        deadline_s * G_TIME_SPAN_SECOND;
+                       MAX(deadline_s, SGI_MIGRATION_WAIT_MIN_S) *
+                       G_TIME_SPAN_SECOND;
 
     for (;;) {
         QDict *ret = qtest_qmp_assert_success_ref(s,
@@ -57,16 +67,15 @@ static inline void sgi_wait_migration_status(QTestState *s,
  * via "-incoming <uri>" on its command line or a prior "migrate-incoming"
  * QMP command. This only drives @from's "migrate" command and its own
  * completion wait, matching every existing caller, none of which keeps a
- * handle to the destination QTestState here. Every existing caller used a 30
- * second deadline (or none at all), so this passes 30 through rather than
- * taking a parameter of its own.
+ * handle to the destination QTestState here. It takes no deadline of its
+ * own and waits SGI_MIGRATION_WAIT_MIN_S.
  */
 static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
 {
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
 
-    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(from, "completed", SGI_MIGRATION_WAIT_MIN_S);
 }
 
 #endif /* SGI_MIGRATE_H */
