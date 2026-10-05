@@ -169,9 +169,9 @@ def scripts(args):
 
 QTEST_MESON = 'tests/qtest/meson.build'
 
-# The per-test tables in tests/qtest/meson.build. Changing an entry changes
+# The per-test table in tests/qtest/meson.build. Changing an entry changes
 # only how that one test is run.
-QTEST_TABLES = ('slow_qtests', 'qtest_priorities')
+QTEST_TABLES = ('slow_qtests',)
 QTEST_TABLE = re.compile(
     r'^(?P<name>' + '|'.join(QTEST_TABLES) + r')\s*=\s*\{\n(?P<body>.*?)^\}\n',
     re.M | re.S)
