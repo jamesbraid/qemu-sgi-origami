@@ -48,6 +48,15 @@ layer:
           sources:
           - docs/datasheets/ip30-flash.md
           notes: Unknown wiring; the compatibility default, not a measured board.
+        system_timekeepers:
+          ip30-board:
+            kind: ds1685
+            initial_ip27_fixture: false
+            provenance: derived
+            sources:
+            - docs/datasheets/ip30-octane2-machine.md
+            - hw/mips/sgi/octane.c
+            notes: The board's IOC3 drives a DS1685-family clock, whose 512-byte NVRAM and the model's 24-byte clock record a new machine starts zeroed; the part treats an all-zero image as fresh.
         emulator_constraints:
           accepted_bank_sizes_mib:
           - 64

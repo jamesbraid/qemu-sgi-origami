@@ -729,12 +729,14 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
     selected = model.get("machine", {}).get("emulation", {}).get(
         "system_timekeepers", {})
     components = {c["id"]: c for c in model.get("components", [])}
+    generation = model["machine"].get("generation")
     for board, policy in selected.items():
         fitted = components.get(board, {})
         parent = components.get(fitted.get("parent"), {})
-        if model["machine"].get("generation") != "SN1":
+        if generation not in ("SN1", "IP30"):
             raise ResolutionError(
-                "system Timekeeper selection requires a Bedrock assembly")
+                "system Timekeeper selection requires a Bedrock or IP30 "
+                "assembly")
         if fitted.get("kind") == "board":
             def within(component):
                 seen = set()
@@ -765,10 +767,17 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
         if not has_ioc3:
             raise ResolutionError(
                 f"system Timekeeper board '{board}' has no fitted IOC3")
-        if (policy.get("kind") != "m48t35-compatible"
-                or type(policy.get("year_base")) is not int
-                or policy["year_base"] != 1968
-                or policy.get("initial_ip27_fixture") is not False):
+        if generation == "IP30":
+            # The DS1685 keeps its own century, so it has no year base.
+            supported = (policy.get("kind") == "ds1685"
+                         and "year_base" not in policy
+                         and policy.get("initial_ip27_fixture") is False)
+        else:
+            supported = (policy.get("kind") == "m48t35-compatible"
+                         and type(policy.get("year_base")) is int
+                         and policy["year_base"] == 1968
+                         and policy.get("initial_ip27_fixture") is False)
+        if not supported:
             raise ResolutionError("unsupported system Timekeeper policy")
 
 

@@ -77,6 +77,31 @@ class IP30CatalogueTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "has no identity"):
             compile_model(model)
 
+    def test_ds1685_is_the_io_board_timekeeper(self):
+        """The Octane NVRAM stores follow from the IP30 board's DS1685
+        record, as the SN stores follow from their Timekeepers."""
+        topology = compile_model(resolved("octane"))
+        self.assertEqual(topology["io_boards"][0]["system_timekeeper"],
+                         {"kind": "ds1685", "initial_ip27_fixture": False})
+
+    def test_ds1685_policy_is_checked(self):
+        from sgi_model import model_composition
+        from sgi_model.model_composition import ResolutionError
+
+        source = resolved("octane")
+        for fault in ("kind", "year_base"):
+            with self.subTest(fault=fault):
+                model = copy.deepcopy(source)
+                policy = model["machine"]["emulation"][
+                    "system_timekeepers"]["ip30-board"]
+                if fault == "kind":
+                    policy["kind"] = "m48t35-compatible"
+                else:
+                    policy["year_base"] = 1968
+                with self.assertRaisesRegex(ResolutionError,
+                                            "unsupported system Timekeeper"):
+                    model_composition.validate_system_timekeepers(model)
+
     def test_boot_flash_wiring_is_required(self):
         model = resolved("octane")
         del model["machine"]["emulation"]["boot_flash_wiring"]

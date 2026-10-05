@@ -921,16 +921,21 @@
 # @m48t35-compatible: experimental shared Timekeeper compatibility
 #     model
 #
+# @ds1685: the IP30 board's DS1685-family real-time clock and NVRAM,
+#     reached through its IOC3
+#
 # Since: 11.2
 ##
-{ 'enum': 'SGIModelSystemTimekeeperKind', 'data': ['m48t35-compatible'] }
+{ 'enum': 'SGIModelSystemTimekeeperKind',
+  'data': ['m48t35-compatible', 'ds1685'] }
 
 ##
 # @SGIModelSystemTimekeeper:
 #
 # @kind: explicit compatibility selection, not a physical part
 #     identity
-# @year-base: machine software year convention
+# @year-base: machine software year convention; absent for a part
+#     that keeps its own century
 # @initial-ip27-fixture: whether a fresh unbacked part receives the
 #     IP27 fixture
 #
@@ -938,7 +943,7 @@
 ##
 { 'struct': 'SGIModelSystemTimekeeper',
   'data': { 'kind': 'SGIModelSystemTimekeeperKind',
-            'year-base': 'uint32', 'initial-ip27-fixture': 'bool' } }
+            '*year-base': 'uint32', 'initial-ip27-fixture': 'bool' } }
 
 ##
 # @SGIModelIoBoard:

@@ -11470,7 +11470,11 @@
           "populated": true,
           "preset": "ip30",
           "revision": 3,
-          "serial": 134346593796098
+          "serial": 134346593796098,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1685"
+          }
         }
       ],
       "junk-uart": -1,
@@ -11641,7 +11645,11 @@
           "populated": true,
           "preset": "ip30",
           "revision": 3,
-          "serial": 134346610573314
+          "serial": 134346610573314,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1685"
+          }
         }
       ],
       "junk-uart": -1,

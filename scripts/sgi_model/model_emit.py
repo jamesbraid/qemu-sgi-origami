@@ -403,14 +403,14 @@ _SCSI_TARGETS = {
 # one UART instead (the model tooling/prom.py's `behind_l1` branch: one
 # `-serial chardev:l1`).
 
-# The m48t35 Timekeeper's NVRAM window and the clock reference record its
-# model keeps beside it (hw/rtc/m48t35.h's M48T35_SIZE and
-# M48T35_CLOCK_REF_BYTES); IP30's DS1685-family NVRAM and its clock
-# record (hw/rtc/ds1685.h's DS1685_CLOCK_REF_BYTES).
-_TIMEKEEPER_NVRAM_BYTES = 0x8000
-_TIMEKEEPER_CLOCK_BYTES = 16
-_IP30_NVRAM_BYTES = 512
-_IP30_CLOCK_BYTES = 24
+# Each Timekeeper kind's NVRAM and the clock reference record its model
+# keeps beside it: the m48t35 window (hw/rtc/m48t35.h's M48T35_SIZE and
+# M48T35_CLOCK_REF_BYTES), which an IOC3's own Timekeeper also is, and
+# the DS1685 (hw/rtc/ds1685.h's NVRAM and DS1685_CLOCK_REF_BYTES).
+_TIMEKEEPER_BYTES = {
+    "m48t35-compatible": (0x8000, 16),
+    "ds1685": (512, 24),
+}
 # The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
 # that fit one.
 _IO_FLASH_BYTES = 0x100000
@@ -586,13 +586,10 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     for index, _ in enumerate(flash_boards):
         storage.append({"name": f"io{index}-flash", "size": _IO_FLASH_BYTES,
                         "read-only": False, "initial": "io-prom"})
-    if generation == "IP30":
-        nvram_sizes = [(_IP30_NVRAM_BYTES, _IP30_CLOCK_BYTES, "zero")]
-    else:
-        nvram_sizes = [(_TIMEKEEPER_NVRAM_BYTES, _TIMEKEEPER_CLOCK_BYTES,
-                        _timekeeper_initial(board))
-                       for board in boards
-                       if _timekeeper_board(board, harness)]
+    nvram_sizes = [
+        (*_TIMEKEEPER_BYTES[board.get("system_timekeeper", {}).get(
+            "kind", "m48t35-compatible")], _timekeeper_initial(board))
+        for board in boards if _timekeeper_board(board, harness)]
     for index, (size, clock_size, initial) in enumerate(nvram_sizes):
         storage.append({"name": f"nvram{index}", "size": size,
                         "read-only": False, "initial": initial})
