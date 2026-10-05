@@ -252,9 +252,8 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     return true;
 
 unsupported:
-    error_setg(errp, "topology '%s' names I/O-only network endpoints; "
-               "their complete experimental runtime composition is not supported",
-               t->name);
+    error_setg(errp, "topology '%s' has an unsupported runtime endpoint "
+               "configuration", t->name);
     return false;
 }
 
