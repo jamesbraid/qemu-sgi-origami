@@ -326,21 +326,21 @@ static void dp83840_unrealize(DeviceState *dev)
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
     .version_id = 7,
-    .minimum_version_id = 3,
+    .minimum_version_id = 7,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
         VMSTATE_UINT16(advertise, DP83840State),
-        VMSTATE_UINT16_V(next_page, DP83840State, 5),
+        VMSTATE_UINT16(next_page, DP83840State),
         VMSTATE_UINT16(pcs_config, DP83840State),
         VMSTATE_UINT16(loopback_bypass, DP83840State),
         VMSTATE_UINT16(tenbt_config, DP83840State),
         VMSTATE_BOOL(autoneg_done, DP83840State),
         VMSTATE_BOOL(settle_armed, DP83840State),
         VMSTATE_TIMER_PTR(settle_timer, DP83840State),
-        VMSTATE_BOOL_V(link_down, DP83840State, 4),
-        VMSTATE_UINT8_V(restart_phase, DP83840State, 6),
-        VMSTATE_INT64_V(restart_complete_ns, DP83840State, 6),
-        VMSTATE_BOOL_V(forced_link, DP83840State, 7),
+        VMSTATE_BOOL(link_down, DP83840State),
+        VMSTATE_UINT8(restart_phase, DP83840State),
+        VMSTATE_INT64(restart_complete_ns, DP83840State),
+        VMSTATE_BOOL(forced_link, DP83840State),
         VMSTATE_END_OF_LIST()
     }
 };

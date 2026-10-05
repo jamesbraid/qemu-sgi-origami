@@ -478,15 +478,10 @@ static int sgi_ioc3_parallel_post_load(void *opaque, int version_id)
     return 0;
 }
 
-static bool sgi_ioc3_parallel_has_test_fifo(void *opaque, int version_id)
-{
-    return version_id >= 3;
-}
-
 static const VMStateDescription vmstate_sgi_ioc3_parallel = {
     .name = "sgi-ioc3-parallel",
     .version_id = 4,
-    .minimum_version_id = 2,
+    .minimum_version_id = 4,
     .post_load = sgi_ioc3_parallel_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(addr_hi, SGIIOC3ParallelState,
@@ -501,10 +496,9 @@ static const VMStateDescription vmstate_sgi_ioc3_parallel = {
         VMSTATE_UINT8(config_a, SGIIOC3ParallelState),
         VMSTATE_UINT8(config_b, SGIIOC3ParallelState),
         VMSTATE_UINT8(extended, SGIIOC3ParallelState),
-        VMSTATE_UINT16_EQUAL_V(parallel_part, SGIIOC3ParallelState, 4),
-        VMSTATE_UINT16_EQUAL_V(fifo_depth, SGIIOC3ParallelState, 3),
-        VMSTATE_FIFO8_TEST(test_fifo, SGIIOC3ParallelState,
-                           sgi_ioc3_parallel_has_test_fifo),
+        VMSTATE_UINT16_EQUAL(parallel_part, SGIIOC3ParallelState),
+        VMSTATE_UINT16_EQUAL(fifo_depth, SGIIOC3ParallelState),
+        VMSTATE_FIFO8(test_fifo, SGIIOC3ParallelState),
         VMSTATE_BOOL(service, SGIIOC3ParallelState),
         VMSTATE_END_OF_LIST()
     }
