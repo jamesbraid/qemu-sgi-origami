@@ -65,6 +65,36 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "ioc3-subsystem-id",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
@@ -257,6 +287,36 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "ioc3-subsystem-id",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
@@ -449,6 +509,36 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "ioc3-subsystem-id",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
@@ -641,6 +731,36 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "ioc3-subsystem-id",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,

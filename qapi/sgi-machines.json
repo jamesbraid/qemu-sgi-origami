@@ -1491,6 +1491,35 @@
             'cache-mib': 'uint16' } }
 
 ##
+# @SGIModelOverrideTarget:
+#
+# Where a launch sets an override.
+#
+# @machine: a `-M` property of the offering's machine
+#
+# @cpu: a `-cpu` property of the offering's processor part
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelOverrideTarget', 'data': ['machine', 'cpu'] }
+
+##
+# @SGIModelOverride:
+#
+# One identity or board value the catalogue gives a configuration that
+# a launch may override.  With none given, the machine uses the
+# catalogue's value.
+#
+# @property: the property's name
+#
+# @target: where the property is set
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelOverride',
+  'data': { 'property': 'str', 'target': 'SGIModelOverrideTarget' } }
+
+##
 # @SGIModelSmdkTftpMode:
 #
 # Diagnostic package file-serving behavior.
@@ -1584,8 +1613,11 @@
 # @identity-inputs: named identity/SPD inputs this offering accepts
 #
 # @hardware-inputs: product-specific launch inputs the configuration
-#     binds, and whether each is required.  The family overrides of
-#     catalogue board values are machine properties, not listed here
+#     binds, and whether each is required.  Overrides of the
+#     catalogue's own values are in @overrides
+#
+# @overrides: every identity or board value the catalogue gives this
+#     configuration that a launch may override, and where
 #
 # @smdk: selected diagnostic launch recipe, when supported
 #
@@ -1628,6 +1660,7 @@
             'netboot-adapter': 'str',
             'identity-inputs': ['str'],
             'hardware-inputs': ['SGIModelInputBinding'],
+            'overrides': ['SGIModelOverride'],
             '*smdk': 'SGIModelSmdkRecipe',
             'supported-guests': ['str'],
             'install-media': ['str'],
