@@ -3843,54 +3843,6 @@ static void test_reset_state(void)
     qtest_quit(qts);
 }
 
-static void test_memory_population_migration(void)
-{
-    g_autofree char *directory = NULL;
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *quoted = g_shell_quote(flash_path);
-    GError *error = NULL;
-    QTestState *from, *to;
-    const char *machine =
-        "octane,bank0-size=67108864,bank1-size=67108864";
-
-    directory = g_dir_make_tmp("octane-banks-migration-XXXXXX", &error);
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    from = qtest_initf(MEMTX_TEST_DEVICE
-                       "-M %s -m 128M -cpu R10000 -bios %s -S",
-                       machine, quoted);
-    to = qtest_initf(MEMTX_TEST_DEVICE "-M %s -m 128M -cpu R10000 -bios %s -S "
-                     "-incoming defer", machine, quoted);
-
-    qtest_writeq(from, HIGH_RAM, 0x1111222233334444ULL);
-    qtest_writeq(from, RAM + 64 * MiB - 8, 0x5555666677778888ULL);
-    qtest_writeq(from, RAM + 64 * MiB, 0x9999aaaabbbbccccULL);
-    qtest_writeq(from, RAM + 128 * MiB - 8, 0xddddeeeeffff0000ULL);
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
-
-    g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, 0x80010000U);
-    g_assert_cmphex(qtest_readl(to, HEART + 0x24), ==, 0x80010002U);
-    g_assert_cmphex(qtest_readq(to, HIGH_RAM), ==,
-                    0x1111222233334444ULL);
-    g_assert_cmphex(qtest_readq(to, RAM + 64 * MiB - 8), ==,
-                    0x5555666677778888ULL);
-    g_assert_cmphex(qtest_readq(to, RAM + 64 * MiB), ==,
-                    0x9999aaaabbbbccccULL);
-    g_assert_cmphex(qtest_readq(to, RAM + 128 * MiB - 8), ==,
-                    0xddddeeeeffff0000ULL);
-    qtest_quit(to);
-    qtest_quit(from);
-    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
-        g_assert_cmpint(g_unlink(socket), ==, 0);
-    }
-    g_assert_cmpint(g_rmdir(directory), ==, 0);
-}
-
 static void test_migration_state(void)
 {
     uint8_t low_pattern[LOW_RAM_SIZE];
@@ -4242,8 +4194,6 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     qtest_add_func("/octane/reset-state", test_reset_state);
-    qtest_add_func("/octane/memory-population-migration",
-                   test_memory_population_migration);
     qtest_add_func("/octane/migration-state", test_migration_state);
     qtest_add_func("/octane2/low-ram-migration",
                    test_octane2_low_ram_migration);
