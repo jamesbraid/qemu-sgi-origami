@@ -86,6 +86,7 @@ hw/mips/origami-model-formats.json
 hw/mips/sgi/baseio-flash.c
 hw/mips/sgi/baseio.c
 hw/mips/sgi/board-gigachannel.c
+hw/mips/sgi/board-mac.c
 hw/mips/sgi/board-pci-expansion.c
 hw/mips/sgi/board-pci-shoehorn.c
 hw/mips/sgi/initial-flash.c
@@ -292,6 +293,7 @@ include/hw/mips/sgi/initial-flash.h
 include/hw/mips/sgi/net-cable.h
 include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
+include/hw/mips/sgi/sgi-board-mac.h
 include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sgi-storage.h
 include/hw/mips/sgi/sn-machine.h
