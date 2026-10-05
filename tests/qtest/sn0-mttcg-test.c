@@ -1573,7 +1573,6 @@ static unsigned int gh_break_pos;
 static unsigned int gh_count_pos;
 static unsigned int gh_reset_compare_pos;
 static bool gh_intervening_insn;
-static bool gh_interrupt_after_count;
 static bool gh_wide_timer_moves;
 static bool gh_delay_slot_count;
 static int gh_count_branch;
@@ -1740,12 +1739,6 @@ static void build_gdb_peer_hold(GuestImage *img)
     /* CPU A waits for B, then writes Count with Compare well ahead. */
     emit_li(img, R_T3, 1);
     emit_wait_ge(img, R_T3, GH_PEER_OFF);
-    if (gh_interrupt_after_count) {
-        emit_mfc0(img, R_T3, CP0_STATUS, 0);
-        emit_ori(img, R_T3, R_T3, STATUS_IM7 | 1);
-        emit_mtc0(img, R_T3, CP0_STATUS, 0);
-        emit_ehb(img);
-    }
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
     emit_li(img, R_T4, 1000);
@@ -1921,6 +1914,57 @@ static void gdb_peer_command(int fd, const char *command,
     }
 }
 
+/*
+ * Unmask the Count/Compare interrupt on held CPU A through the stub. Doing it
+ * from guest code before the two timer writes left a window of host time
+ * (GH_COMPARE ticks, a few milliseconds) in which a descheduled vCPU took the
+ * interrupt at the breakpoint address before the breakpoint could stop it.
+ * Unmasking while held gives the same resumed state with no race: the match
+ * is already pending, so the interrupt is taken at the held PC.
+ */
+static void gdb_peer_unmask_timer(int fd)
+{
+    char reply[64], command[64];
+    uint64_t status;
+
+    gdb_peer_command(fd, "Hg1", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(fd, "p20", reply, sizeof(reply));
+    status = g_ascii_strtoull(reply, NULL, 16);
+    snprintf(command, sizeof(command), "P20=%016" PRIx64,
+             status | STATUS_IM7 | 1);
+    gdb_peer_command(fd, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+}
+
+/*
+ * Single-step thread 1 and return its PC. An exit request that reaches the
+ * vCPU between its interrupt check and entering the stepped block makes the
+ * block return before its first instruction, and TCG still reports the step
+ * as complete (cpu_tb_exec() raises EXCP_DEBUG for any single-step return).
+ * Such a step ran nothing, so step again until the PC moves.
+ */
+static uint64_t gdb_peer_step(int fd, uint64_t from)
+{
+    char reply[256];
+    uint64_t pc = from;
+
+    for (unsigned int i = 0; i < 10 && pc == from; i++) {
+        gdb_peer_command(fd, "vCont;s:1", NULL, 0);
+        gdb_peer_reply(fd, reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "T05thread:01;");
+        gdb_peer_command(fd, "Hg1", reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(fd, "p25", reply, sizeof(reply));
+        pc = g_ascii_strtoull(reply, NULL, 16);
+        if (pc == from) {
+            g_test_message("single step at 0x%" PRIx64 " ran no instruction",
+                           from);
+        }
+    }
+    return pc;
+}
+
 static void test_gdb_peer_hold(const void *data)
 {
     g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
@@ -1937,7 +1981,6 @@ static void test_gdb_peer_hold(const void *data)
     bool interrupt_vm = options & 8;
 
     gh_intervening_insn = options & 1;
-    gh_interrupt_after_count = interrupt_vm;
     gh_wide_timer_moves = options & 2;
     gh_delay_slot_count = false;
     gh_count_branch = 0;
@@ -2016,6 +2059,9 @@ static void test_gdb_peer_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
+    if (interrupt_vm) {
+        gdb_peer_unmask_timer(gdb);
+    }
     if (migrate_vm) {
         source_hub_at_save = qtest_readq(qts, GH_HUB_COUNT);
         migration_path = g_build_filename(dir, "migration.sock", NULL);
@@ -2182,7 +2228,6 @@ static void test_gdb_sn1_hold(const void *data)
     }
     gh_intervening_insn = options & 1;
     gh_wide_timer_moves = options & 2;
-    gh_interrupt_after_count = interrupt_vm;
     gh_delay_slot_count = options & 4;
     gh_count_branch = (options >> 10) & 3;
     gh_migrate_after_intervening = options & 512;
@@ -2240,14 +2285,9 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, command, reply, sizeof(reply));
     g_assert_cmpstr(reply, ==, "OK");
     if (options & 8) {
-        gdb_peer_command(gdb, "vCont;s:1", NULL, 0);
-        gdb_peer_reply(gdb, reply, sizeof(reply));
-        g_assert_cmpstr(reply, ==, "T05thread:01;");
-        gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
-        g_assert_cmpstr(reply, ==, "OK");
-        gdb_peer_command(gdb, "p25", reply, sizeof(reply));
-        g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
-                        break_pc);
+        g_assert_cmphex(gdb_peer_step(gdb, 0xffffffff00000000ULL |
+                                      IMAGE_KSEG1_BASE | gh_count_pos),
+                        ==, break_pc);
     }
     peer_before = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_before = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
@@ -2304,6 +2344,9 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
+    if (interrupt_vm) {
+        gdb_peer_unmask_timer(gdb);
+    }
     if (reset_vm) {
         uint64_t status;
 
