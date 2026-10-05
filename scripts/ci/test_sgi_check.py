@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -129,6 +130,55 @@ class QtestShards(unittest.TestCase):
     def test_tree_durations_carry_the_generated_header(self):
         text = sgi_check.QTEST_DURATIONS.read_text(encoding='utf-8')
         self.assertTrue(text.startswith(sgi_check.DURATIONS_HEADER))
+
+
+class SmokeQtestSetup(unittest.TestCase):
+    """Pull requests run the quick setup; the full run stays thorough."""
+
+    def run_smoke(self):
+        calls = []
+
+        # The quick setup keeps a-test and leaves out b-test.
+        def list_meson_tests(build, dest, *selection):
+            calls.append(('list', None, selection))
+            Path(dest).write_text('qtest-mips64/a-test\n', encoding='utf-8')
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sgi_check, 'script_suites'), \
+                mock.patch.object(sgi_check, 'rom_suite'), \
+                mock.patch.object(sgi_check, 'required_cases',
+                                  return_value=[]), \
+                mock.patch.object(sgi_check, 'select_qtests',
+                                  return_value=(['qtest-mips64/a-test',
+                                                 'qtest-mips64/b-test'],
+                                                False)), \
+                mock.patch.object(sgi_check.Build, 'ninja'), \
+                mock.patch.object(sgi_check.Build, 'list_meson_tests',
+                                  list_meson_tests), \
+                mock.patch.object(sgi_check.Build, 'meson_test',
+                                  lambda self, logbase, args, *a, **kw:
+                                  calls.append((logbase, args, kw))):
+            sgi_check.smoke(argparse.Namespace(build=Path(tmp), base=None))
+            selected = (Path(tmp) / 'selected-qtests.txt').read_text()
+        return calls, selected
+
+    def test_qtests_run_quick(self):
+        calls, _ = self.run_smoke()
+        runs = {logbase: kw for logbase, _, kw in calls if logbase != 'list'}
+        self.assertEqual(runs['smoke-qtest']['setup'], 'qemu:quick')
+        for logbase in ('smoke-linux', 'smoke-smp', 'smoke-unit'):
+            self.assertNotIn('setup', runs[logbase])
+
+    def test_only_the_tests_quick_keeps_are_named(self):
+        calls, selected = self.run_smoke()
+        self.assertEqual(selected,
+                         'qtest-mips64/a-test\nqtest-mips64/b-test\n')
+        lists = [sel for kind, _, sel in calls if kind == 'list']
+        self.assertEqual(lists[0][0], '--names-from')
+        self.assertIn('--exclude-suite=slow', lists[0])
+        self.assertIn('--exclude-suite=thorough', lists[0])
+        args = {logbase: args for logbase, args, _ in calls}
+        self.assertEqual(args['smoke-qtest'], ['qtest-mips64/a-test'])
 
 
 class FullPart(unittest.TestCase):
