@@ -1029,9 +1029,15 @@ static void test_origin200_accepts_its_memory_populations(const void *data)
     unsigned int i;
 
     for (i = 0; i < ARRAY_SIZE(mib); i++) {
-        g_autofree char *args = g_strdup_printf(
-            "-M origin200 -m %uM -display none", mib[i]);
-        QTestState *qts = qtest_init(args);
+        g_autofree char *args = NULL;
+        QTestState *qts;
+
+        /* The quick setup builds the largest and smallest only. */
+        if (i != 0 && i != ARRAY_SIZE(mib) - 1 && !g_test_slow()) {
+            continue;
+        }
+        args = g_strdup_printf("-M origin200 -m %uM -display none", mib[i]);
+        qts = qtest_init(args);
 
         qtest_quit(qts);
     }
@@ -1048,10 +1054,16 @@ static void test_origin200_dual_accepts_its_populations(const void *data)
     unsigned int i;
 
     for (i = 0; i < ARRAY_SIZE(mib_per_node); i++) {
-        g_autofree char *args = g_strdup_printf(
-            "-M origin200,topology=origin200-dual -smp 4 "
-            "-m %uM -display none", mib_per_node[i] * 2);
-        QTestState *qts = qtest_init(args);
+        g_autofree char *args = NULL;
+        QTestState *qts;
+
+        /* The quick setup builds the largest and smallest only. */
+        if (i != 0 && i != ARRAY_SIZE(mib_per_node) - 1 && !g_test_slow()) {
+            continue;
+        }
+        args = g_strdup_printf("-M origin200,topology=origin200-dual -smp 4 "
+                               "-m %uM -display none", mib_per_node[i] * 2);
+        qts = qtest_init(args);
 
         qtest_quit(qts);
     }
