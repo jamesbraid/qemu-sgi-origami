@@ -202,15 +202,24 @@
                 "additionalProperties": false,
                 "required": [
                   "kind",
-                  "year_base",
                   "initial_ip27_fixture",
                   "provenance",
                   "sources",
                   "notes"
                 ],
+                "oneOf": [
+                  {
+                    "required": ["year_base"],
+                    "properties": { "kind": { "const": "m48t35-compatible" } }
+                  },
+                  {
+                    "not": { "required": ["year_base"] },
+                    "properties": { "kind": { "const": "ds1685" } }
+                  }
+                ],
                 "properties": {
                   "kind": {
-                    "const": "m48t35-compatible"
+                    "enum": ["m48t35-compatible", "ds1685"]
                   },
                   "year_base": {
                     "const": 1968

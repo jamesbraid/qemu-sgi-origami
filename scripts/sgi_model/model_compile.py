@@ -1895,7 +1895,7 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
     pci_kinds = {**_HUB_PCI_KINDS, "rad1": "RAD1"} if board_kind == "IP30" else _HUB_PCI_KINDS
     pci, ioc3_serial = _board_pci_population(
         model, components, pci_kinds, {bridge["id"]})
-    return {
+    io_board = {
         "id": board_id,
         "module_index": entry["module_index"],
         "board_kind": board_kind,
@@ -1908,6 +1908,13 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
         "pci": pci,
         "ioc3_serial": ioc3_serial,
     }
+    selected = model["machine"]["emulation"].get(
+        "system_timekeepers", {}).get(board_id)
+    if selected is not None:
+        io_board["system_timekeeper"] = {
+            key: selected[key] for key in
+            ("kind", "year_base", "initial_ip27_fixture") if key in selected}
+    return io_board
 
 
 def _compile_module(model: dict, module_id: str, module_index: int,

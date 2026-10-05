@@ -2401,7 +2401,8 @@ static bool sgi_machine_instantiate_bedrock_io(
         SGIModelSystemTimekeeper *clock = record->system_timekeeper;
 
         if (clock->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_M48T35_COMPATIBLE ||
-            clock->year_base != 1968 || clock->initial_ip27_fixture) {
+            !clock->has_year_base || clock->year_base != 1968 ||
+            clock->initial_ip27_fixture) {
             error_setg(errp, "unsupported fitted system Timekeeper policy");
             return false;
         }
