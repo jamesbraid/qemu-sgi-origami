@@ -98,8 +98,8 @@ static void mips_store_status(CPUMIPSState *env, target_ulong val)
 
 /*
  * Put CPU_INTERRUPT_HARD back up if a pending interrupt has just become
- * deliverable. mips_cpu_exec_interrupt() drops the flag when a pending
- * interrupt can neither be taken nor wake the CPU, so that the exec
+ * deliverable. On the R10000 family mips_cpu_exec_interrupt() drops the
+ * flag when a pending interrupt cannot be taken, so that the exec
  * loop's lock-free skip survives a masked window; every own-CPU change
  * that can end such a window has to call this, or the interrupt waits
  * for the next edge on its line.
@@ -118,16 +118,12 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env)
     CPUState *cs = env_cpu(env);
 
     /*
-     * Nothing to do where the MT ASE is present, and the reads below
-     * must not happen there either. mips_cpu_exec_interrupt() excludes
-     * MT from the clear, so the flag is never down while an interrupt
-     * is pending and this function could only ever return -- but it
-     * would return after reading CP0_Status, which helper_mttc0_status()
-     * can be writing from another VPE's thread at the same moment.
-     * Testing Config3 first, a field fixed at realize, keeps the
-     * exclusion on both halves of the invariant rather than on one.
+     * Only CPUs whose flag mips_cpu_exec_interrupt() can drop need it back;
+     * on every other model the flag already follows the line. Config is
+     * fixed at realize, so this also keeps the reads below off MT CPUs,
+     * whose Status another VPE can be writing.
      */
-    if (ase_mt_available(env)) {
+    if (!env->cfg.drops_masked_interrupt_flag) {
         return;
     }
 

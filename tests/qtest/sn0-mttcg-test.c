@@ -4,9 +4,10 @@
  * Test MIPS R10000 and multi-threaded TCG CPU behavior on Origin 200.
  */
 /*
- * R10000 is the only CPU with a machine here. With synthesized firmware off,
- * -smp CPUs run from reset with each generated MIPS64 raw -bios image owning
- * the boot vector and low RAM. Failures concern target/mips or accel/tcg, not
+ * R10000 is the only CPU with an SGI machine here; one case boots Malta to
+ * pin a non-R10000 contrast. With synthesized firmware off, -smp CPUs run
+ * from reset with each generated MIPS64 raw -bios image owning the boot
+ * vector and low RAM. Failures concern target/mips or accel/tcg, not
  * other SN0 devices. PI reports Hub-local CPU identity, avoiding the
  * primitives under test. Guest spins are unbounded; per-phase progress words
  * identify stalls under the host polling deadline. Boot-exception handlers
@@ -17,9 +18,9 @@
  * non-global translation for the same page.
  * interrupt/masked-line-stays-off-the-lock checks that a masked pending line
  * leaves the execution-loop lock free: mips_cpu_exec_interrupt() drops the
- * flag and each local unmask reasserts it. The removed two-CPU lld/scd
- * rendezvous test checked LL/SC atomicity and cross-thread visibility;
- * test_four_cpu_two_node_rendezvous_thread_multi in
+ * flag and each local unmask reasserts it, on the R10000 family only. The
+ * removed two-CPU lld/scd rendezvous test checked LL/SC atomicity and
+ * cross-thread visibility; test_four_cpu_two_node_rendezvous_thread_multi in
  * tests/functional/mips64/test_sn0_smp.py checks the same behavior on a real
  * machine.
  */
@@ -989,11 +990,12 @@ static bool all_cpus_done(QTestState *qts)
  * The accelerator named here wins over the -accel qtest libqtest appends,
  * because QEMU takes the first one on the command line that initialises.
  */
-static QTestState *boot_cpu_case(const char *accel, const char *cpu,
-                                 int nr_cpus,
-                                 void (*writer)(int fd,
-                                                void (*build)(GuestImage *img)),
-                                 void (*build)(GuestImage *img))
+typedef void (*ImageWriter)(int fd, void (*build)(GuestImage *img));
+
+static QTestState *boot_machine_case(const char *machine, const char *accel,
+                                     const char *cpu, int nr_cpus,
+                                     ImageWriter writer,
+                                     void (*build)(GuestImage *img))
 {
     g_autofree char *image = NULL;
     QTestState *qts;
@@ -1004,12 +1006,21 @@ static QTestState *boot_cpu_case(const char *accel, const char *cpu,
     writer(fd, build);
     close(fd);
 
-    qts = qtest_initf("-M origin200 -m 128M "
+    qts = qtest_initf("-M %s -m 128M "
                       "-smp %d -cpu %s -bios %s "
                       "-accel %s -no-reboot -no-shutdown",
-                      nr_cpus, cpu, image, accel);
+                      machine, nr_cpus, cpu, image, accel);
     unlink(image);
     return qts;
+}
+
+static QTestState *boot_cpu_case(const char *accel, const char *cpu,
+                                 int nr_cpus,
+                                 void (*writer)(int fd,
+                                                void (*build)(GuestImage *img)),
+                                 void (*build)(GuestImage *img))
+{
+    return boot_machine_case("origin200", accel, cpu, nr_cpus, writer, build);
 }
 
 static QTestState *boot_case(const char *accel, void (*build)(GuestImage *img))
@@ -1178,7 +1189,17 @@ static void test_tlb_asid(const void *data)
 /* A quarter of the counter's range: far enough ahead to stay unreached. */
 #define MI_COMPARE_AHEAD    0x4000u
 
+/*
+ * A comparator that matches only on Count's own advance, as Malta's CPUs
+ * have, would wait a whole counter wrap for the equal write above: about
+ * 27 s at Malta's 160 MHz Count (320 MHz CPU clock, CCRes 2). Arm it
+ * 0x100000 ticks ahead instead, about 6.6 ms at that rate.
+ */
+#define MI_ARM_AHEAD_HI     0x0010u
+
 static bool mi_wide_unmask;
+static bool mi_arm_ahead;
+static unsigned int mi_passes = MI_PASSES;
 
 static void emit_status_passes(GuestImage *img, int status, unsigned int n)
 {
@@ -1218,7 +1239,7 @@ static void build_masked_interrupt(GuestImage *img)
     emit_li(img, R_T3, 1);
     emit_wait_ge(img, R_T3, MI_GO_OFF);
 
-    emit_status_passes(img, R_S0, MI_PASSES);
+    emit_status_passes(img, R_S0, mi_passes);
 
     emit_li(img, R_T3, 2);
     emit_publish(img, R_T3, PROGRESS_OFF);
@@ -1233,8 +1254,15 @@ static void build_masked_interrupt(GuestImage *img)
      * and the comparator is equality only. This arms the match from the
      * deterministic side, the same direction the CP0 timer ROM pins.
      */
-    emit_mfc0(img, R_T5, CP0_COMPARE, 0);
-    emit_mtc0(img, R_T5, CP0_COUNT, 0);
+    if (mi_arm_ahead) {
+        emit_mfc0(img, R_T5, CP0_COUNT, 0);
+        emit_lui(img, R_T6, MI_ARM_AHEAD_HI);
+        emit_addu(img, R_T5, R_T5, R_T6);
+        emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    } else {
+        emit_mfc0(img, R_T5, CP0_COMPARE, 0);
+        emit_mtc0(img, R_T5, CP0_COUNT, 0);
+    }
     emit_ehb(img);
     spin = img->pos;
     emit_mfc0(img, R_T6, CP0_CAUSE, 0);
@@ -1243,7 +1271,7 @@ static void build_masked_interrupt(GuestImage *img)
     emit_nop(img);
     emit_publish(img, R_T6, MI_CAUSE_OFF);
 
-    emit_status_passes(img, R_S0, MI_PASSES);
+    emit_status_passes(img, R_S0, mi_passes);
 
     emit_li(img, R_T3, DONE_MAGIC);
     emit_publish(img, R_T3, DONE_OFF);
@@ -1310,6 +1338,8 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
     }
 
     mi_wide_unmask = data && GPOINTER_TO_INT(data);
+    mi_passes = MI_PASSES;
+    mi_arm_ahead = false;
 
     qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
                         build_masked_interrupt);
@@ -1455,6 +1485,63 @@ static void test_unmask_by_eret_delivers(const void *data)
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
     g_assert_cmphex(state_word(qts, EXC_EPC_OFF), ==,
                     0xffffffff00000000ULL | IMAGE_KSEG1_BASE | ue_cont_pos);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The drop is an R10000-family choice. Any other MIPS model keeps upstream's
+ * level behaviour: the flag stays up while a masked line is pending, so each
+ * pass of the masked phase takes the big lock, and the line is taken when
+ * the guest unmasks it. A drop that leaked to this CPU would make the masked
+ * phase cost almost nothing. Only the masked phase is checked: Malta's own
+ * south-bridge timer can leave IP2 pending in the first phase too.
+ */
+static void test_masked_interrupt_keeps_flag_elsewhere(const void *data)
+{
+    const char *cpu = data;
+    uint64_t clear_locks, masked_locks;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    /* Each pass takes the lock here, so fewer of them make the point. */
+    mi_wide_unmask = false;
+    mi_passes = MI_PASSES / 10;
+    mi_arm_ahead = true;
+    qts = boot_machine_case("malta", "tcg", cpu, 1, write_r10k_guest_image,
+                            build_masked_interrupt);
+    g_free(qtest_hmp(qts, "sync-profile on"));
+
+    g_assert_true(wait_for_progress(qts, 1));
+    g_free(qtest_hmp(qts, "sync-profile reset"));
+    qtest_writeq(qts, STATE_PHYS + MI_GO_OFF, 1);
+    g_assert_true(wait_for_progress(qts, 2));
+    clear_locks = bql_acquisitions(qts);
+
+    g_free(qtest_hmp(qts, "sync-profile reset"));
+    qtest_writeq(qts, STATE_PHYS + MI_GO_OFF, 2);
+    g_assert_true(wait_for_cpu0_done(qts));
+    masked_locks = bql_acquisitions(qts);
+
+    g_test_message("%s big-lock acquisitions over %u passes: %" PRIu64
+                   " in the first phase, %" PRIu64 " with a masked line",
+                   cpu, mi_passes, clear_locks, masked_locks);
+    g_assert_cmphex(state_word(qts, MI_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmpuint(masked_locks, >=, mi_passes);
+
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
 
     qtest_quit(qts);
 }
@@ -2394,6 +2481,116 @@ static void test_tlb_random_global(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The re-assert behind a debugger's Status write. The guest carries IP7 under
+ * a closed mask until the flag has dropped, then spins in a chained loop that
+ * never returns to the execution loop on its own. GDB stops it there and
+ * opens IM7 by writing register 32. Nothing lowers or re-raises the line, so
+ * without the re-assert in the Status store the spin runs on with the
+ * interrupt never taken; with it, the interrupt is taken at the spin.
+ */
+static unsigned int gs_spin_pos;
+
+static void build_gdb_status_unmask(GuestImage *img)
+{
+    unsigned int spin;
+
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_lui(img, R_T4, STATUS_KEEP_HI);
+    emit_ori(img, R_T4, R_T4, STATUS_KEEP_LO);
+    emit_and(img, R_S0, R_T3, R_T4);
+    emit_ori(img, R_S0, R_S0, 1);
+    emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    emit_ehb(img);
+    emit_publish(img, R_S0, MI_STATUS_OFF);
+
+    /* See build_masked_interrupt() for why this arms Count from Compare. */
+    emit_mfc0(img, R_T5, CP0_COMPARE, 0);
+    emit_mtc0(img, R_T5, CP0_COUNT, 0);
+    emit_ehb(img);
+    spin = img->pos;
+    emit_mfc0(img, R_T6, CP0_CAUSE, 0);
+    emit_andi(img, R_T7, R_T6, CAUSE_IP7);
+    emit_beq(img, R_T7, R_ZERO, spin);
+    emit_nop(img);
+    emit_publish(img, R_T6, MI_CAUSE_OFF);
+
+    emit_status_passes(img, R_S0, MI_PASSES / 10);
+
+    gs_spin_pos = img->pos;
+    emit_spin(img);
+}
+
+static void test_gdb_status_unmask_delivers(const void *data)
+{
+    g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    char reply[256], command[128];
+    uint64_t status, spin_addr;
+    QTestState *qts;
+    int fd, gdb;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    dir = g_dir_make_tmp("sn0-gdb-status-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    socket_path = g_build_filename(dir, "gdb.sock", NULL);
+    fd = g_file_open_tmp("sn0-gdb-status-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_r10k_guest_image(fd, build_gdb_status_unmask);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 128M -smp 1 -cpu R10000 "
+                      "-bios %s -accel tcg -no-reboot -no-shutdown "
+                      "-chardev socket,path=%s,server=on,wait=off,id=gdb0 "
+                      "-gdb chardev:gdb0 -S", image, socket_path);
+    gdb = gdb_peer_socket(socket_path);
+    gdb_peer_command(gdb, "?", reply, sizeof(reply));
+    g_assert_true(reply[0] == 'T' || reply[0] == 'S');
+
+    spin_addr = 0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gs_spin_pos;
+    snprintf(command, sizeof(command), "Z0,%" PRIx64 ",4", spin_addr);
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "vCont;c", NULL, 0);
+    gdb_peer_reply(gdb, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "T05thread:01;");
+    command[0] = 'z';
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+
+    g_assert_cmphex(state_word(qts, MI_STATUS_OFF) & STATUS_IM7, ==, 0);
+    g_assert_cmphex(state_word(qts, MI_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, 0);
+
+    gdb_peer_command(gdb, "p20", reply, sizeof(reply));
+    status = g_ascii_strtoull(reply, NULL, 16);
+    snprintf(command, sizeof(command), "P20=%016" PRIx64,
+             status | STATUS_IM7);
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "vCont;c", NULL, 0);
+
+    for (unsigned int tries = 0; tries < POLL_TRIES / 10; tries++) {
+        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
+    g_assert_cmphex(state_word(qts, EXC_EPC_OFF), ==, spin_addr);
+
+    close(gdb);
+    qtest_quit(qts);
+    unlink(image);
+    unlink(socket_path);
+    rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2408,6 +2605,12 @@ int main(int argc, char **argv)
                         test_masked_interrupt_stays_off_the_lock);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
+    qtest_add_data_func("mttcg/interrupt/unmask-by-gdb-status-delivers", NULL,
+                        test_gdb_status_unmask_delivers);
+    if (qtest_has_machine("malta")) {
+        qtest_add_data_func("mttcg/interrupt/5kef-masked-line-keeps-flag",
+                            "5KEf", test_masked_interrupt_keeps_flag_elsewhere);
+    }
     qtest_add_data_func("mttcg/timer/mtc0-count-match-delivers", NULL,
                         test_count_match_interrupt);
     qtest_add_data_func("mttcg/timer/dmtc0-count-match-delivers",
