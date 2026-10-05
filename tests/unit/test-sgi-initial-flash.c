@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Initial IP27, IP35 and I/O PROM flash contents, over synthetic payloads:
- * no SGI firmware bytes appear here. Offsets and values are repeated as
- * literals rather than taken from the header under test.
+ * Initial IP27, IP30, IP35 and I/O PROM flash contents, over synthetic
+ * payloads: no SGI firmware bytes appear here. Offsets and values are
+ * repeated as literals rather than taken from the header under test.
  *
  * Copyright (c) 2026 James Braid
  */
@@ -13,6 +13,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 
 #define IP27_FLASH_SIZE     (1 * MiB)
+#define IP30_FLASH_SIZE     (1 * MiB)
 #define IP35_FLASH_SIZE     (16 * MiB)
 #define IO6_FLASH_SIZE      (1 * MiB)
 
@@ -184,6 +185,26 @@ static void test_ip35(void)
     g_assert_cmphex(flash[IP35_LABEL_BACKUP + 0x10], ==, 0xff);
 }
 
+/* An IP30 flash holds the payload, then erased bytes, and nothing else. */
+static void test_ip30(void)
+{
+    const size_t size = 0x2345;
+    g_autofree uint8_t *payload = make_payload(size);
+    g_autofree uint8_t *flash = g_malloc0(IP30_FLASH_SIZE);
+    size_t i;
+
+    sgi_ip30_initial_flash(flash, IP30_FLASH_SIZE, payload, size);
+    g_assert_cmpmem(flash, size, payload, size);
+    for (i = size; i < IP30_FLASH_SIZE; i++) {
+        g_assert_cmphex(flash[i], ==, 0xff);
+    }
+    /* No payload: an erased part. */
+    sgi_ip30_initial_flash(flash, IP30_FLASH_SIZE, NULL, 0);
+    for (i = 0; i < IP30_FLASH_SIZE; i++) {
+        g_assert_cmphex(flash[i], ==, 0xff);
+    }
+}
+
 /* The I/O PROM part holds the file as given, then erased bytes. */
 static void test_io6(void)
 {
@@ -205,6 +226,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-initial-flash/ip27-payload", test_ip27_payload);
     g_test_add_func("/sgi-initial-flash/ip27-template", test_ip27_template);
     g_test_add_func("/sgi-initial-flash/ip27-no-magic", test_ip27_no_magic);
+    g_test_add_func("/sgi-initial-flash/ip30", test_ip30);
     g_test_add_func("/sgi-initial-flash/ip35", test_ip35);
     g_test_add_func("/sgi-initial-flash/io6", test_io6);
     return g_test_run();

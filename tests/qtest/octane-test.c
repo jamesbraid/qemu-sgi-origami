@@ -3221,13 +3221,15 @@ static void test_firmware_rejections(void)
                                NULL, &error_output, &status, NULL));
     g_test_message("missing firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "must contain 1 to 1 MiB bytes"));
+    g_assert_nonnull(strstr(error_output, "octane: cannot find PROM image "
+                            "'/nonexistent/octane-prom'"));
     g_clear_pointer(&error_output, g_free);
     g_assert_true(g_spawn_sync(NULL, (char **)too_large, NULL, 0, NULL, NULL,
                                NULL, &error_output, &status, NULL));
     g_test_message("oversized firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "must contain 1 to 1 MiB bytes"));
+    g_assert_nonnull(strstr(error_output, "PROM image exceeds flash capacity "
+                            "(1048576 bytes)"));
     g_assert_cmpint(unlink(oversized), ==, 0);
 }
 

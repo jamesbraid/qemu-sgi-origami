@@ -191,41 +191,23 @@ static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t)
 
 /*
  * The decoded image for @input, sized for @item. The boot PROM fills a
- * whole IP27 flash, half an IP35 flash (one of its two positions) or
- * the Octane flash as a raw image. The I/O PROM is stored as supplied,
- * container included, so the whole file must fit.
+ * whole IP27 or IP30 flash or half an IP35 flash (one of its two
+ * positions). The I/O PROM is stored as supplied, container included, so
+ * the whole file must fit.
  */
 static SGIPromImage *load_input(const SGIModelInitInput *input,
                                 const char *path,
                                 const SGIModelStorageItem *item, Error **errp)
 {
     g_autoptr(SGIPromImage) image = NULL;
-    g_autoptr(GError) gerr = NULL;
-    g_autofree char *contents = NULL;
-    gsize length;
 
     switch (input->kind) {
     case SGI_MODEL_INIT_INPUT_KIND_IP27_PROM:
+    case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
         return sgi_prom_image_load(path, item->size, errp);
     case SGI_MODEL_INIT_INPUT_KIND_IP35_PROM:
         return sgi_prom_image_load(path, item->size / SGI_IP35_FLASH_POSITIONS,
                                    errp);
-    case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
-        /* The Octane machine copies its -bios file without decoding it. */
-        if (!g_file_get_contents(path, &contents, &length, &gerr)) {
-            error_setg(errp, "cannot read PROM image '%s': %s", path,
-                       gerr->message);
-            return NULL;
-        }
-        if (!length || length > item->size) {
-            error_setg(errp, "PROM image '%s' must hold 1 to %" PRIu64
-                       " bytes", path, item->size);
-            return NULL;
-        }
-        image = g_new0(SGIPromImage, 1);
-        image->file = g_bytes_new_take(g_steal_pointer(&contents), length);
-        image->payload = g_bytes_ref(image->file);
-        return g_steal_pointer(&image);
     case SGI_MODEL_INIT_INPUT_KIND_IO6_PROM:
         image = sgi_prom_image_load(path, item->size, errp);
         if (image && g_bytes_get_size(image->file) > item->size) {
@@ -277,8 +259,7 @@ static void build_item(const SGIModelStorageItem *item,
         sgi_ip35_initial_flash(buf, item->size, data, length);
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
-        memset(buf, 0xff, item->size);
-        memcpy(buf, data, length);
+        sgi_ip30_initial_flash(buf, item->size, data, length);
         break;
     default:
         g_assert_not_reached();
