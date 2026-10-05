@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Build QEMU and run native MIPS64 checks. Both jobs first run the script
 # and model suites, which need no build. Smoke covers changed qtests, SGI
-# unit tests, and one Linux boot; full adds register and functional tests
-# plus the source-built ROM suite. Guest assets are checksum-verified.
+# unit tests, one Linux boot and the source-built ROM suite; full adds every
+# register test and the remaining functional tests. Guest assets are
+# checksum-verified.
 # scripts/ci/sgi-check holds the checks themselves, so a developer can run
 # them in the same image; scripts/ci/runner-setup holds the job-container
 # steps around them.

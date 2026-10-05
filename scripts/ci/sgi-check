@@ -130,6 +130,16 @@ def build(args):
     run(['ninja', '-C', path])
 
 
+def rom_suite(build, logbase):
+    """Run the ROMs built from tests/functional/mips64/roms/suite."""
+    expected = build.path / f'{logbase}.expected'
+    with open(expected, 'w', encoding='utf-8') as out:
+        run([sys.executable, CHECKER, '--list-rom-identities',
+             SOURCE / 'tests/functional/mips64/roms/suite',
+             '--require-rom-target', build.path], stdout=out)
+    build.meson_test(logbase, ['func-mips64-sgi_roms'], expected)
+
+
 def script_suites(suites, python):
     for suite in suites:
         run([python or sys.executable, '-B', SOURCE / suite])
@@ -264,9 +274,13 @@ def smoke(args):
                      ['--test-args', 'LinuxKernel.test_one_cpu',
                       'func-mips64-linux_kernel'], expected)
 
+    # sgi-unit includes the unit tests of the functional tests' lib_*.py
+    # helpers.
     expected = build.path / 'expected-unit.txt'
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
     build.meson_test('smoke-unit', ['--suite', 'qemu:sgi-unit'], expected)
+
+    rom_suite(build, 'smoke-rom')
 
 
 # Functional test classes whose every test_ method the full run requires.
@@ -314,12 +328,7 @@ def full(args):
         build.meson_test(logbase, [target],
                          build.path / f'{logbase}.expected')
 
-    expected = build.path / 'full-rom.expected'
-    with open(expected, 'w', encoding='utf-8') as out:
-        run([sys.executable, CHECKER, '--list-rom-identities',
-             SOURCE / 'tests/functional/mips64/roms/suite',
-             '--require-rom-target', build.path], stdout=out)
-    build.meson_test('full-rom', ['func-mips64-sgi_roms'], expected)
+    rom_suite(build, 'full-rom')
 
     expected = build.path / 'full-unit.expected'
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
@@ -359,7 +368,8 @@ def main(argv=None):
 
     mode = modes.add_parser(
         'smoke', help='the pull-request checks: the qtests a change '
-                      'selects, one Linux boot and the unit tests')
+                      'selects, one Linux boot, the unit tests and the ROM '
+                      'suite')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
                       help='select qtests changed since the merge base '
                            'with this commit (default: $PR_BASE_SHA; none '
