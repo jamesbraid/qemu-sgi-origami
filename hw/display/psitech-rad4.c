@@ -787,7 +787,7 @@ static uint32_t rad4_masked_store(PsitechRad4State *s, uint32_t old,
 {
     if (s->overlay_index_compat && s->mask == RAD4_OVERLAY_PLANE_MASK &&
         (value & ~0xfu) == 0) {
-        value <<= 24;
+        value <<= RAD4_PIXEL_WID_SHIFT;
     }
     return (old & ~s->mask) | (value & s->mask);
 }

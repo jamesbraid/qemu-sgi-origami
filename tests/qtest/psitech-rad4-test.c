@@ -1545,7 +1545,12 @@ static void check_overlay_index_compat(QTestState *qts, bool compat)
     bar2_write(qts, 0x000004, 0x00123456u);
     bar2_write(qts, 0x000008, 0x00123456u);
     bar2_write(qts, 0x00000c, 0x00123456u);
+    bar2_write(qts, 0x000010, 0x07123456u);
     bar2_write(qts, B_MASK, 0x0f000000u);
+
+    /* A bare 0 is still transparent overlay, with or without the rule. */
+    bar2_write(qts, 0x000010, 0x00000000u);
+    g_assert_cmphex(bar2_read(qts, 0x000010), ==, 0x00123456u);
 
     bar2_write(qts, 0x000000, 0x00000002u);
     bar2_write(qts, 0x000004, 0x00000102u);
