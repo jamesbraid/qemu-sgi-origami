@@ -92,19 +92,6 @@ foreach speed : ['quick', 'thorough']
 
     foreach test : target_tests
       testname = '@0@-@1@'.format(target_base, test)
-      test_suites = suites
-      if target_base == 'mips64' and sysmode == 'system' and \
-         test in get_variable('tests_mips64_system_sgi', [])
-        test_suites = suites + ['sgi', 'sgi-functional']
-      endif
-      if testname == 'mips64-openbsd_install'
-        test_suites += ['func-install']
-      elif testname.startswith('mips64-irix_diag')
-        test_suites += ['func-diag']
-      elif testname in ['mips64-openbsd_net_transfer',
-                       'mips64-xframe_pci']
-        test_suites += ['func-openbsd']
-      endif
       if fs.exists('generic' / 'test_' + test + '.py')
         testfile = 'generic' / 'test_' + test + '.py'
       else
@@ -151,18 +138,14 @@ foreach speed : ['quick', 'thorough']
            protocol: 'tap',
            timeout: time_out,
            priority: time_out,
-           suite: test_suites)
+           suite: suites + get_variable('test_' + target_base + '_' + sysmode +
+                                        '_extra_suites', {}).get(test, []))
     endforeach
 
     # Benchmarks run under "meson test --benchmark" rather than with the
     # tests, with the same environment, dependencies and pre-caching.
     foreach test : target_benchmarks
       testname = '@0@-@1@'.format(target_base, test)
-      bench_suites = ['system-' + target_base]
-      if target_base == 'mips64' and sysmode == 'system' and \
-         test in get_variable('benchmarks_mips64_system', [])
-        bench_suites += ['sgi']
-      endif
       if fs.exists('generic' / 'test_' + test + '.py')
         testfile = 'generic' / 'test_' + test + '.py'
       else
@@ -195,7 +178,9 @@ foreach speed : ['quick', 'thorough']
                 protocol: 'tap',
                 timeout: get_variable('test_' + target_base + '_timeouts',
                                       {}).get(test, 90),
-                suite: bench_suites)
+                suite: ['system-' + target_base] +
+                       get_variable('test_' + target_base + '_' + sysmode +
+                                    '_extra_suites', {}).get(test, []))
     endforeach
   endforeach
 endforeach
