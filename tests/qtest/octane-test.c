@@ -2019,75 +2019,67 @@ static void test_flash_cpu_program_benchmark(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void test_flash_migration_rejected(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("octane-flash-migrate-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *image = g_malloc(MiB);
-    g_autoptr(QDict) reply = NULL;
-    g_autofree char *snapshot_error = NULL;
-    QDict *error;
-    QTestState *qts;
+static char *octane_blockdev(const char *node, const char *path);
+static void octane_make_store(const char *path, size_t size, uint8_t fill,
+                              uint16_t mark);
 
-    memset(image, 0xff, MiB);
-    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
-    qts = octane_start_flash(path, 0, 0);
-    reply = qtest_qmp(qts,
-        "{'execute':'migrate','arguments':{'uri':'exec:cat >/dev/null'}}");
-    error = qdict_get_qdict(reply, "error");
-    g_assert_nonnull(error);
-    g_assert_nonnull(strstr(qdict_get_str(error, "desc"),
-                           "migration with persistent boot flash"));
-    snapshot_error = qtest_hmp(qts, "savevm flash-blocked");
-    g_assert_nonnull(strstr(snapshot_error,
-                           "migration with persistent boot flash"));
-    qtest_quit(qts);
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
+/* A machine whose boot flash is the raw file @path, as a launcher binds it. */
+static QTestState *octane_start_bound_flash(const char *path, const char *extra)
+{
+    g_autofree char *node = octane_blockdev("flash", path);
+
+    return qtest_initf(MEMTX_TEST_DEVICE "-M octane,node0-flash=flash "
+                       "-m 128M -cpu R10000 -blockdev %s %s", node, extra);
 }
 
-static void test_flash_restore_rejected(void)
+/*
+ * A machine with bound boot flash migrates as the SN machines' do: the
+ * part's command state and array travel with the machine, the destination
+ * reads what the source programmed, and both programs reach the shared
+ * file. The source is left in read-status mode, so the destination must
+ * also restore the part's non-array read mode, not just its bytes.
+ */
+static void test_flash_migration(void)
 {
-    g_autofree char *dir = g_dir_make_tmp("octane-flash-restore-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *image = g_malloc(MiB);
-    g_autofree char *snapshot = g_build_filename(dir, "snapshot.qcow2", NULL);
-    g_autofree char *extra = NULL;
-    g_autofree char *reply = NULL;
-    QTestState *qts;
-    g_autofree char *drive = g_strdup_printf(
-        "if=none,id=flash0,file=%s,format=raw", path);
-    g_autofree char *file = g_strdup_printf("file:%s", path);
-    const char *incoming[] = { "defer", file };
+    g_autofree char *dir = g_dir_make_tmp("octane-flash-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "node0-flash.raw", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migrate.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    g_autofree char *stored = NULL;
+    QTestState *from, *to;
+    gsize size;
 
-    memset(image, 0xff, MiB);
-    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
-    for (unsigned i = 0; i < G_N_ELEMENTS(incoming); i++) {
-        const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", "octane,node0-flash=flash0", "-m",
-            "128M", "-cpu", "R10000", "-drive", drive, "-incoming",
-            incoming[i], "-display", "none", "-qmp", "stdio", NULL
-        };
+    octane_make_store(path, MiB, 0xff, 0x1234);
+    from = octane_start_bound_flash(path, "");
+    to = octane_start_bound_flash(path, incoming);
+    qtest_writel(from, BRIDGE_REG(0x020),
+                 qtest_readl(from, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_writew(from, FLASH, 0x4040);
+    qtest_writew(from, FLASH + 0x20, 0x1290);
+    qtest_writew(from, FLASH, 0x7070);
+    g_assert_cmphex(qtest_readw(from, FLASH), ==, 0x0080);
 
-        assert_launch_rejected(args, "migration with persistent boot flash");
-    }
-    /* A snapshot made without backing must also be refused when reopened. */
-    g_assert_true(mkimg(snapshot, "qcow2", 1));
-    extra = g_strdup_printf("-drive if=none,id=snap,file=%s,format=qcow2",
-                             snapshot);
-    qts = octane_start_args(extra);
-    reply = qtest_hmp(qts, "savevm flash-restore");
-    g_assert_cmpstr(reply, ==, "");
-    qtest_quit(qts);
-    g_clear_pointer(&reply, g_free);
-    qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
-                      "-drive %s,readonly=on %s", drive, extra);
-    reply = qtest_hmp(qts, "loadvm flash-restore");
-    g_test_message("snapshot load response: %s", reply);
-    g_assert_nonnull(strstr(reply, "migration with persistent boot flash"));
-    qtest_quit(qts);
-    g_assert_cmpint(g_unlink(snapshot), ==, 0);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    /* Still in read-status mode, then the programmed word and the image. */
+    g_assert_cmphex(qtest_readw(to, FLASH), ==, 0x0080);
+    qtest_writew(to, FLASH, 0xffff);
+    g_assert_cmphex(qtest_readw(to, FLASH), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(to, FLASH + 0x20), ==, 0x1290);
+    qtest_writew(to, FLASH, 0x4040);
+    qtest_writew(to, FLASH + 0x40, 0x5678);
+    qtest_writew(to, FLASH, 0xffff);
+    g_assert_cmphex(qtest_readw(to, FLASH + 0x40), ==, 0x5678);
+    qtest_quit(from);
+    qtest_quit(to);
+
+    g_assert_true(g_file_get_contents(path, &stored, &size, NULL));
+    g_assert_cmpuint(size, ==, MiB);
+    g_assert_cmphex(lduw_be_p(stored), ==, 0x1234);
+    g_assert_cmphex(lduw_be_p(stored + 0x20), ==, 0x1290);
+    g_assert_cmphex(lduw_be_p(stored + 0x40), ==, 0x5678);
+    g_unlink(socket);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -3409,8 +3401,6 @@ static void test_kernel_refused(void)
                             "image, not -kernel");
 }
 
-static void octane_make_store(const char *path, size_t size, uint8_t fill,
-                              uint16_t mark);
 
 /*
  * As on the SN machines, -nic with no model reaches the onboard IOC3 and
@@ -4663,10 +4653,8 @@ int main(int argc, char **argv)
                         test_flash);
     qtest_add_data_func("/octane/flash-select1-strap1", GUINT_TO_POINTER(3),
                         test_flash);
-    qtest_add_func("/octane/flash-persistent-migration-rejected",
-                   test_flash_migration_rejected);
-    qtest_add_func("/octane/flash-persistent-restore-rejected",
-                   test_flash_restore_rejected);
+    qtest_add_func("/octane/flash-persistent-migration",
+                   test_flash_migration);
     qtest_add_func("/octane/flash-execute", test_flash_execute);
     qtest_add_func("/octane/flash-cpu-program-benchmark-cross-sector",
                    test_flash_cpu_program_benchmark);
