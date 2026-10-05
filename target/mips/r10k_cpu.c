@@ -495,3 +495,35 @@ void mips_r10k_cpu_finalize(MIPSCPU *cpu)
     mips_r10k_cpu_unrealize(cpu);
     g_clear_pointer(&cpu->r10k_profile, g_free);
 }
+
+#ifndef CONFIG_USER_ONLY
+/*
+ * tlb_active_mask holds one bit per TLB entry that can match, so the
+ * R10000 conflict scan in r10k_invalidate_conflicts() visits only those.
+ * Entries from 64 up are not tracked.
+ */
+void r10k_tlb_note_active(CPUMIPSState *env, int idx, bool active)
+{
+    if (idx < 64) {
+        if (active) {
+            env->tlb_active_mask |= 1ULL << idx;
+        } else {
+            env->tlb_active_mask &= ~(1ULL << idx);
+        }
+    }
+}
+
+/* Rebuild the map from the entries, which survive reset and migration. */
+void r10k_tlb_rebuild_active_mask(CPUMIPSState *env)
+{
+    env->tlb_active_mask = 0;
+    if (!env->tlb) {
+        return;
+    }
+    for (int i = 0; i < env->tlb->nb_tlb && i < 64; i++) {
+        if (!env->tlb->mmu.r4k.tlb[i].EHINV) {
+            env->tlb_active_mask |= 1ULL << i;
+        }
+    }
+}
+#endif
