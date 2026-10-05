@@ -3292,6 +3292,18 @@ static void test_cpu_type(void)
                             "Invalid CPU model: R10000");
 }
 
+/* -kernel is refused with the SN machines' wording, not ignored. */
+static void test_kernel_refused(void)
+{
+    g_autofree char *extra = g_strdup_printf("-bios %s -kernel %s",
+                                             flash_path, flash_path);
+
+    octane_storage_rejected("octane", extra,
+                            "octane: stock-PROM boot only; boot a kernel "
+                            "through the PROM's own TFTP netboot or a disk "
+                            "image, not -kernel");
+}
+
 static void octane_make_store(const char *path, size_t size, uint8_t fill,
                               uint16_t mark);
 
@@ -4598,6 +4610,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/storage/refusals", test_storage_refusals);
     qtest_add_func("/octane/topology-and-nodes", test_topology_and_nodes);
     qtest_add_func("/octane/cpu-type", test_cpu_type);
+    qtest_add_func("/octane/kernel-refused", test_kernel_refused);
     qtest_add_func("/octane/default-nic-and-disk", test_default_nic_and_disk);
     qtest_add_func("/octane/catalogue-machine-options",
                    test_catalogue_machine_options);
