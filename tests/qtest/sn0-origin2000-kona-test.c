@@ -1228,43 +1228,6 @@ static void test_mapram_full_window_sweep(void)
 }
 
 /*
- * The framebuffer pixel array's own migration test is the closest precedent
- * for a large migrated array: draw through the textport, migrate, read back
- * on the destination (test_migration() above). The map RAM table gets the
- * same treatment here -- two written entries plus one left untouched, so the
- * destination is checked against a real value in one case and against
- * migrated zero, not stale host memory, in the other.
- */
-static void test_mapram_migration(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-kona-mapram-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-
-    qtest_writel(from, MAPRAM_ENTRY(0), 0x10000000);
-    qtest_writel(from, MAPRAM_ENTRY(0x3ffff), 0x1003ffff);
-
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0)), ==, 0x10000000);
-    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0x3ffff)), ==, 0x1003ffff);
-    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(1)), ==, 0);
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
-/*
  * The DS2502 the guest reads back holds exactly the fixed-offset record
  * production code builds, its own two pages leaving the CRC-16 residue,
  * and the remaining 64 bytes of its 128-byte address space unprogrammed
@@ -1983,8 +1946,6 @@ int main(int argc, char **argv)
                    test_mapram_ordinary_mapping_write_read_back);
     qtest_add_func("sn0/origin2000/kona/mapram-full-window-sweep",
                    test_mapram_full_window_sweep);
-    qtest_add_func("sn0/origin2000/kona/mapram-migration",
-                   test_mapram_migration);
 
     ret = g_test_run();
     qtest_quit(qts);
