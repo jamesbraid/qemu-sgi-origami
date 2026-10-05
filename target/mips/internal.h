@@ -131,9 +131,11 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                          MemTxAttrs *attrs);
 hwaddr mips_cpu_get_phys_addr_debug(CPUState *cpu, vaddr addr);
 
-/* r10k_addr.c: the R10000 family's xkphys uncached-attribute window. */
+/* r10k_addr.c: the R10000 family's uncached-attribute windows. */
 hwaddr mips_r10k_xkphys_uncached_window(CPUMIPSState *env, target_ulong address,
                                         unsigned int cca, uint64_t *pa);
+hwaddr mips_r10k_mapped_uncached_window(CPUMIPSState *env, unsigned int cca,
+                                        unsigned int uc, MemTxAttrs *attrs);
 
 typedef struct r4k_tlb_t r4k_tlb_t;
 struct r4k_tlb_t {
