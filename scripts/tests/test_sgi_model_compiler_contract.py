@@ -781,6 +781,115 @@ class PicIo9DescriptorTests(unittest.TestCase):
         ])
         return model
 
+    def model_with_two_pic_empty_io9(self):
+        model = self.model_with_pic_io9()
+        components = {item["id"]: item for item in model["components"]}
+        pic = components.pop("fixture-pic")
+        pic["id"] = "pic-xio-f"
+        pic["name"] = "PIC widget 15"
+        model["components"].append({
+            "id": "pic-xio-b", "name": "PIC widget 11",
+            "kind": "pci-host-bridge", "hardware_kind": "pic",
+            "pci_host_bridge": {"heads": 2}, "provenance": "derived",
+        })
+        for bus in model["buses"]:
+            if bus.get("master") == "fixture-pic":
+                bus["master"] = "pic-xio-f"
+        for connection in model["connections"]:
+            if connection["component"] == "fixture-pic":
+                connection["component"] = "pic-xio-f"
+                if connection.get("role") == "bridge-downstream":
+                    connection["bus"] = "fixture-pic-f-pci0"
+                if connection["role"] == "bridge-upstream":
+                    connection["xio"].update({
+                        "enumerated_widget": 15,
+                        "discovery_widget": 15,
+                        "decoded_widgets": [15],
+                    })
+            if connection["component"] == "fixture-ioc4":
+                connection["bus"] = "fixture-pic-f-pci0"
+        model["buses"].append({
+            "id": "fixture-pic-b-pci0", "name": "PIC widget 11 PCI head 0",
+            "kind": "pci", "master": "pic-xio-b", "provenance": "derived",
+        })
+        model["buses"].append({
+            "id": "fixture-pic-f-pci0", "name": "PIC widget 15 PCI head 0",
+            "kind": "pci", "master": "pic-xio-f", "provenance": "derived",
+        })
+        model["buses"] = [
+            bus for bus in model["buses"]
+            if bus["id"] != "fixture-pic-pci0"
+        ]
+        model["connections"] = [
+            connection for connection in model["connections"]
+            if connection["component"] != "fixture-ioc4"
+        ]
+        model["components"] = [
+            component for component in model["components"]
+            if component["id"] != "fixture-ioc4"
+        ]
+        model["connections"].extend([
+            {"component": "pic-xio-b", "bus": "xio",
+             "role": "bridge-upstream", "provenance": "derived",
+             "xio": {"enumerated_widget": 11, "discovery_widget": 11,
+                     "decoded_widgets": [11]}},
+            {"component": "pic-xio-b", "bus": "fixture-pic-b-pci0",
+             "role": "bridge-downstream", "pci_head": 0,
+             "provenance": "derived"},
+            {"component": "fixture-io9", "bus": "fixture-pic-f-pci0",
+             "role": "endpoint", "provenance": "derived"},
+        ])
+        return model
+
+    def test_two_pic_io9_preserves_an_explicit_empty_endpoint_list(self):
+        from jsonschema import Draft202012Validator
+
+        model = self.model_with_two_pic_empty_io9()
+        self.assertEqual(
+            list(Draft202012Validator(schema(MACHINES)).iter_errors(model)), []
+        )
+        entry = compile_model(model)
+        self.assertEqual([host["id"] for host in entry["pci_host_bridges"]],
+                         ["pic-xio-b", "pic-xio-f"])
+        board = next(item for item in entry["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertTrue(board["populated"])
+        self.assertEqual(board["pci"], [])
+        self.assertEqual((board["pci_host_index"], board["pci_head"]),
+                         (1, 0))
+
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertTrue(exported_board["populated"])
+        self.assertEqual(exported_board["pci-functions"], [])
+        self.assertEqual((exported_board["pci-host-index"],
+                          exported_board["pci-head"]), (1, 0))
+
+        absent = copy.deepcopy(model)
+        absent["components"] = [
+            item for item in absent["components"]
+            if item["id"] != "fixture-io9"
+        ]
+        absent["connections"] = [
+            item for item in absent["connections"]
+            if item["component"] != "fixture-io9"
+        ]
+        self.assertFalse(any(
+            item["board_kind"] == "IO9"
+            for item in compile_model(absent)["io_boards"]
+        ))
+
+    def test_empty_io9_endpoint_list_requires_explicit_pci_bus_owner(self):
+        model = self.model_with_two_pic_empty_io9()
+        model["connections"] = [
+            item for item in model["connections"]
+            if item["component"] != "fixture-io9"
+        ]
+
+        with self.assertRaisesRegex(CompileError, "no authored PCI functions"):
+            compile_model(model)
+
     def test_pic_profile_is_compiled_on_its_host_record(self):
         model = self.model_with_pic_io9()
         model["machine"]["emulation"]["pic_profiles"] = {
@@ -3318,7 +3427,7 @@ class CatalogueJsonTests(unittest.TestCase):
     captured golden -- the packet's own worked examples.
     """
 
-    def test_legacy_empty_pci_functions_keep_authored_presence(self):
+    def test_empty_pci_function_lists_keep_authored_presence(self):
         legacy = _emit_io_board({
             "id": "fixture-baseio", "module_index": 0,
             "board_kind": "BASEIO", "other_identities": [],
@@ -3334,7 +3443,15 @@ class CatalogueJsonTests(unittest.TestCase):
             "part": None, "revision": None, "serial": None,
             "ioc3_serial": None,
         })
-        self.assertNotIn("pci-functions", io9)
+        self.assertEqual(io9["pci-functions"], [])
+
+        io9_without_list = _emit_io_board({
+            "id": "fixture-io9-unlisted", "module_index": 0,
+            "board_kind": "IO9", "other_identities": [],
+            "part": None, "revision": None, "serial": None,
+            "ioc3_serial": None,
+        })
+        self.assertNotIn("pci-functions", io9_without_list)
 
     def test_document_shape(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
