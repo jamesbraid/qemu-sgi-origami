@@ -4279,6 +4279,46 @@ static void test_flood_renders(const void *data)
     g_assert_cmpuint(most, ==, 1);
 }
 
+/*
+ * A device added with -device realizes after the builder has committed,
+ * outside its transaction, so the device must open its own: otherwise
+ * each region it maps commits alone and renders every view built so far
+ * again. These cases count the renders before the first system reset, as
+ * the one-memory-transaction cases do, with such a device on the command
+ * line. The bounds are the counts each makes today.
+ */
+typedef struct DeviceRenders {
+    const char *machine;
+    const char *device;
+    unsigned int most;
+} DeviceRenders;
+
+static void test_device_renders(const void *data)
+{
+    const DeviceRenders *c = data;
+    g_autoptr(GHashTable) renders = new_render_table();
+    unsigned int most;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    if (!qtest_has_device(c->device)) {
+        g_test_skip("the device is not built in");
+        return;
+    }
+    most = count_renders(c->machine, NULL, RESET_STARTS, 0, renders);
+    g_assert_cmpuint(g_hash_table_size(renders), >, 1);
+    g_assert_cmpuint(most, <=, c->most);
+}
+
+/* An XBridge: its crossbar's ports and routes and its two heads. */
+#define CHIP_ARGS "none -cpu R10000 -device sgi-xio-test-target,id=fabric " \
+    "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc," \
+    "fabric=/machine/peripheral/fabric/fabric.ram[0]"
+
+static const DeviceRenders xbridge_renders = { CHIP_ARGS, "sgi-xbridge", 3 };
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4299,6 +4339,8 @@ int main(int argc, char **argv)
                         &hub_number_flood, test_flood_renders);
     qtest_add_data_func("sn/builder/flood-renders/cable-down",
                         &cable_flood, test_flood_renders);
+    qtest_add_data_func("sn/builder/device-renders/xbridge",
+                        &xbridge_renders, test_device_renders);
     qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
                         test_pci_expansion_requires_fabric);
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
