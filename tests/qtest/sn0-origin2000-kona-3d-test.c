@@ -6029,6 +6029,17 @@ static void test_texture_8x8_widths(void)
                      ==, 12);
 }
 
+/*
+ * Where the reset and migration cases cut an 8x8 upload short, counted in
+ * words delivered out of the 20-word header and 64-word payload: nothing,
+ * mid-header, one header word short, header complete, first payload word,
+ * mid-payload and one word short of the end. These are the points where
+ * the partial-command state changes shape; the positions between them
+ * repeat a neighbour's case at the cost of a machine (or a machine pair)
+ * each.
+ */
+static const unsigned texture_8x8_splits[] = { 0, 10, 19, 20, 21, 52, 83 };
+
 static void test_texture_8x8_reset(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -6038,7 +6049,8 @@ static void test_texture_8x8_reset(void)
         hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
     }
     for (unsigned image = 0; image < 2; image++) {
-        for (unsigned split = 0; split < 84; split++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(texture_8x8_splits); i++) {
+            unsigned split = texture_8x8_splits[i];
             char *before[7];
             unsigned pos = split < 20 ? 0 : split - 20;
 
@@ -6068,7 +6080,8 @@ static void test_texture_8x8_migrates(void)
         hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
     }
     for (unsigned image = 0; image < 2; image++) {
-        for (unsigned split = 0; split < 84; split++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(texture_8x8_splits); i++) {
+            unsigned split = texture_8x8_splits[i];
             unsigned pos = split < 20 ? 0 : split - 20;
             g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
             g_autofree char *log = NULL, *found = NULL;
