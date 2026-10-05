@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define IMAGE_SIZE          0x1000
 #define MAIN_LOOP           0x480
@@ -63,7 +64,6 @@
 #define CACHE_OTHER_ECC     0x155u
 #define CACHE_SENTINEL      0xffffffffu
 #define CACHE_ECC_SENTINEL  0x3ffu
-#define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
 #define STREAM_ADVANCE      (1u << 26)
@@ -580,15 +580,16 @@ static void assert_cache_tags(QTestState *qts, const CacheTagProbe *probes,
 
 static uint64_t wait_for_change(QTestState *qts, uint64_t old)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "counter change");
+    for (;;) {
         uint64_t value = state_word(qts, COUNT_OFF);
 
         if (value != old) {
             return value;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_not_reached();
 }
@@ -596,41 +597,44 @@ static uint64_t wait_for_change(QTestState *qts, uint64_t old)
 static uint32_t wait_for_advance(QTestState *qts, uint32_t initial,
                                  uint32_t advance)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "counter advance");
+    for (;;) {
         uint32_t value = state_word(qts, COUNT_OFF);
 
         if (value - initial >= advance) {
             return value;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_not_reached();
 }
 
 static void wait_for_ready(QTestState *qts)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest ready");
+    for (;;) {
         if (state_word(qts, READY_OFF) == READY_MAGIC) {
             return;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_not_reached();
 }
 
 static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest state");
+    for (;;) {
         if (state_word(qts, off) == expected) {
             return;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(state_word(qts, off), ==, expected);
 }
@@ -959,7 +963,7 @@ static void assert_r16000_migration_rejected(const CacheCapacity *source,
     GError *error = NULL;
     QTestState *from, *to;
     int fd;
-    int64_t deadline;
+    SgiWait w;
     bool failed = false;
 
     if (!qtest_has_accel("tcg")) {
@@ -996,8 +1000,8 @@ static void assert_r16000_migration_rejected(const CacheCapacity *source,
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
 
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-    while (g_get_monotonic_time() < deadline) {
+    sgi_wait_start(&w, "refused incoming migration to fail");
+    do {
         QDict *ret = qtest_qmp_assert_success_ref(to,
             "{'execute':'query-migrate'}");
         const char *status = qdict_get_str(ret, "status");
@@ -1007,8 +1011,7 @@ static void assert_r16000_migration_rejected(const CacheCapacity *source,
         if (failed) {
             break;
         }
-        g_usleep(1000);
-    }
+    } while (sgi_wait_continue(&w, 1000));
     g_assert_true(failed);
     {
         QDict *ret = qtest_qmp_assert_success_ref(to,
@@ -1070,7 +1073,7 @@ static void assert_r16000_cpu_model_migration_rejected(
     GError *error = NULL;
     QTestState *from, *to;
     int fd;
-    int64_t deadline;
+    SgiWait w;
     bool failed = false;
 
     if (!qtest_has_accel("tcg")) {
@@ -1112,8 +1115,8 @@ static void assert_r16000_cpu_model_migration_rejected(
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
 
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-    while (g_get_monotonic_time() < deadline) {
+    sgi_wait_start(&w, "refused incoming migration to fail");
+    do {
         QDict *ret = qtest_qmp_assert_success_ref(to,
             "{'execute':'query-migrate'}");
         const char *status = qdict_get_str(ret, "status");
@@ -1123,8 +1126,7 @@ static void assert_r16000_cpu_model_migration_rejected(
         if (failed) {
             break;
         }
-        g_usleep(1000);
-    }
+    } while (sgi_wait_continue(&w, 1000));
     g_assert_true(failed);
     {
         QDict *ret = qtest_qmp_assert_success_ref(to,

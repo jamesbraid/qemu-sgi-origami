@@ -8,6 +8,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define R12000_CPU_1 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
     "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
@@ -414,7 +415,7 @@ static void run_user_code_first_call(bool remote)
     unsigned int result = remote ? 64 : 0;
     QTestState *qts;
     int fd;
-    int64_t deadline;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -439,15 +440,14 @@ static void run_user_code_first_call(bool remote)
                                          node1_code, sizeof(node1_code)));
     }
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "user mailbox");
     do {
         g_assert_true(qtest_memread_cpu(qts, 0, USER_MAILBOX,
                                         mailbox, sizeof(mailbox)));
         if (ldl_be_p(mailbox + 28) && ldl_be_p(mailbox + result + 28)) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     for (unsigned int i = 0; i < sizeof(mailbox); i += 4) {
         g_test_message("mailbox[%u]=0x%08x", i, ldl_be_p(mailbox + i));
     }
@@ -655,7 +655,7 @@ static void run_word_load_test(const char *machine, const char *cpu,
     uint8_t mailbox[0x200] = { 0 };
     uint8_t user_code[16] = { 0 };
     QTestState *qts;
-    int64_t deadline;
+    SgiWait w;
     int fd;
 
     if (!qtest_has_accel("tcg")) {
@@ -678,14 +678,13 @@ static void run_word_load_test(const char *machine, const char *cpu,
     qtest_memwrite(qts, WORD_LOAD_DATA, data, sizeof(data));
     qtest_memwrite(qts, USER_PHYS + 0x800, user_code, sizeof(user_code));
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "word load done");
     do {
         qtest_memread(qts, WORD_LOAD_MAILBOX, mailbox, sizeof(mailbox));
         if (ldl_be_p(mailbox + WORD_LOAD_DONE)) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     qtest_quit(qts);
     g_assert_cmphex(ldl_be_p(mailbox + WORD_LOAD_DONE), ==, 1);
     for (unsigned int i = 0; i < WORD_LOAD_RESULTS; i++) {
@@ -784,7 +783,7 @@ static void run_cpu_timer_test(const char *machine, const char *cpu)
     g_autofree char *path = NULL;
     uint8_t mailbox[32] = { 0 };
     QTestState *qts;
-    int64_t deadline;
+    SgiWait w;
     int fd;
 
     if (!qtest_has_accel("tcg")) {
@@ -802,14 +801,13 @@ static void run_cpu_timer_test(const char *machine, const char *cpu)
                       machine, cpu, path);
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "timer mailbox");
     do {
         qtest_memread(qts, TIMER_MAILBOX, mailbox, sizeof(mailbox));
         if (ldl_be_p(mailbox + 28)) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     qtest_quit(qts);
     g_assert_cmpuint(ldl_be_p(mailbox + 28), ==, 1);
     g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, CAUSE_IP7);
@@ -1047,7 +1045,7 @@ static void r12000_run_profile(const char *profile, bool wide_block,
     g_autofree char *path = NULL;
     uint8_t mailbox[72] = { 0 };
     QTestState *qts;
-    int64_t deadline;
+    SgiWait w;
     int fd;
 
     if (!qtest_has_accel("tcg")) {
@@ -1064,14 +1062,13 @@ static void r12000_run_profile(const char *profile, bool wide_block,
                       "-bios %s -accel tcg -S", profile, path);
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "R12000 mailbox");
     do {
         qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
         if (ldl_be_p(mailbox + 24)) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     g_assert_cmphex(ldl_be_p(mailbox + 24), ==, 1);
     g_assert_cmphex(ldl_be_p(mailbox), ==, expected_prid);
     g_assert_cmphex(ldl_be_p(mailbox + 4) & 0x1ffffff, ==, expected_mode);
@@ -1440,16 +1437,16 @@ static void test_r16000_identity_and_immutable_inputs(void)
         QTestState *qts = qtest_initf(
             "-M malta -m 64M -cpu %s -bios %s -accel tcg,thread=single -S",
             cases[i].profile, image);
-        int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+        SgiWait w;
 
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&w, "R16000 profile mailbox");
         do {
             qtest_memread(qts, R16000_MAILBOX + 12, mailbox, 4);
             if (ldl_be_p(mailbox) == 1) {
                 break;
             }
-            g_usleep(1000);
-        } while (g_get_monotonic_time() < deadline);
+        } while (sgi_wait_continue(&w, 1000));
         g_assert_cmphex(ldl_be_p(mailbox), ==, 1);
         qtest_memread(qts, R16000_MAILBOX, mailbox, sizeof(mailbox));
         g_assert_cmphex(ldl_be_p(mailbox), ==, 0x00000F50);
@@ -1502,15 +1499,15 @@ static char *r12000_probe_image(bool wide_block)
 static void r12000_wait_mailbox(QTestState *qts, unsigned int offset)
 {
     uint8_t value[4];
-    int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
+    sgi_wait_start(&w, "R12000 mailbox");
     do {
         qtest_memread(qts, R12000_MAILBOX + offset, value, sizeof(value));
         if (ldl_be_p(value) == 1) {
             return;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     g_assert_not_reached();
 }
 
@@ -1578,7 +1575,7 @@ static void r12000_migrate_rejects_profile(const char *destination)
     g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     QTestState *from, *to;
-    int64_t deadline;
+    SgiWait w;
 
     from = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
                        "-bios %s -accel tcg -S", R12000_CPU_1, image);
@@ -1591,10 +1588,9 @@ static void r12000_migrate_rejects_profile(const char *destination)
     qtest_set_expected_status(to, 1);
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "destination exit after a refused migration");
     while (qtest_probe_child(to)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_quit(from);
     qtest_quit(to);
@@ -1637,7 +1633,7 @@ static void test_r10000_tlb_conflict_after_reset(void)
     uint8_t mailbox[20] = { 0 };
     unsigned int second;
     QTestState *qts;
-    int64_t deadline;
+    SgiWait w;
     int fd;
 
     if (!qtest_has_accel("tcg")) {
@@ -1681,14 +1677,13 @@ static void test_r10000_tlb_conflict_after_reset(void)
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
     for (unsigned int phase = 1; phase <= 2; phase++) {
-        deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+        sgi_wait_start(&w, "R12000 two-phase mailbox");
         do {
             qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
             if (ldl_be_p(mailbox) == phase) {
                 break;
             }
-            g_usleep(1000);
-        } while (g_get_monotonic_time() < deadline);
+        } while (sgi_wait_continue(&w, 1000));
         g_assert_cmphex(ldl_be_p(mailbox), ==, phase);
         if (phase == 1) {
             qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");

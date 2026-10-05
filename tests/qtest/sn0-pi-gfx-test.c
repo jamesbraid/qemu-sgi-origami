@@ -128,13 +128,13 @@ static void stores(QTestState *qts, unsigned int node, unsigned int slice,
                    uint64_t addr, uint64_t count)
 {
     uint64_t box = node_base(node) + MAILBOX + slice * MAILBOX_STRIDE;
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
     qtest_writeq(qts, box + 8, addr);
     qtest_writeq(qts, box, count);
+    sgi_wait_start(&w, "guest store");
     while (qtest_readq(qts, box)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 

@@ -10,6 +10,7 @@
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
 #include "sgi-launch.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define HUB_BASE UINT64_C(0x20001000000)
@@ -324,8 +325,8 @@ static void assert_processor_mode_report(QTestState *qts)
 
         g_assert_cmpuint(sn0_wait_word(qts, cpu,
                                       SN0_USER_MAILBOX +
-                                      (cpu % 2) * MODE_REPORT_STRIDE + 16,
-                                      30), ==, 1);
+                                      (cpu % 2) * MODE_REPORT_STRIDE + 16),
+                         ==, 1);
         before = read_processor_mode_report(qts, cpu, 0);
         local = read_processor_mode_report(qts, cpu, 4);
         reset = read_processor_mode_report(qts, cpu, 8);
@@ -1517,41 +1518,14 @@ static void migrate_module(QTestState *from, QTestState *to)
                                                 NULL);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
     g_assert_nonnull(directory);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(to,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
 }

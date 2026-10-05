@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "sn0-user-image.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define BRIDGE_WIDGET       8
 #define BRIDGE_BASE         (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
@@ -257,7 +258,8 @@ static void test_empty_slot_read_bus_errors(void)
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
     QTestState *qts;
-    uint32_t marker = 0;
+    uint32_t marker;
+    SgiWait w;
 
     build_probe_image(image);
     path = sn0_image_write(image, "sn0-bridge-master-timeout-guest");
@@ -268,10 +270,9 @@ static void test_empty_slot_read_bus_errors(void)
     unlink(path);
 
     /* The fragment zeroes each outcome itself; the marker says it ran. */
-    g_test_timer_start();
-    while (marker != GUEST_MARKER && g_test_timer_elapsed() < 10) {
-        marker = qtest_readl(qts, GUEST_MARKER_ADDR);
-        g_usleep(1000);
+    sgi_wait_start(&w, "guest marker");
+    while ((marker = qtest_readl(qts, GUEST_MARKER_ADDR)) != GUEST_MARKER) {
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(marker, ==, GUEST_MARKER);
 

@@ -153,7 +153,7 @@ static void test_double_bit_cpu(gconstpointer data)
     qtest_writeq(s, HEART_REGS + 0x10000,
                  c->heart_mask ? ECC_IRQ : 0);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
-    done = sn0_wait_word(s, 0, MAILBOX, 10);
+    done = sn0_wait_word(s, 0, MAILBOX);
     qtest_qmp_assert_success(s, "{'execute':'stop'}");
     registers = qtest_hmp(s, "info registers");
     g_test_message("%s", registers);
@@ -194,7 +194,7 @@ static void test_dma_code(void)
     QTestState *s;
     uint8_t word[4];
     uint32_t seen, replacement = mips_addiu(SN0_R_V0, SN0_R_ZERO, 2);
-    int64_t deadline;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -231,20 +231,19 @@ static void test_dma_code(void)
     qtest_writel(s, DMA_CARD + 0x00, 0xa0008000);
     qtest_writel(s, DMA_CARD + 0x04, sizeof(word));
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
-    g_assert_cmpuint(sn0_wait_word(s, 0, MAILBOX, 10), ==, 1);
+    g_assert_cmpuint(sn0_wait_word(s, 0, MAILBOX), ==, 1);
 
     qtest_writel(s, DMA_CARD + 0x0c, 2);
     g_assert_cmpuint(qtest_readl(s, DMA_CARD + 0x28), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, WORD), ==, replacement);
-    deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    sgi_wait_start(&w, "second mailbox report");
     do {
         g_assert_true(qtest_memread_cpu(s, 0, MAILBOX, word, sizeof(word)));
         seen = ldl_be_p(word);
         if (seen == 2) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     g_assert_cmpuint(seen, ==, 2);
     qtest_quit(s);
 }

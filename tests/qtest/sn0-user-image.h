@@ -13,6 +13,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-mips-emit.h"
+#include "sgi-wait.h"
 
 #define SN0_IMAGE_SIZE      0x2000
 #define SN0_IMAGE_BASE      0xbfc00000u
@@ -304,20 +305,24 @@ static inline char *sn0_image_write(const SN0Image *p, const char *stem)
     return path;
 }
 
-/* Poll a big-endian mailbox word through @cpu's own address space. */
+/*
+ * Poll a big-endian mailbox word through @cpu's own address space until it
+ * is nonzero. Gives up after SGI_WAIT_S of host time and returns the zero
+ * it last read, so the caller's assertion names the word.
+ */
 static inline uint32_t sn0_wait_word(QTestState *qts, unsigned int cpu,
-                                     uint64_t addr, unsigned int seconds)
+                                     uint64_t addr)
 {
-    int64_t deadline = g_get_monotonic_time() + seconds * G_TIME_SPAN_SECOND;
     uint8_t word[4];
+    SgiWait w;
 
+    sgi_wait_start(&w, "CPU %u mailbox 0x%" PRIx64, cpu, addr);
     do {
         g_assert_true(qtest_memread_cpu(qts, cpu, addr, word, sizeof(word)));
         if (ldl_be_p(word)) {
             break;
         }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 1000));
     return ldl_be_p(word);
 }
 
