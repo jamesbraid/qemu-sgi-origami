@@ -400,8 +400,8 @@ _SCSI_TARGETS = {
 # `CHARDEV_SYSTEM_CONTROLLER`/`CHARDEV_BRINGUP_PORT` and `serial_args`,
 # which every Hub-family launcher already calls in this order. A Bedrock
 # node's L1 combines the console and the system controller dialogue on
-# one UART instead (the model tooling/prom.py's `behind_l1` branch: one
-# `-serial chardev:l1`).
+# one UART instead (include/hw/mips/sgi/sn-machine.h's
+# sgi_sn1_serial_line(): one `-serial chardev:l1` first).
 
 # Each Timekeeper kind's NVRAM and the clock reference record its model
 # keeps beside it: the m48t35 window (hw/rtc/m48t35.h's M48T35_SIZE and
@@ -489,9 +489,8 @@ def _networks_for(topology: dict) -> list[dict]:
     IOC3s carry onboard Ethernet, but a BaseIO-G MediaIO daughtercard's
     second IOC3 does not, so the offering follows the compiled `ethernet`
     population bit rather than the bare IOC3 kind (`model_compile`'s
-    `_board_pci_population`). `the model tooling/irix.py`'s
-    `IRIX_NETWORK_ADAPTERS["ef"]` wires the onboard adapter with no
-    explicit `-device` of its own, only a `-netdev ...,id=netN` backend.
+    `_board_pci_population`). A launch wires the onboard adapter with no
+    explicit `-device` of its own, only a `-nic` or `-netdev` backend.
     """
     networks = []
     for board in topology["io_boards"]:
@@ -616,12 +615,11 @@ def _resources_for(topology: dict, harness: dict,
     inputs a launcher may supply beyond its writable `storage`.
     """
     resources = []
-    # Origin 300's identity and SPD inputs -- the model tooling/prom.py's
-    # ORIGIN300_EEPROM_INPUTS (two chassis EEPROMs and two board EEPROMs,
-    # one pair per board: the node board and the IO-8) and
-    # ORIGIN300_SPD_INPUTS (one record per fitted DIMM). Neither module
-    # carries a byte size for these chips; this catalogue does not invent
-    # one (see the packet report's open question). Each chassis's L1 reads
+    # Origin 300's raw identity and SPD record overrides: the machine's
+    # chassis-eeprom and board-eeprom arrays (one pair per board: the node
+    # board and the IO-8) and spd-eeprom (one record per fitted DIMM).
+    # Nothing records a byte size for these chips, so this catalogue does
+    # not invent one. Each chassis's L1 reads
     # its own pair, so a two-chassis topology has twice as many. The L1
     # count stands in for the chassis count: every Origin 300 chassis has
     # exactly one L1, and no other controller kind carries these inputs.

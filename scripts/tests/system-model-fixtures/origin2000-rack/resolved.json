@@ -3782,8 +3782,8 @@
       "prom_dialogue": "ip27-menu",
       "provenance": "derived",
       "sources": [
-        "tools/origami_lib/node_prom.py: node_prom_drives, the harness's own requirement that every launch seed four independent node flash images because the machine takes no -bios",
-        "tools/origami_lib/launch.py: select_launch_profile's origin2000 branch, requires_node_proms=True",
+        "query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds",
+        "tools/origami_lib/launch.py: LaunchProfile.requires_node_proms",
         "tools/origami_lib/irix.py: run irix's --machine choices name origin200, origin2000 and origin300 for IRIX only; run sash and run mdk restrict --machine to origin200 and origin2000"
       ],
       "supported_guests": [
