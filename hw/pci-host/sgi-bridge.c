@@ -2790,38 +2790,21 @@ static int sgi_bridge_post_load(void *opaque, int version_id)
     SGIBridgeState *s = opaque;
 
     sgi_bridge_aim_all_windows(s);
-    /*
-     * An older stream carries only the effective levels; attribute them to
- * the PCI side. A wire level is re-driven by its source device.
-     */
-    if (version_id < 5) {
-        s->pci_pin_level = s->pin_level;
-        s->gpio_pin_level = 0;
-    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_bridge = {
     .name = "sgi-bridge",
     .version_id = 5,
-    .minimum_version_id = 1,
+    .minimum_version_id = 5,
     .post_load = sgi_bridge_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIBridgeState, SGI_BRIDGE_REG_SLOTS),
         VMSTATE_UINT8(pin_level, SGIBridgeState),
-        VMSTATE_UINT8_V(pci_pin_level, SGIBridgeState, 5),
-        VMSTATE_UINT8_V(gpio_pin_level, SGIBridgeState, 5),
-        VMSTATE_UINT32_V(int_error, SGIBridgeState, 4),
-        VMSTATE_UINT64_ARRAY_V(ate_entry, SGIBridgeState,
-                               SGI_BRIDGE_ATE_ENTRIES, 2),
-        /*
-         * Sixty bytes of the chip's own one-wire responder state, kept as
-         * padding so streams written before the part became a device on a bus
-         * still load. That responder is gone and the part migrates its own
-         * conversation now, so the bytes are written zero and discarded
-         * rather than translated.
-         */
-        VMSTATE_UNUSED_V(3, 60),
+        VMSTATE_UINT8(pci_pin_level, SGIBridgeState),
+        VMSTATE_UINT8(gpio_pin_level, SGIBridgeState),
+        VMSTATE_UINT32(int_error, SGIBridgeState),
+        VMSTATE_UINT64_ARRAY(ate_entry, SGIBridgeState, SGI_BRIDGE_ATE_ENTRIES),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -1215,18 +1215,12 @@ static const VMStateDescription vmstate_xbridge = {
     .name = TYPE_SGI_XBRIDGE_HEAD,
     .version_id = 2,
     .post_load = xbridge_post_load,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(pci_levels, SGIXBridgeHeadState),
         VMSTATE_UINT8(pins, SGIXBridgeHeadState),
         VMSTATE_UINT32_ARRAY(reg, SGIXBridgeHeadState, REG_COUNT),
-        VMSTATE_UINT64_SUB_ARRAY(ate, SGIXBridgeHeadState, 0,
-                                 SGI_XBRIDGE_HEAD_ATE_MAPPED),
-        /* Version 2 added revision B's second 512 entries. */
-        VMSTATE_SUB_ARRAY(ate, SGIXBridgeHeadState,
-                          SGI_XBRIDGE_HEAD_ATE_MAPPED,
-                          ATE_COUNT - SGI_XBRIDGE_HEAD_ATE_MAPPED, 2,
-                          vmstate_info_uint64, uint64_t),
+        VMSTATE_UINT64_ARRAY(ate, SGIXBridgeHeadState, ATE_COUNT),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1942,25 +1936,14 @@ static const Property chip_properties[] = {
                        onewire_serial[1], SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
 
-static int chip_post_load(void *opaque, int version_id)
-{
-    SGIXBridgeState *s = opaque;
-
-    return (version_id == 1 && s->superbridge) ||
-           (version_id < 3 && s->packet_context) ? -EINVAL : 0;
-}
-
 /* The mode is immutable; the children carry programmed state. */
 static const VMStateDescription vmstate_chip = {
     .name = TYPE_SGI_XBRIDGE,
-    .post_load = chip_post_load,
     .version_id = 3,
-    .minimum_version_id = 1,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
-        VMSTATE_SINGLE(packet_context, SGIXBridgeState, 3,
-                       vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_SINGLE(mode, SGIXBridgeState, 2,
-                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT8_EQUAL(packet_context, SGIXBridgeState),
+        VMSTATE_UINT8_EQUAL(mode, SGIXBridgeState),
         VMSTATE_END_OF_LIST()
     }
 };
