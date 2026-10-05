@@ -61,6 +61,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -69,8 +70,8 @@
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXioBaseioState, SGI_XIO_BASEIO)
 
-/* Placeholder; no reviewed source assigns a serial to this board class. */
-#define XIO_BASEIO_SERIAL_PLACEHOLDER 0x060504030201ULL
+/* Marked synthetic; no reviewed source assigns a serial to this board. */
+#define XIO_BASEIO_SERIAL_PLACEHOLDER SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0)
 
 struct SGIXioBaseioState {
     SGIXioBoardState parent_obj;
@@ -145,8 +146,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
     s->bridge = SGI_BRIDGE(bridge);
-    sgi_baseio_preset_set_bridge_identity(bridge, identity);
-    qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
+    sgi_baseio_preset_set_bridge_identity(bridge, identity, s->onewire_serial);
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);

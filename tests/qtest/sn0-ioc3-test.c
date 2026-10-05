@@ -2039,7 +2039,7 @@ static void test_a_search_finds_the_ethernet_address_part(const void *data)
  * test_each_node_has_its_own_onewire_identity computes over the bytes its
  * own search returned.
  */
-#define ONEWIRE_NODE0_SERIAL 0x5e7000000001ULL
+#define ONEWIRE_NODE0_SERIAL 0x5e7454d55000ULL
 
 static void test_read_rom_returns_the_whole_identity(const void *data)
 {

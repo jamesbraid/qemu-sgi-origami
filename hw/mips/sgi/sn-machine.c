@@ -78,6 +78,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sgi/net-cable.h"
 #include "sn0.h"
@@ -1699,17 +1700,26 @@ static const uint64_t *sgi_machine_io_board_ioc3_serial(
  * is inferred from that grouping, the way the BaseIO-G's MIO record shares
  * its Bridge's line. The upgrade guide's one loopback example prints a rev
  * B board as 2G_MPLN; this model fits the rev C board whichever way the
- * module is cabled. The barcode is a placeholder, and the serial only has
- * to read back distinct from the IP29 record's; it continues the
- * descending-byte placeholder idiom past the MIO's and the Cad Duo's.
+ * module is cabled. The barcode and serial are marked synthetic ones, and
+ * the serial only has to read back distinct from the IP29 record's: it is
+ * the XIO option board letter with the IP29 Bridge's own instance.
  */
-static const SGIBridgeBoardRecord sgi_machine_crosstown_record = {
-    .barcode = "OXBOXEXT01",
-    .part = "030-1264-001",
-    .revision = "C",
-    .name = "XBOX_EXT",
-};
-#define SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL 0x0e0d0c0b0a09ULL
+static bool sgi_machine_add_crosstown_record(DeviceState *bridge,
+                                             uint64_t bridge_serial,
+                                             Error **errp)
+{
+    uint64_t serial = SGI_SYNTHETIC_ONEWIRE_SERIAL('O', bridge_serial & 0xff);
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+    const SGIBridgeBoardRecord record = {
+        .barcode = barcode,
+        .part = "030-1264-001",
+        .revision = "C",
+        .name = "XBOX_EXT",
+    };
+
+    sgi_synthetic_barcode(barcode, 'O', serial);
+    return sgi_bridge_add_onewire_board_part(bridge, &record, serial, errp);
+}
 
 /* The block node or drive bound to item @name, or NULL. */
 static const char *sgi_machine_storage_node(SGIMachineState *s,
@@ -1883,9 +1893,7 @@ static bool sgi_machine_instantiate_ip29_io(
         return false;
     }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN &&
-        !sgi_bridge_add_onewire_board_part(
-            bridge, &sgi_machine_crosstown_record,
-            SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL, errp)) {
+        !sgi_machine_add_crosstown_record(bridge, record->serial, errp)) {
         return false;
     }
     return true;
@@ -2654,11 +2662,14 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
                                               &module_node_count);
         for (i = 0; i < module_node_count; i++) {
             unsigned int node_index = module_nodes[i];
+            const SGIModelAsicIdentity *asic = nodes[node_index]->identity;
 
-            sgi_sn0_module_management_identity_rom(
-                nodes[node_index]->slot, module->initial_module_number,
-                identity.rom);
-            if (!sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
+            if (!sgi_sn0_module_management_responder_rom(
+                    module->id, node_index,
+                    asic->has_module_responder_serial ?
+                    &asic->module_responder_serial : NULL,
+                    identity.rom, &error_fatal) ||
+                !sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
                                                 &identity, &error_fatal)) {
                 exit(EXIT_FAILURE);
             }

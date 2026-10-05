@@ -1013,9 +1013,9 @@ class RecordShapeTests(unittest.TestCase):
         # (docs/machines/layers/products/origin2000-rack.yaml,
         # machine.emulation.synthetic_identities), the same mechanism a
         # node's Hub uses -- never the identity block's own absent serial.
-        self.assertEqual(router["serial"], 0x100000000005)
+        self.assertEqual(router["serial"], 0x51454d555200)
         self.assertEqual(entry["routers"][1]["id"], "router-2")
-        self.assertEqual(entry["routers"][1]["serial"], 0x100000000006)
+        self.assertEqual(entry["routers"][1]["serial"], 0x51454d555201)
         # A crossbar's manufacturer id, part number and initially-
         # populated-links mask are fixed by which chip it is (decision
         # D-0026) and are not carried here.
@@ -1048,11 +1048,11 @@ class RecordShapeTests(unittest.TestCase):
         }])
         self.assertEqual(
             [node["identity"]["serial"] for node in entry["nodes"]],
-            [0xc0b0a090807, 0xc0b0a090808],
+            [0x51454d554e00, 0x51454d554e01],
         )
         self.assertEqual(
             [board["serial"] for board in entry["io_boards"]],
-            [0x60504030201, 0x60504030202],
+            [0x51454d554200, 0x51454d554201],
         )
         # Both boards share their node's own system board (the Origin 200
         # family's IP29), so both compile to IP29_IO, never BASEIO.
@@ -1612,7 +1612,7 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
         # carry them) and are not carried here.
         identity = self.entry["nodes"][0]["identity"]
         self.assertEqual(identity, {
-            "ni_revision": 3, "widget_revision": 1, "serial": 0xc0b0a090807,
+            "ni_revision": 3, "widget_revision": 1, "serial": 0x51454d554e00,
             "i2c_controller": True, "system_controller": True,
         })
 
@@ -1660,14 +1660,14 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
         # BASEIO in sn-model.h names that different board.
         self.assertEqual(board["board_kind"], "IP29_IO")
         self.assertEqual(board["revision"], 4)
-        self.assertEqual(board["serial"], 0x60504030201)
+        self.assertEqual(board["serial"], 0x51454d554200)
         self.assertEqual(board["part"], "030-1244-001")
         # A PCI function's own device number, revision and interrupt
         # input are sgi-baseio's own preset facts now (decision D-0026);
         # only the kind order survives, for the catalogue's offerings.
         self.assertEqual(
             [item["kind"] for item in board["pci"]], ["ISP1040", "ISP1040", "IOC3"])
-        self.assertEqual(board["ioc3_serial"], 0x5e7000000001)
+        self.assertEqual(board["ioc3_serial"], 0x5e7454d55000)
 
     def test_supported_cpu_populations(self):
         self.assertEqual(self.entry["supported_cpu_populations"], [[1], [2]])
@@ -1979,7 +1979,9 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(
             set(node["identity"]),
             {"ni-revision", "widget-revision", "serial", "i2c-controller",
-             "system-controller"})
+             "system-controller", "module-responder-serial"})
+        self.assertEqual(node["identity"]["module-responder-serial"],
+                         0x51454D554D10)
         self.assertNotIn("management-adapter-offset", node)
         self.assertEqual(set(node["flash"]), {"kind", "size"})
         board = topology["io-boards"][0]

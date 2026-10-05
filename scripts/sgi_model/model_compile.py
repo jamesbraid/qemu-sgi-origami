@@ -24,6 +24,8 @@ from collections.abc import Callable
 
 from .model_composition import validate_initialization_policy
 
+from . import synthetic_serial
+
 from .model_shared import (
     _compile_r10000_reset_mode, _integer, _required, _validate_integer, num,
 )
@@ -697,6 +699,79 @@ def _synthetic_serial(model: dict, component_id: str, kind: str, node_index: int
     raise CompileError(f"component '{component_id}' has no synthetic serial")
 
 
+def _module_responder_serial(model: dict, component_id: str) -> int | None:
+    """The ROM serial of a node's Hub-side module-identity responder.
+
+    `machine.emulation.module_responder_identities` names one per node of an
+    SN0 module with a shared module controller. Like every other synthetic
+    serial it must carry the marker; a node named twice is refused, and
+    `_check_module_responders` refuses the rest.
+    """
+    emulation = model["machine"].get("emulation", {})
+    serial = None
+    for entry in emulation.get("module_responder_identities") or []:
+        if entry.get("component") != component_id:
+            continue
+        if serial is not None:
+            raise CompileError(
+                f"component '{component_id}' has more than one module "
+                "responder identity")
+        serial = num(entry["serial"])
+        if not synthetic_serial.onewire_serial_marked(serial):
+            raise CompileError(
+                f"component '{component_id}' module responder serial "
+                f"{serial:#014x} carries no synthetic-serial marker")
+    return serial
+
+
+def _check_module_responders(nodes: list[dict], modules: list[dict]) -> None:
+    """Refuse module-identity responders an SN0 machine could not tell apart.
+
+    Each node of a module with a shared module controller carries a
+    responder on its Hub bus, next to which the controller's own module
+    serial chip answers as the module letter at the module's number. The
+    letter's instances split between the two (sgi-synthetic-serial.h):
+    module numbers stay below `MODULE_RESPONDER_FIRST_INSTANCE` and each
+    responder takes the letter at that instance or above, so neither can
+    take the other's serial, and no two nodes share a responder.
+    """
+    first = synthetic_serial.MODULE_RESPONDER_FIRST_INSTANCE
+    chips = {}
+    for module in modules:
+        if module["controller_index"] < 0:
+            continue
+        number = module["initial_module_number"]
+        if number >= first:
+            raise CompileError(
+                f"module '{module['id']}' initial number {number} is in the "
+                f"module-identity responders' range, {first} and up")
+        chips[synthetic_serial.onewire_serial("M", number)] = module["id"]
+    owners = {}
+    for node in nodes:
+        module = modules[node["module_index"]]
+        if module["controller_index"] < 0:
+            continue
+        serial = node["identity"].get("module_responder_serial")
+        if serial is None:
+            raise CompileError(
+                f"node '{node['id']}' of module '{module['id']}' has no "
+                "module responder serial")
+        if serial in chips:
+            raise CompileError(
+                f"node '{node['id']}' module responder serial {serial:#014x} "
+                f"is module '{chips[serial]}' serial chip's own")
+        if (serial >> 16 != synthetic_serial.ONEWIRE_PREFIX or
+                (serial >> 8) & 0xFF != ord("M") or serial & 0xFF < first):
+            raise CompileError(
+                f"node '{node['id']}' module responder serial {serial:#014x} "
+                f"is not the module letter at instance {first} or above")
+        if serial in owners:
+            raise CompileError(
+                f"nodes '{owners[serial]}' and '{node['id']}' share module "
+                f"responder serial {serial:#014x}")
+        owners[serial] = node["id"]
+
+
 _FLASH_KINDS = {"am29f080": "AM29F080"}
 
 
@@ -1088,6 +1163,7 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
         revisions["widget_revision"] = _integer(
             identity, widget_field, f"node '{node['id']}'", 8)
     serial = _synthetic_serial(model, node["id"], asic_kind, node_index)
+    responder = _module_responder_serial(model, node["id"])
 
     found = _node_i2c_adapter(model, components, node)
     system_controller = False
@@ -1104,10 +1180,13 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
             if component is not None and component.get("kind") == "system-controller":
                 system_controller = True
                 break
-    return {
+    identity = {
         **revisions, "serial": serial,
         "i2c_controller": found is not None, "system_controller": system_controller,
     }
+    if responder is not None:
+        identity["module_responder_serial"] = responder
+    return identity
 
 
 def _region(component: dict, region_id: str) -> dict | None:
@@ -2281,6 +2360,8 @@ def compile_model(model: dict) -> dict:
         modules = [_compile_module(model, module["id"], module["index"],
                                     graph["nodes"], controllers, graph["io_peers"])
                    for module in graph["modules"]]
+        if generation == "SN0":
+            _check_module_responders(nodes, modules)
         used_l1 = set()
         for node in nodes:
             if node["asic_kind"] != "BEDROCK":

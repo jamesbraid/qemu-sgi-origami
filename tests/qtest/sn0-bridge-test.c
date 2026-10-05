@@ -2256,7 +2256,7 @@ static void test_a_search_returns_the_identity(const void *data)
         }
     }
 
-    g_assert_cmphex(rom, ==, 0x360605040302010bULL);
+    g_assert_cmphex(rom, ==, 0x4551454d5542000bULL);
 }
 
 /* Shift a byte out to the part, least-significant bit first. */
@@ -2308,10 +2308,10 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
  * construction.
  */
 static const uint8_t ip29_record[64] = {
-    0x01, 0x4f, 0x49, 0x50, 0x32, 0x39, 0x30, 0x30,
-    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x01, 0x45, 0x4d, 0x55, 0x4e, 0x30, 0x30, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
     0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
-    0x2d, 0x31, 0x32, 0x34, 0x34, 0x2d, 0x34, 0x1e,
+    0x2d, 0x31, 0x32, 0x34, 0x34, 0x2d, 0xb4, 0xc5,
     0x20, 0x20, 0x20, 0x30, 0x30, 0x31, 0x48, 0x20,
     0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0x49, 0x50, 0x32, 0x39, 0x20, 0x20, 0x20, 0x20,
@@ -2575,7 +2575,7 @@ static void test_a_named_part_reads_back_its_page(const void *data)
 
     g_assert_false(NIC_RESET(qts));
     rom = nic_search_for_identity(qts);
-    g_assert_cmphex(rom, ==, 0x360605040302010bULL);
+    g_assert_cmphex(rom, ==, 0x4551454d5542000bULL);
 
     /* The reset between the search and the match, as firmware sends it. */
     g_assert_false(NIC_RESET(qts));
@@ -2598,7 +2598,7 @@ static void test_naming_another_part_deselects_this_one(const void *data)
     g_assert_false(NIC_RESET(qts));
 
     /* One bit different from this part's identity, in the serial number. */
-    nic_match_identity(qts, 0x360605040302010bULL ^ (1ULL << 40));
+    nic_match_identity(qts, 0x4551454d5542000bULL ^ (1ULL << 40));
 
     /* Ask the deselected part to read a page anyway. */
     nic_write_byte(qts, 0xa5);
@@ -2811,7 +2811,7 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
      * where the reuse is actually ambiguous.
      */
     g_assert_false(NIC_RESET(qts));
-    nic_match_identity(qts, 0x360605040302010bULL);
+    nic_match_identity(qts, 0x4551454d5542000bULL);
     nic_write_byte(qts, 0xf0);
     nic_write_byte(qts, 0x00);
     nic_write_byte(qts, 0x00);

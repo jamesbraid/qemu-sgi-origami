@@ -3212,33 +3212,33 @@
       "synthetic_identities": [
         {
           "component": "node0-hub",
-          "reason": "Stable synthetic node identity for this selected emulated installation, in the one shape the schema still carries (synthetic_serials, the KLCONFIG-era per-kind base/stride form, went with synthesized firmware). Node 0 keeps the base Origin 200 value unchanged from before that removal.",
-          "serial": "0x0c0b0a090807"
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
         },
         {
           "component": "node0-bridge",
-          "reason": "Stable synthetic I/O board identity; node 0 keeps the base Origin 200 value.",
-          "serial": "0x060504030201"
+          "reason": "Synthetic Bridge identity B0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554200"
         },
         {
           "component": "node0-ioc3",
-          "reason": "Stable synthetic IOC3 identity; node 0 keeps the base Origin 200 value.",
-          "serial": "0x5e7000000001"
+          "reason": "Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
+          "serial": "0x5e7454d55000"
         },
         {
           "component": "node1-hub",
-          "reason": "Stable synthetic node identity for node 1, one past node 0's value, the same per-node stride the removed synthetic_serials mechanism applied (base plus node index).",
-          "serial": "0x0c0b0a090808"
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
         },
         {
           "component": "node1-bridge",
-          "reason": "Stable synthetic I/O board identity for node 1, one past node 0's value.",
-          "serial": "0x060504030202"
+          "reason": "Synthetic Bridge identity B1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554201"
         },
         {
           "component": "node1-ioc3",
-          "reason": "Stable synthetic IOC3 identity for node 1, one past node 0's value.",
-          "serial": "0x5e7000000002"
+          "reason": "Synthetic IOC3 identity 1. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
+          "serial": "0x5e7454d55001"
         }
       ]
     },

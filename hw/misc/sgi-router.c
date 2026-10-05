@@ -15,6 +15,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "hw/misc/sgi-router.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "migration/vmstate.h"
 #include "system/memory.h"
 #include "system/reset.h"
@@ -1467,10 +1468,12 @@ static void sgi_router_nic_page_crc(uint8_t page[32])
 
 /*
  * The NIC manufacturing pages a stock PROM reads after ROM discovery: the
- * same layout on every Router, with only the fitted board's slot number
- * printed into the ASCII serial text.
+ * same layout on every Router, with only the ASCII serial text naming the
+ * fitted unit. A marked ROM serial prints as its marked text, "EMUR000000"
+ * for the first Router; any other prints the Router letter and the slot.
 */
-static void sgi_router_default_nic_image(uint32_t slot, uint8_t image[64])
+static void sgi_router_default_nic_image(uint64_t nic_serial, uint32_t slot,
+                                         uint8_t image[64])
 {
     static const uint8_t page_a[30] = {
         0x01, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
@@ -1487,7 +1490,10 @@ static void sgi_router_default_nic_image(uint32_t slot, uint8_t image[64])
 
     memcpy(image, page_a, sizeof(page_a));
     memcpy(&image[32], page_b, sizeof(page_b));
-    g_snprintf(serial, sizeof(serial), "ORTR%06u", slot);
+    if (!sgi_synthetic_text_from_onewire(serial, sizeof(serial) - 1,
+                                         nic_serial)) {
+        sgi_synthetic_text_serial(serial, sizeof(serial) - 1, 'R', slot);
+    }
     memcpy(&image[1], serial, 10);
     for (page = 0; page < SGI_ROUTER_NIC_PAGES; page++) {
         sgi_router_nic_page_crc(&image[page * 32]);
@@ -1509,6 +1515,17 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
     if (s->nic_image && !s->nic_present) {
         error_setg(errp, "nic-image requires nic-present");
         return;
+    }
+    if (s->nic_present && !s->nic_image && s->slot > 999999) {
+        char text[11];
+
+        /* An unmarked serial prints the slot in six digits instead. */
+        if (!sgi_synthetic_text_from_onewire(text, sizeof(text) - 1,
+                                             s->nic_serial)) {
+            error_setg(errp, "slot %u does not fit the NIC record's serial "
+                       "text", s->slot);
+            return;
+        }
     }
     if (s->nic_present) {
         g_autofree char *image = NULL;
@@ -1547,7 +1564,8 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         } else {
             uint8_t default_image[64];
 
-            sgi_router_default_nic_image(s->slot, default_image);
+            sgi_router_default_nic_image(s->nic_serial, s->slot,
+                                         default_image);
             ds2505_set_image(s->nic, default_image, sizeof(default_image));
         }
         object_property_add_child(OBJECT(dev), "nic", OBJECT(s->nic));
@@ -1589,7 +1607,8 @@ static const Property sgi_router_properties[] = {
     DEFINE_PROP_UINT8("chip-inputs", SGIRouterState, chip_inputs, 1),
     DEFINE_PROP_UINT32("slot", SGIRouterState, slot, 0),
     DEFINE_PROP_UINT64("nic-clock-hz", SGIRouterState, nic_clock_hz, 100000000),
-    DEFINE_PROP_UINT64("nic-serial", SGIRouterState, nic_serial, 0),
+    DEFINE_PROP_UINT64("nic-serial", SGIRouterState, nic_serial,
+                       SGI_SYNTHETIC_ONEWIRE_SERIAL('R', 0)),
     DEFINE_PROP_BOOL("nic-present", SGIRouterState, nic_present, true),
     DEFINE_PROP_STRING("nic-image", SGIRouterState, nic_image),
     DEFINE_PROP_LINK("port1-cable", SGIRouterState, port_cable[0],

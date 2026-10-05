@@ -39,14 +39,14 @@ layer:
           accepted_bank_sizes_mib: [512, 256, 128, 64]
         synthetic_identities:
           - component: base-hub
-            serial: "0x0c0b0a090807"
-            reason: Stable synthetic node identity; the base Origin 200 value.
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
           - component: base-bridge
-            serial: "0x060504030201"
-            reason: Stable synthetic I/O board identity; the base Origin 200 value.
+            serial: "0x51454d554200"
+            reason: Synthetic Bridge identity B0, carrying the "QEMU" marker; not hardware evidence.
           - component: base-ioc3
-            serial: "0x5e7000000001"
-            reason: Stable synthetic IOC3 identity; the base Origin 200 value.
+            serial: "0x5e7454d55000"
+            reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
       notes: >-
         A converted module with no cabinet. The upgrade guide's loopback test
         shows the PROM inventory of the base machine plus one added

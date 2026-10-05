@@ -31,6 +31,7 @@
 #include "qemu/timer.h"
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "system/address-spaces.h"
 #include "system/cpus.h"
@@ -2108,6 +2109,8 @@ static uint64_t sgi_hub_onewire_value(SGIHubState *s, unsigned arg)
  * Build the two fixed pages the Hub's PIMM record exposes. The values are
  * synthetic, but the layout and checks are part of the guest-visible record
  * contract: PROM and IRIX reject a page whose stored CRC does not close.
+ * A marked ROM serial prints as its marked text, "EMUN000000" for node 0's;
+ * any other prints its low 40 bits in hex.
 */
 static void sgi_hub_onewire_build_record(SGIHubState *s, uint8_t image[64])
 {
@@ -2118,8 +2121,11 @@ static void sgi_hub_onewire_build_record(SGIHubState *s, uint8_t image[64])
 
     memset(image, ' ', 64);
     image[0] = 0x01;
-    g_snprintf(serial, sizeof(serial), "%010" PRIx64,
-               (uint64_t)(s->onewire_serial & MAKE_64BIT_MASK(0, 40)));
+    if (!sgi_synthetic_text_from_onewire(serial, sizeof(serial) - 1,
+                                         s->onewire_serial)) {
+        g_snprintf(serial, sizeof(serial), "%010" PRIx64,
+                   (uint64_t)(s->onewire_serial & MAKE_64BIT_MASK(0, 40)));
+    }
     memcpy(&image[1], serial, sizeof(serial) - 1);
     memcpy(&image[11], part, MIN(sizeof(part) - 1, 19));
     memcpy(&image[32 + 6], revision, sizeof(revision) - 1);
@@ -5401,7 +5407,7 @@ static const Property sgi_hub_properties[] = {
                       elsc_dip_switches, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIHubState, onewire_serial,
-                       0x0c0b0a090807ULL),
+                       SGI_SYNTHETIC_ONEWIRE_SERIAL('N', 0)),
     DEFINE_PROP_UINT32("population", SGIHubState, population,
                        SGI_HUB_POPULATION_ALL),
     DEFINE_PROP_UINT64("i2c-controller-offset", SGIHubState,

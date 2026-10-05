@@ -46,29 +46,14 @@ layer:
           accepted_bank_sizes_mib: [512, 256, 128, 64]
         synthetic_identities:
           - component: hub
-            serial: "0x0c0b0a090807"
-            reason: >-
-              Stable synthetic node identity for this selected emulated
-              installation, in the one shape the schema still carries
-              (synthetic_serials, the KLCONFIG-era per-kind base/stride
-              form, went with synthesized firmware; format 2 needs this
-              value the same explicit way Origin 2000 already authors
-              its own). The value itself is unchanged from before that
-              removal.
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
           - component: bridge
-            serial: "0x060504030201"
-            reason: >-
-              Stable synthetic I/O board identity for this selected
-              emulated installation, restored in the schema's one
-              remaining shape; value unchanged from before synthetic_serials
-              was removed with synthesized firmware.
+            serial: "0x51454d554200"
+            reason: Synthetic Bridge identity B0, carrying the "QEMU" marker; not hardware evidence.
           - component: ioc3
-            serial: "0x5e7000000001"
-            reason: >-
-              Stable synthetic IOC3 identity for this selected emulated
-              installation, restored in the schema's one remaining shape;
-              value unchanged from before synthetic_serials was removed
-              with synthesized firmware.
+            serial: "0x5e7454d55000"
+            reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
       harness:
         console: ioc3-serial-a
         prom_dialogue: ip27-menu

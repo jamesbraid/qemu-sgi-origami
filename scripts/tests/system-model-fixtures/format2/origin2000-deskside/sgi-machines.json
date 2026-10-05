@@ -2327,7 +2327,7 @@
           "attachment": 1,
           "carrier": "xio-slot",
           "id": "baseio",
-          "ioc3-serial": 17592186044424,
+          "ioc3-serial": 103853732483072,
           "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
@@ -2335,7 +2335,7 @@
           "populated": true,
           "preset": "io6",
           "revision": 4,
-          "serial": 17592186044423
+          "serial": 89358092026368
         }
       ],
       "ip27-firmware": {
@@ -2355,7 +2355,7 @@
             2,
             3
           ],
-          "serial": "SGIMODULE2"
+          "serial": "EMUM000001"
         }
       ],
       "name": "origin2000-deskside",
@@ -2736,8 +2736,9 @@
           "id": "node-board-1-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029200,
             "ni-revision": 5,
-            "serial": 17592186044417,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 1
           },
@@ -2798,8 +2799,9 @@
           "id": "node-board-2-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029201,
             "ni-revision": 5,
-            "serial": 17592186044418,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 1
           },
@@ -2860,8 +2862,9 @@
           "id": "node-board-3-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029202,
             "ni-revision": 5,
-            "serial": 17592186044419,
+            "serial": 89358092029442,
             "system-controller": false,
             "widget-revision": 1
           },
@@ -2922,8 +2925,9 @@
           "id": "node-board-4-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029203,
             "ni-revision": 5,
-            "serial": 17592186044420,
+            "serial": 89358092029443,
             "system-controller": false,
             "widget-revision": 1
           },
@@ -2940,7 +2944,7 @@
           "module-index": 0,
           "part": 1,
           "revision": 1,
-          "serial": 17592186044421,
+          "serial": 89358092030464,
           "slot": 1
         },
         {
@@ -2949,7 +2953,7 @@
           "module-index": 0,
           "part": 1,
           "revision": 1,
-          "serial": 17592186044422,
+          "serial": 89358092030465,
           "slot": 2
         }
       ],

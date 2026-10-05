@@ -114,15 +114,20 @@ DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
 
 /*
  * The module's one-wire identity, attached directly to each node's Hub: the
- * byte layout below is the same on every module of this kind, so the machine
- * passes only the fitted-part values (a module's own serial and initial
- * number, a node's physical slot) rather than building the bytes itself.
+ * page layout is the same on every module of this kind, so the machine
+ * passes only the model's values (the module's serial text, each node's
+ * responder ROM serial) rather than building the bytes itself.
  */
 bool sgi_sn0_module_management_identity_pages(
     const char *serial, uint8_t page[2][DS2502_PAGE_SIZE]);
-void sgi_sn0_module_management_identity_rom(unsigned int slot,
-                                            uint8_t module_number,
-                                            uint8_t rom[8]);
+/*
+ * Node @node_index's responder ROM from its model serial; false, with
+ * @errp set, when the node of module @module_id carries none (@serial NULL).
+ */
+bool sgi_sn0_module_management_responder_rom(const char *module_id,
+                                             unsigned int node_index,
+                                             const uint64_t *serial,
+                                             uint8_t rom[8], Error **errp);
 
 /*
  * Controller-side requests the scheduler arbitrates against processor grants.

@@ -299,14 +299,14 @@
           "attachment": 0,
           "carrier": "onboard",
           "id": "baseio",
-          "ioc3-serial": 103835129348097,
+          "ioc3-serial": 103853732483072,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
           "populated": true,
           "preset": "ip29-io-crosstown",
           "revision": 4,
-          "serial": 6618611909121
+          "serial": 89358092026368
         }
       ],
       "ip27-firmware": {
@@ -407,7 +407,7 @@
           "identity": {
             "i2c-controller": true,
             "ni-revision": 3,
-            "serial": 13241552537607,
+            "serial": 89358092029440,
             "system-controller": true,
             "widget-revision": 1
           },

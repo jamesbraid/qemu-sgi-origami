@@ -54,13 +54,16 @@
 #define PLACED_CAD_DUO      1
 
 /*
- * One fixture: which widget the board answers at and which PCI device its Cad
- * Duo occupies.
+ * One fixture: which widget the board answers at, which PCI device its Cad
+ * Duo occupies, and the barcode its card's record carries: the card letter P
+ * and the instance the slot gives its parts, 64 plus the slot's place in the
+ * topology's slot list.
  */
 typedef struct {
     const char *args;
     unsigned int widget;
     unsigned int device;
+    const char *barcode;
 } ShoehornCase;
 
 #define WIDGET_BASE(w)      (SPACE_IO + ((uint64_t)(w) << 24))
@@ -119,15 +122,16 @@ typedef struct {
 #define RECORD_CRC_RESIDUE   0xb001
 
 /*
- * The record the card's part stores: placeholder barcode OCADDUO001, part
- * 030-1155-002, revision D, name PCI_ENET, each page closed by its inverted
- * CRC-16.
+ * The record the card's part stores: barcode EMUP66 for the board at IO4,
+ * part 030-1155-002, revision D, name PCI_ENET, each page closed by its
+ * inverted CRC-16. Page 0 holds the barcode, so its check is only this
+ * board's; record_matches() compares the rest of that page by field.
  */
 static const uint8_t cad_duo_record[RECORD_SIZE] = {
-    0x01, 0x4f, 0x43, 0x41, 0x44, 0x44, 0x55, 0x4f,
-    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x01, 0x45, 0x4d, 0x55, 0x50, 0x36, 0x36, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
     0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
-    0x2d, 0x31, 0x31, 0x35, 0x35, 0x2d, 0x6e, 0x0f,
+    0x2d, 0x31, 0x31, 0x35, 0x35, 0x2d, 0x99, 0xf9,
     0x20, 0x20, 0x20, 0x30, 0x30, 0x32, 0x44, 0x20,
     0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0x50, 0x43, 0x49, 0x5f, 0x45, 0x4e, 0x45, 0x54,
@@ -189,15 +193,15 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
     "slot=io4,sio-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
 /*
- * The dual-serial card's record: placeholder barcode OSIOUFC001, the
+ * The dual-serial card's record: barcode EMUP66 for the board at IO4, the
  * reseller-cited part 030-1657-003, a declared placeholder revision A and the
  * OpenBSD-sourced name PCI_SIO_UFC.
  */
 static const uint8_t sio_record[RECORD_SIZE] = {
-    0x01, 0x4f, 0x53, 0x49, 0x4f, 0x55, 0x46, 0x43,
-    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x01, 0x45, 0x4d, 0x55, 0x50, 0x36, 0x36, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
     0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
-    0x2d, 0x31, 0x36, 0x35, 0x37, 0x2d, 0x02, 0xa0,
+    0x2d, 0x31, 0x36, 0x35, 0x37, 0x2d, 0x99, 0xed,
     0x20, 0x20, 0x20, 0x30, 0x30, 0x33, 0x41, 0x20,
     0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0x50, 0x43, 0x49, 0x5f, 0x53, 0x49, 0x4f, 0x5f,
@@ -205,7 +209,7 @@ static const uint8_t sio_record[RECORD_SIZE] = {
 };
 
 static const ShoehornCase sio_case = {
-    SIO_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+    SIO_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE, "EMUP66",
 };
 
 static const ShoehornCase expansion_case = {
@@ -215,11 +219,30 @@ static const ShoehornCase carrier_case = {
     CARRIER_ARGS, CARRIER_WIDGET, CARRIER_CAD_DUO,
 };
 static const ShoehornCase device_case = {
-    SHOEHORN_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+    SHOEHORN_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE, "EMUP66",
 };
 static const ShoehornCase placed_case = {
-    PLACED_ARGS, PLACED_WIDGET, PLACED_CAD_DUO,
+    PLACED_ARGS, PLACED_WIDGET, PLACED_CAD_DUO, "EMUP64",
 };
+
+/*
+ * A read record against a vector: the case's own barcode, space-padded to
+ * its ten characters, then every other byte but page 0's check, which the
+ * barcode moves. The callers check both pages' residues separately.
+ */
+static void record_matches(const uint8_t *memory, const uint8_t *vector,
+                           const ShoehornCase *c)
+{
+    char barcode[11];
+
+    g_snprintf(barcode, sizeof(barcode), "%-10s", c->barcode);
+    g_assert_cmphex(memory[0], ==, vector[0]);
+    g_assert_cmpmem(memory + 1, 10, barcode, 10);
+    g_assert_cmpmem(memory + 11, RECORD_PAGE - 13, vector + 11,
+                    RECORD_PAGE - 13);
+    g_assert_cmpmem(memory + RECORD_PAGE, RECORD_PAGE, vector + RECORD_PAGE,
+                    RECORD_PAGE);
+}
 
 /*
  * Program the Cad Duo's BAR0, enable memory, and aim the Bridge window at it.
@@ -510,7 +533,7 @@ static void test_cad_duo_carries_its_board_record(const void *data)
     g_assert_cmphex(record_rom, !=, 0);
 
     ow_read_memory(qts, c, record_rom, memory, sizeof(memory));
-    g_assert_cmpmem(memory, RECORD_SIZE, cad_duo_record, RECORD_SIZE);
+    record_matches(memory, cad_duo_record, c);
     g_assert_cmphex(ow_crc16(memory, RECORD_PAGE), ==, RECORD_CRC_RESIDUE);
     g_assert_cmphex(ow_crc16(memory + RECORD_PAGE, RECORD_PAGE), ==,
                     RECORD_CRC_RESIDUE);
@@ -586,7 +609,7 @@ static void test_sio_carries_its_board_record(const void *data)
     g_assert_cmpuint(ow_search_all(qts, c, rom, G_N_ELEMENTS(rom)), ==, 1);
     g_assert_cmphex(rom[0] & 0xff, ==, OW_FAMILY_DS2505);
     ow_read_memory(qts, c, rom[0], memory, sizeof(memory));
-    g_assert_cmpmem(memory, RECORD_SIZE, sio_record, RECORD_SIZE);
+    record_matches(memory, sio_record, c);
     g_assert_cmphex(ow_crc16(memory, RECORD_PAGE), ==, RECORD_CRC_RESIDUE);
     g_assert_cmphex(ow_crc16(memory + RECORD_PAGE, RECORD_PAGE), ==,
                     RECORD_CRC_RESIDUE);

@@ -55,6 +55,7 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -69,10 +70,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIGigachannelState, SGI_GIGACHANNEL)
 #define GIGACHANNEL_BOARD_PART      "030-1252-001"
 #define GIGACHANNEL_BOARD_REVISION  "F"
 #define GIGACHANNEL_BOARD_NAME      "XBOX_DUALXTOWN"
-#define GIGACHANNEL_BOARD_BARCODE   "OXBOXDXT01"
 
-/* Placeholder; no reviewed source assigns a serial to this board. */
-#define GIGACHANNEL_SERIAL_PLACEHOLDER 0x060504030201ULL
+/* Marked synthetic; no reviewed source assigns a serial to this board. */
+#define GIGACHANNEL_SERIAL_PLACEHOLDER SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0)
 
 /* One 16-bit word, repeated across the chip select by the port. */
 #define GIGACHANNEL_STATUS_SIZE 2
@@ -122,6 +122,7 @@ static const MemoryRegionOps gigachannel_status_ops = {
 static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
 {
     SGIGigachannelState *s = SGI_GIGACHANNEL(board);
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
     DeviceState *bridge;
 
     if (!s->fabric) {
@@ -139,7 +140,8 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
     s->bridge = SGI_BRIDGE(bridge);
     qdev_prop_set_uint32(bridge, "revision", GIGACHANNEL_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part", GIGACHANNEL_BOARD_PART);
-    qdev_prop_set_string(bridge, "board-barcode", GIGACHANNEL_BOARD_BARCODE);
+    sgi_synthetic_barcode(barcode, 'O', s->onewire_serial);
+    qdev_prop_set_string(bridge, "board-barcode", barcode);
     qdev_prop_set_string(bridge, "board-revision",
                          GIGACHANNEL_BOARD_REVISION);
     qdev_prop_set_string(bridge, "board-name", GIGACHANNEL_BOARD_NAME);

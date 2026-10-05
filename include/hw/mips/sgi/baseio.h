@@ -31,12 +31,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * sgi_bridge_board_part_error()); bridge_revision is the silicon
  * revision a Bridge-based preset's carrier sets on its own "revision"
  * property, 0 for the io8 preset, whose XBridge exposes no equivalent
- * property of its own. board_barcode, board_revision and board_name are
+ * property of its own. board_letter, board_revision and board_name are
  * the rest of the board's identity record, which the carrier sets on its
  * Bridge's "board-barcode", "board-revision" and "board-name" properties;
- * board_revision is the board's revision letter, not the chip's. They
- * are NULL for the io8 preset, whose XBridge carries no such properties
- * and keeps the older text layout.
+ * board_letter is the board's synthetic-serial component letter, from
+ * which the barcode is made, and board_revision is the board's revision
+ * letter, not the chip's. They are 0 and NULL for the io8 preset, whose
+ * XBridge carries no such properties and keeps the older text layout.
  *
  * xio_widgets and bridge_flash describe a preset the XIO card carrier
  * (sgi-xio-baseio) builds: the XIO widgets the card may sit at, one
@@ -54,7 +55,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
 typedef struct SGIBaseioPresetIdentity {
     const char *board_part;
     uint32_t bridge_revision;
-    const char *board_barcode;
+    char board_letter;
     const char *board_revision;
     const char *board_name;
     uint32_t xio_widgets;
@@ -66,10 +67,12 @@ const SGIBaseioPresetIdentity *sgi_baseio_preset_lookup(const char *name);
 
 /*
  * Set a Bridge-based preset's identity on the carrier's unrealized
- * Bridge: its silicon revision, board part and the rest of the board's
- * identity record.
+ * Bridge: its silicon revision, board part, one-wire serial
+ * @bridge_serial and the rest of the board's identity record. The
+ * record's barcode names the same unit the serial does.
  */
 void sgi_baseio_preset_set_bridge_identity(
-    DeviceState *bridge, const SGIBaseioPresetIdentity *identity);
+    DeviceState *bridge, const SGIBaseioPresetIdentity *identity,
+    uint64_t bridge_serial);
 
 #endif

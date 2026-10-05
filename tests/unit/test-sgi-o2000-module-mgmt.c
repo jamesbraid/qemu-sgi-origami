@@ -673,6 +673,38 @@ static void test_undeclared_actions_refused(void)
 }
 
 /*
+ * A node's module-identity responder ROM is family 0x09, its serial least
+ * significant byte first and the Dallas CRC-8; a node of a controller
+ * module with no responder serial is refused with the message the machine
+ * exits on, rather than given a made-up ROM.
+ */
+static void test_responder_rom(void)
+{
+    static const uint8_t m16[8] = {
+        0x09, 0x10, 0x4d, 0x55, 0x4d, 0x45, 0x51, 0x0b,
+    };
+    const uint64_t serial = UINT64_C(0x51454d554d10);
+    uint8_t rom[8] = { 0 };
+    Error *err = NULL;
+
+    g_assert_true(sgi_sn0_module_management_responder_rom(
+                      "compute-module", 0, &serial, rom, &error_abort));
+    g_assert_cmpmem(rom, sizeof(rom), m16, sizeof(m16));
+
+    memset(rom, 0xa5, sizeof(rom));
+    g_assert_false(sgi_sn0_module_management_responder_rom(
+                       "compute-module", 2, NULL, rom, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "module 'compute-module' node 2 has no module-responder "
+                    "serial");
+    error_free(err);
+    for (size_t i = 0; i < sizeof(rom); i++) {
+        g_assert_cmphex(rom[i], ==, 0xa5);
+    }
+}
+
+/*
  * Capabilities are answered one at a time. A module wired for reset alone
  * accepts a reset and refuses the power commands, rather than the two
  * travelling together because one line happens to be connected.
@@ -1122,6 +1154,8 @@ int main(int argc, char **argv)
                Fixture, NULL, setup, test_partial_capability, teardown);
     g_test_add_func("/sgi-sn0-module-management/action/declares-nothing",
                     test_undeclared_actions_refused);
+    g_test_add_func("/sgi-sn0-module-management/identity/responder-rom",
+                    test_responder_rom);
     g_test_add("/sgi-sn0-module-management/realize/needs-declared-lines",
                Fixture, GUINT_TO_POINTER(0), setup,
                test_declared_action_needs_its_line, teardown);

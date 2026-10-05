@@ -22,6 +22,7 @@
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -73,9 +74,12 @@
 /* Kept equal so a shared caller's buffer size matches this file's own. */
 QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
 
-/* Guests match on the family code; the serial is the machine's. */
+/*
+ * Guests match on the family code; the serial is the machine's, and this
+ * marked synthetic one only stands in for a Bridge nothing gave one.
+ */
 #define NIC_ROM_FAMILY          0x0b
-#define NIC_ROM_SERIAL_DEFAULT  0x060504030201ULL
+#define NIC_ROM_SERIAL_DEFAULT  SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0)
 #define NIC_ROM_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
 
 #define BRIDGE_SSRAM_PARITY_ERR 0x090

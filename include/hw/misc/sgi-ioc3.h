@@ -7,6 +7,7 @@
 #define HW_MISC_SGI_IOC3_H
 
 #include "hw/1wire/onewire.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-dma-buffer.h"
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
@@ -76,13 +77,12 @@ struct SGIIOC3BusState {
  * The Cad Duo's own board record, on a DS2505-class part beside the
  * station-address part, in the same board-identity record layout the IOC3
  * one-wire bus uses elsewhere. Part, revision and name are what a real card's
- * inventory line prints; the barcode is a placeholder, since a real one names
- * one physical unit.
+ * inventory line prints; the barcode is a marked synthetic one its carrier
+ * sets, since a real one names one physical unit.
  */
 #define SGI_IOC3_CAD_DUO_BOARD_PART     "030-1155-002"
 #define SGI_IOC3_CAD_DUO_BOARD_REVISION "D"
 #define SGI_IOC3_CAD_DUO_BOARD_NAME     "PCI_ENET"
-#define SGI_IOC3_CAD_DUO_BOARD_BARCODE  "OCADDUO001"
 
 /*
  * SGI's dual-serial PCI card: an IOC3 wired for serial ports A and B only.
@@ -91,13 +91,12 @@ struct SGIIOC3BusState {
  * 030-1657-003 "SERIAL I/O CARD (UFC), PCI", and OpenBSD's IOC3 driver calls
  * the board PCI_SIO_UFC. No available source prints the record itself, so its
  * revision is a declared placeholder and its name the OpenBSD candidate. The
- * barcode is a placeholder too, since a real one names one unit. Its
+ * barcode is a marked synthetic one its carrier sets, as for the Cad Duo. Its
  * subsystem id is unobserved too, the same placeholder as the Cad Duo's.
  */
 #define SGI_IOC3_SIO_UFC_BOARD_PART     "030-1657-003"
 #define SGI_IOC3_SIO_UFC_BOARD_REVISION "A"
 #define SGI_IOC3_SIO_UFC_BOARD_NAME     "PCI_SIO_UFC"
-#define SGI_IOC3_SIO_UFC_BOARD_BARCODE  "OSIOUFC001"
 #define SGI_IOC3_SUBSYS_SIO_UFC_UNCAPTURED 0xFFFF
 
 #define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
@@ -166,18 +165,23 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_ONEWIRE_SAMPLE_SHIFT 2
 #define SGI_IOC3_ONEWIRE_SAMPLE_MASK  0xffu
 
-/* Family and serial top bits are required by OpenBSD's owmac_match(). */
+/*
+ * Family and serial top bits are required by OpenBSD's owmac_match(): a
+ * UniqueWare part with customer code 0x5e7. The default serial keeps that
+ * code and carries the synthetic marker below it.
+ */
 #define SGI_IOC3_ONEWIRE_FAMILY  0x91
-#define SGI_IOC3_ONEWIRE_SERIAL  0x5e7000000001ULL
+#define SGI_IOC3_ONEWIRE_CUSTOMER 0x5e7
+#define SGI_IOC3_ONEWIRE_SERIAL \
+    SGI_SYNTHETIC_UNIQUEWARE_SERIAL(SGI_IOC3_ONEWIRE_CUSTOMER, 0)
 
 #define SGI_IOC3_ONEWIRE_SERIAL_MASK 0xffffffffffffULL
 
 /*
  * The board-record part's ROM serial when nothing sets
- * "board-onewire-serial": a placeholder in the descending-byte idiom the
- * other modelled board parts use. No real value is used here.
+ * "board-onewire-serial": a marked synthetic one. No real value is used.
  */
-#define SGI_IOC3_BOARD_ONEWIRE_SERIAL 0x0f0e0d0c0b0aULL
+#define SGI_IOC3_BOARD_ONEWIRE_SERIAL SGI_SYNTHETIC_ONEWIRE_SERIAL('C', 0)
 
 /* Bit 21 routes the MicroLAN engine onto pin 8; drivers set it first. */
 #define SGI_IOC3_PIN_CONTROL_SET 0x34

@@ -1031,11 +1031,11 @@ static void test_router_nic_inventory(void)
         { 3, 0, 4 }, { 0, 6, 6 },
     };
     static const char record_serials[][11] = {
-        "ORTR000001", "ORTR000002",
+        "EMUR000000", "EMUR000001",
     };
     static const uint8_t rom_serials[][6] = {
-        { 0x05, 0x00, 0x00, 0x00, 0x00, 0x10 },
-        { 0x06, 0x00, 0x00, 0x00, 0x00, 0x10 },
+        { 0x00, 0x52, 0x55, 0x4d, 0x45, 0x51 },
+        { 0x01, 0x52, 0x55, 0x4d, 0x45, 0x51 },
     };
     uint8_t roms[2][8];
 
@@ -1648,7 +1648,7 @@ static void test_cached_alias_size(void)
 static void test_router_nic_inventory_migration(void)
 {
     static const char record_serials[][11] = {
-        "ORTR000001", "ORTR000002",
+        "EMUR000000", "EMUR000001",
     };
     QTestState *from = start_module();
     QTestState *to = qtest_init("-M origin2000 -incoming defer");
@@ -1909,7 +1909,7 @@ static void assert_cpu_inventory(QTestState *qts)
 
             g_assert_cmpint(qdict_get_int(base, "return"), ==, index);
             g_assert_cmphex(qdict_get_int(identity, "return"), ==,
-                            UINT64_C(0x100000000001) + index / 2);
+                            UINT64_C(0x51454d554e00) + index / 2);
         }
     }
     g_assert_cmphex(seen, ==, 0xff);
@@ -1920,7 +1920,7 @@ static void assert_cpu_inventory(QTestState *qts)
             "'property': 'nic-serial'}}", path);
 
         g_assert_cmphex(qdict_get_int(identity, "return"), ==,
-                        UINT64_C(0x100000000005) + router);
+                        UINT64_C(0x51454d555200) + router);
     }
 }
 
