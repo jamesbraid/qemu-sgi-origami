@@ -1465,7 +1465,7 @@ static void test_interrupt_acknowledge(void)
     QTestState *qts = rad4_init();
 
     rad4_play_mode0(qts);
-    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE | INTCSR_LOCAL_IN_ENABLE);
 
     frame_request(qts);
     qtest_clock_step(qts, 1000000000 / 60 + 1000);
@@ -1489,6 +1489,39 @@ static void test_interrupt_acknowledge(void)
     g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
     g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
                     PCI_STATUS_INTERRUPT, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * INTCSR as PCI 9060 Data Sheet Table 45 gives it: PCI interrupt enable and
+ * local interrupt output enable reset set; only the writable fields store;
+ * and the local input reaches the PCI line only with both the PCI interrupt
+ * enable and the PCI local interrupt enable set.
+ */
+static void test_intcsr_table_45(void)
+{
+    QTestState *qts = rad4_init();
+
+    g_assert_cmphex(bar0_read(qts, R_INTCSR), ==,
+                    INTCSR_ENABLE | INTCSR_LOCAL_OUT_ENABLE);
+    bar0_write(qts, R_INTCSR, 0xffffffffu);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR), ==, 0x080f1f07u);
+    bar0_write(qts, R_INTCSR, 0);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR), ==, 0);
+
+    rad4_play_mode0(qts);
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+    frame_request(qts);
+    qtest_clock_step(qts, 1000000000 / 60 + 1000);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
+                    INTCSR_PENDING);
+    g_assert_false(rad4_pci_irq(qts));
+
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE | INTCSR_LOCAL_IN_ENABLE);
+    g_assert_true(rad4_pci_irq(qts));
+    bar0_write(qts, R_INTCSR, INTCSR_LOCAL_IN_ENABLE);
+    g_assert_false(rad4_pci_irq(qts));
 
     qtest_quit(qts);
 }
@@ -3812,6 +3845,7 @@ int main(int argc, char **argv)
                    test_interrupt_acknowledge);
     qtest_add_func("/psitech-rad4/frame-interrupt-needs-request",
                    test_frame_interrupt_needs_request);
+    qtest_add_func("/psitech-rad4/intcsr-table-45", test_intcsr_table_45);
     qtest_add_func("/psitech-rad4/dma-registers-before-start",
                    test_dma_registers_before_start);
     qtest_add_func("/psitech-rad4/dma-single-descriptor-upload",
