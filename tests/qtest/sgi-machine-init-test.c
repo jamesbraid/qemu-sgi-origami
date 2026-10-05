@@ -11,7 +11,10 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 
-/* The IP27 and IP35 boot windows, uncached. */
+/*
+ * The IP27 and IP35 boot windows, uncached. Octane's Bridge flash
+ * window, Bridge base 0x1f000000 plus 0xc00000, is at the same address.
+ */
 #define BOOT_WINDOW UINT64_C(0x1fc00000)
 
 #define IP27_FLASH_SIZE (1024 * 1024)
@@ -23,6 +26,11 @@
 /* Origin 300's PROM position holds exactly the image its -bios takes. */
 #define IP35_PROM_SIZE 0x1686a8
 #define SN1_MACHINE "-cpu R14000 -smp 2"
+#define FUEL_MACHINE "-cpu R14000 -smp 1 -m 512M"
+
+/* Octane's whole 1 MiB flash; a PROM image shorter than that. */
+#define IP30_FLASH_SIZE (1024 * 1024)
+#define IP30_PROM_SIZE 0x9a3c4
 
 #define O2K_DESKSIDE "origin2000,topology=origin2000-deskside,nodes=2"
 
@@ -245,6 +253,65 @@ static void test_origin300(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+/* Fuel is the second Bedrock product; its PROM position is Origin 300's. */
+static void test_fuel(void)
+{
+    static const unsigned int cpus[] = { 0 };
+    const char *machine = "fuel,topology=fuel,nodes=1";
+    g_autofree char *prom = make_prom("fuel-prom", IP35_PROM_SIZE, false);
+    char *dir = create_state("fuel", machine, prom, NULL);
+    g_autofree char *attached = attach_state(machine, dir);
+    QTestState *qts;
+    uint8_t **created, **unbacked;
+
+    qts = qtest_initf("%s " FUEL_MACHINE, attached);
+    created = read_nodes(qts, cpus, 1, IP35_PROM_SIZE);
+    qtest_quit(qts);
+    qts = qtest_initf("-M %s " FUEL_MACHINE " -bios %s", machine, prom);
+    unbacked = read_nodes(qts, cpus, 1, IP35_PROM_SIZE);
+    qtest_quit(qts);
+
+    assert_nodes_equal(created, unbacked, 1, IP35_PROM_SIZE);
+    free_nodes(created, 1);
+    free_nodes(unbacked, 1);
+    remove_state(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/*
+ * Octane reads its whole flash through the Bridge window, so the erased
+ * bytes after a short image are compared too.
+ */
+static void test_octane(gconstpointer data)
+{
+    static const unsigned int cpus[] = { 0 };
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *machine = octane2 ? "octane2,topology=octane2" :
+                                    "octane,topology=octane";
+    const char *cpu = octane2 ? "-cpu R12000 -m 256M" : "-cpu R10000 -m 128M";
+    g_autofree char *prom = make_prom("ip30-prom", IP30_PROM_SIZE, false);
+    char *dir = create_state("ip30", machine, prom, NULL);
+    g_autofree char *attached = attach_state(machine, dir);
+    QTestState *qts;
+    uint8_t **created, **unbacked;
+
+    qts = qtest_initf("%s %s", attached, cpu);
+    created = read_nodes(qts, cpus, 1, IP30_FLASH_SIZE);
+    qtest_quit(qts);
+    qts = qtest_initf("-M %s %s -bios %s", machine, cpu, prom);
+    unbacked = read_nodes(qts, cpus, 1, IP30_FLASH_SIZE);
+    qtest_quit(qts);
+
+    assert_nodes_equal(created, unbacked, 1, IP30_FLASH_SIZE);
+    /* The image's first byte, then the erased tail. */
+    g_assert_cmphex(created[0][0], ==, 0x5a);
+    g_assert_cmphex(created[0][IP30_PROM_SIZE], ==, 0xff);
+    free_nodes(created, 1);
+    free_nodes(unbacked, 1);
+    remove_state(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -257,6 +324,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-machine-init/origin200", test_origin200);
     qtest_add_func("/sgi-machine-init/origin2000", test_origin2000);
     qtest_add_func("/sgi-machine-init/origin300", test_origin300);
+    qtest_add_func("/sgi-machine-init/fuel", test_fuel);
+    qtest_add_data_func("/sgi-machine-init/octane", GINT_TO_POINTER(0),
+                        test_octane);
+    qtest_add_data_func("/sgi-machine-init/octane2", GINT_TO_POINTER(1),
+                        test_octane);
     ret = g_test_run();
 
     g_assert_cmpint(g_rmdir(scratch), ==, 0);
