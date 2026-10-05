@@ -752,6 +752,7 @@ static void test_nic_memory(void)
     QTestState *qts;
     NIC nic;
     uint16_t crc;
+    unsigned int first;
 
     g_assert_cmpint(fd, >=, 0);
     for (unsigned int i = 0; i < DATA_SIZE; i++) {
@@ -766,8 +767,14 @@ static void test_nic_memory(void)
         qts = nic_start(extra);
     }
     nic = (NIC) { qts, 0 };
-    crc = nic_memory_header(&nic, 0xf0, 29);
-    for (unsigned int i = 29; i < DATA_SIZE; i++) {
+    /*
+     * The thorough setup reads from byte 29 through every byte to the end
+     * of memory; the quick setup starts the same read eight bytes before
+     * the last page, so it still crosses a page boundary.
+     */
+    first = g_test_slow() ? 29 : DATA_SIZE - 40;
+    crc = nic_memory_header(&nic, 0xf0, first);
+    for (unsigned int i = first; i < DATA_SIZE; i++) {
         uint8_t byte = nic_read_byte(&nic);
 
         g_assert_cmphex(byte, ==, image[i]);
