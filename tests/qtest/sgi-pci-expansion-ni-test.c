@@ -3257,10 +3257,17 @@ int main(int argc, char **argv)
             "storage/migration-stride-mismatch",
         };
 
+        /*
+         * Each field takes the same refusal path. The quick setup checks
+         * the first power field and the first storage field.
+         */
         for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
             g_autofree char *path = g_strdup_printf(
                 "/sgi/pci-expansion-ni/%s", cases[i]);
 
+            if (i != 0 && i != 4 && !g_test_slow()) {
+                continue;
+            }
             qtest_add_data_func(path, GUINT_TO_POINTER(i),
                                 test_assembly_immutable_mismatch);
         }
@@ -3273,11 +3280,15 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sgi/pci-expansion-ni/"
                         "power-migration-absent-to-selected",
                         GUINT_TO_POINTER(2), test_power_migration_mismatch);
+    /* The quick setup places the adapter at the first and last position. */
     for (unsigned placement = 0; placement < 12; placement++) {
         g_autofree char *name = g_strdup_printf(
             "/sgi/pci-expansion-ni/adapter-placement/head%u-device%u",
             placement / 2, placement % 2 + 1);
 
+        if (placement != 0 && placement != 11 && !g_test_slow()) {
+            continue;
+        }
         qtest_add_data_func(name, GUINT_TO_POINTER(placement),
                             test_adapter_placement);
     }
