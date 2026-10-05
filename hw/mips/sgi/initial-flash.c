@@ -111,6 +111,31 @@ static void sgi_ip27_flash_configure(uint8_t *flash,
              (uint8_t)(old_sum - new_sum));
 }
 
+/*
+ * Origin 300 runs have always flashed check_sum_adj 0x9c over the stock
+ * image's 0, which is exactly the byte-sum-preserving value for the fields
+ * below; a Fuel run with machine type 2 and that same 0x9c failed the
+ * PROM's checksum, and one with 0x9b passed.
+ */
+void sgi_ip35_flash_configure(uint8_t *flash,
+                              const SGIIP35FlashValues *values)
+{
+    uint8_t *config = flash + SGI_IP27_CONFIG_OFFSET;
+    uint8_t old_sum = sgi_ip27_config_byte_sum(config);
+    uint8_t new_sum;
+
+    stl_be_p(config + SGI_IP27_CONFIG_CHECKSUM_OFFSET, 0);
+    stl_be_p(config + 0x04, values->cpu_mode_word);
+    /* The low word of the 64-bit processor frequency. */
+    stl_be_p(config + 0x14, values->cpu_clock_hz);
+    stl_be_p(config + SGI_IP27_CONFIG_MACHINE_TYPE_OFFSET,
+             values->machine_type);
+    stl_be_p(config + 0x38, 1);                    /* flash program count */
+    new_sum = sgi_ip27_config_byte_sum(config);
+    stl_be_p(config + SGI_IP27_CONFIG_CHECKSUM_OFFSET,
+             (uint8_t)(old_sum - new_sum));
+}
+
 void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
                             const SGIIP27FlashValues *values,
                             const uint8_t *payload, size_t payload_size)

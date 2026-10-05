@@ -244,6 +244,19 @@
                 }
               }
             },
+            "ip35_firmware": {
+              "type": "object",
+              "required": ["machine_type", "cpu_mode_word", "provenance", "sources", "notes"],
+              "additionalProperties": false,
+              "description": "The product values an IP35 PROM's flash configuration block carries and compares with its CPU-configuration table row.",
+              "properties": {
+                "machine_type": { "type": "integer", "minimum": 0, "maximum": 255 },
+                "cpu_mode_word": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                "provenance": { "$ref": "#/$defs/fact-provenance" },
+                "sources": { "$ref": "#/$defs/sources" },
+                "notes": { "type": "string", "minLength": 1 }
+              }
+            },
             "boot_flash_wiring": {
               "type": "object",
               "required": ["select", "strap", "provenance", "sources", "notes"],

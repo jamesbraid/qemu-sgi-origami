@@ -2037,19 +2037,34 @@ static void test_prom_cpu_module_config(const void *data)
         { 0x64, UINT32_C(0x549aa985) },
         { 0x74, UINT32_C(500000000) },
         { 0x90, 1 },
-        { 0x94, UINT32_C(0x9c) },
         { 0x98, 1 },
     };
     g_autofree char *flash = create_flash_image();
     QTestState *qts;
 
     for (unsigned int attached = 0; attached < 2; attached++) {
+        g_autofree char *image = NULL;
+        uint8_t image_sum = 0;
+        gsize size;
+
+        g_assert_true(g_file_get_contents(attached ? flash : prom_path,
+                                          &image, &size, NULL));
+        for (unsigned int k = 0x60; k < 0xb0; k++) {
+            image_sum += (uint8_t)image[k];
+        }
         qts = attached ? machine_start_with_flash(flash, "") : machine_start();
-        for (size_t i = 0; i < ARRAY_SIZE(words); i++) {
-            for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
+        for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
+            uint8_t block_sum = 0;
+
+            for (size_t i = 0; i < ARRAY_SIZE(words); i++) {
                 g_assert_cmphex(qtest_readl(qts, views[j] + words[i].offset),
                                 ==, words[i].value);
             }
+            /* check_sum_adj keeps the block's byte sum the image's. */
+            for (unsigned int k = 0x60; k < 0xb0; k++) {
+                block_sum += qtest_readb(qts, views[j] + k);
+            }
+            g_assert_cmphex(block_sum, ==, image_sum);
         }
         qtest_quit(qts);
     }

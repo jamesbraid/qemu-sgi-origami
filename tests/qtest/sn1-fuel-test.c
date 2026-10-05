@@ -1136,12 +1136,48 @@ static void test_fuel_rejects_other_board_code(const void *data)
     qtest_quit(qts);
 }
 
+/* The byte sum the IP35 PROM checks over a configuration block. */
+static uint8_t fuel_config_byte_sum(const uint8_t *config)
+{
+    uint8_t sum = 0;
+
+    for (unsigned int i = 0; i < 0x50; i++) {
+        sum += config[i];
+    }
+    return sum;
+}
+
+/*
+ * The configuration block the machine writes into the boot PROM: the
+ * catalogue's Fuel values -- the 500 MHz, 2 MiB module's mode word and
+ * clock and machine type 2 (SN11) -- with check_sum_adj keeping the
+ * block's byte sum what the supplied image's was.
+ */
+static void fuel_check_config_block(QTestState *qts, const char *prom)
+{
+    g_autofree char *image = NULL;
+    uint8_t block[0x50];
+    gsize size;
+
+    g_assert_true(qtest_memread_cpu(qts, 0, 0x1fc00060, block,
+                                    sizeof(block)));
+    g_assert_cmphex(ldl_be_p(block + 0x04), ==, 0x549aa985);
+    g_assert_cmpuint(ldl_be_p(block + 0x14), ==, 500000000);
+    g_assert_cmpuint(ldl_be_p(block + 0x30), ==, 2);
+    g_assert_true(g_file_get_contents(prom, &image, &size, NULL));
+    g_assert_cmpuint(size, >=, 0xb0);
+    g_assert_cmphex(fuel_config_byte_sum(block), ==,
+                    fuel_config_byte_sum((uint8_t *)image + 0x60));
+}
+
 /* A plain launch takes every board value from the Fuel catalogue. */
 static void test_fuel_catalogue_defaults(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(data);
     QTestState *qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M "
                                   "-bios %s -S", quoted);
+
+    fuel_check_config_block(qts, data);
 
     for (unsigned int reset = 0; reset < 2; reset++) {
         g_assert_cmphex(qtest_readq(qts,

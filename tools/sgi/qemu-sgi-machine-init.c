@@ -257,6 +257,16 @@ static void build_item(const SGIModelStorageItem *item,
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP35_PROM:
         sgi_ip35_initial_flash(buf, item->size, data, length);
+        if (t->ip35_firmware) {
+            SGIIP35FlashValues ip35 = {
+                .machine_type = t->ip35_firmware->machine_type,
+                .cpu_mode_word = t->ip35_firmware->cpu_mode_word,
+                .cpu_clock_hz =
+                    t->nodes->value->cpu_slots->value->assembly->clock_hz,
+            };
+
+            sgi_ip35_flash_configure(buf, &ip35);
+        }
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
         sgi_ip30_initial_flash(buf, item->size, data, length);

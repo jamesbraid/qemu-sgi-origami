@@ -416,6 +416,10 @@
           }
         }
       ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1419422085,
+        "machine-type": 1
+      },
       "junk-uart": -1,
       "modules": [
         {

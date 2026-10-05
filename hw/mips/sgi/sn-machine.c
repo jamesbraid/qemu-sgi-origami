@@ -4211,6 +4211,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
                 qdev_prop_set_uint64(DEVICE(node), "board-id-word",
                                      config->board_id_word);
+                if (t->ip35_firmware) {
+                    qdev_prop_set_uint32(DEVICE(node), "firmware-machine-type",
+                                         t->ip35_firmware->machine_type);
+                    qdev_prop_set_uint32(DEVICE(node), "firmware-mode-word",
+                                         t->ip35_firmware->cpu_mode_word);
+                }
                 qdev_prop_set_uint8(DEVICE(node), "bedrock-revision",
                                     config->revision);
                 qdev_prop_set_uint8(DEVICE(node), "local-region",

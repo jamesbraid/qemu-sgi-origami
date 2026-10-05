@@ -65,6 +65,17 @@ layer:
             provenance: derived
             sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
+        # The IP35 flash configuration block's product values. PROM 6.210
+        # compares the block with the CPU-configuration table row its PIMM
+        # speed code selects; Origin 300's 0x8000-branch rows carry machine
+        # type 1 (SN10) and the 500 MHz, 2 MiB row's mode word is
+        # 0x549aa985 (Origami docs/research/origin300-flash-cpu-identity.md).
+        ip35_firmware:
+          machine_type: 1
+          cpu_mode_word: 0x549aa985
+          provenance: derived
+          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
+          notes: The values every Origin 300 run has flashed, now carried as data; established against the PROM's own table.
         machine_name: origin300
         display_description: SGI Origin 300 (IP45), approximate V12
         profile: v12-direct
