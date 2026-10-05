@@ -465,25 +465,28 @@ typedef struct OctaneBoardIdentity {
     const char *name;
 } OctaneBoardIdentity;
 
-/* Reviewed virtual identities; the ROM serials and barcodes are synthetic. */
+/*
+ * Reviewed virtual identities; the ROM serials and barcodes are marked
+ * synthetic ones, each barcode space-padded to its ten-character field.
+ */
 static const OctaneBoardIdentity octane_board_identities[2][4] = {
     {
-        { HEART + 0xb8, 0x817a30010000010bULL, "SIM3010001",
+        { HEART + 0xb8, 0x6851454d5555000bULL, "EMUU00    ",
           "030-0888-004", "B", "PM10" },
-        { BRIDGE_NIC, 0xd87a30010000020bULL, "SIM3010002",
+        { BRIDGE_NIC, 0x6451454d554e000bULL, "EMUN00    ",
           "030-0887-003", "F", "IP30" },
-        { IOC3_MICROLAN, 0xef7a30010000030bULL, "SIM3010003",
+        { IOC3_MICROLAN, 0x5a51454d5546000bULL, "EMUF00    ",
           "030-0891-003", "A", "FP1" },
-        { IOC3_MICROLAN, 0x6a7a30010000040bULL, "SIM3010004",
+        { IOC3_MICROLAN, 0xf451454d5553000bULL, "EMUS00    ",
           "060-0028-003", "A", "PWR.SPPLY.SR" },
     }, {
-        { HEART + 0xb8, 0x657a30020000010bULL, "SIM3020001",
+        { HEART + 0xb8, 0x6851454d5555000bULL, "EMUU00    ",
           "030-1590-002", "B", "PM10360MHZ" },
-        { BRIDGE_NIC, 0x3c7a30020000020bULL, "SIM3020002",
+        { BRIDGE_NIC, 0x6451454d554e000bULL, "EMUN00    ",
           "030-1467-001", "B", "IP30" },
-        { IOC3_MICROLAN, 0x0b7a30020000030bULL, "SIM3020003",
+        { IOC3_MICROLAN, 0x5a51454d5546000bULL, "EMUF00    ",
           "030-0891-003", "H", "FP1" },
-        { IOC3_MICROLAN, 0x8e7a30020000040bULL, "SIM3020004",
+        { IOC3_MICROLAN, 0xf451454d5553000bULL, "EMUS00    ",
           "060-0035-002", "A", "PWR.SPPLY.ER" },
     },
 };
@@ -684,7 +687,7 @@ static void test_board_identities(gconstpointer data)
             if (bus == 2 && (found[i] & 0xff) == 0x91) {
                 ethernet = found[i];
                 g_assert_cmphex((ethernet >> 8) & 0xffffffffffffULL, ==,
-                                0x5e7000000001ULL);
+                                0x5e7454d55000ULL);
             } else {
                 bool matched = false;
 
@@ -843,7 +846,7 @@ static void test_octane_mac(gconstpointer data)
     qts = octane2 ? octane2_start_args("-nic user") :
                     octane_start_args("-nic user");
     /* The part's serial is the catalogue io-board's ioc3-serial. */
-    g_assert_cmphex(octane_station_address(qts, mac), ==, 0x5e7000000001ULL);
+    g_assert_cmphex(octane_station_address(qts, mac), ==, 0x5e7454d55000ULL);
     g_assert_cmpmem(mac, 6, fallback, 6);
     qtest_quit(qts);
     qts = octane2 ?
