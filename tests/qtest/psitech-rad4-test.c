@@ -229,10 +229,9 @@
  * Bridge's byte-lane correction for a device-initiated DMA transfer (crosses
  * XIO, unlike this file's own PIO-only apertures above):
  * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself. The
- * Direct window's own swap enable, and the register holding the bit that
- * clears its "add 512 megabytes" quirk, which resets set.
+ * register holding the bit that clears the Direct window's "add 512
+ * megabytes" quirk, which resets set.
  */
-#define DEV_SWAP_DIRECT         (1u << 19)
 #define PCI_DMA_DIRECT          0x80000000u
 #define BRIDGE_DIRECT_MAP_REG   (BRIDGE_BASE + 0x080 + REG_DATA)
 
@@ -730,14 +729,12 @@ static void dma_write_payload(QTestState *qts, uint32_t phys,
 }
 
 /*
- * Enables bus mastering and this slot's Direct-window byte-lane correction,
- * then writes DMACSR0 (ROM_COMMAND) to start (or abort) a transfer. Real
- * firmware programs a working device's DMA for the corrected case. The
- * disabled case leaves the crossed wiring this chip's DMA path otherwise
- * faithfully emulates, which tests/qtest/sn0-qlogic-isp-test.c exercises
- * directly. rad4_window_to()'s own writes to the slot's device register
- * never set this bit, so it is set again immediately before every start or
- * abort this file issues rather than once in rad4_init().
+ * Enables bus mastering, then writes DMACSR0 (ROM_COMMAND) to start (or
+ * abort) a transfer. The slot's Direct-window byte swapper stays off, as
+ * IRIX 6.5.30 leaves it for this card (Device(5) reads 0x12051002 in a
+ * running buffered-mode guest): the Bridge's crossed wiring then hands
+ * each big-endian memory word to PCI as the same 32-bit value, little
+ * endian, which tests/qtest/sn0-qlogic-isp-test.c exercises directly.
  */
 static void dma_start(QTestState *qts, uint32_t val)
 {
@@ -752,7 +749,7 @@ static void dma_start(QTestState *qts, uint32_t val)
      */
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
     qtest_writel(qts, BRIDGE_DEVICE(RAD4_SLOT),
-                DEV_MEMORY_SPACE | DEV_SWAP_DIRECT | (base >> 20));
+                DEV_MEMORY_SPACE | (base >> 20));
     qtest_writel(qts, WINDOW_RAD4 + ((RAD4_ROM_PCI + ROM_COMMAND) &
                                     (WINDOW_SIZE - 1)), val);
 }
