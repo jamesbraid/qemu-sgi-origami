@@ -140,10 +140,13 @@ A device's 4 GB of PCI space divides by its top bits:
   no response, and neither does any address from ``1 << 32`` up to
   the 64-bit window.
 
-Each target widget is a link to a memory region; the head keeps a
-plain and a byte-swapping address space for each, so byte placement
-follows the XBridge's own swap tables. A self-ordered endpoint uses the
-plain address space whatever its DMA swap control contains.
+Each target widget is a link to a memory region; the head keeps an
+address space for each and the shared placement targets over it
+(``hw/pci-host/sgi-dma-placement.c``, as on the Bridge), so byte
+placement follows the XBridge's own swap tables: a set swap control is
+a byte stream, a clear one reverses each aligned 32-bit word. In
+packet mode the targets send each step as an explicit packet carrying
+this head and the requesting slot instead of writing an address space.
 
 Translation table
 =================

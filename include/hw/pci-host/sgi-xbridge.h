@@ -9,6 +9,7 @@
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "system/memory.h"
 #include "hw/misc/sgi-dma-buffer.h"
+#include "hw/pci-host/sgi-dma-placement.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_XBRIDGE_HEAD "sgi-xbridge-head"
@@ -170,8 +171,7 @@ struct SGIXBridgeHeadState {
     MemoryRegion *target[16];
     struct XBridgeTarget {
         AddressSpace as;
-        MemoryRegion swap;
-        AddressSpace swap_as;
+        SGIDMAPlacementSet placement;
     } endpoint[16];
     struct XBridgeDMA {
         IOMMUMemoryRegion iommu;
@@ -179,13 +179,8 @@ struct SGIXBridgeHeadState {
         SGIDMABufferProvider provider;
         SGIXBridgeHeadState *head;
         unsigned slot;
-        struct XBridgeSourceDMA {
-            SGIXBridgeHeadState *head;
-            unsigned slot;
-            bool swap;
-            MemoryRegion mr;
-            AddressSpace as;
-        } source[2];
+        /* Packet mode: the placements, each sending with this slot's id. */
+        SGIDMAPlacementSet source;
     } dma[8];
     MemoryRegion denied;
     AddressSpace denied_as;

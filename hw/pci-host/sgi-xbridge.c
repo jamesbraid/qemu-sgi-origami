@@ -147,45 +147,6 @@ static void xbridge_set_pin(void *opaque, int pin, int level)
     }
 }
 
-static MemTxResult xbridge_swap_read(void *opaque, hwaddr addr,
-                                     uint64_t *value, unsigned size,
-                                     MemTxAttrs attrs)
-{
-    struct XBridgeTarget *target = opaque;
-    uint8_t bytes[4] = { 0 };
-    MemTxResult result;
-
-    /* The implementation width is four; the helpers' wider cases are not. */
-    assert(size <= sizeof(bytes));
-    result = address_space_read(&target->as, addr ^ (4 - size), attrs,
-                                bytes, size);
-    *value = ldn_be_p(bytes, size);
-    return result;
-}
-
-static MemTxResult xbridge_swap_write(void *opaque, hwaddr addr,
-                                      uint64_t value, unsigned size,
-                                      MemTxAttrs attrs)
-{
-    struct XBridgeTarget *target = opaque;
-    uint8_t bytes[4];
-
-    assert(size <= sizeof(bytes));
-    stn_be_p(bytes, size, value);
-    return address_space_write(&target->as, addr ^ (4 - size), attrs,
-                               bytes, size);
-}
-
-static const MemoryRegionOps xbridge_swap_ops = {
-    .read_with_attrs = xbridge_swap_read,
-    .write_with_attrs = xbridge_swap_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
-};
-
 static uint64_t xbridge_flush_read(void *opaque, hwaddr addr, unsigned size)
 {
     return 0;
@@ -207,82 +168,39 @@ static const MemoryRegionOps xbridge_flush_ops = {
     .impl.max_access_size = 8,
 };
 
-static MemTxResult xbridge_source_dma_read(void *opaque, hwaddr address,
-                                           uint64_t *value, unsigned size,
-                                           MemTxAttrs attrs)
+/* A packet-mode leg: the packet names this head and the requesting slot. */
+static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
+                                       void *buffer, unsigned size,
+                                       bool write, MemTxAttrs attrs)
 {
-    struct XBridgeSourceDMA *path = opaque;
-    SGIXBridgeHeadState *s = path->head;
+    struct XBridgeDMA *dma = opaque;
+    SGIXBridgeHeadState *s = dma->head;
     SGIXioSource source = {
         .widget_known = true,
         .device_known = true,
         .widget = REG(s, 0x20) & 15,
-        .device = path->slot,
+        .device = dma->slot,
     };
-    uint8_t bytes[8] = { 0 };
     MemTxResult result;
 
-    if (path->swap) {
-        address ^= 4 - size;
-    }
-    result = s->packet_sender(s->packet_opaque, s, address, bytes, size,
-                              false, &source);
+    result = s->packet_sender(s->packet_opaque, s, address, buffer, size,
+                              write, &source);
     trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                                 source.widget, source.device, address,
-                                size, false, result);
-    *value = path->swap ? ldn_be_p(bytes, size) : ldn_le_p(bytes, size);
+                                size, write, result);
     return result;
 }
 
-static MemTxResult xbridge_source_dma_write(void *opaque, hwaddr address,
-                                            uint64_t value, unsigned size,
-                                            MemTxAttrs attrs)
+/*
+ * The decode the IOMMU region and the batched provider share. On success
+ * the entry's target is the placement the request selects; *placement and
+ * *onward say which, and the space beyond it.
+ */
+static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
+                                           IOMMUAccessFlags flag,
+                                           SGIDMAPlacement *placement,
+                                           AddressSpace **onward)
 {
-    struct XBridgeSourceDMA *path = opaque;
-    SGIXBridgeHeadState *s = path->head;
-    SGIXioSource source = {
-        .widget_known = true,
-        .device_known = true,
-        .widget = REG(s, 0x20) & 15,
-        .device = path->slot,
-    };
-    uint8_t bytes[8];
-    MemTxResult result;
-
-    if (path->swap) {
-        address ^= 4 - size;
-        stn_be_p(bytes, size, value);
-    } else {
-        stn_le_p(bytes, size, value);
-    }
-    result = s->packet_sender(s->packet_opaque, s, address, bytes, size,
-                              true, &source);
-    trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                                source.widget, source.device, address,
-                                size, true, result);
-    return result;
-}
-
-static const MemoryRegionOps xbridge_source_dma_ops[2] = {
-    {
-        .read_with_attrs = xbridge_source_dma_read,
-        .write_with_attrs = xbridge_source_dma_write,
-        .endianness = DEVICE_LITTLE_ENDIAN,
-        .valid = { .min_access_size = 1, .max_access_size = 8 },
-        .impl = { .min_access_size = 1, .max_access_size = 8 },
-    }, {
-        .read_with_attrs = xbridge_source_dma_read,
-        .write_with_attrs = xbridge_source_dma_write,
-        .endianness = DEVICE_LITTLE_ENDIAN,
-        .valid = { .min_access_size = 1, .max_access_size = 8 },
-        .impl = { .min_access_size = 1, .max_access_size = 4 },
-    },
-};
-
-static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
-                                      IOMMUAccessFlags flag, int iommu_idx)
-{
-    struct XBridgeDMA *dma = container_of(iommu, struct XBridgeDMA, iommu);
     SGIXBridgeHeadState *s = dma->head;
     IOMMUTLBEntry entry = {
         .iova = addr & ~0xfffULL,
@@ -291,9 +209,11 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     };
     int widget = -1;
     uint64_t destination;
-    bool swap, correction;
+    bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
 
+    *placement = SGI_DMA_PLACEMENT_IDENTITY;
+    *onward = NULL;
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
         entry.target_as = &s->flush_as;
         entry.translated_addr = addr & 0xf000;
@@ -348,14 +268,16 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
-    correction = !swap;
-
-    entry.target_as = correction ? &s->endpoint[widget].swap_as :
-                                  &s->endpoint[widget].as;
+    *placement = sgi_dma_placement_select(swap, false);
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
-        entry.target_as = &dma->source[correction].as;
+        *onward = NULL;
+        entry.target_as = sgi_dma_placement_as(&dma->source, *placement);
         entry.translated_addr |= (hwaddr)widget << 48;
+    } else {
+        *onward = &s->endpoint[widget].as;
+        entry.target_as = sgi_dma_placement_as(&s->endpoint[widget].placement,
+                                               *placement);
     }
     entry.perm = IOMMU_RW;
 
@@ -365,6 +287,16 @@ out:
                                    widget, entry.translated_addr,
                                    entry.addr_mask, entry.perm, flag);
     return entry;
+}
+
+static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
+                                      IOMMUAccessFlags flag, int iommu_idx)
+{
+    struct XBridgeDMA *dma = container_of(iommu, struct XBridgeDMA, iommu);
+    SGIDMAPlacement placement;
+    AddressSpace *onward;
+
+    return xbridge_dma_translate(dma, addr, flag, &placement, &onward);
 }
 
 static AddressSpace *xbridge_dma_as(PCIBus *bus, void *opaque, int devfn)
@@ -390,7 +322,8 @@ static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     bool write = dir == DMA_DIRECTION_FROM_DEVICE;
     IOMMUTLBEntry entry;
     hwaddr translated, length, span;
-    AddressSpace *target;
+    AddressSpace *target, *onward;
+    SGIDMAPlacement placement;
     bool correct;
     SGIDMABufferRequest composed = *request;
 
@@ -400,8 +333,8 @@ static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
                              request->max_access_size < 4)))) {
         return false;
     }
-    entry = xbridge_translate(&dma->iommu, addr,
-                               write ? IOMMU_WO : IOMMU_RO, 0);
+    entry = xbridge_dma_translate(dma, addr, write ? IOMMU_WO : IOMMU_RO,
+                                  &placement, &onward);
     span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
     length = span;
     if (!(entry.perm & (1 << write))) {
@@ -415,14 +348,10 @@ static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     } else {
         translated = (entry.translated_addr & ~entry.addr_mask) |
                      (addr & entry.addr_mask);
-        correct = entry.target_as->root->ops == &xbridge_swap_ops;
+        /* Only the word placement composes with a converted request. */
+        correct = placement == SGI_DMA_PLACEMENT_WORD;
         composed.swap32 ^= correct;
-        target = entry.target_as;
-        if (correct) {
-            struct XBridgeTarget *endpoint = target->root->opaque;
-
-            target = &endpoint->as;
-        }
+        target = correct ? onward : entry.target_as;
         if (!sgi_dma_buffer_try_rw(target, translated, buf, &length, dir,
                                    attrs, &composed, result)) {
             if (correct) {
@@ -1094,10 +1023,10 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
             continue;
         }
         address_space_init(&endpoint->as, s->target[i], name);
-        memory_region_init_io(&endpoint->swap, OBJECT(s), &xbridge_swap_ops,
-                              endpoint, name, UINT64_MAX);
-        endpoint->swap.disable_reentrancy_guard = true;
-        address_space_init(&endpoint->swap_as, &endpoint->swap, name);
+        /* Packet mode places through each slot's sender instead. */
+        sgi_dma_placement_init(&endpoint->placement, OBJECT(s), name,
+                               &endpoint->as, s->packet_sender ? 0 :
+                               BIT(SGI_DMA_PLACEMENT_WORD));
     }
     memory_region_init(&s->denied, OBJECT(s), "xbridge.denied", UINT64_MAX);
     address_space_init(&s->denied_as, &s->denied, "xbridge.denied");
@@ -1113,22 +1042,15 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         s->dma[i].provider.transfer = xbridge_dma_buffer_transfer;
         s->dma[i].provider.opaque = &s->dma[i];
         if (s->packet_sender) {
-            for (unsigned correction = 0; correction < 2; correction++) {
-                struct XBridgeSourceDMA *path = &s->dma[i].source[correction];
-                g_autofree char *source_name = g_strdup_printf(
-                    "xbridge.source-%u-%u", i, correction);
+            g_autofree char *source_name = g_strdup_printf(
+                "xbridge.source-%u", i);
 
-                path->head = s;
-                path->slot = i;
-                path->swap = correction;
-                memory_region_init_io(&path->mr, OBJECT(s),
-                                      &xbridge_source_dma_ops[correction],
-                                      path, source_name,
-                                      SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
-                /* A card programmed through this head can DMA synchronously. */
-                path->mr.disable_reentrancy_guard = true;
-                address_space_init(&path->as, &path->mr, source_name);
-            }
+            sgi_dma_placement_init_send(&s->dma[i].source, OBJECT(s),
+                                        source_name,
+                                        SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE,
+                                        BIT(SGI_DMA_PLACEMENT_IDENTITY) |
+                                        BIT(SGI_DMA_PLACEMENT_WORD),
+                                        xbridge_source_send, &s->dma[i]);
         }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
                                  TYPE_XBRIDGE_IOMMU, OBJECT(s), name,
@@ -1182,16 +1104,14 @@ static void xbridge_unrealize(DeviceState *dev)
 
     for (i = 0; i < 16; i++) {
         if (s->target[i]) {
+            sgi_dma_placement_destroy(&s->endpoint[i].placement);
             address_space_destroy(&s->endpoint[i].as);
-            address_space_destroy(&s->endpoint[i].swap_as);
         }
     }
     for (i = 0; i < 8; i++) {
         address_space_destroy(&s->dma[i].as);
         if (s->packet_sender) {
-            for (unsigned correction = 0; correction < 2; correction++) {
-                address_space_destroy(&s->dma[i].source[correction].as);
-            }
+            sgi_dma_placement_destroy(&s->dma[i].source);
         }
     }
     address_space_destroy(&s->denied_as);

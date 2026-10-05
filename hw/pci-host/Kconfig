@@ -128,6 +128,7 @@ config SGI_BRIDGE
 config SGI_XBRIDGE
     bool
     select SGI_DMA_BUFFER
+    select SGI_DMA_PLACEMENT
     default y if SGI_DEVICES
     select PCI
     select SGI_XBRIDGE_XBOW
