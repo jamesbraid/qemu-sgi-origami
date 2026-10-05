@@ -301,6 +301,7 @@ include/hw/mips/sgi/sgi-board-mac.h
 include/hw/mips/sgi/sgi-cpu.h
 include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sgi-storage.h
+include/hw/mips/sgi/sgi-synthetic-serial.h
 include/hw/mips/sgi/sn-machine.h
 include/hw/mips/sgi/xio-widget.h
 include/hw/misc/sgi-bedrock-flash.h
@@ -359,6 +360,7 @@ scripts/sgi_model/model_qemu.py
 scripts/sgi_model/model_shared.py
 scripts/sgi_model/model_validation.py
 scripts/sgi_model/registry.py
+scripts/sgi_model/synthetic_serial.py
 scripts/sgi_model/system_model.py
 scripts/test_check_qtest_registered.py
 scripts/tests/system-model-fixtures/conflicting-decoded-widget.yaml
@@ -439,6 +441,7 @@ scripts/tests/test_sgi_model_goldens.py
 scripts/tests/test_sgi_model_resolution.py
 scripts/tests/test_sgi_model_resolution_contract.py
 scripts/tests/test_sgi_model_validation_contract.py
+scripts/tests/test_sgi_synthetic_serial.py
 target/mips/r10k.h
 target/mips/system/r10k_addr.c
 target/mips/system/r10k_migrate.c
@@ -826,6 +829,7 @@ tests/unit/test-sgi-prom-image.c
 tests/unit/test-sgi-rad1-audio-pcm.c
 tests/unit/test-sgi-router.c
 tests/unit/test-sgi-scanout.c
+tests/unit/test-sgi-synthetic-serial.c
 tests/unit/test-sgi-x-gc.c
 tests/unit/test-sn-model.c
 tests/unit/test-sn0-fabric-routed.c

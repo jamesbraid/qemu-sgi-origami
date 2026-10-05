@@ -7,7 +7,7 @@ fork_unit_tests = [
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-prom-image', 'test-sgi-initial-flash',
-  'test-sgi-machine-init',
+  'test-sgi-machine-init', 'test-sgi-synthetic-serial',
   'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
   'test-sgi-rad1-audio-pcm', 'test-dma-buffer',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
@@ -117,6 +117,8 @@ tests = {
   'test-sn-model': ['../../hw/mips/sgi/sn-model-runtime.c'],
   'test-sgi-prom-image': ['../../hw/mips/sgi/prom-image.c', zlib],
   'test-sgi-initial-flash': ['../../hw/mips/sgi/initial-flash.c'],
+  # all code tested by test-sgi-synthetic-serial is inside its header
+  'test-sgi-synthetic-serial': [],
   # all code tested by test-sgi-rad1-audio-pcm is inside sgi-rad1-audio-pcm.h
   'test-sgi-rad1-audio-pcm': [],
   'test-logging': [],
