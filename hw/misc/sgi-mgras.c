@@ -1831,17 +1831,6 @@ static int mgras_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
-    if (version_id < 33) {
-        memset(s->front_alpha, 0xff,
-               s->front_count * sizeof(*s->front_alpha));
-        memset(s->back_alpha, 0xff,
-               s->back_count * sizeof(*s->back_alpha));
-        for (int i = 0; i < 2 && s->slot_alpha[i]; i++) {
-            memset(s->slot_alpha[i], 0xff,
-                   s->slot_count * sizeof(*s->slot_alpha[i]));
-        }
-    }
-
     if (s->ge_active_slot >= ARRAY_SIZE(s->ge) ||
         s->ge_write_ptr[0] > s->ge_words[0] ||
         s->ge_write_ptr[1] > s->ge_words[1] ||
@@ -1902,7 +1891,7 @@ static bool mgras_slot_count_valid(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_mgras_slots = {
     .name = TYPE_SGI_MGRAS "/slots",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .needed = mgras_slots_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(slot_count, SGIMgrasState),
@@ -1912,9 +1901,9 @@ static const VMStateDescription vmstate_sgi_mgras_slots = {
                               vmstate_info_uint32, uint32_t),
         VMSTATE_VARRAY_UINT32(slot[1], SGIMgrasState, slot_count, 0,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_VARRAY_UINT32(slot_alpha[0], SGIMgrasState, slot_count, 2,
+        VMSTATE_VARRAY_UINT32(slot_alpha[0], SGIMgrasState, slot_count, 0,
                               vmstate_info_uint8, uint8_t),
-        VMSTATE_VARRAY_UINT32(slot_alpha[1], SGIMgrasState, slot_count, 2,
+        VMSTATE_VARRAY_UINT32(slot_alpha[1], SGIMgrasState, slot_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_END_OF_LIST()
     }
@@ -1965,14 +1954,8 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
 };
 
 /*
- * The unversioned machines support migration between identical builds
- * only. Change both version_id and minimum_version_id when represented state
- * changes.
- */
-/*
  * The period the source runs, sent only when re-deriving it from the
- * migrated tables and PLL bytes would give another, so an ordinary stream
- * stays loadable by a binary that predates this subsection.
+ * migrated tables and PLL bytes would give another.
  */
 static bool mgras_timing_needed(void *opaque)
 {
@@ -2140,34 +2123,34 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
         /* The per-pixel format tag; see mgras_put_pixel(). */
-        VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 10,
+        VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         /* So does the overlay plane. */
-        VMSTATE_VARRAY_UINT32(overlay, SGIMgrasState, front_count, 12,
+        VMSTATE_VARRAY_UINT32(overlay, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
-        VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
-        VMSTATE_UINT32_V(hq_hash, SGIMgrasState, 2),
-        VMSTATE_UINT32_ARRAY_V(ge_words, SGIMgrasState, 2, 2),
+        VMSTATE_UINT32(hq_words, SGIMgrasState),
+        VMSTATE_UINT32(hq_hash, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(ge_words, SGIMgrasState, 2),
         VMSTATE_VALIDATE("GE upload lengths are in range",
                          mgras_ge_lengths_valid),
-        VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 2,
+        VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 0,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 2,
+        VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 0,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_ARRAY_V(ge_write_ptr, SGIMgrasState, 2, 2),
-        VMSTATE_UINT32_ARRAY_V(ge_read_ptr, SGIMgrasState, 2, 2),
-        VMSTATE_UINT32_V(ge_active_slot, SGIMgrasState, 2),
-        VMSTATE_BOOL_ARRAY_V(ge_read_odd, SGIMgrasState, 2, 2),
-        VMSTATE_BOOL_ARRAY_V(ge_load_mode, SGIMgrasState, 2, 2),
-        VMSTATE_UINT32_V(ge_hash, SGIMgrasState, 2),
+        VMSTATE_UINT32_ARRAY(ge_write_ptr, SGIMgrasState, 2),
+        VMSTATE_UINT32_ARRAY(ge_read_ptr, SGIMgrasState, 2),
+        VMSTATE_UINT32(ge_active_slot, SGIMgrasState),
+        VMSTATE_BOOL_ARRAY(ge_read_odd, SGIMgrasState, 2),
+        VMSTATE_BOOL_ARRAY(ge_load_mode, SGIMgrasState, 2),
+        VMSTATE_UINT32(ge_hash, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(context, SGIMgrasState, 63),
         VMSTATE_UINT32(context_words, SGIMgrasState), VMSTATE_UINT32(entry, SGIMgrasState),
         VMSTATE_UINT32(protocol, SGIMgrasState), VMSTATE_UINT64(prefix, SGIMgrasState),
         VMSTATE_BOOL(prefix_written, SGIMgrasState),
         VMSTATE_BOOL(entry_selected, SGIMgrasState),
-        VMSTATE_BOOL_V(first_ack, SGIMgrasState, 2),
-        VMSTATE_BOOL_V(second_ack, SGIMgrasState, 2),
+        VMSTATE_BOOL(first_ack, SGIMgrasState),
+        VMSTATE_BOOL(second_ack, SGIMgrasState),
         VMSTATE_BOOL(ready, SGIMgrasState),
         VMSTATE_UINT32(pending, SGIMgrasState), VMSTATE_UINT32(irq_mask, SGIMgrasState),
         VMSTATE_UINT32(error, SGIMgrasState), VMSTATE_UINT32(error_addr, SGIMgrasState),
@@ -2176,11 +2159,11 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT8(cmap_position, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, SGI_MGRAS_CMAP_ENTRIES),
         VMSTATE_UINT64(retraces, SGIMgrasState),
-        VMSTATE_UINT32_V(cursor_x, SGIMgrasState, 2),
-        VMSTATE_UINT32_V(cursor_y, SGIMgrasState, 2),
-        VMSTATE_BOOL_V(display_enabled, SGIMgrasState, 3),
-        VMSTATE_BOOL_V(cursor_enabled, SGIMgrasState, 3),
-        VMSTATE_UINT8_ARRAY_V(cursor, SGIMgrasState, 256, 3),
+        VMSTATE_UINT32(cursor_x, SGIMgrasState),
+        VMSTATE_UINT32(cursor_y, SGIMgrasState),
+        VMSTATE_BOOL(display_enabled, SGIMgrasState),
+        VMSTATE_BOOL(cursor_enabled, SGIMgrasState),
+        VMSTATE_UINT8_ARRAY(cursor, SGIMgrasState, 256),
         VMSTATE_UINT32(revision, SGIMgrasState), VMSTATE_UINT32(part, SGIMgrasState),
         VMSTATE_UINT32(manufacturer, SGIMgrasState),
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
@@ -2198,10 +2181,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(dac_lut_data, SGIMgrasState, 2),
         VMSTATE_UINT32(dac_config, SGIMgrasState),
         VMSTATE_UINT32(dac_lut_index_low, SGIMgrasState),
-        VMSTATE_UINT8_V(dac_lut_load_pos, SGIMgrasState, 9),
-        VMSTATE_UINT8_V(dac_lut_load_channel, SGIMgrasState, 9),
-        VMSTATE_UINT8_2DARRAY_V(dac_gamma, SGIMgrasState, 3, 256, 9),
-        VMSTATE_UINT8_ARRAY_V(dac_reg, SGIMgrasState, SGI_MGRAS_DAC_REGS, 13),
+        VMSTATE_UINT8(dac_lut_load_pos, SGIMgrasState),
+        VMSTATE_UINT8(dac_lut_load_channel, SGIMgrasState),
+        VMSTATE_UINT8_2DARRAY(dac_gamma, SGIMgrasState, 3, 256),
+        VMSTATE_UINT8_ARRAY(dac_reg, SGIMgrasState, SGI_MGRAS_DAC_REGS),
         VMSTATE_UINT32_ARRAY(config_table, SGIMgrasState,
                              SGI_MGRAS_CONFIG_TABLE_WORDS),
         VMSTATE_UINT32(bringup_flag, SGIMgrasState),
@@ -2217,8 +2200,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(dma_desc_30000, SGIMgrasState, 1),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY_V(xmap[0].overlay_mode, SGIMgrasState,
-                               SGI_MGRAS_XMAP_ENTRIES, 12),
+        VMSTATE_UINT32_ARRAY(xmap[0].overlay_mode, SGIMgrasState,
+                             SGI_MGRAS_XMAP_ENTRIES),
         VMSTATE_UINT32(hq_status_extra, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_upper, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_lower, SGIMgrasState),
@@ -2259,67 +2242,60 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT8(xmap[0].index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(xmap[0].mode, SGIMgrasState,
                              SGI_MGRAS_XMAP_ENTRIES),
-        VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
-                               SGI_MGRAS_XMAP_ENTRIES, 11),
-        VMSTATE_TIMER_PTR_V(scanout.retrace_timer, SGIMgrasState, 2),
-        VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
-        /*
-         * Version 17 grows the command payload to 16 words for
-         * glLoadMatrixf; the stream keeps the second 8 here.
-         */
-        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
+        VMSTATE_UINT32_ARRAY(xmap[0].buf_select, SGIMgrasState,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_TIMER_PTR(scanout.retrace_timer, SGIMgrasState),
+        VMSTATE_UINT32(ge_report, SGIMgrasState),
+        /* Words 8 to 15 of the command payload, for glLoadMatrixf. */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 0,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
-        VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
+        VMSTATE_UINT32_ARRAY(gl_banks, SGIMgrasState, 2),
+        VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 0,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_ARRAY_V(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
-                               18),
-        VMSTATE_UINT64_ARRAY_V(gl_selected, SGIMgrasState,
-                               SGI_MGRAS_GL_CONTEXTS, 18),
-        VMSTATE_UINT64_V(gl_selections, SGIMgrasState, 18),
-        VMSTATE_UINT32_V(gl_current, SGIMgrasState, 18),
-        /* Version 19 adds PP1s 1 to 3; PP1 0 is the XMAP sent above. */
+        VMSTATE_UINT32_ARRAY(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS),
+        VMSTATE_UINT64_ARRAY(gl_selected, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS),
+        VMSTATE_UINT64(gl_selections, SGIMgrasState),
+        VMSTATE_UINT32(gl_current, SGIMgrasState),
+        /* PP1s 1 to 3; PP1 0 is the XMAP sent above. */
         VMSTATE_STRUCT_SUB_ARRAY(xmap, SGIMgrasState, 1,
-                                 SGI_MGRAS_MAX_PP1 - 1, 19,
+                                 SGI_MGRAS_MAX_PP1 - 1, 0,
                                  vmstate_sgi_mgras_xmap, SGIMgrasXmap),
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
-                             SGI_MGRAS_GL_CONTEXTS, 20,
+                             SGI_MGRAS_GL_CONTEXTS, 0,
                              vmstate_sgi_mgras_gl_context_parser,
                              SGIMgrasGLContext),
         /* Bank 1's format tag, since that bank holds indices too. */
-        VMSTATE_VARRAY_UINT32(back_format, SGIMgrasState, back_count, 24,
+        VMSTATE_VARRAY_UINT32(back_format, SGIMgrasState, back_count, 0,
                               vmstate_info_uint8, uint8_t),
         /* Contexts read out of GE external RAM, and the transfer under way. */
-        VMSTATE_UINT64_ARRAY_V(gl_saved, SGIMgrasState,
-                               SGI_MGRAS_GL_CONTEXTS, 26),
-        VMSTATE_BOOL_ARRAY_V(gl_is_saved, SGIMgrasState,
-                             SGI_MGRAS_GL_CONTEXTS, 29),
-        VMSTATE_UINT32_V(eram_state, SGIMgrasState, 26),
-        VMSTATE_UINT64_V(eram_host, SGIMgrasState, 26),
-        VMSTATE_UINT32_V(eram_rows, SGIMgrasState, 26),
-        VMSTATE_UINT32_V(eram_bpr, SGIMgrasState, 26),
-        VMSTATE_UINT32_V(eram_next_addr, SGIMgrasState, 26),
+        VMSTATE_UINT64_ARRAY(gl_saved, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS),
+        VMSTATE_BOOL_ARRAY(gl_is_saved, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS),
+        VMSTATE_UINT32(eram_state, SGIMgrasState),
+        VMSTATE_UINT64(eram_host, SGIMgrasState),
+        VMSTATE_UINT32(eram_rows, SGIMgrasState),
+        VMSTATE_UINT32(eram_bpr, SGIMgrasState),
+        VMSTATE_UINT32(eram_next_addr, SGIMgrasState),
         /* A host read through the data port, between its reads. */
-        VMSTATE_BOOL_V(pio_read_active, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_x, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_y, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_w, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_h, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_next, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(pio_read_low, SGIMgrasState, 27),
-        VMSTATE_UINT32_V(gl_re_count_word, SGIMgrasState, 30),
-        VMSTATE_UINT32_V(gl_re_count_tokens, SGIMgrasState, 30),
-        VMSTATE_UINT32_V(tram_transfer, SGIMgrasState, 31),
-        VMSTATE_UINT32_V(tram_rows, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_words, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_first_row, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_read_block, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_load_block, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_kernel_txaddr, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_kernel_tladdr, SGIMgrasState, 32),
-        VMSTATE_UINT32_V(tram_kernel_rows, SGIMgrasState, 32),
-        /* Version 34 extends command payloads for the 32-row GL stipple. */
-        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 16, 16, 34,
+        VMSTATE_BOOL(pio_read_active, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_x, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_y, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_w, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_h, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_next, SGIMgrasState),
+        VMSTATE_UINT32(pio_read_low, SGIMgrasState),
+        VMSTATE_UINT32(gl_re_count_word, SGIMgrasState),
+        VMSTATE_UINT32(gl_re_count_tokens, SGIMgrasState),
+        VMSTATE_UINT32(tram_transfer, SGIMgrasState),
+        VMSTATE_UINT32(tram_rows, SGIMgrasState),
+        VMSTATE_UINT32(tram_words, SGIMgrasState),
+        VMSTATE_UINT32(tram_first_row, SGIMgrasState),
+        VMSTATE_UINT32(tram_read_block, SGIMgrasState),
+        VMSTATE_UINT32(tram_load_block, SGIMgrasState),
+        VMSTATE_UINT32(tram_kernel_txaddr, SGIMgrasState),
+        VMSTATE_UINT32(tram_kernel_tladdr, SGIMgrasState),
+        VMSTATE_UINT32(tram_kernel_rows, SGIMgrasState),
+        /* Words 16 to 31 of the command payload, for the 32-row stipple. */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 16, 16, 0,
                           vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },

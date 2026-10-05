@@ -417,7 +417,7 @@ typedef struct SGIMgrasTexture {
     uint64_t load_dma_bytes;
     uint32_t volume_base, volume_mode, volume_level;
     uint32_t volume_width, volume_height, volume_depth, volume_bytes;
-    /* Keep the version-11 field size stable; version 13 adds its tail. */
+    /* One volume image, kept as two fields that migrate separately. */
     uint8_t volume_data[SGI_MGRAS_VOLUME_TEX_BASE_BYTES];
     uint8_t volume_data_extra[SGI_MGRAS_VOLUME_TEX_BYTES -
                               SGI_MGRAS_VOLUME_TEX_BASE_BYTES];
@@ -848,7 +848,7 @@ struct SGIMgrasState {
      * The console, presented frame and retrace timer
      * (hw/display/sgi/scanout.h). Each frame is resolved from guest state
      * by sgi-mgras-display.c, so only the retrace phase is migrated: as
-     * the timer's expiry, the field the version-2 stream always carried.
+     * the timer's expiry.
      * The period follows from migrated VC3 and DAC state, or from the
      * timing subsection when that state no longer gives it.
      */

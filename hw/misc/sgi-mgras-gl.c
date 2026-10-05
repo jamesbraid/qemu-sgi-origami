@@ -2423,11 +2423,11 @@ const VMStateDescription vmstate_sgi_mgras_gl_readback = {
 static const VMStateDescription vmstate_sgi_mgras_gl_context_client_read = {
     .name = TYPE_SGI_MGRAS "/gl-context-client-read",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(client_read_bracket, SGIMgrasGLContext),
         VMSTATE_UINT32(client_read_kicked, SGIMgrasGLContext),
-        VMSTATE_UINT32_V(client_read_bank, SGIMgrasGLContext, 2),
+        VMSTATE_UINT32(client_read_bank, SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2555,7 +2555,7 @@ static bool mgras_gl_pixels_needed(void *opaque)
 static const VMStateDescription vmstate_sgi_mgras_gl_context_pixels = {
     .name = TYPE_SGI_MGRAS "/gl-context-pixels",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(pixels.active, SGIMgrasGLContext),
         VMSTATE_UINT32(pixels.format, SGIMgrasGLContext),
@@ -2569,8 +2569,8 @@ static const VMStateDescription vmstate_sgi_mgras_gl_context_pixels = {
         VMSTATE_UINT32(pixels.skip, SGIMgrasGLContext),
         VMSTATE_UINT32(pixels.carry, SGIMgrasGLContext),
         VMSTATE_UINT32(pixels.ncarry, SGIMgrasGLContext),
-        VMSTATE_UINT32_V(pixels.ncomponent, SGIMgrasGLContext, 2),
-        VMSTATE_UINT32_ARRAY_V(pixels.components, SGIMgrasGLContext, 4, 2),
+        VMSTATE_UINT32(pixels.ncomponent, SGIMgrasGLContext),
+        VMSTATE_UINT32_ARRAY(pixels.components, SGIMgrasGLContext, 4),
         VMSTATE_END_OF_LIST()
     }
 };
