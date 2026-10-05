@@ -163,7 +163,7 @@ class CheckSgiTestResults(unittest.TestCase):
         identity = ('qemu', 'qemu:qtest+qtest-mips64+slow / '
                     'qtest-mips64/cdrom-test')
         identities = checker.read_skip_allowlist(manifest)
-        self.assertEqual(len(identities), 6)
+        self.assertEqual(len(identities), 5)
         self.assertIn(identity, identities)
         self.assertIn(('qtest-mips64/sn0-origin2000-kona-3d-test',
                        '/mips64/sn0/origin2000/kona-3d/renderer/real-gl'),
