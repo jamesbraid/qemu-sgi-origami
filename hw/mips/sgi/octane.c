@@ -326,10 +326,20 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
+    const SGIModelIoBoard *board = s->model->io_boards ?
+        s->model->io_boards->value : NULL;
     g_autofree char *mac = sgi_board_mac(s->mac, 0, errp);
     PCIDevice *pci;
 
     if (!mac) {
+        return false;
+    }
+    /* The onboard I/O this function builds is the catalogue's ip30 board. */
+    if (!board || board->preset != SGI_MODEL_IO_BOARD_PRESET_IP30 ||
+        !board->has_ioc3_serial) {
+        error_setg(errp, "%s catalogue topology '%s' has no ip30 I/O board "
+                   "with an IOC3 serial", MACHINE_GET_CLASS(machine)->name,
+                   s->model->name);
         return false;
     }
 
@@ -348,6 +358,7 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     object_property_add_child(OBJECT(machine), "ioc3", OBJECT(pci));
     qdev_prop_set_uint16(DEVICE(pci), "subsystem-id",
                          SGI_IOC3_SUBSYS_IP30_SYSBOARD);
+    qdev_prop_set_uint64(DEVICE(pci), "onewire-serial", board->ioc3_serial);
     qdev_prop_set_uint32(DEVICE(pci), "population",
                          SGI_IOC3_POPULATION_SERIAL_A |
                          SGI_IOC3_POPULATION_SERIAL_B |
