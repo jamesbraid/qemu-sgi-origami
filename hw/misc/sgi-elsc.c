@@ -1281,6 +1281,27 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     elsc_module_console_input(s, false);
 }
 
+/*
+ * The rotation starts with code 0 at the first reset, and a later reset
+ * leaves a running rotation on its schedule. The first step runs here
+ * rather than from a timer armed at the current time. Such a timer is
+ * already expired when replay's initial snapshot is taken, and when
+ * QEMU services an expired virtual timer depends on host scheduling, so
+ * replays from that snapshot could diverge from the recording. Every
+ * step after this one is armed in the future.
+ *
+ * This is the exit phase so that both buses the step publishes on, and the
+ * shared rotation's peer, have finished their own reset.
+ */
+static void elsc_reset_exit(Object *obj, ResetType type)
+{
+    SGIElscState *s = SGI_ELSC(obj);
+
+    if (s->arbitration && !timer_pending(s->arb_timer)) {
+        elsc_arb_step(s);
+    }
+}
+
 void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque)
 {
@@ -1320,12 +1341,10 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->cold_power_on = true;
     /*
      * The timer exists either way so that unrealize and the migration stream
-     * keep one shape; only starting it makes the rotation run.
+     * keep one shape; only starting it makes the rotation run, which the
+     * first reset does (elsc_reset_exit).
      */
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
-    if (s->arbitration) {
-        timer_mod(s->arb_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL));
-    }
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -1498,6 +1517,7 @@ static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
     dc->vmsd = &vmstate_sgi_elsc;
     device_class_set_props(dc, sgi_elsc_properties);
     rc->phases.hold = elsc_reset_hold;
+    rc->phases.exit = elsc_reset_exit;
 
     sc->event = elsc_event;
     sc->send = elsc_send;
