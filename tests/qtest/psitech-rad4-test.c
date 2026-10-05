@@ -1612,10 +1612,10 @@ static void test_dma_upload_honors_mask(void)
 /*
  * Guest compatibility approximation for the shipped X server's greyed Motif
  * menu labels: under the overlay plane mask 0x0f000000, a store whose value
- * is a bare 4-bit index writes that index into the overlay bits 24-27,
- * through the CPU path and through DMA. Any other value keeps plain
- * plane-mask behaviour, and turning overlay-index-compat off restores it for
- * bare indices too.
+ * is a bare 4-bit index writes that index into the overlay bits 24-27 on
+ * the CPU path. Any other value keeps plain plane-mask behaviour, and
+ * turning overlay-index-compat off restores it for bare indices too. DMA
+ * always follows the plain plane mask.
  */
 static void check_overlay_index_compat(QTestState *qts, bool compat)
 {
@@ -1646,8 +1646,7 @@ static void check_overlay_index_compat(QTestState *qts, bool compat)
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
     dma_run(qts);
-    g_assert_cmphex(bar2_read(qts, 0x00000c), ==,
-                    compat ? 0x05123456u : 0x00123456u);
+    g_assert_cmphex(bar2_read(qts, 0x00000c), ==, 0x00123456u);
 }
 
 static void test_overlay_index_compat(void)
@@ -1664,6 +1663,33 @@ static void test_overlay_index_compat_off(void)
 
     rad4_configure_bars(qts);
     check_overlay_index_compat(qts, false);
+    qtest_quit(qts);
+}
+
+/*
+ * The buffered X server's sweep uploads its 8-bit root-visual pixels, such
+ * as 0x0000000d, while the X server's overlay mask may be in force. Under
+ * mask 0x0f000000 such an upload leaves the overlay transparent: the bare
+ * value is a legitimate pixel, not an overlay index. Shifting it into the
+ * overlay once turned the whole buffered desktop black.
+ */
+static void test_dma_bare_pixel_under_overlay_mask(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t pixels[2] = { 0x0000000du, 0x0000000eu };
+
+    bar2_write(qts, 0x000040, 0x0000000du);
+    bar2_write(qts, 0x000044, 0x0000000eu);
+    bar2_write(qts, B_MASK, 0x0f000000u);
+    dma_write_payload(qts, DMA_SRC_PHYS, pixels, ARRAY_SIZE(pixels));
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x000040u, sizeof(pixels), DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
+    dma_run(qts);
+
+    g_assert_cmphex(bar2_read(qts, 0x000040), ==, 0x0000000du);
+    g_assert_cmphex(bar2_read(qts, 0x000044), ==, 0x0000000eu);
     qtest_quit(qts);
 }
 
@@ -3769,6 +3795,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-driver-chain-layout",
                    test_dma_driver_chain_layout);
     qtest_add_func("/psitech-rad4/dma-long-chain", test_dma_long_chain);
+    qtest_add_func("/psitech-rad4/dma-bare-pixel-under-overlay-mask",
+                   test_dma_bare_pixel_under_overlay_mask);
     qtest_add_func("/psitech-rad4/dma-runs-in-bus-time",
                    test_dma_runs_in_bus_time);
     qtest_add_func("/psitech-rad4/dma-abort-mid-transfer",
