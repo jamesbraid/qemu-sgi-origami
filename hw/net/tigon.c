@@ -2340,23 +2340,6 @@ static int tigon_post_load(void *opaque, int version_id)
 {
     TigonState *s = opaque;
 
-    if (version_id < 2) {
-        s->station_addr = s->conf.macaddr;
-    }
-    if (version_id < 3 && timer_pending(s->coal_rx_timer)) {
-        uint64_t deadline = timer_expire_time_ns(s->coal_rx_timer);
-
-        if (s->coal_tx_bds) {
-            timer_mod(s->coal_tx_timer, deadline);
-        }
-        if (!s->coal_rx_bds) {
-            timer_del(s->coal_rx_timer);
-        }
-    }
-    /* Version 3 counted completed TX ring walks, not descriptors. */
-    if (version_id < 4 && s->coal_tx_bds) {
-        tigon_coal_flush(s, false);
-    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->station_addr.a);
     tigon_update_irq(s);
     return 0;
@@ -2371,11 +2354,11 @@ static int tigon_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
     .version_id = 6,
-    .minimum_version_id = 1,
+    .minimum_version_id = 6,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, TigonState),
-        VMSTATE_UINT8_ARRAY_V(station_addr.a, TigonState, 6, 2),
+        VMSTATE_UINT8_ARRAY(station_addr.a, TigonState, 6),
         VMSTATE_UINT32(misc_host_ctl, TigonState),
         VMSTATE_UINT32(misc_local_ctl, TigonState),
         VMSTATE_UINT32(pci_state, TigonState),
@@ -2416,25 +2399,25 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_TIMER_PTR(coal_rx_timer, TigonState),
         VMSTATE_UINT32(coal_rx_bds, TigonState),
         VMSTATE_UINT32(coal_tx_bds, TigonState),
-        VMSTATE_TIMER_PTR_V(coal_tx_timer, TigonState, 3),
+        VMSTATE_TIMER_PTR(coal_tx_timer, TigonState),
         VMSTATE_STRUCT(eeprom, TigonState, 1, vmstate_tigon_eeprom,
                        TigonEeprom),
-        VMSTATE_STRUCT(rx_latency, TigonState, 5,
+        VMSTATE_STRUCT(rx_latency, TigonState, 0,
                        vmstate_sgi_net_rx_latency, SGINetRxLatency),
-        VMSTATE_UINT64_V(refresh_stats_ptr, TigonState, 6),
-        VMSTATE_BOOL_V(stack_up, TigonState, 6),
-        VMSTATE_UINT64_V(stat_rx_octets, TigonState, 6),
-        VMSTATE_UINT64_V(stat_rx_ucast, TigonState, 6),
-        VMSTATE_UINT64_V(stat_rx_mcast, TigonState, 6),
-        VMSTATE_UINT64_V(stat_rx_bcast, TigonState, 6),
-        VMSTATE_UINT64_V(stat_tx_octets, TigonState, 6),
-        VMSTATE_UINT64_V(stat_tx_ucast, TigonState, 6),
-        VMSTATE_UINT64_V(stat_tx_mcast, TigonState, 6),
-        VMSTATE_UINT64_V(stat_tx_bcast, TigonState, 6),
-        VMSTATE_UINT32_V(stat_rx_discards, TigonState, 6),
-        VMSTATE_TIMER_PTR_V(stats_timer, TigonState, 6),
-        VMSTATE_BOOL_V(stats_dirty, TigonState, 6),
-        VMSTATE_TIMER_PTR_V(stats_live_timer, TigonState, 6),
+        VMSTATE_UINT64(refresh_stats_ptr, TigonState),
+        VMSTATE_BOOL(stack_up, TigonState),
+        VMSTATE_UINT64(stat_rx_octets, TigonState),
+        VMSTATE_UINT64(stat_rx_ucast, TigonState),
+        VMSTATE_UINT64(stat_rx_mcast, TigonState),
+        VMSTATE_UINT64(stat_rx_bcast, TigonState),
+        VMSTATE_UINT64(stat_tx_octets, TigonState),
+        VMSTATE_UINT64(stat_tx_ucast, TigonState),
+        VMSTATE_UINT64(stat_tx_mcast, TigonState),
+        VMSTATE_UINT64(stat_tx_bcast, TigonState),
+        VMSTATE_UINT32(stat_rx_discards, TigonState),
+        VMSTATE_TIMER_PTR(stats_timer, TigonState),
+        VMSTATE_BOOL(stats_dirty, TigonState),
+        VMSTATE_TIMER_PTR(stats_live_timer, TigonState),
         VMSTATE_END_OF_LIST()
     }
 };

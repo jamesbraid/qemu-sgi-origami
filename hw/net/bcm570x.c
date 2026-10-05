@@ -2667,19 +2667,6 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
 
     /*
-     * Version 6 streams carried the PHY as a standalone qdev section. Keep a
-     * load-only compatibility registration for that section while version 7
-     * and later carry the same state inside the MAC section.
-     */
-    if (vmstate_register_with_alias_id(VMSTATE_IF(dev),
-                                       VMSTATE_INSTANCE_ID_ANY,
-                                       &vmstate_bcm570x_phy, &s->phy,
-                                       -1, 0, errp) < 0) {
-        bcm570x_cleanup_net(s);
-        return;
-    }
-
-    /*
      * The dual-port BCM5704 is one multifunction PCI device presenting two
      * MAC functions, not two devices and not a bridged card (datasheet: an
      * inference from the public BCM5704 architecture and the driver
@@ -2714,8 +2701,6 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                              s->subsystem_vendor_id);
         qdev_prop_set_uint16(&f1->qdev, "subsystem-id", s->subsystem_id);
         if (!pci_realize_and_unref(f1, bus, errp)) {
-            vmstate_unregister(VMSTATE_IF(dev), &vmstate_bcm570x_phy,
-                               &s->phy);
             bcm570x_cleanup_net(s);
             return;
         }
@@ -2732,7 +2717,6 @@ static void bcm570x_exit(PCIDevice *dev)
 {
     Bcm570xState *s = BCM570X(dev);
 
-    vmstate_unregister(VMSTATE_IF(dev), &vmstate_bcm570x_phy, &s->phy);
     bcm570x_cleanup_net(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
@@ -2794,26 +2778,16 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
     /* The PHY migrates its cable state; NetClientState does not. */
     qemu_get_queue(s->nic)->link_down = s->phy.link_down;
-    if (version_id < 6) {
-        s->tx_coal_pending = 0;
-    }
-    if (version_id < 9) {
-        /* No arrival line in the stream: the chip is where it published. */
-        s->rx_prod_staged = s->status_rx_prod;
-    }
     bcm570x_update_irq(s);
     /*
-     * Version 6 carries the timers themselves. Older streams carried only the
-     * receive pending count, so report that count immediately. Rebuild any
-     * missing timer from the restored register state so a malformed or older
-     * stream cannot strand live work.
+     * Rebuild any missing timer from the restored register state so a
+     * malformed stream cannot strand live work.
      */
     if (s->rx_coal_pending != 0 && !s->rx_coal_expired &&
         !timer_pending(&s->coal_timer)) {
         uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
 
-        timer_mod(&s->coal_timer, version_id < 6 ? now :
-                  now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
+        timer_mod(&s->coal_timer, now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
     }
     if (s->tx_coal_pending != 0 && !s->tx_coal_expired &&
         !timer_pending(&s->tx_coal_timer)) {
@@ -2828,7 +2802,7 @@ static int bcm570x_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
     .version_id = 10,
-    .minimum_version_id = 1,
+    .minimum_version_id = 10,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, Bcm570xState),
@@ -2839,31 +2813,23 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_rx_prod, Bcm570xState),
-        VMSTATE_UINT16_V(rx_prod_staged, Bcm570xState, 9),
-        VMSTATE_STRUCT(rx_latency, Bcm570xState, 9,
+        VMSTATE_UINT16(rx_prod_staged, Bcm570xState),
+        VMSTATE_STRUCT(rx_latency, Bcm570xState, 0,
                        vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_UINT16(rx_std_cons, Bcm570xState),
         VMSTATE_UINT16(rx_jumbo_cons, Bcm570xState),
-        VMSTATE_BOOL_V(irq_masked, Bcm570xState, 2),
-        VMSTATE_BOOL_V(irq_pending, Bcm570xState, 2),
-        VMSTATE_BOOL_V(status_kick_done, Bcm570xState, 3),
-        VMSTATE_UINT8_V(status_tag, Bcm570xState, 3),
-        VMSTATE_UINT16_V(rx_coal_pending, Bcm570xState, 4),
-        /* Version 5 carried two superseded DMA-warning latches. */
-        VMSTATE_UNUSED_V(5, 2),
-        VMSTATE_UINT16_V(tx_coal_pending, Bcm570xState, 6),
-        VMSTATE_TIMER_V(coal_timer, Bcm570xState, 6),
-        VMSTATE_TIMER_V(tx_coal_timer, Bcm570xState, 6),
-        /*
-         * Version 6 carried a periodic status timer the chip does not have.
-         */
-        VMSTATE_UNUSED_V(6, 8),
-        VMSTATE_STRUCT(phy, Bcm570xState, 7, vmstate_bcm570x_phy,
+        VMSTATE_BOOL(irq_masked, Bcm570xState),
+        VMSTATE_BOOL(irq_pending, Bcm570xState),
+        VMSTATE_BOOL(status_kick_done, Bcm570xState),
+        VMSTATE_UINT8(status_tag, Bcm570xState),
+        VMSTATE_UINT16(rx_coal_pending, Bcm570xState),
+        VMSTATE_UINT16(tx_coal_pending, Bcm570xState),
+        VMSTATE_TIMER(coal_timer, Bcm570xState),
+        VMSTATE_TIMER(tx_coal_timer, Bcm570xState),
+        VMSTATE_STRUCT(phy, Bcm570xState, 0, vmstate_bcm570x_phy,
                        Bcm570xPhyState),
-        /* Version 8 carried the superseded receive-unmask latch. */
-        VMSTATE_UNUSED_V(8, 1),
-        VMSTATE_BOOL_V(rx_coal_expired, Bcm570xState, 10),
-        VMSTATE_BOOL_V(tx_coal_expired, Bcm570xState, 10),
+        VMSTATE_BOOL(rx_coal_expired, Bcm570xState),
+        VMSTATE_BOOL(tx_coal_expired, Bcm570xState),
         VMSTATE_END_OF_LIST()
     }
 };

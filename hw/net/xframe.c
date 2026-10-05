@@ -285,13 +285,6 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 #define XFRAME_LINK_UP_DELAY_MS     5
 
 /*
- * Compatibility delay used only when an incoming migration stream contains a
- * pending instance of the former synthetic link-down timer. New device
- * activity never arms that timer.
- */
-#define XFRAME_LINK_DOWN_TO_UP_MS   500
-
-/*
  * The scheduled interrupt's period. A live IRIX xg boot pinned the watchdog
  * as a pure liveness timer. It does not care what interrupt arrives, only
  * that one arrives inside its interval (~15 s), and it resets the adapter
@@ -410,17 +403,12 @@ static bool xframe_link_pending(XframeState *s)
  *
  * IRIX xg opens PIC_INT_MASK but leaves GPIO_INT_MASK at its all-ones reset,
  * yet the link source reaches its ISR. Gate the source on PIC_INT_GPIO alone
- * and retain GPIO_INT_MASK for readback. An incoming version-7 device keeps
- * the former GPIO leaf gate until it is replaced rather than changing
- * interrupt visibility during migration.
+ * and retain GPIO_INT_MASK for readback.
  */
 static bool xframe_gpio_link_pending(XframeState *s)
 {
     return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS) != 0) &&
-           !(s->pic_int_mask & XFRAME_PIC_INT_GPIO) &&
-           (!s->legacy_interrupt_masking ||
-            ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS &
-              ~s->gpio_int_mask) != 0));
+           !(s->pic_int_mask & XFRAME_PIC_INT_GPIO);
 }
 
 /*
@@ -443,9 +431,7 @@ static bool xframe_sched_int_pending(XframeState *s)
 /*
  * Recompute the level-sensitive INTx line from each source's block masks.
  * GENERAL_INT_MASK does not gate delivery: IRIX xg leaves it at its all-ones
- * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK. A
- * device loaded from a version-7 stream retains the former GENERAL aggregate
- * gates as migration compatibility state.
+ * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK.
  *
  * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
  * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
@@ -463,13 +449,6 @@ static void xframe_update_irq(XframeState *s)
     bool link_pending = xframe_link_pending(s);
     bool pic_pending = xframe_gpio_link_pending(s) ||
                        xframe_sched_int_pending(s);
-
-    if (s->legacy_interrupt_masking) {
-        rx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
-        tx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXTRAFFIC);
-        link_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXMAC);
-        pic_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXPIC);
-    }
 
     pci_set_irq(PCI_DEVICE(s),
                 rx_pending || tx_pending || link_pending || pic_pending);
@@ -616,21 +595,6 @@ static void xframe_traffic_ack(XframeState *s, bool rx, uint64_t written)
         }
     }
     xframe_update_irq(s);
-}
-
-/*
- * Retain the former synthetic link-down timer callback for incoming migration
- * streams that saved it while pending. New device activity never arms it.
- */
-static void xframe_link_down_timer_cb(void *opaque)
-{
-    XframeState *s = opaque;
-
-    s->gpio_int_reg |= XFRAME_GPIO_INT_REG_LINK_DOWN;
-    xframe_update_irq(s);
-    timer_mod(s->link_up_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
-              XFRAME_LINK_DOWN_TO_UP_MS);
 }
 
 /*
@@ -785,10 +749,8 @@ static void xframe_soft_reset(XframeState *s)
     s->stat_rx_octets = 0;
     /*
      * A reset drops the adapter (ADAPTER_EN cleared above), so any pending
-     * link event is void. Cancel the active UP one-shot, the legacy DOWN
-     * one-shot retained for migration, and the scheduled interrupt.
+     * link event is void. Cancel the UP one-shot and the scheduled interrupt.
      */
-    timer_del(s->link_down_timer);
     timer_del(s->link_up_timer);
     timer_del(s->sched_int_timer);
     xframe_load_factory_mac(s);
@@ -1146,7 +1108,6 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                       XFRAME_LINK_UP_DELAY_MS);
         } else if (adapter_disable_edge) {
-            timer_del(s->link_down_timer);
             timer_del(s->link_up_timer);
             timer_del(s->sched_int_timer);
             s->sched_int_pending = false;
@@ -1461,11 +1422,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
     case XFRAME_GENERAL_INT_MASK:
         /*
          * Retained for readback. IRIX xg leaves this at reset and enables the
-         * interrupt sources it uses through their block masks. An incoming
-         * version-7 device retains its former final aggregate gate.
+         * interrupt sources it uses through their block masks.
          */
         s->general_int_mask = full;
-        xframe_update_irq(s);
         return;
     case XFRAME_TX_TRAFFIC_MASK:
         /* Second-level mask: gates TX_TRAFFIC_INT -> INTx. Recompute. */
@@ -1502,9 +1461,12 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_update_irq(s);
         return;
     case XFRAME_GPIO_INT_MASK:
-        /* Only an incoming version-7 device retains this link-source gate. */
+        /*
+         * The model keeps this for readback only and gates the link source
+         * on PIC_INT_GPIO; the datasheet has this mask gate the GPIO
+         * leaves, so the two differ here.
+         */
         s->gpio_int_mask = full;
-        xframe_update_irq(s);
         return;
     case XFRAME_TXPIC_INT_MASK:
         /*
@@ -3145,7 +3107,6 @@ static void xframe_set_link_status(NetClientState *nc)
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
 
     if (nc->link_down) {
-        timer_del(s->link_down_timer);
         timer_del(s->link_up_timer);
         s->gpio_int_reg = (s->gpio_int_reg & ~XFRAME_GPIO_INT_REG_LINK_UP) |
                           XFRAME_GPIO_INT_REG_LINK_DOWN;
@@ -3194,8 +3155,6 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         xframe_rx_recovery_timer_cb, s);
     s->stat_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, xframe_stat_timer_cb, s);
-    s->link_down_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
-                                      xframe_link_down_timer_cb, s);
     s->link_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                     xframe_link_up_timer_cb, s);
     s->sched_int_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -3292,7 +3251,6 @@ static void xframe_exit(PCIDevice *dev)
     qemu_bh_delete(s->rx_flush_bh);
     timer_free(s->rx_recovery_timer);
     timer_free(s->stat_timer);
-    timer_free(s->link_down_timer);
     timer_free(s->link_up_timer);
     timer_free(s->sched_int_timer);
     for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
@@ -3309,7 +3267,7 @@ static void xframe_exit(PCIDevice *dev)
 /*
  * A target that loads with the scheduled interrupt armed must keep it coming,
  * or a driver watchdog resumes resetting the device as if this migrated in
- * stale. VMSTATE_TIMER_PTR_V above restores the timer's own pending expiry
+ * stale. VMSTATE_TIMER_PTR above restores the timer's own pending expiry
  * exactly when the source had it mid-period at save time; re-arm only covers
  * the gap that restore cannot, a save taken with nothing pending on the
  * timer (between periods, or any other case where it was armed but not
@@ -3328,7 +3286,7 @@ static void xframe_exit(PCIDevice *dev)
  * reset) clears it too, so a migrated target re-arms only when the source
  * device actually still had one pending.
  *
- * Also gated on !timer_pending(s->sched_int_timer): VMSTATE_TIMER_PTR_V has
+ * Also gated on !timer_pending(s->sched_int_timer): VMSTATE_TIMER_PTR has
  * already restored that exact pending expiry by the time post_load runs, so
  * re-arming unconditionally would discard it for now + period, shifting the
  * next interrupt later than the source's. Re-arming only when nothing is
@@ -3338,83 +3296,11 @@ static void xframe_exit(PCIDevice *dev)
 static int xframe_post_load(void *opaque, int version_id)
 {
     XframeState *s = opaque;
-    unsigned i;
 
     /*
      * The cache is local prefetch state, never part of the migration stream.
      */
     xframe_rx_cache_invalidate(s);
-
-    if (version_id < 8) {
-        s->legacy_interrupt_masking = true;
-    }
-
-    /*
-     * A stream older than version 3 never carried RMAC_MAX_PYLD_LEN, so it
-     * arrives zero, which would read back as "accept a payload of nothing".
-     * Present the reset default instead: a source that predates the field was
-     * running the 1500-byte default anyway, since nothing could have raised
-     * it.
-     */
-    if (version_id < 3) {
-        s->rmac_max_pyld_len =
-            (uint64_t)XFRAME_MAX_PYLD_DEFAULT << XFRAME_MAX_PYLD_SHIFT;
-    }
-
-    /*
-     * A version-1 stream predates this branch's per-block interrupt masks
-     * (VMSTATE_UINT64_V at version 2 below): v1 gated every source through
-     * the single GENERAL_INT_MASK, so a v1 source never programmed any of
-     * the eight masks below. This VMState never carried them. They are the
-     * masks that
-     * xframe_update_irq (via xframe_link_pending, xframe_gpio_link_pending
-     * and xframe_sched_int_pending) actually gates on: pic_int_mask,
-     * txpic_int_mask, rxpic_int_mask, gpio_int_mask, tx_traffic_mask,
-     * rx_traffic_mask, mac_int_mask and mac_rmac_err_mask. Left unset, a v1
-     * load leaves them at this struct's reset value (XFRAME_INT_MASK_RESET,
-     * all-ones/masked), and xframe_update_irq now gates every source through
-     * exactly these masks, so a migrated v1 guest would stop seeing
-     * interrupts even though its general mask still had them open. The
-     * compatible v2 state for a v1 source is all eight open (0): the guest's
-     * driver is already past bring-up and does not revisit its masks
-     * afterward, so the model must present them open itself rather than wait
-     * for a rewrite that never comes.
-     */
-    if (version_id < 2) {
-        s->pic_int_mask = 0;
-        s->txpic_int_mask = 0;
-        s->rxpic_int_mask = 0;
-        s->gpio_int_mask = 0;
-        s->tx_traffic_mask = 0;
-        s->rx_traffic_mask = 0;
-        s->mac_int_mask = 0;
-        s->mac_rmac_err_mask = 0;
-    }
-
-    /*
-     * Version 5 saved the traffic memories before the model used them for
-     * interrupt moderation. Retaining those entries would make future
-     * completions on a version 6 destination behave differently from the
-     * immediate interrupts produced by the source.
-     */
-    if (version_id < 6) {
-        s->tti_command = 0;
-        s->tti_data1 = 0;
-        s->tti_data2 = 0;
-        s->rti_command = 0;
-        s->rti_data1 = 0;
-        s->rti_data2 = 0;
-        memset(s->tti_entry_data1, 0, sizeof(s->tti_entry_data1));
-        memset(s->tti_entry_data2, 0, sizeof(s->tti_entry_data2));
-        memset(s->tti_entry_valid, 0, sizeof(s->tti_entry_valid));
-        memset(s->rti_entry_data1, 0, sizeof(s->rti_entry_data1));
-        memset(s->rti_entry_data2, 0, sizeof(s->rti_entry_data2));
-        memset(s->rti_entry_valid, 0, sizeof(s->rti_entry_valid));
-        for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
-            xframe_traffic_batch_reset(&s->tti_batch[i]);
-            xframe_traffic_batch_reset(&s->rti_batch[i]);
-        }
-    }
 
     if (s->sched_int_armed && !timer_pending(s->sched_int_timer)) {
         xframe_sched_int_arm(s);
@@ -3423,8 +3309,7 @@ static int xframe_post_load(void *opaque, int version_id)
      * Periodic statistics DMA resumes on the target if the source had it
      * enabled. Only periodic mode leaves enable set to migrate. A one-shot
      * clears it when its single transfer completes, so the enable bit alone
-     * is the condition. A v3 or older source never programmed it, and the
-     * zero-value fields load as disabled, so this arms nothing there.
+     * is the condition.
      */
     if ((s->stat_cfg & XFRAME_STAT_CFG_EN) && !timer_pending(s->stat_timer)) {
         timer_mod(s->stat_timer,
@@ -3438,41 +3323,28 @@ static int xframe_post_load(void *opaque, int version_id)
 }
 
 /*
- * The migratable register state. Version 1 (the base this model started from)
- * covers the byte-swap and scratch registers, ADAPTER_CONTROL,
- * GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole MAC-address table
- * and its parallel per-entry mask (entry 0's factory address plus any
- * programmed unicast or multicast entry. Whatever the guest wrote must
- * survive migration exactly), the per-FIFO pending transmit list pointer, and
- * the receive ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending
- * RX_TRAFFIC_INT status, and the card's current walk position through the
- * ring).
+ * The migratable register state: the byte-swap and scratch registers,
+ * ADAPTER_CONTROL, GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole
+ * MAC-address table and its parallel per-entry mask (entry 0's factory
+ * address plus any programmed unicast or multicast entry; whatever the guest
+ * wrote must survive migration exactly), the per-FIFO pending transmit list
+ * pointer, and the receive ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the
+ * pending RX_TRAFFIC_INT status, and the card's current walk position
+ * through the ring).
  *
- * Version 2 is this branch's interrupt-block model, added as one logical bump
- * over that base (VMSTATE_*_V at version 2 below): the per-block interrupt
- * masks (the PCI-X/PIC masks, the transmit-and receive-traffic masks, and the
- * two MAC masks) and the pending TX_TRAFFIC_INT completion status, these
- * feed xframe_update_irq, so a migrated target that lost them would recompute
- * a wrong INTx line; the PIC/GPIO-block link path IRIX xg uses (gpio_int_reg,
- * the link-state status, and gpio_int_mask, retained for readback;
- * pic_int_mask's PIC_INT_GPIO bit gates delivery); the current link-up timer
- * and the legacy link-down timer retained for existing migration streams; and
- * the scheduled interrupt that replaced the earlier sustained-link heartbeat:
- * SCHED_INT_CTRL (the register the driver arms it with), the
+ * The interrupt block: the per-block interrupt masks (the PCI-X/PIC masks,
+ * the transmit-and receive-traffic masks, and the two MAC masks) and the
+ * pending TX_TRAFFIC_INT completion status feed xframe_update_irq, so a
+ * migrated target that lost them would recompute a wrong INTx line; the
+ * PIC/GPIO-block link path IRIX xg uses (gpio_int_reg, the link-state
+ * status, and gpio_int_mask, retained for readback; pic_int_mask's
+ * PIC_INT_GPIO bit gates delivery); the link-up timer; and the scheduled
+ * interrupt: SCHED_INT_CTRL (the register the driver arms it with), the
  * sched_int_pending latch (which also feeds the INTx recompute),
  * sched_int_armed (whether an arm is actually outstanding, see
  * xframe_post_load), and the timer's own pending expiry (sched_int_timer),
  * migrated for the same reason link_up_timer is: a target that lost a pending
  * scheduled interrupt would starve the driver watchdog after migration.
- *
- * A version-1 stream loads every version-2 field at this struct's reset
- * value: zero for the latches, pending flags and timers, nothing pending,
- * nothing armed, the correct state for a target that migrated in from a build
- * with no interrupt model at all, but XFRAME_INT_MASK_RESET
- * (all-ones/masked) for the eight gating masks, since the struct resets masks
- * closed. xframe_post_load re-opens exactly those eight for a version_id < 2
- * load (see its comment): the compatible v2 state for a v1 source, whose
- * general_int_mask alone gated its interrupts, is these masks open.
  *
  * The two derived summaries (GENERAL_INT_STATUS and PIC_INT_STATUS) need no
  * field of their own: both are recomputed from the RX/TX traffic status, the
@@ -3481,12 +3353,6 @@ static int xframe_post_load(void *opaque, int version_id)
  * lives in NICConf, which every NIC model leaves out of its VMState (see
  * hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI config space is covered by
  * VMSTATE_PCI_DEVICE.
- *
- * Version 8 records whether the device was loaded from a version-7 or older
- * stream. Those sources gated INTx through GENERAL_INT_MASK and gated GPIO
- * link leaves through GPIO_INT_MASK. Retaining that behavior avoids changing
- * an already-running guest's interrupt visibility during migration; a fresh
- * version-8 device uses the readback-only behavior required by IRIX xg.
  */
 static const VMStateDescription vmstate_xframe_traffic_batch = {
     .name = "xframe/traffic-batch",
@@ -3514,7 +3380,7 @@ static const VMStateDescription vmstate_xframe_traffic_continuous = {
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
     .version_id = 9,
-    .minimum_version_id = 1,
+    .minimum_version_id = 9,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, XframeState),
@@ -3523,23 +3389,23 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(sw_reset, XframeState),
         VMSTATE_UINT64(adapter_control, XframeState),
         VMSTATE_UINT64(general_int_mask, XframeState),
-        VMSTATE_UINT64_V(rmac_max_pyld_len, XframeState, 3),
-        VMSTATE_UINT64_V(stat_cfg, XframeState, 4),
-        VMSTATE_UINT64_V(stat_addr, XframeState, 4),
-        VMSTATE_UINT64_V(stat_tx_frms, XframeState, 4),
-        VMSTATE_UINT64_V(stat_tx_octets, XframeState, 4),
-        VMSTATE_UINT64_V(stat_rx_frms, XframeState, 4),
-        VMSTATE_UINT64_V(stat_rx_octets, XframeState, 4),
-        VMSTATE_UINT64_V(pic_int_mask, XframeState, 2),
-        VMSTATE_UINT64_V(txpic_int_mask, XframeState, 2),
-        VMSTATE_UINT64_V(rxpic_int_mask, XframeState, 2),
-        VMSTATE_UINT64_V(gpio_int_mask, XframeState, 2),
-        VMSTATE_UINT64_V(tx_traffic_mask, XframeState, 2),
-        VMSTATE_UINT64_V(rx_traffic_mask, XframeState, 2),
-        VMSTATE_UINT64_V(mac_int_mask, XframeState, 2),
-        VMSTATE_UINT64_V(mac_rmac_err_mask, XframeState, 2),
-        VMSTATE_UINT64_V(mac_rmac_err, XframeState, 2),
-        VMSTATE_UINT64_V(gpio_int_reg, XframeState, 2),
+        VMSTATE_UINT64(rmac_max_pyld_len, XframeState),
+        VMSTATE_UINT64(stat_cfg, XframeState),
+        VMSTATE_UINT64(stat_addr, XframeState),
+        VMSTATE_UINT64(stat_tx_frms, XframeState),
+        VMSTATE_UINT64(stat_tx_octets, XframeState),
+        VMSTATE_UINT64(stat_rx_frms, XframeState),
+        VMSTATE_UINT64(stat_rx_octets, XframeState),
+        VMSTATE_UINT64(pic_int_mask, XframeState),
+        VMSTATE_UINT64(txpic_int_mask, XframeState),
+        VMSTATE_UINT64(rxpic_int_mask, XframeState),
+        VMSTATE_UINT64(gpio_int_mask, XframeState),
+        VMSTATE_UINT64(tx_traffic_mask, XframeState),
+        VMSTATE_UINT64(rx_traffic_mask, XframeState),
+        VMSTATE_UINT64(mac_int_mask, XframeState),
+        VMSTATE_UINT64(mac_rmac_err_mask, XframeState),
+        VMSTATE_UINT64(mac_rmac_err, XframeState),
+        VMSTATE_UINT64(gpio_int_reg, XframeState),
         VMSTATE_UINT64(mac_cfg, XframeState),
         VMSTATE_BOOL(rmac_cfg_unlocked, XframeState),
         VMSTATE_UINT64(rmac_addr_cmd, XframeState),
@@ -3549,39 +3415,39 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64_ARRAY(mac_addr_mask, XframeState,
                              XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
-        VMSTATE_UINT64_V(tx_traffic_int, XframeState, 2),
-        VMSTATE_UINT64_V(tti_command, XframeState, 5),
-        VMSTATE_UINT64_V(tti_data1, XframeState, 5),
-        VMSTATE_UINT64_V(tti_data2, XframeState, 5),
-        VMSTATE_UINT64_ARRAY_V(tti_entry_data1, XframeState,
-                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
-        VMSTATE_UINT64_ARRAY_V(tti_entry_data2, XframeState,
-                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
-        VMSTATE_BOOL_ARRAY_V(tti_entry_valid, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 5),
-        VMSTATE_UINT64_V(rti_command, XframeState, 5),
-        VMSTATE_UINT64_V(rti_data1, XframeState, 5),
-        VMSTATE_UINT64_V(rti_data2, XframeState, 5),
-        VMSTATE_UINT64_ARRAY_V(rti_entry_data1, XframeState,
-                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
-        VMSTATE_UINT64_ARRAY_V(rti_entry_data2, XframeState,
-                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
-        VMSTATE_BOOL_ARRAY_V(rti_entry_valid, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_UINT64(tx_traffic_int, XframeState),
+        VMSTATE_UINT64(tti_command, XframeState),
+        VMSTATE_UINT64(tti_data1, XframeState),
+        VMSTATE_UINT64(tti_data2, XframeState),
+        VMSTATE_UINT64_ARRAY(tti_entry_data1, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES),
+        VMSTATE_UINT64_ARRAY(tti_entry_data2, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES),
+        VMSTATE_BOOL_ARRAY(tti_entry_valid, XframeState,
+                           XFRAME_TRAFFIC_MEM_ENTRIES),
+        VMSTATE_UINT64(rti_command, XframeState),
+        VMSTATE_UINT64(rti_data1, XframeState),
+        VMSTATE_UINT64(rti_data2, XframeState),
+        VMSTATE_UINT64_ARRAY(rti_entry_data1, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES),
+        VMSTATE_UINT64_ARRAY(rti_entry_data2, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES),
+        VMSTATE_BOOL_ARRAY(rti_entry_valid, XframeState,
+                           XFRAME_TRAFFIC_MEM_ENTRIES),
         VMSTATE_STRUCT_ARRAY(tti_batch, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 6,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 0,
                              vmstate_xframe_traffic_batch,
                              XframeTrafficBatch),
         VMSTATE_STRUCT_ARRAY(rti_batch, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 6,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 0,
                              vmstate_xframe_traffic_batch,
                              XframeTrafficBatch),
         VMSTATE_STRUCT_ARRAY(tti_continuous, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 7,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 0,
                              vmstate_xframe_traffic_continuous,
                              XframeTrafficContinuous),
         VMSTATE_STRUCT_ARRAY(rti_continuous, XframeState,
-                             XFRAME_TRAFFIC_MEM_ENTRIES, 7,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 0,
                              vmstate_xframe_traffic_continuous,
                              XframeTrafficContinuous),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
@@ -3589,14 +3455,12 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_UINT64(rx_traffic_int, XframeState),
         VMSTATE_UINT64(rx_page_addr, XframeState),
         VMSTATE_UINT32(rx_desc_idx, XframeState),
-        VMSTATE_UINT64_V(sched_int_ctrl, XframeState, 2),
-        VMSTATE_BOOL_V(sched_int_pending, XframeState, 2),
-        VMSTATE_BOOL_V(sched_int_armed, XframeState, 2),
-        VMSTATE_TIMER_PTR_V(sched_int_timer, XframeState, 2),
-        VMSTATE_TIMER_PTR_V(link_down_timer, XframeState, 2),
-        VMSTATE_TIMER_PTR_V(link_up_timer, XframeState, 2),
-        VMSTATE_BOOL_V(legacy_interrupt_masking, XframeState, 8),
-        VMSTATE_STRUCT(rx_latency, XframeState, 9,
+        VMSTATE_UINT64(sched_int_ctrl, XframeState),
+        VMSTATE_BOOL(sched_int_pending, XframeState),
+        VMSTATE_BOOL(sched_int_armed, XframeState),
+        VMSTATE_TIMER_PTR(sched_int_timer, XframeState),
+        VMSTATE_TIMER_PTR(link_up_timer, XframeState),
+        VMSTATE_STRUCT(rx_latency, XframeState, 0,
                        vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_END_OF_LIST()
     }

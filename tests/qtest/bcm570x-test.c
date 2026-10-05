@@ -38,9 +38,6 @@
 #include "libqtest.h"
 #include "libqos/pci-sgi-bridge.h"
 #include "qapi/error.h"
-#include "qobject/qdict.h"
-#include "qobject/qjson.h"
-#include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "sgi-migrate.h"
@@ -5708,73 +5705,6 @@ static void bcm570x_migrate(QTestState *from, QTestState *to, const char *uri)
     sgi_wait_migration_status(to, "completed", 30);
 }
 
-static QDict *bcm570x_vmstate_field(QList *fields, const char *name)
-{
-    const QListEntry *entry;
-
-    QLIST_FOREACH_ENTRY(fields, entry) {
-        QDict *field = qobject_to(QDict, qlist_entry_obj(entry));
-
-        if (g_str_equal(qdict_get_str(field, "field"), name)) {
-            return field;
-        }
-    }
-    return NULL;
-}
-
-/*
- * Version 6 predates moving the PHY into the MAC's migration section. The
- * nested state must therefore start at a new parent version: reusing version
- * 6 makes old and new binaries assign different layouts to the same stream.
- */
-static void test_vmstate_versions_nested_phy(const void *data)
-{
-    g_autofree gchar *dump_path = NULL;
-    g_autofree gchar *dump = NULL;
-    g_autofree gchar *error_output = NULL;
-    QObject *root_obj;
-    QDict *root, *section, *description, *phy;
-    QList *fields;
-    GError *err = NULL;
-    int fd, wait_status;
-
-    fd = g_file_open_tmp("bcm570x-vmstate-XXXXXX", &dump_path, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(fd, >=, 0);
-    close(fd);
-
-    {
-        g_autofree char *command = g_strdup_printf(
-            "%s " BCM_MACHINE " -device bcm570x -dump-vmstate %s",
-            qtest_qemu_binary(NULL), dump_path);
-        g_auto(GStrv) args = NULL;
-
-        g_assert_true(g_shell_parse_argv(command, NULL, &args, &err));
-        g_assert_no_error(err);
-        g_assert_true(g_spawn_sync(NULL, args, NULL, 0, NULL, NULL,
-                                   NULL, &error_output, &wait_status, &err));
-    }
-    g_assert_no_error(err);
-    g_assert_true(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_true(g_file_get_contents(dump_path, &dump, NULL, &err));
-    g_assert_no_error(err);
-
-    root_obj = qobject_from_json(dump, &error_abort);
-    root = qobject_to(QDict, root_obj);
-    g_assert_false(qdict_haskey(root, "bcm570x-phy"));
-    section = qdict_get_qdict(root, "bcm570x");
-    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 10);
-    description = qdict_get_qdict(section, "Description");
-    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 10);
-    fields = qdict_get_qlist(description, "Fields");
-    phy = bcm570x_vmstate_field(fields, "phy");
-    g_assert_nonnull(phy);
-    g_assert_cmpint(qdict_get_int(phy, "version_id"), ==, 7);
-
-    qobject_unref(root_obj);
-    unlink(dump_path);
-}
-
 /*
  * The PHY is a migrated child while the net frontend is host state. Both must
  * still describe the same cable on the destination, including after a fresh
@@ -6568,8 +6498,6 @@ int main(int argc, char **argv)
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/status-dma-error", NULL,
                         test_status_dma_error);
-    qtest_add_data_func("/bcm570x/vmstate-versions-nested-phy", NULL,
-                        test_vmstate_versions_nested_phy);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
     qtest_add_data_func(
