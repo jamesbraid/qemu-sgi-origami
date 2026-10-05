@@ -123,6 +123,10 @@ slow_qtests = {
   # on a host at load average 100 (three runs alone, one four-way
   # parallel). Allow about three times the loaded figure.
   'sgi-migration-roundtrip-test': 300,
+  # 36 cases on Octane and Octane2 machines. Measured 30.90s alone on
+  # 2026-10-04, and killed at the 60s default when nine suites ran in
+  # parallel at host load average about 95. Allow three times 60s.
+  'octane-mgras-test': 180,
   # The 59 RTC storage and register cases measured 49.02s alone.
   # Three times that leaves room for the repeated QEMU launches under load.
   'sn0-ds1685-test': 150,
