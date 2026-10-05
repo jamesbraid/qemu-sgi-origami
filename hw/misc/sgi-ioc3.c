@@ -1744,7 +1744,7 @@ static const hwaddr sgi_ioc3_sdma_alias_base[SGI_IOC3_SERIAL_PORTS] = {
     SGI_IOC3_SDMA_ALIAS_A, SGI_IOC3_SDMA_ALIAS_B,
 };
 
-static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
+static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
 {
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
@@ -2085,6 +2085,19 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     /* The SuperIO line is board wiring, not the PCI pin. */
     qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
+}
+
+/*
+ * An IOC3 added with -device realizes outside a board's build, and each
+ * of its regions would commit on its own. Build it in one transaction.
+ * The build realizes the serial ports, ethernet and timekeeper, maps
+ * regions and wires IRQs; nothing in it accesses an address space.
+ */
+static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    sgi_ioc3_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 static void sgi_ioc3_exit(PCIDevice *dev)
