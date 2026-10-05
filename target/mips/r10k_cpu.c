@@ -8,19 +8,25 @@
 #include "cpu.h"
 #include "internal.h"
 
-static void mips_r10000_prid_get(Object *obj, Visitor *v, const char *name,
-                                 void *opaque, Error **errp)
+/*
+ * r10000-prid and r14000-prid: the whole PRId a part reports, whose
+ * implementation number is fixed by the CPU model and whose revision
+ * varies by part. @opaque is that implementation number.
+ */
+static void mips_r10k_prid_get(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
 {
     R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
-    uint32_t value = profile ? profile->r10000_prid : 0;
+    uint32_t value = profile ? profile->prid : 0;
 
     visit_type_uint32(v, name, &value, errp);
 }
 
-static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
-                                 void *opaque, Error **errp)
+static void mips_r10k_prid_set(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
+    uint32_t implementation = (uintptr_t)opaque;
     uint32_t value;
 
     if (DEVICE(obj)->realized) {
@@ -30,16 +36,28 @@ static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
     if (!visit_type_uint32(v, name, &value, errp)) {
         return;
     }
-    if ((value & ~0xffu) != 0x0900) {
-        error_setg(errp, "%s requires implementation 0x09 and zero upper bits",
-                   name);
+    if ((value & ~0xffu) != implementation << 8) {
+        error_setg(errp, "%s requires implementation 0x%02x and zero upper "
+                   "bits", name, implementation);
         return;
     }
     if (!cpu->r10k_profile) {
         error_setg(errp, "%s unavailable on this CPU model", name);
         return;
     }
-    cpu->r10k_profile->r10000_prid = value;
+    cpu->r10k_profile->prid = value;
+}
+
+/* The CPU models whose PRId is a property, and that property's name. */
+static const char *mips_r10k_prid_property(const char *model)
+{
+    if (!strcmp(model, "R10000")) {
+        return "r10000-prid";
+    }
+    if (!strcmp(model, "R14000")) {
+        return "r14000-prid";
+    }
+    return NULL;
 }
 
 static void mips_r10k_reset_mode_get(Object *obj, Visitor *v,
@@ -327,10 +345,12 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
     if (!(def->insn_flags & INSN_R10K)) {
         return;
     }
-    if (!strcmp(def->name, "R10000")) {
-        object_class_property_add(oc, "r10000-prid", "uint32",
-                                  mips_r10000_prid_get, mips_r10000_prid_set,
-                                  NULL, NULL);
+    if (mips_r10k_prid_property(def->name)) {
+        object_class_property_add(oc, mips_r10k_prid_property(def->name),
+                                  "uint32", mips_r10k_prid_get,
+                                  mips_r10k_prid_set, NULL,
+                                  (void *)(uintptr_t)
+                                  ((def->CP0_PRid >> 8) & 0xff));
     }
     if (!strcmp(def->name, "R10000") || !strcmp(def->name, "R14000")) {
         object_class_property_add(oc, "reset-mode", "uint32",
@@ -374,8 +394,8 @@ void mips_r10k_cpu_init(MIPSCPU *cpu)
         return;
     }
     cpu->r10k_profile = g_new0(R10KCPUProfile, 1);
-    if (!strcmp(mcc->cpu_def->name, "R10000")) {
-        cpu->r10k_profile->r10000_prid = mcc->cpu_def->CP0_PRid;
+    if (mips_r10k_prid_property(mcc->cpu_def->name)) {
+        cpu->r10k_profile->prid = mcc->cpu_def->CP0_PRid;
     }
 }
 
@@ -451,8 +471,8 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
         r10k->xkseg_limit = env->cpu_model->xkseg_limit;
     }
 
-    if (!strcmp(env->cpu_model->name, "R10000")) {
-        env->CP0_PRid = cpu->r10k_profile->r10000_prid;
+    if (mips_r10k_prid_property(env->cpu_model->name)) {
+        env->CP0_PRid = cpu->r10k_profile->prid;
     }
 }
 
