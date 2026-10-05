@@ -124,6 +124,26 @@ static void test_octane_prid_override(void)
     qtest_quit(qts);
 }
 
+/*
+ * The SN machines apply their catalogue part the same way: Origin 200's
+ * catalogue PRId is 0x926, and -cpu R10000,r10000-prid= names another.
+ * The board's mode bits still reach the CPU's reset-mode, which sizes the
+ * secondary cache, whichever PRId it takes: Config0 bits 24:0 of the
+ * catalogue's 0x1211a785, the 1 MB part.
+ */
+static void test_origin200_prid(gconstpointer data)
+{
+    bool override = GPOINTER_TO_INT(data);
+    QTestState *qts = qtest_initf("-M origin200 -cpu %s -S",
+                                  override ? "R10000,r10000-prid=0x927" :
+                                             "R10000");
+
+    g_assert_cmphex(cpu_property(qts, "r10000-prid"), ==,
+                    override ? 0x927 : 0x926);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, 0x11a785);
+    qtest_quit(qts);
+}
+
 static void test_invalid_identity(void)
 {
     const char *profiles[] = {
@@ -290,6 +310,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/r10000/identity/octane", "octane", test_identity);
     qtest_add_func("/r10000/identity/octane-override",
                    test_octane_prid_override);
+    qtest_add_data_func("/r10000/identity/origin200", GINT_TO_POINTER(0),
+                        test_origin200_prid);
+    qtest_add_data_func("/r10000/identity/origin200-override",
+                        GINT_TO_POINTER(1), test_origin200_prid);
     qtest_add_data_func("/r10000/identity/octane2", GINT_TO_POINTER(0),
                         test_octane2_identity);
     qtest_add_data_func("/r10000/identity/octane2-override",
