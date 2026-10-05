@@ -41,6 +41,7 @@
 #include "hw/pci/pci_regs.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #ifdef CONFIG_LINUX
@@ -634,19 +635,19 @@ static void redirector_send_packet(int fd, const uint8_t *buf, size_t len,
 static void wait_for_log_marker(QTestState *qts, const char *logfile,
                                 const char *marker)
 {
-    unsigned int i;
+    SgiWait w;
 
-    for (i = 0; i < 100; i++) {
+    sgi_wait_start(&w, "QEMU log marker %s", marker);
+    for (;;) {
         g_autofree char *log = NULL;
 
         qtest_clock_step(qts, 1000 * 1000);
-        g_usleep(2000);
         if (g_file_get_contents(logfile, &log, NULL, NULL) &&
             strstr(log, marker)) {
             return;
         }
+        sgi_wait_pause(&w, 2000);
     }
-    g_error("timed out waiting for QEMU log marker: %s", marker);
 }
 
 /*
@@ -657,19 +658,18 @@ static void wait_for_log_marker(QTestState *qts, const char *logfile,
 static void wait_for_rx_prod(Bcm *b, uint16_t want)
 {
     uint8_t idx[2];
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "receive producer %u", want);
+    for (;;) {
         qtest_memread(b->qts, STATUS_PHYS + DMA16(BCM_STATUS_RX_PROD_OFF),
                       idx, 2);
         if (get16be(idx) == want) {
             return;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    qtest_memread(b->qts, STATUS_PHYS + DMA16(BCM_STATUS_RX_PROD_OFF), idx, 2);
-    g_assert_cmphex(get16be(idx), ==, want);
 }
 
 /*
@@ -691,20 +691,38 @@ static uint32_t read_status_tag(Bcm *b)
 static void wait_for_ret_end(Bcm *b, unsigned int idx)
 {
     uint8_t flags[2];
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "return ring entry %u", idx);
+    for (;;) {
         qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
                       DMA16(BCM_RXBD_FLAGS), flags, 2);
         if (get16be(flags) & BCM_RXBDFLAG_END) {
             return;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
-                  DMA16(BCM_RXBD_FLAGS), flags, 2);
-    g_assert_cmphex(get16be(flags) & BCM_RXBDFLAG_END, ==, BCM_RXBDFLAG_END);
+}
+
+/*
+ * Wait for the chip to write @frame into the receive buffer. Delivery from
+ * the socket happens on a later pass of the main loop; the virtual clock is
+ * left alone, so an arrival deadline cannot pass while this waits.
+ */
+static void wait_for_landed(Bcm *b, const uint8_t *frame, size_t len)
+{
+    g_autofree uint8_t *landed = g_malloc(len);
+    SgiWait w;
+
+    sgi_wait_start(&w, "received frame in the buffer");
+    for (;;) {
+        qtest_memread(b->qts, RX_BUF_PHYS, landed, len);
+        if (memcmp(landed, frame, len) == 0) {
+            return;
+        }
+        sgi_wait_pause(&w, 5000);
+    }
 }
 
 /*
@@ -3441,7 +3459,6 @@ static void test_receive_waits_for_its_arrival_deadline(const void *data)
     int sv[2];
     Bcm b;
     uint8_t frame[64];
-    uint8_t landed[64];
     uint8_t ret[BCM_RXBD_SIZE];
     unsigned int i;
 
@@ -3471,14 +3488,7 @@ static void test_receive_waits_for_its_arrival_deadline(const void *data)
      * the buffer. Nothing here advances the virtual clock, so the arrival
      * deadline cannot have passed.
      */
-    for (i = 0; i < 200; i++) {
-        qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
-        if (memcmp(landed, frame, sizeof(frame)) == 0) {
-            break;
-        }
-        g_usleep(5000);
-    }
-    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    wait_for_landed(&b, frame, sizeof(frame));
 
     /* The return descriptor is written; the producer and the line are not. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
@@ -3661,7 +3671,7 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     qtest_memset(b.qts, STD_STALE_BUF_PHYS, 0xa5, sizeof(second));
     qtest_memset(b.qts, JUMBO_BUF_PHYS, 0xa5, sizeof(second));
     net_socket_send_frame(sv[0], second, sizeof(second));
-    g_usleep(100000);
+    sgi_wait_socket_read(sv[0]);
 
     /* Neither buffer written, and no completion. */
     g_assert_cmpuint(read_rx_prod(&b), ==, 1);
@@ -3774,7 +3784,7 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
                  BCM_JUMBO_FRAME_LEN);
     qtest_memset(b.qts, RX_BUF_PHYS, 0xa5, sizeof(small));
     net_socket_send_frame(sv[0], second, BCM_JUMBO_FRAME_LEN);
-    g_usleep(100000);
+    sgi_wait_socket_read(sv[0]);
 
     g_assert_cmpuint(read_rx_prod(&b), ==, 1);
     qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
@@ -4002,7 +4012,7 @@ static void test_receive_ring_laps(const void *data)
     uint8_t frame[64];
     uint8_t bd[BCM_RXBD_SIZE];
     uint8_t ret[BCM_RXBD_SIZE];
-    unsigned int i, j;
+    unsigned int i;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i + 2);
@@ -4043,23 +4053,14 @@ static void test_receive_ring_laps(const void *data)
     for (i = 0; i < LAP_FRAMES; i++) {
         unsigned int idx = i % LAP_RET_LEN;
         uint64_t slot = RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE;
-        bool got = false;
 
         /* Clear the entry so its completion cannot be mistaken for an older
          * one still sitting there from the previous lap. */
         qtest_memset(b.qts, slot, 0, BCM_RXBD_SIZE);
         net_socket_send_frame(sv[0], frame, sizeof(frame));
 
-        for (j = 0; j < 200 && !got; j++) {
-            qtest_memread(b.qts, slot, ret, sizeof(ret));
-            if (get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
-                got = true;
-                break;
-            }
-            g_usleep(5000);
-            qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS / 4);
-        }
-        g_assert_true(got);
+        wait_for_ret_end(&b, idx);
+        qtest_memread(b.qts, slot, ret, sizeof(ret));
         g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                         sizeof(frame) + BCM_ETH_FCS_LEN);
 
@@ -4138,10 +4139,12 @@ static void test_receive_ring_full_recovers(const void *data)
     }
     /*
      * Each completion waits for its own arrival deadline, so run the clock on
-     * as well as the main loop until the ring has taken everything it can.
+     * as well as the main loop until the ring has taken everything it can:
+     * every entry but the last. A few more arrival deadlines then give a
+     * frame that wrongly took the last entry the time to show.
      */
-    for (i = 0; i < 40; i++) {
-        g_usleep(5000);
+    wait_for_ret_end(&b, LAP_RET_LEN - 2);
+    for (i = 0; i < 4; i++) {
         qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS);
     }
 
@@ -4308,7 +4311,7 @@ static void test_receive_mac_enable(const void *data)
     memset(frame, 0x7a, sizeof(frame));
     memset(frame, 0xff, 6);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(100000);
+    sgi_wait_socket_read(sv[0]);
     g_assert_cmpuint(read_rx_prod(&b), ==, 1);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     g_usleep(100000);
@@ -4384,7 +4387,7 @@ static void test_queued_receive_released_by_producer(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(100000);
+    sgi_wait_socket_read(sv[0]);
     g_assert_cmpuint(read_rx_prod(&b), ==, 0);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
@@ -4432,7 +4435,7 @@ static void test_receive_queue_reset(const void *data)
                              sv[1], BCM_SLOT));
 
     net_socket_send_frame(sv[0], stale, sizeof(stale));
-    g_usleep(100000);
+    sgi_wait_socket_read(sv[0]);
 
     if (system_reset) {
         qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
@@ -4606,7 +4609,6 @@ static void test_receive_completion_dma_error(const void *data)
     int sv[2];
     Bcm b;
     uint8_t frame[64];
-    uint8_t landed[sizeof(frame)];
     uint8_t ret[BCM_RXBD_SIZE];
     unsigned int i;
 
@@ -4627,14 +4629,7 @@ static void test_receive_completion_dma_error(const void *data)
                    UNMAPPED_PHYS & 0xffffffff);
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    for (i = 0; i < 200; i++) {
-        qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
-        if (memcmp(landed, frame, sizeof(frame)) == 0) {
-            break;
-        }
-        g_usleep(5000);
-    }
-    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    wait_for_landed(&b, frame, sizeof(frame));
     g_assert_cmphex(read_rx_prod(&b), ==, 0);
 
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
@@ -6065,7 +6060,7 @@ static void test_masked_interrupt_survives_migration(const void *data)
     bcm570x_migrate(from.qts, to_qts, uri);
 
     net_socket_send_frame(dest_sv[0], frame, sizeof(frame));
-    g_usleep(100000);
+    sgi_wait_socket_read(dest_sv[0]);
     qtest_memread(to.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
