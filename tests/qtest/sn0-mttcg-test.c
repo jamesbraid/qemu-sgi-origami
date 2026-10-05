@@ -31,6 +31,7 @@
 #include "sgi-mips-emit.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -77,7 +78,6 @@
 #define VEC_CACHE_ERROR     0x300
 #define VEC_GENERAL         0x380
 
-#define POLL_TRIES          30000
 #define POLL_INTERVAL_US    1000
 
 /* Instruction encodings, named as in target/mips/tcg/translate.c. */
@@ -1031,26 +1031,32 @@ static QTestState *boot_case(const char *accel, void (*build)(GuestImage *img))
 /* Poll until every CPU is done.  Returns false if the deadline expired. */
 static bool wait_for_done(QTestState *qts)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "every CPU done");
+    for (;;) {
         if (all_cpus_done(qts)) {
             return true;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     return false;
 }
 
 static bool wait_for_cpu0_done(QTestState *qts)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "CPU 0 done");
+    for (;;) {
         if (state_word(qts, DONE_OFF) == DONE_MAGIC) {
             return true;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     return false;
 }
@@ -1315,13 +1321,16 @@ static uint64_t bql_acquisitions(QTestState *qts)
 
 static bool wait_for_progress(QTestState *qts, uint64_t want)
 {
-    unsigned int tries;
+    SgiWait w;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "guest progress");
+    for (;;) {
         if (state_word(qts, PROGRESS_OFF) >= want) {
             return true;
         }
-        g_usleep(POLL_INTERVAL_US);
+        if (!sgi_wait_continue(&w, POLL_INTERVAL_US)) {
+            break;
+        }
     }
     return false;
 }
@@ -1331,6 +1340,7 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
     uint64_t clear_locks, masked_locks;
     QTestState *qts;
     bool done;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1373,11 +1383,12 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
     g_assert_cmpuint(masked_locks, <, clear_locks + MI_PASSES / 10);
 
     /* The line the phases carried is still deliverable on the unmask. */
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "interrupt on unmask");
+    for (;;) {
         if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
@@ -1455,7 +1466,7 @@ static void build_unmask_by_eret(GuestImage *img)
 static void test_unmask_by_eret_delivers(const void *data)
 {
     QTestState *qts;
-    unsigned int tries;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1464,12 +1475,13 @@ static void test_unmask_by_eret_delivers(const void *data)
 
     qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
                         build_unmask_by_eret);
-    for (tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "interrupt or done after ERET");
+    for (;;) {
         if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC ||
             state_word(qts, DONE_OFF) == DONE_MAGIC) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
 
     g_assert_cmphex(state_word(qts, UE_STATUS_OFF) &
@@ -1502,6 +1514,7 @@ static void test_masked_interrupt_keeps_flag_elsewhere(const void *data)
     const char *cpu = data;
     uint64_t clear_locks, masked_locks;
     QTestState *qts;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1533,11 +1546,12 @@ static void test_masked_interrupt_keeps_flag_elsewhere(const void *data)
     g_assert_cmphex(state_word(qts, MI_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
     g_assert_cmpuint(masked_locks, >=, mi_passes);
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "interrupt on unmask");
+    for (;;) {
         if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
@@ -1611,6 +1625,7 @@ static void build_count_match_interrupt(GuestImage *img)
 static void test_count_match_interrupt(const void *data)
 {
     QTestState *qts;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1619,12 +1634,10 @@ static void test_count_match_interrupt(const void *data)
     gh_wide_timer_moves = GPOINTER_TO_INT(data);
     qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
                         build_count_match_interrupt);
-    for (unsigned int i = 0; i < 1000; i++) {
-        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC ||
-            state_word(qts, DONE_OFF) == DONE_MAGIC) {
-            break;
-        }
-        g_usleep(1000);
+    sgi_wait_start(&w, "Count/Compare interrupt or done");
+    while (state_word(qts, EXC_MARK_OFF) != EXC_MAGIC &&
+           state_word(qts, DONE_OFF) != DONE_MAGIC) {
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
@@ -1856,7 +1869,7 @@ static void build_gdb_peer_hold(GuestImage *img)
 static int gdb_peer_socket(const char *path)
 {
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    struct timeval timeout = { .tv_sec = 5 };
+    struct timeval timeout = { .tv_sec = SGI_WAIT_S };
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
     g_assert_cmpint(fd, >=, 0);
@@ -1911,6 +1924,61 @@ static void gdb_peer_command(int fd, const char *command,
     g_assert_cmpint(gdb_peer_byte(fd), ==, '+');
     if (reply) {
         gdb_peer_reply(fd, reply, size);
+    }
+}
+
+/*
+ * Run CPU B alone while CPU A stays held at its breakpoint, until B has made
+ * progress and enough guest time has passed for A's Count to reach
+ * GH_COMPARE. A fixed host-time hold could end, on a loaded host, before B
+ * had run at all, or before A's Count/Compare match was due.
+ *
+ * Guest time is read from B's own Count, which B publishes every pass of its
+ * loop. Both CPUs' Count registers run from the same virtual clock at the
+ * same rate, and A wrote its Count before the hold began. So once B's Count
+ * has advanced past GH_COMPARE from a value B published after resuming, A's
+ * Count has passed GH_COMPARE too. The main loop runs a virtual-clock timer
+ * that is due before it handles the next request on any socket, so A's
+ * Count/Compare timer has already raised Cause.IP7 by the time the test's
+ * next gdb or qtest request is handled.
+ *
+ * @word reads one published guest word; @hub is the node's PI_RT_COUNT. The
+ * values B published before the hold are @peer_before and @hub_before. With
+ * @timer_write, B also writes its own Count and Compare once after resuming,
+ * so the baseline is taken after that write.
+ */
+static void gdb_peer_hold_past_compare(QTestState *qts,
+                                       uint64_t (*word)(QTestState *,
+                                                        unsigned int),
+                                       uint64_t hub, uint64_t peer_before,
+                                       uint64_t hub_before, bool timer_write)
+{
+    uint64_t progress;
+    uint32_t count0;
+    SgiWait w;
+
+    sgi_wait_start(&w, "CPU B progress while CPU A is held");
+    while (word(qts, GH_PEER_OFF) <= peer_before ||
+           qtest_readq(qts, hub) <= hub_before ||
+           (timer_write && word(qts, GH_PEER_WRITE_DONE_OFF + 8) != 1)) {
+        sgi_wait_pause(&w, 1000);
+    }
+
+    /*
+     * B publishes its pass count and then its Count. Two more passes ensure
+     * the Count read next was published after B resumed, and after its own
+     * timer write.
+     */
+    progress = word(qts, GH_PEER_OFF);
+    sgi_wait_start(&w, "a CPU B Count published after the hold began");
+    while (word(qts, GH_PEER_OFF) < progress + 2) {
+        sgi_wait_pause(&w, 1000);
+    }
+    count0 = word(qts, GH_PEER_COUNT_OFF + 8);
+    sgi_wait_start(&w, "CPU B Count to advance past GH_COMPARE");
+    while ((uint32_t)(word(qts, GH_PEER_COUNT_OFF + 8) - count0) <=
+           GH_COMPARE) {
+        sgi_wait_pause(&w, 1000);
     }
 }
 
@@ -2040,7 +2108,8 @@ static void test_gdb_peer_hold(const void *data)
 
     /* Thread 2 is CPU B. Thread 1 stays at the post-Count breakpoint. */
     gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
-    g_usleep(50000);
+    gdb_peer_hold_past_compare(qts, state_word, GH_HUB_COUNT, peer_before,
+                               hub_before, false);
     peer_after = state_word(qts, GH_PEER_OFF);
     peer_count_after = state_word(qts, GH_PEER_COUNT_OFF + 8);
     hub_after = qtest_readq(qts, GH_HUB_COUNT);
@@ -2223,6 +2292,7 @@ static void test_gdb_sn1_hold(const void *data)
     uint32_t peer_count_before, peer_count_after;
     uint64_t elapsed_ticks = 0;
     uint64_t break_pc;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -2271,7 +2341,7 @@ static void test_gdb_sn1_hold(const void *data)
     {
         GPollFD pfd = { .fd = gdb, .events = G_IO_IN };
 
-        if (g_poll(&pfd, 1, 5000) == 0) {
+        if (g_poll(&pfd, 1, SGI_WAIT_S * 1000) == 0) {
             g_test_message("R14000 breakpoint timeout: alive %" PRIu64
                            ", exception %" PRIu64 ", EPC %" PRIx64,
                            sn1_timer_state_word(qts, ALIVE_OFF),
@@ -2300,16 +2370,11 @@ static void test_gdb_sn1_hold(const void *data)
         qtest_writeq(qts, SN1_STATE_HOST + GH_PEER_WRITE_REQ_OFF + 8, 1);
     }
     gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
-    for (unsigned int i = 0; i < 100; i++) {
-        g_usleep(10000);
-        peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
-        hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
-        if (peer_after > peer_before && hub_after > hub_before &&
-            (!gh_peer_timer_writes ||
-             sn1_timer_state_word(qts, GH_PEER_WRITE_DONE_OFF + 8) == 1)) {
-            break;
-        }
-    }
+    gdb_peer_hold_past_compare(qts, sn1_timer_state_word,
+                               SN1_BEDROCK_LOCAL + 0x30100, peer_before,
+                               hub_before, gh_peer_timer_writes);
+    peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
+    hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
     g_test_message("peer progress %" PRIu64 " -> %" PRIu64
                    ", Bedrock %" PRIu64 " -> %" PRIu64
                    ", peer timer write %" PRIu64,
@@ -2318,9 +2383,9 @@ static void test_gdb_sn1_hold(const void *data)
     if (long_hold) {
         peer_count_before = sn1_timer_state_word(qts,
                                                 GH_PEER_COUNT_OFF + 8);
-        for (unsigned int i = 0;
-             i < 30 && elapsed_ticks <= 0x80000000ULL; i++) {
-            g_usleep(500000);
+        sgi_wait_start(&w, "CPU B Count to advance 2^31 ticks");
+        while (elapsed_ticks <= 0x80000000ULL) {
+            sgi_wait_pause(&w, 500000);
             peer_count_after = sn1_timer_state_word(qts,
                                                    GH_PEER_COUNT_OFF + 8);
             elapsed_ticks += (uint32_t)(peer_count_after -
@@ -2380,12 +2445,10 @@ static void test_gdb_sn1_hold(const void *data)
                         0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
                         gh_reset_compare_pos);
         gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
-        for (unsigned int i = 0; i < 100; i++) {
-            if ((uint32_t)sn1_timer_state_word(qts,
-                GH_PEER_COUNT_OFF + 8) > 1000) {
-                break;
-            }
-            g_usleep(10000);
+        sgi_wait_start(&w, "CPU B Count past 1000 after reset");
+        while ((uint32_t)sn1_timer_state_word(qts,
+                                              GH_PEER_COUNT_OFF + 8) <= 1000) {
+            sgi_wait_pause(&w, 10000);
         }
         g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
         gdb_peer_reply(gdb, reply, sizeof(reply));
@@ -2428,11 +2491,12 @@ static void test_gdb_sn1_hold(const void *data)
         gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
     }
 wait_gdb_sn1_done:
-    for (unsigned int i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "CPU A done after the hold");
+    for (;;) {
         if (sn1_timer_state_word(qts, DONE_OFF) == DONE_MAGIC) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     if (reset_vm) {
         g_assert_cmphex(sn1_timer_state_word(qts, EXC_MARK_OFF), ==, 0);
@@ -2573,6 +2637,7 @@ static void test_gdb_status_unmask_delivers(const void *data)
     uint64_t status, spin_addr;
     QTestState *qts;
     int fd, gdb;
+    SgiWait w;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -2618,11 +2683,12 @@ static void test_gdb_status_unmask_delivers(const void *data)
     g_assert_cmpstr(reply, ==, "OK");
     gdb_peer_command(gdb, "vCont;c", NULL, 0);
 
-    for (unsigned int tries = 0; tries < POLL_TRIES / 10; tries++) {
+    sgi_wait_start(&w, "interrupt on unmask");
+    for (;;) {
         if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
