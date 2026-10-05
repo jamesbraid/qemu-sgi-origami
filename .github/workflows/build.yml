@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Build QEMU and run native MIPS64 checks. Both jobs first run the model
-# contract suites, which need no build. Smoke covers changed qtests, SGI
+# Build QEMU and run native MIPS64 checks. Both jobs first run the script
+# and model suites, which need no build. Smoke covers changed qtests, SGI
 # unit tests, and one Linux boot; full adds register and functional tests
 # plus the source-built ROM suite. Guest assets are checksum-verified.
 # scripts/ci/sgi-check holds the checks themselves, so a developer can run
@@ -97,12 +97,12 @@ jobs:
           bash scripts/ci/runner-setup check
 
       # These need no QEMU build, so run them first: a broken model file
-      # fails the job in minutes instead of after the build.
-      - name: model contract suites
+      # or script fails the job in minutes instead of after the build.
+      - name: script and model suites
         run: |
-          echo "model contract suites" > "$CI_STEP"
+          echo "script and model suites" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
-              "$IMAGE_ID" python3 scripts/ci/sgi-check model
+              "$IMAGE_ID" python3 scripts/ci/sgi-check scripts
 
       - name: configure and build QEMU
         run: |
@@ -209,12 +209,12 @@ jobs:
           bash scripts/ci/runner-setup check
 
       # These need no QEMU build, so run them first: a broken model file
-      # fails the job in minutes instead of after the build.
-      - name: model contract suites
+      # or script fails the job in minutes instead of after the build.
+      - name: script and model suites
         run: |
-          echo "model contract suites" > "$CI_STEP"
+          echo "script and model suites" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
-              "$IMAGE_ID" python3 scripts/ci/sgi-check model
+              "$IMAGE_ID" python3 scripts/ci/sgi-check scripts
 
       - name: configure and build QEMU
         run: |

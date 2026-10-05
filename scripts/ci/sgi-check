@@ -38,13 +38,21 @@ CONFIGURE_ARGS = [
 # The sgi_model contract suites. They need PyYAML and jsonschema, which
 # pythondeps.toml lists as the sgi-model group, but no QEMU binary.
 MODEL_SUITES = [
-    'test_sgi_model_generator.py',
-    'test_sgi_model_resolution.py',
-    'test_sgi_model_export_contract.py',
-    'test_sgi_model_validation_contract.py',
-    'test_sgi_model_compiler_contract.py',
-    'test_sgi_model_goldens.py',
-    'test_sgi_model_resolution_contract.py',
+    'scripts/tests/test_sgi_model_generator.py',
+    'scripts/tests/test_sgi_model_resolution.py',
+    'scripts/tests/test_sgi_model_export_contract.py',
+    'scripts/tests/test_sgi_model_validation_contract.py',
+    'scripts/tests/test_sgi_model_compiler_contract.py',
+    'scripts/tests/test_sgi_model_goldens.py',
+    'scripts/tests/test_sgi_model_resolution_contract.py',
+]
+
+# The other script tests that need neither a build nor network access.
+SCRIPT_SUITES = MODEL_SUITES + [
+    'scripts/tests/test_sgi_model_ip30.py',
+    'scripts/tests/test_check_sgi_test_results.py',
+    'scripts/tests/test_archive_source.py',
+    'scripts/ci/test_sgi_check.py',
 ]
 
 # Migration cases start several QEMU processes per test file, so limit the
@@ -122,10 +130,17 @@ def build(args):
     run(['ninja', '-C', path])
 
 
+def script_suites(suites, python):
+    for suite in suites:
+        run([python or sys.executable, '-B', SOURCE / suite])
+
+
 def model(args):
-    python = args.python or sys.executable
-    for suite in MODEL_SUITES:
-        run([python, '-B', SOURCE / 'scripts/tests' / suite])
+    script_suites(MODEL_SUITES, args.python)
+
+
+def scripts(args):
+    script_suites(SCRIPT_SUITES, args.python)
 
 
 QTEST_MESON = 'tests/qtest/meson.build'
@@ -334,6 +349,13 @@ def main(argv=None):
     mode.add_argument('--python', type=Path,
                       help='interpreter to run them with')
     mode.set_defaults(func=model)
+
+    mode = modes.add_parser(
+        'scripts', help='run the script tests that need no build, the '
+                        'model suites among them')
+    mode.add_argument('--python', type=Path,
+                      help='interpreter to run them with')
+    mode.set_defaults(func=scripts)
 
     mode = modes.add_parser(
         'smoke', help='the pull-request checks: the qtests a change '
