@@ -652,14 +652,24 @@ static void test_baseio_timekeeper_repair_stores(void)
         { 1, 0x6d },
         { 2, 0xad },
     };
-    for (unsigned int cpu = 0;
-         cpu < 2 * G_N_ELEMENTS(module_nasids); cpu++) {
-        QTestState *qts = start_module();
+    const unsigned int cpus = 2 * G_N_ELEMENTS(module_nasids);
+
+    for (unsigned int cpu = 0; cpu < cpus; cpu++) {
+        QTestState *qts;
         uint8_t marker = repairs[cpu & 1].marker;
         uint8_t checksum = repairs[cpu & 1].checksum;
         uint64_t window = IO_SPACE + UINT64_C(0x20000000) +
                           IOC3_TIMEKEEPER;
 
+        /*
+         * The first processor stores through its own node and the last
+         * through node 0's window, and between them they make both
+         * repairs. The thorough setup tries every processor.
+         */
+        if (cpu != 0 && cpu != cpus - 1 && !g_test_slow()) {
+            continue;
+        }
+        qts = start_module();
         if (cpu >= 2) {
             /* The other Crossbow reaches BaseIO through node 0's window. */
             window += module_nasids[0] * NODE_STRIDE;
