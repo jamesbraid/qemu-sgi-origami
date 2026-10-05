@@ -21,9 +21,7 @@
  * config 0x7C/0x84; the chip id in MISC_CTL; the global reset with its
  * on-chip firmware-ready handshake, the SRAM
  * 0x0B50 mailbox and the firmware-progress register at 0x5034 the driver
- * polls; the self-clearing *_MODE reset
- * bits, including the buffer-manager enable request the IRIX driver polls for
- * clear rather than set; the MII path
+ * polls; the self-clearing *_MODE reset bits; the MII path
  * to the integrated copper PHY (a separate model) through the MI registers;
  * the MAC-address mailbox in SRAM; link
  * status tied to the netdev; the transmit ring, the send-ring RCB, the
