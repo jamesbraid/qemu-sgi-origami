@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "qemu/rcu.h"
 #include "qemu/timer.h"
 #include "system/cpu-timers.h"
 #include "system/reset.h"
@@ -170,6 +171,13 @@ static void teardown(Fixture *f, gconstpointer unused)
 {
     object_unparent(OBJECT(f->module));
     object_unref(OBJECT(f->module));
+    /*
+     * Child-bus finalization is deferred to RCU, and the RCU thread frees the
+     * wire and its timer while the next case may be running that timer. This
+     * test never holds the BQL, so nothing else serializes the two. Complete
+     * it before the next case advances the global virtual clock.
+     */
+    drain_call_rcu();
 }
 
 /*
@@ -589,6 +597,8 @@ static void test_declared_action_needs_its_line(Fixture *f,
         object_unparent(OBJECT(dev));
     }
     object_unref(OBJECT(dev));
+    /* As in teardown(): finish the deferred bus finalization now. */
+    drain_call_rcu();
 }
 
 /*
@@ -613,6 +623,8 @@ static void test_connected_line_needs_its_capability(Fixture *f,
         object_unparent(OBJECT(dev));
     }
     object_unref(OBJECT(dev));
+    /* As in teardown(): finish the deferred bus finalization now. */
+    drain_call_rcu();
 }
 
 /*
@@ -656,6 +668,8 @@ static void test_undeclared_actions_refused(void)
 
     object_unparent(OBJECT(dev));
     object_unref(OBJECT(dev));
+    /* As in teardown(): finish the deferred bus finalization now. */
+    drain_call_rcu();
 }
 
 /*
@@ -695,6 +709,8 @@ static void test_partial_capability(Fixture *f, gconstpointer unused)
 
     object_unparent(OBJECT(dev));
     object_unref(OBJECT(dev));
+    /* As in teardown(): finish the deferred bus finalization now. */
+    drain_call_rcu();
 }
 
 /*
