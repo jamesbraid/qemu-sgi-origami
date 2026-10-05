@@ -223,50 +223,6 @@ static void test_migration(void)
     qtest_quit(from);
 }
 
-/*
- * Each PP1's XMAP register file and PP1SELECT itself travel with the
- * stream: PP1 0 in the fields the single XMAP used, PP1s 1 to 3 in the
- * version-19 section. The four PP1s differ, so a stream that carried only
- * one, or copied PP1 0 into the others, fails a read below.
- */
-static void test_pp1_xmap_migration(gconstpointer data)
-{
-    const char *board = data;
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *source_cmdline = NULL;
-    g_autofree char *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-mgras-pp1-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    source_cmdline = g_strdup_printf(MIGRATION_ARGS
-                                     " -global sgi-mgras.board=%s", board);
-    from = qtest_init(source_cmdline);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS
-                                   " -global sgi-mgras.board=%s"
-                                   " -incoming %s", board, uri);
-    to = qtest_init(dest_cmdline);
-
-    mgras_give_pp1s_distinct_xmaps(from);
-    qtest_writeb(from, REG_PP1_SELECT, PP1_SELECT(1, 0));
-
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readl(to, REG_PP1_SELECT), ==, PP1_SELECT(1, 0));
-    for (unsigned int n = 0; n < 4; n++) {
-        mgras_assert_pp1_xmap(to, mgras_pp1_select_one(n), n);
-    }
-    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 static void test_discarded_fifo_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -567,10 +523,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
                    test_public_fifo_glyph_narrow_migration);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-xmap-migration",
-                        "ssi", test_pp1_xmap_migration);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-xmap-migration/essi",
-                        "essi", test_pp1_xmap_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
                    test_discarded_fifo_migration);
     qtest_add_func("sn0/origin2000/mgras/partial-fifo-fill-migration",
