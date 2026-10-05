@@ -104,11 +104,9 @@ jobs:
       # The register suite, the same target build.yml's required check runs,
       # against the sanitized binary instead of the ordinary one.
       #
-      # TIMEOUT_MULTIPLIER=4 is not padding. Several of these tests already sit
-      # close to their meson budgets on an ordinary build -- the hub and IOC3
-      # suites were measured at 106-119 seconds against a 240-second entry, and
-      # four tests were widened this year after CI killed them at 120 -- and a
-      # sanitized binary is slower still. Left at 1, the slow tests would be
+      # TIMEOUT_MULTIPLIER=4 is not padding. The meson budgets are three times
+      # an ordinary build's time in a loaded parallel run, and a sanitized
+      # binary is slower still. Left at 1, the slow tests would be
       # killed by meson's clock and reported as failures with no failing
       # subtest, which reads exactly like a real defect and is not one. The
       # variable is QEMU's own knob for this (scripts/mtest2make.py); it scales
