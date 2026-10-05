@@ -7,6 +7,7 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-mgras.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
@@ -1758,6 +1759,7 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
      */
     s->nic_bus = onewire_create_bus(dev, "nic");
     if (s->board_record) {
+        char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
         SGIBoardRecord record = {
             .barcode = s->board_record_barcode,
             .part = s->board->record_part,
@@ -1765,6 +1767,11 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
             .name = s->board->record_name,
         };
 
+        /* Unless one is given, the marked barcode for the part's serial. */
+        if (!record.barcode) {
+            sgi_synthetic_barcode(barcode, 'G', s->board_record_serial);
+            record.barcode = barcode;
+        }
         if (!sgi_board_record_attach(OBJECT(s), "nic-chip", s->nic_bus,
                                      &record, s->board_record_serial,
                                      "MGRAS", errp)) {
@@ -2332,13 +2339,15 @@ static const Property mgras_properties[] = {
     /*
      * Fit the board's serial-number record. Off by default, which keeps
      * the older always-done answer at 0x011098 for machines that have not
-     * chosen a record. The default barcode and serial are fictitious.
+     * chosen a record. The default serial and the barcode made from it
+     * are marked synthetic ones.
      */
     DEFINE_PROP_BOOL("board-record", SGIMgrasState, board_record, false),
     DEFINE_PROP_STRING("board-record-barcode", SGIMgrasState,
                        board_record_barcode),
     DEFINE_PROP_UINT64("board-record-serial", SGIMgrasState,
-                       board_record_serial, 0x7a3000000b01ULL),
+                       board_record_serial,
+                       SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
 };
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)

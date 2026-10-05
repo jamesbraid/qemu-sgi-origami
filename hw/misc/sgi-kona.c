@@ -36,6 +36,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-kona.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -65,25 +66,29 @@
  */
 #define SGI_KONA_ONEWIRE_FAMILY 0x09
 
-/* Placeholder serials; these are not hardware identifiers. */
-#define SGI_KONA_GEOMETRY_SERIAL 0x000000000001ULL
-#define SGI_KONA_KTOWN_SERIAL    0x000000000002ULL
+/*
+ * Marked synthetic serials, graphics-board instances 0 and 1 for the pipe's
+ * two boards; these are not hardware identifiers.
+ */
+#define SGI_KONA_GEOMETRY_SERIAL SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)
+#define SGI_KONA_KTOWN_SERIAL    SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 1)
 
 /*
  * These records use the shared fixed-offset board-record representation.
  * Barcode, part, revision, and name are stored fields. Group, capability,
  * and variety bytes use the unprogrammed value. The displayed serial is the
  * one-wire ROM number, not a separate stored field. Configured part numbers
- * are retained; the other identity fields are synthetic placeholders.
+ * are retained; the other identity fields are synthetic placeholders, and
+ * each barcode is the marked one for its part's serial.
  */
 static const SGIBridgeBoardRecord sgi_kona_geometry_record = {
-    .barcode = "00000001",
+    .barcode = "EMUG00",
     .part = "030-1398-001",
     .revision = "01",
     .name = "GEOM-BD",
 };
 static const SGIBridgeBoardRecord sgi_kona_ktown_record = {
-    .barcode = "00000002",
+    .barcode = "EMUG01",
     .part = "030-1067-001",
     .revision = "01",
     .name = "KTOWN-BD",

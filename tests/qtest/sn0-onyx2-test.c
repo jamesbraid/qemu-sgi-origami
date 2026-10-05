@@ -92,11 +92,12 @@ static bool qom_has_child(QTestState *qts, const char *parent,
 #define DS2502_READ_MEMORY     0xf0
 
 /*
- * sgi-kona's placeholder serials: the geometry board is 1 and the Ktown
- * 2 (hw/misc/sgi-kona.c; no capture gives real ones).
+ * sgi-kona's marked synthetic serials: "QEMU", the graphics-board letter
+ * G, then instance 0 for the geometry board and 1 for the Ktown (no
+ * capture gives real ones).
  */
-#define GEOMETRY_SERIAL        1
-#define KTOWN_SERIAL           2
+#define GEOMETRY_SERIAL        UINT64_C(0x51454d554700)
+#define KTOWN_SERIAL           UINT64_C(0x51454d554701)
 
 /* The record's part number: nine characters at 21, three more at 35. */
 #define RECORD_PART_BASE       21

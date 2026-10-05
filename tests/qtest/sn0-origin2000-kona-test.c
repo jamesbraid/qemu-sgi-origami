@@ -300,8 +300,8 @@ static uint16_t kona_crc16(uint16_t crc, const uint8_t *buf, size_t len)
 #define KONA_CRC16_RESIDUE 0xb001
 
 #define KONA_ONEWIRE_FAMILY 0x09
-#define KONA_GEOMETRY_SERIAL UINT64_C(0x000000000001)
-#define KONA_KTOWN_SERIAL    UINT64_C(0x000000000002)
+#define KONA_GEOMETRY_SERIAL UINT64_C(0x51454d554700)
+#define KONA_KTOWN_SERIAL    UINT64_C(0x51454d554701)
 
 /*
  * The 64-bit ROM code a Match ROM selects: family, then serial LSB first,
@@ -1268,7 +1268,7 @@ static void test_onewire_geometry_identity(void)
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(qts, REG_ONEWIRE, identity);
-    kona_assert_onewire_identity(qts, REG_ONEWIRE, "00000001", "030-1398-001",
+    kona_assert_onewire_identity(qts, REG_ONEWIRE, "EMUG00", "030-1398-001",
                                  "01", "GEOM-BD");
 }
 
@@ -1279,7 +1279,7 @@ static void test_onewire_ktown_identity(void)
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
     kona_match_rom(qts, REG_ONEWIRE, identity);
-    kona_assert_onewire_identity(qts, REG_ONEWIRE, "00000002", "030-1067-001",
+    kona_assert_onewire_identity(qts, REG_ONEWIRE, "EMUG01", "030-1067-001",
                                  "01",
                                  "KTOWN-BD");
 }
@@ -1322,7 +1322,7 @@ static void test_onewire_other_identity_parts_empty(void)
 
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(s, REG_ONEWIRE, identity);
-    kona_assert_onewire_identity(s, REG_ONEWIRE, "00000001", "030-1398-001",
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "EMUG00", "030-1398-001",
                                  "01", "GEOM-BD");
 
     /*
@@ -1463,7 +1463,7 @@ static void test_onewire_board_part_configures_geometry_record(void)
 
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(s, REG_ONEWIRE, identity);
-    kona_assert_onewire_identity(s, REG_ONEWIRE, "00000001", "030-1129-002",
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "EMUG00", "030-1129-002",
                                  "01", "GEOM-BD");
 
     qtest_quit(s);
@@ -1539,13 +1539,13 @@ static void test_nic_identity_matches_onewire_identity(void)
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(qts, REG_NIC, identity);
-    kona_assert_onewire_identity(qts, REG_NIC, "00000001", "030-1398-001",
+    kona_assert_onewire_identity(qts, REG_NIC, "EMUG00", "030-1398-001",
                                  "01", "GEOM-BD");
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
     kona_match_rom(qts, REG_NIC, identity);
-    kona_assert_onewire_identity(qts, REG_NIC, "00000002", "030-1067-001",
+    kona_assert_onewire_identity(qts, REG_NIC, "EMUG01", "030-1067-001",
                                  "01", "KTOWN-BD");
 }
 
