@@ -777,7 +777,7 @@ static void test_variants(gconstpointer data)
         g_assert_cmphex(qtest_readl(qts, sh + 0x072488) >> 24, ==,
                         v->version1);
         assert_record_name(qts, sh, v->record,
-                           octane2 ? "SIM3020005" : "SIM3010005");
+                           "EMUG00    ");
         assert_core(qts, octane2);
         qtest_quit(qts);
     }

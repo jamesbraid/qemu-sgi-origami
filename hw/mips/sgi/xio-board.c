@@ -187,7 +187,7 @@ static Object *sgi_xio_board_slots(void)
 
 static const char *const sgi_xio_board_serial_props[] = {
     "onewire-serial", "ioc3-onewire-serial", "cad-duo-onewire-serial",
-    "sio-onewire-serial",
+    "sio-onewire-serial", "board-record-serial", "nic-serial",
 };
 
 static void sgi_xio_board_distinct_serials(SGIXioBoardState *board,

@@ -148,6 +148,7 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-odyssey.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -10309,7 +10310,7 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_UINT32("cas-latency", SGIOdysseyState, cas_latency, 3),
     DEFINE_PROP_STRING("profile", SGIOdysseyState, profile),
     DEFINE_PROP_UINT64("nic-serial", SGIOdysseyState, nic_serial,
-                       0x5d0000000001ULL),
+                       SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),
     DEFINE_PROP_LINK("fabric", SGIOdysseyState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),

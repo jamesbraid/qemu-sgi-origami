@@ -714,15 +714,11 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         if (mgras) {
             qdev_prop_set_string(board, "board", s->graphics_board);
             /*
-             * The PROM names the board from its serial-number record. Barcode
-             * and ROM serial are fictitious, like the other IP30 identities.
+             * The PROM names the board from its serial-number record. The
+             * board's own default barcode and ROM serial are the marked
+             * synthetic ones, "EMUG00", like the other IP30 identities.
              */
             qdev_prop_set_bit(board, "board-record", true);
-            qdev_prop_set_string(board, "board-record-barcode",
-                                 octane2 ? "SIM3020005" : "SIM3010005");
-            qdev_prop_set_uint64(board, "board-record-serial",
-                                 octane2 ? 0x7a3002000005ULL :
-                                           0x7a3001000005ULL);
         }
         if (!object_property_set_link(OBJECT(board), "fabric",
                                       OBJECT(&s->graphics_fabric), errp) ||
