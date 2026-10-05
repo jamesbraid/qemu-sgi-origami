@@ -33,6 +33,8 @@ OPTIONAL_QTEST_SKIPS = SOURCE / 'tests/qtest/mips64-qtest-optional-skips.txt'
 CONFIGURE_ARGS = [
     '--target-list=mips64-softmmu', '--disable-docs', '--enable-tests',
     '--enable-hmp', '--enable-slirp', '--enable-debug-tcg', '--enable-opengl',
+    # The image's gdb, so gdbstub functional cases run rather than skip.
+    '--gdb=/usr/bin/gdb-multiarch',
 ]
 
 # The sgi_model contract suites. They need PyYAML and jsonschema, which
