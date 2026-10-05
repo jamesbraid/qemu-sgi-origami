@@ -104,6 +104,26 @@ static void test_octane2_identity(gconstpointer data)
     qtest_quit(qts);
 }
 
+/*
+ * Octane's catalogue PRId is a default: -cpu R10000,r10000-prid= names
+ * another part, as it does on every SGI machine.
+ */
+static void test_octane_prid_override(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start("octane", "R10000,r10000-prid=0x926", "");
+    read_identity(qts, 0x926);
+    g_assert_cmphex(cpu_property(qts, "r10000-prid"), ==, 0x926);
+    qtest_system_reset(qts);
+    read_identity(qts, 0x926);
+    qtest_quit(qts);
+}
+
 static void test_invalid_identity(void)
 {
     const char *profiles[] = {
@@ -268,6 +288,8 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, image, sizeof(image)), ==, sizeof(image));
     close(fd);
     qtest_add_data_func("/r10000/identity/octane", "octane", test_identity);
+    qtest_add_func("/r10000/identity/octane-override",
+                   test_octane_prid_override);
     qtest_add_data_func("/r10000/identity/octane2", GINT_TO_POINTER(0),
                         test_octane2_identity);
     qtest_add_data_func("/r10000/identity/octane2-override",

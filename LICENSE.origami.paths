@@ -197,6 +197,7 @@ hw/mips/sgi/origin300-pci-expansion.h
 hw/mips/sgi/pi-gfx-state.c
 hw/mips/sgi/pi-gfx.c
 hw/mips/sgi/prom-image.c
+hw/mips/sgi/sgi-cpu.c
 hw/mips/sgi/sgi-machines-qmp-stub.c
 hw/mips/sgi/sgi-machines.c
 hw/mips/sgi/sgi-machines.json
@@ -297,6 +298,7 @@ include/hw/mips/sgi/net-cable.h
 include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
 include/hw/mips/sgi/sgi-board-mac.h
+include/hw/mips/sgi/sgi-cpu.h
 include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sgi-storage.h
 include/hw/mips/sgi/sn-machine.h
