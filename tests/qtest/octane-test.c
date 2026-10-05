@@ -3277,6 +3277,22 @@ static void octane_storage_rejected(const char *machine, const char *extra,
                                     const char *message);
 
 /*
+ * Each product takes only its catalogue processor part, refused with
+ * QEMU's own invalid-CPU message as the SN machines refuse theirs.
+ */
+static void test_cpu_type(void)
+{
+    g_autofree char *bios = g_strdup_printf("-bios %s -cpu R14000",
+                                            flash_path);
+    g_autofree char *octane2 = g_strdup_printf("-bios %s -cpu R10000",
+                                               flash_path);
+
+    octane_storage_rejected("octane", bios, "Invalid CPU model: R14000");
+    octane_storage_rejected("octane2", octane2,
+                            "Invalid CPU model: R10000");
+}
+
+/*
  * topology= and nodes= resolve through the shared catalogue resolver, so
  * Octane refuses a node count or topology its catalogue does not list as
  * the SN machines do, and reports the count it builds.
@@ -4540,6 +4556,7 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(2), test_storage_nvram);
     qtest_add_func("/octane/storage/refusals", test_storage_refusals);
     qtest_add_func("/octane/topology-and-nodes", test_topology_and_nodes);
+    qtest_add_func("/octane/cpu-type", test_cpu_type);
     qtest_add_func("/octane/catalogue-machine-options",
                    test_catalogue_machine_options);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);

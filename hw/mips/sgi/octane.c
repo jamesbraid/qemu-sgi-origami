@@ -545,11 +545,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         error_setg(errp, "%s unsupported HEART bank population", product);
         return false;
     }
-    if (octane2 && strcmp(machine->cpu_type,
-                          MIPS_CPU_TYPE_NAME("R12000"))) {
-        error_setg(errp, "octane2 requires an R12000 CPU");
-        return false;
-    }
     if (!octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock,
                                 errp)) {
         return false;
@@ -1002,9 +997,32 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
     }
 }
 
+/* The most processors any of @product's offerings fits. */
+static unsigned int octane_max_cpus(const char *product)
+{
+    unsigned int max_cpus = 0;
+
+    for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
+         entry; entry = entry->next) {
+        if (g_str_equal(entry->value->product, product)) {
+            max_cpus = MAX(max_cpus, entry->value->smp);
+        }
+    }
+    return max_cpus;
+}
+
+/*
+ * Octane and Octane2 differ only in catalogue data, so one class init
+ * serves both, keyed by the product.
+ */
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    const char *product = data;
+    const SGIModelTopology *t = octane_default_model(product);
+    const SGIModelProcessor *processor =
+        t->nodes->value->cpu_slots->value->assembly;
+    const char **cpu_types = g_new0(const char *, 2);
 
     object_class_property_add_str(oc, "topology", octane_get_topology,
                                   octane_set_topology);
@@ -1026,61 +1044,42 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "flash-strap",
         "Strap the PROM to boot from Bridge flash select 1 (default from "
         "query-sgi-machines; the board's strap is unknown)");
+    octane_class_add_properties(oc, product);
 
-    mc->desc = "SGI Octane (IP30), functional profile";
-    mc->init = octane_init;
+    /* The catalogue's processor part is the one CPU type the board takes. */
+    cpu_types[0] = g_strconcat(processor->kind, MIPS_CPU_TYPE_SUFFIX, NULL);
+    mc->desc = t->description;
+    mc->init = g_str_equal(product, "octane2") ? octane2_init : octane_init;
     mc->reset = octane_reset;
-    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
+    mc->valid_cpu_types = cpu_types;
+    mc->default_cpu_type = cpu_types[0];
     mc->default_cpus = 1;
-    mc->max_cpus = 1;
-    mc->default_ram_size = octane_model_ram(
-        octane_default_model("octane")->nodes->value);
+    mc->max_cpus = octane_max_cpus(product);
+    mc->default_ram_size = octane_model_ram(t->nodes->value);
     mc->no_floppy = true;
     mc->no_cdrom = true;
     mc->no_parallel = true;
 }
 
-static void octane2_class_init(ObjectClass *oc, const void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    octane_class_init(oc, data);
-    octane_class_add_properties(oc, "octane2");
-    mc->desc = "SGI Octane2 (IP30), functional profile";
-    mc->init = octane2_init;
-    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
-    mc->default_ram_size = octane_model_ram(
-        octane_default_model("octane2")->nodes->value);
-}
-
-static void octane1_class_init(ObjectClass *oc, const void *data)
-{
-    octane_class_init(oc, data);
-    octane_class_add_properties(oc, "octane");
-}
-
-static const TypeInfo octane2_machine = {
-    .name = MACHINE_TYPE_NAME("octane2"),
-    .parent = TYPE_MACHINE,
-    .instance_size = sizeof(OctaneMachineState),
-    .instance_init = octane2_instance_init,
-    .instance_finalize = octane_instance_finalize,
-    .class_init = octane2_class_init,
+static const TypeInfo octane_machine_types[] = {
+    {
+        .name = MACHINE_TYPE_NAME("octane"),
+        .parent = TYPE_MACHINE,
+        .instance_size = sizeof(OctaneMachineState),
+        .instance_init = octane_instance_init,
+        .instance_finalize = octane_instance_finalize,
+        .class_init = octane_class_init,
+        .class_data = "octane",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("octane2"),
+        .parent = TYPE_MACHINE,
+        .instance_size = sizeof(OctaneMachineState),
+        .instance_init = octane2_instance_init,
+        .instance_finalize = octane_instance_finalize,
+        .class_init = octane_class_init,
+        .class_data = "octane2",
+    },
 };
 
-static const TypeInfo octane_machine = {
-    .name = MACHINE_TYPE_NAME("octane"),
-    .parent = TYPE_MACHINE,
-    .instance_size = sizeof(OctaneMachineState),
-    .instance_init = octane_instance_init,
-    .instance_finalize = octane_instance_finalize,
-    .class_init = octane1_class_init,
-};
-
-static void octane_register_types(void)
-{
-    type_register_static(&octane_machine);
-    type_register_static(&octane2_machine);
-}
-
-type_init(octane_register_types)
+DEFINE_TYPES(octane_machine_types)
