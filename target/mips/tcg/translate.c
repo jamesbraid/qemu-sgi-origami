@@ -1278,6 +1278,7 @@ static inline void gen_save_pc(target_ulong pc)
 }
 
 /* Count recovery follows execution order through a branch delay slot. */
+#ifndef CONFIG_USER_ONLY
 static void gen_save_count_next_pc(DisasContext *ctx)
 {
     switch (ctx->hflags & MIPS_HFLAG_BMASK_BASE) {
@@ -1298,6 +1299,7 @@ static void gen_save_count_next_pc(DisasContext *ctx)
         break;
     }
 }
+#endif /* !CONFIG_USER_ONLY */
 
 void save_cpu_state(DisasContext *ctx, int do_save_pc)
 {
