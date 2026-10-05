@@ -14,7 +14,6 @@
 #include "qapi/visitor.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
-#include "hw/core/loader.h"
 #include "qemu/module.h"
 #include "system/reset.h"
 #include "qemu/bswap.h"
@@ -42,6 +41,8 @@
 #include "migration/register.h"
 #include "system/runstate.h"
 #include "target/mips/cpu.h"
+#include "hw/mips/sgi/initial-flash.h"
+#include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-storage.h"
 
@@ -57,7 +58,7 @@
 #define OCTANE_GRAPHICS_WIDGET 11
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
-#define OCTANE_FLASH_SIZE MiB
+#define OCTANE_FLASH_SECTOR (64 * KiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_WIDGET 0x18000000ULL
 #define OCTANE_BANK_UNIT (32 * MiB)
@@ -505,9 +506,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     const SGIModelBoardRecord *system_board;
     const char *product = octane2 ? "octane2" : "octane";
     const char *flash_node, *nvram, *nvram_clock;
-    g_autofree char *path = NULL;
-    int64_t size;
-    int loaded;
+    uint64_t flash_size;
     bool mgras = sgi_mgras_board_known(s->graphics_board);
     bool vpro = !strcmp(s->graphics_board, "vpro");
     bool graphics = mgras || vpro;
@@ -556,8 +555,10 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                               OBJECT(flash_chip));
     /* Compatibility geometry and identifiers; the fitted part is unknown. */
     qdev_prop_set_string(flash_chip, "name", "octane.boot-flash");
-    qdev_prop_set_uint32(flash_chip, "num-blocks", 16);
-    qdev_prop_set_uint64(flash_chip, "sector-length", 64 * KiB);
+    flash_size = s->node->flash->size;
+    qdev_prop_set_uint32(flash_chip, "num-blocks",
+                         flash_size / OCTANE_FLASH_SECTOR);
+    qdev_prop_set_uint64(flash_chip, "sector-length", OCTANE_FLASH_SECTOR);
     qdev_prop_set_uint8(flash_chip, "width", 2);
     qdev_prop_set_uint8(flash_chip, "device-width", 2);
     qdev_prop_set_bit(flash_chip, "big-endian", true);
@@ -576,7 +577,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                 error_setg(errp, "no flash drive named '%s'", s->flash_drive);
                 return false;
             }
-            if (blk_getlength(blk) != OCTANE_FLASH_SIZE) {
+            if (blk_getlength(blk) != flash_size) {
                 error_setg(errp, "octane boot flash must be exactly 1 MiB");
                 return false;
             }
@@ -602,23 +603,25 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     }
     firmware = sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_chip), 0);
     if (machine->firmware) {
-        uint8_t *storage = memory_region_get_ram_ptr(firmware);
+        g_autofree char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS,
+                                               machine->firmware);
+        g_autoptr(SGIPromImage) image = NULL;
+        const uint8_t *payload;
+        size_t length;
 
-        path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-        size = path ? get_image_size(path, NULL) : -1;
-        if (size <= 0 || size > OCTANE_FLASH_SIZE) {
-            error_setg(errp, "octane firmware '%s' must contain "
-                       "1 to 1 MiB bytes", machine->firmware);
-            return false;
-        }
-        memset(storage, 0xff, OCTANE_FLASH_SIZE);
-        loaded = load_image_size(path, storage, OCTANE_FLASH_SIZE);
-        if (loaded != size) {
-            error_setg(errp, "octane cannot load firmware image '%s'",
+        if (!path) {
+            error_setg(errp, "%s: cannot find PROM image '%s'", product,
                        machine->firmware);
             return false;
         }
-        memory_region_flush_rom_device(firmware, 0, OCTANE_FLASH_SIZE);
+        image = sgi_prom_image_load(path, flash_size, errp);
+        if (!image) {
+            return false;
+        }
+        payload = g_bytes_get_data(image->payload, &length);
+        sgi_ip30_initial_flash(memory_region_get_ram_ptr(firmware),
+                               flash_size, payload, length);
+        memory_region_flush_rom_device(firmware, 0, flash_size);
     }
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");

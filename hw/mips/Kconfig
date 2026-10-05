@@ -53,6 +53,7 @@ config SGI_OCTANE
     bool
     select PFLASH_CFI01
     select SGI_CATALOGUE
+    select SGI_PROM_IMAGE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     select QLOGIC_ISP_SCSI_PCI

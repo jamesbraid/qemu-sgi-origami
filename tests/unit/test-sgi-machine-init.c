@@ -522,6 +522,63 @@ static void test_octane(void)
 }
 
 /*
+ * A version-6 single-segment container holding the PAYLOAD_SIZE-byte
+ * pattern make_image() writes for @seed, stored rather than compressed.
+ * The header fields the decoder checks are filled; the others are
+ * arbitrary.
+ */
+static char *make_container(const char *name, uint8_t seed)
+{
+    const size_t header = 4096;
+    g_autofree uint8_t *bytes = g_malloc0(header + PAYLOAD_SIZE);
+    char *path = scratch_path(name);
+    uint64_t sum = 0;
+    size_t i;
+
+    for (i = 0; i < PAYLOAD_SIZE; i++) {
+        bytes[header + i] = seed + i * 7;
+        sum += bytes[header + i];
+    }
+    stl_be_p(bytes + 0x3c, 156);
+    stq_be_p(bytes + 0x40, 0x4a464b535743534dULL);
+    stq_be_p(bytes + 0x48, 6);
+    stq_be_p(bytes + 0x50, header + PAYLOAD_SIZE);
+    stl_be_p(bytes + 0x7c, 1);
+    memcpy(bytes + 0x80, "synthetic-image", 16);
+    stq_be_p(bytes + 0x90, 0x10);
+    stq_be_p(bytes + 0x98, header);
+    stq_be_p(bytes + 0xb0, PAYLOAD_SIZE);
+    stq_be_p(bytes + 0xc0, sum);
+    stq_be_p(bytes + 0xd0, PAYLOAD_SIZE);
+    g_assert_true(g_file_set_contents(path, (char *)bytes,
+                                      header + PAYLOAD_SIZE, NULL));
+    return path;
+}
+
+/*
+ * The Octane boot flash holds a container's decoded payload, as the
+ * machine's -bios does, not the container file.
+ */
+static void test_octane_container(void)
+{
+    g_autofree char *prom = make_container("ip30-container", 0x31);
+    g_autofree char *dir = scratch_path("octane-container");
+    ToolRun run = run_tool("--machine", "octane,topology=octane",
+                           "--boot-prom", prom, dir, NULL);
+    gsize size;
+    g_autofree uint8_t *flash = NULL;
+
+    g_assert_true(run_succeeded(&run));
+    tool_run_clear(&run);
+    flash = read_store(dir, "node0-flash", &size);
+    g_assert_cmpuint(size, ==, 1048576);
+    assert_starts_with_payload(flash, 0x31);
+    assert_all(flash, PAYLOAD_SIZE, size, 0xff);
+    remove_tree(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/*
  * The fresh image the Timekeeper datasheet gives for two dates: a month
  * whose leap-cycle record is 1 and one whose record is 2.
  */
@@ -696,6 +753,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);
+    g_test_add_func("/sgi-machine-init/octane-container",
+                    test_octane_container);
     g_test_add_func("/sgi-machine-init/fresh-ip27-nvram",
                     test_fresh_ip27_nvram);
     g_test_add_func("/sgi-machine-init/trailing-slash", test_trailing_slash);

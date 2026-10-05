@@ -78,6 +78,14 @@ void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
 void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size);
 
+/*
+ * Fill @flash_size bytes at @flash as a new IP30 boot flash: @payload at
+ * offset zero and every other byte erased. IP30 flash carries no
+ * configuration block or label the machine formats for the PROM.
+ */
+void sgi_ip30_initial_flash(uint8_t *flash, size_t flash_size,
+                            const uint8_t *payload, size_t payload_size);
+
 /* The BASEIO and GIGAchannel I/O PROM flash part. */
 #define SGI_IO6_FLASH_SIZE  0x100000
 
