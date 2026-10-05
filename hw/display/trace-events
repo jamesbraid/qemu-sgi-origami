@@ -230,4 +230,6 @@ apple_gfx_iosfc_raise_irq(uint32_t vector) "vector=0x%x"
 rad4_gfx_update_push(int y_start, int y_end) "rows %d-%d"
 rad4_gfx_update_idle(void) ""
 rad4_cursor_position(int x, int y, bool on) "x %d y %d on %d"
+rad4_dma_start(uint32_t desc) "descriptor pointer 0x%x"
+rad4_dma_done(uint32_t descs) "%u descriptors"
 
