@@ -2377,9 +2377,6 @@ def _compile_pic_io_records(model: dict, graph: dict,
                         f"IO9 non-IOC4 PCI part '{component['id']}' has "
                         "IOC4-only clock input")
                 functions.append((device, function, entry, connection))
-        if not functions:
-            raise CompileError(
-                f"IO9 board '{board['id']}' has no authored PCI functions")
         functions.sort(key=lambda item: (item[0], item[1]))
         seen_devfns = set()
         seen_pic_inputs = set()
@@ -2402,6 +2399,21 @@ def _compile_pic_io_records(model: dict, graph: dict,
             connection["bus"]
             for _device, _function, _entry, connection in functions
         }
+        if not functions:
+            board_bus_connections = [
+                connection
+                for connection in model["connections"]
+                if connection.get("component") == board["id"]
+                and connection.get("role") == "endpoint"
+                and buses.get(connection["bus"], {}).get("kind") == "pci"
+            ]
+            board_buses = {connection["bus"]
+                           for connection in board_bus_connections}
+            if len(board_bus_connections) != 1 or len(board_buses) != 1:
+                raise CompileError(
+                    f"IO9 board '{board['id']}' has no authored PCI functions "
+                    "or one explicit PCI bus connection")
+            function_buses = board_buses
         if len(function_buses) != 1:
             raise CompileError(
                 f"IO9 board '{board['id']}' functions must resolve through "
@@ -2445,7 +2457,7 @@ def _compile_pic_io_records(model: dict, graph: dict,
                 f"IO9 board '{board['id']}' has no identity.part")
         record = {
             "id": board["id"], "module_index": modules_by_id[module["id"]],
-            "board_kind": "IO9", "populated": bool(functions),
+            "board_kind": "IO9", "populated": True,
             "other_identities": [], "part": identity["part"],
             "revision": None, "serial": None, "ioc3_serial": None,
             "pci": pci_functions,

@@ -308,7 +308,7 @@ def _io_board(raw: dict) -> dict:
     emit_pci_functions = "pci_functions" in raw
     if raw.get("board_kind") == "IO9":
         pci_functions = raw.get("pci", [])
-        emit_pci_functions = bool(pci_functions)
+        emit_pci_functions = "pci" in raw
     if emit_pci_functions:
         functions = []
         for entry in pci_functions:
