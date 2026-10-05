@@ -165,32 +165,17 @@ layer:
             - {issuer: 1, owner: 0}
         synthetic_identities:
           - component: expansion-bedrock
-            serial: "0x123456"
-            reason: Explicit synthetic BIC identity for the isolated NI experiment.
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
           - component: compute-bedrock
-            serial: "0x0d0c0b0a0908"
-            reason: >-
-              Stable synthetic node identity for this selected emulated
-              installation, in the one shape the schema still carries
-              (synthetic_serials, the KLCONFIG-era per-kind base/stride
-              form, went with synthesized firmware; format 2 needs this
-              value the same explicit way every other product now
-              authors its own). Origin 300 has no prior generated value
-              to preserve, so this continues the existing descending-byte
-              pattern one step past Origin 200's own base value.
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
           - component: compute-xbridge
-            serial: "0x0b0a090807"
-            reason: >-
-              Stable synthetic identity for the one physical IO-8 board
-              (both PCI heads, compute-xbridge-bridge-e and compute-xbridge-bridge-f, are
-              the same chip and share this value); continues the same
-              descending-byte pattern.
+            serial: "0x51454d555800"
+            reason: Synthetic XBridge identity X0, carrying the "QEMU" marker; not hardware evidence.
           - component: compute-ioc3
-            serial: "0x5e7000000002"
-            reason: >-
-              Stable synthetic IOC3 identity for this selected emulated
-              installation, in the same "5e70..." shape Origin 200's own
-              IOC3 uses, one past its value.
+            serial: "0x5e7454d55000"
+            reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
         initially_operational_crossbow_links:
           - component: compute-xbridge-crossbar
             widgets: [14, 15]

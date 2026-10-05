@@ -144,10 +144,10 @@ layer:
             Fuel PROM fetch trace and independent board evidence must test
             these addresses before this can become a hardware claim.
         synthetic_identities:
-          - {component: bedrock, serial: "0x0d0c0b0a0909", reason: Stable synthetic Fuel node identity for this spike; not a recovered board serial.}
-          - {component: xbridge, serial: "0x0b0a090808", reason: Stable synthetic Fuel XBridge identity for this spike; not a recovered board serial.}
-          - {component: ioc3, serial: "0x5e7000000003", reason: Stable synthetic Fuel IOC3 identity for this spike; not a recovered board serial.}
-          - {component: vpro-v12, serial: "0x0b0a09080a", reason: Stable synthetic catalogue metadata for the uncaptured graphics board; the Odyssey device supplies its own guest-visible NIC.}
+          - {component: bedrock, serial: "0x51454d554e00", reason: 'Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.'}
+          - {component: xbridge, serial: "0x51454d555800", reason: 'Synthetic XBridge identity X0, carrying the "QEMU" marker; not hardware evidence.'}
+          - {component: ioc3, serial: "0x5e7454d55000", reason: 'Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.'}
+          - {component: vpro-v12, serial: "0x51454d554700", reason: 'Synthetic graphics board identity G0, carrying the "QEMU" marker; catalogue metadata only, since the Odyssey device supplies its own NIC serial.'}
         initially_operational_crossbow_links:
           - component: xbridge-crossbar
             widgets: [13, 14, 15]

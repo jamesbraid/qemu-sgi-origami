@@ -1213,7 +1213,7 @@ static void test_space_above_face(void)
  */
 #define PLACEHOLDER_PART "NOT-OBSERVED"
 #define PLACEHOLDER_FAMILY 0x0b
-#define PLACEHOLDER_SERIAL 0x060504030201ULL
+#define PLACEHOLDER_SERIAL 0x51454d555800ULL
 
 /*
  * head_start() above already covers the no-board-part case this fixture also

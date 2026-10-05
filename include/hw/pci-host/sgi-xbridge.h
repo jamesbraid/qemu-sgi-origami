@@ -6,6 +6,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "system/memory.h"
 #include "hw/misc/sgi-dma-buffer.h"
 #include "qom/object.h"
@@ -33,10 +34,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
  * real IP45 IO-8 identity bytes are known, so a machine that needs the stock
  * PROM's bus-walk to attach the IO-8's bridge object uses this explicit
  * placeholder pair. An Origin 200/2000 part number would read as an
- * observed IP45 fact; the placeholder claims no real hardware bytes.
+ * observed IP45 fact; the placeholder claims no real hardware bytes, and its
+ * serial is a marked synthetic one.
  */
 #define SGI_XBRIDGE_NIC_PLACEHOLDER_PART   "NOT-OBSERVED"
-#define SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL 0x060504030201ULL
+#define SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL SGI_SYNTHETIC_ONEWIRE_SERIAL('X', 0)
 
 /*
  * The crossbar ports a machine can attach to: 8 to 0xd, the heads excluded.

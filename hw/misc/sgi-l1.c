@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -2511,9 +2512,10 @@ static const VMStateDescription vmstate_l1 = {
  * l1.c reads: a type/length byte (top two bits the type, low six the length),
  * then the bytes. SGI 007-4498-002 printed pages 181-182 and 007-4365-001
  * printed page 75 give the IO8 areas' 16- and 80-byte field boundaries.
- * The contents are not factory data: serials, dates, keys and the IO8 part
- * are placeholders, and only the node board's name, part and revision
- * letter come from real inventories (the caller supplies them). Every area
+ * The contents are not factory data: dates, keys and the IO8 part are
+ * placeholders, the serials are marked synthetic ones, and only the node
+ * board's name, part and revision letter come from real inventories (the
+ * caller supplies them). Every area
  * sums to zero modulo 256. A Fuel's single system board answers as both
  * the node board and the I/O logic board, the second area carrying the
  * station address in the IO8 position.
@@ -2571,24 +2573,32 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
 }
 
 /*
- * A board area: placeholder manufacturer "SYNTHETIC", serial "000000" and
- * a zero date, the given name, part and revision, zeroed unknown binary
- * fields, and for an I/O board the twelve ASCII hex digits of its station
- * address after them.
+ * A board area: placeholder manufacturer "SYNTHETIC", a marked synthetic
+ * serial and a zero date, the given name, part and revision, zeroed unknown
+ * binary fields, and for an I/O board the twelve ASCII hex digits of its
+ * station address after them. The serial is component @letter's, instance
+ * @index: "EMUN00" for node 0's board. On the model, with "000000" here
+ * the stock IP35 PROM reported after every reset that the NVRAM did not
+ * belong to this system and reinitialized it, and with the marked serials
+ * it does not. Which property of "000000" the PROM rejects is unknown.
  */
 static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
                                 const char *part, const char *revision,
-                                const uint8_t *mac)
+                                const uint8_t *mac, char letter,
+                                unsigned int index)
 {
     static const char zeros[4];
     GByteArray *area = g_byte_array_new();
     uint8_t header[6] = { 0 };
     uint8_t fru_file = 0, eof = L1_IA_EOF;
+    char serial[SGI_SYNTHETIC_TEXT_MIN_WIDTH + 1];
 
+    sgi_synthetic_text_serial(serial, SGI_SYNTHETIC_TEXT_MIN_WIDTH, letter,
+                              index);
     g_byte_array_append(area, header, sizeof(header));
     l1_ia_text(area, "SYNTHETIC");
     l1_ia_text(area, name);
-    l1_ia_text(area, "000000");
+    l1_ia_text(area, serial);
     l1_ia_text(area, part);
     g_byte_array_append(area, &fru_file, 1);
     l1_ia_text(area, revision);
@@ -2715,7 +2725,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         if (!s->records[16].length) {
             l1_build_board_area(&s->records[16], s->node_board_name,
                                 s->node_board_part, s->node_board_revision,
-                                NULL);
+                                NULL, 'N', s->identity_index);
         }
     }
     if (io8 && !l1_component_selected(s, 1)) {
@@ -2724,7 +2734,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         }
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], "IO8", "NOTOBSERVED0", "00",
-                                mac);
+                                mac, 'I', s->identity_index);
         }
         /* A supplied board area carries its own address, if it has one. */
         s->board_mac_valid = l1_io8_board_mac(&s->records[17], s->board_mac);
@@ -2744,10 +2754,11 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         if (!s->records[1].length) {
             l1_build_chassis_area(&s->records[1]);
         }
+        /* The same one board as component 0, so the same serial. */
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], s->node_board_name,
                                 s->node_board_part, s->node_board_revision,
-                                s->board_mac);
+                                s->board_mac, 'N', s->identity_index);
         }
     }
     return true;
@@ -2890,6 +2901,10 @@ fuel_mac_done:
     }
     if (s->rack >= 0x3ff || s->bay >= 0x3f) {
         error_setg(errp, "L1 rack or bay must be a concrete destination");
+        return;
+    }
+    if (s->identity_index > 99) {
+        error_setg(errp, "L1 identity-index must be 0 to 99");
         return;
     }
     if (s->node_position > 3) {
@@ -3318,6 +3333,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_STRING("mac-record", SGIL1State, mac_record),
     DEFINE_PROP_STRING("node-board-name", SGIL1State, node_board_name),
     DEFINE_PROP_STRING("node-board-part", SGIL1State, node_board_part),
+    DEFINE_PROP_UINT8("identity-index", SGIL1State, identity_index, 0),
     DEFINE_PROP_STRING("node-board-revision", SGIL1State,
                        node_board_revision),
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),

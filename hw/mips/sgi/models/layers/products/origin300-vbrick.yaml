@@ -111,21 +111,20 @@ layer:
             payload. They do not identify a fitted flash part or physical decoder.
         synthetic_identities:
           - component: bedrock
-            serial: "0x0d0c0b0a0908"
-            reason: Reuse the one-chassis Origin 300's synthetic node identity.
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
           - component: xbridge
-            serial: "0x0b0a090807"
-            reason: Reuse the one-chassis Origin 300's synthetic IO-8 identity.
+            serial: "0x51454d555800"
+            reason: Synthetic XBridge identity X0, carrying the "QEMU" marker; not hardware evidence.
           - component: ioc3
-            serial: "0x5e7000000002"
-            reason: Reuse the one-chassis Origin 300's synthetic IOC3 identity.
+            serial: "0x5e7454d55000"
+            reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
           - component: graphics-v12
-            serial: "0x0b0a090809"
-            reason: >-
-              Stable synthetic catalogue metadata for the uncaptured graphics board.
+            serial: "0x51454d554700"
+            reason: Synthetic graphics board identity G0, carrying the "QEMU" marker; catalogue metadata only, since the Odyssey device supplies its own NIC serial.
           - component: graphics-xbridge
-            serial: "0x0b0a09080a"
-            reason: No captured V-brick XBridge identity is available.
+            serial: "0x51454d555801"
+            reason: Synthetic XBridge identity X1, carrying the "QEMU" marker; not hardware evidence.
         initially_operational_crossbow_links:
           - component: xbridge-crossbar
             widgets: [11, 14, 15]

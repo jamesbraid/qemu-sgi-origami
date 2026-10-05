@@ -1770,7 +1770,7 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
         head_f = boards["xbridge-bridge-f"]
         self.assertEqual(
             [item["kind"] for item in head_f["pci"]], ["ISP12160", "IOC3", "LUCENT_OHCI"])
-        self.assertEqual(head_f["ioc3_serial"], 0x5e7000000002)
+        self.assertEqual(head_f["ioc3_serial"], 0x5e7454d55000)
 
     def test_controller(self):
         self.assertEqual(self.entry["controllers"], [{
@@ -1807,7 +1807,7 @@ class OriginThreeHundredTwoChassisTests(unittest.TestCase):
         self.assertEqual([node["slot"] for node in nodes], [0, 0])
         self.assertEqual([node["slave_role"] for node in nodes], [False, True])
         self.assertEqual([node["identity"]["serial"] for node in nodes],
-                         [0x0d0c0b0a0908, 0x0d0c0b0a0909])
+                         [0x51454d554e00, 0x51454d554e01])
 
     def test_each_node_carries_only_its_own_chassis_processors(self):
         # Four fitted slices per node, not all eight processors in the
@@ -1828,9 +1828,9 @@ class OriginThreeHundredTwoChassisTests(unittest.TestCase):
                           "slave-xbridge-bridge-e", "slave-xbridge-bridge-f"])
         self.assertEqual([board["module_index"] for board in boards], [0, 0, 1, 1])
         self.assertEqual([board["serial"] for board in boards],
-                         [0x0b0a090807, 0x0b0a090807, 0x0b0a090808, 0x0b0a090808])
+                         [0x51454d555800, 0x51454d555800, 0x51454d555801, 0x51454d555801])
         self.assertEqual([board["ioc3_serial"] for board in boards],
-                         [None, 0x5e7000000002, None, 0x5e7000000003])
+                         [None, 0x5e7454d55000, None, 0x5e7454d55001])
         self.assertEqual(
             [(item["node_index"], item["widget"]) for item in self.entry["xio_attachments"]],
             [(0, 14), (0, 15), (1, 14), (1, 15)])

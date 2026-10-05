@@ -12305,7 +12305,7 @@
           "attachment": 1,
           "carrier": "onboard",
           "id": "ip34-system-board",
-          "ioc3-serial": 103835129348099,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 49930,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -12343,7 +12343,7 @@
           "populated": true,
           "preset": "odyssey",
           "revision": 10,
-          "serial": 47413004298
+          "serial": 89358092027648
         }
       ],
       "ip35-firmware": {
@@ -12441,7 +12441,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975689,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -12496,7 +12496,7 @@
           "attachment": 1,
           "carrier": "onboard",
           "id": "ip34-system-board",
-          "ioc3-serial": 103835129348099,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 49930,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -12619,7 +12619,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975689,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -16813,13 +16813,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -16842,7 +16842,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -16857,7 +16857,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 1193046,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17039,7 +17039,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17193,13 +17193,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -17222,7 +17222,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -17237,7 +17237,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 1193046,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17419,7 +17419,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17576,13 +17576,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -17605,7 +17605,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -17620,7 +17620,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 1193046,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17802,7 +17802,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -17958,13 +17958,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -17987,7 +17987,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -18002,7 +18002,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 1193046,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -18184,7 +18184,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -18271,13 +18271,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "master-xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -18300,7 +18300,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -18317,13 +18317,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004296
+          "serial": 89358092032001
         },
         {
           "attachment": 3,
           "carrier": "machine-placed",
           "id": "slave-xbridge-bridge-f",
-          "ioc3-serial": 103835129348099,
+          "ioc3-serial": 103853732483073,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 1,
@@ -18346,7 +18346,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004296,
+          "serial": 89358092032001,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -18508,7 +18508,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -18603,7 +18603,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975689,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -18670,13 +18670,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -18699,7 +18699,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -18717,7 +18717,7 @@
           "populated": true,
           "preset": "odyssey",
           "revision": 10,
-          "serial": 47413004297
+          "serial": 89358092027648
         }
       ],
       "ip35-firmware": {
@@ -18848,7 +18848,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -18915,13 +18915,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -18944,7 +18944,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -18962,7 +18962,7 @@
           "populated": true,
           "preset": "vbrick",
           "revision": 2,
-          "serial": 47413004298
+          "serial": 89358092032001
         }
       ],
       "ip35-firmware": {
@@ -19100,7 +19100,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
@@ -19162,13 +19162,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -19191,7 +19191,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -19327,7 +19327,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },

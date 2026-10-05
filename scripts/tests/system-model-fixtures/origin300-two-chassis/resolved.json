@@ -2776,33 +2776,33 @@
       "synthetic_identities": [
         {
           "component": "master-bedrock",
-          "reason": "Stable synthetic node identity; the master keeps the one-chassis Origin 300's value.",
-          "serial": "0x0d0c0b0a0908"
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
         },
         {
           "component": "master-xbridge",
-          "reason": "The master's IO-8 identity, the one-chassis Origin 300's value.",
-          "serial": "0x0b0a090807"
+          "reason": "Synthetic XBridge identity X0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d555800"
         },
         {
           "component": "master-ioc3",
-          "reason": "The master's IOC3 identity, the one-chassis Origin 300's value.",
-          "serial": "0x5e7000000002"
+          "reason": "Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
+          "serial": "0x5e7454d55000"
         },
         {
           "component": "slave-bedrock",
-          "reason": "Stable synthetic node identity for the slave chassis, one past the master's, as the dual-module Origin 200 strides its second node. The captured pairs show distinct barcodes per module; the values themselves are a model choice.",
-          "serial": "0x0d0c0b0a0909"
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
         },
         {
           "component": "slave-xbridge",
-          "reason": "The slave's IO-8 identity, one past the master's.",
-          "serial": "0x0b0a090808"
+          "reason": "Synthetic XBridge identity X1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d555801"
         },
         {
           "component": "slave-ioc3",
-          "reason": "The slave's IOC3 identity, one past the master's.",
-          "serial": "0x5e7000000003"
+          "reason": "Synthetic IOC3 identity 1. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
+          "serial": "0x5e7454d55001"
         }
       ],
       "system_timekeepers": {

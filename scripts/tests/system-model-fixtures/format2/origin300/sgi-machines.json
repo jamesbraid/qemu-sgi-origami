@@ -379,13 +379,13 @@
           "populated": false,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 89358092032000
         },
         {
           "attachment": 1,
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483072,
           "ioc3-subsystem-id": 65535,
           "mac-source": "module-l1",
           "module-index": 0,
@@ -408,7 +408,7 @@
           "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295,
+          "serial": 89358092032000,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
             "kind": "m48t35-compatible",
@@ -544,7 +544,7 @@
           "identity": {
             "i2c-controller": false,
             "ni-revision": 2,
-            "serial": 14345375975688,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 2
           },
