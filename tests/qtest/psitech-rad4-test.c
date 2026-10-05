@@ -2367,6 +2367,60 @@ static void test_dma_migration_mid_transfer(void)
 }
 
 /*
+ * The channel moves any byte count between any PCI and any local byte
+ * address, writing only the bytes inside the span (PCI 9060 Data Sheet page
+ * 6, section 2.2.2.5 and section 3.6.3.3). PCI and local lanes are straight
+ * (page 18), so local byte A is lane A % 4 of the word a CPU reads through
+ * BAR2, as PCI byte P is lane P % 4 of the little-endian dword at P & ~3.
+ * Six bytes from PCI byte 2 land at local byte 0x41, then go back out from
+ * there to PCI byte 3: the bytes either side keep their values both ways.
+ */
+static void test_dma_unaligned_spans(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t src[2] = { 0x13121110u, 0x17161514u };
+    uint32_t dst = DMA_SRC_PHYS + 0x100;
+    uint32_t desc = FB_SIZE - 16;
+    uint8_t fill[16], back[16];
+
+    dma_write_payload(qts, DMA_SRC_PHYS, src, ARRAY_SIZE(src));
+    bar2_write(qts, 0x3c, 0x90919293u);
+    bar2_write(qts, 0x40, 0xa0a1a2a3u);
+    bar2_write(qts, 0x44, 0xb0b1b2b3u);
+    bar2_write(qts, 0x48, 0xc0c1c2c3u);
+    bar2_write(qts, desc, PCI_DMA_DIRECT | (DMA_SRC_PHYS + 2));
+    bar2_write(qts, desc + 4, 0x41);
+    bar2_write(qts, desc + 8, 6);
+    bar2_write(qts, desc + 12, DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc);
+    dma_run(qts);
+
+    g_assert_true(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                  DMA_STATUS_DONE);
+    g_assert_cmphex(bar2_read(qts, 0x3c), ==, 0x90919293u);
+    g_assert_cmphex(bar2_read(qts, 0x40), ==, 0x141312a3u);
+    g_assert_cmphex(bar2_read(qts, 0x44), ==, 0xb0171615u);
+    g_assert_cmphex(bar2_read(qts, 0x48), ==, 0xc0c1c2c3u);
+
+    memset(fill, 0xcc, sizeof(fill));
+    qtest_memwrite(qts, dst, fill, sizeof(fill));
+    bar2_write(qts, desc, PCI_DMA_DIRECT | (dst + 3));
+    bar2_write(qts, desc + 12, DMA_DESC_END_OF_CHAIN | DMA_DESC_LOCAL_TO_PCI);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc);
+    dma_run(qts);
+
+    g_assert_true(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                  DMA_STATUS_DONE);
+    qtest_memread(qts, dst, back, sizeof(back));
+    g_assert_cmphex((uint32_t)ldl_be_p(back), ==, 0x12ccccccu);
+    g_assert_cmphex((uint32_t)ldl_be_p(back + 4), ==, 0x16151413u);
+    g_assert_cmphex((uint32_t)ldl_be_p(back + 8), ==, 0xcccccc17u);
+    g_assert_cmphex((uint32_t)ldl_be_p(back + 12), ==, 0xccccccccu);
+
+    qtest_quit(qts);
+}
+
+/*
  * A Local-space descriptor pointer at or past the framebuffer's own end
  * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
  * clear, the same failure convention test_dma_abort_recovers_a_failed_
@@ -3811,6 +3865,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-partial-transfer",
                    test_dma_partial_transfer);
     qtest_add_func("/psitech-rad4/dma-looping-chain", test_dma_looping_chain);
+    qtest_add_func("/psitech-rad4/dma-unaligned-spans",
+                   test_dma_unaligned_spans);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
                    test_dma_local_descriptor_out_of_bounds);
     qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",

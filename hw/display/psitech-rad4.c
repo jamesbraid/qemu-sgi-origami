@@ -822,9 +822,9 @@ static bool rad4_rgb_index_is_display_attribute(uint16_t index)
  * strict plane-mask behaviour.
  */
 static uint32_t rad4_masked_store(PsitechRad4State *s, uint32_t old,
-                                  uint32_t value, bool cpu)
+                                  uint32_t value)
 {
-    if (cpu && s->overlay_index_compat &&
+    if (s->overlay_index_compat &&
         s->mask == RAD4_OVERLAY_PLANE_MASK &&
         (value & ~0xfu) == 0) {
         value <<= RAD4_PIXEL_WID_SHIFT;
@@ -2091,70 +2091,86 @@ static const MemoryRegionOps rad4_bar0_ops = {
 #define RAD4_DMA_CH1_DONE       (1u << 12)
 
 /*
- * Byte order of DMA data, decided here and nowhere else: a pixel or a
- * host-memory descriptor word crosses PCI as a little-endian dword. That
- * choice is under separate review; the engine below only calls these.
+ * Byte order of DMA data, decided here and nowhere else. The PLX part has
+ * no byte-order control and wires PCI byte lanes straight to local ones
+ * (PCI 9060 Data Sheet page 18: BE0#-BE3# select LD[7:0]-LD[31:24]), so
+ * local byte address A is PCI byte lane A % 4 of its dword: the dword's
+ * least significant byte at the lowest address, little endian. This model
+ * keeps each local dword in s->framebuffer as the value a CPU store through
+ * BAR2 writes, most significant byte first, so local byte A lives at
+ * framebuffer[A ^ 3]. A host-memory descriptor word crosses PCI as a
+ * little-endian dword for the same reason.
  */
+static uint32_t rad4_dma_local_byte(uint32_t local_addr)
+{
+    return local_addr ^ 3;
+}
+
 static uint32_t rad4_dma_from_pci(const uint8_t *bytes)
 {
     return ldl_le_p(bytes);
 }
 
-static void rad4_dma_to_pci(uint8_t *bytes, uint32_t value)
-{
-    stl_le_p(bytes, value);
-}
-
 /*
- * Merge @len bytes of PCI dwords into the framebuffer under the plane mask
- * (RAD4_BAR2_MASK), as a CPU pixel write is: the mask register is documented
- * as programmed "before CPU transfer/fill and restored afterward" and both
- * driver DMA render paths (bigx_update and rad4_rect_dma_move/fill/copy)
- * share the same threshold logic deciding between them, so it is the memory
- * controller's masked write, not a CPU-only feature. The mask in force when
- * the data arrives applies.
+ * Merge @len bytes from PCI into the framebuffer at local byte address
+ * @local_addr, each under its own byte lane of the plane mask
+ * (RAD4_BAR2_MASK). The channel moves any byte count between any two byte
+ * addresses and writes only the bytes inside the span (PCI 9060 Data Sheet
+ * page 6, section 2.2.2.5 on page 9 and section 3.6.3.3 on page 26), so
+ * the bytes either side of an unaligned span keep their values.
+ *
+ * That the plane mask applies to DMA at all is inferred, not documented
+ * for the board: the mask register is programmed "before CPU
+ * transfer/fill and restored afterward" and both driver DMA render paths
+ * (bigx_update and rad4_rect_dma_move/fill/copy) share the threshold logic
+ * that chooses between CPU and DMA, so it is taken to be the memory
+ * controller's masked write rather than a CPU-only feature. Applying it per
+ * byte lane for a partial dword is inferred the same way. The mask in force
+ * when the data arrives applies. The overlay-index rule of
+ * rad4_masked_store() is a CPU-store compatibility rule and never applies
+ * here.
  */
 static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
                            const uint8_t *buf, uint32_t len)
 {
-    uint32_t off;
+    uint32_t i;
 
-    for (off = 0; off < len; off += 4) {
-        uint8_t *dst = s->framebuffer + local_addr + off;
-        uint32_t old = ldl_be_p(dst);
+    for (i = 0; i < len; i++) {
+        uint32_t addr = local_addr + i;
+        uint8_t mask = s->mask >> (8 * (addr % 4));
+        uint8_t *dst = s->framebuffer + rad4_dma_local_byte(addr);
 
-        stl_be_p(dst, rad4_masked_store(s, old,
-                                        rad4_dma_from_pci(buf + off), false));
+        *dst = (*dst & ~mask) | (buf[i] & mask);
     }
     rad4_mark_dirty_range(s, local_addr, len);
 }
 
 /*
  * Move @len bytes, at most RAD4_DMA_SLICE, between host memory and the
- * framebuffer. One PCI access covers the whole span; the Bridge still
- * translates and lane-swaps each dword of it. If it fails, the span is
- * redone a dword at a time so the transfer stops with exactly the dwords
- * before the failing one moved.
+ * framebuffer, from any byte address to any other. One PCI access covers
+ * the whole span; the Bridge still translates each dword of it. If it
+ * fails, the span is redone one PCI dword at a time so the transfer stops
+ * with exactly the bytes before the failing dword moved.
  */
 static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
                           uint32_t pci_addr, uint32_t local_addr,
                           uint32_t len)
 {
     uint8_t buf[RAD4_DMA_SLICE];
-    uint32_t off;
+    uint32_t off, piece;
 
     assert(len <= sizeof(buf));
     if (local_to_pci) {
-        for (off = 0; off < len; off += 4) {
-            rad4_dma_to_pci(buf + off,
-                            ldl_be_p(s->framebuffer + local_addr + off));
+        for (off = 0; off < len; off++) {
+            buf[off] = s->framebuffer[rad4_dma_local_byte(local_addr + off)];
         }
         if (pci_dma_write(&s->pci, pci_addr, buf, len) == MEMTX_OK) {
             return true;
         }
-        for (off = 0; off < len; off += 4) {
+        for (off = 0; off < len; off += piece) {
+            piece = MIN(len - off, 4 - (pci_addr + off) % 4);
             if (pci_dma_write(&s->pci, pci_addr + off, buf + off,
-                              4) != MEMTX_OK) {
+                              piece) != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                              "psitech-rad4: DMA readback write failed at "
                              "0x%x\n", pci_addr + off);
@@ -2168,9 +2184,10 @@ static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
         rad4_dma_merge(s, local_addr, buf, len);
         return true;
     }
-    for (off = 0; off < len; off += 4) {
+    for (off = 0; off < len; off += piece) {
+        piece = MIN(len - off, 4 - (pci_addr + off) % 4);
         if (pci_dma_read(&s->pci, pci_addr + off, buf + off,
-                         4) != MEMTX_OK) {
+                         piece) != MEMTX_OK) {
             rad4_dma_merge(s, local_addr, buf, off);
             qemu_log_mask(LOG_GUEST_ERROR,
                          "psitech-rad4: DMA payload read failed at 0x%x\n",
@@ -2205,7 +2222,7 @@ static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
  * there, at the top of the 8 MiB local extent.
  *
  * A descriptor this model cannot honour (a pointer outside local memory, a
- * failed host-memory read, a span outside the framebuffer or unaligned)
+ * failed host-memory read, a span outside the framebuffer)
  * stops the channel with Done clear; the guest's own timeout and abort
  * recovery then runs.
  */
@@ -2264,13 +2281,6 @@ static bool rad4_dma_load_desc(PsitechRad4State *s)
                      " targets local address 0x%x size 0x%x outside "
                      "the framebuffer\n", desc_addr, s->dma_local,
                      s->dma_size);
-        return false;
-    }
-    if (s->dma_local % 4 != 0 || s->dma_size % 4 != 0) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                     "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
-                     " has an unaligned local address 0x%x or size "
-                     "0x%x\n", desc_addr, s->dma_local, s->dma_size);
         return false;
     }
     s->dma_have_desc = true;
@@ -2604,7 +2614,7 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     if (offset < RAD4_FB_SIZE) {
         uint32_t old = ldl_be_p(s->framebuffer + offset);
 
-        stl_be_p(s->framebuffer + offset, rad4_masked_store(s, old, v, true));
+        stl_be_p(s->framebuffer + offset, rad4_masked_store(s, old, v));
         rad4_mark_dirty_range(s, offset, size);
         return;
     }
@@ -3024,8 +3034,7 @@ static bool rad4_migrated_state_valid(PsitechRad4State *s)
     if (s->dma_have_desc &&
         (s->dma_local >= RAD4_FB_SIZE ||
          s->dma_size > RAD4_FB_SIZE - s->dma_local ||
-         s->dma_moved > s->dma_size ||
-         (s->dma_local | s->dma_size | s->dma_moved) % 4)) {
+         s->dma_moved > s->dma_size)) {
         return false;
     }
     switch (s->serial_state) {
