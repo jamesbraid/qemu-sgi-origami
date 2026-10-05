@@ -9,6 +9,7 @@
 #include "memtx.h"
 #include "sgi-migrate.h"
 #include "sgi-launch.h"
+#include "sgi-wait.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "qobject/qlist.h"
@@ -933,10 +934,11 @@ static void test_octane_ioc3_ethernet_polled(bool octane2)
     const uint32_t rx_buf = 0xc000;
     uint8_t frame[60], landed[sizeof(frame)], sent[sizeof(frame)];
     uint32_t length;
-    struct timeval timeout = { .tv_sec = 5 };
+    struct timeval timeout = { .tv_sec = SGI_WAIT_S };
     g_autofree char *args = NULL;
     QTestState *qts;
     int sv[2];
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     g_assert_cmpint(setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &timeout,
@@ -972,11 +974,12 @@ static void test_octane_ioc3_ethernet_polled(bool octane2)
     g_assert_cmpint(send(sv[0], frame, sizeof(frame), 0), ==, sizeof(frame));
 
     /* The buffer valid bit is the poll result; no index or IRQ is needed. */
-    for (unsigned int i = 0; i < 200; i++) {
+    sgi_wait_start(&w, "received frame valid bit");
+    for (;;) {
         if (qtest_readl(qts, RAM + rx_buf) & (1u << 31)) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, 50000);
     }
     g_assert_cmphex(qtest_readl(qts, RAM + rx_buf) & (1u << 31), ==,
@@ -1112,7 +1115,8 @@ static void test_octane2_serial(void)
     QTestState *qts = qtest_init_with_serial(args, &sock);
     const uint8_t sent = '2';
     uint8_t received;
-    struct timeval deadline = { .tv_sec = 5 };
+    struct timeval deadline = { .tv_sec = SGI_WAIT_S };
+    SgiWait w;
 
     g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
                                &deadline, sizeof(deadline)), ==, 0);
@@ -1122,10 +1126,9 @@ static void test_octane2_serial(void)
     qtest_writeb(qts, UART_A + 3, 0x03);
     qtest_writeb(qts, UART_A + 1, 0x01);
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
-    g_test_timer_start();
+    sgi_wait_start(&w, "UART status");
     while (!(qtest_readb(qts, UART_A + 5) & 1)) {
-        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
     qtest_writeb(qts, UART_A, 'O');
@@ -1780,18 +1783,18 @@ static void test_flash_execute(void)
     for (unsigned pass = 0; pass < 2; pass++) {
         uint32_t result = 0;
         uint64_t entry_pc;
-        int64_t deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
+        SgiWait w;
 
         qtest_writel(qts, RAM + 0x4000, 0);
         entry_pc = octane_cpu_pc(qts);
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&w, "flash execution pass %u", pass);
         do {
             result = qtest_readl(qts, RAM + 0x4000);
             if (result) {
                 break;
             }
-            g_usleep(1000);
-        } while (g_get_monotonic_time() < deadline);
+        } while (sgi_wait_continue(&w, 1000));
         qtest_qmp_assert_success(qts, "{'execute':'stop'}");
         if (result != (pass ? 0x0357 : 0x1357)) {
             g_autofree char *registers = qtest_hmp(qts, "info registers");
@@ -3363,6 +3366,7 @@ static void test_octane2_scsi_target1_read(void)
     uint8_t sector[sizeof(data)];
     uint8_t untouched[sizeof(data)];
     int fd;
+    SgiWait w;
 
     for (size_t i = 0; i < sizeof(sector); i++) {
         sector[i] = i * 73 + 19;
@@ -3422,10 +3426,10 @@ static void test_octane2_scsi_target1_read(void)
     qtest_writew(qts, ISP_MAILBOX(4), 2);
 
     /* File-backed READ(10) can complete after the request doorbell. */
-    for (unsigned i = 0; i < 1000 &&
-         qtest_readw(qts, ISP_MAILBOX(5)) != 2; i++) {
+    sgi_wait_start(&w, "READ(10) response");
+    while (qtest_readw(qts, ISP_MAILBOX(5)) != 2) {
         qtest_clock_step(qts, 1000);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(qtest_readw(qts, ISP_MAILBOX(5)), ==, 2);
     qtest_memread(qts, RAM + 0x9040, status, sizeof(status));
@@ -3472,6 +3476,7 @@ static void test_uncached_attribute_zero(void)
     uint32_t result;
     uint32_t missing;
     int fd;
+    SgiWait w;
 
     memset(image, 0xff, sizeof(image));
     for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
@@ -3499,20 +3504,22 @@ static void test_uncached_attribute_zero(void)
     qtest_writel(qts, RAM + 0x4000, 0xdeadbeef);
     qtest_writel(qts, RAM + 0x4004, 0xdeadbeef);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    for (unsigned i = 0; i < 10000; i++) {
+    sgi_wait_start(&w, "guest store at 0x4000");
+    for (;;) {
         result = qtest_readl(qts, RAM + 0x4000);
         if (result != 0xdeadbeef) {
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(result, ==, 0x00400000);
-    for (unsigned i = 0; i < 10000; i++) {
+    sgi_wait_start(&w, "guest store at 0x4004");
+    for (;;) {
         result = qtest_readl(qts, RAM + 0x4004);
         if (result != 0xdeadbeef) {
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(result & 0x0fffffff, ==, 0x0c00106d);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + IOC3 + 0x28), ==,
@@ -3606,7 +3613,8 @@ static void test_serial_a_chardev(void)
     QTestState *qts = octane_start_serial(&sock);
     const uint8_t sent = 'I';
     uint8_t received;
-    struct timeval deadline = { .tv_sec = 5 };
+    struct timeval deadline = { .tv_sec = SGI_WAIT_S };
+    SgiWait w;
 
     g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
                                &deadline, sizeof(deadline)), ==, 0);
@@ -3617,10 +3625,9 @@ static void test_serial_a_chardev(void)
     qtest_writeb(qts, UART_A + 1, 0x01);
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
 
-    g_test_timer_start();
+    sgi_wait_start(&w, "UART status");
     while (!(qtest_readb(qts, UART_A + 5) & 1)) {
-        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
                     IOC3_SERIAL_IRQ);
@@ -3646,7 +3653,7 @@ static void test_serial_b(const void *data)
         .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
     };
     socklen_t addrlen = sizeof(addr);
-    struct timeval deadline = { .tv_sec = 5 };
+    struct timeval deadline = { .tv_sec = SGI_WAIT_S };
     g_autofree char *quoted = g_shell_quote(flash_path);
     g_autofree char *args = NULL;
     QTestState *qts;
@@ -3695,7 +3702,8 @@ static void test_serial_a_interrupt_route(void)
     int sock;
     QTestState *qts = octane_start_serial(&sock);
     const uint8_t sent = 'R';
-    struct timeval deadline = { .tv_sec = 5 };
+    struct timeval deadline = { .tv_sec = SGI_WAIT_S };
+    SgiWait w;
 
     g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
                                &deadline, sizeof(deadline)), ==, 0);
@@ -3710,10 +3718,9 @@ static void test_serial_a_interrupt_route(void)
     qtest_writeb(qts, UART_A + 1, 0x01);
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
 
-    g_test_timer_start();
+    sgi_wait_start(&w, "UART status");
     while (!(qtest_readb(qts, UART_A + 5) & 1)) {
-        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
                     IOC3_SERIAL_IRQ);
