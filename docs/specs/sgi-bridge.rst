@@ -200,29 +200,25 @@ Byte lanes
 ==========
 
 The chip's per-window swap bits (Device(x) bits 19 and 20, one for
-the direct windows and one for the translated window) enable a
-swapper that turns the crossed wiring between the big-endian
-XIO side and the little-endian PCI side into straight-through
-byte numbering. A byte-addressed model is straight-through already,
-so the model corrects the *disabled* case -- the reset state, and
-the state both guests run in. The correction moves only the low two
-address bits: a transfer never crosses the 32-bit word its lanes are
-defined within (specification Tables 65 and 73).
+the direct windows and one for the translated window) select where a
+DMA's bytes land. With the bit set the transfer is a byte stream; a
+byte-addressed model is that already. With it clear -- the reset
+state -- each aligned 32-bit word is byte-reversed and the words keep
+their order (specification Tables 73 and 76).
 
 Which window applies is judged on the raw PCI address the device
 issued, before any translation rewrites it. Local-window transfers
-are never corrected -- local space is not carried to XIO and
-has no swapper in its path.
+are never placed -- local space is not carried to XIO and has no
+swapper in its path. No slot is exempt by PCI identity.
 
-The IOC3 is exempt: it is a big-endian PCI part and both public
-drivers clear its swap bits. The exemption is board policy handed
-down per slot, not something the chip could know -- real silicon has
-no notion of PCI identity.
-
-A corrected transfer that the fabric refuses is refused to the
-device: the swap path forwards the inner access's result rather than
-answering with zeroes, so a device's DMA error handling sees the
-same refusals on a swapped slot as on a direct one.
+The translate function picks one of three targets from
+``hw/pci-host/sgi-dma-placement.c``, which the XBridge shares:
+identity (the fabric address space itself), per-word reversal and
+per-doubleword reversal. The two reversals are callback regions that
+take an eight-byte step in one call and forward through the fabric
+address space. A placed transfer that the fabric refuses is refused to
+the device: the target forwards the inner access's result rather than
+answering with zeroes.
 
 Board identity part
 ===================

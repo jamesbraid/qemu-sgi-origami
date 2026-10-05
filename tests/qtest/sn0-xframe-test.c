@@ -418,8 +418,7 @@ static QTestState *boot_with_socket_traced(int *host_fd, const char *logfile)
 
     qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
                       "-device xframe,addr=%d,netdev=n0,mac=%s "
-                      "-d trace:sgi_bridge_lane_swap_read,"
-                      "trace:sgi_bridge_lane_swap_write,"
+                      "-d trace:sgi_dma_placement_access,"
                       "trace:sgi_bridge_dma_xlate_plain -D %s",
                       MACHINE_WITH_BRIDGE, sv[1], XFRAME_SLOT, TEST_MAC,
                       logfile);
@@ -509,9 +508,9 @@ static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 
 /*
  * Payload bytes use plain Bridge DMA; descriptors retain byte-lane correction
- * with DEV_SWAP clear. The old path sent 64 payload bytes through sixteen
- * lane_swap_ops callbacks plus eight descriptor callbacks, reversing each
- * payload word. Count callbacks and compare raw bytes. Logs use the build
+ * with DEV_SWAP clear. The word placement takes one callback per doubleword,
+ * so the 32-byte descriptor read costs four and any payload read through it
+ * would add more. Count callbacks and compare raw bytes. Logs use the build
  * directory: shared /tmp is a small tmpfs where short writes cause unrelated
  * failures; Tigon and BCM570x use g_file_open_tmp.
  */
@@ -574,10 +573,10 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
     close(host_fd);
 
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
-    lane_reads = count_log_matches(log, "lane swap read");
-    g_test_message("lane-swap reads: %u total, %u descriptor",
-                   lane_reads, (unsigned)sizeof(desc) / 4);
-    g_assert_cmpuint(lane_reads, ==, sizeof(desc) / 4);
+    lane_reads = count_log_matches(log, "sgi-bridge.placement.word read");
+    g_test_message("word placement reads: %u total, %u descriptor",
+                   lane_reads, (unsigned)sizeof(desc) / 8);
+    g_assert_cmpuint(lane_reads, ==, sizeof(desc) / 8);
     g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), >, 0);
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));

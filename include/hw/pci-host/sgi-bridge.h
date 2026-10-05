@@ -19,6 +19,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "hw/misc/sgi-dma-buffer.h"
+#include "hw/pci-host/sgi-dma-placement.h"
 #include "qom/object.h"
 #include "hw/block/flash.h"
 
@@ -316,13 +317,12 @@ struct SGIBridgeState {
     AddressSpace plain_dma_as;
 
     /*
-     * Where a lane-permuted transfer is sent: a translation entry can only
-     * say where an access lands, so the action lives in the target space.
+     * Where a placed transfer is sent: a translation entry can only say
+     * where an access lands, so the byte placement lives in the target space.
      */
     MemoryRegion dma_denied;
     AddressSpace dma_denied_as;
-    MemoryRegion lane_swap;
-    AddressSpace lane_swap_as;
+    SGIDMAPlacementSet placement;
 
     /*
      * The fabric DMA and interrupt packets travel: a pin rise is a write

@@ -885,9 +885,9 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
  * Enabling host coalescing arms the periodic status tick, and stepping the
  * one received frame under a max-coalesced count of one makes the model post
  * one status block to the programmed host address. Its address is a
- * direct-map
- * IOVA, so on the swap route it would appear in the Bridge's lane-swap trace.
- * On the plain route it appears in the plain-translate trace instead. The
+ * direct-map IOVA, so on the slot's route it would cross a Bridge placement
+ * target and appear in that trace. On the plain route it appears in the
+ * plain-translate trace instead. The
  * status block's first word checks the byte order. The model writes the
  * driver's big-endian layout, so the UPDATED flag's bytes must read
  * 00 00 00 01 in guest memory.
@@ -916,8 +916,7 @@ static void test_dma_rides_plain_route(const void *data)
     qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
                       "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0"
-                      " -d trace:sgi_bridge_lane_swap_read,"
-                      "trace:sgi_bridge_lane_swap_write,"
+                      " -d trace:sgi_dma_placement_access,"
                       "trace:sgi_bridge_dma_xlate_plain -D %s",
                       sv[1], logfile);
     aim_window_at_bar(qts);
@@ -971,13 +970,8 @@ static void test_dma_rides_plain_route(const void *data)
     snprintf(needle, sizeof(needle), "plain addr 0x%" PRIx64,
              (uint64_t)IOVA(STATUS_PHYS));
     g_assert_cmpuint(count_lines_with(log, needle), >, 0);
-    /* ...and its address never crossed the swap window. */
-    snprintf(needle, sizeof(needle), "lane swap read addr 0x%" PRIx64,
-             (uint64_t)IOVA(STATUS_PHYS));
-    g_assert_cmpuint(count_lines_with(log, needle), ==, 0);
-    snprintf(needle, sizeof(needle), "lane swap write addr 0x%" PRIx64,
-             (uint64_t)IOVA(STATUS_PHYS));
-    g_assert_cmpuint(count_lines_with(log, needle), ==, 0);
+    /* ...and no transfer crossed a placement target. */
+    g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement."), ==, 0);
 
     g_free(log);
     unlink(logfile);

@@ -31,11 +31,13 @@ states its native order and moves raw bytes.
 Writing device and machine code
 ===============================
 
-Move raw bytes across a boundary that repacks. The Bridge's window and
-lane-swap paths read into a byte buffer with ``address_space_read()``
-and repack with ``ldn_be_p()``/``stn_be_p()``: the answering region's
-declared endianness is resolved before the code sees bytes, so exactly
-one swap happens, at the window, independent of the host. The pair of
+Move raw bytes across a boundary that repacks. The Bridge's window
+paths and the shared DMA placement targets read into a byte buffer
+with ``address_space_read()`` and repack explicitly (``ldn_be_p()``
+for a window, a byte permutation then ``ldn_le_p()`` for a placement
+target): the answering region's declared endianness is resolved before
+the code sees bytes, so exactly one swap happens, at the window,
+independent of the host. The pair of
 endiannesses looks redundant and is load-bearing; replacing the buffer
 with a value accessor such as ``address_space_ldl_be()`` reintroduces
 the region's endianness as a live term. DMA behind the Bridge moves

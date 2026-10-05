@@ -91,8 +91,9 @@ sgi_bridge_dma_xlate(uint64_t addr, unsigned slot, int flag) "DMA translate addr
 sgi_bridge_dma_xlate_64(uint64_t addr, uint64_t translated, unsigned widget) "DMA translate 64-bit addr 0x%" PRIx64 " -> 0x%" PRIx64 " widget %u"
 sgi_bridge_dma_xlate_direct(uint64_t addr, uint64_t translated, unsigned widget) "DMA translate 32-bit direct addr 0x%" PRIx64 " -> 0x%" PRIx64 " widget %u"
 sgi_bridge_dma_xlate_plain(uint64_t addr, int flag) "DMA translate plain addr 0x%" PRIx64 " flag %d"
-sgi_bridge_lane_swap_read(uint64_t addr, unsigned size) "lane swap read addr 0x%" PRIx64 " size %u"
-sgi_bridge_lane_swap_write(uint64_t addr, unsigned size) "lane swap write addr 0x%" PRIx64 " size %u"
+
+# sgi-dma-placement.c
+sgi_dma_placement_access(const char *target, const char *op, uint64_t addr, uint64_t host, unsigned size) "%s %s addr 0x%" PRIx64 " host 0x%" PRIx64 " size %u"
 
 # sgi-xbridge.c
 sgi_xbridge_pci_irq(int64_t vtime, unsigned widget, unsigned device, unsigned pin, int level) "vtime %" PRId64 " source_widget %u device %u PCI_pin %u level %d"

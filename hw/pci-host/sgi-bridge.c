@@ -608,10 +608,7 @@ static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
     return !(s->byte_lane_exempt & (1u << slot));
 }
 
-/*
- * Only the low two bits move: lanes are defined within one word. The mask is
- * address-wide because the DMA path passes whole fabric addresses.
- */
+/* Only the low two bits move: lanes are defined within one word. */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
     return (offset & ~(hwaddr)3) | ((offset & 3u) ^ (4u - size));
@@ -2055,100 +2052,58 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
            BRIDGE_PAGE_SHIFT_16K : BRIDGE_PAGE_SHIFT_4K;
 }
 
-/* The programmed DMA swap control applies to every requesting PCI slot. */
-static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot,
-                                            hwaddr pci_addr)
+/*
+ * The placement the requesting slot's swap bit asks for. The window is
+ * chosen on the PCI address the device issued, since it selects between the
+ * two swap bits.
+ */
+static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
+                                                unsigned int slot,
+                                                hwaddr pci_addr)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
 
     /* Local space never crosses the swapper; the override is test-only. */
     if (pci_addr < BRIDGE_PCI_TRANSLATED ||
         (s->byte_lane_exempt & (1U << slot))) {
-        return false;
+        return SGI_DMA_PLACEMENT_IDENTITY;
     }
-    return !(dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
-                                                 : DEV_SWAP_DIRECT));
+    return sgi_dma_placement_select(
+        dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
+                                            : DEV_SWAP_DIRECT),
+        false);
 }
 
 /*
- * THE PAIR OF ENDIANNESSES HERE IS REQUIRED DESPITE THE APPARENT REDUNDANCY:
- * the body must stay address_space_read/write into a byte buffer, which
- * resolves the answering region's endianness before this code sees the bytes.
- * A value accessor such as address_space_ldl_be() reads as a simplification
- * and reintroduces that endianness as a live term, transfers aimed at
- * another widget's registers arrive reversed. The with-attrs form is what
- * lets a refused transfer be refused here too instead of answered with
- * zeroes. These callbacks never target this space, so there is no way back
- * into themselves.
- */
-static MemTxResult sgi_bridge_lane_swap_read(void *opaque, hwaddr addr,
-                                             uint64_t *val, unsigned size,
-                                             MemTxAttrs attrs)
-{
-    SGIBridgeState *s = opaque;
-    uint8_t bytes[8];
-    MemTxResult res;
-
-    trace_sgi_bridge_lane_swap_read(addr, size);
-    res = address_space_read(&s->fabric_as,
-                             sgi_bridge_window_correct(addr, size),
-                             attrs, bytes, size);
-    *val = ldn_be_p(bytes, size);
-    return res;
-}
-
-static MemTxResult sgi_bridge_lane_swap_write(void *opaque, hwaddr addr,
-                                              uint64_t val, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    SGIBridgeState *s = opaque;
-    uint8_t bytes[8];
-
-    trace_sgi_bridge_lane_swap_write(addr, size);
-    stn_be_p(bytes, size, val);
-    return address_space_write(&s->fabric_as,
-                               sgi_bridge_window_correct(addr, size),
-                               attrs, bytes, size);
-}
-
-static const MemoryRegionOps sgi_bridge_lane_swap_ops = {
-    .read_with_attrs = sgi_bridge_lane_swap_read,
-    .write_with_attrs = sgi_bridge_lane_swap_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
-};
-
-/*
- * The decode shared by every DMA route. A slot's own route (slot >= 0) may
- * send the access through the byte-lane swap; the plain route (slot < 0)
- * never does. It exists for byte-stream transfers whose swap nothing
- * observes, so paying a per-word dispatch for it buys nothing.
+ * The decode shared by every DMA route and the batched provider. A slot's
+ * own route (slot >= 0) places its bytes by the slot's swap bits; the plain
+ * route (slot < 0) never does. It exists for byte-stream transfers whose
+ * swap nothing observes, so paying a per-word dispatch for it buys nothing.
+ * *placement reports the placement the entry's target applies.
  */
 static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
                                                  hwaddr addr,
-                                                 IOMMUAccessFlags flag)
+                                                 IOMMUAccessFlags flag,
+                                                 SGIDMAPlacement *placement)
 {
     unsigned int shift = sgi_bridge_page_shift(s);
     hwaddr page_mask = MAKE_64BIT_MASK(0, shift);
+    SGIDMAPlacement chosen = slot >= 0 ?
+        sgi_bridge_dma_placement(s, slot, addr) : SGI_DMA_PLACEMENT_IDENTITY;
     IOMMUTLBEntry entry = {
         /*
          * The swap decision is taken on the raw PCI address, ahead of the
          * 64-bit decode below: rewritten first, a wide access is measured
          * against the wrong window. Both arms land in the requesting node's
          * fabric view, the claim view the machine roots at fabric_as, and
-         * the swapping arm reaches it through the lane_swap ops, so a
+         * the placement targets forward to it, so a
          * transfer resolves to the node it names by programmed number, the
          * same route the interrupt path takes. The global map would collapse
          * a second node's DMA into node zero's memory while the nodes still
          * read the same nasid during renumbering. The plain route rides the
          * unswapped arm: it skips the byte lanes alone, never the routing.
          */
-        .target_as = slot >= 0 &&
-                     sgi_bridge_dma_needs_correction(s, slot, addr) ?
-                     &s->lane_swap_as : &s->fabric_as,
+        .target_as = sgi_dma_placement_as(&s->placement, chosen),
         .iova = addr & ~page_mask,
         .translated_addr = 0,
         .addr_mask = page_mask,
@@ -2160,6 +2115,7 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
     hwaddr offset;
     hwaddr fabric;
 
+    *placement = chosen;
     if (slot >= 0) {
         trace_sgi_bridge_dma_xlate(addr, slot, flag);
     } else {
@@ -2260,8 +2216,10 @@ static IOMMUTLBEntry sgi_bridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
 {
     struct SGIBridgeDeviceDMA *dma =
         container_of(iommu, struct SGIBridgeDeviceDMA, iommu);
+    SGIDMAPlacement placement;
 
-    return sgi_bridge_translate_common(dma->s, dma->slot, addr, flag);
+    return sgi_bridge_translate_common(dma->s, dma->slot, addr, flag,
+                                       &placement);
 }
 
 static IOMMUTLBEntry sgi_bridge_plain_translate(IOMMUMemoryRegion *iommu,
@@ -2270,8 +2228,9 @@ static IOMMUTLBEntry sgi_bridge_plain_translate(IOMMUMemoryRegion *iommu,
                                                 int iommu_idx)
 {
     SGIBridgeState *s = container_of(iommu, SGIBridgeState, plain_iommu);
+    SGIDMAPlacement placement;
 
-    return sgi_bridge_translate_common(s, -1, addr, flag);
+    return sgi_bridge_translate_common(s, -1, addr, flag, &placement);
 }
 
 /* One table for the bus; the swap attribute is the requesting slot's. */
@@ -2303,6 +2262,7 @@ static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     bool write = dir == DMA_DIRECTION_FROM_DEVICE;
     IOMMUTLBEntry entry;
     hwaddr translated, length, span;
+    SGIDMAPlacement placement;
     bool correct;
     SGIDMABufferRequest composed = *request;
 
@@ -2312,8 +2272,9 @@ static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
                              request->max_access_size < 4)))) {
         return false;
     }
-    entry = sgi_bridge_translate(&dma->iommu, addr,
-                                  write ? IOMMU_WO : IOMMU_RO, 0);
+    entry = sgi_bridge_translate_common(s, dma->slot, addr,
+                                        write ? IOMMU_WO : IOMMU_RO,
+                                        &placement);
     span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
     length = span;
     if (!(entry.perm & (1 << write))) {
@@ -2327,13 +2288,14 @@ static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     } else {
         translated = (entry.translated_addr & ~entry.addr_mask) |
                      (addr & entry.addr_mask);
-        correct = entry.target_as == &s->lane_swap_as;
+        /* Only the word placement composes with a converted request. */
+        correct = placement == SGI_DMA_PLACEMENT_WORD;
         composed.swap32 ^= correct;
         if (!sgi_dma_buffer_try_rw(correct ? &s->fabric_as : entry.target_as,
                                    translated, buf, &length, dir, attrs,
                                    &composed, result)) {
             if (correct) {
-                length = memory_access_size(&s->lane_swap,
+                length = memory_access_size(entry.target_as->root,
                     MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
             }
             /* The outer facade splits the operation before leaf dispatch. */
@@ -2718,17 +2680,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->dma_denied_as, &s->dma_denied,
                        "sgi-bridge.dma-denied");
 
-    /* One swap region for the chip: per-device decision, shared action. */
-    memory_region_init_io(&s->lane_swap, obj, &sgi_bridge_lane_swap_ops, s,
-                          "sgi-bridge.lane-swap", UINT64_MAX);
-    /*
-     * The re-entrancy guard is per owning device and this chip owns both ends
-     * of an ordinary transfer, so normal DMA would trip it; regions reached
-     * through this one still apply their own guards.
-     */
-    s->lane_swap.disable_reentrancy_guard = true;
-    address_space_init(&s->lane_swap_as, &s->lane_swap,
-                       "sgi-bridge.lane-swap");
+    /* One set of placements for the chip: per-slot decision, shared action. */
+    sgi_dma_placement_init(&s->placement, obj, "sgi-bridge.placement",
+                           &s->fabric_as, BIT(SGI_DMA_PLACEMENT_WORD));
 
     /* One IOMMU region per slot: the swap bits belong to the issuer. */
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
@@ -2790,7 +2744,7 @@ static void sgi_bridge_unrealize(DeviceState *dev)
     for (slot = SGI_BRIDGE_DEVICES - 1; slot >= 0; slot--) {
         address_space_destroy(&s->dma[slot].as);
     }
-    address_space_destroy(&s->lane_swap_as);
+    sgi_dma_placement_destroy(&s->placement);
     address_space_destroy(&s->dma_denied_as);
     address_space_destroy(&s->pci_io_as);
     address_space_destroy(&s->pci_mmio_as);
