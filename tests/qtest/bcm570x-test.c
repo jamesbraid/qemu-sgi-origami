@@ -98,6 +98,7 @@
 #define BCM_BUFMGR_MODE         0x4400u
 #define BCM_BUFMGR_ENABLE       0x00000002u
 #define BCM_BUFMGR_ATTN         0x00000004u
+#define BCM_BUFMGR_START_NS     1000000
 
 /* The firmware-ready handshake in on-chip SRAM. */
 #define BCM_SRAM_FW_MBOX        0x0b50u
@@ -983,27 +984,56 @@ static void test_hcc_mode_idle_poll(const void *data)
     bcm_close(&b);
 }
 
-/*
- * The buffer-manager enable handshake, where IRIX tg diverges from the public
- * drivers. The driver sets ENABLE (0x2) alongside ATTN_ENABLE (0x4) and then
- * polls ENABLE for CLEAR ("TG3_BM_ENA bit did not clear" on timeout),
- * unlike tg3/bge, which poll it for SET. A plain store-and-read-back
- * would leave ENABLE set and hang the driver. The chip acknowledges the
- * request by dropping ENABLE at once, while ATTN_ENABLE persists.
- */
-static void test_bufmgr_enable_self_clears(const void *data)
+/* ENABLE stays clear until buffer-manager startup completes. */
+static void test_bufmgr_startup(const void *data)
 {
     Bcm b;
+    uint32_t (*read_reg)(Bcm *, uint32_t);
+    void (*write_reg)(Bcm *, uint32_t, uint32_t);
+    unsigned int path;
 
     bcm_open(&b, bcm_init());
 
-    bar_writel(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    for (path = 0; path < 2; path++) {
+        read_reg = path ? ind_reg_readl : bar_readl;
+        write_reg = path ? ind_reg_writel : bar_writel;
 
-    /* ENABLE reads back clear for the driver's poll... */
-    g_assert_cmphex(bar_readl(&b, BCM_BUFMGR_MODE) & BCM_BUFMGR_ENABLE, ==, 0);
-    /* ...while ATTN_ENABLE, which the driver did not poll, persists. */
-    g_assert_cmphex(bar_readl(&b, BCM_BUFMGR_MODE) & BCM_BUFMGR_ATTN, ==,
-                    BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2);
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2 - 1);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, 1);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==,
+                        BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+
+        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        write_reg(&b, BCM_BUFMGR_MODE,
+                  BCM_MODE_RESET | BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
+        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==,
+                        BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    }
+
+    bar_writel(&b, BCM_BUFMGR_MODE, BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2);
+    bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    qtest_clock_step(b.qts, BCM_BUFMGR_START_NS);
+    g_assert_cmphex(bar_readl(&b, BCM_BUFMGR_MODE), ==, 0);
 
     bcm_close(&b);
 }
@@ -6268,6 +6298,7 @@ static void test_dual_port_survives_migration(const void *data)
     QPCIDevice *from0, *from1, *to0, *to1;
     QPCIBar to_bar0, to_bar1;
     uint32_t configured_high[2], configured_low[2];
+    int64_t startup_origin_ns;
 
     tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
     g_assert(tmpfs);
@@ -6286,6 +6317,11 @@ static void test_dual_port_survives_migration(const void *data)
     configured_high[1] = ind_reg_readl_dev(from1, BCM_MAC_ADDR_0_HIGH);
     configured_low[0] = ind_reg_readl_dev(from0, BCM_MAC_ADDR_0_LOW);
     configured_low[1] = ind_reg_readl_dev(from1, BCM_MAC_ADDR_0_LOW);
+    ind_reg_writel_dev(from0, BCM_BUFMGR_MODE,
+                       BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    qtest_clock_step(from, BCM_BUFMGR_START_NS);
+    g_assert_cmphex(ind_reg_readl_dev(from0, BCM_BUFMGR_MODE), ==,
+                    BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
     ind_mem_writel_dev(from0, 0x0c1c, 0xaaaa0000);
     ind_mem_writel_dev(from1, 0x0c1c, 0xbbbb1111);
     ind_reg_writel_dev(from0, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
@@ -6303,6 +6339,12 @@ static void test_dual_port_survives_migration(const void *data)
     to1 = qpci_device_find(to_bus, QPCI_DEVFN(BCM_SLOT, 1));
     g_assert_nonnull(to0);
     g_assert_nonnull(to1);
+    startup_origin_ns = qtest_clock_step(from, 1);
+    ind_reg_writel_dev(from1, BCM_BUFMGR_MODE,
+                       BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    qtest_clock_step(from, BCM_BUFMGR_START_NS / 2);
+    g_assert_cmphex(ind_reg_readl_dev(from1, BCM_BUFMGR_MODE), ==,
+                    BCM_BUFMGR_ATTN);
     bcm570x_migrate(from, to, uri);
 
     qpci_device_enable(to0);
@@ -6312,6 +6354,14 @@ static void test_dual_port_survives_migration(const void *data)
 
     g_assert_cmphex(ind_mem_readl_dev(to0, 0x0c1c), ==, 0xaaaa0000);
     g_assert_cmphex(ind_mem_readl_dev(to1, 0x0c1c), ==, 0xbbbb1111);
+    g_assert_cmphex(ind_reg_readl_dev(to0, BCM_BUFMGR_MODE), ==,
+                    BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
+    qtest_clock_set(to, startup_origin_ns + BCM_BUFMGR_START_NS - 1);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_BUFMGR_MODE), ==,
+                    BCM_BUFMGR_ATTN);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_BUFMGR_MODE), ==,
+                    BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
     assert_station_bytes_dev(to0, to_bar0, 0x0000a1a2, 0xa3a4a5a6);
     assert_station_bytes_dev(to1, to_bar1, 0x0000b1b2, 0xb3b4b5b6);
 
@@ -6373,8 +6423,8 @@ int main(int argc, char **argv)
                         test_self_clearing_reset_bits);
     qtest_add_data_func("/bcm570x/hcc-mode-idle-poll", NULL,
                         test_hcc_mode_idle_poll);
-    qtest_add_data_func("/bcm570x/bufmgr-enable-self-clears", NULL,
-                        test_bufmgr_enable_self_clears);
+    qtest_add_data_func("/bcm570x/bufmgr-startup", NULL,
+                        test_bufmgr_startup);
     qtest_add_data_func("/bcm570x/hcc-mode-clears-to-zero", NULL,
                         test_hcc_mode_clears_to_zero);
     qtest_add_data_func("/bcm570x/mi-busy-clears", NULL,
