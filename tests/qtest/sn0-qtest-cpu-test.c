@@ -831,6 +831,88 @@ static void test_r14000_timer(void)
     run_cpu_timer_test("-M malta -m 64M -nic none -vga none", "R14000");
 }
 
+/*
+ * A Compare write directly after a Count write, with Compare one tick ahead
+ * of the Count just written, is a match the guest armed before the host got
+ * around to the second write. The R10000 family recovers it, so IP7 is
+ * pending afterwards; a plain Compare write one tick ahead of the running
+ * Count would leave it clear. Under -icount the writes are far enough apart
+ * in virtual time that only the recovery can explain IP7.
+ */
+static void run_cpu_adjacent_recovery_test(const char *machine,
+                                           const char *cpu)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[16] = { 0 };
+    QTestState *qts;
+    int64_t deadline;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    user_li(image, 26, 0xa0000000 | TIMER_MAILBOX);
+    user_li(image, 10, 0x100);
+    user_li(image, 11, 0x101);
+    /* Raw MTC0s: user_mtc0() pads each with nops, which would separate them. */
+    user_emit(image, 0x40800000 | (10 << 16) | (CP0_COUNT << 11));
+    user_emit(image, 0x40800000 | (11 << 16) | (CP0_COMPARE << 11));
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(image, 0);
+    }
+    user_mfc0(image, 9, CP0_CAUSE);
+    user_i(image, 43, 26, 9, 0);
+    user_i(image, 9, 0, 9, 1);
+    user_i(image, 43, 26, 9, 4);
+    user_park(image);
+    fd = g_file_open_tmp("sn0-cpu-adjacent-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("%s -cpu %s -bios %s -accel tcg,thread=single "
+                      "-icount shift=10,sleep=off -S",
+                      machine, cpu, path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    do {
+        qtest_memread(qts, TIMER_MAILBOX, mailbox, sizeof(mailbox));
+        if (ldl_be_p(mailbox + 4)) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    qtest_quit(qts);
+    g_assert_cmpuint(ldl_be_p(mailbox + 4), ==, 1);
+    g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, CAUSE_IP7);
+}
+
+static void test_r10000_adjacent_recovery(void)
+{
+    run_cpu_adjacent_recovery_test("-M origin200 -m 128M", "R10000");
+}
+
+static void test_r12000_adjacent_recovery(void)
+{
+    run_cpu_adjacent_recovery_test("-M malta -m 64M -nic none -vga none",
+                                   R12000_CPU_1);
+}
+
+static void test_r14000_adjacent_recovery(void)
+{
+    run_cpu_adjacent_recovery_test("-M malta -m 64M -nic none -vga none",
+                                   "R14000");
+}
+
+static void test_r16000_adjacent_recovery(void)
+{
+    run_cpu_adjacent_recovery_test("-M malta -m 64M -nic none -vga none",
+                                   R16000_CPU_4M);
+}
+
 static void r12000_emit_reg(UserCode *p, unsigned int rt, unsigned int rd,
                            unsigned int offset)
 {
@@ -1640,8 +1722,16 @@ int main(int argc, char **argv)
         qtest_add_func("/r16000/word-loads", test_r16000_word_loads);
     }
     qtest_add_func("/sn0/qtest/r10000-timer", test_r10000_timer);
+    qtest_add_func("/sn0/qtest/r10000-adjacent-recovery",
+                   test_r10000_adjacent_recovery);
     if (qtest_has_machine("malta")) {
         qtest_add_func("/sn0/qtest/r14000-timer", test_r14000_timer);
+        qtest_add_func("/sn0/qtest/r12000-adjacent-recovery",
+                       test_r12000_adjacent_recovery);
+        qtest_add_func("/sn0/qtest/r14000-adjacent-recovery",
+                       test_r14000_adjacent_recovery);
+        qtest_add_func("/sn0/qtest/r16000-adjacent-recovery",
+                       test_r16000_adjacent_recovery);
         qtest_add_func("/r12000/profile-required",
                        test_r12000_requires_profile);
         qtest_add_func("/r12000/profile-inconsistent",
