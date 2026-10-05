@@ -663,13 +663,9 @@ def _hardware_inputs(topology: dict) -> list[dict]:
 
 
 def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
-    """The `-M` value selecting one offering. Octane builds its one HEART
-    node board without a node count, so it has no nodes= property and
-    takes only the topology."""
-    options = f"{machine_name},topology={topology['name']}"
-    if topology["generation"] == "IP30":
-        return options
-    return f"{options},nodes={nodes}"
+    """The `-M` value selecting one offering: product, topology and node
+    count, the same three for every machine."""
+    return f"{machine_name},topology={topology['name']},nodes={nodes}"
 
 
 def _offerings_for(model: dict, topology: dict,

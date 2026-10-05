@@ -100,7 +100,7 @@ static void test_machine_help(void)
         "origin2000,topology=origin2000-deskside,nodes=2",
         "origin300,topology=origin300,nodes=1",
         "fuel,topology=fuel,nodes=1",
-        "octane,topology=octane",
+        "octane,topology=octane,nodes=1",
     };
     ToolRun run = run_tool("--machine", "help", NULL);
     g_auto(GStrv) lines = NULL;
@@ -510,7 +510,7 @@ static void test_octane(void)
         { "nvram0-clock", 24 },
     };
     g_autofree char *dir = create_and_check(
-        "octane", "octane,topology=octane", false, stores,
+        "octane", "octane,topology=octane,nodes=1", false, stores,
         ARRAY_SIZE(stores));
     gsize size;
     g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
@@ -563,7 +563,7 @@ static void test_octane_container(void)
 {
     g_autofree char *prom = make_container("ip30-container", 0x31);
     g_autofree char *dir = scratch_path("octane-container");
-    ToolRun run = run_tool("--machine", "octane,topology=octane",
+    ToolRun run = run_tool("--machine", "octane,topology=octane,nodes=1",
                            "--boot-prom", prom, dir, NULL);
     gsize size;
     g_autofree uint8_t *flash = NULL;

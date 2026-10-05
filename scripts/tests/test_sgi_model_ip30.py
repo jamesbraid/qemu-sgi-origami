@@ -44,7 +44,7 @@ class IP30CatalogueTests(unittest.TestCase):
         offering = next(o for o in catalogue["offerings"] if o["product"] == "octane2")
         self.assertNotIn("required-properties", offering["processor"])
         self.assertEqual(offering["machine-options"],
-                         "octane2,topology=octane2")
+                         "octane2,topology=octane2,nodes=1")
         self.assertNotIn("firmware", offering)
         self.assertEqual(offering["init-inputs"], [
             {"name": "boot-prom", "kind": "ip30-prom", "required": True}])

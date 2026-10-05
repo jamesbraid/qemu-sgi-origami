@@ -28,8 +28,10 @@ mips_ss.add(when: 'CONFIG_SGI_PROM_IMAGE',
                       zlib])
 # The family machine base and builder over the compiled catalogue
 # (qapi/sgi-machines.json, embedded and parsed by sgi/sgi-machines.c below).
-mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c'))
+mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-machine.c'))
+# The topology resolver every SGI machine shares, Octane included.
+mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
+            if_true: files('sgi/sn-model-runtime.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sgi/sn1-fabric.c',
