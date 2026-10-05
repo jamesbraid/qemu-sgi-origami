@@ -3885,14 +3885,18 @@ static void md_init(Object *obj)
                           SGI_BEDROCK_MD_ECC_SIZE);
     memory_region_init(&s->memory_mr, obj, TYPE_SGI_BEDROCK_MD "-memory",
                        SGI_BEDROCK_MD_MEMORY_SIZE);
+    memory_region_init(&s->memory_live, obj,
+                       TYPE_SGI_BEDROCK_MD "-memory-live",
+                       SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_init_io(&s->memory_mmio, obj, &md_memory_ops, s,
                           TYPE_SGI_BEDROCK_MD "-memory-decoder",
                           SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_add_subregion(&s->memory_mr, 0, &s->memory_mmio);
+    memory_region_add_subregion_overlap(&s->memory_mr, 0, &s->memory_live, 1);
     /* Checked doublewords sit above the bank aliases inside the window. */
     memory_region_init(&s->ecc_overlay, obj, TYPE_SGI_BEDROCK_MD "-ecc-overlay",
                        SGI_BEDROCK_MD_MEMORY_SIZE);
-    memory_region_add_subregion_overlap(&s->memory_mr, 0, &s->ecc_overlay, 2);
+    memory_region_add_subregion_overlap(&s->memory_live, 0, &s->ecc_overlay, 2);
     for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
         g_autofree char *name =
             g_strdup_printf(TYPE_SGI_BEDROCK_MD "-ecc-injection%u", i);
@@ -3991,7 +3995,7 @@ static void md_realize(DeviceState *dev, Error **errp)
                                  s->node_mr, 0, 1);
         memory_region_set_enabled(&s->memory_alias[bank], false);
         memory_region_set_unmergeable(&s->memory_alias[bank], true);
-        memory_region_add_subregion_overlap(&s->memory_mr,
+        memory_region_add_subregion_overlap(&s->memory_live,
                                             bank * MD_MEMORY_BANK_SIZE,
                                             &s->memory_alias[bank], 1);
     }
@@ -4017,7 +4021,7 @@ static void md_unrealize(DeviceState *dev)
     md_watched_pages_clear(s);
     if (s->memory_alias_initialized) {
         for (unsigned bank = 0; bank < 8; bank++) {
-            memory_region_del_subregion(&s->memory_mr,
+            memory_region_del_subregion(&s->memory_live,
                                         &s->memory_alias[bank]);
         }
         s->memory_alias_initialized = false;

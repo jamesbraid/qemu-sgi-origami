@@ -84,6 +84,65 @@
     },
     {
       "if": {
+        "required": ["composition", "machine"],
+        "properties": {
+          "composition": { "required": ["product"], "properties": {
+            "product": { "const": "origin350-ip53-experiment" }
+          } },
+          "machine": {
+            "required": ["generation", "harness", "emulation"],
+            "properties": {
+              "generation": { "const": "SN1" },
+              "harness": { "required": ["launch_recipe"], "properties": {
+                "launch_recipe": { "const": "ip53-discovery" },
+                "requires_per_node_flash": { "type": "boolean" },
+                "has_managed_boot_flash": { "type": "boolean" },
+                "operator_firmware": { "type": "boolean" }
+              } },
+              "emulation": {
+                "required": ["machine_name", "pic_profiles"],
+                "properties": {
+                  "machine_name": { "const": "origin350" },
+                  "pic_profiles": {
+                    "type": "object", "minProperties": 1,
+                    "additionalProperties": {
+                      "const": "pic-rev3-bedrock-experimental"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": { "machine": { "properties": {
+          "firmware_config": { "properties": {
+            "processor_reset_mode": {
+              "type": "integer", "minimum": 0, "maximum": 4294967295
+            }
+          } },
+          "harness": { "required": [
+            "launch_recipe", "requires_per_node_flash",
+            "has_managed_boot_flash", "operator_firmware"
+          ] }
+        } } }
+      },
+      "else": {
+        "properties": { "machine": { "properties": {
+          "firmware_config": { "properties": {
+            "processor_reset_mode": { "$ref": "#/$defs/r10000-reset-mode" }
+          } },
+          "harness": { "not": { "anyOf": [
+            { "required": ["requires_per_node_flash"] },
+            { "required": ["has_managed_boot_flash"] },
+            { "required": ["operator_firmware"] }
+          ] } }
+        } } }
+      }
+    },
+    {
+      "if": {
         "required": ["evidence_policy", "machine"],
         "properties": {
           "evidence_policy": { "const": "strict" },
@@ -152,7 +211,12 @@
           "properties": {
             "cpu_clock_hz": { "type": "integer", "minimum": 1 },
             "hub_clock_hz": { "type": "integer", "minimum": 1 },
-            "processor_reset_mode": { "$ref": "#/$defs/r10000-reset-mode" },
+            "processor_reset_mode": {
+              "oneOf": [
+                { "$ref": "#/$defs/r10000-reset-mode" },
+                { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+              ]
+            },
             "machine_type": { "type": "integer", "minimum": 0 },
             "flash_read_cycles": { "type": "integer", "minimum": 0 },
             "flash_write_cycles": { "type": "integer", "minimum": 0 },
@@ -198,7 +262,9 @@
               "type": "object",
               "minProperties": 1,
               "propertyNames": { "$ref": "#/$defs/identifier" },
-              "additionalProperties": { "const": "pic-rev3-bedrock" }
+              "additionalProperties": {
+                "enum": ["pic-rev3-bedrock", "pic-rev3-bedrock-experimental"]
+              }
             },
             "system_timekeepers": {
               "type": "object",
@@ -649,6 +715,9 @@
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
             "smdk": { "$ref": "#/$defs/smdk-recipe" },
             "launch_recipe": { "enum": ["ip53-discovery"], "description": "Optional offering launch preparation. Emitted only when authored." },
+            "requires_per_node_flash": { "type": "boolean", "description": "Whether this product requires a separate boot flash for each node." },
+            "has_managed_boot_flash": { "type": "boolean", "description": "Whether the launcher manages a boot-flash payload for this product." },
+            "operator_firmware": { "type": "boolean", "description": "Whether this profile uses caller-selected firmware as an operator input." },
             "console_records": {
               "type": "array", "minItems": 1,
               "description": "Explicit IP53 console endpoints, filtered by selected node population.",
@@ -1748,6 +1817,37 @@
         },
         {
           "if": {
+            "properties": { "kind": { "const": "cpu" }, "hardware_kind": { "const": "r16000" } },
+            "required": ["kind", "hardware_kind"]
+          },
+          "then": {
+            "properties": { "identity": { "properties": {
+              "required_properties": {
+                "const": ["r16000-experimental", "r16000-reset-mode", "r16000-scache-bytes"]
+              }
+            } } }
+          },
+          "else": {
+            "properties": {
+              "identity": {
+                "not": { "anyOf": [
+                  { "required": ["r16000_reset_mode"] },
+                  { "required": ["r16000_scache_bytes"] }
+                ] },
+                "properties": {
+                  "required_properties": {
+                    "not": { "contains": { "enum": [
+                      "r16000-experimental", "r16000-reset-mode",
+                      "r16000-scache-bytes"
+                    ] } }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
             "not": {
               "properties": { "hardware_kind": { "const": "ioc4" } },
               "required": ["hardware_kind"]
@@ -1849,6 +1949,16 @@
             "widget_part": { "$ref": "#/$defs/address" },
             "widget_mfg": { "$ref": "#/$defs/address" },
             "processor_identification": { "$ref": "#/$defs/address" },
+            "r16000_reset_mode": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "r16000_scache_bytes": { "type": "integer", "minimum": 1 },
+            "required_properties": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": [
+                "r16000-experimental", "r16000-reset-mode",
+                "r16000-scache-bytes"
+              ] }
+            },
             "fpu_identification": { "$ref": "#/$defs/address" },
             "ni_revision": { "type": "integer", "minimum": 0, "maximum": 15 },
             "widget_revision": { "type": "integer", "minimum": 0, "maximum": 15 },

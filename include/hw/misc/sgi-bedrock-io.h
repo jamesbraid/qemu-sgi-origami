@@ -30,6 +30,9 @@ typedef MemTxResult (*SGIBedrockIODestinationRW)(void *opaque,
     const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
     bool write);
 
+typedef bool (*SGIBedrockIOBTELocalRW)(void *opaque, hwaddr address,
+    void *buffer, size_t size, bool write, MemTxResult *result);
+
 struct SGIBedrockIOState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -38,6 +41,8 @@ struct SGIBedrockIOState {
     AddressSpace *dma_as;
     SGIBedrockIODestinationRW destination_rw;
     void *destination_opaque;
+    SGIBedrockIOBTELocalRW bte_local_rw;
+    void *bte_local_opaque;
     MemoryRegion *dma_mr;
     AddressSpace linked_dma_as;
     bool linked_dma_as_initialized;
@@ -106,6 +111,9 @@ void sgi_bedrock_io_set_destination(SGIBedrockIOState *s,
                                    SGIBedrockIODestinationRW rw, void *opaque);
 
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
+void sgi_bedrock_io_set_bte_local_rw(SGIBedrockIOState *s,
+                                     SGIBedrockIOBTELocalRW rw,
+                                     void *opaque);
 
 /*
  * How this interface finds another node's: an XIO register packet or a

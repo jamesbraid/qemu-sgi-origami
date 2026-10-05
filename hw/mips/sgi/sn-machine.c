@@ -55,6 +55,7 @@
 #include "hw/misc/sgi-l1.h"
 #include "chardev/char.h"
 #include "migration/vmstate.h"
+#include "net/net.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
@@ -62,6 +63,7 @@
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci-host/sgi-pic.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci/pci.h"
 #include "block/block.h"
@@ -128,6 +130,7 @@ SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelPciHostBridge, pci_host_bridge)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioAttachment, xio_attachment)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioSlot, xio_slot)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelPciFunction, pci_function)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelController, controller)
 
 static unsigned int *sgi_model_array_uint32(const uint32List *list, size_t *count)
@@ -304,6 +307,8 @@ struct SGIMachineState {
 
     bool debug_leds;
     bool junk_uart_present;
+    bool ip53_experimental;
+    bool ip53_experiment_authorized;
     uint8_t elsc_dip_switches;
     uint32_t module_start_delay_ms;
 
@@ -347,6 +352,9 @@ struct SGIMachineState {
      * synthetic two-node fixture).
      */
     DeviceState **bedrock_nodes;
+    DeviceState **pic_hosts;
+    SGIXioLink *pic_links;
+    size_t pic_host_count;
     SGIMachineNodeConfig *node_config;
     SGIMachineL1Config *l1_config;
     SGIMachineIoConfig *io_config;
@@ -367,6 +375,10 @@ struct SGIMachineState {
     uint8_t *initial_reachability;
     SGIL1QueryRouter query_router;
     bool management_registered;
+    bool ip53_fingerprint_enabled;
+    bool ip53_fingerprint_registered;
+    uint8_t ip53_local_fingerprint[32];
+    uint8_t ip53_incoming_fingerprint[32];
     /* Each Bedrock node's share of machine->ram, in node order. */
     MemoryRegion *bedrock_ram;
 
@@ -1056,7 +1068,50 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 }
 
 static bool sgi_machine_preflight_io_descriptors(
-    const SGIModelTopology *t, Error **errp);
+    const SGIModelTopology *t, bool allow_ip53_fixture,
+    bool allow_ip53_experiment, Error **errp);
+
+static SGIModelPicCompatibilityProfile sgi_machine_ip53_pic_profile(
+    bool runtime_experiment)
+{
+    if (runtime_experiment) {
+        return
+            SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
+    }
+    return SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK;
+}
+
+static bool sgi_machine_ip53_experiment_policy(
+    SGIMachineState *s, SGIMachineClass *smc, const SGIModelTopology *t,
+    bool *allow_ip53_experiment, Error **errp)
+{
+    bool origin350 = g_strcmp0(smc->product, "origin350") == 0;
+    bool experiment_topology =
+        g_strcmp0(t->name, "origin350-ip53-experiment") == 0;
+
+    if (smc->test_topology && qtest_enabled()) {
+        if (s->ip53_experimental) {
+            error_setg(errp, "qtest fixture topology cannot enable the "
+                       "IP53 runtime experiment");
+            return false;
+        }
+        *allow_ip53_experiment = false;
+        return true;
+    }
+    if (s->ip53_experimental &&
+        (!origin350 || smc->test_topology || !experiment_topology)) {
+        error_setg(errp, "ip53-experimental=on requires the origin350 "
+                   "machine and origin350-ip53-experiment topology");
+        return false;
+    }
+    if (origin350 && experiment_topology && !s->ip53_experimental) {
+        error_setg(errp, "origin350-ip53-experiment requires "
+                   "ip53-experimental=on");
+        return false;
+    }
+    *allow_ip53_experiment = s->ip53_experimental;
+    return true;
+}
 
 /*
  * The topology this machine builds: the chassis topology= names, with
@@ -1067,18 +1122,29 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
                                                    Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     const SGIModelTopology *chassis = sgi_machine_chassis(machine);
+    bool allow_ip53_experiment;
+    bool allow_ip53_fixture = smc->test_topology && qtest_enabled();
 
     if (!chassis) {
         error_setg(errp, "unknown topology");
         return NULL;
     }
     if (!sgi_model_check_runtime_endpoints(chassis, errp) ||
-        !sgi_machine_preflight_io_descriptors(chassis, errp)) {
+        !sgi_machine_ip53_experiment_policy(
+            s, smc, chassis, &allow_ip53_experiment, errp)) {
         return NULL;
     }
-    s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
-                                           errp);
+    if (!s->view) {
+        s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
+                                               errp);
+    }
+    if (!s->view || !sgi_machine_preflight_io_descriptors(
+            s->view, allow_ip53_fixture, allow_ip53_experiment, errp)) {
+        s->view = NULL;
+        return NULL;
+    }
     return s->view;
 }
 
@@ -2811,6 +2877,255 @@ static bool sgi_machine_instantiate_io_board(
     }
 }
 
+static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
+                                         const SGIModelTopology *t,
+                                         Error **errp)
+{
+    g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t host_count, attachment_count, i;
+
+    hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                  &attachment_count);
+    s->pic_hosts = g_new0(DeviceState *, host_count);
+    s->pic_links = g_new0(SGIXioLink, host_count);
+    s->pic_host_count = host_count;
+
+    for (i = 0; i < host_count; i++) {
+        const SGIModelPciHostBridge *host = hosts[i];
+        SGIPICState *pic;
+        g_autofree char *child_name = NULL;
+
+        if (host->xio_attachment_index >= attachment_count) {
+            error_setg(errp, "PCI host '%s' names an invalid XIO attachment",
+                       host->id);
+            return false;
+        }
+        pic = SGI_PIC(qdev_new(TYPE_SGI_PIC));
+        child_name = g_strdup_printf("pic-%s", host->id);
+
+        object_property_add_child(OBJECT(s), child_name, OBJECT(pic));
+        object_unref(OBJECT(pic));
+        if (s->ip53_experiment_authorized) {
+            const SGIModelXioAttachment *attachment =
+                attachments[host->xio_attachment_index];
+
+            qdev_prop_set_enum(DEVICE(pic), "compatibility-profile",
+                               host->compatibility_profile);
+            qdev_prop_set_bit(DEVICE(pic), "test-fixture", false);
+            qdev_prop_set_uint8(DEVICE(pic), "pxbow-host-widget", 10);
+            qdev_prop_set_uint8(DEVICE(pic), "pxbow-pic-widget",
+                                attachment->widget);
+            if (!sgi_pic_enable_pxbow_experiment(
+                    pic, SGI_BEDROCK_IO_PIO_SIZE, errp)) {
+                return false;
+            }
+        } else {
+            qdev_prop_set_bit(DEVICE(pic), "test-fixture", true);
+            qdev_prop_set_bit(DEVICE(pic), "linked-transport", true);
+            qdev_prop_set_bit(DEVICE(pic), "bedrock-interrupts", true);
+        }
+        s->pic_hosts[i] = DEVICE(pic);
+    }
+    return true;
+}
+
+static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
+                                             const SGIModelTopology *t,
+                                             unsigned int node_index,
+                                             Error **errp)
+{
+    g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t host_count, attachment_count, i;
+    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+
+    hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                  &attachment_count);
+    for (i = 0; i < host_count; i++) {
+        const SGIModelPciHostBridge *host = hosts[i];
+        const SGIModelXioAttachment *attachment =
+            attachments[host->xio_attachment_index];
+        MemoryRegion *face;
+
+        if (attachment->node_index != node_index) {
+            continue;
+        }
+        if (s->ip53_experiment_authorized) {
+            MemoryRegion *widget_zero =
+                sgi_pic_pxbow_widget_zero(SGI_PIC(s->pic_hosts[i]));
+            MemoryRegion *routed =
+                sgi_pic_routed_widget(SGI_PIC(s->pic_hosts[i]));
+
+            if (!sn1_node_set_ip53_pic_widget(node, 0, widget_zero, errp) ||
+                !sn1_node_set_ip53_pic_widget(node, attachment->widget,
+                                               routed, errp)) {
+                return false;
+            }
+            continue;
+        }
+        face = sgi_xio_port_cpu_face(OBJECT(s->pic_hosts[i]), 0);
+        if (!sn1_node_set_ip53_pic_widget(node, attachment->widget, face,
+                                          errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool sgi_machine_build_pic_io9(SGIMachineState *s,
+                                      const SGIModelTopology *t,
+                                      Error **errp)
+{
+    g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    const SGIModelIoBoardList *board_entry;
+    size_t host_count, attachment_count, i;
+
+    hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                  &attachment_count);
+
+    for (i = 0; i < host_count; i++) {
+        const SGIModelPciHostBridge *host = hosts[i];
+        const SGIModelXioAttachment *attachment =
+            attachments[host->xio_attachment_index];
+        SN1NodeState *node = SN1_NODE(
+            s->bedrock_nodes[attachment->node_index]);
+        SGIBedrockIOState *bedrock_io = sn1_node_bedrock_io(node);
+        SGIPICState *pic = SGI_PIC(s->pic_hosts[i]);
+        g_autofree char *link_name = g_strdup_printf("pic-link-%s", host->id);
+
+        if (!bedrock_io) {
+            error_setg(errp, "PCI host '%s' has no realized Bedrock endpoint",
+                       host->id);
+            return false;
+        }
+        sgi_xio_link_init(&s->pic_links[i], OBJECT(s), link_name,
+                          OBJECT(bedrock_io), 0, OBJECT(pic), 0);
+        if (!sgi_xio_link_connect(&s->pic_links[i], errp) ||
+            (s->ip53_experiment_authorized &&
+             !sgi_pic_attach_pxbow_packet_endpoint(
+                 pic, sgi_xio_port_packet_face(OBJECT(bedrock_io), 0),
+                 errp)) ||
+            !sysbus_realize(SYS_BUS_DEVICE(pic), errp) ||
+            !sgi_xio_link_connect(&s->pic_links[i], errp)) {
+            return false;
+        }
+    }
+
+    for (board_entry = t->io_boards; board_entry;
+         board_entry = board_entry->next) {
+        const SGIModelIoBoard *board = board_entry->value;
+        const SGIModelPciFunctionList *function_entry;
+        DeviceState *rtc = NULL;
+        MemoryRegion *rtc_clock = NULL;
+
+        if (!board->populated ||
+            board->preset != SGI_MODEL_IO_BOARD_PRESET_IO9) {
+            continue;
+        }
+        if (board->has_ds1742 && board->ds1742) {
+            g_autofree char *data_id = g_strdup_printf(
+                "sgi-ds1742-data-%s", board->id);
+            g_autofree char *clock_id = g_strdup_printf(
+                "sgi-ds1742-clock-%s", board->id);
+            BlockBackend *data = blk_by_name(data_id);
+            BlockBackend *clock = blk_by_name(clock_id);
+            g_autofree char *child_name = g_strdup_printf(
+                "ds1742-%s", board->id);
+
+            if (!data || !clock) {
+                error_setg(errp, "IO9 board '%s' requires both DS1742 "
+                           "backends '%s' and '%s'", board->id, data_id,
+                           clock_id);
+                return false;
+            }
+            rtc = qdev_new("ds1742");
+            object_property_add_child(OBJECT(s), child_name, OBJECT(rtc));
+            object_unref(OBJECT(rtc));
+            if (!qdev_prop_set_drive_err(rtc, "drive", data, errp) ||
+                !qdev_prop_set_drive_err(rtc, "clock-drive", clock, errp) ||
+                !sysbus_realize(SYS_BUS_DEVICE(rtc), errp)) {
+                return false;
+            }
+            rtc_clock = sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc), 0);
+        }
+        for (function_entry = board->pci_functions; function_entry;
+             function_entry = function_entry->next) {
+            const SGIModelPciFunction *function = function_entry->value;
+            SGIPICState *pic = SGI_PIC(s->pic_hosts[board->pci_host_index]);
+            DeviceState *head = sgi_pic_head_device(pic, board->pci_head);
+            PCIBus *bus = sgi_pic_pci_bus(pic, board->pci_head);
+            PCIDevice *pci;
+            const char *type;
+            g_autofree char *child_name = NULL;
+            unsigned int irq_line = function->pci_device * 4 +
+                                    function->intx_pin;
+
+            switch (function->kind) {
+            case SGI_MODEL_PCI_FUNCTION_KIND_IOC4:
+                type = "sgi-ioc4";
+                break;
+            case SGI_MODEL_PCI_FUNCTION_KIND_ISP12160:
+                type = "qlogic-isp12160";
+                break;
+            case SGI_MODEL_PCI_FUNCTION_KIND_BCM5701:
+                type = "bcm570x";
+                break;
+            default:
+                error_setg(errp, "IO9 board '%s' has an unsupported PCI "
+                           "function", board->id);
+                return false;
+            }
+            child_name = g_strdup_printf("io9-%s-d%u-f%u", board->id,
+                                         function->pci_device,
+                                         function->pci_function);
+            pci = PCI_DEVICE(qdev_new(type));
+            object_property_add_child(OBJECT(s), child_name, OBJECT(pci));
+            pci->devfn = PCI_DEVFN(function->pci_device,
+                                   function->pci_function);
+            if (function->kind == SGI_MODEL_PCI_FUNCTION_KIND_IOC4) {
+                unsigned int node_index =
+                    attachments[hosts[board->pci_host_index]->
+                                xio_attachment_index]->node_index;
+                unsigned int port;
+
+                qdev_prop_set_uint32(DEVICE(pci), "clock-hz",
+                                     function->clock_hz);
+                qdev_prop_set_bit(DEVICE(pci), "serial-dma-experimental",
+                                  function->serial_dma_experimental);
+                if (rtc_clock) {
+                    object_property_set_link(OBJECT(pci), "clock",
+                                             OBJECT(rtc_clock), &error_abort);
+                }
+                for (port = 0; port < 4; port++) {
+                    static const char *const chardev_props[] = {
+                        "chardev1", "chardev2", "chardev3", "chardev4",
+                    };
+                    Chardev *chr = serial_hd(
+                        sgi_sn1_serial_line(node_index, port + 1));
+
+                    qdev_prop_set_chr(DEVICE(pci), chardev_props[port], chr);
+                }
+            } else if (function->kind ==
+                       SGI_MODEL_PCI_FUNCTION_KIND_BCM5701) {
+                qdev_prop_set_string(DEVICE(pci), "model", "bcm5701");
+                qemu_configure_nic_device(DEVICE(pci), true, NULL);
+            }
+            qdev_connect_gpio_out_named(head, "pci-intx", irq_line,
+                                        qdev_get_gpio_in(head,
+                                                         function->pic_input));
+            if (!pci_realize_and_unref(pci, bus, errp)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /*
  * Realizes every Crossbow this topology built, once every node and board
  * linked to one has (sgi_xbow_attach_endpoint() refuses on an
@@ -3994,6 +4309,342 @@ static void sgi_machine_io_peer_number_changed(Notifier *notifier, void *data)
     sn1_fabric_update_claims(peer->endpoint);
 }
 
+#define SGI_MACHINE_IP53_FINGERPRINT_SIZE 32
+
+static void sgi_machine_fingerprint_update(GChecksum *checksum,
+                                           const void *data, size_t length)
+{
+    g_assert(length <= G_MAXSSIZE);
+    g_checksum_update(checksum, data, length);
+}
+
+static void sgi_machine_fingerprint_u8(GChecksum *checksum, uint8_t value)
+{
+    sgi_machine_fingerprint_update(checksum, &value, sizeof(value));
+}
+
+static void sgi_machine_fingerprint_u32(GChecksum *checksum, uint32_t value)
+{
+    uint8_t encoded[] = {
+        (value >> 24) & 0xff, (value >> 16) & 0xff,
+        (value >> 8) & 0xff, value & 0xff,
+    };
+
+    sgi_machine_fingerprint_update(checksum, encoded, sizeof(encoded));
+}
+
+static void sgi_machine_fingerprint_u64(GChecksum *checksum, uint64_t value)
+{
+    uint8_t encoded[] = {
+        (value >> 56) & 0xff, (value >> 48) & 0xff,
+        (value >> 40) & 0xff, (value >> 32) & 0xff,
+        (value >> 24) & 0xff, (value >> 16) & 0xff,
+        (value >> 8) & 0xff, value & 0xff,
+    };
+
+    sgi_machine_fingerprint_update(checksum, encoded, sizeof(encoded));
+}
+
+static void sgi_machine_fingerprint_string(GChecksum *checksum,
+                                           const char *value)
+{
+    size_t length = strlen(value);
+
+    g_assert(length <= UINT32_MAX);
+    sgi_machine_fingerprint_u32(checksum, length);
+    sgi_machine_fingerprint_update(checksum, value, length);
+}
+
+static int sgi_machine_compare_host_ids(const void *left, const void *right)
+{
+    const SGIModelPciHostBridge *const *a = left;
+    const SGIModelPciHostBridge *const *b = right;
+
+    return g_strcmp0((*a)->id, (*b)->id);
+}
+
+static int sgi_machine_compare_board_ids(const void *left, const void *right)
+{
+    const SGIModelIoBoard *const *a = left;
+    const SGIModelIoBoard *const *b = right;
+
+    return g_strcmp0((*a)->id, (*b)->id);
+}
+
+static int sgi_machine_compare_devfns(const void *left, const void *right)
+{
+    const SGIModelPciFunction *const *a = left;
+    const SGIModelPciFunction *const *b = right;
+    unsigned int a_devfn = PCI_DEVFN((*a)->pci_device, (*a)->pci_function);
+    unsigned int b_devfn = PCI_DEVFN((*b)->pci_device, (*b)->pci_function);
+
+    return (a_devfn > b_devfn) - (a_devfn < b_devfn);
+}
+
+static bool sgi_machine_ip53_fingerprint(
+    const SGIModelTopology *t,
+    const SGIMachineNodeConfig *node_config,
+    const SGIMachineL1Config *l1_config,
+    bool runtime_permission,
+    uint8_t pxbow_revision,
+    uint8_t digest[32], Error **errp)
+{
+    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree const SGIModelController **controllers = NULL;
+    g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree const SGIModelPciHostBridge **sorted_hosts = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree const SGIModelIoBoard **sorted_boards = NULL;
+    size_t node_count, controller_count, host_count, attachment_count;
+    size_t crossbar_count;
+    size_t board_count, io9_count = 0, i;
+    static const uint8_t domain[] = "sgi-ip53-assembly";
+    gsize digest_length = SGI_MACHINE_IP53_FINGERPRINT_SIZE;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    controllers = sgi_model_controller_array(t->controllers,
+                                              &controller_count);
+    hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                  &attachment_count);
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    sorted_hosts = g_memdup2(hosts, sizeof(*hosts) * host_count);
+    sorted_boards = g_memdup2(boards, sizeof(*boards) * board_count);
+    for (i = 0; i < board_count; i++) {
+        io9_count += boards[i]->preset == SGI_MODEL_IO_BOARD_PRESET_IO9;
+    }
+    qsort(sorted_hosts, host_count, sizeof(*sorted_hosts),
+          sgi_machine_compare_host_ids);
+    qsort(sorted_boards, board_count, sizeof(*sorted_boards),
+          sgi_machine_compare_board_ids);
+
+    sgi_machine_fingerprint_update(checksum, domain, sizeof(domain));
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 4);
+    sgi_machine_fingerprint_u8(checksum, runtime_permission);
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 1 : 0);
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 0);
+    sgi_machine_fingerprint_u32(checksum,
+                                runtime_permission ? pxbow_revision : 0);
+    if (runtime_permission) {
+        /* Reset PROM reads use the shared bounded IP35 carrier. */
+        sgi_machine_fingerprint_u8(checksum, 1);
+        /* The PIC-owned status-source field changes migration identity. */
+        sgi_machine_fingerprint_u8(checksum, 1);
+        /* The CPU PIO lane policy is part of the runtime composition. */
+        sgi_machine_fingerprint_u8(checksum, 1);
+        /* Direct64 DMA attributes are part of the runtime composition. */
+        sgi_machine_fingerprint_u8(checksum, 2);
+    }
+    sgi_machine_fingerprint_u32(checksum, node_count);
+    for (i = 0; i < node_count; i++) {
+        const SGIModelNode *node = nodes[i];
+
+        if (!node->has_board_kind ||
+            node->board_kind != SGI_MODEL_BOARD_KIND_IP53 ||
+            !node->identity || !node->identity->has_clock_hz ||
+            !node->identity->clock_hz ||
+            !node->identity->has_ni_revision ||
+            node->identity->ni_revision > 15 ||
+            !node->identity->has_widget_revision ||
+            node->identity->widget_revision > 15) {
+            error_setg(errp, "IP53 fingerprint has invalid Bedrock node '%s'",
+                       node->id);
+            return false;
+        }
+        if (node_config[i].controller_index >= controller_count ||
+            !controllers[node_config[i].controller_index]->l1 ||
+            !l1_config[node_config[i].controller_index].reported_type) {
+            error_setg(errp, "IP53 fingerprint has invalid L1 controller for "
+                       "Bedrock node '%s'", node->id);
+            return false;
+        }
+        /* Node order assigns NASID and the node's address-space owner. */
+        sgi_machine_fingerprint_u32(checksum, i);
+        sgi_machine_fingerprint_string(checksum, node->id);
+        sgi_machine_fingerprint_u64(checksum,
+                                    node_config[i].board_id_word);
+        sgi_machine_fingerprint_u32(checksum,
+                                    node_config[i].controller_index);
+        sgi_machine_fingerprint_u8(
+            checksum,
+            l1_config[node_config[i].controller_index].reported_type);
+        sgi_machine_fingerprint_u64(checksum, node->identity->clock_hz);
+        sgi_machine_fingerprint_u32(checksum,
+                                    node->identity->ni_revision);
+        sgi_machine_fingerprint_u32(checksum,
+                                    node->identity->widget_revision);
+        if (runtime_permission) {
+            const SGIModelCpuSlotList *slot;
+            size_t cpu_count = 0, cpu;
+
+            for (slot = node->cpu_slots; slot; slot = slot->next) {
+                cpu_count++;
+            }
+            sgi_machine_fingerprint_u32(checksum, cpu_count);
+            for (cpu = 0; cpu < cpu_count; cpu++) {
+                sgi_machine_fingerprint_u32(checksum, cpu);
+                sgi_machine_fingerprint_u8(checksum, 1);
+                sgi_machine_fingerprint_u64(checksum, SN1_PROM_RESET);
+                sgi_machine_fingerprint_u64(checksum,
+                                            SN1_IP53_PROM_PAYLOAD_SIZE);
+            }
+        }
+    }
+
+    sgi_machine_fingerprint_u32(checksum, host_count);
+    for (i = 0; i < host_count; i++) {
+        const SGIModelPciHostBridge *host = sorted_hosts[i];
+        const SGIModelXioAttachment *attachment;
+        const SGIModelNode *node;
+
+        if (host->xio_attachment_index >= attachment_count ||
+            !host->has_compatibility_profile) {
+            error_setg(errp, "IP53 fingerprint has invalid PCI host '%s'",
+                       host->id);
+            return false;
+        }
+        attachment = attachments[host->xio_attachment_index];
+        if (attachment->node_index >= node_count) {
+            error_setg(errp, "IP53 fingerprint host '%s' has invalid owner",
+                       host->id);
+            return false;
+        }
+        node = nodes[attachment->node_index];
+        sgi_machine_fingerprint_string(checksum, host->id);
+        sgi_machine_fingerprint_string(checksum, node->id);
+        sgi_machine_fingerprint_u32(checksum, attachment->widget);
+        sgi_machine_fingerprint_u8(checksum,
+                                   attachment->crossbar_index >= 0);
+        if (attachment->crossbar_index >= 0) {
+            if ((size_t)attachment->crossbar_index >= crossbar_count) {
+                error_setg(errp, "IP53 fingerprint host '%s' has invalid "
+                           "Crossbow owner", host->id);
+                return false;
+            }
+            sgi_machine_fingerprint_string(
+                checksum, crossbars[attachment->crossbar_index]->id);
+        }
+        sgi_machine_fingerprint_u32(checksum,
+                                    host->compatibility_profile);
+    }
+
+    sgi_machine_fingerprint_u32(checksum, io9_count);
+    for (i = 0; i < board_count; i++) {
+        const SGIModelIoBoard *board = sorted_boards[i];
+        const SGIModelPciHostBridge *host;
+        const SGIModelXioAttachment *attachment;
+        g_autofree const SGIModelPciFunction **functions = NULL;
+        size_t function_count, function_index;
+
+        if (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO9) {
+            continue;
+        }
+        if (!board->has_pci_host_index || board->pci_host_index >= host_count ||
+            !board->has_pci_head) {
+            error_setg(errp, "IP53 fingerprint has invalid IO9 board '%s'",
+                       board->id);
+            return false;
+        }
+        host = hosts[board->pci_host_index];
+        attachment = attachments[host->xio_attachment_index];
+        sgi_machine_fingerprint_string(checksum, board->id);
+        sgi_machine_fingerprint_string(checksum, host->id);
+        sgi_machine_fingerprint_u32(checksum, board->pci_head);
+        sgi_machine_fingerprint_string(checksum,
+                                       nodes[attachment->node_index]->id);
+        sgi_machine_fingerprint_u32(checksum, attachment->widget);
+        sgi_machine_fingerprint_u8(checksum, board->populated);
+        sgi_machine_fingerprint_u8(checksum,
+                                   board->has_ds1742 && board->ds1742);
+        if (board->has_ds1742 && board->ds1742) {
+            sgi_machine_fingerprint_string(checksum, board->id);
+        }
+        functions = sgi_model_pci_function_array(
+            board->populated ? board->pci_functions : NULL, &function_count);
+        qsort(functions, function_count, sizeof(*functions),
+              sgi_machine_compare_devfns);
+        sgi_machine_fingerprint_u32(checksum, function_count);
+        for (function_index = 0; function_index < function_count;
+             function_index++) {
+            const SGIModelPciFunction *function = functions[function_index];
+
+            sgi_machine_fingerprint_u32(checksum, function->kind);
+            sgi_machine_fingerprint_u8(checksum, function->revision);
+            sgi_machine_fingerprint_u8(checksum, function->pci_device);
+            sgi_machine_fingerprint_u8(checksum, function->pci_function);
+            sgi_machine_fingerprint_u32(checksum, function->intx_pin);
+            sgi_machine_fingerprint_u32(checksum, function->pic_input);
+            sgi_machine_fingerprint_u8(checksum, function->has_clock_hz);
+            if (function->has_clock_hz) {
+                sgi_machine_fingerprint_u32(checksum, function->clock_hz);
+            }
+            sgi_machine_fingerprint_u8(
+                checksum, function->has_serial_dma_experimental);
+            if (function->has_serial_dma_experimental) {
+                sgi_machine_fingerprint_u8(
+                    checksum, function->serial_dma_experimental);
+            }
+        }
+    }
+    g_checksum_get_digest(checksum, digest, &digest_length);
+    if (digest_length != SGI_MACHINE_IP53_FINGERPRINT_SIZE) {
+        error_setg(errp, "could not compute IP53 assembly fingerprint");
+        return false;
+    }
+    return true;
+}
+
+static int sgi_machine_ip53_fingerprint_pre_save(void *opaque)
+{
+    SGIMachineState *s = opaque;
+
+    memcpy(s->ip53_incoming_fingerprint, s->ip53_local_fingerprint,
+           sizeof(s->ip53_incoming_fingerprint));
+    return 0;
+}
+
+static bool sgi_machine_ip53_fingerprint_post_load(void *opaque,
+                                                    int version_id,
+                                                    Error **errp)
+{
+    SGIMachineState *s = opaque;
+    bool mismatch;
+
+    mismatch = memcmp(s->ip53_incoming_fingerprint,
+                      s->ip53_local_fingerprint,
+                      sizeof(s->ip53_local_fingerprint)) != 0;
+    if (mismatch) {
+        error_setg(errp, "IP53 assembly fingerprint mismatch");
+        return false;
+    }
+    return true;
+}
+
+static const VMStateDescription vmstate_sgi_machine_ip53_fingerprint = {
+    .name = "sgi-machine/ip53-assembly",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .priority = MIG_PRI_BACKEND,
+    .pre_save = sgi_machine_ip53_fingerprint_pre_save,
+    .post_load_errp = sgi_machine_ip53_fingerprint_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(ip53_incoming_fingerprint, SGIMachineState, 32),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void sgi_machine_register_ip53_fingerprint(SGIMachineState *s)
+{
+    if (s->ip53_fingerprint_enabled) {
+        vmstate_register_any(NULL, &vmstate_sgi_machine_ip53_fingerprint, s);
+        s->ip53_fingerprint_registered = true;
+    }
+}
+
 static const VMStateDescription vmstate_sgi_machine_owner = {
     .name = "sgi-machine/l1-owner",
     .version_id = 1,
@@ -4689,7 +5340,24 @@ static bool sgi_machine_resolve_uint(SGIMachineState *s,
 }
 
 /* Refuse authored board identities outside the builder's supported set. */
+static bool sgi_machine_topology_has_ip53(const SGIModelTopology *t)
+{
+    const SGIModelNodeList *entry;
+
+    for (entry = t->nodes; entry; entry = entry->next) {
+        const SGIModelNode *node = entry->value;
+
+        if (node->has_board_kind &&
+            node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
+                                            bool allow_ip53,
+                                            bool runtime_experiment,
                                             Error **errp)
 {
     const SGIModelNodeList *entry;
@@ -4706,9 +5374,23 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
             return false;
         }
         if (node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
-            error_setg(errp, "topology '%s' node '%s' selects unsupported "
-                       "board kind 'ip53'", t->name, node->id);
-            return false;
+            if (!allow_ip53) {
+                error_setg(errp, "topology '%s' node '%s' selects unsupported "
+                           "board kind 'ip53'", t->name, node->id);
+                return false;
+            }
+            if (!node->identity || !node->identity->has_clock_hz ||
+                !node->identity->clock_hz) {
+                error_setg(errp, "topology '%s' IP53 node '%s' requires "
+                           "an explicitly compiled positive Bedrock clock",
+                           t->name, node->id);
+                return false;
+            }
+            if (runtime_experiment && node->identity->clock_hz != 200000000) {
+                error_setg(errp, "origin350 IP53 experiment requires a "
+                           "200000000 Hz Bedrock clock");
+                return false;
+            }
         }
     }
     return true;
@@ -4716,20 +5398,51 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
 
 /* Validate optional XIO and PCI board references before config resolution. */
 static bool sgi_machine_preflight_io_descriptors(
-    const SGIModelTopology *t, Error **errp)
+    const SGIModelTopology *t, bool allow_ip53_fixture,
+    bool allow_ip53_experiment, Error **errp)
 {
     g_autofree const SGIModelIoBoard **boards = NULL;
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelNode **nodes = NULL;
     g_autofree bool *owned_attachments = NULL;
     g_autofree bool *owned_heads = NULL;
-    size_t board_count, host_count, attachment_count, i;
+    g_autofree bool *owned_devfns = NULL;
+    g_autofree bool *owned_routes = NULL;
+    size_t board_count, host_count, attachment_count, crossbar_count;
+    size_t node_count, i;
+    size_t io9_count = 0;
     bool has_io9 = false;
+    bool has_ip53 = false;
+    bool all_ip53 = true;
+    const SGIModelNodeList *node_entry;
+
+    for (node_entry = t->nodes; node_entry; node_entry = node_entry->next) {
+        const SGIModelNode *node = node_entry->value;
+        bool ip53 = node->has_board_kind &&
+            node->board_kind == SGI_MODEL_BOARD_KIND_IP53;
+
+        has_ip53 |= ip53;
+        all_ip53 &= ip53;
+    }
 
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
-    attachment_count = QAPI_LIST_LENGTH(t->xio_attachments);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                  &attachment_count);
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    nodes = sgi_model_node_array(t->nodes, &node_count);
     owned_attachments = g_new0(bool, attachment_count ? attachment_count : 1);
     owned_heads = g_new0(bool, host_count ? host_count * 2 : 1);
+    owned_devfns = g_new0(bool, MAX(host_count * 2 * 256, 1));
+    owned_routes = g_new0(bool, MAX(host_count * 2 * 128, 1));
+
+    if (has_ip53 && crossbar_count) {
+        error_setg(errp, "topology '%s' IP53 construction does not support "
+                   "XIO crossbars", t->name);
+        return false;
+    }
 
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
@@ -4738,6 +5451,19 @@ static bool sgi_machine_preflight_io_descriptors(
         if (host->kind != SGI_MODEL_PCI_HOST_KIND_PIC) {
             error_setg(errp, "topology '%s' PCI host '%s' has unsupported kind",
                        t->name, host->id);
+            return false;
+        }
+        if (host->has_compatibility_profile &&
+            host->compatibility_profile !=
+                sgi_machine_ip53_pic_profile(allow_ip53_experiment)) {
+            if (allow_ip53_experiment) {
+                error_setg(errp, "topology '%s' PCI host '%s' must select "
+                           "pic-rev3-bedrock-experimental", t->name,
+                           host->id);
+            } else {
+                error_setg(errp, "topology '%s' PCI host '%s' has unsupported "
+                           "compatibility profile", t->name, host->id);
+            }
             return false;
         }
         if (attachment >= attachment_count) {
@@ -4752,6 +5478,44 @@ static bool sgi_machine_preflight_io_descriptors(
             return false;
         }
         owned_attachments[attachment] = true;
+        if (has_ip53) {
+            const SGIModelXioAttachment *selected = attachments[attachment];
+            size_t other;
+
+            if (selected->node_index >= node_count ||
+                selected->widget == 0 || selected->widget >= SGI_XIO_WIDGETS ||
+                selected->crossbar_index != -1 ||
+                !nodes[selected->node_index]->has_board_kind ||
+                nodes[selected->node_index]->board_kind !=
+                    SGI_MODEL_BOARD_KIND_IP53) {
+                error_setg(errp, "topology '%s' PCI host '%s' has an "
+                           "unsupported node, widget, or Crossbow "
+                           "attachment", t->name, host->id);
+                return false;
+            }
+            for (other = 0; other < i; other++) {
+                const SGIModelXioAttachment *prior =
+                    attachments[hosts[other]->xio_attachment_index];
+
+                if (prior->node_index == selected->node_index &&
+                    prior->widget == selected->widget) {
+                    error_setg(errp, "topology '%s' PCI hosts share node %u "
+                               "widget %u", t->name, selected->node_index,
+                               selected->widget);
+                    return false;
+                }
+            }
+        }
+    }
+
+    if (has_ip53) {
+        for (i = 0; i < attachment_count; i++) {
+            if (!owned_attachments[i]) {
+                error_setg(errp, "topology '%s' IP53 construction has "
+                           "unowned XIO attachment %zu", t->name, i);
+                return false;
+            }
+        }
     }
 
     for (i = 0; i < board_count; i++) {
@@ -4763,6 +5527,7 @@ static bool sgi_machine_preflight_io_descriptors(
             size_t key;
 
             has_io9 = true;
+            io9_count++;
             if (board->has_attachment || !board->has_pci_host_index ||
                 !board->has_pci_head) {
                 error_setg(errp, "topology '%s' IO9 board '%s' has "
@@ -4791,6 +5556,131 @@ static bool sgi_machine_preflight_io_descriptors(
                 return false;
             }
             owned_heads[key] = true;
+            if (board->has_ds1742 && board->ds1742) {
+                g_autofree char *data_id = g_strdup_printf(
+                    "sgi-ds1742-data-%s", board->id);
+                g_autofree char *clock_id = g_strdup_printf(
+                    "sgi-ds1742-clock-%s", board->id);
+                BlockBackend *data = blk_by_name(data_id);
+                BlockBackend *clock = blk_by_name(clock_id);
+                const char *id;
+                const char *cursor;
+
+                for (id = board->id, cursor = id; *cursor; cursor++) {
+                    if (!(*cursor >= 'a' && *cursor <= 'z') &&
+                        !(*cursor >= '0' && *cursor <= '9') &&
+                        *cursor != '-') {
+                        error_setg(errp, "IO9 board '%s' has an invalid "
+                                   "DS1742 owner ID", board->id);
+                        return false;
+                    }
+                }
+                if (board->id[0] < 'a' || board->id[0] > 'z') {
+                    error_setg(errp, "IO9 board '%s' has an invalid DS1742 "
+                               "owner ID", board->id);
+                    return false;
+                }
+                if (!data || !clock) {
+                    error_setg(errp, "IO9 board '%s' requires both DS1742 "
+                               "backends '%s' and '%s'", board->id, data_id,
+                               clock_id);
+                    return false;
+                }
+                if (blk_getlength(data) != 2048 ||
+                    blk_getlength(clock) < 16) {
+                    error_setg(errp, "IO9 board '%s' has invalid DS1742 "
+                               "backing pair sizes", board->id);
+                    return false;
+                }
+            }
+            if (board->populated) {
+                const SGIModelPciFunctionList *function_entry;
+                bool has_ioc4 = false;
+                bool has_isp12160 = false;
+                bool has_bcm5701 = false;
+
+                for (function_entry = board->pci_functions; function_entry;
+                     function_entry = function_entry->next) {
+                    const SGIModelPciFunction *function =
+                        function_entry->value;
+                    unsigned int devfn, route, route_index;
+                    unsigned int expected_revision;
+
+                    if (!function->has_pci_device ||
+                        !function->has_pci_function ||
+                        !function->has_intx_pin || !function->has_pic_input ||
+                        function->pci_device < 1 ||
+                        function->pci_device > 4 ||
+                        function->pci_function > 7 ||
+                        function->intx_pin != SGI_MODEL_PCI_INTX_PIN_INTA ||
+                        function->pic_input >= 8) {
+                        error_setg(errp, "topology '%s' IO9 board '%s' has "
+                                   "incomplete PCI position or route",
+                                   t->name, board->id);
+                        return false;
+                    }
+                    switch (function->kind) {
+                    case SGI_MODEL_PCI_FUNCTION_KIND_IOC4:
+                        has_ioc4 = true;
+                        expected_revision = 0x53;
+                        if (!function->has_clock_hz ||
+                            (function->clock_hz != 33333333 &&
+                             function->clock_hz != 66666667) ||
+                            !function->has_serial_dma_experimental) {
+                            error_setg(errp, "topology '%s' IO9 board '%s' "
+                                       "has incomplete IOC4 clock or DMA "
+                                       "policy", t->name, board->id);
+                            return false;
+                        }
+                        break;
+                    case SGI_MODEL_PCI_FUNCTION_KIND_ISP12160:
+                        has_isp12160 = true;
+                        expected_revision = 0x06;
+                        break;
+                    case SGI_MODEL_PCI_FUNCTION_KIND_BCM5701:
+                        has_bcm5701 = true;
+                        expected_revision = 0x00;
+                        break;
+                    default:
+                        error_setg(errp, "topology '%s' IO9 board '%s' has "
+                                   "an unsupported PCI function",
+                                   t->name, board->id);
+                        return false;
+                    }
+                    if (function->revision != expected_revision) {
+                        error_setg(errp, "topology '%s' IO9 board '%s' has "
+                                   "unsupported PCI function revision",
+                                   t->name, board->id);
+                        return false;
+                    }
+                    devfn = function->pci_device * 8 + function->pci_function;
+                    route = function->pci_device * 4 + function->intx_pin;
+                    route_index = (host_index * 2 + board->pci_head) * 128 +
+                                  route;
+                    if (owned_devfns[(host_index * 2 + board->pci_head) *
+                                     256 + devfn] ||
+                        owned_routes[route_index]) {
+                        error_setg(errp, "topology '%s' IO9 board '%s' has "
+                                   "a duplicate PCI position or interrupt "
+                                   "route", t->name, board->id);
+                        return false;
+                    }
+                    owned_devfns[(host_index * 2 + board->pci_head) *
+                                 256 + devfn] = true;
+                    owned_routes[route_index] = true;
+                }
+                if (!board->pci_functions) {
+                    error_setg(errp, "topology '%s' IO9 board '%s' has no "
+                               "PCI functions", t->name, board->id);
+                    return false;
+                }
+                if (!has_ioc4 || !has_isp12160 || !has_bcm5701) {
+                    error_setg(errp, "topology '%s' IO9 board '%s' requires "
+                               "IOC4, ISP12160 and BCM5701 functions",
+                               t->name, board->id);
+                    return false;
+                }
+            }
         } else if (!board->has_attachment || board->has_pci_host_index ||
                    board->has_pci_head) {
             error_setg(errp, "topology '%s' board '%s' has inconsistent "
@@ -4799,10 +5689,42 @@ static bool sgi_machine_preflight_io_descriptors(
         }
     }
 
-    if (host_count || has_io9) {
-        error_setg(errp, "topology '%s' has unsupported PIC/IO9 descriptors",
+    if (has_ip53 && ((!allow_ip53_fixture && !allow_ip53_experiment) ||
+                     !all_ip53 || !host_count || !has_io9)) {
+        error_setg(errp, "topology '%s' IP53 construction requires the "
+                   "runtime experiment permission or a qtest fixture",
                    t->name);
         return false;
+    }
+    if (allow_ip53_experiment &&
+        (!has_ip53 || !all_ip53 || node_count != 1 || host_count != 1 ||
+         io9_count != 1)) {
+        error_setg(errp, "origin350 IP53 experiment requires one IP53 node, "
+                   "one PIC host and one IO9 board");
+        return false;
+    }
+    if (host_count || has_io9) {
+        if ((!allow_ip53_fixture && !allow_ip53_experiment) ||
+            !has_ip53 || !all_ip53 ||
+            !host_count || !has_io9) {
+            error_setg(errp, "topology '%s' has unsupported PIC/IO9 "
+                       "descriptors", t->name);
+            return false;
+        }
+        for (i = 0; i < host_count; i++) {
+            if (!hosts[i]->has_compatibility_profile ||
+                hosts[i]->compatibility_profile !=
+                    sgi_machine_ip53_pic_profile(allow_ip53_experiment)) {
+                error_setg(errp, "topology '%s' PCI host '%s' has no "
+                           "compatibility profile", t->name, hosts[i]->id);
+                return false;
+            }
+        }
+        if (allow_ip53_experiment && (node_count != 1 || host_count != 1)) {
+            error_setg(errp, "origin350 IP53 experiment requires one node "
+                       "and one PIC host");
+            return false;
+        }
     }
     return true;
 }
@@ -5043,6 +5965,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     size_t io_board_count = 0, crossbar_count = 0, node_count_check;
     uint64_t ram_offset = 0;
     SGIModelAsicKind kind;
+    bool allow_ip53_experiment = false;
+    bool allow_ip53_fixture = smc->test_topology && qtest_enabled();
 
     if (!t && sgi_machine_chassis(machine)) {
         error_propagate_prepend(errp, local_err, "%s: ", mc->name);
@@ -5070,12 +5994,19 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!sgi_machine_validate_board_kinds(t, errp) ||
+    if (!sgi_machine_ip53_experiment_policy(
+            s, smc, t, &allow_ip53_experiment, errp)) {
+        return false;
+    }
+    if (!sgi_machine_validate_board_kinds(
+            t, allow_ip53_fixture || allow_ip53_experiment,
+            allow_ip53_experiment, errp) ||
         !sgi_machine_resolve_config(s, t, errp) ||
         !sgi_storage_check(s->storage, MACHINE_GET_CLASS(s)->name,
                            SGI_MACHINE_GET_CLASS(s)->product, t, errp)) {
         return false;
     }
+    s->ip53_fingerprint_enabled = sgi_machine_topology_has_ip53(t);
     if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
         !sgi_machine_validate_expansion_storage(s, t, errp)) {
         return false;
@@ -5196,6 +6127,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
+    s->ip53_experiment_authorized = allow_ip53_experiment;
+
     /*
      * The boot-progress indicator is a Hub trace event; Bedrock has no
      * counterpart yet, so debug-leds (on by default) stays inert for it
@@ -5257,6 +6190,39 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
 
+    if (kind != SGI_MODEL_ASIC_KIND_HUB &&
+        !sgi_machine_create_pic_hosts(s, t, errp)) {
+        return false;
+    }
+    if (s->ip53_fingerprint_enabled) {
+        uint8_t pxbow_revision = 0;
+
+        if (allow_ip53_experiment) {
+            size_t i;
+
+            if (!s->pic_host_count) {
+                error_setg(errp, "IP53 PXBOW composition has no PIC host");
+                return false;
+            }
+            pxbow_revision = sgi_pic_pxbow_revision(
+                SGI_PIC(s->pic_hosts[0]));
+            for (i = 1; i < s->pic_host_count; i++) {
+                if (sgi_pic_pxbow_revision(
+                        SGI_PIC(s->pic_hosts[i])) != pxbow_revision) {
+                    error_setg(errp, "IP53 PIC hosts have different PXBOW "
+                               "revisions");
+                    return false;
+                }
+            }
+        }
+        if (!sgi_machine_ip53_fingerprint(t, s->node_config, s->l1_config,
+                                          allow_ip53_experiment,
+                                          pxbow_revision,
+                                          s->ip53_local_fingerprint, errp)) {
+            return false;
+        }
+    }
+
     if (kind != SGI_MODEL_ASIC_KIND_HUB) {
         g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
@@ -5276,6 +6242,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             size_t i;
             const SGIModelIoBoardList *board_entry;
             bool found_board = false;
+            bool ip53 = nodes[node_index]->has_board_kind &&
+                nodes[node_index]->board_kind == SGI_MODEL_BOARD_KIND_IP53;
 
             /*
              * Widget zero is the crossbar's own local view; the rest come
@@ -5295,6 +6263,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             qdev_prop_set_uint32(DEVICE(node), "nasid",
                                  sgi_machine_topology_nasid(t, node_index));
             node->model_node = nodes[node_index];
+            if (ip53) {
+                if (!sn1_node_set_ip53_assembly_validated(node, errp) ||
+                    !sgi_machine_set_pic_widget_views(s, t, node_index,
+                                                       errp)) {
+                    return false;
+                }
+            } else {
             for (board_entry = t->io_boards; board_entry;
                  board_entry = board_entry->next) {
                 const SGIModelIoBoard *board = board_entry->value;
@@ -5364,6 +6339,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;
+            }
             /*
              * Each node's memory is its own share of machine->ram: one
              * region cannot sit at two node placements, and the claim
@@ -5477,6 +6453,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                  board_index++) {
                 const SGIModelIoBoard *record = io_boards[board_index];
 
+                if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IO9) {
+                    continue;
+                }
                 if (record->attachment >= attachment_count) {
                     error_setg(errp, "topology '%s' io board %u names "
                               "attachment %u, past its %zu XIO "
@@ -5497,9 +6476,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 }
             }
         }
+        if (!sgi_machine_build_pic_io9(s, t, errp)) {
+            return false;
+        }
         if (!sgi_machine_load_flash(machine, t, s, errp)) {
             return false;
         }
+        sgi_machine_register_ip53_fingerprint(s);
         return true;
     }
 
@@ -5769,6 +6752,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_realize_crossbars(s, t, errp)) {
         return false;
     }
+    sgi_machine_register_ip53_fingerprint(s);
     return true;
 }
 
@@ -6010,6 +6994,11 @@ static bool sgi_machine_claim_xio_fabric(Object *obj, Object *board,
         return true;
     }
     return true;
+}
+
+bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
+{
+    return SGI_MACHINE(machine)->ip53_experiment_authorized;
 }
 
 void sgi_machine_init(MachineState *machine)
@@ -6259,6 +7248,22 @@ static bool sgi_machine_get_junk_uart(Object *obj, Error **errp)
 static void sgi_machine_set_junk_uart(Object *obj, bool value, Error **errp)
 {
     SGI_MACHINE(obj)->junk_uart_present = value;
+}
+
+static bool sgi_machine_get_ip53_experimental(Object *obj, Error **errp)
+{
+    return SGI_MACHINE(obj)->ip53_experimental;
+}
+
+static void sgi_machine_set_ip53_experimental(Object *obj, bool value,
+                                              Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    if (sgi_machine_built("ip53-experimental", errp)) {
+        return;
+    }
+    s->ip53_experimental = value;
 }
 
 static void sgi_machine_get_elsc_dip_switches(Object *obj, Visitor *v,
@@ -6593,6 +7598,9 @@ static void sgi_machine_instance_finalize(Object *obj)
     SGIMachineState *s = SGI_MACHINE(obj);
     size_t i;
 
+    if (s->ip53_fingerprint_registered) {
+        vmstate_unregister(NULL, &vmstate_sgi_machine_ip53_fingerprint, s);
+    }
     if (s->management_registered) {
         vmstate_unregister(NULL, &vmstate_sgi_machine_management, s);
     }
@@ -6624,6 +7632,11 @@ static void sgi_machine_instance_finalize(Object *obj)
             object_unref(OBJECT(s->io_peers[i]));
         }
     }
+    for (i = 0; i < s->pic_host_count; i++) {
+        g_free(s->pic_links[i].name);
+    }
+    g_free(s->pic_hosts);
+    g_free(s->pic_links);
     g_free(s->controllers);
     g_free(s->controller_bics);
     g_free(s->controller_reset_registered);
@@ -6744,6 +7757,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Fit the junk-bus UART, a manufacturing/bring-up serial port a "
         "shipped machine does not have. Off by default; on, it takes the "
         "fourth character device (serial_hd index 3).");
+
+    object_class_property_add_bool(oc, "ip53-experimental",
+                                   sgi_machine_get_ip53_experimental,
+                                   sgi_machine_set_ip53_experimental);
+    object_class_property_set_description(oc, "ip53-experimental",
+        "Permit the registered Origin 350 IP53 software experiment. "
+        "Off by default and cannot change after the machine is built.");
 
     object_class_property_add(oc, "elsc-dip-switches", "uint8",
                               sgi_machine_get_elsc_dip_switches,

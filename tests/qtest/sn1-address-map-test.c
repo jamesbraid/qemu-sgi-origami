@@ -598,10 +598,14 @@ static void widget_reg_write(QTestState *qts, unsigned int widget,
  * -f"'s flat view of the CPU's address space reports for the entry covering
  * address, or NULL if the flat view has nothing mapped there.
  */
-static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
+static char *flat_view_region_type_in(QTestState *qts, const char *space,
+                                      uint64_t address)
 {
     g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    const char *system_view = strstr(mtree, "Root memory region: system");
+    g_autofree char *header = space ?
+        g_strdup_printf(" AS \"%s\", root:", space) :
+        g_strdup("Root memory region: system");
+    const char *system_view = strstr(mtree, header);
     const char *system_view_end;
     const char *line;
 
@@ -633,6 +637,11 @@ static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
     return NULL;
 }
 
+static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
+{
+    return flat_view_region_type_in(qts, NULL, address);
+}
+
 static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
 {
     g_autofree char *type = flat_view_region_type_at(qts, address);
@@ -644,15 +653,15 @@ static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
 }
 
 /*
- * Every window the processor fetches firmware from must resolve to ram, rom
- * or romd in the flat view. An i/o entry there caches no TCG translation:
- * each instruction recompiles as its own one-instruction block, and the guest
- * runs 100-300x slower while giving no outward sign anything is wrong.
+ * TCG needs a RAM/ROM leaf to cache translated code. An attribute router
+ * appears as i/o in its upstream FlatView, so check its downstream spaces.
+ * An MMIO leaf there would force repeated single-instruction translations.
  */
-static void assert_flat_view_is_execution_storage(QTestState *qts,
-                                                   uint64_t address)
+static void assert_flat_view_is_execution_storage_in(QTestState *qts,
+                                                      const char *space,
+                                                      uint64_t address)
 {
-    g_autofree char *type = flat_view_region_type_at(qts, address);
+    g_autofree char *type = flat_view_region_type_in(qts, space, address);
 
     g_assert_nonnull(type);
     if (strcmp(type, "ram") && strcmp(type, "rom") && strcmp(type, "romd")) {
@@ -660,6 +669,12 @@ static void assert_flat_view_is_execution_storage(QTestState *qts,
                        "ram/rom/romd", address, type);
         g_assert_not_reached();
     }
+}
+
+static void assert_flat_view_is_execution_storage(QTestState *qts,
+                                                   uint64_t address)
+{
+    assert_flat_view_is_execution_storage_in(qts, NULL, address);
 }
 
 static void assert_flat_view_is_io(QTestState *qts, uint64_t address)
@@ -3691,7 +3706,11 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
     ramblocks = qtest_hmp(qts, "info ramblock");
     g_assert_nonnull(strstr(ramblocks, "sn1.prom.reset"));
     g_assert_nonnull(strstr(ramblocks, "sn1.prom.local-high"));
-    assert_flat_view_is_execution_storage(qts, PROM_RESET);
+    /* Both reset routes must end in executable storage, not MMIO. */
+    assert_flat_view_is_execution_storage_in(qts, "sn1.reset-prom", 0);
+    assert_flat_view_is_execution_storage_in(qts, "sn1.reset-prom", 0x1000);
+    assert_flat_view_is_execution_storage_in(qts, "sn1.reset-memory", 0);
+    assert_flat_view_is_execution_storage_in(qts, "sn1.reset-memory", 0x1000);
     assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
 
     /* Every execution view reads position zero, not the supplied payload. */

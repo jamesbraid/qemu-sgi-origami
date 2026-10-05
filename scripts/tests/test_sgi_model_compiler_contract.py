@@ -50,7 +50,9 @@ MACHINES = ROOT / "hw/mips/sgi/models"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from sgi_model.model_compile import CompileError, compile_model, index_graph
+from sgi_model.model_compile import (
+    CompileError, _mode_bits, _processor, compile_model, index_graph,
+)
 from sgi_model.model_emit import _io_board as _emit_io_board
 from sgi_model.model_emit import _ip53_console_records
 from sgi_model.model_emit import _offerings_for
@@ -246,6 +248,119 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             _ip53_console_records(
                 topology, {**self.harness([record]), "console": "l1-uart"},
                 (0,))
+
+    def test_origin350_experiment_r16000_projects_explicit_reset_and_cache(self):
+        model = {
+            "composition": {"product": "origin350-ip53-experiment"},
+            "machine": {"emulation": {"machine_name": "origin350"}},
+        }
+        cpu = {
+            "id": "cpu0", "hardware_kind": "r16000",
+            "identity": {
+                "clock_mhz": 700, "cache_mib": 8,
+                "r16000_reset_mode": 0x009cad85,
+                "r16000_scache_bytes": 0x800000,
+                "required_properties": [
+                    "r16000-experimental", "r16000-reset-mode",
+                    "r16000-scache-bytes",
+                ],
+            },
+        }
+
+        processor = _processor(model, cpu)
+        processor["mode_bits"] = _mode_bits(model, {}, processor)
+
+        self.assertEqual(processor, {
+            "id": "r16000-700mhz", "kind": "R16000",
+            "clock_hz": 700_000_000, "cache_mib": 8,
+            "mode_bits": 0x009cad85,
+            "required_properties": [
+                "r16000-experimental", "r16000-reset-mode",
+                "r16000-scache-bytes",
+            ],
+        })
+
+    def test_r16000_projection_is_limited_to_origin350_experiment(self):
+        model = {
+            "composition": {"product": "origin300"},
+            "machine": {"emulation": {"machine_name": "origin300"}},
+        }
+        cpu = {
+            "id": "cpu0", "hardware_kind": "r16000",
+            "identity": {
+                "clock_mhz": 700, "cache_mib": 8,
+                "r16000_reset_mode": 0x009cad85,
+                "r16000_scache_bytes": 0x800000,
+                "required_properties": [
+                    "r16000-experimental", "r16000-reset-mode",
+                    "r16000-scache-bytes",
+                ],
+            },
+        }
+
+        with self.assertRaisesRegex(CompileError, "only the Origin 350 IP53 experiment"):
+            _processor(model, cpu)
+
+    def test_r16000_projection_rejects_mismatched_and_missing_inputs(self):
+        model = {
+            "composition": {"product": "origin350-ip53-experiment"},
+            "machine": {"emulation": {"machine_name": "origin350"}},
+        }
+        cpu = {
+            "id": "cpu0", "hardware_kind": "r16000",
+            "identity": {
+                "clock_mhz": 700, "cache_mib": 8,
+                "r16000_reset_mode": 0x009cad85,
+                "r16000_scache_bytes": 0x800000,
+                "required_properties": [
+                    "r16000-experimental", "r16000-reset-mode",
+                    "r16000-scache-bytes",
+                ],
+            },
+        }
+        missing = object()
+        cases = (
+            ("machine class", ("machine", "emulation", "machine_name"), "origin300"),
+            ("product class", ("composition", "product"), "origin350"),
+            ("clock", ("identity", "clock_mhz"), 701),
+            ("cache", ("identity", "cache_mib"), 4),
+            ("reset mode", ("identity", "r16000_reset_mode"), 0x009aa985),
+            ("secondary cache bytes", ("identity", "r16000_scache_bytes"), 0x400000),
+            ("boolean clock", ("identity", "clock_mhz"), True),
+            ("string clock", ("identity", "clock_mhz"), "700"),
+            ("boolean cache", ("identity", "cache_mib"), True),
+            ("string cache", ("identity", "cache_mib"), "8"),
+            ("boolean reset mode", ("identity", "r16000_reset_mode"), True),
+            ("string reset mode", ("identity", "r16000_reset_mode"), "0x009cad85"),
+            ("boolean cache bytes", ("identity", "r16000_scache_bytes"), True),
+            ("string cache bytes", ("identity", "r16000_scache_bytes"), "0x800000"),
+            ("missing clock", ("identity", "clock_mhz"), missing),
+            ("missing cache", ("identity", "cache_mib"), missing),
+            ("missing reset mode", ("identity", "r16000_reset_mode"), missing),
+            ("missing secondary cache bytes", ("identity", "r16000_scache_bytes"), missing),
+            ("missing QOM requirements", ("identity", "required_properties"), missing),
+            ("reordered QOM requirements", ("identity", "required_properties"), [
+                "r16000-reset-mode", "r16000-experimental",
+                "r16000-scache-bytes",
+            ]),
+            ("missing experimental QOM requirement", ("identity", "required_properties"), [
+                "r16000-reset-mode", "r16000-scache-bytes",
+            ]),
+        )
+        for field, path, value in cases:
+            with self.subTest(field=field):
+                candidate_model, candidate_cpu = copy.deepcopy(model), copy.deepcopy(cpu)
+                target = (candidate_model if path[0] != "identity"
+                          else candidate_cpu["identity"])
+                keys = path if path[0] != "identity" else path[1:]
+                for key in keys[:-1]:
+                    target = target[key]
+                if value is missing:
+                    target.pop(keys[-1])
+                else:
+                    target[keys[-1]] = value
+                with self.assertRaises(ValueError):
+                    _processor(candidate_model, candidate_cpu)
 
     def test_ip53_recipe_and_ioc4_or_l1_policy_are_emitted_for_each_population(self):
         model = _resolved("origin300-two-chassis")
@@ -560,7 +675,18 @@ class BoardSelectionTests(unittest.TestCase):
         return model
 
     def test_nearest_board_identity_selects_ip53_without_changing_asic(self):
-        model = self.model_with_bedrock_board("ip53")
+        model = PicIo9DescriptorTests().model_with_pic_io9(crossbar=True)
+        model["components"].append({
+            "id": "selected-board", "name": "Selected board", "kind": "board",
+            "hardware_kind": "ip53", "provenance": "derived",
+        })
+        next(item for item in model["components"]
+             if item["id"] == "bedrock")["parent"] = "selected-board"
+        node = next(item for item in model["components"]
+                    if item["id"] == "bedrock")
+        node["identity"].update({
+            "clock_mhz": 200, "ni_revision": 2, "widget_revision": 2,
+        })
 
         compiled = compile_model(model)["nodes"][0]
         exported = json.loads(render_catalogue_json([model]))[
@@ -729,6 +855,95 @@ class PicIo9DescriptorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(CompileError, "multiple PCI functions route"):
             compile_model(model)
+
+    def test_ip53_bedrock_clock_is_projected_as_checked_hz(self):
+        model = self.model_with_pic_io9()
+        components = {item["id"]: item for item in model["components"]}
+        node = components["bedrock"]
+        board = {"id": "fixture-ip53-node-board",
+                 "name": "Synthetic IP53 node board", "kind": "board",
+                 "hardware_kind": "ip53", "provenance": "derived"}
+        model["components"].append(board)
+        node["parent"] = board["id"]
+        node["identity"].update({
+            "clock_mhz": 200, "ni_revision": 2, "widget_revision": 2,
+        })
+
+        entry = compile_model(model)
+        self.assertEqual(entry["nodes"][0]["identity"]["clock_hz"],
+                         200_000_000)
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(exported["nodes"][0]["identity"]["clock-hz"],
+                         200_000_000)
+
+        for identity, message in (
+            ({"clock_mhz": True}, "clock_mhz"),
+            ({"clock_mhz": (1 << 64) // 1_000_000 + 1}, "clock_mhz"),
+            ({"clock_mhz": 200, "clock_hz": 201_000_000},
+             "contradictory.*clock_hz"),
+            ({"clock_hz": 200_000_000}, "requires identity.clock_mhz"),
+        ):
+            with self.subTest(identity=identity):
+                invalid = self.model_with_pic_io9()
+                components = {item["id"]: item
+                              for item in invalid["components"]}
+                node = components["bedrock"]
+                board = {"id": "fixture-ip53-node-board",
+                         "name": "Synthetic IP53 node board", "kind": "board",
+                         "hardware_kind": "ip53", "provenance": "derived"}
+                invalid["components"].append(board)
+                node["parent"] = board["id"]
+                node["identity"].pop("clock_mhz", None)
+                node["identity"].pop("clock_hz", None)
+                node["identity"].update({
+                    "ni_revision": 2, "widget_revision": 2,
+                })
+                node["identity"].update(identity)
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(invalid)
+
+    def test_ip53_node_uses_independent_ni_and_widget_revisions(self):
+        model = self.model_with_ip53_node()
+        node = next(item for item in model["components"]
+                    if item["id"] == "bedrock")
+        node["identity"]["hardware_revision"] = 7
+
+        identity = compile_model(model)["nodes"][0]["identity"]
+        self.assertEqual(identity["ni_revision"], 1)
+        self.assertEqual(identity["widget_revision"], 3)
+
+    def test_ip53_node_revision_projection_rejects_missing_or_invalid_fields(self):
+        for field, value in (("ni_revision", None),
+                             ("widget_revision", None),
+                             ("ni_revision", True),
+                             ("widget_revision", "3"),
+                             ("ni_revision", -1),
+                             ("widget_revision", 16)):
+            with self.subTest(field=field, value=value):
+                model = self.model_with_ip53_node()
+                identity = next(item for item in model["components"]
+                                if item["id"] == "bedrock")["identity"]
+                if value is None:
+                    identity.pop(field)
+                else:
+                    identity[field] = value
+                with self.assertRaises(CompileError):
+                    compile_model(model)
+
+    def test_ip53_node_revision_projection_has_no_hardware_revision_fallback(self):
+        model = self.model_with_ip53_node()
+        identity = next(item for item in model["components"]
+                        if item["id"] == "bedrock")["identity"]
+        identity.pop("ni_revision")
+        identity.pop("widget_revision")
+        identity["hardware_revision"] = 2
+
+        with self.assertRaisesRegex(CompileError, "ni_revision"):
+            compile_model(model)
+
+    def test_bedrock_clock_identity_output_is_unchanged_for_other_boards(self):
+        entry = compile_model(self.model_with_pic_io9())
+        self.assertNotIn("clock_hz", entry["nodes"][0]["identity"])
 
     def test_pic_has_one_xio_host_record_and_io9_has_pci_reference(self):
         entry = compile_model(self.model_with_pic_io9())
@@ -1219,6 +1434,80 @@ class PicIo9DescriptorTests(unittest.TestCase):
             "provenance": "derived",
         })
         return model
+
+    def model_with_ip53_node(self, *, pic=True, crossbar=True):
+        model = (self.model_with_pic_io9(crossbar=crossbar) if pic
+                 else _resolved("origin300"))
+        components = {item["id"]: item for item in model["components"]}
+        board = {"id": "fixture-ip53-node-board",
+                 "name": "Synthetic IP53 node board", "kind": "board",
+                 "hardware_kind": "ip53", "provenance": "derived"}
+        model["components"].append(board)
+        node = components["bedrock"]
+        node["parent"] = board["id"]
+        node.setdefault("identity", {}).update({
+            "clock_mhz": 200, "ni_revision": 1, "widget_revision": 3,
+        })
+        return model
+
+    def test_ip53_node_uses_authored_pic_crossbar_path(self):
+        entry = compile_model(self.model_with_ip53_node())
+        host = entry["pci_host_bridges"][0]
+        attachment = entry["xio_attachments"][host["xio_attachment_index"]]
+        self.assertEqual(attachment["crossbar_index"], 0)
+        self.assertEqual(attachment["widget"], 13)
+        self.assertEqual(attachment["node_index"], 0)
+
+    def test_ip53_dispatch_refuses_mixed_node_boards(self):
+        model = _resolved("origin300-two-chassis")
+        model["components"].append({
+            "id": "fixture-ip53-node-board",
+            "name": "Synthetic IP53 node board", "kind": "board",
+            "hardware_kind": "ip53", "provenance": "derived",
+        })
+        node = next(item for item in model["components"]
+                    if item["id"] == "master-bedrock")
+        node["parent"] = "fixture-ip53-node-board"
+        node["identity"].update({
+            "clock_mhz": 200, "ni_revision": 2, "widget_revision": 2,
+        })
+
+        with self.assertRaisesRegex(CompileError,
+                                    "mixed IP53 and non-IP53 SN1 nodes"):
+            compile_model(model)
+
+    def test_ip53_node_requires_pic_attached_to_that_node(self):
+        model = self.model_with_ip53_node()
+
+        def foreign_pic(_model, _graph, _modules, first_attachment,
+                        _ds1742_boards):
+            return ([{"id": "fixture-pic", "kind": "pic",
+                      "xio_attachment_index": first_attachment}], [],
+                    [{"crossbar_index": 0, "widget": 13,
+                      "node_index": 1}])
+
+        with mock.patch("sgi_model.model_compile._compile_pic_io_records",
+                        side_effect=foreign_pic):
+            with self.assertRaisesRegex(
+                    CompileError,
+                    "IP53 Bedrock node 0 has no authored PIC attachment"):
+                compile_model(model)
+
+    def test_ip53_node_requires_an_authored_pic_host(self):
+        with self.assertRaisesRegex(CompileError,
+                                    "IP53 Bedrock nodes require an authored PIC"):
+            compile_model(self.model_with_ip53_node(pic=False))
+
+    def test_product_name_does_not_select_ip53_node_path(self):
+        model = self.model_with_pic_io9(crossbar=True)
+        baseline = compile_model(model)
+        model["composition"]["product"] = "origin350-ip53-experiment"
+
+        entry = compile_model(model)
+        for field in ("io_boards", "xio_attachments", "xio_slots",
+                      "pci_host_bridges"):
+            with self.subTest(field=field):
+                self.assertEqual(entry[field], baseline[field])
 
     def test_pic_crossbar_route_is_preserved_as_authored(self):
         entry = compile_model(self.model_with_pic_io9(crossbar=True))

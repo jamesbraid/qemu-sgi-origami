@@ -5,9 +5,14 @@
  * differ from Origin 300 boot windows. Real boot-image contents are untested.
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 #include "sgi-migrate.h"
+
+static char *log_file(const char *tag);
+static unsigned count_lines(const char *text, const char *needle);
 
 #define FLASH_PATH "/machine/peripheral/flash"
 
@@ -33,6 +38,35 @@
 
 #define FLASH_SIZE (16 * 1024 * 1024)
 #define SECTOR_SIZE (64 * 1024)
+#define IP53_PROM_SIZE 0x100000
+#define IP53_EXECUTION_SIZE 1476264ULL
+#define IP53_RESET 0x1fc00000ULL
+#define IP53_LOCAL_HIGH (HUB + 0x1fc00000ULL)
+#define IP53_TCG_RAM_TRAMPOLINE 0x10000ULL
+#define IP53_TCG_RAM_CONTROL 0x40000ULL
+#define IP53_TCG_FLASH_MARKER (IP53_TCG_RAM_CONTROL + 8)
+#define IP53_TCG_CODE_OFFSET 0x1000
+#define IP53_TCG_PARK_OFFSET 0x80
+#define IP53_TCG_BEDROCK (SPACE_IO + UINT64_C(0x01800000))
+#define IP53_TCG_MD_MEMORY_CONFIG 0x780008ULL
+#define IP53_TCG_MD_INSTALLED_BANKS_0_1 UINT64_C(0x53)
+#define IP53_TCG_SHARED_RESET_RAM UINT64_C(0x1fc20000)
+#define IP53_TCG_SHARED_RESET_PROM UINT64_C(0x5566778899aabbcc)
+#define IP53_TCG_SHARED_RESET_WRITE UINT64_C(0x12345678abcdefff)
+#define IP53_TCG_SHARED_RESET_READ_MARKER (IP53_TCG_RAM_CONTROL + 0x10)
+#define IP53_TCG_OLD_MARKER 0xffffULL
+#define IP53_TCG_NEW_MARKER 0x7fffULL
+#define IP53_TCG_RAM_MARKER 0x52414d43ULL
+#define IP53_TCG_RESET_STORE_MARKER 0x52535456ULL
+#define IP53_TCG_RESET_STORE_VALUE 0x1234ULL
+#define IP53_TCG_ROUTE_COPY_MARKER UINT64_C(0x524f555445434f50)
+#define IP53_TCG_ROUTE_PROM_EVEN UINT64_C(0x50524f4d4556454e)
+#define IP53_TCG_ROUTE_PROM_ODD UINT64_C(0x50524f4d4f444421)
+#define IP53_TCG_ENTRYLO_PROM_FLAGS 0x12 /* C=2, V=1 */
+#define IP53_TCG_ENTRYLO_RAM_FLAGS 0x16  /* C=2, D=V=1 */
+#define IP53_TCG_WAIT_US (15 * G_USEC_PER_SEC)
+
+static void ip53_mips_store(uint8_t *image, size_t offset, uint32_t insn);
 
 /* A command or mode word at flash word index n arrives at bus offset 8n. */
 #define WORD(n) ((uint64_t)(n) * 8)
@@ -151,6 +185,28 @@ static QTestState *flash_start(const char *image, const char *options,
     qtest_sysbus_mmio_map(s, FLASH_PATH, 0, LOCAL);
     qtest_sysbus_mmio_map(s, FLASH_PATH, 1, REMOTE);
     return s;
+}
+
+static QTestState *ip53_flash_start(const char *bios, const char *image,
+                                    const char *data, const char *clock,
+                                    const char *extra)
+{
+    g_autofree char *quoted_bios = g_shell_quote(bios);
+    g_autofree char *quoted_image = g_shell_quote(image);
+    g_autofree char *quoted_data = g_shell_quote(data);
+    g_autofree char *quoted_clock = g_shell_quote(clock);
+
+    return qtest_initf("-M sn-builder-bedrock-test,"
+                       "construction-fault=ip53-pic-io9 "
+                       "-m 64M -smp 1 -cpu R14000 -bios %s "
+                       "-drive if=pflash,file=%s,format=raw,readonly=off "
+                       "-drive if=none,id=sgi-ds1742-data-fixture-io9,"
+                       "file=%s,format=raw "
+                       "-drive if=none,id=sgi-ds1742-clock-fixture-io9,"
+                       "file=%s,format=raw "
+                       "-display none -S %s",
+                       quoted_bios, quoted_image, quoted_data, quoted_clock,
+                       extra);
 }
 
 static void flash_program(QTestState *s, uint64_t base, uint64_t offset,
@@ -369,6 +425,8 @@ static void test_query_mode(void)
     /* The AMD-compatible primary command set. */
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x14)), ==, 0x0000);
+    /* Each selection exposes the reviewed 8 MiB experiment capacity. */
+    g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x27)), ==, 23);
     /*
      * The positions are separate parts with separate command state. Putting
      * position zero in query mode leaves position one reading its own array,
@@ -376,6 +434,9 @@ static void test_query_mode(void)
      */
     g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
                     0xfeedfacefeedfaceULL);
+    qtest_writeq(s, LOCAL + SECOND_READ + QUERY, 0x98);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + QUERY_READ(0x27)), ==, 23);
+    flash_reset_to_array(s, LOCAL + SECOND_READ);
 
     /* The same query state is visible through the other boot space. */
     g_assert_cmphex(qtest_readw(s, REMOTE + QUERY_READ(0x10)), ==, 'Q');
@@ -395,6 +456,1027 @@ static void test_query_mode(void)
 
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * The IP45 bus decomposes unaligned cycles before they reach this adapter.
+ * Reads can therefore return bytes from the mapped selection followed by the
+ * unmapped hole. Stores narrower than a qword are refused before reaching
+ * CFI, as are aligned stores beyond the aperture.
+ */
+static void test_cycle_bounds(void)
+{
+    g_autofree char *image = flash_image("cycle-bounds");
+    g_autofree char *log = log_file("cycle-bounds");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    uint8_t stored[2];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_erase_sector(image, LAST_SECTOR);
+    image_write_be64(image, PART_SIZE - 8, 0x1122334455667788ULL);
+    extra = g_strdup_printf("-d guest_errors,unimp,trace:pflash_io_write "
+                            "-D %s", log);
+    s = flash_start(image, "", extra);
+
+    g_assert_cmphex(qtest_readq(s, PRIMARY + PART_SIZE - 8), ==,
+                    0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + PART_SIZE - 4), ==,
+                    0x5566778800000000ULL);
+    g_assert_cmphex(qtest_readl(s, PRIMARY + PART_SIZE - 2), ==,
+                    0x77880000);
+
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
+    qtest_writeq(s, LOCAL + BYTE(0x100) + 1, 0x1234);
+    qtest_system_reset(s);
+
+    qtest_writeq(s, LOCAL + SECOND_READ + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + SECOND_READ + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + SECOND_READ + UNLOCK0, 0xa0);
+    qtest_writeq(s, LOCAL + SECOND_READ + WRITE_LIMIT, 0x1234);
+    qtest_quit(s);
+
+    image_read(image, 0x100, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0xff);
+    g_assert_cmphex(stored[1], ==, 0xff);
+    image_read(image, PART_SIZE - 2, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0x77);
+    g_assert_cmphex(stored[1], ==, 0x88);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpuint(count_lines(found, "outside every mapped read address"),
+                     ==, 2);
+    /*
+     * Decomposed narrow writes are refused; the aligned out-of-range store
+     * is refused by the aperture check. Only command prefixes reach CFI.
+     */
+    g_assert_nonnull(strstr(found, "outside the 64-bit store the firmware "
+                            "uses"));
+    g_assert_nonnull(strstr(found, "past the last backing word"));
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 6);
+
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * The fixture starts stopped, so advance the flash's erase timers explicitly.
+ */
+static void ip53_flash_erase_sector(QTestState *s, uint64_t base,
+                                    uint64_t offset)
+{
+    uint16_t typical_timeout;
+
+    flash_enter_query(s, base);
+    typical_timeout = qtest_readw(s, base + QUERY_READ(0x21));
+    g_assert_cmphex(typical_timeout, ==, 9);
+    flash_reset_to_array(s, base);
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_writeq(s, base + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + UNLOCK1, 0x55);
+    qtest_writeq(s, base + UNLOCK0, 0x80);
+    qtest_writeq(s, base + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + UNLOCK1, 0x55);
+    qtest_writeq(s, base + BYTE(offset), 0x30);
+    /* QEMU pflash uses a 50 us setup delay and scales this exponent in us. */
+    qtest_clock_step(s, 50 * 1000);
+    qtest_clock_step(s, (1ULL << typical_timeout) * 1000);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+}
+
+static uint32_t ip53_mips_lui(unsigned int rt, uint16_t imm)
+{
+    return (0x0f << 26) | (rt << 16) | imm;
+}
+
+static uint32_t ip53_mips_ori(unsigned int rt, unsigned int rs, uint16_t imm)
+{
+    return (0x0d << 26) | (rs << 21) | (rt << 16) | imm;
+}
+
+static uint32_t ip53_mips_dsll(unsigned int reg, unsigned int shift)
+{
+    return (reg << 16) | (reg << 11) | (shift << 6) | 0x38;
+}
+
+static uint32_t ip53_mips_sd(unsigned int rt, unsigned int base,
+                             int16_t offset)
+{
+    return (0x3f << 26) | (base << 21) | (rt << 16) | (uint16_t)offset;
+}
+
+static uint32_t ip53_mips_dmtc0(unsigned int rt, unsigned int rd)
+{
+    return (0x10 << 26) | (5 << 21) | (rt << 16) | (rd << 11);
+}
+
+static size_t ip53_mips_load_imm64(uint32_t *code, size_t n,
+                                   unsigned int reg, uint64_t value)
+{
+    code[n++] = ip53_mips_ori(reg, 0, (uint16_t)(value >> 48));
+    for (int shift = 32; shift >= 0; shift -= 16) {
+        code[n++] = ip53_mips_dsll(reg, 16);
+        code[n++] = ip53_mips_ori(reg, reg, (uint16_t)(value >> shift));
+    }
+    return n;
+}
+
+static void ip53_mips_tlb_pair(uint32_t *code, size_t *n, unsigned int index,
+                               uint64_t asid, uint64_t even_pfn,
+                               uint64_t odd_pfn, uint64_t entrylo_flags)
+{
+    *n = ip53_mips_load_imm64(code, *n, 8,
+                              UINT64_C(0xc00000001fc00000) | asid);
+    code[(*n)++] = ip53_mips_dmtc0(8, 10); /* EntryHi */
+    *n = ip53_mips_load_imm64(code, *n, 8,
+                              (even_pfn >> 6) | entrylo_flags);
+    code[(*n)++] = ip53_mips_dmtc0(8, 2);  /* EntryLo0 */
+    *n = ip53_mips_load_imm64(code, *n, 8,
+                              (odd_pfn >> 6) | entrylo_flags);
+    code[(*n)++] = ip53_mips_dmtc0(8, 3);  /* EntryLo1 */
+    code[(*n)++] = ip53_mips_ori(8, 0, index);
+    code[(*n)++] = (0x10 << 26) | (4 << 21) | (8 << 16); /* mtc0 Index */
+    for (unsigned int i = 0; i < 5; i++) {
+        code[(*n)++] = 0;
+    }
+    code[(*n)++] = 0x42000002;             /* tlbwi */
+    for (unsigned int i = 0; i < 5; i++) {
+        code[(*n)++] = 0;
+    }
+}
+
+static size_t ip53_tcg_build_route_copy(uint32_t *code)
+{
+    size_t n = 0;
+
+    n = ip53_mips_load_imm64(code, n, 8, 0x1fe000);
+    code[n++] = ip53_mips_dmtc0(8, 5);      /* PageMask */
+    ip53_mips_tlb_pair(code, &n, 0, 1, 0x1fc00000, 0x1fd00000,
+                       IP53_TCG_ENTRYLO_PROM_FLAGS);
+    ip53_mips_tlb_pair(code, &n, 1, 2, 0x01a00000, 0x01b00000,
+                       IP53_TCG_ENTRYLO_RAM_FLAGS);
+
+    n = ip53_mips_load_imm64(code, n, 8,
+                             UINT64_C(0xc00000001fc00001));
+    code[n++] = ip53_mips_dmtc0(8, 10);     /* select ASID 1 */
+    for (unsigned int i = 0; i < 5; i++) {
+        code[n++] = 0;
+    }
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0xc00000001fc02000));
+    code[n++] = (0x37 << 26) | (8 << 21) | (9 << 16); /* ld t1, 0(t0) */
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0xc00000001fd02000));
+    code[n++] = (0x37 << 26) | (8 << 21) | (10 << 16); /* ld t2, 0(t0) */
+
+    n = ip53_mips_load_imm64(code, n, 8,
+                             UINT64_C(0xc00000001fc00002));
+    code[n++] = ip53_mips_dmtc0(8, 10);     /* select ASID 2 */
+    for (unsigned int i = 0; i < 5; i++) {
+        code[n++] = 0;
+    }
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0xc00000001fc02000));
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0xc00000001fd02000));
+    code[n++] = ip53_mips_sd(10, 8, 0);
+
+    code[n++] = ip53_mips_lui(8, 0x8004);
+    n = ip53_mips_load_imm64(code, n, 9, IP53_TCG_ROUTE_COPY_MARKER);
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    code[n++] = 0x1000ffff;                 /* completion loop */
+    code[n++] = 0;
+    return n;
+}
+
+static void ip53_tcg_build_route_payload(uint8_t *payload)
+{
+    uint32_t code[192];
+    size_t count = ip53_tcg_build_route_copy(code);
+
+    g_assert_cmpuint(count, <=, G_N_ELEMENTS(code));
+    for (size_t i = 0; i < count; i++) {
+        ip53_mips_store(payload, IP53_TCG_RAM_TRAMPOLINE + i * 4, code[i]);
+    }
+}
+
+static void ip53_mips_store(uint8_t *image, size_t offset, uint32_t insn)
+{
+    stl_be_p(image + offset, insn);
+}
+
+/*
+ * The reset vector selects CPU 0 by the public Bedrock PI CPU-number local
+ * form. Bits 1:0 include both the slot and PI number, so only global CPU 0
+ * reaches the RAM control and mutable flash loop. The other three CPUs spin
+ * without writing either marker.
+ */
+static void ip53_tcg_build_payload(uint8_t *payload, bool high_alias)
+{
+    static const uint32_t startup[] = {
+        0x400c6000,             /* mfc0 t4, Status */
+        0x358c0080,             /* ori t4, t4, Status.KX */
+        0x408c6000,             /* mtc0 t4, Status */
+        0, 0, 0, 0,             /* CP0 write hazard */
+        0x3c089200,             /* lui t0, 0x9200 */
+        0x0008403c,             /* dsll32 t0, t0, 0 */
+        0x3c090100,             /* lui t1, 0x0100 */
+        0x01094025,             /* or t0, t0, t1 */
+        0xdd0a0020,             /* ld t2, 0x20(t0): PI CPU number */
+        0x314a0003,             /* andi t2, t2, 3: unique global slice */
+        0x15400011,             /* bne t2, zero, park */
+        0,
+        0x3c0a8001,             /* lui t2, 0x8001: RAM trampoline */
+        0x01400008,             /* jr t2 */
+        0,
+    };
+    static const uint32_t loop[] = {
+        0x3409ffff,             /* ori t1, zero, old marker */
+        0x3c088004,             /* lui t0, 0x8004 */
+        0xfd090008,             /* sd t1, 8(t0): flash marker */
+        0x1000fffc,             /* beq zero, zero, loop */
+        0,
+    };
+    size_t i;
+
+    for (i = 0; i < G_N_ELEMENTS(startup); i++) {
+        ip53_mips_store(payload, i * 4, startup[i]);
+    }
+    {
+        uint32_t park[10];
+        size_t count = ip53_mips_load_imm64(
+            park, 0, 8, UINT64_C(0x980000001fc00100));
+
+        park[count++] = 0x01000008; /* jr t0 */
+        park[count++] = 0;
+        for (i = 0; i < count; i++) {
+            ip53_mips_store(payload, IP53_TCG_PARK_OFFSET + i * 4, park[i]);
+        }
+        ip53_mips_store(payload, 0x100, 0x1000ffff);
+        ip53_mips_store(payload, 0x104, 0);
+    }
+    for (i = 0; i < G_N_ELEMENTS(loop); i++) {
+        ip53_mips_store(payload, IP53_TCG_CODE_OFFSET + i * 4, loop[i]);
+    }
+
+    /* CPU 0 first writes a RAM marker, then enters the selected flash alias. */
+    {
+        uint32_t ram_code[16] = {
+            ip53_mips_lui(8, 0x8004),
+            ip53_mips_lui(9, 0x5241),
+            ip53_mips_ori(9, 9, 0x4d43),
+            ip53_mips_sd(9, 8, 0),
+        };
+        size_t n = 4;
+
+        if (high_alias) {
+            ram_code[n++] = ip53_mips_ori(10, 0, 0x9000);
+            ram_code[n++] = ip53_mips_dsll(10, 16);
+            ram_code[n++] = ip53_mips_ori(10, 10, 0x0100);
+            ram_code[n++] = ip53_mips_dsll(10, 16);
+            ram_code[n++] = ip53_mips_ori(10, 10, 0x1fc0);
+            ram_code[n++] = ip53_mips_dsll(10, 16);
+            ram_code[n++] = ip53_mips_ori(10, 10, IP53_TCG_CODE_OFFSET);
+        } else {
+            n = ip53_mips_load_imm64(ram_code, n, 10,
+                                     UINT64_C(0x980000001fc00000) |
+                                     IP53_TCG_CODE_OFFSET);
+        }
+        ram_code[n++] = 0x01400008; /* jr t2 */
+        ram_code[n++] = 0;
+        g_assert_cmpuint(n, <=, G_N_ELEMENTS(ram_code));
+        for (i = 0; i < n; i++) {
+            ip53_mips_store(payload, IP53_TCG_RAM_TRAMPOLINE + i * 4,
+                            ram_code[i]);
+        }
+    }
+}
+
+static void ip53_tcg_build_boundary_payload(uint8_t *payload,
+                                            bool after_first, unsigned cca)
+{
+    uint32_t code[64];
+    size_t n = 0;
+
+    ip53_tcg_build_payload(payload, false);
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0x9200000001780008));
+    n = ip53_mips_load_imm64(code, n, 9,
+                             IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    n = ip53_mips_load_imm64(code, n, 8,
+                             cca == 2 ? UINT64_C(0xffffffffbfc00000) +
+                                        IP53_EXECUTION_SIZE :
+                             UINT64_C(0x8000000000000000) |
+                             ((uint64_t)cca << 59) |
+                             (IP53_RESET + IP53_EXECUTION_SIZE));
+    if (after_first) {
+        code[n++] = (0x24 << 26) | (8 << 21) | (9 << 16);
+        code[n++] = (0x24 << 26) | (8 << 21) | (10 << 16) | 0xffff;
+    } else {
+        code[n++] = (0x24 << 26) | (8 << 21) | (10 << 16) | 0xffff;
+        code[n++] = (0x24 << 26) | (8 << 21) | (9 << 16);
+    }
+    code[n++] = ip53_mips_lui(11, 0x8004);
+    code[n++] = ip53_mips_sd(9, 11, 0x10);
+    code[n++] = ip53_mips_sd(10, 11, 0x18);
+    code[n++] = 0x1000ffff;
+    code[n++] = 0;
+    g_assert_cmpuint(n, <=, G_N_ELEMENTS(code));
+    for (size_t i = 0; i < n; i++) {
+        ip53_mips_store(payload, IP53_TCG_RAM_TRAMPOLINE + i * 4, code[i]);
+    }
+}
+
+static QTestState *ip53_tcg_flash_start(const char *bios, const char *image,
+                                        const char *data, const char *clock,
+                                        const char *extra)
+{
+    g_autofree char *quoted_bios = g_shell_quote(bios);
+    g_autofree char *quoted_image = g_shell_quote(image);
+    g_autofree char *quoted_data = g_shell_quote(data);
+    g_autofree char *quoted_clock = g_shell_quote(clock);
+
+    return qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
+                       "-cpu R16000,r16000-experimental=on,"
+                       "r16000-reset-mode=0x009cad85,"
+                       "r16000-scache-bytes=0x800000 "
+                       "-bios %s "
+                       "-drive if=pflash,index=0,file=%s,format=raw "
+                       "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                       "format=raw "
+                       "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                       "format=raw "
+                       "-accel tcg,thread=single -display none -S %s",
+                       quoted_bios, quoted_image, quoted_data, quoted_clock,
+                       extra ? extra : "");
+}
+
+static QTestState *ip53_tcg_static_start(const char *bios,
+                                          const char *data,
+                                          const char *clock,
+                                          const char *extra)
+{
+    g_autofree char *quoted_bios = g_shell_quote(bios);
+    g_autofree char *quoted_data = g_shell_quote(data);
+    g_autofree char *quoted_clock = g_shell_quote(clock);
+
+    return qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
+                       "-cpu R16000,r16000-experimental=on,"
+                       "r16000-reset-mode=0x009cad85,"
+                       "r16000-scache-bytes=0x800000 "
+                       "-bios %s "
+                       "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                       "format=raw "
+                       "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                       "format=raw "
+                       "-accel tcg,thread=single -display none -S %s",
+                       quoted_bios, quoted_data, quoted_clock,
+                       extra ? extra : "");
+}
+
+static void ip53_tcg_build_reset_store_payload(uint8_t *payload)
+{
+    uint32_t code[] = {
+        ip53_mips_lui(8, 0xbfc0),
+        ip53_mips_ori(8, 8, 0x2000),
+        ip53_mips_ori(9, 0, IP53_TCG_RESET_STORE_VALUE),
+        ip53_mips_sd(9, 8, 0),
+        ip53_mips_lui(8, 0x8004),
+        ip53_mips_lui(9, (uint16_t)(IP53_TCG_RESET_STORE_MARKER >> 16)),
+        ip53_mips_ori(9, 9, (uint16_t)IP53_TCG_RESET_STORE_MARKER),
+        ip53_mips_sd(9, 8, 0),
+        0x1000ffff, /* Park after proving the refused store executed. */
+        0,
+    };
+
+    ip53_tcg_build_payload(payload, false);
+    for (size_t i = 0; i < G_N_ELEMENTS(code); i++) {
+        ip53_mips_store(payload, IP53_TCG_CODE_OFFSET + i * 4, code[i]);
+    }
+}
+
+static uint64_t ip53_tcg_read_marker(QTestState *s, uint64_t address)
+{
+    uint8_t bytes[8];
+
+    qtest_memread(s, address, bytes, sizeof(bytes));
+    return ldq_be_p(bytes);
+}
+
+static void ip53_tcg_wait_marker(QTestState *s, const char *name,
+                                 uint64_t address, uint64_t expected)
+{
+    int64_t deadline = g_get_monotonic_time() + IP53_TCG_WAIT_US;
+    uint64_t actual = 0;
+
+    do {
+        actual = ip53_tcg_read_marker(s, address);
+        if (actual == expected) {
+            return;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    g_autofree char *registers = qtest_hmp(s, "info registers 0");
+    g_test_message("timed out waiting for %s marker at 0x%" PRIx64
+                   ": got 0x%" PRIx64, name, address, actual);
+    g_test_message("CPU 0 registers: %s", registers);
+    g_assert_cmphex(actual, ==, expected);
+}
+
+/*
+ * Run CPU 0 from one uncached flash alias, then program one immediate from
+ * 0xffff to 0x7fff through CFI while stopped. The branch loop naturally
+ * returns CPU 0 to the same instruction address after resume. This tests TCG
+ * translated-code refresh, not hardware instruction-cache behavior.
+ */
+static void test_ip53_reset_boundary_tlb_fill_order(void)
+{
+    static const uint8_t ram_byte = 0xa5;
+    static const uint64_t ram_marker = IP53_TCG_RAM_CONTROL + 0x10;
+    static const uint64_t prom_marker = IP53_TCG_RAM_CONTROL + 0x18;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    for (unsigned int variant = 0; variant < 6; variant++) {
+        bool after_first = (variant & 1) == 0;
+        unsigned cca = variant < 2 ? 3 : variant < 4 ? 5 : 2;
+        uint8_t before_ram_byte = 0x39;
+        g_autofree char *bios = sized_image("ip53-boundary-bios",
+                                            IP53_EXECUTION_SIZE);
+        g_autofree char *image = flash_image("ip53-boundary-flash");
+        g_autofree char *data = sized_image("ip53-boundary-rtc-data", 0x800);
+        g_autofree char *clock = sized_image("ip53-boundary-rtc-clock", 16);
+        g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+        uint64_t boundary = IP53_RESET + IP53_EXECUTION_SIZE;
+        QTestState *s;
+
+        ip53_tcg_build_boundary_payload(payload, after_first, cca);
+        payload[IP53_EXECUTION_SIZE - 1] = 0x6d;
+        image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+        image_erase_sector(image, 0);
+        image_write(image, 0, payload, IP53_EXECUTION_SIZE);
+        s = ip53_tcg_flash_start(bios, image, data, clock, NULL);
+
+        qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                     IP53_TCG_MD_INSTALLED_BANKS_0_1);
+        qtest_memwrite(s, boundary, &ram_byte, sizeof(ram_byte));
+        qtest_memwrite(s, boundary - 1, &before_ram_byte, 1);
+        qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0x33);
+        qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE,
+                       payload + IP53_TCG_RAM_TRAMPOLINE, 64 * 4);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        ip53_tcg_wait_marker(s, after_first ? "boundary after-first RAM" :
+                             "boundary PROM-first RAM", ram_marker, ram_byte);
+        ip53_tcg_wait_marker(s, after_first ? "boundary after-first PROM" :
+                             "boundary PROM-first PROM", prom_marker,
+                             cca == 5 ? before_ram_byte : 0x6d);
+        qtest_qmp_assert_success(s, "{'execute':'stop'}");
+        qtest_quit(s);
+
+        g_assert_cmpint(unlink(bios), ==, 0);
+        g_assert_cmpint(unlink(image), ==, 0);
+        g_assert_cmpint(unlink(data), ==, 0);
+        g_assert_cmpint(unlink(clock), ==, 0);
+    }
+}
+
+static void test_ip53_static_reset_view(void)
+{
+    static const uint8_t first_prom[] = {
+        0x31, 0x42, 0x53, 0x64, 0x75, 0x86, 0x97, 0xa8,
+    };
+    static const uint8_t interior_prom[] = {
+        0x13, 0x24, 0x35, 0x46, 0x57, 0x68, 0x79, 0x8a,
+    };
+    static const uint8_t before_ram[] = {
+        0x19, 0x28, 0x37, 0x46, 0x55, 0x64, 0x73, 0x82,
+    };
+    static const uint8_t after_ram[] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    };
+    uint8_t bytes[sizeof(first_prom)];
+    g_autofree char *bios = sized_image("ip53-static-bios",
+                                        IP53_EXECUTION_SIZE);
+    g_autofree char *data = sized_image("ip53-static-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-static-rtc-clock", 16);
+    g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+    uint64_t boundary = IP53_RESET + IP53_EXECUTION_SIZE;
+    uint64_t boundary_va = UINT64_C(0xffffffffbfc00000) +
+                           IP53_EXECUTION_SIZE;
+    uint64_t before = IP53_RESET - sizeof(before_ram);
+    uint64_t before_va = UINT64_C(0xffffffffbfc00000) -
+                         sizeof(before_ram);
+    QTestState *s;
+
+    memcpy(payload, first_prom, sizeof(first_prom));
+    memcpy(payload + 0x1000, interior_prom, sizeof(interior_prom));
+    payload[IP53_EXECUTION_SIZE - 1] = 0x6d;
+    image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+    s = ip53_tcg_static_start(bios, data, clock, NULL);
+
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                 IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                                   IP53_TCG_MD_MEMORY_CONFIG), ==,
+                    IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    qtest_memwrite(s, before, before_ram, sizeof(before_ram));
+    qtest_memwrite(s, boundary, after_ram, sizeof(after_ram));
+
+    qtest_memwrite(s, IP53_RESET, before_ram, sizeof(before_ram));
+    qtest_memwrite(s, IP53_RESET + 0x1000, after_ram, sizeof(after_ram));
+    qtest_memwrite(s, boundary - 1, before_ram, 1);
+
+    /* Host accesses reach the enabled bank. */
+    qtest_memread(s, IP53_RESET, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), before_ram, sizeof(before_ram));
+    g_assert_true(qtest_memread_cpu_debug(s, 0, before_va, bytes,
+                                          sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), before_ram, sizeof(before_ram));
+    g_assert_true(qtest_memread_cpu_debug(s, 0, boundary_va, bytes,
+                                          sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), after_ram, sizeof(after_ram));
+
+    /* KSEG1 and the Hub boot aliases retain PROM over enabled RAM. */
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffbfc00000), bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), first_prom, sizeof(first_prom));
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffbfc01000), bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), interior_prom, sizeof(interior_prom));
+    qtest_memread(s, LOCAL, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), first_prom, sizeof(first_prom));
+    qtest_memread(s, IP53_LOCAL_HIGH, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), first_prom, sizeof(first_prom));
+    qtest_memread(s, REMOTE, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), first_prom, sizeof(first_prom));
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffbfc00000) + IP53_EXECUTION_SIZE - 1,
+        bytes, 1));
+    g_assert_cmphex(bytes[0], ==, 0x6d);
+
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffbfc00000), bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), first_prom, sizeof(first_prom));
+
+    qtest_quit(s);
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
+static void test_ip53_guest_store_refuses_reset_view(void)
+{
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    for (unsigned int static_carrier = 0; static_carrier < 2;
+         static_carrier++) {
+        const char *kind = static_carrier ? "static" : "pflash";
+        g_autofree char *bios = sized_image("ip53-store-bios",
+                                            IP53_EXECUTION_SIZE);
+        g_autofree char *image = flash_image("ip53-store-flash");
+        g_autofree char *data = sized_image("ip53-store-rtc-data", 0x800);
+        g_autofree char *clock = sized_image("ip53-store-rtc-clock", 16);
+        g_autofree char *log = log_file("ip53-store");
+        g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
+        g_autofree char *found = NULL;
+        g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+        uint8_t bytes[8];
+        uint8_t expected[8];
+        QTestState *s;
+
+        ip53_tcg_build_reset_store_payload(payload);
+        image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+        image_erase_sector(image, 0);
+        image_write(image, 0, payload, IP53_EXECUTION_SIZE);
+        s = static_carrier ? ip53_tcg_static_start(bios, data, clock, extra) :
+            ip53_tcg_flash_start(bios, image, data, clock, extra);
+
+        qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                     UINT64_C(0x33));
+        g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                                       IP53_TCG_MD_MEMORY_CONFIG), ==,
+                        UINT64_C(0x33));
+        qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE,
+                       payload + IP53_TCG_RAM_TRAMPOLINE, 16 * 4);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        ip53_tcg_wait_marker(s, "store after reset-view refusal",
+                             IP53_TCG_RAM_CONTROL,
+                             IP53_TCG_RESET_STORE_MARKER);
+        qtest_qmp_assert_success(s, "{'execute':'stop'}");
+
+        /* The guest reached the store and continued after the posted write. */
+        g_assert_true(qtest_memread_cpu_debug(
+            s, 0, UINT64_C(0xffffffffbfc02000), bytes, sizeof(bytes)));
+        memcpy(expected, payload + 0x2000, sizeof(expected));
+        g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+        qtest_memread(s, LOCAL + 0x2000, bytes, sizeof(bytes));
+        g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+        qtest_memread(s, IP53_LOCAL_HIGH + 0x2000, bytes, sizeof(bytes));
+        g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+        qtest_memread(s, REMOTE + 0x2000, bytes, sizeof(bytes));
+        g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+
+        qtest_quit(s);
+        image_read(bios, 0x2000, bytes, sizeof(bytes));
+        g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+        if (!static_carrier) {
+            image_read(image, 0x2000, bytes, sizeof(bytes));
+            g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+        }
+        g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+        g_assert_cmpuint(count_lines(
+            found, "sn1.prom.reset execution view: refusing a 8-byte write "
+            "of 0x1234 at offset 0x2000"), ==, 1);
+        g_test_message("%s reset-view store reached the refusal callback; "
+                       "the guest continued to its completion marker", kind);
+
+        g_assert_cmpint(unlink(bios), ==, 0);
+        g_assert_cmpint(unlink(image), ==, 0);
+        g_assert_cmpint(unlink(data), ==, 0);
+        g_assert_cmpint(unlink(clock), ==, 0);
+        g_assert_cmpint(unlink(log), ==, 0);
+    }
+}
+
+static void test_ip53_tcg_code_refresh(void)
+{
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    for (unsigned int alias = 0; alias < 2; alias++) {
+        bool high_alias = alias != 0;
+        g_autofree char *bios = sized_image("ip53-tcg-bios",
+                                            IP53_EXECUTION_SIZE);
+        g_autofree char *image = flash_image("ip53-tcg-flash");
+        g_autofree char *data = sized_image("ip53-tcg-rtc-data", 0x800);
+        g_autofree char *clock = sized_image("ip53-tcg-rtc-clock", 16);
+        g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+        uint8_t instruction[4];
+        QTestState *s;
+
+        ip53_tcg_build_payload(payload, high_alias);
+        image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+        image_erase_sector(image, 0);
+        image_write(image, 0, payload, IP53_EXECUTION_SIZE);
+        s = ip53_tcg_flash_start(bios, image, data, clock, NULL);
+        /* Keep the reset vector uncovered while the fixture starts. */
+        qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                     UINT64_C(0x33));
+        g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                                       IP53_TCG_MD_MEMORY_CONFIG), ==,
+                        UINT64_C(0x33));
+        qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE,
+                       payload + IP53_TCG_RAM_TRAMPOLINE, 16 * 4);
+
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        ip53_tcg_wait_marker(s, "mapped RAM positive-control",
+                             IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+        ip53_tcg_wait_marker(s, high_alias ? "local-high old" : "reset old",
+                             IP53_TCG_FLASH_MARKER, IP53_TCG_OLD_MARKER);
+        qtest_qmp_assert_success(s, "{'execute':'stop'}");
+
+        flash_program(s, LOCAL, IP53_TCG_CODE_OFFSET + 2,
+                      IP53_TCG_NEW_MARKER);
+        g_assert_true(qtest_memread_cpu_debug(
+            s, 0, UINT64_C(0xffffffffbfc00000) + IP53_TCG_CODE_OFFSET,
+            instruction, sizeof(instruction)));
+        g_assert_cmphex(ldl_be_p(instruction), ==,
+                        0x34090000 | IP53_TCG_NEW_MARKER);
+        qtest_memread(s, IP53_LOCAL_HIGH + IP53_TCG_CODE_OFFSET,
+                      instruction, sizeof(instruction));
+        g_assert_cmphex(ldl_be_p(instruction), ==,
+                        0x34090000 | IP53_TCG_NEW_MARKER);
+
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        ip53_tcg_wait_marker(s, high_alias ? "local-high new" : "reset new",
+                             IP53_TCG_FLASH_MARKER, IP53_TCG_NEW_MARKER);
+        qtest_quit(s);
+
+        g_assert_cmpuint(unlink(bios), ==, 0);
+        g_assert_cmpuint(unlink(image), ==, 0);
+        g_assert_cmpuint(unlink(data), ==, 0);
+        g_assert_cmpuint(unlink(clock), ==, 0);
+    }
+}
+
+static void test_ip53_tcg_mapped_prom_to_ram_copy(void)
+{
+    uint32_t route_code[192];
+    size_t route_count = ip53_tcg_build_route_copy(route_code);
+    size_t route_size = route_count * sizeof(route_code[0]);
+    g_autofree char *bios = sized_image("ip53-route-copy-bios",
+                                        IP53_EXECUTION_SIZE);
+    g_autofree char *data = sized_image("ip53-route-copy-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-route-copy-rtc-clock", 16);
+    g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+    g_autofree uint8_t *code_bytes = g_malloc(route_size);
+    g_autofree uint8_t *code_readback = g_malloc(route_size);
+    uint8_t bytes[8];
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    ip53_tcg_build_payload(payload, false);
+    stq_be_p(payload + 0x2000, IP53_TCG_ROUTE_PROM_EVEN);
+    stq_be_p(payload + 0x102000, IP53_TCG_ROUTE_PROM_ODD);
+    ip53_tcg_build_route_payload(payload);
+    for (size_t i = 0; i < route_count; i++) {
+        stl_be_p(code_bytes + i * 4, route_code[i]);
+    }
+    image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+    s = ip53_tcg_static_start(bios, data, clock, NULL);
+
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                 UINT64_C(0x33));
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                                   IP53_TCG_MD_MEMORY_CONFIG), ==,
+                    UINT64_C(0x33));
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffbfc02000), bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes), ==, IP53_TCG_ROUTE_PROM_EVEN);
+    qtest_memread(s, IP53_LOCAL_HIGH + 0x2000, bytes, sizeof(bytes));
+    g_assert_cmphex(ldq_be_p(bytes), ==, IP53_TCG_ROUTE_PROM_EVEN);
+    qtest_memread(s, IP53_LOCAL_HIGH + 0x102000, bytes, sizeof(bytes));
+    g_assert_cmphex(ldq_be_p(bytes), ==, IP53_TCG_ROUTE_PROM_ODD);
+
+    qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE,
+                   payload + IP53_TCG_RAM_TRAMPOLINE, route_size);
+    qtest_memread(s, IP53_TCG_RAM_TRAMPOLINE, code_readback, route_size);
+    g_assert_cmpmem(code_readback, route_size, code_bytes, route_size);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    ip53_tcg_wait_marker(s, "mapped PROM copy",
+                         IP53_TCG_RAM_CONTROL, IP53_TCG_ROUTE_COPY_MARKER);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+
+    qtest_memread(s, HUB + 0x01a02000, bytes, sizeof(bytes));
+    g_assert_cmphex(ldq_be_p(bytes), ==, IP53_TCG_ROUTE_PROM_EVEN);
+    qtest_memread(s, HUB + 0x01b02000, bytes, sizeof(bytes));
+    g_assert_cmphex(ldq_be_p(bytes), ==, IP53_TCG_ROUTE_PROM_ODD);
+    qtest_quit(s);
+
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
+static void test_ip53_reset_views_are_shared(void)
+{
+    static const uint8_t cached_fetch[] = {
+        0xc1, 0xd2, 0xe3, 0xf4, 0x15, 0x26, 0x37, 0x48,
+    };
+    static const uint64_t cpu_views[] = {
+        UINT64_C(0xffffffff9fc00000), /* cached KSEG0 */
+        UINT64_C(0xffffffffbfc00000), /* uncached KSEG1 */
+        UINT64_C(0x980000001fc00000), /* XKPHYS CCA 3, selector 0 */
+        UINT64_C(0x960000001fc00000), /* XKPHYS CCA 2, selector 3 */
+        UINT64_C(0xa80000001fc00000), /* XKPHYS CCA 5, selector 0 */
+    };
+    uint8_t bytes[sizeof(cached_fetch)];
+    g_autofree char *bios = sized_image("ip53-shared-reset-bios",
+                                        IP53_EXECUTION_SIZE);
+    g_autofree char *data = sized_image("ip53-shared-reset-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-shared-reset-rtc-clock", 16);
+    g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    ip53_tcg_build_payload(payload, false);
+    memcpy(payload + 0x27f4, cached_fetch, sizeof(cached_fetch));
+    image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+    s = ip53_tcg_static_start(bios, data, clock, NULL);
+
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
+                 UINT64_C(0x33));
+    qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE,
+                   payload + IP53_TCG_RAM_TRAMPOLINE, 16 * 4);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    ip53_tcg_wait_marker(s, "cached and uncached reset views",
+                         IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    /* Startup sets Status.KX before the test removes both RAM banks. */
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                               IP53_TCG_MD_MEMORY_CONFIG), ==, 0);
+
+    for (size_t i = 0; i < ARRAY_SIZE(cpu_views); i++) {
+        if (!qtest_memread_cpu_debug(s, 0, cpu_views[i], bytes,
+                                     sizeof(bytes))) {
+            g_autofree char *registers = qtest_hmp(s, "info registers 0");
+
+            g_test_message("CPU 0 debug read failed at virtual address "
+                           "0x%" PRIx64 "; registers: %s",
+                           cpu_views[i], registers);
+            g_assert_not_reached();
+        }
+        g_assert_cmpmem(bytes, sizeof(bytes), payload, sizeof(bytes));
+        if (!qtest_memread_cpu_debug(s, 0, cpu_views[i] + 0x1000,
+                                     bytes, sizeof(bytes))) {
+            g_autofree char *registers = qtest_hmp(s, "info registers 0");
+
+            g_test_message("CPU 0 debug read failed at virtual address "
+                           "0x%" PRIx64 "; registers: %s",
+                           cpu_views[i] + 0x1000, registers);
+            g_assert_not_reached();
+        }
+        g_assert_cmpmem(bytes, sizeof(bytes), payload + 0x1000,
+                        sizeof(bytes));
+    }
+    if (!qtest_memread_cpu_debug(s, 0,
+                                 UINT64_C(0x980000001fc027f4), bytes,
+                                 sizeof(bytes))) {
+        g_autofree char *registers = qtest_hmp(s, "info registers 0");
+
+        g_test_message("CPU 0 debug read failed at virtual address "
+                       "0x980000001fc027f4; registers: %s", registers);
+        g_assert_not_reached();
+    }
+    g_assert_cmpmem(bytes, sizeof(bytes), cached_fetch, sizeof(cached_fetch));
+    qtest_memread(s, IP53_RESET, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), payload, sizeof(bytes));
+    qtest_memread(s, LOCAL, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), payload, sizeof(bytes));
+    qtest_memread(s, IP53_LOCAL_HIGH, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), payload, sizeof(bytes));
+    qtest_memread(s, REMOTE, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), payload, sizeof(bytes));
+
+    qtest_quit(s);
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
+/*
+ * The builder fixture supplies an IP53 node with a synthetic 1 MiB BIOS.
+ * Its writable flash is a separate 16 MiB image. Only the reviewed payload
+ * length is visible in the reset and high local execution views.
+ */
+static void test_ip53_execution_views(void)
+{
+    g_autofree char *bios = sized_image("ip53-bios", IP53_PROM_SIZE);
+    g_autofree char *image = flash_image("ip53-views");
+    g_autofree char *data = sized_image("ip53-views-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-views-rtc-clock", 16);
+    g_autofree char *log = log_file("ip53-views");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    uint8_t stored[8];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_erase_sector(image, PART_SIZE);
+    image_write_be64(image, IP53_EXECUTION_SIZE - 8,
+                     0x1122334455667788ULL);
+    image_write_be64(image, IP53_EXECUTION_SIZE,
+                     0xaabbccddeeff0011ULL);
+    extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write,"
+                            "trace:pflash_data_write,"
+                            "trace:pflash_sector_erase_start -D %s "
+                            "-qtest-log /dev/stderr", log);
+    s = ip53_flash_start(bios, image, data, clock, extra);
+
+    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_EXECUTION_SIZE - 8), ==,
+                    0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE - 8),
+                    ==, 0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_EXECUTION_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE),
+                    ==, 0);
+
+    /* Keep CFI waiting for its program word across refused execution writes. */
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
+    qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
+    qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
+    qtest_writeq(s, IP53_RESET + 0x204, 0);
+    qtest_writeq(s, IP53_LOCAL_HIGH + 0x204, 0);
+    qtest_writeq(s, IP53_RESET + IP53_EXECUTION_SIZE, 0);
+    qtest_writeq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE, 0);
+    qtest_writeq(s, LOCAL + BYTE(0x204), 0x5a5a);
+    g_assert_cmphex(qtest_readw(s, IP53_RESET + 0x204), ==, 0x5a5a);
+    g_assert_cmphex(qtest_readw(s, IP53_LOCAL_HIGH + 0x204), ==, 0x5a5a);
+
+    /* The other CFI selection changes its array without refreshing views. */
+    flash_program(s, LOCAL + SECOND_READ, 0x204, 0x0f0f);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x204), ==, 0x0f0f);
+    g_assert_cmphex(qtest_readw(s, IP53_RESET + 0x204), ==, 0x5a5a);
+    g_assert_cmphex(qtest_readw(s, IP53_LOCAL_HIGH + 0x204), ==, 0x5a5a);
+
+    ip53_flash_erase_sector(s, LOCAL, 0);
+    g_assert_cmphex(qtest_readw(s, IP53_RESET + 0x204), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(s, IP53_LOCAL_HIGH + 0x204), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x204), ==, 0x0f0f);
+
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readw(s, IP53_RESET + 0x204), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(s, IP53_LOCAL_HIGH + 0x204), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x204), ==, 0x0f0f);
+    qtest_quit(s);
+
+    image_read(image, 0x204, stored, 2);
+    g_assert_cmphex(stored[0], ==, 0xff);
+    g_assert_cmphex(stored[1], ==, 0xff);
+    image_read(image, PART_SIZE + 0x204, stored, 2);
+    g_assert_cmphex(stored[0], ==, 0x0f);
+    g_assert_cmphex(stored[1], ==, 0x0f);
+    image_read(image, IP53_EXECUTION_SIZE, stored, sizeof(stored));
+    g_assert_cmphex(ldq_be_p(stored), ==, 0xaabbccddeeff0011ULL);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    /* Both views reject the payload write and the boundary write. */
+    g_assert_cmpuint(count_lines(found, "execution view: refusing"), ==, 4);
+    g_assert_cmpuint(count_lines(found, "past the last backing word"), ==, 1);
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 16);
+    g_assert_cmpuint(count_lines(found, "data offset:"), ==, 2);
+    g_assert_cmpuint(count_lines(found, "start sector erase at:"), ==, 1);
+
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
+static void test_ip53_execution_view_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-ip53-flash-migration-XXXXXX", &error);
+    g_autofree char *bios = sized_image("ip53-migration-bios",
+                                        IP53_PROM_SIZE);
+    g_autofree char *source = flash_image("ip53-migration-source");
+    g_autofree char *destination = flash_image("ip53-migration-destination");
+    g_autofree char *source_data = sized_image("ip53-migration-source-rtc-data",
+                                               0x800);
+    g_autofree char *source_clock = sized_image(
+        "ip53-migration-source-rtc-clock", 16);
+    g_autofree char *destination_data = sized_image(
+        "ip53-migration-destination-rtc-data", 0x800);
+    g_autofree char *destination_clock = sized_image(
+        "ip53-migration-destination-rtc-clock", 16);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from;
+    QTestState *to;
+
+    g_assert_no_error(error);
+    image_erase_sector(source, 0);
+    image_erase_sector(source, PART_SIZE);
+    image_erase_sector(destination, 0);
+    image_erase_sector(destination, PART_SIZE);
+    image_write_be64(destination, 0x204, 0x1111111111111111ULL);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ip53_flash_start(bios, source, source_data, source_clock, "");
+    to = ip53_flash_start(bios, destination, destination_data,
+                          destination_clock, "-incoming defer");
+
+    flash_program(from, LOCAL, 0x204, 0x1234);
+    g_assert_cmphex(qtest_readw(from, IP53_RESET + 0x204), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(from, IP53_LOCAL_HIGH + 0x204), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(to, IP53_RESET + 0x204), ==, 0x1111);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(qtest_readw(to, IP53_RESET + 0x204), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(to, IP53_LOCAL_HIGH + 0x204), ==, 0x1234);
+    qtest_system_reset(to);
+    g_assert_cmphex(qtest_readw(to, IP53_RESET + 0x204), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(to, IP53_LOCAL_HIGH + 0x204), ==, 0x1234);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    /* QEMU removes the migration socket; rmdir below checks cleanup. */
+    g_assert_cmpint(unlink(source), ==, 0);
+    g_assert_cmpint(unlink(destination), ==, 0);
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(source_data), ==, 0);
+    g_assert_cmpint(unlink(source_clock), ==, 0);
+    g_assert_cmpint(unlink(destination_data), ==, 0);
+    g_assert_cmpint(unlink(destination_clock), ==, 0);
+    g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
 /*
@@ -1212,6 +2294,341 @@ static void test_first_sector_rewrite(void)
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
+
+/*
+ * BTE addresses go through the memory-directory path. The high-local PROM
+ * view retains its bytes while BTE copies through overlapping RAM addresses.
+ */
+static uint64_t ip53_bte_copy(QTestState *s, uint64_t bte, uint64_t source,
+                              uint64_t destination, uint64_t notification)
+{
+    qtest_writeq(s, bte, 1 | (UINT64_C(1) << 20));
+    qtest_writeq(s, bte + 8, source);
+    qtest_writeq(s, bte + 0x10, destination);
+    qtest_writeq(s, bte + 0x20, notification);
+    qtest_writeq(s, bte + 0x18, 1 << 4);
+    return qtest_readq(s, bte);
+}
+
+static void test_ip53_bte_uses_local_memory_directory(void)
+{
+    const uint64_t bte0 = IP53_TCG_BEDROCK + 0x400000 + 0x10000;
+    const uint64_t bte1 = IP53_TCG_BEDROCK + 0x400000 + 0x20000;
+    const uint64_t md_config = IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG;
+    const uint64_t source = 0x1eca8000;
+    const uint64_t destination = 0x1fd10000;
+    const uint64_t notification = destination + 0x80;
+    const uint64_t scratch = 0x1e000000;
+    const uint64_t disabled_bank = 0x5fd10000;
+    const uint64_t disabled_notification = disabled_bank + 0x80;
+    const uint64_t outside_memory = 0x100000000;
+    const uint64_t prom_word = UINT64_C(0x1122334455667788);
+    const uint64_t backing_sentinel = UINT64_C(0xa5c33ca596699669);
+    const uint64_t error_status = 1 | (UINT64_C(1) << 16);
+    g_autofree char *bios = sized_image("ip53-bte-bios", IP53_EXECUTION_SIZE);
+    g_autofree char *data = sized_image("ip53-bte-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-bte-rtc-clock", 16);
+    g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+    uint8_t source_bytes[128];
+    uint8_t actual[128];
+    uint8_t sentinel[sizeof(uint64_t)];
+    QTestState *s;
+
+    for (unsigned i = 0; i < sizeof(source_bytes); i++) {
+        source_bytes[i] = (i * 37) ^ 0xa6;
+    }
+    stq_be_p(payload + (destination - IP53_RESET), prom_word);
+    stq_be_p(payload + (notification - IP53_RESET), ~prom_word);
+    image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+    s = ip53_tcg_static_start(bios, data, clock, NULL);
+
+    qtest_writeq(s, md_config, IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    qtest_memwrite(s, source, source_bytes, sizeof(source_bytes));
+    qtest_memread(s, IP53_LOCAL_HIGH + (destination - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, prom_word);
+    qtest_memread(s, IP53_LOCAL_HIGH + (notification - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, ~prom_word);
+
+    /* Copy into RAM at the bounded reset carrier's physical address. */
+    g_assert_cmphex(ip53_bte_copy(s, bte0, source, destination, notification),
+                    ==, 0);
+
+    /* The boot view retains PROM while a second BTE reads the RAM copy. */
+    qtest_memread(s, IP53_LOCAL_HIGH + (destination - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, prom_word);
+    qtest_memread(s, IP53_LOCAL_HIGH + (notification - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, ~prom_word);
+    g_assert_cmphex(ip53_bte_copy(s, bte1, destination, scratch,
+                                  scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch, actual,
+        sizeof(actual)));
+    g_assert_cmpmem(actual, sizeof(actual), source_bytes, sizeof(source_bytes));
+
+    /* The completed zero status replaced a nonzero local notification word. */
+    g_assert_cmphex(ip53_bte_copy(s, bte1, notification, scratch + 0x100,
+                                  scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x100, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, 0);
+
+    /* Bank 1 fits in QEMU RAM but is disabled by the memory-directory map. */
+    qtest_writeq(s, md_config, 0x51);
+    g_assert_cmphex(ip53_bte_copy(s, bte0, source, disabled_bank, notification),
+                    ==, error_status);
+    g_assert_cmphex(ip53_bte_copy(s, bte1, notification, scratch + 0x200,
+                                  scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x200, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, error_status);
+    qtest_memread(s, IP53_LOCAL_HIGH + (notification - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, ~prom_word);
+
+    /* A rejected notification must not change backing memory or status. */
+    qtest_writeq(s, md_config, IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    stq_be_p(sentinel, backing_sentinel);
+    qtest_memwrite(s, disabled_notification, sentinel, sizeof(sentinel));
+    g_assert_cmphex(ip53_bte_copy(s, bte1, disabled_notification,
+                                  scratch + 0x600, scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x600, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, backing_sentinel);
+
+    qtest_writeq(s, md_config, 0x51);
+    g_assert_cmphex(ip53_bte_copy(s, bte0, source, destination,
+                                  disabled_notification), ==, 0);
+    g_assert_cmphex(ip53_bte_copy(s, bte1, destination, scratch + 0x500,
+                                  scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x500, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, ldq_be_p(source_bytes));
+
+    qtest_writeq(s, md_config, IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    g_assert_cmphex(ip53_bte_copy(s, bte1, disabled_notification,
+                                  scratch + 0x700, scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x700, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, backing_sentinel);
+
+    /* This address is local to node 0 but outside its installed memory. */
+    qtest_writeq(s, md_config, IP53_TCG_MD_INSTALLED_BANKS_0_1);
+    g_assert_cmphex(ip53_bte_copy(s, bte0, outside_memory, scratch + 0x300,
+                                  notification), ==, error_status);
+    g_assert_cmphex(ip53_bte_copy(s, bte1, notification, scratch + 0x400,
+                                  scratch + 0x800), ==, 0);
+    g_assert_true(qtest_memread_cpu_debug(
+        s, 0, UINT64_C(0xffffffffa0000000) + scratch + 0x400, actual,
+        sizeof(uint64_t)));
+    g_assert_cmphex(ldq_be_p(actual), ==, error_status);
+    qtest_memread(s, IP53_LOCAL_HIGH + (notification - IP53_RESET),
+                  actual, sizeof(uint64_t));
+    g_assert_cmphex(ldq_be_p(actual), ==, ~prom_word);
+
+    qtest_quit(s);
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
+static size_t ip53_tcg_record_load(uint32_t *code, size_t n,
+                                    uint64_t address, unsigned marker)
+{
+    n = ip53_mips_load_imm64(code, n, 8, address);
+    code[n++] = (0x37 << 26) | (8 << 21) | (10 << 16); /* ld t2, 0(t0) */
+    code[n++] = ip53_mips_lui(8, 0x8004);
+    code[n++] = ip53_mips_sd(10, 8, marker);
+    return n;
+}
+
+static size_t ip53_tcg_record_call(uint32_t *code, size_t n,
+                                    uint64_t address, unsigned marker)
+{
+    n = ip53_mips_load_imm64(code, n, 8, address);
+    code[n++] = (8 << 21) | (31 << 11) | 9; /* jalr ra, t0 */
+    code[n++] = 0;
+    code[n++] = ip53_mips_lui(8, 0x8004);
+    code[n++] = ip53_mips_sd(2, 8, marker);
+    return n;
+}
+
+static size_t ip53_tcg_memory_config(uint32_t *code, size_t n, uint64_t config)
+{
+    n = ip53_mips_load_imm64(code, n, 8, UINT64_C(0x9200000001780008));
+    n = ip53_mips_load_imm64(code, n, 9, config);
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    return n;
+}
+
+static void test_ip53_cpu_accesses_shared_reset_ram(void)
+{
+    const uint64_t reset_offset = IP53_TCG_SHARED_RESET_RAM - IP53_RESET;
+    const uint64_t cached_reset_ram =
+        UINT64_C(0xa800000000000000) | IP53_TCG_SHARED_RESET_RAM;
+    const uint64_t helper_offset = 0x3000;
+    const uint64_t prom_helper = UINT64_C(0x980000001fc00000) | helper_offset;
+    const uint64_t ram_helper = UINT64_C(0xa80000001fc00000) | helper_offset;
+    const uint64_t bte0 = IP53_TCG_BEDROCK + 0x400000 + 0x10000;
+    const uint64_t bank1_destination = UINT64_C(0x40030000);
+    const uint64_t bank1_notification = UINT64_C(0x40038000);
+    const uint64_t error_status = 1 | (UINT64_C(1) << 16);
+    const uint64_t decoy = UINT64_C(0xdec0dec0dec0dec0);
+    g_autofree char *bios = sized_image("ip53-shared-ram-bios",
+                                        IP53_EXECUTION_SIZE);
+    g_autofree char *data = sized_image("ip53-shared-ram-rtc-data", 0x800);
+    g_autofree char *clock = sized_image("ip53-shared-ram-rtc-clock", 16);
+    g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
+    uint32_t code[256];
+    uint8_t code_bytes[sizeof(code)];
+    uint8_t ram_code[12];
+    size_t n = 0;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    ip53_tcg_build_payload(payload, false);
+    /* CPU 0 enables its own low RAM after an actual reset fetch. */
+    ip53_mips_store(payload, 15 * 4, ip53_mips_lui(10, 0xbfc0));
+    ip53_mips_store(payload, 16 * 4, ip53_mips_ori(10, 10, 0x400));
+    ip53_mips_store(payload, 17 * 4, 0x01400008); /* jr t2 */
+    ip53_mips_store(payload, 18 * 4, 0);
+    n = ip53_tcg_memory_config(code, n, 0x33);
+    code[n++] = ip53_mips_lui(10, 0x8001);
+    code[n++] = 0x01400008;
+    code[n++] = 0;
+    for (size_t i = 0; i < n; i++) {
+        ip53_mips_store(payload, 0x400 + i * 4, code[i]);
+    }
+    n = 0;
+    stq_be_p(payload + reset_offset, IP53_TCG_SHARED_RESET_PROM);
+    ip53_mips_store(payload, helper_offset, ip53_mips_ori(2, 0, 0x1111));
+    ip53_mips_store(payload, helper_offset + 4, 0x03e00008); /* jr ra */
+    ip53_mips_store(payload, helper_offset + 8, 0);
+    image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
+    s = ip53_tcg_static_start(bios, data, clock, NULL);
+
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_SHARED_RESET_RAM), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0x53);
+    stl_be_p(ram_code, ip53_mips_ori(2, 0, 0x2222));
+    stl_be_p(ram_code + 4, 0x03e00008);
+    stl_be_p(ram_code + 8, 0);
+    qtest_memwrite(s, IP53_RESET + helper_offset, ram_code, sizeof(ram_code));
+    qtest_writeq(s, reset_offset, decoy);
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0x33);
+
+    n = ip53_tcg_memory_config(code, n, 0x53);
+    n = ip53_tcg_record_call(code, n, prom_helper, 0x20);
+    n = ip53_mips_load_imm64(code, n, 8, cached_reset_ram);
+    n = ip53_mips_load_imm64(code, n, 9, IP53_TCG_SHARED_RESET_WRITE);
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    n = ip53_tcg_record_load(code, n, cached_reset_ram, 0x10);
+    n = ip53_tcg_record_load(code, n,
+                             UINT64_C(0x9600000000000000) |
+                             IP53_TCG_SHARED_RESET_RAM, 0x18);
+    n = ip53_tcg_record_call(code, n, ram_helper, 0x28);
+    n = ip53_tcg_record_call(code, n, prom_helper, 0x30);
+    n = ip53_tcg_record_call(code, n,
+                             UINT64_C(0xffffffffbfc00000) | helper_offset,
+                             0x48);
+    n = ip53_tcg_record_load(code, n,
+                             UINT64_C(0xffffffffa0000000) |
+                             IP53_TCG_SHARED_RESET_RAM, 0x50);
+    /* A KSEG1 store must reach the PROM refusal, not the underlying RAM. */
+    n = ip53_mips_load_imm64(code, n, 8,
+                             UINT64_C(0xffffffffa0000000) |
+                             IP53_TCG_SHARED_RESET_RAM);
+    n = ip53_mips_load_imm64(code, n, 9, UINT64_C(0xbadbadbadbad));
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    n = ip53_tcg_record_load(code, n, cached_reset_ram, 0x58);
+    /* Shrink bank zero without removing the low-RAM test program. */
+    n = ip53_tcg_memory_config(code, n, 0x33);
+    n = ip53_tcg_record_load(code, n, cached_reset_ram, 0x38);
+    n = ip53_tcg_memory_config(code, n, 0x53);
+    n = ip53_tcg_record_load(code, n, cached_reset_ram, 0x40);
+    code[n++] = ip53_mips_lui(8, 0x8004);
+    n = ip53_mips_load_imm64(code, n, 9, IP53_TCG_RAM_MARKER);
+    code[n++] = ip53_mips_sd(9, 8, 0);
+    code[n++] = 0x1000ffff;
+    code[n++] = 0;
+    g_assert_cmpuint(n, <=, G_N_ELEMENTS(code));
+    for (size_t i = 0; i < n; i++) {
+        stl_be_p(code_bytes + i * sizeof(uint32_t), code[i]);
+    }
+    qtest_memwrite(s, IP53_TCG_RAM_TRAMPOLINE, code_bytes,
+                   n * sizeof(uint32_t));
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    ip53_tcg_wait_marker(s, "simultaneous noncoherent PROM and coherent RAM",
+                         IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                               IP53_TCG_MD_MEMORY_CONFIG), ==, 0x53);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x10), ==,
+                    IP53_TCG_SHARED_RESET_WRITE);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x18), ==,
+                    IP53_TCG_SHARED_RESET_WRITE);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x20), ==, 0x1111);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x28), ==, 0x2222);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x30), ==, 0x1111);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x38), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x40), ==,
+                    IP53_TCG_SHARED_RESET_WRITE);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x48), ==, 0x1111);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x50), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_RAM_CONTROL + 0x58), ==,
+                    IP53_TCG_SHARED_RESET_WRITE);
+
+    /* BTE independently resolves the CPU-written physical memory coordinate. */
+    g_assert_cmphex(ip53_bte_copy(s, bte0, IP53_TCG_SHARED_RESET_RAM,
+                                  bank1_destination, bank1_notification),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(s, bank1_destination), ==,
+                    IP53_TCG_SHARED_RESET_WRITE);
+    g_assert_cmphex(qtest_readq(s, reset_offset), ==, decoy);
+    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + reset_offset), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+    g_assert_cmphex(qtest_readq(s, LOCAL + reset_offset), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0x52);
+    g_assert_cmphex(ip53_bte_copy(s, bte0, IP53_TCG_SHARED_RESET_RAM,
+                                  bank1_destination, bank1_notification),
+                    ==, error_status);
+    g_assert_cmphex(qtest_readq(s, bank1_notification), ==, error_status);
+
+    /* Full reset must remove an active overlapping alias before CPU release. */
+    qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG, 0x53);
+    qtest_writeq(s, IP53_TCG_RAM_CONTROL, 0);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
+                               IP53_TCG_MD_MEMORY_CONFIG), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IP53_TCG_SHARED_RESET_RAM), ==,
+                    IP53_TCG_SHARED_RESET_PROM);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    ip53_tcg_wait_marker(s, "reset fetch after clearing overlapping RAM",
+                         IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    qtest_quit(s);
+
+    g_assert_cmpint(unlink(bios), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1221,6 +2638,27 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-flash/positions-are-distinct",
                    test_positions_are_distinct);
     qtest_add_func("sn1/bedrock-flash/query-mode", test_query_mode);
+    qtest_add_func("sn1/bedrock-flash/cycle-bounds", test_cycle_bounds);
+    qtest_add_func("sn1/bedrock-flash/ip53-static-reset-view",
+                   test_ip53_static_reset_view);
+    qtest_add_func("sn1/bedrock-flash/ip53-tcg-code-refresh",
+                   test_ip53_tcg_code_refresh);
+    qtest_add_func("sn1/bedrock-flash/ip53-tcg-mapped-prom-to-ram-copy",
+                   test_ip53_tcg_mapped_prom_to_ram_copy);
+    qtest_add_func("sn1/bedrock-flash/ip53-bte-uses-local-memory-directory",
+                   test_ip53_bte_uses_local_memory_directory);
+    qtest_add_func("sn1/bedrock-flash/ip53-cpu-accesses-shared-reset-ram",
+                   test_ip53_cpu_accesses_shared_reset_ram);
+    qtest_add_func("sn1/bedrock-flash/ip53-reset-boundary-tlb-fill-order",
+                   test_ip53_reset_boundary_tlb_fill_order);
+    qtest_add_func("sn1/bedrock-flash/ip53-shared-reset-views",
+                   test_ip53_reset_views_are_shared);
+    qtest_add_func("sn1/bedrock-flash/ip53-guest-store-refuses-reset-view",
+                   test_ip53_guest_store_refuses_reset_view);
+    qtest_add_func("sn1/bedrock-flash/ip53-execution-views",
+                   test_ip53_execution_views);
+    qtest_add_func("sn1/bedrock-flash/ip53-execution-view-migration",
+                   test_ip53_execution_view_migration);
     qtest_add_func("sn1/bedrock-flash/program", test_program);
     qtest_add_func("sn1/bedrock-flash/sector-erase", test_sector_erase);
     qtest_add_func("sn1/bedrock-flash/local-aperture",

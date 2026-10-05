@@ -27,17 +27,21 @@ struct XbowTransportTest {
     SGIXbowState xbow;
     MemoryRegion control;
     MemoryRegion cpu_alias;
+    MemoryRegion cpu_alias8;
     MemoryRegion packet_alias;
+    MemoryRegion packet_ingress_alias[SGI_XBOW_LINKS];
+    MemoryRegion unqualified_regs;
     AddressSpace *packets;
-    Endpoint endpoint[4];
-    uint64_t count[4];
-    uint64_t address[4];
-    uint64_t value[4];
-    uint64_t attributes[4];
+    Endpoint endpoint[6];
+    uint64_t count[6];
+    uint64_t address[6];
+    uint64_t value[6];
+    uint64_t attributes[6];
     uint64_t probe;
     uint64_t result;
     uint64_t guards;
     bool stop_on_link_reset;
+    bool status_source_field;
     uint64_t reset_high;
     uint64_t reset_low;
     AddressSpace *cpus;
@@ -219,14 +223,17 @@ static void load_reset_state(XbowTransportTest *s, bool truncate)
 static uint64_t control_read(void *opaque, hwaddr addr, unsigned size)
 {
     XbowTransportTest *s = opaque;
-    unsigned i = addr / 32;
+    unsigned i;
 
-    if (i < 4) {
-        switch (addr % 32) {
-        case 0: return s->count[i];
-        case 8: return s->address[i];
-        case 16: return s->value[i];
-        case 24: return s->attributes[i];
+    if (addr >= 0x100) {
+        i = (addr - 0x100) / 32;
+        if (i < G_N_ELEMENTS(s->count)) {
+            switch ((addr - 0x100) % 32) {
+            case 0: return s->count[i];
+            case 8: return s->address[i];
+            case 16: return s->value[i];
+            case 24: return s->attributes[i];
+            }
         }
     }
     switch (addr) {
@@ -320,9 +327,11 @@ static void transport_realize(DeviceState *dev, Error **errp)
             qdev_get_gpio_in_named(dev, "reset-observed", i));
     }
     qdev_prop_set_uint64(DEVICE(&s->xbow), "span", 1ULL << 34);
-    qdev_prop_set_uint16(DEVICE(&s->xbow), "links-present", 0x700);
-    qdev_prop_set_uint16(DEVICE(&s->xbow), "startup-links-alive", 0x700);
-    for (i = 0; i < 4; i++) {
+    qdev_prop_set_uint16(DEVICE(&s->xbow), "links-present",
+                         s->status_source_field ? 0xff00 : 0xf00);
+    qdev_prop_set_uint16(DEVICE(&s->xbow), "startup-links-alive",
+                         s->status_source_field ? 0xff00 : 0xf00);
+    for (i = 0; i < G_N_ELEMENTS(s->endpoint); i++) {
         g_autofree char *name = g_strdup_printf("endpoint%u", i);
         s->endpoint[i].test = s;
         s->endpoint[i].index = i;
@@ -335,21 +344,26 @@ static void transport_realize(DeviceState *dev, Error **errp)
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 7,
                    &s->endpoint[0].mr, &s->endpoint[1].mr, &err), &err, 0);
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 8,
-                   NULL, &s->endpoint[1].mr, &err), &err, 1);
-    record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 8,
-                   &s->endpoint[0].mr, NULL, &err), &err, 2);
+                   NULL, NULL, &err), &err, 1);
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 8,
                    &uninitialized, &s->endpoint[1].mr, &err), &err, 3);
     record_refusal(s, sgi_xbow_attach_widget(&s->xbow, 14, NULL, &err),
                    &err, 5);
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 16,
                    &s->endpoint[0].mr, &s->endpoint[1].mr, &err), &err, 7);
-    for (i = 0; i < 2; i++) {
-        if (!sgi_xbow_attach_endpoint(&s->xbow, 8 + 2 * i,
-                                      &s->endpoint[2 * i].mr,
-                                      &s->endpoint[2 * i + 1].mr, errp)) {
-            return;
-        }
+    if (!sgi_xbow_attach_endpoint(&s->xbow, 8, &s->endpoint[0].mr,
+                                  &s->endpoint[1].mr, errp) ||
+        !sgi_xbow_attach_endpoint(&s->xbow, 9, &s->endpoint[4].mr, NULL,
+                                  errp) ||
+        !sgi_xbow_attach_endpoint(&s->xbow, 10, &s->endpoint[2].mr,
+                                  &s->endpoint[3].mr, errp) ||
+        !sgi_xbow_attach_endpoint(&s->xbow, 11, NULL, &s->endpoint[5].mr,
+                                  errp)) {
+        return;
+    }
+    if (s->status_source_field &&
+        !sgi_xbow_enable_status_source_field(&s->xbow, errp)) {
+        return;
     }
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 8,
                    &s->endpoint[2].mr, &s->endpoint[3].mr, &err), &err, 4);
@@ -359,11 +373,26 @@ static void transport_realize(DeviceState *dev, Error **errp)
     record_refusal(s, sgi_xbow_attach_endpoint(&s->xbow, 11,
                    &s->endpoint[0].mr, &s->endpoint[1].mr, &err), &err, 6);
     memory_region_init_io(&s->control, OBJECT(s), &control_ops, s,
-                          "transport.control", 0x100);
+                          "transport.control", 0x200);
     /* The control callback deliberately makes a nested test transaction. */
     s->control.disable_reentrancy_guard = true;
     memory_region_init_alias(&s->cpu_alias, OBJECT(s), "transport.cpu",
                              sgi_xbow_ingress(&s->xbow, 9), 0, 1ULL << 38);
+    memory_region_init_alias(&s->cpu_alias8, OBJECT(s), "transport.cpu8",
+                             sgi_xbow_ingress(&s->xbow, 8), 0, 1ULL << 38);
+    for (i = 0; i < SGI_XBOW_LINKS; i++) {
+        g_autofree char *name = g_strdup_printf("transport.packet-ingress%u",
+                                                i + SGI_XBOW_FIRST_WIDGET);
+        MemoryRegion *ingress = sgi_xbow_packet_ingress(
+            &s->xbow, i + SGI_XBOW_FIRST_WIDGET);
+
+        memory_region_init_alias(&s->packet_ingress_alias[i], OBJECT(s), name,
+                                 ingress,
+                                 0, SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+    }
+    memory_region_init_alias(&s->unqualified_regs, OBJECT(s),
+                             "transport.unqualified-registers", &s->xbow.regs,
+                             0, 1ULL << 34);
     memory_region_init_alias(&s->packet_alias, OBJECT(s), "transport.packet",
                              sgi_xbow_packet_ingress(&s->xbow, 9),
                              0, 1ULL << 52);
@@ -374,6 +403,11 @@ static void transport_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->control);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->cpu_alias);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->packet_alias);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->cpu_alias8);
+    for (i = 0; i < SGI_XBOW_LINKS; i++) {
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->packet_ingress_alias[i]);
+    }
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->unqualified_regs);
 }
 
 static void transport_unrealize(DeviceState *dev)
@@ -399,10 +433,10 @@ static const VMStateDescription transport_vmstate = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT64_ARRAY(count, XbowTransportTest, 4),
-        VMSTATE_UINT64_ARRAY(address, XbowTransportTest, 4),
-        VMSTATE_UINT64_ARRAY(value, XbowTransportTest, 4),
-        VMSTATE_UINT64_ARRAY(attributes, XbowTransportTest, 4),
+        VMSTATE_UINT64_ARRAY(count, XbowTransportTest, 6),
+        VMSTATE_UINT64_ARRAY(address, XbowTransportTest, 6),
+        VMSTATE_UINT64_ARRAY(value, XbowTransportTest, 6),
+        VMSTATE_UINT64_ARRAY(attributes, XbowTransportTest, 6),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -410,6 +444,8 @@ static const VMStateDescription transport_vmstate = {
 static const Property transport_properties[] = {
     DEFINE_PROP_BOOL("stop-on-link-reset", XbowTransportTest,
                      stop_on_link_reset, false),
+    DEFINE_PROP_BOOL("status-source-field", XbowTransportTest,
+                     status_source_field, false),
 };
 
 static void transport_class_init(ObjectClass *oc, const void *data)

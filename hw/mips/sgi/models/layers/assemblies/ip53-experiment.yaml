@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# IP53 Origin 350 compute module board identity and documented slot capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip53-experiment
+  platform: ip35
+  requires: {architecture: sn1-ip53-experiment}
+  contract: {board_ip: IP53}
+  capacity:
+    cpu_slots_per_node: 4
+    dimm_slots_per_node: 8
+    memory_banks_per_node: 8
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [512, 1024]
+    provenance: derived
+    sources: ["007-4566-001 p.68-75, 114-119: 2U compute module; 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 8 DIMM slots as four pairs, 512 MB or 1 GB DIMMs, 1-8 GB"]
+    notes: >-
+      CPU count, DIMM slots, and DIMM capacities follow the cited guide. The
+      eight one-DIMM bank positions and their size mapping are software
+      arrangements for this experiment, not a statement of physical bank wiring.
+      The board accepts two or four R16000 processors and has eight DIMM slots;
+      the guide says DIMMs are installed in matched pairs. The
+      experiment selects two 1 GiB DIMMs in synthetic bank positions 0 and 1;
+      the manuals establish capacity and paired DIMM rules, not this placement.
+      Independent review is required before launch. No SPD bytes or IP45 board
+      identity are supplied. Eight one-DIMM bank positions are a software
+      mapping used by this experiment, not a claim about the physical IP53
+      bank organization.
+  memory_kits:
+    - id: kit-2048-at-banks-0-1-experiment
+      dimms: 2
+      dimm_mib: 1024
+      banks: [1024, 1024]
+      bank_positions: [0, 1]
+      provenance: derived
+      sources: ["007-4566-001 p.68-75, 114-119: 512 MiB or 1 GiB DIMMs; 1-8 GiB node memory"]
+      notes: >-
+        Synthetic software bank placement for a 2 GiB experiment. The cited
+        guide supports capacity and matched DIMM rules but does not establish
+        how this board maps banks or DIMM positions. No SPD or board serial is
+        inferred.

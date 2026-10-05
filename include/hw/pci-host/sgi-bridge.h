@@ -16,6 +16,7 @@
 #define HW_PCI_HOST_SGI_BRIDGE_H
 
 #include "qemu/units.h"
+#include "qapi/error.h"
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "hw/misc/sgi-pio-forward.h"
@@ -100,6 +101,34 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
 bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
                                        const SGIBridgeBoardRecord *record,
                                        uint64_t serial, Error **errp);
+
+/*
+ * The bridge's plain DMA route for a device on its bus, or NULL when the
+ * device is not behind an SGI Bridge. Transfers move through this with
+ * dma_memory_read/write: the same address decode and node-qualified fabric
+ * routing as the slot's own space, with the byte-lane swap alone left out.
+ * Which transfers belong here is the device model's call, made from what its
+ * card is programmed to do: a leg whose two swaps compose to the identity (a
+ * frame payload everywhere; every leg on a card that swaps descriptors too)
+ * moves here rather than paying a per-word dispatch to produce bytes a plain
+ * copy gives for free, while a leg whose single swap is observable stays on
+ * pci_dma_*, which honours the slot's programmed correction.
+ */
+AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
+
+/*
+ * Native endpoint PIO ordering. This is also the default DMA declaration when
+ * a device has no explicit DMA trait.
+ */
+#define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
+#define SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED "dma-byte-lane-self-ordered"
+
+/*
+ * Read endpoint PIO and DMA declarations. DMA inherits PIO only when the
+ * optional DMA property is absent.
+ */
+bool sgi_bridge_device_byte_lane_traits(Object *obj, bool *pio_self_ordered,
+                                        bool *dma_self_ordered, Error **errp);
 
 /*
  * The whole of the widget's XIO space belongs to this chip. Sized to
@@ -252,6 +281,13 @@ struct SGIBridgeState {
 
     /* Where each window aims: an I/O region cannot hold an alias offset. */
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
+
+    /* Derived at plug time from immutable endpoint traits. Not migrated. */
+    uint32_t pio_self_ordered_slots;
+    uint32_t dma_self_ordered_slots;
+
+    /* Slots forced exempt whatever is plugged in them: a test override. */
+    uint32_t byte_lane_exempt;
 
     /* Slots the board wires to the 64-bit data path (REQ64# at reset). */
     uint8_t req64_slots;

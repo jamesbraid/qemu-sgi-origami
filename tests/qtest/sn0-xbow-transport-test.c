@@ -9,6 +9,9 @@
 #define CONTROL 0x10000000ULL
 #define CPU (1ULL << 54)
 #define PACKET (2ULL << 54)
+#define CPU8 (3ULL << 54)
+#define PACKET_INGRESS_BASE (4ULL << 54)
+#define UNQUALIFIED (8ULL << 54)
 #define XBOW "/machine/peripheral/test/xbow"
 
 static QTestState *start(const char *extra)
@@ -20,12 +23,26 @@ static QTestState *start(const char *extra)
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 0, CONTROL);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 1, CPU);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 2, PACKET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 3, CPU8);
+    for (unsigned i = 0; i < 8; i++) {
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 4 + i,
+                              PACKET_INGRESS_BASE +
+                              ((uint64_t)i << 52));
+    }
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/test", 12, UNQUALIFIED);
     return qts;
+}
+
+static uint64_t packet_ingress(unsigned widget)
+{
+    g_assert_cmpuint(widget, >=, 8);
+    g_assert_cmpuint(widget, <=, 15);
+    return PACKET_INGRESS_BASE + ((uint64_t)(widget - 8) << 52);
 }
 
 static uint64_t field(QTestState *qts, unsigned endpoint, unsigned offset)
 {
-    return qtest_readq(qts, CONTROL + endpoint * 32 + offset);
+    return qtest_readq(qts, CONTROL + 0x100 + endpoint * 32 + offset);
 }
 
 static void test_separate_faces(void)
@@ -44,6 +61,29 @@ static void test_separate_faces(void)
     g_assert_cmphex(field(qts, 2, 0), ==, 1);
     g_assert_cmphex(qtest_readq(qts, PACKET + (10ULL << 48) + high), ==,
                     0x8877665544332211ULL);
+    qtest_quit(qts);
+}
+
+static void test_endpoint_face_modes(void)
+{
+    QTestState *qts = start("");
+
+    /* Widget 9 has a CPU face only. */
+    qtest_writeq(qts, CPU8 + (9ULL << 34) + 0x80, 0x1020304050607080ULL);
+    g_assert_cmphex(field(qts, 4, 0), ==, 1);
+    g_assert_cmphex(field(qts, 4, 8), ==, 0x80);
+    qtest_writeq(qts, PACKET + (9ULL << 48) + 0x80,
+                 0x8877665544332211ULL);
+    g_assert_cmphex(field(qts, 4, 0), ==, 1);
+
+    /* Widget 11 has a packet face only. */
+    qtest_writeq(qts, PACKET + (11ULL << 48) + 0x100,
+                 0xaabbccddeeff0011ULL);
+    g_assert_cmphex(field(qts, 5, 0), ==, 1);
+    g_assert_cmphex(field(qts, 5, 8), ==, 0x100);
+    qtest_writeq(qts, CPU8 + (11ULL << 34) + 0x100,
+                 0x123456789abcdef0ULL);
+    g_assert_cmphex(field(qts, 5, 0), ==, 1);
     qtest_quit(qts);
 }
 
@@ -114,7 +154,7 @@ static void test_bounds_guards(void)
 {
     QTestState *qts = start("");
 
-    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x88), ==, 0xff);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0x88), ==, 0xfb);
     qtest_writeb(qts, CPU + (8ULL << 34) + 4095, 0x12);
     qtest_writeb(qts, CPU + (8ULL << 34) + 4096, 0x34);
     g_assert_cmphex(field(qts, 0, 0), ==, 1);
@@ -127,6 +167,7 @@ static void test_bounds_guards(void)
     g_assert_cmphex(field(qts, 3, 8), ==, (1ULL << 48) - 1);
     qtest_writeb(qts, PACKET + (11ULL << 48), 0xbc);
     g_assert_cmphex(field(qts, 3, 0), ==, 1);
+    g_assert_cmphex(field(qts, 5, 0), ==, 1);
     qtest_quit(qts);
 }
 
@@ -145,6 +186,50 @@ static void test_interrupt_packet_face(void)
     g_assert_cmphex(field(qts, 2, 0), ==, 0);
     qtest_readl(qts, CPU + 0x54);
     g_assert_cmphex(field(qts, 3, 16), ==, 0x27);
+    qtest_quit(qts);
+}
+
+static void test_widget_zero_status_source_field(void)
+{
+    QTestState *qts = start(
+        "-global sgi-xbow-transport-test.status-source-field=on");
+    uint32_t status;
+    unsigned widget;
+
+    /* The direct register view and an ordinary Crossbow keep the field zero. */
+    g_assert_cmphex(qtest_readl(qts, UNQUALIFIED + 0x0c) & 0x3c0, ==, 0);
+    qtest_quit(qts);
+
+    qts = start("");
+    g_assert_cmphex(qtest_readl(qts, packet_ingress(9) + 0x0c) & 0x3c0, ==,
+                    0);
+    qtest_quit(qts);
+
+    qts = start(
+        "-global sgi-xbow-transport-test.status-source-field=on");
+    for (widget = 8; widget <= 15; widget++) {
+        uint64_t ingress = packet_ingress(widget);
+
+        /* Aligned 64-bit accesses remain refused without setting status. */
+        g_assert_cmphex(qtest_readq(qts, ingress + 0x08), ==, 0);
+        status = qtest_readl(qts, ingress + 0x0c);
+        g_assert_cmphex(status & 0x21, ==, 0);
+        g_assert_cmphex((status >> 6) & 0xf, ==, widget);
+
+        /* Byte and halfword reads still set the access and multiple flags. */
+        g_assert_cmphex(qtest_readb(qts, ingress + 0x0c), ==, 0);
+        g_assert_cmphex(qtest_readw(qts, ingress + 0x0c), ==, 0);
+        status = qtest_readl(qts, ingress + 0x0c);
+        g_assert_cmphex(status & 0x21, ==, 0x21);
+        g_assert_cmphex((status >> 6) & 0xf, ==, widget);
+
+        status = qtest_readl(qts, ingress + 0x54);
+        g_assert_cmphex(status & 0x21, ==, 0x21);
+        g_assert_cmphex((status >> 6) & 0xf, ==, widget);
+        status = qtest_readl(qts, ingress + 0x0c);
+        g_assert_cmphex(status & 0x21, ==, 0);
+        g_assert_cmphex((status >> 6) & 0xf, ==, widget);
+    }
     qtest_quit(qts);
 }
 
@@ -388,14 +473,14 @@ static void test_lifetime(void)
 }
 
 /*
- * The endpoints this fixture attached, widgets 8 and 10, and none of the
- * attempts the bounds test above shows refused.
+ * Widgets 8 through 11 have at least one face attached, while all invalid
+ * and duplicate attachment attempts leave the endpoint mask unchanged.
  */
 static void test_endpoint_widgets(void)
 {
     QTestState *qts = start("");
 
-    g_assert_cmphex(qtest_readq(qts, CONTROL + 0xf0), ==, 0x500);
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0xf0), ==, 0xf00);
     qtest_quit(qts);
 }
 
@@ -405,11 +490,15 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow-transport/bounds-guards", test_bounds_guards);
     qtest_add_func("/sn0/xbow-transport/interrupt-packet-face",
                    test_interrupt_packet_face);
+    qtest_add_func("/sn0/xbow-transport/widget-zero-status-source-field",
+                   test_widget_zero_status_source_field);
     qtest_add_data_func("/sn0/xbow-transport/migration/source-down",
                         GUINT_TO_POINTER(0x500), test_migration);
     qtest_add_data_func("/sn0/xbow-transport/migration/destination-down",
                         GUINT_TO_POINTER(0x300), test_migration);
     qtest_add_func("/sn0/xbow-transport/separate-faces", test_separate_faces);
+    qtest_add_func("/sn0/xbow-transport/endpoint-face-modes",
+                   test_endpoint_face_modes);
     qtest_add_func("/sn0/xbow-transport/gating", test_gating);
     qtest_add_func("/sn0/xbow-transport/attributes-errors",
                    test_attributes_errors);

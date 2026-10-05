@@ -17,10 +17,11 @@
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
+#define TYPE_SGI_BRIDGE_DMA_TEST_BASE "sgi-bridge-dma-test-base"
 #define TYPE_SGI_BRIDGE_DMA_TEST "sgi-bridge-dma-test"
-/* The same card as a 64-bit PCI agent. */
 #define TYPE_SGI_BRIDGE_DMA_TEST_64BIT "sgi-bridge-dma-test-64bit"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST)
+#define TYPE_SGI_BRIDGE_DMA_ONLY_TEST "sgi-bridge-dma-only-test"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST_BASE)
 
 /* Large enough for page-straddling and synchronous DMA benchmarks. */
 #define SGI_BRIDGE_DMA_TEST_MAX 65536
@@ -60,6 +61,7 @@ struct SGIBridgeDMATestState {
 
     /* A copy tests the read direction without a second transform. */
     uint64_t source;
+    uint32_t dma_result;
 
     /* The level this device is holding its interrupt pin at. */
     uint32_t interrupt;
@@ -68,6 +70,10 @@ struct SGIBridgeDMATestState {
     uint16_t vendor_id;
     uint16_t device_id;
 
+    /* The legacy fixture uses this PIO trait and leaves DMA absent. */
+    bool byte_lane_self_ordered;
+    bool plain_dma;
+    bool dma_buffer;
     bool dma_r32;
     MemoryRegion dma_view;
     AddressSpace dma_view_as;
@@ -260,6 +266,8 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
     unsigned int i;
 
     if (s->length > SGI_BRIDGE_DMA_TEST_MAX) {
+        s->result = MEMTX_ERROR;
+        s->dma_result = MEMTX_ERROR;
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: asked for %u bytes, which is more "
                       "than this device will transfer\n", s->length);
@@ -271,8 +279,16 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
     }
 
     /* One call for the whole transfer: the per-page distinction lives here. */
-    for (i = 0; i < s->repetitions; i++) {
-        s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
+    if (s->plain_dma) {
+        s->result = address_space_write(
+            sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+        s->dma_result = s->result;
+    } else {
+        for (i = 0; i < s->repetitions; i++) {
+            s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
+            s->dma_result = s->result;
+        }
     }
     s->read_data = 0;
     memcpy(&s->read_data, buf, MIN(s->length, sizeof(s->read_data)));
@@ -289,6 +305,8 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
     MemTxResult result;
 
     if (s->length > SGI_BRIDGE_DMA_TEST_MAX) {
+        s->result = MEMTX_ERROR;
+        s->dma_result = MEMTX_ERROR;
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: asked to copy %u bytes, which is "
                       "more than this device will transfer\n", s->length);
@@ -301,12 +319,21 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
     s->read_data = ldq_le_p(buf);
     /* A read that failed has no data to copy, so nothing is written. */
     if (result != MEMTX_OK) {
+        s->dma_result = result;
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: the copy's read of 0x%" PRIx64
                       " failed, so it writes nothing\n", s->source);
         return;
     }
-    s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
+    if (s->plain_dma) {
+        s->result = address_space_write(
+            sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+        s->dma_result = s->result;
+    } else {
+        s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
+        s->dma_result = s->result;
+    }
 }
 
 static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
@@ -499,7 +526,12 @@ static void sgi_bridge_dma_test_irq_in(void *opaque, int n, int level)
 
 static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
-    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST_BASE(dev);
+
+    object_property_add_uint32_ptr(OBJECT(dev), "x-test-dma-result",
+                                   &s->dma_result, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(dev), "x-test-wide-scratch",
+                                   &s->wide_scratch, OBJ_PROP_FLAG_READ);
 
     qdev_init_gpio_in_named(DEVICE(dev), sgi_bridge_dma_test_irq_in,
                             "test-irq", 1);
@@ -539,7 +571,7 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 
 static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 {
-    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST_BASE(dev);
 
     sgi_bridge_dma_test_dirty_stop(s);
 
@@ -553,7 +585,7 @@ static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 
 static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
 {
-    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST_BASE(obj);
 
     sgi_bridge_dma_test_dirty_stop(s);
 
@@ -568,12 +600,13 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->result = MEMTX_OK;
     s->read_data = 0;
     s->req64 = false;
+    s->dma_result = MEMTX_OK;
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static void sgi_bridge_dma_test_req64_sampled(PCIDevice *dev, bool asserted)
 {
-    SGI_BRIDGE_DMA_TEST(dev)->req64 = asserted;
+    SGI_BRIDGE_DMA_TEST_BASE(dev)->req64 = asserted;
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
@@ -613,7 +646,31 @@ static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
 };
 
-static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
+static bool sgi_bridge_dma_test_pio_ordered(Object *obj, Error **errp)
+{
+    return SGI_BRIDGE_DMA_TEST_BASE(obj)->byte_lane_self_ordered;
+}
+
+static void sgi_bridge_dma_test_set_pio_ordered(Object *obj, bool value,
+                                                Error **errp)
+{
+    if (qdev_is_realized(DEVICE(obj))) {
+        qdev_prop_set_after_realize(DEVICE(obj),
+                                    SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                    errp);
+        return;
+    }
+    SGI_BRIDGE_DMA_TEST_BASE(obj)->byte_lane_self_ordered = value;
+}
+
+/* This variant declares DMA ordering and deliberately has no PIO property. */
+static bool sgi_bridge_dma_only_ordered(Object *obj, Error **errp)
+{
+    return true;
+}
+
+static void sgi_bridge_dma_test_base_class_init(ObjectClass *oc,
+                                                const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(oc);
@@ -633,6 +690,21 @@ static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 
+static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
+{
+    object_class_property_add_bool(oc, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
+                                   sgi_bridge_dma_test_pio_ordered,
+                                   sgi_bridge_dma_test_set_pio_ordered);
+}
+
+static void sgi_bridge_dma_only_test_class_init(ObjectClass *oc,
+                                                const void *data)
+{
+    object_class_property_add_bool(oc,
+        SGI_BRIDGE_DMA_BYTE_LANE_SELF_ORDERED,
+        sgi_bridge_dma_only_ordered, NULL);
+}
+
 static void sgi_bridge_dma_test_64bit_class_init(ObjectClass *oc,
                                                  const void *data)
 {
@@ -645,8 +717,15 @@ static void sgi_bridge_dma_test_64bit_class_init(ObjectClass *oc,
 
 static const TypeInfo sgi_bridge_dma_test_types[] = {
     {
-        .name = TYPE_SGI_BRIDGE_DMA_TEST,
+        .name = TYPE_SGI_BRIDGE_DMA_TEST_BASE,
         .parent = TYPE_PCI_DEVICE,
+        .instance_size = sizeof(SGIBridgeDMATestState),
+        .class_init = sgi_bridge_dma_test_base_class_init,
+        .abstract = true,
+    },
+    {
+        .name = TYPE_SGI_BRIDGE_DMA_TEST,
+        .parent = TYPE_SGI_BRIDGE_DMA_TEST_BASE,
         .instance_size = sizeof(SGIBridgeDMATestState),
         .class_init = sgi_bridge_dma_test_class_init,
         .interfaces = (const InterfaceInfo[]) {
@@ -659,6 +738,16 @@ static const TypeInfo sgi_bridge_dma_test_types[] = {
         .class_init = sgi_bridge_dma_test_64bit_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_PCI_64BIT_DEVICE },
+            { },
+        },
+    },
+    {
+        .name = TYPE_SGI_BRIDGE_DMA_ONLY_TEST,
+        .parent = TYPE_SGI_BRIDGE_DMA_TEST_BASE,
+        .instance_size = sizeof(SGIBridgeDMATestState),
+        .class_init = sgi_bridge_dma_only_test_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
             { },
         },
     },

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Origin 300 boot-flash adapter and two CFI PROM positions. */
+/* Bedrock boot-flash adapter and two CFI PROM positions. */
 #ifndef HW_MISC_SGI_BEDROCK_FLASH_H
 #define HW_MISC_SGI_BEDROCK_FLASH_H
 
@@ -10,7 +10,7 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockFlashState, SGI_BEDROCK_FLASH)
 
 /*
- * Published logical capacity of the boot flash, across both PROM positions.
+ * Total backing image size across both PROM positions.
  */
 #define SGI_BEDROCK_FLASH_SIZE (16 * MiB)
 
