@@ -53,6 +53,7 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "system/system.h"
@@ -64,8 +65,8 @@
 #define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPciExpansionState, SGI_PCI_EXPANSION)
 
-/* Placeholder; see sgi-ip29-io's identical constant. */
-#define PCI_EXPANSION_SERIAL_PLACEHOLDER 0x060504030201ULL
+/* Marked synthetic; no reviewed source assigns a serial to this board. */
+#define PCI_EXPANSION_SERIAL_PLACEHOLDER SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0)
 
 struct SGIPciExpansionState {
     SGIXioBoardState parent_obj;
@@ -142,6 +143,11 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
                          SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
     if (s->board_barcode) {
         qdev_prop_set_string(bridge, "board-barcode", s->board_barcode);
+    } else if (s->board_name) {
+        char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+
+        sgi_synthetic_barcode(barcode, 'O', s->onewire_serial);
+        qdev_prop_set_string(bridge, "board-barcode", barcode);
     }
     if (s->board_revision) {
         qdev_prop_set_string(bridge, "board-revision", s->board_revision);
@@ -232,7 +238,7 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
  * table names 030-1062-002 the Origin 2000 PCI cardcage. That this
  * carrier is that cardcage is inferred: the owner's guide names no part.
  * Both real PCI_XIO boards observed report Bridge revision 3. The
- * barcode is a placeholder.
+ * barcode is the marked synthetic one the build makes from the serial.
  */
 #define TYPE_SGI_PCI_CARRIER "sgi-pci-carrier"
 
@@ -242,7 +248,6 @@ static void pci_carrier_instance_init(Object *obj)
 
     s->slots = 3;
     s->board_part = g_strdup("030-1062-002");
-    s->board_barcode = g_strdup("OPCIXIO001");
     s->board_revision = g_strdup("C");
     s->board_name = g_strdup("PCI-XIO");
     s->bridge_revision = 3;

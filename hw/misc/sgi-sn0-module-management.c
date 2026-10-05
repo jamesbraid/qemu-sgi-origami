@@ -13,6 +13,7 @@
 #include "hw/i2c/pcf8584.h"
 #include "hw/i2c/i2c-wire.h"
 #include "hw/misc/sgi-sn0-module-management.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -669,22 +670,28 @@ bool sgi_sn0_module_management_identity_pages(
 }
 
 /*
- * The module responder's eight-byte one-wire ROM: family code 0x09, a byte
- * unique per node (0x08 plus slot), the module number folded into the next
- * byte's top nibble, three zero bytes, then a CRC8 self-check. Matches the
- * shipped module (slot 1-4, module number one) byte for byte; the
- * module-number fold is inferred from that one sample and not independently
- * confirmed against a second module number.
+ * A node's module-identity responder ROM: family code 0x09, the node's own
+ * 48-bit ROM serial from the machine's model, least significant byte first,
+ * then the Dallas CRC-8 over those seven bytes. The serial is a marked
+ * synthetic one; no captured part supplies it, and neither the node's slot
+ * nor the mutable module number enters it.
  */
-void sgi_sn0_module_management_identity_rom(unsigned int slot,
-                                            uint8_t module_number,
-                                            uint8_t rom[8])
+bool sgi_sn0_module_management_responder_rom(const char *module_id,
+                                             unsigned int node_index,
+                                             const uint64_t *serial,
+                                             uint8_t rom[8], Error **errp)
 {
+    if (!serial) {
+        error_setg(errp, "module '%s' node %u has no module-responder serial",
+                   module_id, node_index);
+        return false;
+    }
     rom[0] = 0x09;
-    rom[1] = 0x08 + slot;
-    rom[2] = rom[3] = rom[4] = rom[5] = 0x00;
-    rom[6] = (module_number & 0x0f) << 4;
+    for (unsigned int i = 0; i < 6; i++) {
+        rom[1 + i] = *serial >> (8 * i);
+    }
     rom[7] = onewire_crc8(0, rom, 7);
+    return true;
 }
 
 static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
@@ -807,6 +814,9 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
         return;
     }
     mgmt_build_module_serial_image(s, module_serial_image);
+    /* The serial chip's own ROM serial: marked, one per module number. */
+    qdev_prop_set_uint64(s->module_serial, "serial",
+                         SGI_SYNTHETIC_ONEWIRE_SERIAL('M', s->module_number));
     ds2502_set_image(s->module_serial, module_serial_image,
                      sizeof(module_serial_image));
     if (!qdev_realize(s->module_serial, BUS(s->onewire_bus), errp)) {
@@ -877,7 +887,6 @@ static void mgmt_init(Object *obj)
     s->module_serial = mgmt_add_child(s, "module-serial",
                                       TYPE_ONEWIRE_DS2502);
     qdev_prop_set_uint8(s->module_serial, "family", 0x09);
-    qdev_prop_set_uint64(s->module_serial, "serial", UINT64_C(0x304e53494753));
     s->msc = SGI_ELSC(mgmt_add_child(s, "msc", TYPE_SGI_ELSC));
     sgi_elsc_set_module_ops(s->msc, &mgmt_elsc_ops, s);
     /*

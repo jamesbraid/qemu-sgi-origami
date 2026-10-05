@@ -173,12 +173,18 @@ static Object *sgi_xio_board_slots(void)
  * The one-wire identity serials a board class carries. A board fitted by
  * slot name that leaves one at its class's shared placeholder would read
  * the same serial as every other such board, where every fitted part's
- * own one-wire ROM is unique; offset it by the slot's machine-wide
- * position so no two slots share one. The widget alone would not do: a
+ * own one-wire ROM is unique; offset its instance by the slot's
+ * machine-wide position so no two slots share one. The placeholders are
+ * marked synthetic serials at instance 0, and the offset starts at
+ * instance 64, above any the catalogue assigns, keeping the marker and
+ * the component letter intact. The widget alone would not do: a
  * module's two Crossbows number their widgets alike, so IO5 and IO7 are
  * both widget 14. The catalogue's own boards, placed by widget, set their
  * serials outright.
  */
+#define SGI_XIO_BOARD_SERIAL_BASE      64
+#define SGI_XIO_BOARD_SERIAL_POSITIONS (256 - SGI_XIO_BOARD_SERIAL_BASE)
+
 static const char *const sgi_xio_board_serial_props[] = {
     "onewire-serial", "ioc3-onewire-serial", "cad-duo-onewire-serial",
     "sio-onewire-serial",
@@ -205,9 +211,10 @@ static void sgi_xio_board_distinct_serials(SGIXioBoardState *board,
             value != placeholder) {
             continue;
         }
+        g_assert(position < SGI_XIO_BOARD_SERIAL_POSITIONS);
         object_property_set_uint(obj, prop->name,
-                                 placeholder + ((uint64_t)(position + 1) << 8),
-                                 &error_abort);
+                                 placeholder + SGI_XIO_BOARD_SERIAL_BASE +
+                                 position, &error_abort);
     }
 }
 

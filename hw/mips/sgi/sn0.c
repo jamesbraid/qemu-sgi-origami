@@ -1342,8 +1342,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
 
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(node), "bridge", OBJECT(bridge));
-    sgi_baseio_preset_set_bridge_identity(bridge, identity);
-    qdev_prop_set_uint64(bridge, "onewire-serial", bridge_serial);
+    sgi_baseio_preset_set_bridge_identity(bridge, identity, bridge_serial);
     if (pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", pci_bus_name);
     }

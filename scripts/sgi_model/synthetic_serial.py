@@ -17,6 +17,11 @@ UNIQUEWARE_MARKER = 0x454D55
 TEXT_MARKER = "EMU"
 TEXT_MIN_WIDTH = 6
 
+# The module letter's one-wire instances split in two on an Origin 2000 or
+# Onyx2: a module's serial chip takes its module number, below this, and
+# each node's Hub-side module-identity responder takes one at or above it.
+MODULE_RESPONDER_FIRST_INSTANCE = 16
+
 # The component letters, in the header's order.
 LETTERS = {
     "N": "node or system board",

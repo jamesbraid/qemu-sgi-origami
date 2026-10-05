@@ -1132,7 +1132,7 @@ static void test_a_slot_finishes_on_the_clock(const void *data)
 #define ONEWIRE_CMD_SEARCH    0xf0
 #define ONEWIRE_FAMILY_DS2505 0x0b
 #define ONEWIRE_FAMILY_DS2502 0x09
-#define HUB_ONEWIRE_SERIAL(nasid) (0x0c0b0a090807ULL + (nasid))
+#define HUB_ONEWIRE_SERIAL(nasid) (0x51454d554e00ULL + (nasid))
 
 /* The Dallas CRC-8 over the low bytes, as the public DS2505 sheet has it. */
 static uint8_t onewire_crc8(uint64_t data, unsigned int bytes)
@@ -3324,18 +3324,18 @@ static void test_model_population_overrides_class_globals(const void *data)
 static void test_origin2000_hubs_carry_module_identity(const void *data)
 {
     static const uint8_t expected_pages[2][32] = {
-        { 0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
-          0x4c, 0x45, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        { 0x01, 0x45, 0x4d, 0x55, 0x4d, 0x30, 0x30, 0x30,
+          0x30, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x9f, 0x88 },
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x8b, 0x40 },
         { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x4b, 0x59 },
     };
     static const uint64_t module_serials[ORIGIN2000_NODE_COUNT] = {
-        0x100000000009ULL, 0x10000000000aULL,
-        0x10000000000bULL, 0x10000000000cULL,
+        0x51454d554d10ULL, 0x51454d554d11ULL,
+        0x51454d554d12ULL, 0x51454d554d13ULL,
     };
     QTestState *qts = qtest_init("-M origin2000");
 
@@ -3344,7 +3344,7 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
                               (module_serials[node] << 8);
         uint64_t pimm_rom = onewire_expected_identity(
-            0x100000000001ULL + node);
+            0x51454d554e00ULL + node);
         g_autofree char *path =
             g_strdup_printf("/machine/node%u/hub", node);
         QDict *response = qtest_qmp(
@@ -3428,16 +3428,15 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
     for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
         unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
         uint64_t pimm_rom = onewire_expected_identity(
-            0x100000000001ULL + node);
+            0x51454d554e00ULL + node);
         uint8_t expected[32];
         uint8_t page[32];
         uint16_t crc;
 
         memset(expected, ' ', sizeof(expected));
         expected[0] = 0x01;
-        g_snprintf((char *)&expected[1], 11, "%010" PRIx64,
-                   (uint64_t)((0x100000000001ULL + node) &
-                              UINT64_C(0xffffffffff)));
+        /* The marked serial prints as its own text: "EMUN", the node. */
+        g_snprintf((char *)&expected[1], 11, "EMUN%06u", node);
         memcpy(&expected[11], "SGI-IP27-PIMM", 13);
         crc = ~onewire_crc16(0, expected, 30);
         expected[30] = crc;

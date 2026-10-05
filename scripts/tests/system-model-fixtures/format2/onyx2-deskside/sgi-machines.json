@@ -774,7 +774,7 @@
           "attachment": 1,
           "carrier": "xio-slot",
           "id": "baseio",
-          "ioc3-serial": 17592186044424,
+          "ioc3-serial": 103853732483072,
           "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
@@ -782,7 +782,7 @@
           "populated": true,
           "preset": "io6g",
           "revision": 4,
-          "serial": 17592186044423
+          "serial": 89358092026368
         },
         {
           "attachment": 4,
@@ -795,7 +795,7 @@
           "populated": true,
           "preset": "kona",
           "revision": 0,
-          "serial": 17592186044425
+          "serial": 89358092027648
         }
       ],
       "ip27-firmware": {
@@ -813,7 +813,7 @@
             0,
             1
           ],
-          "serial": "SGIMODULE3"
+          "serial": "EMUM000001"
         }
       ],
       "name": "onyx2-deskside",
@@ -960,8 +960,9 @@
           "id": "node-board-1-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029200,
             "ni-revision": 5,
-            "serial": 17592186044417,
+            "serial": 89358092029440,
             "system-controller": false,
             "widget-revision": 1
           },
@@ -1022,8 +1023,9 @@
           "id": "node-board-2-hub",
           "identity": {
             "i2c-controller": true,
+            "module-responder-serial": 89358092029201,
             "ni-revision": 5,
-            "serial": 17592186044418,
+            "serial": 89358092029441,
             "system-controller": false,
             "widget-revision": 1
           },

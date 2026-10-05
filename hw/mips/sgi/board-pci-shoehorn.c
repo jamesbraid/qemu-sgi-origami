@@ -78,6 +78,7 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -94,14 +95,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciShoehornState, SGI_PCI_SHOEHORN)
  * is the SGI assembly number on the photographed board's label, and the
  * revision the REV B beside it: the label is not the record, so the revision
  * is inferred. Real Origin 2000 inventories name the board XTALK_PCI. The
- * barcode is a placeholder, since a real one names a physical unit. The part
+ * barcode is marked synthetic, since a real one names a physical unit. The part
  * is exactly twelve characters (hw/pci-host/sgi-bridge.h,
  * sgi_bridge_board_part_error()).
  */
 #define SGI_SHOEHORN_BRIDGE_BOARD_PART     "030-1275-002"
 #define SGI_SHOEHORN_BRIDGE_BOARD_REVISION "B"
 #define SGI_SHOEHORN_BRIDGE_BOARD_NAME     "XTALK_PCI"
-#define SGI_SHOEHORN_BRIDGE_BOARD_BARCODE  "OXTPCI0001"
 
 /*
  * The photographed board's Bridge is marked "Bridge Rev D", widget revision
@@ -111,19 +111,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciShoehornState, SGI_PCI_SHOEHORN)
  */
 #define SGI_SHOEHORN_BRIDGE_REVISION 4
 
-/* Placeholder; see sgi-ip29-io's identical constant. */
-#define PCI_SHOEHORN_SERIAL_PLACEHOLDER 0x060504030201ULL
+/* Marked synthetic; no reviewed source assigns a serial to this board. */
+#define PCI_SHOEHORN_SERIAL_PLACEHOLDER SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0)
 
 /*
- * The fitted Cad Duo's one-wire identity part serial when nothing sets
- * "cad-duo-onewire-serial". No real value is known, so this is the same
- * descending-byte placeholder idiom used for an unobserved NIC ROM serial
- * elsewhere; a catalogue-placed board sets the topology's synthetic identity
- * instead.
+ * The fitted Cad Duo's station-address part serial when nothing sets
+ * "cad-duo-onewire-serial". No real value is known, so this is the IOC3's
+ * marked synthetic default; a catalogue-placed board sets the topology's
+ * synthetic identity instead.
  */
-#define PCI_SHOEHORN_CAD_DUO_ONEWIRE 0x0d0c0b0a0908ULL
-/* The dual-serial card's record part serial, the next placeholder along. */
-#define PCI_SHOEHORN_SIO_ONEWIRE 0x100f0e0d0c0bULL
+#define PCI_SHOEHORN_CAD_DUO_ONEWIRE SGI_IOC3_ONEWIRE_SERIAL
+/* The dual-serial card's record part serial, the IOC3 record default. */
+#define PCI_SHOEHORN_SIO_ONEWIRE SGI_IOC3_BOARD_ONEWIRE_SERIAL
 
 struct SGIPciShoehornState {
     SGIXioBoardState parent_obj;
@@ -153,7 +152,6 @@ typedef struct PciShoehornCard {
     uint16_t subsystem_id;
     uint32_t population;
     const char *part;
-    const char *barcode;
     const char *revision;
     const char *name;
 } PciShoehornCard;
@@ -161,15 +159,15 @@ typedef struct PciShoehornCard {
 static const PciShoehornCard pci_shoehorn_cad_duo = {
     "cad-duo", "onewire-serial", SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED,
     SGI_IOC3_POPULATION_AUTO,
-    SGI_IOC3_CAD_DUO_BOARD_PART, SGI_IOC3_CAD_DUO_BOARD_BARCODE,
-    SGI_IOC3_CAD_DUO_BOARD_REVISION, SGI_IOC3_CAD_DUO_BOARD_NAME,
+    SGI_IOC3_CAD_DUO_BOARD_PART, SGI_IOC3_CAD_DUO_BOARD_REVISION,
+    SGI_IOC3_CAD_DUO_BOARD_NAME,
 };
 
 static const PciShoehornCard pci_shoehorn_sio_ufc = {
     "sio-ufc", "board-onewire-serial", SGI_IOC3_SUBSYS_SIO_UFC_UNCAPTURED,
     SGI_IOC3_POPULATION_SERIAL_A | SGI_IOC3_POPULATION_SERIAL_B,
-    SGI_IOC3_SIO_UFC_BOARD_PART, SGI_IOC3_SIO_UFC_BOARD_BARCODE,
-    SGI_IOC3_SIO_UFC_BOARD_REVISION, SGI_IOC3_SIO_UFC_BOARD_NAME,
+    SGI_IOC3_SIO_UFC_BOARD_PART, SGI_IOC3_SIO_UFC_BOARD_REVISION,
+    SGI_IOC3_SIO_UFC_BOARD_NAME,
 };
 
 /*
@@ -183,6 +181,7 @@ static bool pci_shoehorn_fit_card(SGIPciShoehornState *s,
                                   Error **errp)
 {
     PCIBus *bus = PCI_HOST_BRIDGE(s->bridge)->bus;
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
     PCIDevice *ioc3;
 
     ioc3 = pci_new(PCI_DEVFN(slot, 0), TYPE_SGI_IOC3);
@@ -191,7 +190,8 @@ static bool pci_shoehorn_fit_card(SGIPciShoehornState *s,
     qdev_prop_set_uint32(DEVICE(ioc3), "population", card->population);
     qdev_prop_set_uint64(DEVICE(ioc3), card->serial_prop, onewire_serial);
     qdev_prop_set_string(DEVICE(ioc3), "board-part", card->part);
-    qdev_prop_set_string(DEVICE(ioc3), "board-barcode", card->barcode);
+    sgi_synthetic_barcode(barcode, 'P', onewire_serial);
+    qdev_prop_set_string(DEVICE(ioc3), "board-barcode", barcode);
     qdev_prop_set_string(DEVICE(ioc3), "board-revision", card->revision);
     qdev_prop_set_string(DEVICE(ioc3), "board-name", card->name);
     if (!pci_realize_and_unref(ioc3, bus, errp)) {
@@ -211,6 +211,7 @@ static bool pci_shoehorn_fit_card(SGIPciShoehornState *s,
 static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
 {
     SGIPciShoehornState *s = SGI_PCI_SHOEHORN(board);
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
     DeviceState *bridge;
 
     if (!s->fabric) {
@@ -243,8 +244,8 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "revision", SGI_SHOEHORN_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part",
                          SGI_SHOEHORN_BRIDGE_BOARD_PART);
-    qdev_prop_set_string(bridge, "board-barcode",
-                         SGI_SHOEHORN_BRIDGE_BOARD_BARCODE);
+    sgi_synthetic_barcode(barcode, 'O', s->onewire_serial);
+    qdev_prop_set_string(bridge, "board-barcode", barcode);
     qdev_prop_set_string(bridge, "board-revision",
                          SGI_SHOEHORN_BRIDGE_BOARD_REVISION);
     qdev_prop_set_string(bridge, "board-name",

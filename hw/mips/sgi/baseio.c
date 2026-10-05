@@ -80,6 +80,7 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "hw/mips/sgi/baseio.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "chardev/char.h"
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/core/qdev-properties.h"
@@ -540,21 +541,29 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * default population that turns ethernet on for a chip that was never
  * wired to one, driving pci/6 to probe a PHY that does not exist. The
  * part number, revision and name are the real board's, from an owner's
- * inventory; the barcode is a placeholder, since a real one names a
- * single unit. The serial only has to read back distinct from the
- * Bridge's own board record so a one-wire search can tell the two apart;
- * it names no real part, so it continues the same placeholder
- * descending-byte idiom as NIC_ROM_SERIAL_DEFAULT
- * (hw/pci-host/sgi-bridge.c) and SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL
- * (hw/pci-host/sgi-xbridge.c) one step further along it.
+ * inventory; the barcode and serial are marked synthetic ones, since a
+ * real one names a single unit. The serial only has to read back distinct
+ * from the Bridge's own board record so a one-wire search can tell the two
+ * apart: it is the daughtercard letter with the Bridge's own instance.
  */
-static const SGIBridgeBoardRecord baseio_g_mio_record = {
-    .barcode = "OMIO000001",
-    .part = "030-0880-003",
-    .revision = "G",
-    .name = "MIO",
-};
-#define BASEIO_G_MIO_ONEWIRE_SERIAL 0x0c0b0a090807ULL
+static bool baseio_g_add_mio_record(SGIBaseioState *s, Error **errp)
+{
+    DeviceState *bridge = baseio_bus_host(s->pci_bus);
+    uint64_t bridge_serial = object_property_get_uint(OBJECT(bridge),
+                                                      "onewire-serial",
+                                                      &error_abort);
+    uint64_t serial = SGI_SYNTHETIC_ONEWIRE_SERIAL('D', bridge_serial & 0xff);
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+    const SGIBridgeBoardRecord record = {
+        .barcode = barcode,
+        .part = "030-0880-003",
+        .revision = "G",
+        .name = "MIO",
+    };
+
+    sgi_synthetic_barcode(barcode, 'D', serial);
+    return sgi_bridge_add_onewire_board_part(bridge, &record, serial, errp);
+}
 
 /*
  * The MediaIO daughtercard's RAD1 audio ASIC sits at Bridge PCI device 7.
@@ -589,10 +598,7 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
         return false;
     }
 
-    if (!sgi_bridge_add_onewire_board_part(baseio_bus_host(s->pci_bus),
-                                           &baseio_g_mio_record,
-                                           BASEIO_G_MIO_ONEWIRE_SERIAL,
-                                           errp)) {
+    if (!baseio_g_add_mio_record(s, errp)) {
         return false;
     }
 
@@ -885,7 +891,8 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 
 /*
  * Each Bridge-based board's own record carries the real board's part,
- * revision and name, and a placeholder barcode. The io8's XBridge
+ * revision and name, and a marked synthetic barcode made from the board's
+ * letter and its Bridge's serial. The io8's XBridge
  * placeholder keeps the older text layout. The MENET's and MSCSI's
  * part, revision and name are real boards' identities, paired with the
  * Bridge revision each board reports.
@@ -895,20 +902,20 @@ static const char *const bedrock_pci_function_types[] = {
 };
 
 static const SGIBaseioPreset sgi_baseio_presets[] = {
-    { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
+    { "ip29", { "030-1244-001", 4, 'N', "H", "IP29" },
       baseio_build_ip29 },
-    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO",
+    { "io6", { "030-1124-002", 4, 'I', "J", "BASEIO",
                SGI_BASEIO_XIO_WIDGET(8), true },
       baseio_build_io6 },
-    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO",
+    { "io6g", { "030-0734-002", 4, 'I', "N", "BASEIO",
                 SGI_BASEIO_XIO_WIDGET(8) | SGI_BASEIO_XIO_WIDGET(15), true },
       baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8,
       SGI_IOC3_TIMEKEEPER_M48T35, 1968, bedrock_pci_function_types },
-    { "menet", { "030-0873-003", 4, "OMENET0001", "J", "MENET",
+    { "menet", { "030-0873-003", 4, 'O', "J", "MENET",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_menet },
-    { "mscsi", { "030-1243-001", 3, "OMSCSI0001", "F", "MSCSI",
+    { "mscsi", { "030-1243-001", 3, 'O', "F", "MSCSI",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_mscsi },
     { "fuel", { NULL, 0 }, baseio_build_fuel,
@@ -938,17 +945,22 @@ const SGIBaseioPresetIdentity *sgi_baseio_preset_lookup(const char *name)
 }
 
 void sgi_baseio_preset_set_bridge_identity(
-    DeviceState *bridge, const SGIBaseioPresetIdentity *identity)
+    DeviceState *bridge, const SGIBaseioPresetIdentity *identity,
+    uint64_t bridge_serial)
 {
     qdev_prop_set_uint32(bridge, "revision", identity->bridge_revision);
     qdev_prop_set_string(bridge, "board-part", identity->board_part);
+    qdev_prop_set_uint64(bridge, "onewire-serial", bridge_serial);
     /*
      * Set only the record fields the preset names: one that names a board
      * but leaves out its barcode or revision then meets the Bridge's own
      * refusal instead of a NULL string property.
      */
-    if (identity->board_barcode) {
-        qdev_prop_set_string(bridge, "board-barcode", identity->board_barcode);
+    if (identity->board_letter) {
+        char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+
+        sgi_synthetic_barcode(barcode, identity->board_letter, bridge_serial);
+        qdev_prop_set_string(bridge, "board-barcode", barcode);
     }
     if (identity->board_revision) {
         qdev_prop_set_string(bridge, "board-revision",

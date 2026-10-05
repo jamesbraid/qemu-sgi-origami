@@ -123,36 +123,34 @@ layer:
           reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
         module_semantic_serials:
         - component: compute-module
-          serial: SGIMODULE3
-          reason: >-
-            Stable synthetic module identity for this selected emulated
-            installation, distinct from the Origin 2000 module's.
+          serial: EMUM000001
+          reason: Synthetic module serial for module 1, carrying the "EMU" marker; not hardware evidence.
         module_responder_identities:
         - component: node-board-1-hub
-          serial: '0x100000000009'
-          reason: Stable synthetic node-local module responder identity.
+          serial: '0x51454d554d10'
+          reason: Synthetic module-identity responder serial for node 1, the module letter M at instance 16, carrying the "QEMU" marker; not hardware evidence.
         - component: node-board-2-hub
-          serial: '0x10000000000a'
-          reason: Stable synthetic node-local module responder identity.
+          serial: '0x51454d554d11'
+          reason: Synthetic module-identity responder serial for node 2, the module letter M at instance 17, carrying the "QEMU" marker; not hardware evidence.
         synthetic_identities:
         - component: node-board-1-hub
-          serial: '0x100000000001'
-          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+          serial: '0x51454d554e00'
+          reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
         - component: node-board-2-hub
-          serial: '0x100000000002'
-          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+          serial: '0x51454d554e01'
+          reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
         - component: baseio-bridge
-          serial: '0x100000000007'
-          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+          serial: '0x51454d554200'
+          reason: Synthetic Bridge identity B0, carrying the "QEMU" marker; not hardware evidence.
         - component: baseio-ioc3
-          serial: '0x100000000008'
-          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+          serial: '0x5e7454d55000'
+          reason: Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
         - component: mediaio-ioc3
-          serial: '0x10000000000d'
-          reason: Stable synthetic identity for the MediaIO daughtercard's own IOC3; not hardware evidence.
+          serial: '0x5e7454d55001'
+          reason: Synthetic IOC3 identity 1. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
         - component: io4-xg
-          serial: '0x100000000009'
-          reason: Stable synthetic identity for the pipe's XG; not hardware evidence.
+          serial: '0x51454d554700'
+          reason: Synthetic graphics board identity G0, carrying the "QEMU" marker; not hardware evidence.
       harness:
         console: ioc3-serial-a
         prom_dialogue: ip27-menu

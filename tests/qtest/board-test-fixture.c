@@ -44,6 +44,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/baseio.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock-io.h"
@@ -235,7 +236,8 @@ static bool board_test_fixture_realize_baseio(SGIBoardTestFixtureState *s,
         chip = qdev_new(TYPE_SGI_BRIDGE);
         object_property_add_child(OBJECT(s), "chip", OBJECT(chip));
         if (identity) {
-            sgi_baseio_preset_set_bridge_identity(chip, identity);
+            sgi_baseio_preset_set_bridge_identity(
+                chip, identity, SGI_SYNTHETIC_ONEWIRE_SERIAL('B', 0));
         }
         if (s->flash_select0_size) {
             uint32_t i;

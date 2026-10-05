@@ -3670,73 +3670,73 @@
       "module_responder_identities": [
         {
           "component": "node-board-1-hub",
-          "reason": "Stable synthetic node-local module responder identity.",
-          "serial": "0x100000000009"
+          "reason": "Synthetic module-identity responder serial for node 1, the module letter M at instance 16, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554d10"
         },
         {
           "component": "node-board-2-hub",
-          "reason": "Stable synthetic node-local module responder identity.",
-          "serial": "0x10000000000a"
+          "reason": "Synthetic module-identity responder serial for node 2, the module letter M at instance 17, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554d11"
         },
         {
           "component": "node-board-3-hub",
-          "reason": "Stable synthetic node-local module responder identity.",
-          "serial": "0x10000000000b"
+          "reason": "Synthetic module-identity responder serial for node 3, the module letter M at instance 18, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554d12"
         },
         {
           "component": "node-board-4-hub",
-          "reason": "Stable synthetic node-local module responder identity.",
-          "serial": "0x10000000000c"
+          "reason": "Synthetic module-identity responder serial for node 4, the module letter M at instance 19, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554d13"
         }
       ],
       "module_semantic_serials": [
         {
           "component": "compute-module",
-          "reason": "Stable synthetic module identity for this selected emulated installation.",
-          "serial": "SGIMODULE1"
+          "reason": "Synthetic module serial for module 1, carrying the \"EMU\" marker; not hardware evidence.",
+          "serial": "EMUM000001"
         }
       ],
       "profile": "origin2000-rack",
       "synthetic_identities": [
         {
           "component": "node-board-1-hub",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000001"
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
         },
         {
           "component": "node-board-2-hub",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000002"
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
         },
         {
           "component": "node-board-3-hub",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000003"
+          "reason": "Synthetic node identity N2, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e02"
         },
         {
           "component": "node-board-4-hub",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000004"
+          "reason": "Synthetic node identity N3, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e03"
         },
         {
           "component": "router-1",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000005"
+          "reason": "Synthetic Router identity R0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d555200"
         },
         {
           "component": "router-2",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000006"
+          "reason": "Synthetic Router identity R1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d555201"
         },
         {
           "component": "baseio-bridge",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000007"
+          "reason": "Synthetic Bridge identity B0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554200"
         },
         {
           "component": "baseio-ioc3",
-          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence.",
-          "serial": "0x100000000008"
+          "reason": "Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
+          "serial": "0x5e7454d55000"
         }
       ]
     },

@@ -162,6 +162,10 @@
 # @system-controller: whether that controller also answers as the
 #     node's system controller (Origin 200's embedded ELSC)
 #
+# @module-responder-serial: the ROM serial of the module-identity
+#     responder on this node's Hub bus, present on an SN0 node whose
+#     module has a shared module controller (Origin 2000 and Onyx2)
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelAsicIdentity',
@@ -169,7 +173,8 @@
             '*widget-revision': 'uint8',
             'serial': 'uint64',
             'i2c-controller': 'bool',
-            'system-controller': 'bool' } }
+            'system-controller': 'bool',
+            '*module-responder-serial': 'uint64' } }
 
 ##
 # @SGIModelBoardRecord:

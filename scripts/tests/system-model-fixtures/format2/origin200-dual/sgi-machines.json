@@ -224,27 +224,27 @@
           "attachment": 0,
           "carrier": "onboard",
           "id": "baseio",
-          "ioc3-serial": 103835129348097,
+          "ioc3-serial": 103853732483072,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
           "populated": true,
           "preset": "ip29-io",
           "revision": 4,
-          "serial": 6618611909121
+          "serial": 89358092026368
         },
         {
           "attachment": 0,
           "carrier": "onboard",
           "id": "baseio",
-          "ioc3-serial": 103835129348098,
+          "ioc3-serial": 103853732483073,
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1244-001",
           "populated": true,
           "preset": "ip29-io",
           "revision": 4,
-          "serial": 6618611909122
+          "serial": 89358092026369
         }
       ],
       "ip27-firmware": {
@@ -353,7 +353,7 @@
           "identity": {
             "i2c-controller": true,
             "ni-revision": 3,
-            "serial": 13241552537607,
+            "serial": 89358092029440,
             "system-controller": true,
             "widget-revision": 1
           },
@@ -417,7 +417,7 @@
           "identity": {
             "i2c-controller": true,
             "ni-revision": 3,
-            "serial": 13241552537608,
+            "serial": 89358092029441,
             "system-controller": true,
             "widget-revision": 1
           },
