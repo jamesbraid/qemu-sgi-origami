@@ -1,17 +1,17 @@
 /*
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Origin 200 BCM570x Bridge DMA tests. Big-endian scalar access through plain
- * DMA preserves descriptor and status words without swap-window dispatch;
- * scalar bytes alone cannot identify the route, so the Bridge trace does.
- * Plain-route payloads are copied verbatim for the measured BCM5701 setup;
- * transformation with DMA-swap controls clear remains unknown on hardware.
- * The received TCP descriptor checks big-endian 32-bit checksum-offload
- * words:
+ * Origin 200 BCM570x Bridge DMA tests. The card does all its DMA through its
+ * bus-master address space and carries its own byte-swap controls; the slot's
+ * Bridge placement does the rest. With the card's swaps clear in a 64-bit
+ * swap-clear slot, memory holds the chip's big-endian image: the setup IRIX
+ * gives a BCM5701 and the one most tests below use. The received TCP
+ * descriptor checks big-endian 32-bit checksum-offload words:
  * little-endian access byte-swaps them, causing IRIX to reject offloaded
- * frames as "incomplete ethernet frame" and stall TCP. bcm570x-test.c covers
- * x86 without a Bridge: little-endian words and endian-controlled payload
- * swap. These tests cover the Bridge route absent from that suite.
+ * frames as "incomplete ethernet frame" and stall TCP. The placement matrix
+ * programs the card's swaps against every Bridge swap setting and slot width.
+ * bcm570x-test.c covers the card behind a Bridge head's local space, where
+ * no placement applies.
  */
 
 #include "qemu/osdep.h"
@@ -25,15 +25,30 @@
 
 #define BCM_MAC         "52:54:00:bc:57:01"
 
+/*
+ * The card sits in option slot 5, which the Origin 200 wires to the 64-bit
+ * data path, so it runs 64-bit data phases; the slot keeps the Bridge's
+ * swap-clear reset value and the card its own swaps at their reset value:
+ * the configuration IRIX gives a BCM5701. Memory then holds the chip's
+ * big-endian image, which is the layout the assertions below name.
+ */
+#define MACHINE_64BIT   "-M origin200 "
+
 #define MACHINE_WITH_BRIDGE  \
-    "-M origin200 -device bcm570x,addr=3,mac=" BCM_MAC
+    "-M origin200 -device bcm570x,addr=5,mac=" BCM_MAC
 
 /*
- * The card's slot: devices 0 and 1 are the base I/O board's SCSI adapters and
- * device 2 is IOC3; 3 is the first free slot, with the first 1 MB window.
+ * The card's slot: devices 0 and 1 are the base I/O board's SCSI adapters
+ * and device 2 is IOC3; 5 to 7 are the option slots. Device 3, the IOC3's
+ * reserved guest, is not wired to the 64-bit path, which is what a 32-bit
+ * data phase needs here.
  */
-#define BCM_SLOT        3
-#define WINDOW_BCM      (BRIDGE_BASE + 0x700000)
+#define BCM_WIDE_SLOT   5
+#define BCM_NARROW_SLOT 3
+static unsigned int bcm_slot = BCM_WIDE_SLOT;
+#define BCM_SLOT        bcm_slot
+#define WINDOW_BCM      (BRIDGE_BASE + (bcm_slot == BCM_NARROW_SLOT ? \
+                                        0x700000 : 0x900000))
 
 /* PCI type 0 configuration space through the Bridge. */
 #define BRIDGE_CFG0     0x020000
@@ -49,12 +64,9 @@
 
 /*
  * A 64-bit direct-map DMA address. The low bits reach system memory; the
- * prefix selects the direct-map path whose byte swap the Bridge applies for a
- * slot left at the value-preserving default. This is where the
- * swap-window cost lies, and the path plain space must replace. A low
- * bare address
- * would not do: local space never crosses the swapper, so it could not
- * distinguish the routes.
+ * prefix selects the direct-map path whose placement the Bridge applies for
+ * the slot's swap bit and width. A low bare address would not do: local space
+ * never crosses a placement target.
  */
 #define IOVA_PREFIX         0xa500000000000000ULL
 #define IOVA(phys)          (IOVA_PREFIX | (uint32_t)(phys))
@@ -335,8 +347,8 @@ static void test_receive_descriptor_big_endian(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC, sv[1]);
     aim_window_at_bar(qts);
 
     bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
@@ -397,10 +409,10 @@ static void test_receive_descriptor_big_endian(const void *data)
 }
 
 /*
- * The plain DMA route's byte-lane halfword correction (bcm570x_dma_st16:
- * offset xor 2) lands a 16-bit status field in the other half of its
- * 4-byte-aligned word from its nominal offset, so the receive producer
- * reads back at BCM_STATUS_RX_PROD_OFF ^ 2, not BCM_STATUS_RX_PROD_OFF.
+ * The chip's big-endian image puts a 16-bit status field in the other half of
+ * its 32-bit word from the little-endian layout's offset (bcm570x_dma_st16:
+ * offset xor 2), so the receive producer reads back at
+ * BCM_STATUS_RX_PROD_OFF ^ 2, not BCM_STATUS_RX_PROD_OFF.
  */
 static uint16_t status_rx_prod_be(QTestState *qts)
 {
@@ -492,8 +504,8 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -574,8 +586,8 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -690,8 +702,8 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
     memset(zeros, 0, sizeof(zeros));
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -814,8 +826,8 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -885,22 +897,21 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
  * Enabling host coalescing arms the periodic status tick, and stepping the
  * one received frame under a max-coalesced count of one makes the model post
  * one status block to the programmed host address. Its address is a
- * direct-map IOVA, so on the slot's route it would cross a Bridge placement
- * target and appear in that trace. On the plain route it appears in the
- * plain-translate trace instead. The
- * status block's first word checks the byte order. The model writes the
- * driver's big-endian layout, so the UPDATED flag's bytes must read
- * 00 00 00 01 in guest memory.
+ * direct-map IOVA, so the transfer is the card's own bus-master DMA through
+ * the slot's Bridge placement target and shows in that trace; no transfer
+ * skips the Bridge by another route. The status block's first word checks the
+ * byte order: the card's swaps are clear and the slot reverses each
+ * doubleword, so memory holds the chip's big-endian image and the UPDATED
+ * flag's bytes read 00 00 00 01.
  *
  * Pins the DMA route and the byte order, not arrival timing, so the floor is
  * zeroed: the completion reaches the coalescing block the instant the frame
  * lands, and the count of one reports it.
  */
-static void test_dma_rides_plain_route(const void *data)
+static void test_dma_goes_through_placement(const void *data)
 {
     char *logfile = NULL;
     char *log = NULL;
-    char needle[64];
     uint8_t frame[RX_FRAME_LEN];
     uint8_t bd[BCM_RXBD_SIZE];
     uint8_t word0[4];
@@ -913,8 +924,8 @@ static void test_dma_rides_plain_route(const void *data)
     close(fd);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0"
                       " -d trace:sgi_dma_placement_access,"
                       "trace:sgi_bridge_dma_xlate_plain -D %s",
@@ -964,14 +975,14 @@ static void test_dma_rides_plain_route(const void *data)
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
 
     /*
-     * The card's transfer took the plain route (this is also the liveness
-     * control: a dead trace would fail here, not pass anything vacuously)...
+     * The transfers crossed the slot's doubleword placement (this is also the
+     * liveness control: a dead trace fails here, not vacuously), and none
+     * took a route that skips it.
      */
-    snprintf(needle, sizeof(needle), "plain addr 0x%" PRIx64,
-             (uint64_t)IOVA(STATUS_PHYS));
-    g_assert_cmpuint(count_lines_with(log, needle), >, 0);
-    /* ...and no transfer crossed a placement target. */
-    g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement."), ==, 0);
+    g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement.doubleword "),
+                     >, 0);
+    g_assert_cmpuint(count_lines_with(log, "DMA translate plain"), ==, 0);
+    g_assert_cmpuint(count_lines_with(log, "plain addr"), ==, 0);
 
     g_free(log);
     unlink(logfile);
@@ -1013,8 +1024,8 @@ static void test_status_block_update_criteria(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC, sv[1]);
     aim_window_at_bar(qts);
 
     bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
@@ -1106,8 +1117,8 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -1175,8 +1186,8 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+    qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
@@ -1244,12 +1255,190 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     close(sv[1]);
 }
 
+/*
+ * The card's own DMA swap controls against every Bridge placement.
+ *
+ * The chip is big-endian internally. Its byte at lane l of an aligned
+ * doubleword (lane 0 the most significant) reaches the PCI bus at lane
+ * l ^ t, where t is 7 with no swap and 0 with the byte and word swap both
+ * set [57XX-PG105-R Tables 102-103 and 108-109; the single-swap values are
+ * the datasheet's inference]. The Bridge then places each PCI byte: a
+ * swap-set slot is identity, a swap-clear 32-bit slot reverses each word
+ * (p ^ 3) and a swap-clear 64-bit slot each doubleword (p ^ 7). Memory
+ * therefore holds the chip's image with its in-doubleword offsets XORed by
+ * t ^ u. The expected bytes are built here from that rule, not read back
+ * through the model, and checked raw against a sentinel so an untouched byte
+ * and a lost one differ. Frame data and non-frame data (the posted
+ * descriptor, the status block, the completed descriptor) are checked
+ * separately, each with its own pair of swap bits, and the frame lands at an
+ * aligned and an unaligned address with an odd length.
+ */
+#define DEV_SWAP_DIRECT     (1u << 19)
+#define MODE_CTL            0x6800
+#define MODE_SWAP_NONFRAME  0x6u
+#define MODE_SWAP_DATA      0x30u
+#define MATRIX_FRAME_LEN    61
+
+static unsigned int placed(unsigned int off, unsigned int m)
+{
+    return (off & ~7u) | ((off & 7) ^ m);
+}
+
+static unsigned int card_xor(uint32_t mode, bool frame)
+{
+    bool bswap = mode & (frame ? 0x10 : 0x02);
+    bool wswap = mode & (frame ? 0x20 : 0x04);
+
+    return 7 ^ (bswap ? 3 : 0) ^ (wswap ? 4 : 0);
+}
+
+static void run_placement(bool swap_set, bool wide, unsigned int c)
+{
+    uint32_t data_bits = (c << 4) & MODE_SWAP_DATA;
+    uint32_t nf_bits = (((c + 1) % 4) << 1) & MODE_SWAP_NONFRAME;
+    unsigned int u = swap_set ? 0 : (wide ? 7 : 3);
+    unsigned int mf = card_xor(data_bits, true) ^ u;
+    unsigned int mn = card_xor(nf_bits, false) ^ u;
+    uint64_t buf = RX_BUF_PHYS + ((c & 1) ? 3 : 0);
+    uint64_t lo = RX_BUF_PHYS - 8;
+    uint8_t frame[MATRIX_FRAME_LEN], img[32], host[32], ret[BCM_RXBD_SIZE];
+    uint8_t want[128], got[128], sb[0x50];
+    unsigned int i, prod = placed((BCM_STATUS_RX_PROD_OFF ^ 2) + 1, mn);
+    QTestState *qts;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_slot = wide ? BCM_WIDE_SLOT : BCM_NARROW_SLOT;
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=%u,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1], bcm_slot);
+    aim_window_at_bar(qts);
+    qtest_writel(qts, BRIDGE_DEVICE(BCM_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                 (swap_set ? DEV_SWAP_DIRECT : 0));
+    bar_writel(qts, MODE_CTL, data_bits | nf_bits);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    /* The posted descriptor: the chip's image, placed as it will read it. */
+    memset(img, 0, sizeof(img));
+    put32be(img + 0, IOVA(buf) >> 32);
+    put32be(img + 4, IOVA(buf) & 0xffffffff);
+    for (i = 0; i < sizeof(img); i++) {
+        host[placed(i, mn)] = img[i];
+    }
+    qtest_memwrite(qts, STD_RING_PHYS, host, sizeof(host));
+    memset(want, 0xee, sizeof(want));
+    qtest_memwrite(qts, lo, want, sizeof(want));
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, sizeof(sb));
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    net_send_frame(sv[0], frame, sizeof(frame));
+    for (i = 0; i < 200; i++) {
+        qtest_memread(qts, STATUS_PHYS, sb, sizeof(sb));
+        if (sb[prod] == 1) {
+            break;
+        }
+        qtest_clock_step(qts, 1000 * 1000);
+        g_usleep(2000);
+    }
+    g_test_message("swap=%u wide=%u c=%u mf=%u mn=%u", swap_set, wide, c,
+                   mf, mn);
+    g_assert_cmphex(sb[prod], ==, 1);
+    g_assert_cmphex(sb[placed(3, mn)], ==, 1);     /* UPDATED, image byte 3 */
+
+    /* The completed descriptor, un-placed back to the chip's image. */
+    qtest_memread(qts, RET_RING_PHYS, ret, sizeof(ret));
+    for (i = 0; i < 8; i++) {
+        host[placed(i, mn)] = ret[i];
+    }
+    g_assert_cmphex(((uint32_t)host[4] << 24) | (host[5] << 16) |
+                    (host[6] << 8) | host[7], ==, IOVA(buf) & 0xffffffff);
+
+    /* The frame: each byte at its placed address, every other byte kept. */
+    for (i = 0; i < sizeof(frame); i++) {
+        uint64_t a = buf + i;
+
+        want[(a & ~7ULL) + ((a & 7) ^ mf) - lo] = frame[i];
+    }
+    qtest_memread(qts, lo, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+    bcm_slot = BCM_WIDE_SLOT;
+}
+
+/*
+ * PCI State bit 4 reports a 32-bit bus when the chip did not see REQ64# as
+ * reset ended: clear in a wired option slot, set in device 3, which is not
+ * wired, and settled again by a reset.
+ */
+#define BCM_PCI_PCISTATE        0x70
+#define BCM_PCISTATE_32BIT_BUS  0x10
+
+static void test_pci_state_reports_the_bus_width(const void *data)
+{
+    static const unsigned int slots[] = { BCM_WIDE_SLOT, BCM_NARROW_SLOT };
+
+    for (unsigned int n = 0; n < G_N_ELEMENTS(slots); n++) {
+        uint32_t want = slots[n] == BCM_WIDE_SLOT ? 0 : BCM_PCISTATE_32BIT_BUS;
+        QTestState *qts = qtest_initf("-M origin200 -device bcm570x,addr=%u,"
+                                      "mac=" BCM_MAC, slots[n]);
+
+        bcm_slot = slots[n];
+        g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT) + BCM_PCI_PCISTATE) &
+                        BCM_PCISTATE_32BIT_BUS, ==, want);
+        qtest_system_reset(qts);
+        g_assert_cmphex(qtest_readl(qts, CFG0(BCM_SLOT) + BCM_PCI_PCISTATE) &
+                        BCM_PCISTATE_32BIT_BUS, ==, want);
+        qtest_quit(qts);
+    }
+    bcm_slot = BCM_WIDE_SLOT;
+}
+
+static void test_dma_placement_matrix(const void *data)
+{
+    unsigned int c;
+
+    for (c = 0; c < 4; c++) {
+        run_placement(false, false, c);
+        run_placement(false, true, c);
+        run_placement(true, false, c);
+        run_placement(true, true, c);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("/sn0/bcm570x/dma-rides-plain-route", NULL,
-                        test_dma_rides_plain_route);
+    qtest_add_data_func("/sn0/bcm570x/pci-state-reports-the-bus-width",
+                        NULL, test_pci_state_reports_the_bus_width);
+    qtest_add_data_func("/sn0/bcm570x/dma-placement-matrix", NULL,
+                        test_dma_placement_matrix);
+    qtest_add_data_func("/sn0/bcm570x/dma-goes-through-placement", NULL,
+                        test_dma_goes_through_placement);
     qtest_add_data_func("/sn0/bcm570x/status-block-update-criteria", NULL,
                         test_status_block_update_criteria);
     qtest_add_data_func("/sn0/bcm570x/receive-descriptor-big-endian", NULL,

@@ -11,13 +11,12 @@
  *
  * This ran on an x86 PC until the fork stopped building SGI devices for that
  * target, and the move changes what the golden byte assertions below say. The
- * model resolves the Bridge's plain DMA address space at realize and, behind
- * any Bridge, delivers its DMA integer fields in the driver's own big-endian
- * layout instead of native little-endian, with a 16-bit field in the other
- * half of its 32-bit word (offset xor 2) because the word swap relocates
- * halfwords. The packet payload is copied verbatim. That is the device's
- * documented byte-order contract, and it is the only byte order the product
- * ever presents.
+ * model builds its DMA integer fields as the chip's big-endian image, with a
+ * 16-bit field in the other half of its 32-bit word (offset xor 2) from the
+ * little-endian layout, and the MODE_CTL swap bits decide how that image
+ * reaches the bus. The tests below set all four swaps, which puts the image
+ * on the bus byte for byte, and the transfers here use the Bridge's local
+ * space, which applies no placement.
  *
  * The card carries the SGI IRIS Release 2 Gigabit board's PCI four-tuple:
  * IRIX's tg driver registers on the raw Broadcom primary vendor/device and
@@ -287,6 +286,18 @@ typedef struct {
     QPCIBar bar;
 } Bcm;
 
+/*
+ * All four of the card's DMA swaps set: the card's big-endian image then
+ * reaches the bus byte for byte, which is the layout the assertions below
+ * name. The transfer addresses are the Bridge's local space, which never
+ * crosses a placement target, so the slot's own swap bits play no part here;
+ * sn0-bcm570x-test.c runs the card against every Bridge placement.
+ */
+static void bcm_byte_stream(Bcm *b)
+{
+    qpci_io_writel(b->dev, b->bar, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
+}
+
 static void bcm_open_at(Bcm *b, QTestState *qts, unsigned devfn)
 {
     b->qts = qts;
@@ -295,6 +306,7 @@ static void bcm_open_at(Bcm *b, QTestState *qts, unsigned devfn)
     g_assert_nonnull(b->dev);
     qpci_device_enable(b->dev);
     b->bar = qpci_iomap(b->dev, 0, NULL);
+    bcm_byte_stream(b);
 }
 
 static void bcm_open(Bcm *b, QTestState *qts)
@@ -465,8 +477,8 @@ static uint32_t get32dma(const uint8_t *b)
  * A 16-bit DMA field. The word swap puts it in the other half of its 32-bit
  * word from where the little-endian layout does, so its byte offset within
  * the structure is the model's offset xor 2 and the two bytes there are
- * big-endian. Off a Bridge the same field is little-endian at the plain
- * offset.
+ * big-endian: the chip's image, which the all-swaps setting puts on the bus
+ * as it is.
  */
 #define DMA16(off)              ((off) ^ 2u)
 
@@ -3156,19 +3168,62 @@ static void test_transmit_checksum_bad_header(const void *data)
 }
 
 /*
+ * A send descriptor of length zero is legal and moves no bytes: the zero-length
+ * payload read must not touch memory at all (a sanitizer build would fault
+ * on a copy from a null buffer), no frame reaches the wire, and the ring
+ * still completes, the consumer advancing and the status block posting.
+ */
+static void test_transmit_zero_length_descriptor(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t bd[16], sb[BCM_STATUS_BLK_SIZE];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, 0);
+    qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
+
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get32dma(sb + 0), ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get16dma(sb, BCM_STATUS_TX_CONS_OFF), ==, 1);
+    net_socket_expect_no_frame(sv[0]);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
  * What ENDIAN_WORDSWAP reaches, and what it does not. The bit decides how the
  * chip composes the register-programmed host addresses. The driver writes
  * each 64-bit address as two halves word-swapped, the low word into the HI
  * slot. The DMA must still land where it was aimed.
  *
- * It does not reach the payload here. Behind a Bridge the byte-lane
- * correction is the chip's job and the model copies packet payload verbatim
- * on that route, which is the bounded Bridge-machine behavior this model
- * documents: what the card's own clear-data transformation does with these
- * bits set is not known. Off a Bridge the same bits do reverse each 32-bit
- * word of the payload, which is the regime this file asserted when it ran on
- * a PC. So lay a word-reversed buffer down and require the wire to carry it
- * unchanged.
+ * It does not reach the payload: ENDIAN_WORDSWAP in MISC_CTL governs the
+ * indirect register windows and the composition of those register-programmed
+ * addresses, while the payload's byte order is MODE_CTL's frame-data swap
+ * (all four set here, so a byte stream). So lay a word-reversed buffer down
+ * and require the wire to carry it unchanged.
  */
 static void test_transmit_frame_wordswap(const void *data)
 {
@@ -4443,8 +4498,10 @@ static void test_receive_queue_reset(const void *data)
         qtest_qmp_eventwait(b.qts, "RESET");
         qpci_device_enable(b.dev);
         b.bar = qpci_iomap(b.dev, 0, NULL);
+        bcm_byte_stream(&b);
     } else {
         bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+        bar_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
     }
 
     rx_open_one(&b, sv[0]);
@@ -5416,6 +5473,7 @@ static void test_global_reset_cancels_receive_coalescing(const void *data)
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
 
     bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    bar_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
     bcm_rearm_status_after_reset(&b, ticks);
     /*
      * Past the arrival floor as well: the coalescing timer only starts
@@ -6090,6 +6148,7 @@ static void dual5704_arm(QPCIDevice *dev, uint64_t status_phys)
 {
     qpci_config_writew(dev, PCI_COMMAND,
                        PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    ind_reg_writel_dev(dev, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
     ind_mem_writel_dev(dev, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     ind_reg_writel_dev(dev, BCM_HCC_STATUSBLK_HI, status_phys >> 32);
     ind_reg_writel_dev(dev, BCM_HCC_STATUSBLK_LO, status_phys & 0xffffffff);
@@ -6506,6 +6565,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/arrival-line-migrates-only-what-it-holds",
                         NULL,
                         test_arrival_line_migrates_only_what_it_holds);
+    qtest_add_data_func("/bcm570x/transmit-zero-length-descriptor", NULL,
+                        test_transmit_zero_length_descriptor);
     qtest_add_data_func("/bcm570x/dual-port-present-and-independent", NULL,
                         test_dual_port_present_and_independent);
     qtest_add_data_func("/bcm570x/dual-port-survives-migration", NULL,

@@ -61,8 +61,7 @@
  *
  * Modelled from the register, DMA and interrupt behaviour the public OpenBSD
  * bge driver and Linux tg3 driver
- * exercise, the byte-swap and Bridge-facing convention this fork's other NIC
- * models share, and in-tree QEMU device
+ * exercise, the card's own DMA byte-swap controls, and in-tree QEMU device
  * sources.
  */
 
@@ -74,9 +73,9 @@
 #include "qemu/timer.h"
 #include "net/checksum.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/pci-64bit.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "hw/net/net_tx_pkt.h"
-#include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
 #include "hw/net/net-rx-latency.h"
@@ -179,6 +178,8 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_PCI_PCISTATE            0x70
 #define BCM570X_PCISTATE_INTR_NOT_ACTIVE 0x00000002u
 #define BCM570X_PCISTATE_BUSMODE_PCI     0x00000004u
+/* Set when the chip did not see REQ64# at the end of reset (Table 177). */
+#define BCM570X_PCISTATE_32BIT_BUS       0x00000010u
 
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
@@ -208,6 +209,11 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RXMODE_ENABLE       0x00000002u
 #define BCM570X_HCC_MODE            0x3c00
 #define BCM570X_BUFMGR_MODE         0x4400
+#define BCM570X_MODE_CTL            0x6800
+#define BCM570X_MODE_BYTESWAP_NONFRAME 0x00000002u
+#define BCM570X_MODE_WORDSWAP_NONFRAME 0x00000004u
+#define BCM570X_MODE_BYTESWAP_DATA  0x00000010u
+#define BCM570X_MODE_WORDSWAP_DATA  0x00000020u
 #define BCM570X_MISC_CFG            0x6804
 
 /*
@@ -463,18 +469,6 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 struct Bcm570xState {
     PCIDevice parent_obj;
-
-    /*
-     * The plain DMA route offered by an SGI Bridge, or NULL elsewhere.
-     * Big-endian scalar accessors on this route preserve the descriptor and
-     * status layout of little-endian accessors through the Bridge swap route.
-     * Frame payload is copied verbatim as a bounded model behavior for the
-     * measured BCM5701 configuration. That payload choice does not establish
-     * the card's hardware transformation with its DMA-swap controls clear.
-     * Off-Bridge devices retain the existing little-endian scalar view and
-     * payload handling.
-     */
-    AddressSpace *plain_dma;
 
     MemoryRegion bar0;
 
@@ -752,187 +746,158 @@ static uint64_t bcm570x_compose_hostaddr(Bcm570xState *s, uint32_t hi,
 }
 
 /*
- * The existing off-Bridge payload path applies swaps to whole 32-bit words at
- * their physical alignment. This describes the current model, not an
- * established hardware transformation for the MODE_CTL DMA-swap controls.
+ * The chip's own DMA byte-swap controls, MODE_CTL bits 5 and 4 for frame data
+ * and bits 2 and 1 for everything else (descriptors, status block), act "when
+ * DMAing across the PCI bus" [57XX-PG105-R, Table 429]. The chip is
+ * big-endian internally with a 64-bit memory. Its internal byte at lane l of a
+ * doubleword (lane 0 the most significant) goes on PCI byte 7 - l with no swap
+ * and on PCI byte l with both swaps set. For frame data every combination is
+ * established by the programmer's guide, Tables 102-109, at both bus widths:
+ * the word swap exchanges the two 32-bit halves of a doubleword and the byte
+ * swap reverses the bytes within each half, which gives the PCI byte
+ *
+ *     lane ^ (7 ^ (byteswap ? 3 : 0) ^ (wordswap ? 4 : 0))
+ *
+ * in the same aligned doubleword. For non-frame data (descriptors, status
+ * block) the same rule is applied to the no-swap and all-swaps cases the guide
+ * states, and inferred for the single-swap cases. The permutation depends on
+ * the PCI address alone, so it is the same for 32-bit and 64-bit data
+ * phases. A transfer's chip-side lane is its PCI address modulo 8, an
+ * approximation: the chip's internal buffer alignment is not modelled.
+ *
+ * The result is the bus's native view of the card. How those bytes reach
+ * guest memory is the host bridge's business and pci_dma_* carries it.
  */
-static void bcm570x_swap_span(uint8_t *p, unsigned int span,
-                              bool bswap, bool wswap)
+static unsigned int bcm570x_lane_xor(Bcm570xState *s, bool frame)
 {
-    unsigned int i;
+    uint32_t mode = bcm570x_regfile_read(s, BCM570X_MODE_CTL);
+    bool bswap = mode & (frame ? BCM570X_MODE_BYTESWAP_DATA :
+                                 BCM570X_MODE_BYTESWAP_NONFRAME);
+    bool wswap = mode & (frame ? BCM570X_MODE_WORDSWAP_DATA :
+                                 BCM570X_MODE_WORDSWAP_NONFRAME);
 
-    for (i = 0; i + 4 <= span; i += 4) {
-        uint8_t *w = p + i;
-        uint8_t t;
-
-        if (bswap) {
-            t = w[0]; w[0] = w[1]; w[1] = t;
-            t = w[2]; w[2] = w[3]; w[3] = t;
-        }
-        if (wswap) {
-            t = w[0]; w[0] = w[2]; w[2] = t;
-            t = w[1]; w[1] = w[3]; w[3] = t;
-        }
-    }
+    return 7 ^ (bswap ? 3 : 0) ^ (wswap ? 4 : 0);
 }
 
 /*
- * One ordered nonframe DMA transfer, on whichever route the machine gives us:
- * Bridge's plain space when there is one, the slot's own (swap-corrected)
- * space otherwise. See plain_dma for the scalar and payload distinction.
+ * Bring the chip's internal image of [addr, addr + len) onto the bus, or the
+ * reverse. The image is what the datasheet's layouts describe; the bus bytes
+ * are the image with each aligned doubleword's bytes permuted by lane_xor.
+ * Writes touch only the lanes the transfer covers, as the chip's byte enables
+ * do: whole doublewords go out as one transfer and the partial ends one byte
+ * at a time. Reads fetch the covering doublewords. rd is the destination of a
+ * read and wr the source of a write; a zero-length transfer does nothing.
  */
+static MemTxResult bcm570x_dma_xfer(Bcm570xState *s, uint64_t addr,
+                                    uint8_t *rd, const uint8_t *wr,
+                                    unsigned int len, bool frame)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    unsigned int t = bcm570x_lane_xor(s, frame);
+    unsigned int i = 0, j;
+    MemTxResult res;
+
+    if (len == 0) {
+        return MEMTX_OK;
+    }
+
+    if (!wr) {
+        uint64_t astart = addr & ~(uint64_t)7;
+        unsigned int lead = addr - astart;
+        unsigned int span = (lead + len + 7) & ~7u;
+        g_autofree uint8_t *tmp = g_malloc(span);
+
+        res = pci_dma_read(pci, astart, tmp, span);
+        if (res == MEMTX_OK) {
+            for (j = 0; j < len; j++) {
+                unsigned int p = lead + j;
+
+                rd[j] = tmp[(p & ~7u) + ((p & 7) ^ t)];
+            }
+        }
+        return res;
+    }
+
+    while (i < len) {
+        uint64_t a = addr + i;
+
+        if ((a & 7) == 0 && len - i >= 8) {
+            unsigned int run = (len - i) & ~7u;
+            g_autofree uint8_t *tmp = g_malloc(run);
+
+            for (j = 0; j < run; j++) {
+                tmp[(j & ~7u) + ((j & 7) ^ t)] = wr[i + j];
+            }
+            res = pci_dma_write(pci, a, tmp, run);
+            if (res != MEMTX_OK) {
+                return res;
+            }
+            i += run;
+        } else {
+            uint8_t b = wr[i];
+
+            res = pci_dma_write(pci, (a & ~(uint64_t)7) + ((a & 7) ^ t),
+                                &b, 1);
+            if (res != MEMTX_OK) {
+                return res;
+            }
+            i++;
+        }
+    }
+    return MEMTX_OK;
+}
+
+/* Descriptors, rings and the status block: the non-frame swap controls. */
 static MemTxResult bcm570x_dma_read_buf(Bcm570xState *s, uint64_t addr,
                                         void *buf, unsigned int len)
 {
-    if (s->plain_dma) {
-        return dma_memory_read(s->plain_dma, addr, buf, len,
-                               MEMTXATTRS_UNSPECIFIED);
-    }
-    return pci_dma_read(PCI_DEVICE(s), addr, buf, len);
+    return bcm570x_dma_xfer(s, addr, buf, NULL, len, false);
 }
 
 static MemTxResult bcm570x_dma_write_buf(Bcm570xState *s, uint64_t addr,
                                          const void *buf, unsigned int len)
 {
-    if (s->plain_dma) {
-        return dma_memory_write(s->plain_dma, addr, buf, len,
-                                MEMTXATTRS_UNSPECIFIED);
-    }
-    return pci_dma_write(PCI_DEVICE(s), addr, buf, len);
+    return bcm570x_dma_xfer(s, addr, NULL, buf, len, false);
 }
 
 /*
- * DMA'd values. On the plain route memory holds the driver's own big-endian
- * layout, whose 16-bit fields sit in the other half of each 32-bit word from
- * where the swap-corrected view puts them, the byte-lane halfword
- * correction, offset xor 2. On the slot route the swap has already turned the
- * layout little-endian at the model's own offsets.
+ * Fields of the chip's internal image: big-endian, with a 16-bit field in the
+ * half of its 32-bit word the big-endian structure puts it in. The model's
+ * field offsets name the little-endian layout, so a 16-bit field's image
+ * offset is its offset xor 2.
  */
-static uint32_t bcm570x_dma_ld32(Bcm570xState *s, const uint8_t *p)
+static uint32_t bcm570x_dma_ld32(const uint8_t *p)
 {
-    return s->plain_dma ? ldl_be_p(p) : ldl_le_p(p);
+    return ldl_be_p(p);
 }
 
-static uint16_t bcm570x_dma_ld16(Bcm570xState *s, const uint8_t *p)
+static uint16_t bcm570x_dma_ld16(const uint8_t *p)
 {
-    if (s->plain_dma) {
-        return lduw_be_p((const uint8_t *)((uintptr_t)p ^ 2));
-    }
-    return lduw_le_p(p);
+    return lduw_be_p((const uint8_t *)((uintptr_t)p ^ 2));
 }
 
-static void bcm570x_dma_st32(Bcm570xState *s, uint8_t *p, uint32_t v)
+static void bcm570x_dma_st32(uint8_t *p, uint32_t v)
 {
-    if (s->plain_dma) {
-        stl_be_p(p, v);
-    } else {
-        stl_le_p(p, v);
-    }
+    stl_be_p(p, v);
 }
 
-static void bcm570x_dma_st16(Bcm570xState *s, uint8_t *p, uint16_t v)
+static void bcm570x_dma_st16(uint8_t *p, uint16_t v)
 {
-    if (s->plain_dma) {
-        stw_be_p((uint8_t *)((uintptr_t)p ^ 2), v);
-    } else {
-        stw_le_p(p, v);
-    }
+    stw_be_p((uint8_t *)((uintptr_t)p ^ 2), v);
 }
 
-static bool bcm570x_frame_swap(Bcm570xState *s, bool *bswap, bool *wswap)
+/* Frame payload: the frame-data swap controls. */
+static MemTxResult bcm570x_frame_dma_read(Bcm570xState *s, uint64_t phys,
+                                          uint8_t *dst, unsigned int len)
 {
-    uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
-
-    if (s->plain_dma) {
-        /*
-         * Verbatim payload is the bounded Bridge-machine model behavior. The
-         * card's clear-data hardware transformation remains unknown.
-         */
-        *bswap = false;
-        *wswap = false;
-        return false;
-    }
-
-    /*
-     * Preserve the existing off-Bridge interpretation of MISC_CTL: the
-     * word-swap bit requests both byte and word swaps. The reviewed MODE_CTL
-     * fallback is a separate model change.
-     */
-    *bswap = (misc & BCM570X_MISCCTL_ENDIAN_WORDSWAP) != 0;
-    *wswap = *bswap;
-    return *bswap;
+    return bcm570x_dma_xfer(s, phys, dst, NULL, len, true);
 }
 
-/*
- * Read a frame fragment from host memory, applying the model's payload swap.
- * The ordered descriptor fetch immediately before this read establishes the
- * guest's payload writes, so the packet copy itself needs no second barrier.
- * Swapped payloads reverse whole 32-bit words at their physical alignment.
- */
-static MemTxResult bcm570x_frame_dma_read(PCIDevice *pci, Bcm570xState *s,
-                                          uint64_t phys, uint8_t *dst,
-                                          unsigned int len)
-{
-    bool bswap, wswap;
-    uint64_t astart;
-    unsigned int lead, span;
-    uint8_t tmp[BCM570X_MAX_FRAME + 8];
-    MemTxResult result;
-
-    if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        return dma_memory_read_relaxed(s->plain_dma ? s->plain_dma :
-                                       pci_get_address_space(pci),
-                                       phys, dst, len);
-    }
-    astart = phys & ~(uint64_t)3;
-    lead = (unsigned int)(phys - astart);
-    span = (lead + len + 3) & ~3u;
-    if (span > sizeof(tmp)) {
-        return dma_memory_read_relaxed(pci_get_address_space(pci),
-                                       phys, dst, len);
-    }
-    result = dma_memory_read_relaxed(pci_get_address_space(pci),
-                                     astart, tmp, span);
-    if (result != MEMTX_OK) {
-        return result;
-    }
-    bcm570x_swap_span(tmp, span, bswap, wswap);
-    memcpy(dst, tmp + lead, len);
-    return MEMTX_OK;
-}
-
-/*
- * The ordered completed-descriptor write after this payload copy publishes it
- * to the guest and supplies the required barrier on either DMA route. Swapped
- * payloads reverse the word-aligned span whole, including harmless padding
- * the driver does not read.
- */
-static MemTxResult bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
-                                           uint64_t phys, const uint8_t *src,
+static MemTxResult bcm570x_frame_dma_write(Bcm570xState *s, uint64_t phys,
+                                           const uint8_t *src,
                                            unsigned int len)
 {
-    bool bswap, wswap;
-    uint64_t astart;
-    unsigned int lead, span;
-    uint8_t tmp[BCM570X_MAX_FRAME + 8];
-
-    if (!bcm570x_frame_swap(s, &bswap, &wswap)) {
-        return dma_memory_write_relaxed(s->plain_dma ? s->plain_dma :
-                                        pci_get_address_space(pci),
-                                        phys, src, len);
-    }
-    astart = phys & ~(uint64_t)3;
-    lead = (unsigned int)(phys - astart);
-    span = (lead + len + 3) & ~3u;
-    if (span > sizeof(tmp)) {
-        return dma_memory_write_relaxed(pci_get_address_space(pci),
-                                        phys, src, len);
-    }
-    memset(tmp, 0, span);
-    memcpy(tmp + lead, src, len);
-    bcm570x_swap_span(tmp, span, bswap, wswap);
-    return dma_memory_write_relaxed(pci_get_address_space(pci),
-                                    astart, tmp, span);
+    return bcm570x_dma_xfer(s, phys, NULL, src, len, true);
 }
 
 /*
@@ -941,9 +906,9 @@ static MemTxResult bcm570x_frame_dma_write(PCIDevice *pci, Bcm570xState *s,
  * gates it and reads the transmit/receive progress from there rather than a
  * register. The chip owns the block, so the model builds it whole each time.
  *
- * Scalar fields use big-endian accessors on the Bridge's plain DMA route and
- * little-endian accessors elsewhere. The MODE_CTL DMA-swap control is stored
- * for readback. Host address composition retains its MISC_CTL handling.
+ * The block is built as the chip's internal big-endian image and reaches the
+ * bus through the non-frame swap controls. Host address composition keeps its
+ * MISC_CTL handling.
  */
 static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 {
@@ -961,10 +926,10 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 
     memset(blk, 0, sizeof(blk));
     next_tag = s->status_tag + 1;
-    bcm570x_dma_st32(s, blk, BCM570X_STATFLAG_UPDATED);
-    bcm570x_dma_st32(s, blk + BCM570X_STATUS_TAG_OFF, next_tag);
-    bcm570x_dma_st16(s, blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
-    bcm570x_dma_st16(s, blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
+    bcm570x_dma_st32(blk, BCM570X_STATFLAG_UPDATED);
+    bcm570x_dma_st32(blk + BCM570X_STATUS_TAG_OFF, next_tag);
+    bcm570x_dma_st16(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
+    bcm570x_dma_st16(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
     if (bcm570x_dma_write_buf(s, base, blk, sizeof(blk)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: status block write at 0x%" PRIx64
@@ -1489,7 +1454,6 @@ static void bcm570x_tx_rollback_to_frame(Bcm570xState *s,
 
 static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 {
-    PCIDevice *pci = PCI_DEVICE(s);
     uint16_t prod = prod_raw & 0xffff;
     uint32_t maxlen_flags =
         bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
@@ -1537,14 +1501,14 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
             bcm570x_tx_rollback_to_frame(s, frame_start, completed_descs);
             return;
         }
-        buf_addr = ((uint64_t)bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_HI)
+        buf_addr = ((uint64_t)bcm570x_dma_ld32(bd + BCM570X_TXBD_ADDR_HI)
                     << 32) |
-                   bcm570x_dma_ld32(s, bd + BCM570X_TXBD_ADDR_LO);
-        len = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_LEN);
-        flags = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_FLAGS);
+                   bcm570x_dma_ld32(bd + BCM570X_TXBD_ADDR_LO);
+        len = bcm570x_dma_ld16(bd + BCM570X_TXBD_LEN);
+        flags = bcm570x_dma_ld16(bd + BCM570X_TXBD_FLAGS);
 
         if (!frame_dropped && frame_len + len <= sizeof(frame)) {
-            if (bcm570x_frame_dma_read(pci, s, buf_addr, frame + frame_len,
+            if (bcm570x_frame_dma_read(s, buf_addr, frame + frame_len,
                                        len) != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "bcm570x: transmit payload read at 0x%" PRIx64
@@ -1569,7 +1533,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 
         frame_flags |= flags;
         if (frame_mss == 0) {
-            frame_mss = bcm570x_dma_ld16(s, bd + BCM570X_TXBD_MSS);
+            frame_mss = bcm570x_dma_ld16(bd + BCM570X_TXBD_MSS);
         }
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
@@ -2246,7 +2210,6 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
 {
     Bcm570xState *s = qemu_get_nic_opaque(nc);
     size_t orig_size = size;
-    PCIDevice *pci = PCI_DEVICE(s);
     uint16_t ret_len =
         bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
                           BCM570X_RCB_MAXLEN_FLAGS) >> 16;
@@ -2467,9 +2430,9 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         bcm570x_defer_rx_flush(s);
         return 0;
     }
-    buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
+    buf_addr = ((uint64_t)bcm570x_dma_ld32(std_bd + BCM570X_RXBD_ADDR_HI)
                 << 32) |
-               bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_LO);
+               bcm570x_dma_ld32(std_bd + BCM570X_RXBD_ADDR_LO);
 
     if (on_jumbo) {
         /*
@@ -2481,7 +2444,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
          * frame that does fit it.
          */
         uint16_t buf_len =
-            bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_IDX_LEN) & 0xffff;
+            bcm570x_dma_ld32(std_bd + BCM570X_RXBD_IDX_LEN) & 0xffff;
 
         if (framelen > buf_len) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -2492,7 +2455,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         }
     }
 
-    if (bcm570x_frame_dma_write(pci, s, buf_addr, buf,
+    if (bcm570x_frame_dma_write(s, buf_addr, buf,
                                 framelen) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive payload write at 0x%" PRIx64
@@ -2507,14 +2470,14 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
      * The completed descriptor uses the selected DMA route's scalar layout.
      */
     memset(ret_bd, 0, sizeof(ret_bd));
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_IDX_LEN,
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_ADDR_HI, buf_addr >> 32);
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_ADDR_LO, buf_addr & 0xffffffff);
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_IDX_LEN,
              ((uint32_t)idx << 16) | ((framelen + BCM570X_ETH_FCS_LEN) & 0xffff));
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_TYPE_FLAGS, rx_flags);
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_CSUM, csum);
-    bcm570x_dma_st32(s, ret_bd + BCM570X_RXBD_OPAQUE,
-                     bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_OPAQUE));
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_TYPE_FLAGS, rx_flags);
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_CSUM, csum);
+    bcm570x_dma_st32(ret_bd + BCM570X_RXBD_OPAQUE,
+                     bcm570x_dma_ld32(std_bd + BCM570X_RXBD_OPAQUE));
 
     if (bcm570x_dma_write_buf(s,
                              ret_base + (uint64_t)s->rx_prod_staged *
@@ -2642,6 +2605,7 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
      */
     pci_set_long(pci_conf + BCM570X_PCI_PCISTATE,
                  BCM570X_PCISTATE_BUSMODE_PCI |
+                 BCM570X_PCISTATE_32BIT_BUS |
                  BCM570X_PCISTATE_INTR_NOT_ACTIVE);
 
     memory_region_init_io(&s->bar0, OBJECT(s), &bcm570x_bar0_ops, s,
@@ -2707,12 +2671,6 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
             return;
         }
     }
-
-    /*
-     * The DMA route decides the model's regime; see plain_dma. Resolved once
-     * here; the device cannot move buses after realize.
-     */
-    s->plain_dma = sgi_bridge_plain_dma_as(dev);
 }
 
 static void bcm570x_exit(PCIDevice *dev)
@@ -2862,6 +2820,22 @@ static void bcm570x_init(Object *obj)
                   bcm570x_tx_coal_timer, s);
 }
 
+/*
+ * The chip is a 64-bit PCI agent: it samples REQ64# as reset ends and
+ * reports a 32-bit bus in PCI State bit 4 when it did not see it.
+ */
+static void bcm570x_req64_sampled(PCIDevice *dev, bool asserted)
+{
+    uint32_t pcistate = pci_get_long(dev->config + BCM570X_PCI_PCISTATE);
+
+    if (asserted) {
+        pcistate &= ~BCM570X_PCISTATE_32BIT_BUS;
+    } else {
+        pcistate |= BCM570X_PCISTATE_32BIT_BUS;
+    }
+    pci_set_long(dev->config + BCM570X_PCI_PCISTATE, pcistate);
+}
+
 static void bcm570x_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2878,6 +2852,7 @@ static void bcm570x_class_init(ObjectClass *oc, const void *data)
     pc->class_id = PCI_CLASS_NETWORK_ETHERNET;
 
     rc->phases.hold = bcm570x_reset_hold;
+    PCI_64BIT_DEVICE_CLASS(oc)->req64_sampled = bcm570x_req64_sampled;
     dc->vmsd = &vmstate_bcm570x;
     dc->desc = "Broadcom NetXtreme BCM570x Gigabit Ethernet";
     device_class_set_props(dc, bcm570x_properties);
@@ -2893,6 +2868,7 @@ static const TypeInfo bcm570x_types[] = {
         .class_init = bcm570x_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { INTERFACE_PCI_64BIT_DEVICE },
             { },
         },
     },
