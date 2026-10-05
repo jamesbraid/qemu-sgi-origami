@@ -233,6 +233,10 @@
  * megabytes" quirk, which resets set.
  */
 #define PCI_DMA_DIRECT          0x80000000u
+/* The page-mapped window and its 4 KiB address translation entries. */
+#define PCI_DMA_TRANSLATED      0x40000000u
+#define BRIDGE_ATE(n)           (BRIDGE_BASE + 0x010000 + (n) * 8)
+#define ATE_VALID               1u
 #define BRIDGE_DIRECT_MAP_REG   (BRIDGE_BASE + 0x080 + REG_DATA)
 
 /*
@@ -2016,6 +2020,55 @@ static void test_dma_looping_chain(void)
 }
 
 /*
+ * A transfer whose host span runs off the end of a valid translation stops
+ * at the first dword the Bridge cannot translate: the dwords before it have
+ * moved, none after it, and Done stays clear. This holds in both directions
+ * even though the model moves each span in large chunks.
+ */
+static void test_dma_partial_transfer(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t words[2] = { 0x00010203u, 0x00040506u };
+    uint32_t pci = PCI_DMA_TRANSLATED + 0x1000 - 8;
+    uint8_t back[8];
+
+    qtest_writeq(qts, BRIDGE_ATE(0), DMA_SRC_PHYS | ATE_VALID);
+    qtest_writeq(qts, BRIDGE_ATE(1), 0);
+    dma_write_payload(qts, DMA_SRC_PHYS + 0x1000 - 8, words, 2);
+    for (unsigned i = 0; i < 4; i++) {
+        bar2_write(qts, 0x80 + 4 * i, 0x00eeeeeeu);
+    }
+    dma_write_descriptor(qts, DMA_DESC_PHYS, pci, 0x80, 16,
+                         DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
+    g_assert_cmphex(bar2_read(qts, 0x80), ==, words[0]);
+    g_assert_cmphex(bar2_read(qts, 0x84), ==, words[1]);
+    g_assert_cmphex(bar2_read(qts, 0x88), ==, 0x00eeeeeeu);
+    g_assert_cmphex(bar2_read(qts, 0x8c), ==, 0x00eeeeeeu);
+
+    /* Back the other way: the two dwords that translate land, then stop. */
+    qtest_memset(qts, DMA_SRC_PHYS + 0x1000 - 8, 0, sizeof(back));
+    bar2_write(qts, 0x80, 0x00a1a2a3u);
+    bar2_write(qts, 0x84, 0x00b1b2b3u);
+    dma_write_descriptor(qts, DMA_DESC_PHYS, pci, 0x80, 16,
+                         DMA_DESC_END_OF_CHAIN | DMA_DESC_LOCAL_TO_PCI);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
+    qtest_memread(qts, DMA_SRC_PHYS + 0x1000 - 8, back, sizeof(back));
+    g_assert_cmphex(ldl_be_p(back), ==, 0x00a1a2a3u);
+    g_assert_cmphex(ldl_be_p(back + 4), ==, 0x00b1b2b3u);
+
+    qtest_quit(qts);
+}
+
+/*
  * A Local-space descriptor pointer at or past the framebuffer's own end
  * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
  * clear, the same failure convention test_dma_abort_recovers_a_failed_
@@ -3444,6 +3497,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-driver-chain-layout",
                    test_dma_driver_chain_layout);
     qtest_add_func("/psitech-rad4/dma-long-chain", test_dma_long_chain);
+    qtest_add_func("/psitech-rad4/dma-partial-transfer",
+                   test_dma_partial_transfer);
     qtest_add_func("/psitech-rad4/dma-looping-chain", test_dma_looping_chain);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
                    test_dma_local_descriptor_out_of_bounds);
