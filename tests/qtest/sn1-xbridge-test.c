@@ -959,6 +959,288 @@ static void test_page_dma_bit29_compat(void)
     qtest_quit(qts);
 }
 
+/*
+ * The placement matrix on an XBridge head in widget mode: the 32-bit direct
+ * window (device bit 19), the 64-bit direct window (address bit 55), the
+ * translated window with the revision-2 address bit 29 and with ATE bit 5,
+ * each with the swap request set and clear, every start alignment, both
+ * directions, at each slot data-phase width. Transfers start 16 bytes
+ * before a page end so the translated routes cross into a second entry
+ * aimed at another widget. Memory is read raw against a sentinel fill.
+ */
+enum {
+    PLACE_DIRECT32,
+    PLACE_DIRECT64,
+    PLACE_BIT29,
+    PLACE_ATE5,
+    PLACE_ROUTES,
+};
+
+#define PLACE_SEED      0x40
+#define PLACE_SENTINEL  0xee
+#define PLACE_HEAD      (0x1000 - 16)
+#define PLACE_SPAN      64
+#define PLACE_COPY_PCI  0xb08000000000a000ULL   /* bit 55 set: identity */
+#define PLACE_COPY_DST  (TARGET_B + 0xa000)
+#define PLACE_SLOT      0
+
+static const char *const place_route_name[PLACE_ROUTES] = {
+    "direct32", "direct64", "bit29", "ate5",
+};
+
+static const uint64_t place_windows[] = {
+    TARGET_A + SCRATCH + 0x1000 - PLACE_SPAN / 2,
+    TARGET_B + SCRATCH,
+};
+
+static uint64_t place_pci(unsigned route, bool swap, unsigned offset)
+{
+    switch (route) {
+    case PLACE_DIRECT32:
+        return 0x80000000 | (SCRATCH + offset);
+    case PLACE_DIRECT64:
+        return 0xa000000000000000ULL | ((uint64_t)swap << 55) |
+               (SCRATCH + offset);
+    case PLACE_BIT29:
+        return 0x40000000 | (swap ? 0x20000000 : 0) | offset;
+    default:
+        return 0x40000000 | offset;
+    }
+}
+
+static uint64_t place_host(unsigned route, unsigned offset, unsigned unit)
+{
+    unsigned placed = offset ^ (unit - 1);
+
+    if ((route == PLACE_BIT29 || route == PLACE_ATE5) && placed >= 0x1000) {
+        return TARGET_B + SCRATCH + placed - 0x1000;
+    }
+    return TARGET_A + SCRATCH + placed;
+}
+
+static uint8_t place_pattern(uint64_t addr)
+{
+    return (uint8_t)(addr * 7 + 0x13);
+}
+
+static void place_fill(QTestState *qts, bool pattern)
+{
+    uint8_t fill[PLACE_SPAN];
+
+    for (unsigned w = 0; w < G_N_ELEMENTS(place_windows); w++) {
+        for (unsigned i = 0; i < sizeof(fill); i++) {
+            fill[i] = pattern ? place_pattern(place_windows[w] + i) :
+                                PLACE_SENTINEL;
+        }
+        qtest_memwrite(qts, place_windows[w], fill, sizeof(fill));
+    }
+}
+
+/* Every swap control the route does not use is set opposite to it. */
+static void place_set_swap(QTestState *qts, unsigned route, bool swap)
+{
+    bool bit19 = route == PLACE_DIRECT32 ? swap : !swap;
+    uint64_t ate5 = (route == PLACE_ATE5 ? swap : 0) ? 0x20 : 0;
+
+    /* Bit 13 clear, so card_write() needs no programmed-swap dance. */
+    reg_write(qts, 0x200, 0x1010 | ((uint32_t)bit19 << 19));
+    ate_write(qts, 0, 0x8a01 | ate5);
+    ate_write(qts, 1, 0x8b01 | ate5);
+}
+
+static void place_check_write(QTestState *qts, unsigned route, unsigned unit,
+                              unsigned start, unsigned length)
+{
+    uint8_t seen[PLACE_SPAN], expected[PLACE_SPAN];
+
+    for (unsigned w = 0; w < G_N_ELEMENTS(place_windows); w++) {
+        memset(expected, PLACE_SENTINEL, sizeof(expected));
+        for (unsigned i = 0; i < length; i++) {
+            uint64_t host = place_host(route, PLACE_HEAD + start + i, unit);
+
+            if (host >= place_windows[w] &&
+                host < place_windows[w] + sizeof(expected)) {
+                expected[host - place_windows[w]] = PLACE_SEED + i;
+            }
+        }
+        qtest_memread(qts, place_windows[w], seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+    }
+}
+
+static void place_check_read(QTestState *qts, unsigned route, unsigned unit,
+                             unsigned start, unsigned length)
+{
+    uint8_t seen[32 + 8], expected[32 + 8];
+
+    memset(expected, PLACE_SENTINEL, sizeof(expected));
+    for (unsigned i = 0; i < length; i++) {
+        expected[i] = place_pattern(place_host(route, PLACE_HEAD + start + i,
+                                               unit));
+    }
+    qtest_memread(qts, PLACE_COPY_DST, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+}
+
+static void place_transfer(QTestState *qts, unsigned route, bool swap,
+                           unsigned start, unsigned length)
+{
+    uint64_t pci = place_pci(route, swap, PLACE_HEAD + start);
+
+    card_write(qts, 0, pci);
+    card_write(qts, 0x18, pci >> 32);
+    card_write(qts, 4, length);
+    card_write(qts, 8, PLACE_SEED);
+    card_write(qts, 0xc, 1);
+}
+
+static void place_copy(QTestState *qts, unsigned route, bool swap,
+                       unsigned start, unsigned length)
+{
+    uint64_t pci = place_pci(route, swap, PLACE_HEAD + start);
+
+    qtest_memset(qts, PLACE_COPY_DST, PLACE_SENTINEL, 64);
+    card_write(qts, 0x14, pci);
+    card_write(qts, 0x1c, pci >> 32);
+    card_write(qts, 0, (uint32_t)PLACE_COPY_PCI);
+    card_write(qts, 0x18, PLACE_COPY_PCI >> 32);
+    card_write(qts, 4, length);
+    card_write(qts, 0xc, 2);
+}
+
+typedef struct PlaceWidth {
+    uint8_t mask;
+    bool native;
+} PlaceWidth;
+
+static unsigned place_unit(const PlaceWidth *w, bool swap)
+{
+    return swap ? 1 : (w->mask & (1u << PLACE_SLOT)) ? 8 : 4;
+}
+
+static QTestState *place_start(const PlaceWidth *w)
+{
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-bridge-dma-test.dma-buffer=%s "
+        "-global sgi-xbridge-head.dma-64bit-slots=0x%x",
+        w->native ? "off" : "on", w->mask);
+    QTestState *qts = transport_start(extra);
+
+    reg_write(qts, 0x80, 0xa00000);
+    return qts;
+}
+
+static void test_placement_matrix(const void *data)
+{
+    static const unsigned lengths[] = { 1, 2, 3, 4, 7, 8, 13, 32 };
+    const PlaceWidth *w = data;
+    QTestState *qts = place_start(w);
+
+    for (unsigned route = 0; route < PLACE_ROUTES; route++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            unsigned unit = place_unit(w, swap);
+
+            place_set_swap(qts, route, swap);
+            for (unsigned start = 0; start < 8; start++) {
+                for (unsigned n = 0; n < G_N_ELEMENTS(lengths); n++) {
+                    unsigned length = lengths[n];
+
+                    g_test_message("%s swap=%u start=%u length=%u unit=%u",
+                                   place_route_name[route], swap, start,
+                                   length, unit);
+                    place_fill(qts, false);
+                    place_transfer(qts, route, swap, start, length);
+                    g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
+                    place_check_write(qts, route, unit, start, length);
+
+                    place_fill(qts, true);
+                    place_copy(qts, route, swap, start, length);
+                    g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
+                    place_check_read(qts, route, unit, start, length);
+                }
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+/* An invalid entry and bus mastering off both leave memory alone. */
+static void test_placement_refusals(const void *data)
+{
+    const PlaceWidth *w = data;
+    QTestState *qts = place_start(w);
+
+    place_set_swap(qts, PLACE_BIT29, false);
+    ate_write(qts, 1, 0x8b00);
+    place_fill(qts, false);
+    place_transfer(qts, PLACE_BIT29, false, 0, 32);
+    g_assert_cmphex(card_read(qts, 0x28), !=, MEMTX_OK);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 30), ==, 1U << 30);
+    place_check_write(qts, PLACE_BIT29, place_unit(w, false), 0, 16);
+
+    for (unsigned route = 0; route < PLACE_ROUTES; route++) {
+        place_set_swap(qts, route, false);
+        qtest_writel(qts, BASE + 0x20004, 2);
+        place_fill(qts, false);
+        place_transfer(qts, route, false, 3, 24);
+        g_assert_cmphex(card_read(qts, 0x28), !=, MEMTX_OK);
+        place_check_write(qts, route, place_unit(w, false), 0, 0);
+        qtest_writel(qts, BASE + 0x20004, 6);
+    }
+    qtest_quit(qts);
+}
+
+/* A reset clears bit 19 and keeps the width the head was built with. */
+static void test_placement_after_reset(const void *data)
+{
+    const PlaceWidth *w = data;
+    QTestState *qts = place_start(w);
+
+    place_set_swap(qts, PLACE_DIRECT32, true);
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, 0x200) & (1U << 19), ==, 0);
+    qtest_writel(qts, BASE + 0x20010, 0x01000000);
+    qtest_writel(qts, BASE + 0x20004, 6);
+    reg_write(qts, 0x200, 0x1010);
+    reg_write(qts, 0x80, 0xa00000);
+    place_fill(qts, false);
+    place_transfer(qts, PLACE_DIRECT32, false, 1, 13);
+    g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
+    place_check_write(qts, PLACE_DIRECT32, place_unit(w, false), 1, 13);
+    qtest_quit(qts);
+}
+
+static const PlaceWidth place_widths[] = {
+    { 0, false },
+    { 0, true },
+    { 1u << PLACE_SLOT, false },
+    { 1u << PLACE_SLOT, true },
+    { (uint8_t)~(1u << PLACE_SLOT), false },
+    /* Every slot wide, so the head builds no word placement at all. */
+    { 0xff, false },
+    { 0xff, true },
+};
+
+static void add_placement_tests(void)
+{
+    for (unsigned i = 0; i < G_N_ELEMENTS(place_widths); i++) {
+        const PlaceWidth *w = &place_widths[i];
+        g_autofree char *suffix = g_strdup_printf("mask-%02x-%s", w->mask,
+                                                  w->native ? "native" :
+                                                              "buffer");
+        g_autofree char *matrix = g_strdup_printf(
+            "/sn1/xbridge/dma-placement/matrix/%s", suffix);
+        g_autofree char *refusals = g_strdup_printf(
+            "/sn1/xbridge/dma-placement/refusals/%s", suffix);
+        g_autofree char *reset = g_strdup_printf(
+            "/sn1/xbridge/dma-placement/reset/%s", suffix);
+
+        qtest_add_data_func(matrix, w, test_placement_matrix);
+        qtest_add_data_func(refusals, w, test_placement_refusals);
+        qtest_add_data_func(reset, w, test_placement_after_reset);
+    }
+}
+
 static uint32_t tx_run(QTestState *qts, uint32_t address);
 
 static void test_page_dma_bit29_compat_faults(void)
@@ -1578,6 +1860,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/requester-bounds", test_requester_bounds);
     qtest_add_func("/sn1/xbridge/raw-pci-interrupts", test_raw_pci_interrupts);
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);
+    add_placement_tests();
     qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
     qtest_add_func("/sn1/xbridge/page-dma-bit29-compat",
                    test_page_dma_bit29_compat);

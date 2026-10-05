@@ -993,15 +993,24 @@ static void test_ioc3_prefix_source_dma(void)
     }
 }
 
-static void test_source_dma_byte_lanes(void)
+/*
+ * Packet mode places bytes like widget mode: a swap-clear direct transfer
+ * reverses each word in a 32-bit slot and the doubleword in a 64-bit one,
+ * and the swap-set translated transfer is a byte stream at either width.
+ */
+static void run_source_dma_byte_lanes(bool wide)
 {
-    QTestState *s = assembly_start(
+    QTestState *s = assembly_start(wide ?
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-xbridge-head.dma-64bit-slots=1 "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0" :
         "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
         "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0");
     uint64_t head = VIEW(2), card = head + 0x200000;
     const uint32_t address[] = { 0x80008000, 0x40000000 };
     const uint64_t expected[] = {
-        0x4342414047464544ULL, 0x4041424344454647ULL,
+        wide ? 0x4746454443424140ULL : 0x4342414047464544ULL,
+        0x4041424344454647ULL,
     };
 
     qtest_writel(s, head + 0x20010, 0x01000000);
@@ -1025,6 +1034,16 @@ static void test_source_dma_byte_lanes(void)
                         expected[0]);
     }
     qtest_quit(s);
+}
+
+static void test_source_dma_byte_lanes(void)
+{
+    run_source_dma_byte_lanes(false);
+}
+
+static void test_source_dma_doubleword_lanes(void)
+{
+    run_source_dma_byte_lanes(true);
 }
 
 static void test_source_dma_wide_register(void)
@@ -1340,6 +1359,8 @@ int main(int argc, char **argv)
                    test_ioc3_prefix_source_dma);
     qtest_add_func("/sn1/xbridge-chip/source-dma-byte-lanes",
                    test_source_dma_byte_lanes);
+    qtest_add_func("/sn1/xbridge-chip/source-dma-doubleword-lanes",
+                   test_source_dma_doubleword_lanes);
     qtest_add_func("/sn1/xbridge-chip/six-head-source-dma",
                    test_six_head_source_dma);
     qtest_add_func("/sn1/xbridge-chip/head-source-interrupts",

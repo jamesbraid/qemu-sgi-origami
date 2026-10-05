@@ -151,6 +151,8 @@ struct SGIXBridgeHeadState {
     uint64_t ate[SGI_XBRIDGE_HEAD_ATE_COUNT];
     uint8_t speed;
     uint8_t pins;
+    /* Slots whose DMA data phases are 64 bits wide, one bit per slot. */
+    uint8_t dma_64bit_slots;
     /*
      * The head's own MicroLAN board-identity part, present only for a head
      * whose widget carries a board. With board_part unset (NULL), the bus

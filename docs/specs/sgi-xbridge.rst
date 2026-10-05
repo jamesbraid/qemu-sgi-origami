@@ -144,7 +144,9 @@ Each target widget is a link to a memory region; the head keeps an
 address space for each and the shared placement targets over it
 (``hw/pci-host/sgi-dma-placement.c``, as on the Bridge), so byte
 placement follows the XBridge's own swap tables: a set swap control is
-a byte stream, a clear one reverses each aligned 32-bit word. In
+a byte stream, a clear one reverses each aligned 32-bit word in a
+32-bit slot and each aligned doubleword in a slot the head's
+``dma-64bit-slots`` property marks 64-bit, as on the Bridge. In
 packet mode the targets send each step as an explicit packet carrying
 this head and the requesting slot instead of writing an address space.
 
