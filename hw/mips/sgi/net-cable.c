@@ -6,6 +6,7 @@
 #include "hw/mips/sgi/net-cable.h"
 #include "hw/mips/sgi-net-port.h"
 #include "hw/core/qdev-properties.h"
+#include "system/memory.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 
@@ -92,6 +93,12 @@ static void sgi_net_cable_set_down(Object *obj, bool value, Error **errp)
     if (!DEVICE(cable)->realized) {
         return;
     }
+    /*
+     * Every Hub the flood reaches may move its claim aliases in a commit of
+     * its own; one transaction defers them to a single re-render. The flood
+     * accesses no address space, and the notifiers run after the commit.
+     */
+    memory_region_transaction_begin();
     sgi_net_port_flood_start();
     for (side = 0; side < 2; side++) {
         SGINetCableEnd *end = &cable->end[side];
@@ -100,6 +107,7 @@ static void sgi_net_cable_set_down(Object *obj, bool value, Error **errp)
             sgi_net_port_peer_changed(end->port, end->index);
         }
     }
+    memory_region_transaction_commit();
     notifier_list_notify(&cable->changed, cable);
 }
 

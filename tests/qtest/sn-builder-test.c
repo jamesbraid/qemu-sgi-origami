@@ -4105,12 +4105,13 @@ static void test_reset_renders(const void *data)
  * Each Hub's reset re-aims its seven big windows. A commit per window
  * renders every view seven times per Hub, 28 on four nodes; one
  * transaction per Hub makes that four. The Routers' reset-exit floods
- * then move each numbered Hub's claim aliases, one commit per Hub.
+ * then move each numbered Hub's claim aliases: one commit per Hub, or one
+ * in all when the flood is one transaction.
  */
 static const ResetRenders numbered_origin2000_reset = {
     .machine = "origin2000 -smp 8 -m 256M",
     .prepare_and_reset = number_hubs_then_reset,
-    .most = 8,
+    .most = 5,
 };
 
 /*

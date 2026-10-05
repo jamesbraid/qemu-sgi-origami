@@ -18,6 +18,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "system/cpu-timers.h"
+#include "system/memory.h"
 #include "system/reset.h"
 
 #define RR_STATUS_REV_ID       0x00000
@@ -82,6 +83,18 @@ int64_t cpus_get_virtual_clock(void)
 void cpus_set_virtual_clock(int64_t value)
 {
     virtual_time = value;
+}
+
+/*
+ * The Router and cable batch a network flood's region changes in one
+ * memory transaction. These tests link no memory core and map no regions.
+ */
+void memory_region_transaction_begin(void)
+{
+}
+
+void memory_region_transaction_commit(void)
+{
 }
 
 typedef struct Fixture {

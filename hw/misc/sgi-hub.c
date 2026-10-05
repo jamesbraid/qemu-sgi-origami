@@ -956,12 +956,22 @@ static void sgi_hub_net_originate(SGIHubState *s)
     Object *peer_port;
     unsigned int peer_index;
 
+    /*
+     * Every Hub the flood reaches may move its claim aliases in a commit of
+     * its own, and every commit re-renders the flat view of every address
+     * space in the machine, so one transaction defers them to a single
+     * commit. The flood only re-derives link bits, Router port state and
+     * claim aliases from the route tables; nothing in it accesses an
+     * address space.
+     */
+    memory_region_transaction_begin();
     sgi_hub_net_changed(s);
     sgi_net_port_flood_start();
     if (s->net_cable && sgi_net_cable_other_end(s->net_cable, OBJECT(s), 0,
                                                 &peer_port, &peer_index)) {
         sgi_net_port_peer_changed(peer_port, peer_index);
     }
+    memory_region_transaction_commit();
 }
 
 /*

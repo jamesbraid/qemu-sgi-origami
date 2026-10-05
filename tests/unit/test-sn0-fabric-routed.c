@@ -17,6 +17,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "system/cpu-timers.h"
+#include "system/memory.h"
 
 #define RR_DIAG_PARMS          0x00030
 #define RR_STATUS_ERROR(port)  (((uint64_t)(port) << 16) + 0x0008)
@@ -164,6 +165,18 @@ int64_t cpus_get_virtual_clock(void)
 }
 
 void cpus_set_virtual_clock(int64_t value)
+{
+}
+
+/*
+ * The Router and cable batch a network flood's region changes in one
+ * memory transaction. These tests link no memory core and map no regions.
+ */
+void memory_region_transaction_begin(void)
+{
+}
+
+void memory_region_transaction_commit(void)
 {
 }
 
