@@ -40,8 +40,17 @@ def _testcase_name(name):
 
 
 def _suite_name(name):
-    """Keep the selected Meson test name, dropping setup-generated prefixes."""
-    return name.rsplit(' / ', 1)[-1]
+    """Keep the selected Meson test name, dropping setup-generated prefixes.
+
+    Meson before 1.10 names a test 'project:suites / test'.  From 1.10 it
+    is 'suites - project:test', and a JUnit suite adds 'project.' in
+    front of either.
+    """
+    if ' / ' in name:
+        return name.rsplit(' / ', 1)[-1]
+    if ' - ' in name:
+        return name.rsplit(' - ', 1)[-1].split(':', 1)[-1]
+    return name
 
 
 def read_expected(path):
