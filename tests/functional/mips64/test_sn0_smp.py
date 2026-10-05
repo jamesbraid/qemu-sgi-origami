@@ -433,6 +433,29 @@ def emit_assign_peer_nasid_if_master(program, nasid):
     program.patch(skip, len(program.instructions))
 
 
+def emit_wait_for_own_nasid_if_slave(program):
+    """Hold a slave module's CPU until the master has numbered its Hub.
+
+    Nothing orders the slave's CPUs after the master's vector-routed write
+    in emit_assign_peer_nasid_if_master.  Until it lands the slave's Hub
+    still believes it is node zero, and the Hub network-interface
+    datasheet's "Vector routing" section is explicit that before numbers
+    are assigned no node-numbered address means anything.  A slave CPU
+    that raced ahead to a node-one-qualified store took a bus error and
+    never published, so poll the local NI_STATUS node field (bits 16:8)
+    until it is nonzero.  Master CPUs fall straight through.
+    """
+    emit_read_is_slave(program, R_T2)
+    skip = program.branch(0x04, R_T2, R_ZERO)  # beq is_slave, zero, skip
+    wait = len(program.instructions)
+    emit_local_hub_read(program, R_T1, HUB_NI_STATUS)
+    program.emit(mips_r(R_ZERO, R_T1, R_T1, 8, 0x3a))  # dsrl t1, t1, 8
+    program.emit(mips_i(0x0c, R_T1, R_T1, 0x1ff))      # andi t1, t1, 0x1ff
+    branch = program.branch(0x04, R_T1, R_ZERO)        # beq t1, zero, wait
+    program.patch(branch, wait)
+    program.patch(skip, len(program.instructions))
+
+
 def build_rtc_rendezvous():
     program = MipsProgram()
 
@@ -900,9 +923,11 @@ def build_four_cpu_rendezvous(wait_limit=FOUR_CPU_WAIT_LIMIT):
     program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
     program.emit(0)
 
-    # No PROM ran to number node one's Hub; the master module's CPUs do it
-    # before anything below needs a node-one-qualified address to work.
+    # No PROM ran to number node one's Hub; the master module's CPUs do it,
+    # and node one's CPUs wait for it, before anything below needs a
+    # node-one-qualified address to work.
     emit_assign_peer_nasid_if_master(program, 1)
+    emit_wait_for_own_nasid_if_slave(program)
 
     # Both local CPUs atomically count their entry before device identity is
     # read.  They also add their PI processor number, which must be 0 + 1.
