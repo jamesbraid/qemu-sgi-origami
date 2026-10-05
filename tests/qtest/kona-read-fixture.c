@@ -235,30 +235,7 @@ static void roundtrip(KonaReadFixture *s, unsigned request)
     roundtrip_state(s);
 }
 
-typedef struct LayoutIdentity {
-    uint64_t size;
-    uint32_t bytes_len;
-    uint32_t nplanes;
-} LayoutIdentity;
-
-static LayoutIdentity layout_project(SGIBoardMemory *mem, uint64_t old_size)
-{
-    LayoutIdentity saved = { mem->size, mem->bytes_len, mem->nplanes };
-
-    mem->size = old_size;
-    mem->bytes_len = old_size;
-    mem->nplanes = 6;
-    return saved;
-}
-
-static void layout_restore(SGIBoardMemory *mem, LayoutIdentity saved)
-{
-    mem->size = saved.size;
-    mem->bytes_len = saved.bytes_len;
-    mem->nplanes = saved.nplanes;
-}
-
-/* Bind the projection to the six-plane layout before stencil was appended. */
+/* Check the seven-plane layout; return where the stencil plane starts. */
 static uint64_t layout_check(SGIKonaState *k)
 {
     const uint64_t pixels = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
@@ -314,11 +291,10 @@ static uint64_t layout_check(SGIKonaState *k)
     return old_size;
 }
 
-static void layout_save(KonaReadFixture *s, bool old)
+static void layout_save(KonaReadFixture *s)
 {
     SGIKonaState *k = s->source;
     const VMStateDescription *vmsd = DEVICE_GET_CLASS(k)->vmsd;
-    LayoutIdentity saved = { 0 };
     QIOChannelBuffer *output;
     QEMUFile *file;
     Error *err = NULL;
@@ -331,17 +307,11 @@ static void layout_save(KonaReadFixture *s, bool old)
     k->mem.bytes[k->mem.size - 1] = 0xc5;
     g_free(s->layout_stream);
     g_free(s->layout_prefix);
-    s->layout_prefix_len = old ? s->layout_old_size : k->mem.bytes_len;
+    s->layout_prefix_len = k->mem.bytes_len;
     s->layout_prefix = g_memdup2(k->mem.bytes, s->layout_prefix_len);
     output = qio_channel_buffer_new(4096);
     file = qemu_file_new_output(QIO_CHANNEL(output));
-    if (old) {
-        saved = layout_project(&k->mem, s->layout_old_size);
-    }
     s->save_result = vmstate_save_state(file, vmsd, k, NULL, &err);
-    if (old) {
-        layout_restore(&k->mem, saved);
-    }
     qemu_put_byte(file, 0);
     qemu_fflush(file);
     if (!s->save_result) {
@@ -360,10 +330,27 @@ static void layout_save(KonaReadFixture *s, bool old)
     }
 }
 
-static void layout_load(KonaReadFixture *s, bool old)
+/* Change the board-memory size the stream carries, so loading must refuse. */
+static void layout_corrupt_size(uint8_t *stream, size_t len)
+{
+    static const char name[] = TYPE_SGI_KONA "/board-memory";
+    size_t at;
+
+    for (at = 0; at + sizeof(name) - 1 + 12 <= len; at++) {
+        if (!memcmp(stream + at, name, sizeof(name) - 1)) {
+            /* The name, the subsection's version, then the size. */
+            uint8_t *size = stream + at + sizeof(name) - 1 + 4;
+
+            stq_be_p(size, ldq_be_p(size) + 4096);
+            return;
+        }
+    }
+    g_assert_not_reached();
+}
+
+static void layout_load(KonaReadFixture *s, bool corrupt)
 {
     const VMStateDescription *vmsd = DEVICE_GET_CLASS(s->source)->vmsd;
-    LayoutIdentity saved = { 0 };
     QIOChannelBuffer *input;
     QEMUFile *file;
     Error *err = NULL;
@@ -386,17 +373,14 @@ static void layout_load(KonaReadFixture *s, bool old)
     input = qio_channel_buffer_new(s->layout_stream_len);
     memcpy(input->data, s->layout_stream, s->layout_stream_len);
     input->usage = s->layout_stream_len;
-    file = qemu_file_new_input(QIO_CHANNEL(input));
-    if (old) {
-        saved = layout_project(&s->destination->mem, s->layout_old_size);
+    if (corrupt) {
+        layout_corrupt_size((uint8_t *)input->data, input->usage);
     }
+    file = qemu_file_new_input(QIO_CHANNEL(input));
     s->result = vmstate_load_state(file, vmsd, s->destination,
                                    vmsd->version_id, &err);
     s->layout_size = s->destination->mem.size;
     s->layout_planes = s->destination->mem.nplanes;
-    if (old) {
-        layout_restore(&s->destination->mem, saved);
-    }
     if (!s->result) {
         s->layout_match = !memcmp(s->layout_prefix, s->destination->mem.bytes,
                                   s->layout_prefix_len);
@@ -537,7 +521,7 @@ static void control_write(void *opaque, hwaddr offset, uint64_t value,
         roundtrip(s, value);
         break;
     case FIXTURE_LAYOUT_SAVE:
-        layout_save(s, value != 0);
+        layout_save(s);
         break;
     case FIXTURE_LAYOUT_LOAD:
         layout_load(s, value != 0);
