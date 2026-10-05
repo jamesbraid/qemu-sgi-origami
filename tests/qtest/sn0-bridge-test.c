@@ -2191,6 +2191,128 @@ static void test_dma_placement_mixed_functions(const void *data)
     qtest_quit(qts);
 }
 
+/* How many lines of a trace log name @event, with @needle if given. */
+static unsigned count_log_lines(const char *log, const char *event,
+                                const char *needle)
+{
+    g_auto(GStrv) lines = g_strsplit(log, "\n", -1);
+    unsigned n = 0;
+
+    for (unsigned i = 0; lines[i]; i++) {
+        if (strstr(lines[i], event) &&
+            (!needle || strstr(lines[i], needle))) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static char *place_log_path(void)
+{
+    char *path = g_strdup_printf("%s/sn0-bridge-place-XXXXXX.log",
+                                 g_get_tmp_dir());
+    int fd = g_mkstemp(path);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    return path;
+}
+
+/*
+ * Long transfers, which the memory core offers to the placement target as
+ * one buffer: whole units move in one onward transfer and one reversal,
+ * partial units at either end one access at a time. Every route, both swap
+ * settings, every start alignment and both directions must give the bytes
+ * the per-access rule gives, and the swap-clear ones must have taken the
+ * buffer path.
+ */
+#define PLACE_LONG_OFFSET       0x100
+#define PLACE_LONG_LEN          203
+
+static void test_dma_placement_long(const void *data)
+{
+    const PlaceWidth *w = data;
+    g_autofree char *path = place_log_path();
+    g_autofree char *log = NULL;
+    uint8_t seen[PLACE_LONG_LEN + 24], expected[PLACE_LONG_LEN + 24];
+    uint8_t fill[PLACE_LONG_LEN + 24];
+    const uint32_t base = TARGET_PAGE_A + PLACE_LONG_OFFSET - 8;
+    g_autofree char *trace = g_strdup_printf(
+        " -d trace:sgi_dma_placement_buffer -D %s", path);
+    QTestState *qts;
+
+    assert(w->native);
+    qts = place_start_with(w, trace);
+    place_prepare(qts);
+    for (unsigned route = 0; route < PLACE_ROUTES; route++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            unsigned unit = place_unit(w, swap);
+
+            place_set_swap(qts, route, swap);
+            for (unsigned start = 0; start < 8; start++) {
+                unsigned first = PLACE_LONG_OFFSET + start;
+                uint64_t pci = place_pci(route, first);
+
+                g_test_message("%s swap=%u start=%u unit=%u",
+                               place_route_name[route], swap, start, unit);
+                qtest_memset(qts, base, SWAP_SENTINEL, sizeof(seen));
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS_HI,
+                             pci >> 32);
+                place_bridge_transfer(qts, (uint32_t)pci, PLACE_LONG_LEN,
+                                SWAP_SEED);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28),
+                                ==, MEMTX_OK);
+                memset(expected, SWAP_SENTINEL, sizeof(expected));
+                for (unsigned i = 0; i < PLACE_LONG_LEN; i++) {
+                    expected[place_host(route, first + i, unit) - base] =
+                        SWAP_SEED + i;
+                }
+                qtest_memread(qts, base, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), expected,
+                                sizeof(expected));
+
+                for (unsigned i = 0; i < sizeof(fill); i++) {
+                    fill[i] = place_pattern(base + i);
+                }
+                qtest_memwrite(qts, base, fill, sizeof(fill));
+                qtest_memset(qts, PLACE_COPY_DST, SWAP_SENTINEL,
+                             sizeof(seen));
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE,
+                             (uint32_t)pci);
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE_HI,
+                             pci >> 32);
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS,
+                             PLACE_COPY_DST);
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS_HI, 0);
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_LENGTH,
+                             PLACE_LONG_LEN);
+                qtest_writel(qts, WINDOW(place_slot) + DMA_REG_GO, 2);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28),
+                                ==, MEMTX_OK);
+                memset(expected, SWAP_SENTINEL, sizeof(expected));
+                for (unsigned i = 0; i < PLACE_LONG_LEN; i++) {
+                    expected[i] = place_pattern(place_host(route, first + i,
+                                                           unit));
+                }
+                qtest_memread(qts, PLACE_COPY_DST, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), expected,
+                                sizeof(expected));
+            }
+        }
+    }
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    /* Each swap-clear route and direction took buffers; swap-set ones none. */
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     " write "), >=, PLACE_ROUTES * 8);
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     " read "), >=, PLACE_ROUTES * 8);
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     ".identity"), ==, 0);
+}
+
 static void add_dma_placement_tests(void)
 {
     for (unsigned i = 0; i < ARRAY_SIZE(place_widths); i++) {
@@ -2208,6 +2330,12 @@ static void add_dma_placement_tests(void)
         qtest_add_data_func(matrix, w, test_dma_placement_matrix);
         qtest_add_data_func(refusals, w, test_dma_placement_refusals);
         qtest_add_data_func(reset, w, test_dma_placement_after_reset);
+        if (w->native) {
+            g_autofree char *long_name = g_strdup_printf(
+                "sn0/bridge/dma-placement/long/%s", suffix);
+
+            qtest_add_data_func(long_name, w, test_dma_placement_long);
+        }
         if (w->slot == DMA_SLOT) {
             g_autofree char *converted = g_strdup_printf(
                 "sn0/bridge/dma-placement/converted/%s", suffix);
@@ -4162,6 +4290,101 @@ static void assert_untouched(QTestState *qts, uint64_t at)
 }
 
 /*
+ * A swap-clear transfer that runs off the end of a RAM widget into an MMIO
+ * one. The placement takes the RAM part as one buffer and declines the
+ * rest, so the MMIO target sees the same 8-byte accesses it would see with
+ * no buffer path at all. Reading back the same span does the same.
+ */
+#define MMIO_AFTER_RAM          (target(DIRECT_WIDGET) + 0x100000ULL)
+#define MMIO_STATUS             0x00f00000ULL
+#define MMIO_STATUS_READS       48
+#define MMIO_STATUS_WRITES      56
+#define MMIO_STATUS_SIZE        64
+#define STRADDLE_RAM            16
+#define STRADDLE_MMIO           32
+#define STRADDLE_SPAN           (STRADDLE_RAM + STRADDLE_MMIO)
+#define STRADDLE_PCI            (0x80000000ULL | (0x100000ULL - STRADDLE_RAM))
+
+static void widget_card_go(QTestState *qts, unsigned go, uint64_t source,
+                           uint64_t dest, uint32_t length)
+{
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE, (uint32_t)source);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE_HI, source >> 32);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS, (uint32_t)dest);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS_HI, dest >> 32);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_LENGTH, length);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SEED, SWAP_SEED);
+    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_GO, go);
+}
+
+static void test_dma_placement_buffer_declines_mmio(void)
+{
+    g_autofree char *path = place_log_path();
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-bridge-dma-test.dma-buffer=off "
+        "-device sgi-xio-test-target,id=mm,memory-kind=overlap-mmio,size=64K "
+        "-d trace:sgi_dma_placement_buffer,trace:sgi_dma_placement_access "
+        "-D %s", path);
+    g_autofree char *log = NULL;
+    g_autofree char *ram_write = g_strdup_printf(
+        "write addr 0x%" PRIx64 " len %u",
+        (uint64_t)(MMIO_AFTER_RAM - STRADDLE_RAM),
+        STRADDLE_RAM);
+    g_autofree char *ram_read = g_strdup_printf(
+        "read addr 0x%" PRIx64 " len %u",
+        (uint64_t)(MMIO_AFTER_RAM - STRADDLE_RAM),
+        STRADDLE_RAM);
+    QTestState *qts = head_start_with(extra);
+    uint8_t seen[STRADDLE_RAM];
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/mm", 0, MMIO_AFTER_RAM);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/mm", 1, MMIO_STATUS);
+    widget_card_start(qts);
+    aim_the_routes(qts);
+    qtest_writel(qts, WIDGET_REG(BRIDGE_DEVICE(CARD_SLOT)),
+                 DEV_MEMORY_SPACE | (WIDGET_CARD_MMIO >> 20));
+
+    widget_card_go(qts, 1, 0, STRADDLE_PCI, STRADDLE_SPAN);
+    g_assert_cmphex(qtest_readl(qts, WIDGET_WINDOW0 + 0x28), ==, MEMTX_OK);
+    qtest_memread(qts, MMIO_AFTER_RAM - STRADDLE_RAM, seen, sizeof(seen));
+    for (unsigned i = 0; i < sizeof(seen); i++) {
+        g_assert_cmphex(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+    g_assert_cmpuint(qtest_readq(qts, MMIO_STATUS + MMIO_STATUS_WRITES), ==,
+                     STRADDLE_MMIO / 8);
+    g_assert_cmpuint(qtest_readq(qts, MMIO_STATUS + MMIO_STATUS_SIZE), ==, 8);
+
+    /*
+     * Copy the same span back through the same route into RAM at the
+     * route's own offset: the two reversals cancel for the RAM part.
+     */
+    widget_card_go(qts, 2, STRADDLE_PCI, 0x80000000ULL | DIRECT_OFF,
+                   STRADDLE_SPAN);
+    g_assert_cmphex(qtest_readl(qts, WIDGET_WINDOW0 + 0x28), ==, MEMTX_OK);
+    qtest_memread(qts, target(DIRECT_WIDGET) + DIRECT_OFF, seen, sizeof(seen));
+    for (unsigned i = 0; i < sizeof(seen); i++) {
+        g_assert_cmphex(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
+    }
+    g_assert_cmpuint(qtest_readq(qts, MMIO_STATUS + MMIO_STATUS_READS), ==,
+                     STRADDLE_MMIO / 8);
+    g_assert_cmpuint(qtest_readq(qts, MMIO_STATUS + MMIO_STATUS_SIZE), ==, 8);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    /* The RAM part, each way, and the whole RAM destination of the copy. */
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     "write"), ==, 2);
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     ram_write), ==, 1);
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_buffer",
+                                     ram_read), ==, 1);
+    /* The MMIO part, one 8-byte access at a time each way. */
+    g_assert_cmpuint(count_log_lines(log, "sgi_dma_placement_access",
+                                     "size 8"), ==, 2 * STRADDLE_MMIO / 8);
+}
+
+/*
  * Three transfers with the widget in the fabric address: each reaches the
  * widget its own route named, and only that one.
  */
@@ -4806,6 +5029,8 @@ int main(int argc, char **argv)
                     test_full_packet_interrupts);
     qtest_add_func("sn0/bridge/widget/transfer-widgets",
                     test_transfers_carry_their_target_widget);
+    qtest_add_func("sn0/bridge/widget/dma-placement-buffer-declines-mmio",
+                   test_dma_placement_buffer_declines_mmio);
     qtest_add_func("sn0/bridge/widget/pin-destination",
                     test_a_pin_packet_lands_at_its_destination);
     qtest_add_func("sn0/bridge/widget/pin-host-bits",

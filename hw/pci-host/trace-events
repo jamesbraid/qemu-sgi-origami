@@ -94,6 +94,7 @@ sgi_bridge_dma_xlate_plain(uint64_t addr, int flag) "DMA translate plain addr 0x
 
 # sgi-dma-placement.c
 sgi_dma_placement_access(const char *target, const char *op, uint64_t addr, uint64_t host, unsigned size) "%s %s addr 0x%" PRIx64 " host 0x%" PRIx64 " size %u"
+sgi_dma_placement_buffer(const char *target, const char *op, uint64_t addr, uint64_t len) "%s %s addr 0x%" PRIx64 " len %" PRIu64
 
 # sgi-xbridge.c
 sgi_xbridge_pci_irq(int64_t vtime, unsigned widget, unsigned device, unsigned pin, int level) "vtime %" PRId64 " source_widget %u device %u PCI_pin %u level %d"

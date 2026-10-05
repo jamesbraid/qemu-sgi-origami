@@ -553,6 +553,7 @@ static QTestState *tigon_init_netdev_traced(int guest_fd, const char *logfile)
                        "-netdev socket,fd=%d,id=n0 "
                        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
                        "-d trace:sgi_dma_placement_access,"
+                       "trace:sgi_dma_placement_buffer,"
                        "trace:sgi_bridge_dma_xlate_plain -D %s",
                        guest_fd, logfile);
 }
@@ -1061,13 +1062,16 @@ static unsigned count_lines_with(const char *text, const char *needle)
  * which is why the wire bytes match the guest's frame; the trace shows the
  * placement taking the payload buffer too, and no transfer taking a route
  * that skips the Bridge. The placement logs the host address of each
- * doubleword it moves, so a payload transfer shows as a line ending in the
- * buffer's first doubleword's address.
+ * doubleword it moves one access at a time, and the start of each transfer
+ * it takes as one buffer, so the payload shows as either.
  */
 static void test_payload_follows_placement(const void *data)
 {
     g_autofree char *payload_needle =
         g_strdup_printf("%" PRIx64 " size",
+                        (uint64_t)(TX_BUF_DIRECT_PHYS & ~7u));
+    g_autofree char *payload_buffer_needle =
+        g_strdup_printf("%" PRIx64 " len",
                         (uint64_t)(TX_BUF_DIRECT_PHYS & ~7u));
     char *logfile = NULL;
     char *log = NULL;
@@ -1083,7 +1087,8 @@ static void test_payload_follows_placement(const void *data)
     /* Control: the word placement saw the descriptor and ring traffic. */
     g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement.word "), >, 0);
     /* The payload buffer crossed the placement as well. */
-    g_assert_cmpuint(count_lines_with(log, payload_needle), >, 0);
+    g_assert_cmpuint(count_lines_with(log, payload_needle) +
+                     count_lines_with(log, payload_buffer_needle), >, 0);
     /* And no transfer took a route that skips the Bridge. */
     g_assert_cmpuint(count_lines_with(log, "plain addr"), ==, 0);
 

@@ -435,6 +435,7 @@ static QTestState *boot_with_socket_traced(int *host_fd, const char *logfile)
     qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
                       "-device xframe,addr=%d,netdev=n0,mac=%s "
                       "-d trace:sgi_dma_placement_access,"
+                      "trace:sgi_dma_placement_buffer,"
                       "trace:sgi_bridge_dma_xlate_plain -D %s",
                       MACHINE_WITH_BRIDGE, sv[1], XFRAME_SLOT, TEST_MAC,
                       logfile);
@@ -523,11 +524,30 @@ static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 }
 
 /*
+ * The bytes a word placement read moved, whether as single accesses or as
+ * buffers: each traced transfer ends with its size or length.
+ */
+static unsigned word_placement_read_bytes(const char *log)
+{
+    g_auto(GStrv) lines = g_strsplit(log, "\n", -1);
+    unsigned total = 0;
+
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *last = strrchr(lines[i], ' ');
+
+        if (strstr(lines[i], "sgi-bridge.placement.word read") && last) {
+            total += atoi(last + 1);
+        }
+    }
+    return total;
+}
+
+/*
  * Payload goes through the card's own bus-master DMA like the descriptors, so
  * the slot's word placement applies to both: with the frame-path swap-enable
  * bits clear the card puts the frame on the bus in order and memory holds it
- * word-reversed. The placement takes one callback per doubleword, the 32-byte
- * descriptor read costing four and the 64-byte frame eight; no transfer takes
+ * word-reversed. The placement moves exactly the 32-byte descriptor and the
+ * 64-byte frame, as buffers or a callback per doubleword; no transfer takes
  * a route that skips the Bridge. Logs use the build directory: shared /tmp is
  * a small tmpfs where short writes cause unrelated failures; Tigon and BCM570x
  * use g_file_open_tmp.
@@ -544,7 +564,7 @@ static void test_transmit_payload_follows_placement(const void *data)
         g_strdup_printf("xframe-lane-swap-%u.log", (unsigned)getpid());
     g_autofree char *log = NULL;
     uint64_t control1;
-    unsigned lane_reads;
+    unsigned lane_bytes;
     size_t len;
     int fd;
     unsigned i;
@@ -591,10 +611,10 @@ static void test_transmit_payload_follows_placement(const void *data)
     close(host_fd);
 
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
-    lane_reads = count_log_matches(log, "sgi-bridge.placement.word read");
-    g_test_message("word placement reads: %u total, %u descriptor",
-                   lane_reads, (unsigned)sizeof(desc) / 8);
-    g_assert_cmpuint(lane_reads, ==, (sizeof(desc) + sizeof(frame)) / 8);
+    lane_bytes = word_placement_read_bytes(log);
+    g_test_message("word placement read bytes: %u total, %u descriptor",
+                   lane_bytes, (unsigned)sizeof(desc));
+    g_assert_cmpuint(lane_bytes, ==, sizeof(desc) + sizeof(frame));
     g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), ==, 0);
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
