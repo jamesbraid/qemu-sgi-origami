@@ -2348,24 +2348,13 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 {
     SGIMgrasTexture *t = opaque;
 
-    if (version_id < 11 && t->load) {
-        t->load_depth = 1;
-    }
-    if (version_id < 12) {
-        t->color_table_selector = t->color_table_written = 0;
-        t->color_table_active = t->color_table_valid = 0;
-        memset(t->color_table_data, 0, sizeof(t->color_table_data));
-    }
-    if (version_id < 13) {
-        memset(t->volume_data_extra, 0, sizeof(t->volume_data_extra));
-    }
     return sgi_mgras_texture_valid(t) ? 0 : -EINVAL;
 }
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
     .version_id = 13,
-    .minimum_version_id = 10,
+    .minimum_version_id = 13,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
@@ -2398,27 +2387,27 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(load_x, SGIMgrasTexture),
         VMSTATE_UINT32(load_y, SGIMgrasTexture),
         VMSTATE_UINT32(load_size, SGIMgrasTexture),
-        VMSTATE_UINT32_V(load_depth, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(load_volume, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_ARRAY_V(load_packet, SGIMgrasTexture, 8, 11),
-        VMSTATE_UINT64_V(load_dma_bytes, SGIMgrasTexture, 11),
+        VMSTATE_UINT32(load_depth, SGIMgrasTexture),
+        VMSTATE_UINT32(load_volume, SGIMgrasTexture),
+        VMSTATE_UINT32_ARRAY(load_packet, SGIMgrasTexture, 8),
+        VMSTATE_UINT64(load_dma_bytes, SGIMgrasTexture),
         VMSTATE_UINT32(load_comps, SGIMgrasTexture),
         VMSTATE_UINT32(load_csize, SGIMgrasTexture),
         VMSTATE_UINT32(load_abgr, SGIMgrasTexture),
-        VMSTATE_UINT32_V(volume_base, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_mode, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_level, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_width, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_height, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_depth, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(volume_bytes, SGIMgrasTexture, 11),
-        VMSTATE_BUFFER_V(volume_data, SGIMgrasTexture, 11),
-        VMSTATE_UINT32_V(color_table_selector, SGIMgrasTexture, 12),
-        VMSTATE_UINT32_V(color_table_written, SGIMgrasTexture, 12),
-        VMSTATE_UINT32_V(color_table_active, SGIMgrasTexture, 12),
-        VMSTATE_UINT32_V(color_table_valid, SGIMgrasTexture, 12),
-        VMSTATE_BUFFER_V(color_table_data, SGIMgrasTexture, 12),
-        VMSTATE_BUFFER_V(volume_data_extra, SGIMgrasTexture, 13),
+        VMSTATE_UINT32(volume_base, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_mode, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_level, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_width, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_height, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_depth, SGIMgrasTexture),
+        VMSTATE_UINT32(volume_bytes, SGIMgrasTexture),
+        VMSTATE_BUFFER(volume_data, SGIMgrasTexture),
+        VMSTATE_UINT32(color_table_selector, SGIMgrasTexture),
+        VMSTATE_UINT32(color_table_written, SGIMgrasTexture),
+        VMSTATE_UINT32(color_table_active, SGIMgrasTexture),
+        VMSTATE_UINT32(color_table_valid, SGIMgrasTexture),
+        VMSTATE_BUFFER(color_table_data, SGIMgrasTexture),
+        VMSTATE_BUFFER(volume_data_extra, SGIMgrasTexture),
         VMSTATE_END_OF_LIST()
     }
 };

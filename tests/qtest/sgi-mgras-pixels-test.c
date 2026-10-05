@@ -4542,7 +4542,7 @@ static void test_gl_readpixels_dma_bracket_migration(void)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
     from = qts;
     dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
-    to = qtest_init_ext("QTEST_QEMU_BINARY_DST", dest_cmdline, NULL, true);
+    to = qtest_init(dest_cmdline);
 
     qtest_system_reset(from);
     g_assert_cmphex(qtest_readl(from, REG_HQ_STATUS), ==, 0x13);
