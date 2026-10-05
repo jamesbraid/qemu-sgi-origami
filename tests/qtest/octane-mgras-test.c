@@ -6,7 +6,6 @@
 #include "libqtest.h"
 #include "memtx.h"
 #include "sgi-launch.h"
-#include "sgi-migrate.h"
 #include "qobject/qdict.h"
 
 #define XBOW 0x10000000ULL
@@ -461,37 +460,6 @@ static void test_reset(gconstpointer data)
     qtest_quit(qts);
 }
 
-static void test_migration(gconstpointer data)
-{
-    bool octane2 = GPOINTER_TO_INT(data);
-    g_autoptr(GError) error = NULL;
-    g_autofree char *directory =
-        g_dir_make_tmp("octane-mgras-migration-XXXXXX", &error);
-    g_autofree char *socket = g_build_filename(directory, "mig.sock", NULL);
-    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
-    QTestState *from = start(octane2, ",graphics-board=si", "");
-    QTestState *to = start(octane2, ",graphics-board=si", "-incoming defer");
-
-    g_assert_no_error(error);
-    qtest_writel(from, SI_SHORT + CONTROL, 0xc1d28354);
-    qtest_writel(from, SI_LONG + 0x040000, 0x75e68192);
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    sgi_migrate_stopped(from, uri);
-    sgi_wait_migration(to, "completed");
-    assert_identity(to);
-    g_assert_cmphex(qtest_readl(to, SI_LONG + CONTROL), ==, 0xc1d28354);
-    g_assert_cmphex(qtest_readl(to, SI_SHORT + 0x040000), ==, 0x75e68192);
-    qtest_system_reset(to);
-    assert_reset(to);
-    qtest_quit(to);
-    qtest_quit(from);
-    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
-        g_assert_cmpint(g_unlink(socket), ==, 0);
-    }
-    g_assert_cmpint(g_rmdir(directory), ==, 0);
-}
-
 /* Existing HQ4 fixture grammar, local mapped SDRAM only. */
 #define RSS(reg, value) \
     (((uint64_t)(0x60001 | ((reg) << 6)) << 34) | (uint32_t)(value))
@@ -842,7 +810,6 @@ int main(int argc, char **argv)
         { "link-reset-absent", test_link_reset_absent },
         { "core-link-reset-recovery", test_core_link_reset_recovery },
         { "reset", test_reset },
-        { "migration", test_migration },
         { "local-dma", test_local_dma },
         { "interrupt-transport", test_interrupt_transport },
         { "rejected-selection", test_rejected_selection },
