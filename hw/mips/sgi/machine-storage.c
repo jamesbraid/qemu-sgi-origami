@@ -49,19 +49,6 @@ static void sgi_storage_visit_set(GHashTable **bindings, Visitor *v,
     }
 }
 
-/* An instance property's opaque is the bindings table itself. */
-static void sgi_storage_get(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
-{
-    sgi_storage_visit_get(*(GHashTable **)opaque, v, name, errp);
-}
-
-static void sgi_storage_set(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
-{
-    sgi_storage_visit_set(opaque, v, name, errp);
-}
-
 /* A class property's opaque is the table's offset in the instance. */
 static GHashTable **sgi_storage_class_bindings(Object *obj, void *opaque)
 {
@@ -87,16 +74,6 @@ static char *sgi_storage_description(const char *name)
     return g_strdup_printf("Block node or drive backing %s; it must be "
                            "exactly the size query-sgi-machines lists for "
                            "the configuration", name);
-}
-
-void sgi_storage_add_property(Object *obj, GHashTable **bindings,
-                              const char *name)
-{
-    g_autofree char *description = sgi_storage_description(name);
-
-    object_property_add(obj, name, "str", sgi_storage_get, sgi_storage_set,
-                        NULL, bindings);
-    object_property_set_description(obj, name, description);
 }
 
 void sgi_storage_class_add_property(ObjectClass *oc, size_t offset,

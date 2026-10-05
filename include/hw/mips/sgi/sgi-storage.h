@@ -14,17 +14,10 @@
 #include "hw/mips/sgi/sgi-machines.h"
 
 /*
- * Add the string property @name to machine @obj, recording its value in
- * *@bindings (created on first use). Setting it once the machine is
- * built is refused.
- */
-void sgi_storage_add_property(Object *obj, GHashTable **bindings,
-                              const char *name);
-
-/*
- * The same as a property of every instance of class @oc, so that
- * "-M <machine>,help" lists it; the bindings table sits @offset bytes into
- * each instance.
+ * Add the string property @name to every instance of machine class @oc,
+ * so that "-M <machine>,help" lists it. Its value is recorded in the
+ * bindings table @offset bytes into each instance, created on first use.
+ * Setting it once the machine is built is refused.
  */
 void sgi_storage_class_add_property(ObjectClass *oc, size_t offset,
                                     const char *name);
