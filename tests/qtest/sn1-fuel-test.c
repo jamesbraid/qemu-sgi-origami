@@ -1182,7 +1182,7 @@ static void test_fuel_catalogue_defaults(const void *data)
     for (unsigned int reset = 0; reset < 2; reset++) {
         g_assert_cmphex(qtest_readq(qts,
                                     HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
-                        ==, 0x4001);
+                        ==, 0x4004);
         g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)),
                         ==, 2);
         g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, II_WIDGET_ID)),

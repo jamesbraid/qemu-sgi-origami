@@ -110,7 +110,7 @@ class BedrockConfigurationTests(unittest.TestCase):
         node = topology["nodes"][0]
         self.assertEqual(node["identity"]["widget-revision"], 2)
         self.assertEqual(node["bedrock"], {
-            "board-id-word": 0x4001, "board-id-mask": 0xf000,
+            "board-id-word": 0x4004, "board-id-mask": 0xf000,
             "board-id-required-bits": 0x4000, "initiator-region": 0,
             "installed-bank-mask": 3, "local-region": 0})
         # The L1 revision stays unknown: no capture fits the selected board.

@@ -12400,7 +12400,7 @@
           "bedrock": {
             "board-id-mask": 61440,
             "board-id-required-bits": 16384,
-            "board-id-word": 16385,
+            "board-id-word": 16388,
             "initiator-region": 0,
             "installed-bank-mask": 3,
             "local-region": 0
@@ -12578,7 +12578,7 @@
           "bedrock": {
             "board-id-mask": 61440,
             "board-id-required-bits": 16384,
-            "board-id-word": 16385,
+            "board-id-word": 16388,
             "initiator-region": 0,
             "installed-bank-mask": 3,
             "local-region": 0

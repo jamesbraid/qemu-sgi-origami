@@ -34,15 +34,18 @@ layer:
       emulation:
         bedrock_nodes:
           bedrock:
-            # Approximation. Bits 15:12 are established: OpenBSD reads them
-            # and classifies 0x4 as Fuel (docs/datasheets/ip34-fuel.md). The
-            # low nibble is not neutral: PROM 6.210 adds 0x20 to it to index
-            # its CPU-configuration table (docs/research/ip5x-prom-cpu-boot.md,
-            # docs/research/origin300-flash-cpu-identity.md). 1 is the value
-            # every recorded Fuel PROM, diagnostic and IRIX run used, chosen
-            # as Origin 300's 0x8001 is. The other bits, the reset value and
-            # the producer are unknown.
-            board_id_word: 16385
+            # Bits 15:12 are established: OpenBSD reads them and classifies
+            # 0x4 as Fuel (docs/datasheets/ip34-fuel.md). The low nibble is
+            # the PIMM speed code PROM 6.210 adds to 0x20 to choose its
+            # CPU-configuration table row (docs/research/
+            # origin300-flash-cpu-identity.md). 4 selects row 9, the 500 MHz,
+            # 2 MiB R14000 module this product fits; that row match is
+            # established from the PROM's table. Whether a real 500 MHz PIMM
+            # presents 4 or 6, which select the same row, is unknown. The
+            # earlier 1 selected the 800 MHz, 4 MiB row and rested only on
+            # earlier model runs. The other bits, the reset value and the
+            # producer are unknown.
+            board_id_word: 16388
             board_id_mask: 61440
             board_id_required_bits: 16384
             local_region: 0
@@ -51,9 +54,9 @@ layer:
             provenance: derived
             sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
             notes: >-
-              The board-identification word is an approximation: the
-              established Fuel product code, and the low-nibble CPU
-              configuration selector every recorded Fuel run used. Regions
+              The board-identification word is the established Fuel
+              product code with the PIMM speed code of the fitted 500 MHz,
+              2 MiB module, 4 (inferred; 6 selects the same table row). Regions
               and bank mask preserve existing emulator initialization.
         l1_controllers:
           l1:
