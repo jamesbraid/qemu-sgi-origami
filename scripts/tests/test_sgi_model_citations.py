@@ -188,6 +188,21 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(report.count("internal-note"), 2)
         self.assertEqual(len(report.failures), 2)
 
+    def test_markdown_document_in_prose_fails_the_check(self):
+        # QEMU's own documentation is reStructuredText, so a Markdown path
+        # under docs/ names a document that does not ship with this tree.
+        report = self.check_layer(
+            "facts:\n  - {provenance: derived, sources: ['web:dmesgd-8994 line 3'],"
+            " description: 'see docs/component-taxonomy.md for the listing'}\n")
+        self.assertEqual(report.count("internal-note"), 1)
+        self.assertTrue(report.failures)
+
+    def test_qemu_rst_document_in_prose_passes(self):
+        report = self.check_layer(
+            "facts:\n  - {provenance: derived, sources: ['web:dmesgd-8994 line 3'],"
+            " description: 'see docs/specs/sgi-sn.rst'}\n")
+        self.assertEqual(report.failures, [])
+
     def test_informational_classes_do_not_fail(self):
         report = self.check_layer(
             "facts:\n"

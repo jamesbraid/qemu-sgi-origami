@@ -78,10 +78,12 @@ MAINLINE = re.compile(r"^Mainline Linux \S+/")
 
 # Pointers a public reader cannot follow, in citation text and in notes.
 # Documents under docs/specs, docs/system and the other QEMU documentation
-# directories ship with this tree; these do not.
+# directories ship with this tree; these do not. QEMU's documentation is
+# reStructuredText, so any Markdown file under docs/ is from elsewhere.
 INTERNAL_DOC = re.compile(
     r"\bdocs/(datasheets|notebooks|decisions|plans|designs|known-issues|research|"
     r"analysis|library|journey|boot-logs|provenance|reviews|machines)\b"
+    r"|\bdocs/[\w./-]+\.md\b"
     r"|\bOrigami\b")
 DECISION = re.compile(r"\bD-0\d{3}\b")
 TOOL = re.compile(r"(^|[\s(`])tools/[a-z]")
