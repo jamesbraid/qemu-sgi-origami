@@ -2318,8 +2318,8 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
  * A widget's write to XIO address 0 is a memory-class packet, so the Hub
  * puts it in memory: bytes 0-15, which cover the common widget block's
  * identification slot at 4, land in RAM and never reach the Hub's own
- * widget registers (the Hub I/O interface datasheet's check on raw
- * memory address four).
+ * widget registers (the check on raw memory address four in
+ * docs/specs/sgi-hub.rst).
  */
 static void test_dma_to_address_four_is_memory(const void *data)
 {
@@ -2346,7 +2346,7 @@ static void test_dma_to_address_four_is_memory(const void *data)
 }
 
 /*
- * The Hub I/O interface datasheet's bounded 64-bit identity probe, driven
+ * The Hub specification's bounded 64-bit identity probe, driven
  * by a widget: an eight-byte read at XIO address bit 47 | 0x01600000
  * returns the receiving Hub's network-interface status. Varying one field
  * at a time -- the node field, the remote bit, the big-window field, an

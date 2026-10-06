@@ -241,7 +241,7 @@ static const SGIModelCable *nth_cable(const SGIModelTopology *t,
  * every row's cables, and two rows may wire one Hub differently (a
  * deskside's Null Router with two node boards, a Router port with three),
  * so the rule holds per row, not across the whole list. A router's own
- * port count is a device fact (decision D-0026) this catalogue does not
+ * port count is a device fact this catalogue does not
  * carry, so the upper bound on a router end's port is the device's own
  * qtest to check, not this one.
  */
