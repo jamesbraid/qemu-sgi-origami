@@ -19,7 +19,8 @@ from qemu_test.asset import LocalAsset
 from lib_net import (IrixConsole, build_udp_fragments, drive_irix_to_shell,
                      irix_interface_at_pci_slot,
                      parse_ipv4_udp_fragment, reassemble_udp_fragments)
-from lib_prom import FIRMWARE_REL, MACHINES, file_sha256, launch_paused
+from lib_prom import (FIRMWARE_REL, IRIX_ACCEL, IRIX_SMP, MACHINES,
+                      file_sha256, launch_paused)
 
 RELEASE = "6.5.30"
 DISK_REL = os.path.join("irix", RELEASE, "root.qcow2")
@@ -135,7 +136,8 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
         vm.set_console()
         qemu_socket.set_inheritable(True)
         vm.add_args(
-            "-cpu", "R10000", "-smp", "1", "-m", "128M",
+            "-accel", IRIX_ACCEL, "-cpu", "R10000", "-smp", IRIX_SMP,
+            "-m", "128M",
             "-bios", prom, "-audio", "none",
             "-chardev", f"file,id=elsc,path={test.log_file('elsc.log')}",
             "-serial", "none", "-serial", "chardev:elsc",

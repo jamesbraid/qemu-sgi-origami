@@ -369,8 +369,9 @@ if base.QemuSystemTest is not None:
                       % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
                          base.GUEST_ADDR, UDP_GUEST_PORT))
             vm.add_args(
-                '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-smp', '1', '-m', str(base.MEMORY_MIB),
+                '-accel', base.IRIX_ACCEL,
+                '-cpu', 'R10000', '-smp', base.IRIX_SMP,
+                '-m', str(base.MEMORY_MIB),
                 '-bios', prom, '-audio', 'none',
                 '-chardev', f'file,id=elsc,path={elsc}',
                 '-serial', 'none', '-serial', 'chardev:elsc',
