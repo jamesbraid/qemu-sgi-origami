@@ -86,13 +86,13 @@ layer:
             ioc3_subsystem_id: 65535
             mac_source: module-l1
             provenance: derived
-            sources: [hw/mips/sgi/baseio.c, docs/datasheets/l1-controller.md]
+            sources: [hw/mips/sgi/baseio.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]
             notes: The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.
           slave-xbridge-bridge-f:
             ioc3_subsystem_id: 65535
             mac_source: module-l1
             provenance: derived
-            sources: [hw/mips/sgi/baseio.c, docs/datasheets/l1-controller.md]
+            sources: [hw/mips/sgi/baseio.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]
             notes: The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.
         system_timekeepers:
           master-xbridge-bridge-f:
@@ -100,14 +100,14 @@ layer:
             year_base: 1968
             initial_ip27_fixture: false
             provenance: derived
-            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
           slave-xbridge-bridge-f:
             kind: m48t35-compatible
             year_base: 1968
             initial_ip27_fixture: false
             provenance: derived
-            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
         # The IP35 flash configuration block's product values. PROM 6.210
         # compares the block with the CPU-configuration table row its PIMM
@@ -153,7 +153,7 @@ layer:
             address: "0x100_1a000000"
             size: "0x0080_0000"
           provenance: derived
-          sources: ["docs/library/ip35-source-map.md: measured container, payload, load address, entry address and ten trampolines", "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length", "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset", "D-0024: bounded emulator carrier with the physical decoder left unresolved"]
+          sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-trampolines, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views]
           notes: >-
             The one-chassis product's payload and views, carried by each
             chassis's own node: both servers run the same stock IP35 PROM, and

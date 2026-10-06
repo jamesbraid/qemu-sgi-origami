@@ -4,15 +4,7 @@ layer_version: 1
 sources:
   owner-2cpu: "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C"
   007-4365-002: "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB"
-  minimum-documented-origin300-decision: "D-0023: minimum documented Origin 300 product configuration"
   108-0263-004: "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
-  ip35-source-map: "docs/library/ip35-source-map.md: measured container, payload, load address, entry address and ten trampolines"
-  origin300-evidence-matrix: "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length"
-  origin300-reset-alias-evidence: "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset"
-  bounded-emulator-carrier-decision: "D-0024: bounded emulator carrier with the physical decoder left unresolved"
-  tools-origami-lib-prom: "tools/origami_lib/prom.py: ORIGIN300_EEPROM_INPUTS and PromLaunchRequest.brick_serial, the harness's Origin 300 identity inputs; hw/mips/sgi/sn-machine.c: the chassis-eeprom, board-eeprom and spd-eeprom raw record overrides; include/hw/mips/sgi/sn-machine.h: sgi_sn1_serial_line(), which puts each node's L1 console first"
-  tools-origami-lib-irix: "tools/origami_lib/irix.py: _select_irix_profile rejecting IRIX install mode on Origin 300 (\"Origin 300 currently supports IRIX boot mode\")"
-  tools-origami-lib-prom-b: "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection"
 layer:
   kind: product
   id: origin300-pci-expansion-unconnected-uart-experiment
@@ -22,12 +14,12 @@ layer:
     max_nodes: 1
     supported_cpu_populations: [[2], [4]]
     provenance: derived
-    sources: [minimum-documented-origin300-decision, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, 007-4365-002, 108-0263-004]
   population:
     nodes: 1
     cpus_per_node: [2]
     provenance: derived
-    sources: [minimum-documented-origin300-decision, owner-2cpu, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, owner-2cpu, 007-4365-002, 108-0263-004]
   cpu_selection:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
@@ -70,7 +62,7 @@ layer:
             ioc3_subsystem_id: 65535
             mac_source: module-l1
             provenance: derived
-            sources: [hw/mips/sgi/baseio.c, docs/datasheets/l1-controller.md]
+            sources: [hw/mips/sgi/baseio.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]
             notes: The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.
         system_timekeepers:
           compute-xbridge-bridge-f:
@@ -78,7 +70,7 @@ layer:
             year_base: 1968
             initial_ip27_fixture: false
             provenance: derived
-            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
         # The IP35 flash configuration block's product values. PROM 6.210
         # compares the block with the CPU-configuration table row its PIMM
@@ -124,7 +116,7 @@ layer:
             address: "0x100_1a000000"
             size: "0x0080_0000"
           provenance: derived
-          sources: [ip35-source-map, origin300-evidence-matrix, origin300-reset-alias-evidence, bounded-emulator-carrier-decision]
+          sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-trampolines, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views]
           notes: >-
             The four views alias one operator-supplied payload. This is emulator
             compatibility policy; it does not identify a fitted flash part, a
@@ -200,7 +192,7 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image, netboot]
         provenance: derived
-        sources: [tools-origami-lib-prom, tools-origami-lib-irix, tools-origami-lib-prom-b]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
     components:
       - id: compute-module
         name: Origin 300 compute server

@@ -134,7 +134,7 @@ layer:
             compatibility choices; no Fuel PCI configuration dump confirms
             those bytes.
         datasheet_contracts: [docs/datasheets/lucent-ohci.md]
-        sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312", "docs/reviews/fuel-usb-variants-review-20260927.md"]
+        sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312"]
       - id: graphics-connector
         name: graphics board connector
         kind: connector
@@ -186,7 +186,7 @@ layer:
           The model routes ISP12160 INTA to head-F input 1. This is a
           reviewed approximation from a Fuel OpenBSD handler report on an
           unidentified board revision, not a measured revision G trace.
-        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: scsi, as: "PCI INTA at device 1", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 1", mechanism: wire}
@@ -199,7 +199,7 @@ layer:
         description: >-
           The model routes the IOC3 SuperIO output to head-F input 0 under
           the same reviewed, revision-unverified approximation.
-        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: ioc3, as: "separate SuperIO output", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 0", mechanism: wire}
@@ -212,7 +212,7 @@ layer:
         description: >-
           The model routes IOC3 Ethernet INTA to head-F input 4 under the
           same reviewed, revision-unverified approximation.
-        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: ioc3, as: "Ethernet PCI INTA at device 4", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 4", mechanism: wire}
@@ -225,7 +225,7 @@ layer:
         description: >-
           The model routes OHCI INTA to head-F input 5 under the same
           reviewed, revision-unverified approximation.
-        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: usb, as: "PCI INTA at device 5", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 5", mechanism: wire}

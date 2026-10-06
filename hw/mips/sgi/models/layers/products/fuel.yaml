@@ -87,7 +87,7 @@ layer:
             # so the reply stays the observable unknown-version error.
             mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
             provenance: guest-source
-            sources: ["web:lore-kaloz-ip35-35 brick type 'A' is SGI Fuel", "docs/datasheets/ip34-fuel.md: L1 identity and L1 firmware revision input", "firmware:ip35-prom-6.210 I/O type lookup"]
+            sources: ["web:lore-kaloz-ip35-35 brick type 'A' is SGI Fuel", "firmware:ip35-prom-6.210 I/O type lookup"]
             notes: >-
               The reported type comes from a published driver table and the
               PROM's accepted set, not a captured Fuel reply. The older
@@ -101,7 +101,7 @@ layer:
             ioc3_subsystem_id: 49930
             mac_source: module-l1
             provenance: guest-source
-            sources: ["linux:db2ddb871435 arch/mips/pci/pci-xtalk-bridge.c: IP34 IOC3 subsystem device 0xc30a", "docs/datasheets/ioc3.md: board variants", hw/mips/sgi/baseio.c]
+            sources: ["linux:db2ddb871435 arch/mips/pci/pci-xtalk-bridge.c: IP34 IOC3 subsystem device 0xc30a", hw/mips/sgi/baseio.c]
             notes: >-
               The IOC3 subsystem ID is a public driver expectation, not a
               captured Fuel value. The supplied MAC policy is unchanged.
@@ -122,7 +122,7 @@ layer:
             year_base: 1968
             initial_ip27_fixture: false
             provenance: derived
-            sources: [docs/datasheets/ip34-system-timekeeper.md]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
             notes: Flat independent 32 KiB storage is a compatibility assumption. Physical part, capacity, decode and wiring are unknown.
         # The IP35 flash configuration block's product values. PROM 6.210's
         # 0x4000-branch (Fuel) table rows all carry machine type 2 (SN11),
@@ -153,7 +153,7 @@ layer:
             - {name: node-zero remote Hub-special boot view, address: "0x100_38000000", payload_offset: "0x0", size: "0x1686a8"}
           second_selection: {address: "0x100_1a000000", size: "0x0080_0000"}
           provenance: derived
-          sources: ["qemu:hw/mips/sgi/models/layers/products/origin300.yaml existing bounded IP35 PROM compatibility carrier", "docs/decisions/D-0024-origin300-stock-prom-reset-carrier.md"]
+          sources: ["qemu:hw/mips/sgi/models/layers/products/origin300.yaml existing bounded IP35 PROM compatibility carrier", qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views]
           notes: >-
             This boot spike reuses the Origin 300 emulator's bounded views of
             the operator-supplied IP35 PROM payload. The physical Fuel reset
@@ -198,4 +198,4 @@ layer:
         supported_guests: []
         install_media: []
         provenance: derived
-        sources: ["web:tingo-fuel-irix-console raw HTML lines 139 to 146: IP34 node board inventory", "web:tingo-fuel-irix-console raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", "Origami docs/research/fuel-pod-initlog-private-flash-20260927.md at commit 6e052b3ccd: fresh padded flash answers on L1, console ioc3 selects IOC3 serial A", "Origami docs/notebooks/fuel-bringup.md, 2026-09-27 private flash and serial console; 2026-09-30 copied PROM flash retains console sc"]
+        sources: ["web:tingo-fuel-irix-console raw HTML lines 139 to 146: IP34 node board inventory", "web:tingo-fuel-irix-console raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-console]
