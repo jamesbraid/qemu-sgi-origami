@@ -114,6 +114,7 @@ config SGI_SN1
     select SGI_ODYSSEY
     select SGI_XBRIDGE
     select SGI_XIO_LINK
+    select SPLIT_IRQ
     select USB_OHCI_PCI
 
 config SGI_XIO_PORT
