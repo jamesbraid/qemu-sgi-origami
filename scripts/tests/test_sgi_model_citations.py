@@ -144,9 +144,10 @@ class CheckTests(unittest.TestCase):
                 sources:
                   short: "007-3708-002 printed page 5"
                 facts:
-                  - {provenance: vendor-document, sources: [short]}
+                  # run it with tools/origami; see docs/research/x.md
+                  - {provenance: vendor-document, sources: [short]}  # PR 12
                   - {provenance: derived, sources: ["hw/mips/sgi/octane.c"]}
-                  - {provenance: derived, sources: ["The composition selects it."]}
+                  - {provenance: derived, sources: ["The composition selects it."]}  # fine
                   - {provenance: vendor-source, sources: ["web:dmesgd-8994 line 3"]}
                   - provenance: derived
                     sources: ["web:dmesgd-8994 line 3"]
@@ -160,7 +161,12 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(report.count("qemu-code-only"), 1)
         self.assertEqual(report.count("free-text-only"), 1)
         self.assertEqual(report.count("vendor-source"), 1)
-        self.assertEqual(report.count("internal-note"), 2)
+        self.assertEqual(report.count("internal-note"), 4)
+
+    def test_comments_are_found_outside_quotes(self):
+        text = 'a: "x # not a comment"\nb: 1  # a comment\n# whole line\nc: it#s\n'
+        self.assertEqual(list(citations.yaml_comments(text)),
+                         [(2, "# a comment"), (3, "# whole line")])
 
     def test_models_cite_only_well_formed_registered_ids(self):
         report = citations.check()
