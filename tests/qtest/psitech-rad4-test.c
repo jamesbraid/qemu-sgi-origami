@@ -1646,6 +1646,100 @@ static void test_dma_upload_honors_mask(void)
     qtest_quit(qts);
 }
 
+/* One end-of-chain descriptor moving @count words to @local_addr. */
+static void dma_upload_words(QTestState *qts, uint32_t local_addr,
+                             const uint32_t *words, unsigned count)
+{
+    dma_write_payload(qts, DMA_SRC_PHYS, words, count);
+    dma_write_descriptor(qts, DMA_DESC_LOCAL, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         local_addr, count * 4, DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, DMA_MODE_SCATTER_GATHER);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, DMA_DESC_LOCAL);
+    dma_run(qts);
+}
+
+/*
+ * A DMA upload marks for the display only the rows whose bytes it
+ * changes. The buffered X server's daemon re-uploads the whole screen in a
+ * loop, so this is what keeps each refresh from converting the full frame.
+ * The pixels are the same either way; the rad4_gfx_update_push and
+ * rad4_gfx_update_idle trace events are what shows the difference, as in
+ * test_gfx_update_dirty_tracking().
+ */
+static void test_dma_unchanged_rows_stay_clean(void)
+{
+    static const uint32_t payload[4] = {
+        0x00ff0080u, 0x00112233u, 0x00445566u, 0x00778899u,
+    };
+    uint32_t hidden[4];
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) lines = NULL;
+    GString *seen = g_string_new(NULL);
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-dma-dirty-XXXXXX.trace", &trace_path,
+                         &error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -trace enable=rad4_gfx_update_push"
+                      " -trace enable=rad4_gfx_update_idle"
+                      " -D %s", trace_path);
+    rad4_configure_bars(qts);
+    rad4_play_mode0(qts);
+    rad4_force_refresh(qts);
+
+    /* New words in row 7: that row alone. */
+    dma_upload_words(qts, 7 * TEST_FB_STRIDE, payload, ARRAY_SIZE(payload));
+    rad4_force_refresh(qts);
+
+    /* The same words again change nothing, so the refresh is idle. */
+    dma_upload_words(qts, 7 * TEST_FB_STRIDE, payload, ARRAY_SIZE(payload));
+    rad4_force_refresh(qts);
+
+    /* Different words whose difference the plane mask holds back: idle. */
+    for (unsigned i = 0; i < ARRAY_SIZE(payload); i++) {
+        hidden[i] = payload[i] ^ 0xff000000u;
+    }
+    bar2_write(qts, B_MASK, 0x00ffffffu);
+    dma_upload_words(qts, 7 * TEST_FB_STRIDE, hidden, ARRAY_SIZE(hidden));
+    bar2_write(qts, B_MASK, 0xffffffffu);
+    rad4_force_refresh(qts);
+
+    /* One byte changed at an unaligned address in row 9: that row alone. */
+    dma_upload_words(qts, 9 * TEST_FB_STRIDE, payload, ARRAY_SIZE(payload));
+    rad4_force_refresh(qts);
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, 1);
+    dma_write_descriptor(qts, DMA_DESC_LOCAL, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         9 * TEST_FB_STRIDE + 1, 3, DMA_DESC_END_OF_CHAIN);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, DMA_DESC_LOCAL);
+    dma_run(qts);
+    rad4_force_refresh(qts);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace_contents, NULL,
+                                      &error));
+    unlink(trace_path);
+    lines = g_strsplit(trace_contents, "\n", -1);
+    for (int i = 0; lines[i]; i++) {
+        const char *rows = strstr(lines[i], "rows ");
+
+        if (strstr(lines[i], "rad4_gfx_update_push") && rows) {
+            g_string_append_printf(seen, "%s;", rows);
+        } else if (strstr(lines[i], "rad4_gfx_update_idle")) {
+            g_string_append(seen, "idle;");
+        }
+    }
+    g_assert_cmpstr(seen->str, ==,
+                    "rows 0-1023;rows 7-7;idle;idle;rows 9-9;rows 9-9;");
+    g_string_free(seen, true);
+}
+
 /*
  * Guest compatibility approximation for the shipped X server's greyed Motif
  * menu labels: under the overlay plane mask 0x0f000000, a store whose value
@@ -3998,6 +4092,8 @@ int main(int argc, char **argv)
                    test_dma_single_descriptor_upload);
     qtest_add_func("/psitech-rad4/dma-upload-honors-mask",
                    test_dma_upload_honors_mask);
+    qtest_add_func("/psitech-rad4/dma-unchanged-rows-stay-clean",
+                   test_dma_unchanged_rows_stay_clean);
     qtest_add_func("/psitech-rad4/dma-interrupt-enables",
                    test_dma_interrupt_enables);
     qtest_add_func("/psitech-rad4/dma-descriptor-interrupt",

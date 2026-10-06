@@ -630,7 +630,8 @@ struct PsitechRad4State {
      * trap, not a RAM MemoryRegion, so it
      * cannot use the region dirty-bitmap helpers in hw/display/framebuffer.c;
      * rad4_bar2_write() and
-     * rad4_dma_merge() mark rows by hand as they write, and
+     * rad4_dma_merge() mark rows by hand as they write (the DMA merge only
+     * the rows whose bytes it changes), and
      * rad4_gfx_update() converts and pushes
      * only this range instead of the whole frame every refresh. Not migrated:
      * rad4_post_load() marks the whole
@@ -2156,11 +2157,16 @@ static uint32_t rad4_dma_local_byte(uint32_t local_addr)
  * when the data arrives applies. The overlay-index rule of
  * rad4_masked_store() is a CPU-store compatibility rule and never applies
  * here.
+ *
+ * Only the bytes whose value changes mark their rows for the display. The
+ * buffered X server's daemon re-uploads the whole screen from its shadow
+ * copy in a loop, so nearly every byte it moves is already there; marking
+ * those rows made every display refresh convert the full frame again.
  */
 static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
                            const uint8_t *buf, uint32_t len)
 {
-    uint32_t i = 0;
+    uint32_t i = 0, first = len, last = 0;
 
     /*
      * Whole local dwords go as one word: PCI byte lane n is bit 8n of a
@@ -2170,22 +2176,34 @@ static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
      */
     while (i < len) {
         uint32_t addr = local_addr + i;
-        uint8_t mask, *dst;
+        uint8_t mask, *dst, byte;
 
         if (addr % 4 == 0 && len - i >= 4) {
             uint8_t *word = s->framebuffer + addr;
+            uint32_t old = ldl_be_p(word);
+            uint32_t val = (old & ~s->mask) | (ldl_le_p(buf + i) & s->mask);
 
-            stl_be_p(word, (ldl_be_p(word) & ~s->mask) |
-                           (ldl_le_p(buf + i) & s->mask));
+            if (val != old) {
+                stl_be_p(word, val);
+                first = MIN(first, i);
+                last = i + 3;
+            }
             i += 4;
             continue;
         }
         mask = s->mask >> (8 * (addr % 4));
         dst = s->framebuffer + rad4_dma_local_byte(addr);
-        *dst = (*dst & ~mask) | (buf[i] & mask);
+        byte = (*dst & ~mask) | (buf[i] & mask);
+        if (byte != *dst) {
+            *dst = byte;
+            first = MIN(first, i);
+            last = i;
+        }
         i++;
     }
-    rad4_mark_dirty_range(s, local_addr, len);
+    if (first < len) {
+        rad4_mark_dirty_range(s, local_addr + first, last - first + 1);
+    }
 }
 
 /*
