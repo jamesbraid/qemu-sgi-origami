@@ -793,9 +793,9 @@
       "id": "rtc",
       "kind": "rtc",
       "name": "MK48T35-class Timekeeper",
-      "notes": "Byte-bus chip select 0 is what makes this a Timekeeper. Chip selects 1 and 2 mean a DS1687 instead, which is the Octane's clock and is indirectly addressed. The two are not interchangeable. The provenance is SGI's own clock driver for this generation rather than a guest's, and the distinction was worth making: mainline Linux does carry a driver for this part, but its build condition names no SGI machine at all, so citing it would have been a fact about a driver that exists rather than about this board. The public header that does name this board defines its subsystem identifier and says nothing about a clock.",
+      "notes": "The photograph shows a battery-backed Timekeeper package marked M48T35-70PCI on the Origin 200 system board, which is all this entry's provenance rests on. It does not show how the part is wired: the attachment to the IOC3 byte bus at chip select 0, and the difference from a DS1687 clock (the Octane's, on chip selects 1 and 2 and indirectly addressed), come from the IOC3 and Timekeeper contracts, not from the photograph.",
       "parent": "ip29-system-board",
-      "provenance": "vendor-source",
+      "provenance": "observed-hardware",
       "sources": [
         "web:theretroweb-origin200-image-1 battery-backed clock package, marked M48T35-70PCI"
       ]
