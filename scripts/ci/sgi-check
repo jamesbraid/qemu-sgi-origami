@@ -72,8 +72,16 @@ BUILD_SCRIPT_SUITES = [
 # timing assertions failed at eight.
 QTEST_PROCESSES = 4
 
-# Every pull request runs this whatever it changes.
-ALWAYS_QTESTS = {'qtest-mips64/sn0-forward-progress-test'}
+# The most measured qtest time a pull request's check spends. A change that
+# edits more tests than fit runs the cheapest that do and leaves the rest to
+# the full run, which runs every qtest before a land. This, not the job's
+# timeout, bounds the check. The durations were measured at four processes,
+# so the wall time is about a quarter of this.
+SMOKE_QTEST_BUDGET_S = 360
+
+# What a test with no recorded duration counts for: more than the median,
+# so a new test cannot slip a large selection under the budget.
+UNMEASURED_QTEST_S = 120
 
 # The suites the top-level meson.build's quick setup leaves out.
 QUICK_EXCLUDED_SUITES = ('slow', 'thorough')
@@ -121,9 +129,13 @@ class Build:
                  *selection], stdout=out)
 
     def registered_tests(self):
+        """Map each registered Meson test's name to its suite labels."""
         tests = json.loads(output([self.meson, 'introspect', '--tests',
                                    self.path]))
-        return {item.get('name') for item in tests
+        return {item['name']: {suite.split(':', 1)[-1]
+                               for suite in item.get('suite', [])
+                               if isinstance(suite, str)}
+                for item in tests
                 if isinstance(item, dict) and isinstance(item.get('name'), str)}
 
 
@@ -223,54 +235,71 @@ def merge_base(base):
 
 
 def select_qtests(build, base):
-    """Choose the qtests a pull request runs from what it changed.
+    """Choose the qtests a pull request runs: the ones whose files it edits.
 
     Compare against the merge base, so commits that reached the base branch
     after the pull request forked do not read as the pull request's changes.
-    A changed test source selects that test, and a change confined to
+    An edited test source selects that test, and a change confined to
     meson.build's per-test tables selects the tests whose entries changed.
-    Any other change under tests/qtest, or a missing merge base, selects
-    every MIPS64 qtest.
+    Nothing else selects a test. Code a test reaches, shared test helpers
+    and edits to meson.build outside the tables select none: the full run
+    runs every qtest before a land, and the registration check in the
+    workflow rejects a source the suite does not run. A pull request that
+    edits no test file runs no qtest.
+
+    Without a base, select nothing, so a developer's local run stays quick.
+    A base with no merge base cannot say what changed, and running every
+    qtest would defeat the bound, so fail instead.
     """
-    registered = build.registered_tests()
-    all_mips64 = {name for name in registered
-                  if name.startswith('qtest-mips64/')}
-    selected = set(ALWAYS_QTESTS)
-    full = False
-    fork = merge_base(base) if base else None
-    if base and not fork:
-        print(f'no merge base between {base} and HEAD; '
-              'selecting every MIPS64 qtest', flush=True)
-        full = True
-    if fork:
-        paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
-                        'HEAD', '--', 'tests/qtest']).splitlines()
-        for path in paths:
-            target = 'qtest-mips64/' + Path(path).stem
-            if (path.endswith('.c') and (SOURCE / path).is_file() and
-                    target in registered):
-                selected.add(target)
-                continue
-            if path == QTEST_MESON and (SOURCE / path).is_file():
-                tests = changed_table_tests(
-                    output(['git', '-C', SOURCE, 'show',
-                            f'{fork}:{QTEST_MESON}']),
-                    (SOURCE / path).read_text(encoding='utf-8'))
-                if tests is not None:
-                    selected |= {'qtest-mips64/' + test for test in tests}
-                    continue
-            full = True
-    if full:
-        selected = all_mips64
-    selected &= registered
-    if not selected:
-        sys.exit('no required MIPS64 qtest targets are registered')
-    return sorted(selected), full
+    if not base:
+        return []
+    registered = set(build.registered_tests())
+    fork = merge_base(base)
+    if not fork:
+        sys.exit(f'no merge base between {base} and HEAD, so the changed '
+                 'qtests are unknown; fetch more history')
+    selected = set()
+    paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
+                    'HEAD', '--', 'tests/qtest']).splitlines()
+    for path in paths:
+        target = 'qtest-mips64/' + Path(path).stem
+        if (path.endswith('.c') and (SOURCE / path).is_file() and
+                target in registered):
+            selected.add(target)
+        elif path == QTEST_MESON and (SOURCE / path).is_file():
+            tests = changed_table_tests(
+                output(['git', '-C', SOURCE, 'show',
+                        f'{fork}:{QTEST_MESON}']),
+                (SOURCE / path).read_text(encoding='utf-8'))
+            if tests is not None:
+                selected |= {'qtest-mips64/' + test for test in tests}
+    return sorted(selected & registered)
+
+
+def fit_budget(tests, durations, budget=None, default=UNMEASURED_QTEST_S):
+    """Split tests into those that fit the budget and those left over.
+
+    Take the cheapest first, breaking ties by name, and stop adding at
+    the first test that would pass the budget, so the choice does not
+    depend on input order.
+    """
+    budget = SMOKE_QTEST_BUDGET_S if budget is None else budget
+    kept, left = [], []
+    total = 0.0
+    for test in sorted(tests, key=lambda t: (durations.get(t, default), t)):
+        cost = durations.get(test, default)
+        if not left and total + cost <= budget:
+            kept.append(test)
+            total += cost
+        else:
+            left.append(test)
+    return sorted(kept), sorted(left)
 
 
 # Functional tests that boot a generated ROM on a whole machine under real
 # TCG scheduling and need no guest assets: the Meson test, its log base, the
-# module and the test class. Every pull request runs them.
+# module and the test class. Every pull request runs them. They take about
+# 40 s together, so they stay outside the qtest budget below.
 GENERATED_ROM_FUNCTIONAL = [
     ('func-mips64-sn0_smp_rendezvous', 'sn0-smp-rendezvous',
      'test_sn0_smp_rendezvous', 'SN0SMPRendezvous'),
@@ -286,43 +315,46 @@ GENERATED_ROM_FUNCTIONAL = [
 
 
 def smoke(args):
+    """The pull-request check: build, then only what the change edits.
+
+    The generated-ROM functional tests are quick and always run. The boots
+    and the ROM suite run in the full run, which the merge queue dispatches
+    before every land, so they are not repeated here.
+    """
     build = Build(args.build)
     script_suites(BUILD_SCRIPT_SUITES, build.python)
-    build.ninja('tests/functional/mips64-linux_kernel.tstamp',
-                'tests/functional/mips64-sn0_smp.tstamp',
-                *(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
+    build.ninja(*(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
                   '.tstamp' for target, *_ in GENERATED_ROM_FUNCTIONAL))
 
+    qtests = select_qtests(build, args.base)
+    selected = build.path / 'selected-qtests.txt'
+    selected.write_text('\n'.join(qtests) + '\n' if qtests else '',
+                        encoding='utf-8')
     # Pull requests run the quick setup, which leaves out the slow suite
     # and the cases a qtest registers only under g_test_slow(). The
-    # merge queue's full run keeps the thorough setup.
-    qtests, _ = select_qtests(build, args.base)
-    selected = build.path / 'selected-qtests.txt'
-    selected.write_text('\n'.join(qtests) + '\n', encoding='utf-8')
-    expected = build.path / 'expected-qtests.txt'
-    build.list_meson_tests(expected, '--names-from', selected,
-                           *(f'--exclude-suite={suite}'
-                             for suite in QUICK_EXCLUDED_SUITES))
-    # Name only the tests the setup keeps: Meson refuses a named test its
-    # setup leaves out as matching no test. Optional prerequisites do not
-    # depend on which binaries are selected.
-    build.meson_test('smoke-qtest',
-                     expected.read_text(encoding='utf-8').split(), expected,
-                     processes=QTEST_PROCESSES, setup='qemu:quick')
-
-    expected = build.path / 'expected-linux.txt'
-    expected.write_text('LinuxKernel.test_one_cpu\n', encoding='utf-8')
-    build.meson_test('smoke-linux',
-                     ['--test-args', 'LinuxKernel.test_one_cpu',
-                      'func-mips64-linux_kernel'], expected)
-
-    # The SMP machine cases build their own firmware and need no guest
-    # assets, so every pull request runs all of them.
-    expected = build.path / 'expected-smp.txt'
-    build.meson_test('smoke-smp',
-                     required_cases(build, 'test_sn0_smp', 'SN0SMPMachine',
-                                    expected) + ['func-mips64-sn0_smp'],
-                     expected)
+    # merge queue's full run keeps the thorough setup. Meson refuses a
+    # named test its setup leaves out, and the report check refuses an
+    # empty selection, so drop those tests here and say so.
+    suites = build.registered_tests()
+    quick = [test for test in qtests
+             if not suites[test] & set(QUICK_EXCLUDED_SUITES)]
+    if quick != qtests:
+        print('left to the full run (slow or thorough): ' +
+              ' '.join(sorted(set(qtests) - set(quick))), flush=True)
+    kept, left = fit_budget(quick, read_durations(QTEST_DURATIONS))
+    if left:
+        print(f'left to the full run (over the {SMOKE_QTEST_BUDGET_S} s '
+              'budget): ' + ' '.join(left), flush=True)
+    if kept:
+        names = build.path / 'quick-qtests.txt'
+        names.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+        expected = build.path / 'expected-qtests.txt'
+        build.list_meson_tests(expected, '--names-from', names)
+        build.meson_test('smoke-qtest', kept, expected,
+                         processes=QTEST_PROCESSES, setup='qemu:quick')
+    else:
+        print('no qtest source changed; the full run runs every qtest',
+              flush=True)
 
     for target, logbase, module, test_class in GENERATED_ROM_FUNCTIONAL:
         expected = build.path / f'expected-{logbase}.txt'
@@ -336,8 +368,6 @@ def smoke(args):
     expected = build.path / 'expected-unit.txt'
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
     build.meson_test('smoke-unit', ['--suite', 'qemu:sgi-unit'], expected)
-
-    rom_suite(build, 'smoke-rom')
 
 
 # The functional tests the full run requires: the Meson test, its log
@@ -590,13 +620,12 @@ def main(argv=None):
 
     mode = modes.add_parser(
         'smoke', help='the pull-request checks: the script tests that '
-                      'need a build, the qtests a change selects in the '
-                      'quick setup, one Linux boot, the unit tests and the '
-                      'ROM suite')
+                      'need a build, the qtests whose files the change '
+                      'edits (quick setup) and the unit tests')
     mode.add_argument('--base', default=os.environ.get('PR_BASE_SHA'),
-                      help='select qtests changed since the merge base '
+                      help='select qtests edited since the merge base '
                            'with this commit (default: $PR_BASE_SHA; none '
-                           'selects only the always-run set)')
+                           'selects no qtest)')
     mode.set_defaults(func=smoke)
 
     mode = modes.add_parser(
