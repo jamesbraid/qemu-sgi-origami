@@ -156,17 +156,17 @@ Command vocabulary
     subcommand letter is ``err cmd``, but a known letter with a bad or
     extra argument is ``err arg``.
 
-``hbt [<interval> <delay>]``
-    Heartbeat / NMI-watchdog control, which the kernel enables during
-    controller init. ``hbt <interval> <delay>`` enables monitoring so a
-    missed heartbeat raises a non-maskable interrupt after the delay,
-    ``hbt 0`` disables it, and ``hbt`` alone sends one heartbeat; all
-    answer a plain ``ok``. The only valid one-argument form is ``hbt 0``;
-    a single non-zero argument is ``err arg``. The two arguments are
-    decimal, unlike the hex arguments elsewhere, and a malformed one is
-    ``err arg``. The model validates the request and arms no timer -- the
-    kernel only enables the watchdog, so no missed-heartbeat interrupt is
-    modelled.
+``hbt [<interval> [<cycle>]]``
+    Heartbeat / NMI-watchdog control. ``hbt`` alone sends one
+    heartbeat and ``hbt 0`` disables monitoring. Both arguments are
+    hex, like every other numeric argument: the interval is ``5`` to
+    ``258`` seconds, and the optional second argument is the wait from
+    the NMI to the controller's power cycle. A malformed or
+    out-of-range argument is ``err arg``; everything else answers a
+    plain ``ok``. IRIX 6.5.30 sends ``hbt 30 20`` only when its
+    heartbeat tunable is set, which it is not by default, so the model
+    validates the request and arms no timer: no missed-heartbeat NMI
+    or power cycle is modelled.
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error

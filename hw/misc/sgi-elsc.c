@@ -328,7 +328,7 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             sec = sec << 4 | g_ascii_xdigit_value(text[6 + digits]);
             digits++;
         }
-        if (digits && sec > SGI_ELSC_PWR_DOWN_MAX) {
+        if (digits && sec > SGI_ELSC_DELAY_MAX) {
             elsc_frame_response_str(s, "err arg");
             return;
         }
@@ -425,37 +425,21 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
     }
 }
 
-/* A non-empty run of ASCII decimal digits; the text is not NUL-terminated. */
-static bool elsc_all_digits(const char *p, unsigned n)
-{
-    unsigned i;
-
-    if (n == 0) {
-        return false;
-    }
-    for (i = 0; i < n; i++) {
-        if (p[i] < '0' || p[i] > '9') {
-            return false;
-        }
-    }
-    return true;
-}
-
 /*
- * "hbt [<interval> <delay>]": heartbeat / NMI-watchdog control. "hbt" alone
- * sends one heartbeat, "hbt 0" disables monitoring, and
- * "hbt <interval> <delay>" enables it so a missed heartbeat raises a
- * non-maskable interrupt after the delay. The two arguments are decimal,
- * unlike the hex arguments elsewhere in this protocol. The kernel only
- * enables the watchdog during controller init, so validating the request and
- * answering "ok" without arming a timer carries a boot; no missed-heartbeat
- * interrupt is modelled.
+ * "hbt [<interval> [<cycle>]]": heartbeat / NMI-watchdog control, both
+ * arguments hex like every other numeric argument. "hbt" alone sends one
+ * heartbeat and "hbt 0" disables monitoring. Otherwise the interval is 5 to
+ * 0x258 seconds, and the optional second argument sets how long after the
+ * NMI the controller waits before power-cycling the module. The kernel
+ * sends "hbt 30 20" only when its heartbeat tunable is set, which IRIX
+ * 6.5.30 leaves off, so the request is validated and answered without
+ * arming a timer; no missed-heartbeat NMI or power cycle is modelled.
  */
 static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
 {
-    const char *args;
-    const char *sp;
-    unsigned rem;
+    const char *args, *sp;
+    uint32_t interval, cycle;
+    unsigned first;
 
     if (len == 3) {
         elsc_frame_response_str(s, "ok");   /* a single heartbeat */
@@ -468,33 +452,24 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
     }
 
     args = &text[4];
-    rem = len - 4;
-    sp = memchr(args, ' ', rem);
-    if (sp == NULL) {
-        /* The only valid one-argument form is "hbt 0" (disable). */
-        if (rem != 1 || args[0] != '0') {
-            elsc_frame_response_str(s, "err arg");
-            return;
-        }
-    } else {
-        /* "hbt <interval> <delay>": two args split on the space. */
-        unsigned first = sp - args;
-
-        if (!elsc_all_digits(args, first) ||
-            !elsc_all_digits(sp + 1, rem - first - 1)) {
-            elsc_frame_response_str(s, "err arg");
-            return;
-        }
-        /*
-         * The enable form arms an NMI watchdog the model does not implement.
-         * Answering "ok" without arming a timer carries a boot-time risk, but
-         * flag that it is unmodelled.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-elsc: heartbeat/NMI watchdog enable is not "
-                      "modelled; answering ok without arming it\n");
+    sp = memchr(args, ' ', len - 4);
+    first = sp ? sp - args : len - 4;
+    if (!elsc_parse_hex(args, first, &interval) ||
+        (sp && !elsc_parse_hex(sp + 1, len - 4 - first - 1, &cycle))) {
+        elsc_frame_response_str(s, "err arg");
+        return;
     }
-
+    if (interval == 0) {
+        elsc_frame_response_str(s, "ok");   /* monitoring disabled */
+        return;
+    }
+    if (interval < 5 || interval > SGI_ELSC_DELAY_MAX) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-elsc: heartbeat/NMI watchdog enable is not "
+                  "modelled; answering ok without arming it\n");
     elsc_frame_response_str(s, "ok");
 }
 
