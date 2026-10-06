@@ -78,7 +78,7 @@ from qemu_test.asset import LocalAsset
 
 from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, MACHINES,
                       drive_console, file_record, file_sha256,
-                      fork_git_identity, utc_now)
+                      fork_git_identity, launch_paused, utc_now)
 
 
 # The miniroot kernel's own release banner, printed at kernel entry. The
@@ -291,7 +291,7 @@ class IrixMiniroot(QemuSystemTest):
                    *miniroot_extra_args(prom, tftp, elsc_log, capture))
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('miniroot.log')
         try:
             transcript, reached = drive_console(

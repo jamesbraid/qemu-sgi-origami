@@ -75,7 +75,7 @@ from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      irix_interface_at_pci_slot,
                      icmp_echo_exchange, icmp_ipv4_exchange,  # noqa: E402
                      summarise_pcap)
-from lib_prom import MACHINES, file_sha256  # noqa: E402
+from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
 
 def _labelled_values(output):
     """Read the label/value forms printed by tgconfig and its options file."""
@@ -468,7 +468,7 @@ if QemuSystemTest is not None:
                 '-device',
                 f'bcm570x,netdev=tgnet,addr={TG_ADDR},mac={TG_MAC}',
                 '-object', f'filter-dump,id=tgcap,netdev=tgnet,file={pcap}')
-            vm.launch()
+            launch_paused(vm)
 
             log_path = self.log_file('irix-tg.log')
             con = IrixConsole(vm.console_socket, log_path,

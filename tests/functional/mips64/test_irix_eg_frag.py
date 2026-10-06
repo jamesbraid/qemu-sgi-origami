@@ -19,7 +19,7 @@ from qemu_test.asset import LocalAsset
 from lib_net import (IrixConsole, build_udp_fragments, drive_irix_to_shell,
                      irix_interface_at_pci_slot,
                      parse_ipv4_udp_fragment, reassemble_udp_fragments)
-from lib_prom import FIRMWARE_REL, MACHINES, file_sha256
+from lib_prom import FIRMWARE_REL, MACHINES, file_sha256, launch_paused
 
 RELEASE = "6.5.30"
 DISK_REL = os.path.join("irix", RELEASE, "root.qcow2")
@@ -152,7 +152,7 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
                 "-device", (f"{device_model},netdev=netdev,"
                             f"addr={ADDIN_SLOT},"
                             f"mac={configured_mac.hex(':')}"))
-        vm.launch()
+        launch_paused(vm)
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
                           test.log_file(f"irix-{adapter}-frag-console.log"),

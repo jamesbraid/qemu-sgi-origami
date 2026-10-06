@@ -22,7 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import FORK_ROOT, MACHINES, drive_console, run_record, utc_now
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, launch_paused,
+                      run_record, utc_now)
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.asset import LocalAsset
@@ -114,7 +115,7 @@ class IrixInstalledBoot(QemuSystemTest):
             '-nic', 'user,id=net0')
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('irix-installed-boot.log')
         try:
             transcript, reached = drive_console(
