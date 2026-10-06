@@ -802,7 +802,7 @@ def _flash(model: dict, components: dict[str, dict], asic_kind: str, board_id: s
     is the one kind format 2 carries either way; naming it for a Bedrock
     node is the same stated emulator-compatibility choice this project's
     open questions already use for an unidentified physical part elsewhere,
-    never a claim about the real IP45 chip. Flagged for independent review.
+    never a claim about the real IP45 chip. Flagged as an approximation.
     """
     if asic_kind == "bedrock":
         firmware = model["machine"].get("emulation", {}).get("firmware_payload")

@@ -725,7 +725,7 @@
                 },
                 "reset_mode_bits": {
                   "$ref": "#/$defs/address",
-                  "description": "The established Config0 low-25-bit power-on reset word for this exact R14000/R12000A clock and cache SKU, as one packed value rather than r10000-reset-mode's named fields: the public NEC manual states the R12000/R14000 Config0 bit positions (PM, EC, SB, BE, SS, SC, DSD) but this project has not independently reviewed a complete field-by-field encoding table for them the way it has for R10000, so only the literal, independently reviewed word is carried here."
+                  "description": "The established Config0 low-25-bit power-on reset word for this exact R14000/R12000A clock and cache SKU, as one packed value rather than r10000-reset-mode's named fields: the public NEC manual states the R12000/R14000 Config0 bit positions (PM, EC, SB, BE, SS, SC, DSD) but no complete field-by-field encoding table for them is established the way it is for R10000, so only the literal word is carried here."
                 },
                 "notes": { "type": "string" }
               },

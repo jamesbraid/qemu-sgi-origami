@@ -909,7 +909,7 @@ layer:
           component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at
           chip select 0, and this is a separate device on the HUB'S I2C BUS, reached by
           raw transactions the system controller never sees. The distinction's history
-          is in the pcf8584-elsc datasheet's behavioral notes. It answers EIGHT
+          is in docs/specs/sgi-elsc.rst. It answers EIGHT
           CONSECUTIVE SLAVE ADDRESSES FROM 0x50, the top three bits of an eleven-bit
           byte address choosing among them and the low
           byte addressing within one. Whether that is one 2 KB part consuming eight addresses or

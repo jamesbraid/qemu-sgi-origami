@@ -397,7 +397,7 @@
       "hardware_kind": "bridge",
       "id": "baseio-bridge",
       "identity": {
-        "notes": "Select Bridge D; the revision encodings were independently reviewed.",
+        "notes": "Select Bridge D; the revision encodings follow the Bridge specification.",
         "widget_mfg": "0x36",
         "widget_part": "0xc002",
         "widget_revision": 4
@@ -440,7 +440,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (per the ISP specification); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",
@@ -460,7 +460,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (per the ISP specification); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",
