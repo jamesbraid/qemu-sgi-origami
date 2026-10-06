@@ -1105,7 +1105,7 @@
 # weakest of them deciding.
 #
 # @established: every fact is printed in a cited manual, shown by a
-#     real-hardware capture or read directly from disassembly
+#     real-hardware capture or read directly from the firmware image
 #
 # @inferred: some fact follows from established ones without being
 #     printed or observed itself
