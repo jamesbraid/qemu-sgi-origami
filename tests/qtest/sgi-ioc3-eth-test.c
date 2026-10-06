@@ -835,7 +835,7 @@ static void test_dma_swap_controls(const void *data)
     const uint32_t rx_physical = RAM_SCRATCH + 0xc000;
     const unsigned lengths[] = { 64, 1024, 1500, 1514 };
     const unsigned offsets[] = { 42, 64, 66 };
-    const unsigned per_control = 2 * G_N_ELEMENTS(offsets);
+    const unsigned per_control = G_N_ELEMENTS(offsets);
     uint8_t frame[1514];
     unsigned int n, i;
 
@@ -847,9 +847,6 @@ static void test_dma_swap_controls(const void *data)
     for (n = 0; n < per_control * G_N_ELEMENTS(controls) *
                     G_N_ELEMENTS(lengths); n++) {
         unsigned length = lengths[n / (per_control * G_N_ELEMENTS(controls))];
-        bool native = !(n % per_control / G_N_ELEMENTS(offsets));
-        g_autofree char *extra = g_strdup_printf(
-            "-global sgi-ioc3-eth.dma-buffer=%s", native ? "off" : "on");
         uint32_t control = controls[n / per_control % G_N_ELEMENTS(controls)];
         unsigned int rx_offset = offsets[n % G_N_ELEMENTS(offsets)];
         bool swap = control &
@@ -876,11 +873,10 @@ static void test_dma_swap_controls(const void *data)
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         net_socket_set_recv_timeout(sv[0], 2);
-        g_test_message("%s %s DMA, swap controls 0x%x, receive offset %u, "
-                       "%u bytes", native ? "native" : "buffer",
-                       translated ? "translated" : "direct",
+        g_test_message("%s DMA, swap controls 0x%x, receive offset %u, "
+                       "%u bytes", translated ? "translated" : "direct",
                        control, rx_offset, length);
-        qts = ioc3_attach_socket_options(sv[1], 1, extra);
+        qts = ioc3_attach_socket_options(sv[1], 1, "");
         device = qtest_readl(qts, device_reg);
         qtest_writel(qts, device_reg,
                      (device & ~(swap_direct | swap_translated)) | control);
@@ -984,19 +980,16 @@ static void test_dma_prefix_side_effects(const void *data)
     const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
     SgiWait w;
 
-    for (unsigned mode = 0; mode < 4; mode++) {
-        bool native = mode & 1, mastering = mode & 2;
+    for (unsigned mastering = 0; mastering < 2; mastering++) {
         uint32_t payload = mastering ? 0xc0024002 : 0xc0000082;
         uint32_t rx = payload - 42;
         g_autofree char *path = trace_dir ? g_strdup_printf(
-            "%s/ioc3-rx-side-effects-%u.trace", trace_dir, mode) :
+            "%s/ioc3-rx-side-effects-%u.trace", trace_dir, mastering) :
             g_strdup_printf("ioc3-rx-side-effects-%u-%u.trace",
                             (unsigned)getpid(), g_random_int());
         g_autofree char *extra = g_strdup_printf(
-            "-global sgi-ioc3-eth.dma-buffer=%s "
             "-device sgi-xio-test-target,id=new-ram,size=4K "
-            "-trace enable=memory_region_ops_write,file=%s",
-            native ? "off" : "on", path);
+            "-trace enable=memory_region_ops_write,file=%s", path);
         g_autofree char *trace = NULL;
         g_auto(GStrv) lines = NULL;
         unsigned prefix_callbacks = 0, second_callbacks = 0;
@@ -1815,31 +1808,25 @@ static void test_a_payload_failure_does_not_publish_valid(const void *data)
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = i + 1;
     }
-    for (unsigned native = 0; native < 2; native++) {
-        g_autofree char *extra = g_strdup_printf(
-            "-global sgi-ioc3-eth.dma-buffer=%s", native ? "off" : "on");
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
+        "-netdev user,id=n0 "
+        "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
+    ioc3_bring_up(qts, ring, rxbuf, 1);
+    dma_stl_be(qts, rxbuf, 0x11223344);
+    dma_stl_be(qts, rxbuf + 4, 0x55667788);
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
-        qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
-            "-netdev user,id=n0 "
-            "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 %s",
-            IOC3_PCI_SLOT, extra);
-        ioc3_bring_up(qts, ring, rxbuf, 1);
-        dma_stl_be(qts, rxbuf, 0x11223344);
-        dma_stl_be(qts, rxbuf + 4, 0x55667788);
-        ioc3_writel(qts, ENET_MAC_CONTROL,
-                    MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
-                    MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
-        ioc3_writel(qts, ENET_TX_RING_HI, 0);
-        ioc3_writel(qts, ENET_TX_RING_LO,
-                     pci_dma_address(base & 0xffffc000u));
+    tx_one(qts, base, 0, frame, sizeof(frame));
 
-        tx_one(qts, base, 0, frame, sizeof(frame));
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
+    assert_receive_not_published(qts, rxbuf);
 
-        g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
-        assert_receive_not_published(qts, rxbuf);
-
-        ioc3_quit(qts);
-    }
+    ioc3_quit(qts);
 }
 
 /* The complete payload fits; only the following FCS write crosses RAM. */
