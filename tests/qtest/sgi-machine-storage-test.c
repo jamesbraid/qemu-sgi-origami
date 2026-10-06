@@ -765,6 +765,40 @@ static void test_nvram_refusals(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+/*
+ * The block layer rounds a file's length up to a 512-byte sector, so the
+ * size check must read the real one: a 256-byte file is not a 512-byte
+ * NVRAM, nor an eight-byte file a 24-byte clock record.
+ */
+static void test_nvram_short_of_a_sector_refused(void)
+{
+    g_autofree char *half = make_store("octane-nvram-half", 256, 0);
+    g_autofree char *whole = make_store("octane-nvram-whole", 512, 0);
+    g_autofree char *clock = make_store("octane-clock-short", 8, 0);
+    g_autofree char *prom = make_store("octane-nvram-prom", 4096, 0);
+    g_autofree char *half_node = blockdev("nv", half);
+    g_autofree char *whole_node = blockdev("nv", whole);
+    g_autofree char *clock_node = blockdev("nvclock", clock);
+    QTestState *qts;
+
+    assert_rejected("octane,nvram0=nv", "-blockdev", half_node,
+                    "octane: nvram0 is 256 bytes; it must be exactly 512");
+    assert_rejected("octane,nvram0-clock=nvclock", "-blockdev", clock_node,
+                    "octane: nvram0-clock is 8 bytes; it must be at least "
+                    "24");
+
+    /* The sector-sized file the check is meant to accept still starts. */
+    qts = qtest_initf("-M octane,nvram0=nv -bios %s -blockdev %s", prom,
+                      whole_node);
+    g_assert_cmpuint(attached_count(qts, "nv", ""), ==, 1);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(half), ==, 0);
+    g_assert_cmpint(g_unlink(whole), ==, 0);
+    g_assert_cmpint(g_unlink(clock), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -813,6 +847,8 @@ int main(int argc, char **argv)
                    test_nvram_legacy_drive);
     qtest_add_func("/sgi-machine-storage/nvram/refusals",
                    test_nvram_refusals);
+    qtest_add_func("/sgi-machine-storage/nvram/short-of-a-sector-refused",
+                   test_nvram_short_of_a_sector_refused);
     ret = g_test_run();
     g_assert_cmpint(g_rmdir(directory), ==, 0);
     g_free(directory);
