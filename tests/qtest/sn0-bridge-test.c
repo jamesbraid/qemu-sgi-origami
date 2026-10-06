@@ -1551,173 +1551,6 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 
 
 /*
- * The property that forces a slot exempt whatever is plugged into it, kept
- * as a test and debug override of what the card itself says. The non-exempt
- * twin is what makes bytes-identical mean something.
- */
-#define MASQ_SLOT               7
-#define MASQ_CARD               " -device sgi-bridge-dma-test,addr=" \
-                                stringify(MASQ_SLOT)
-/* Exempt slot 7, bit 7, from the Bridge's byte-lane correction. */
-#define MASQ_EXEMPT             " -global sgi-bridge.byte-lane-exempt=0x80"
-
-/* Bus mastering too: these cards initiate transfers as well as answer
- * them. */
-static void card_start(QTestState *qts, unsigned int slot)
-{
-    qtest_writel(qts, CFG0(slot, 0) + 0x10, CARD_MMIO(slot));
-    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND,
-                 PCI_COMMAND_MEMORY | 0x0004);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
-}
-
-static void card_transfer(QTestState *qts, unsigned int slot, uint32_t addr,
-                          uint32_t len)
-{
-    qtest_writel(qts, WINDOW(slot) + DMA_REG_ADDRESS, addr);
-    qtest_writel(qts, WINDOW(slot) + DMA_REG_LENGTH, len);
-    qtest_writel(qts, WINDOW(slot) + DMA_REG_SEED, SWAP_SEED);
-    qtest_writel(qts, WINDOW(slot) + DMA_REG_GO, 1);
-}
-
-static void masq_start(QTestState *qts)
-{
-    card_start(qts, MASQ_SLOT);
-}
-
-static void masq_transfer(QTestState *qts, uint32_t addr, uint32_t len)
-{
-    card_transfer(qts, MASQ_SLOT, addr, len);
-}
-
-static void test_dma_exempt_slot_is_never_swapped(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD MASQ_EXEMPT);
-    uint8_t seen[SWAP_LEN];
-    unsigned int i;
-    uint32_t dev;
-
-    masq_start(qts);
-    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-
-    /* With the bit clear, where a non-exempt device would be permuted. */
-    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
-    }
-
-    /*
-     * And with it set. Read the register back first: without that, a model
-     * that silently dropped the write would reach the same bytes by never
-     * having changed anything, and this half would pass for the wrong reason.
-     */
-    bridge_source_with_swap_at(qts, MASQ_SLOT, DEV_SWAP_TRANSLATED);
-    dev = qtest_readl(qts, REG(BRIDGE_DEVICE(MASQ_SLOT)));
-    g_assert_cmphex(dev & DEV_SWAP_TRANSLATED, ==, DEV_SWAP_TRANSLATED);
-
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
-    }
-
-    qtest_quit(qts);
-}
-
-/*
- * Same device and transfer with exemption dropped: permuted, so the
- * exemption above came from the property, not an unexercised correction.
- */
-static void test_dma_unexempt_slot_is_swapped(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE MASQ_CARD);
-    uint8_t seen[SWAP_LEN];
-    unsigned int i;
-
-    masq_start(qts);
-    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-
-    masq_transfer(qts, PCI_TRANSLATED, SWAP_LEN);
-
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
-    }
-
-    qtest_quit(qts);
-}
-
-
-/*
- * The unreproduced configuration logs once, on the write; the two
- * negatives are the test, or a log-on-every-write model passes.
- */
-#define UNIMP_FRAGMENT  "exempts from the DMA byte swap"
-
-static bool bridge_log_has_the_message_at(const char *extra_device,
-                                          unsigned int slot,
-                                          uint32_t swap_bits)
-{
-    g_autofree char *path = g_strdup_printf("%s/sn0-bridge-swap-XXXXXX.log",
-                                            g_get_tmp_dir());
-    g_autofree char *found = NULL;
-    QTestState *qts;
-    bool seen;
-    int fd = g_mkstemp(path);
-
-    g_assert_cmpint(fd, >=, 0);
-    close(fd);
-
-    qts = qtest_initf("%s%s -d unimp -D %s", MACHINE_WITH_BRIDGE,
-                      extra_device, path);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20) | swap_bits);
-    qtest_quit(qts);
-
-    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
-    seen = strstr(found, UNIMP_FRAGMENT) != NULL;
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    return seen;
-}
-
-static bool bridge_log_has_the_message(const char *extra_device,
-                                       uint32_t swap_bits)
-{
-    return bridge_log_has_the_message_at(extra_device, MASQ_SLOT, swap_bits);
-}
-
-static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
-{
-    /* The configuration itself. */
-    g_assert_true(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT,
-                                             DEV_SWAP_TRANSLATED));
-    g_assert_true(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT,
-                                             DEV_SWAP_DIRECT));
-
-    /*
-     * Same bits, slot, and register write. The model corrects this device.
-     * Nothing to report, because this one works.
-     */
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD,
-                                              DEV_SWAP_TRANSLATED));
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD,
-                                              DEV_SWAP_DIRECT));
-
-    /*
-     * And the exempt device again with the swap bits clear, which is what
-     * every guest actually does. A model keying on the write rather than on
-     * what the write asked for would fail here.
-     */
-    g_assert_false(bridge_log_has_the_message(MASQ_CARD MASQ_EXEMPT, 0));
-}
-
-
-/*
  * The direct window needs the direct-map register cleared: the add-512MB
  * bit resets set and steps every transfer half a gigabyte down.
  */
@@ -2388,31 +2221,6 @@ static void add_dma_placement_tests(void)
             qtest_add_data_func(converted, w, test_dma_placement_converted);
         }
     }
-}
-
-/* Both the board's slot and an added IOC3 support programmed DMA swapping. */
-#define SPARE_IOC3_SLOT         5
-#define SPARE_IOC3              " -device sgi-ioc3,addr=" \
-                                stringify(SPARE_IOC3_SLOT)
-
-static void test_ioc3_dma_swap_is_supported_in_any_slot(const void *data)
-{
-    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
-                                                DEV_SWAP_DIRECT));
-    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
-                                                DEV_SWAP_TRANSLATED));
-
-    /* The board's built-in controller must not log the old limitation. */
-    g_assert_false(bridge_log_has_the_message_at("", IOC3_SLOT,
-                                                DEV_SWAP_DIRECT));
-
-    /*
-     * The same slot with an ordinary card in it, so this is about the chip
-     * and not about slot 5 having become exempt some other way.
-     */
-    g_assert_false(bridge_log_has_the_message_at(
-        " -device sgi-bridge-dma-test,addr=" stringify(SPARE_IOC3_SLOT),
-        SPARE_IOC3_SLOT, DEV_SWAP_DIRECT));
 }
 
 /*
@@ -5017,12 +4825,6 @@ int main(int argc, char **argv)
                         test_dma_zero_length);
     qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,
                         test_dma_swap_bits_reset_clear);
-    qtest_add_data_func("sn0/bridge/dma-exempt-slot-is-never-swapped", NULL,
-                        test_dma_exempt_slot_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/dma-unexempt-slot-is-swapped",
-                        NULL, test_dma_unexempt_slot_is_swapped);
-    qtest_add_data_func("sn0/bridge/dma-swap-on-an-exempt-slot-is-reported",
-                        NULL, test_dma_swap_on_an_exempt_slot_is_reported);
     add_dma_placement_tests();
     qtest_add_data_func("sn0/bridge/dma-placement/mixed-functions/narrow",
                         GINT_TO_POINTER(0), test_dma_placement_mixed_functions);
@@ -5036,8 +4838,6 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/ioc3-dma-swap-supported-in-any-slot", NULL,
-                        test_ioc3_dma_swap_is_supported_in_any_slot);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",

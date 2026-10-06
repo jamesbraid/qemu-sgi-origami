@@ -261,9 +261,6 @@ struct SGIBridgeState {
     /* Where each window aims: an I/O region cannot hold an alias offset. */
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
 
-    /* Slots forced exempt whatever is plugged in them: a test override. */
-    uint32_t byte_lane_exempt;
-
     /* Slots the board wires to the 64-bit data path (REQ64# at reset). */
     uint8_t req64_slots;
     /* Slots whose DMA runs 64-bit data phases, settled at each reset. */
