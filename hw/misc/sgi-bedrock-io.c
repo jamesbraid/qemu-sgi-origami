@@ -12,6 +12,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "system/dma.h"
+#include "system/replay.h"
 #include "hw/core/cpu.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "trace.h"
@@ -238,7 +239,7 @@ static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     }
     if (!(bte->control & (1 << 4))) {
         bte->signal_pending = true;
-        qemu_bh_schedule(bte->signal_bh);
+        replay_bh_schedule_event(bte->signal_bh);
         return;
     }
     value = cpu_to_be64(bte->status);
@@ -249,10 +250,19 @@ static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     }
 }
 
+/*
+ * Scheduled through record/replay, so a replay raises the interrupt at the
+ * same instruction its recording did. A replay event outlives
+ * qemu_bh_cancel(), so a reset that cleared signal_pending is what stops a
+ * completion queued before it.
+ */
 static void ii_bte_signal_bh(void *opaque)
 {
     SGIBedrockIOBTE *bte = opaque;
 
+    if (!bte->signal_pending) {
+        return;
+    }
     bte->signal_pending = false;
     ii_bte_interrupt(bte->io, bte);
 }
