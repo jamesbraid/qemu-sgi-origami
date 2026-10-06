@@ -6,8 +6,9 @@ One compile path takes a resolved composition and produces the record shapes
 consumed by QEMU's SGI catalogue emitter, over one typed index of the physical
 component graph. Most distinctions read facts already in the resolved model
 (an ASIC kind, whether a crossbar is present, or an authored physical slot).
-The R16000 exception is restricted to the reviewed Origin 350 IP53 experiment;
-other products do not gain that CPU through the shared component vocabulary.
+R16000 system models are restricted to the reviewed Origin 350 and separately
+selected Onyx 350 IP53 compatibility profiles; other products do not gain that
+CPU through the shared component vocabulary.
 
 A reference-role configuration (`machine.model_role != "emulation-target"`)
 is refused, never compiled: format 2 carries no facts for a system nobody
@@ -970,15 +971,55 @@ def _processor(model: dict, cpu: dict) -> dict:
             # mode_bits filled in by the caller, as above.
         }
     if part == "r16000":
-        emulation = model.get("machine", {}).get("emulation", {})
-        if (model.get("composition", {}).get("product") !=
-                "origin350" or
-                emulation.get("machine_name") != "origin350"):
+        product = model.get("composition", {}).get("product")
+        profile = {
+            "origin350": ("origin350", 700, 0x009cad85,
+                          "ip53-origin350"),
+            "onyx350-compat": ("onyx350", 800, 0x009caf85,
+                        "ip53-onyx350-compat"),
+            "tezro-deskside-700mhz-4mib-serial-trial": (
+                "tezro", 700, 0x009bad85,
+                "tezro-deskside-700mhz-4mib-serial-trial"),
+            "tezro-deskside-compat": ("tezro", 700, None,
+                                      "ip53-tezro-deskside-compat"),
+        }.get(product)
+        reference_projection = (
+            product == "tezro-deskside-compat"
+            and model.get("machine", {}).get("model_role") == "reference")
+        origin350_projection = (
+            product == "origin350"
+            and model.get("machine", {}).get("emulation", {}).get(
+                "machine_name") == "origin350")
+        if (profile is None or
+                (not reference_projection and not origin350_projection and
+                 model.get("machine", {}).get("emulation", {}).get(
+                     "machine_name") != profile[0])
+                or (not reference_projection and not origin350_projection and
+                    model.get("machine", {}).get("emulation", {}).get(
+                        "profile") != profile[3])
+                or (not reference_projection and not origin350_projection and
+                    model.get("machine", {}).get("harness", {}).get(
+                        "launch_recipe") != "ip53-discovery")):
             raise CompileError(
-                "R16000 is supported for only the Origin 350 IP53 experiment"
+                "R16000 is supported for only the Origin 350 IP53 experiment "
+                "or an explicitly selected compatibility profile"
             )
         clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
         cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
+        if product == "tezro-deskside-compat":
+            if (clock_mhz != 700 or cache_mib != 4 or
+                    _integer(identity, "cache_clock_mhz",
+                             f"CPU '{cpu['id']}'", 32) != 350 or
+                    "r16000_reset_mode" in identity):
+                raise CompileError(
+                    f"CPU '{cpu['id']}' does not match the selected Tezro "
+                    "700 MHz/4 MiB/350 MHz software tuple"
+                )
+            return {
+                "id": "r16000-700mhz", "kind": "R16000",
+                "clock_hz": 700_000_000, "cache_clock_hz": 350_000_000,
+                "cache_mib": 4,
+            }
         reset_mode = _integer(
             identity, "r16000_reset_mode", f"CPU '{cpu['id']}'", 32)
         scache_bytes = _integer(
@@ -988,15 +1029,20 @@ def _processor(model: dict, cpu: dict) -> dict:
             "r16000-experimental", "r16000-reset-mode",
             "r16000-scache-bytes",
         ]
-        if (clock_mhz != 700 or cache_mib != 8 or
-                reset_mode != 0x009cad85 or scache_bytes != 0x800000 or
+        expected_cache_mib = (4 if product ==
+                              "tezro-deskside-700mhz-4mib-serial-trial" else 8)
+        expected_scache_bytes = expected_cache_mib * 1024 * 1024
+        if (clock_mhz != profile[1] or cache_mib != expected_cache_mib or
+                reset_mode != profile[2] or
+                scache_bytes != expected_scache_bytes or
                 required_properties != expected_properties):
             raise CompileError(
                 f"CPU '{cpu['id']}' does not match the selected "
-                "700 MHz/8 MiB Origin 350 IP53 experiment inputs"
+                f"{profile[1]} MHz/{expected_cache_mib} MiB {product} IP53 "
+                "profile inputs"
             )
         return {
-            "id": "r16000-700mhz",
+            "id": f"r16000-{clock_mhz}mhz",
             "kind": "R16000",
             "clock_hz": clock_mhz * 1_000_000,
             "cache_mib": cache_mib,
@@ -1504,7 +1550,8 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
                 f"node '{node['id']}' mixes CPU assemblies; format 2 needs "
                 "one catalogued part per node"
             )
-    processor["mode_bits"] = _mode_bits(model, node, processor)
+    if "mode_bits" in processor or processor["kind"] != "R16000":
+        processor["mode_bits"] = _mode_bits(model, node, processor)
     max_population = _node_max_population(model, position, node_count)
     identity = _node_identity(model, components, node, asic_kind, position,
                               board_kind)
@@ -1532,6 +1579,69 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     if board_kind is not None:
         compiled["board_kind"] = board_kind
     return compiled
+
+
+def compile_reference_construction(model: dict) -> dict:
+    """Summarize the reviewed Tezro construction without a QEMU descriptor.
+
+    This deliberately contains only resolved population and attachment facts;
+    hardware identity fields needed by the runtime compiler remain unknown.
+    """
+    if (model.get("machine", {}).get("model_role") != "reference" or
+            model.get("composition", {}).get("product") !=
+            "tezro-deskside-compat"):
+        raise CompileError(
+            "reference construction summary supports the "
+            "Tezro deskside model only")
+    connections = model.get("connections", [])
+    pics = [item for item in model["components"]
+            if item.get("kind") == "pci-host-bridge"
+            and item.get("hardware_kind") == "pic"]
+    profiles = model["machine"].get("construction_pic_profiles", {})
+    attachments = []
+    for pic in pics:
+        connection = next((item for item in connections
+                           if item.get("component") == pic["id"]
+                           and item.get("bus") == "xio"), None)
+        if connection is None:
+            raise CompileError(f"PIC host '{pic['id']}' has no XIO attachment")
+        attachments.append({"widget": connection["widget"]})
+    io9 = next(item for item in model["components"]
+               if item.get("hardware_kind") == "io9")
+    io9_bus = next(item["id"] for item in model["buses"]
+                   if item.get("master") in {pic["id"] for pic in pics}
+                   and any(connection.get("component") == io9["id"]
+                           and connection.get("bus") == item["id"]
+                           for connection in connections))
+    bridge = next(item for item in connections
+                  if item.get("component") in {pic["id"] for pic in pics}
+                  and item.get("bus") == io9_bus
+                  and item.get("role") == "bridge-downstream")
+    owner = bridge["component"]
+    cpus = [item for item in model["components"]
+            if item.get("hardware_kind") == "r16000"
+            and item.get("parent") == "bedrock"]
+    identity = cpus[0]["identity"]
+    banks = model["composition"]["population"]["memory_bank_mib_per_node"][0]
+    return {
+        "nodes": [{"id": "bedrock", "bank_mib": banks,
+                   "cpu_slots": [{"assembly": {
+                       "clock_hz": identity["clock_mhz"] * 1_000_000,
+                       "cache_clock_hz": (
+                           identity["cache_clock_mhz"] * 1_000_000),
+                       "cache_mib": identity["cache_mib"],
+                   }}]}],
+        "pci_host_bridges": [{
+            "id": pic["id"], "kind": "pic",
+            "compatibility_profile": profiles[pic["id"]],
+        } for pic in pics],
+        "xio_attachments": attachments,
+        "io_boards": [{"id": io9["id"],
+                       "pci_host_index": (
+                           [item["id"] for item in pics].index(owner)),
+                       "pci_head": bridge["pci_head"],
+                       "pci_functions": []}],
+    }
 
 
 def _compile_io_peer(model: dict, components: dict[str, dict], entry: dict,
@@ -2283,10 +2393,12 @@ def _compile_pic_io_records(model: dict, graph: dict,
         host_records.append({
             "id": cid, "kind": "pic",
             "xio_attachment_index": attachment_index,
-            **({"compatibility_profile": model["machine"]["emulation"]
-               ["pic_profiles"][cid]}
-               if cid in model["machine"].get("emulation", {}).get(
-                   "pic_profiles", {}) else {}),
+            **({"compatibility_profile": profile}
+               if (profile := model["machine"].get("emulation", {}).get(
+                   "pic_profiles", {}).get(
+                       cid, model["machine"].get(
+                           "construction_pic_profiles", {}).get(cid)))
+               is not None else {}),
         })
 
         seen_heads: dict[int, str] = {}
@@ -2811,7 +2923,7 @@ def _compile_node_populations(model: dict, graph: dict, nodes: list[dict],
     return rows
 
 
-def compile_model(model: dict) -> dict:
+def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
     """Compile one resolved system model into a format-2 topology dictionary.
 
     Refuses a reference-role configuration, and any configuration this
@@ -2819,7 +2931,11 @@ def compile_model(model: dict) -> dict:
     `CompileError` naming the missing fact -- never by inventing one.
     """
     machine = model.get("machine", {})
-    if machine.get("model_role") != "emulation-target":
+    if (machine.get("model_role") != "emulation-target" and
+            not (reference_construction
+                 and machine.get("model_role") == "reference"
+                 and model.get("composition", {}).get("product") ==
+                 "tezro-deskside-compat")):
         raise CompileError(
             f"'{machine.get('name', model.get('composition', {}).get('product'))}' "
             f"is model_role '{machine.get('model_role')}', not an emulation "
@@ -2951,7 +3067,8 @@ def compile_model(model: dict) -> dict:
                     f"IP53 Bedrock node {missing_pic_nodes[0]} has no authored "
                     "PIC attachment")
         profile_owners = set(model.get("machine", {}).get(
-            "emulation", {}).get("pic_profiles", {}))
+            "emulation", {}).get("pic_profiles", {})) | set(
+                model.get("machine", {}).get("construction_pic_profiles", {}))
         emitted_hosts = {host["id"] for host in pci_host_bridges}
         missing_hosts = sorted(profile_owners - emitted_hosts)
         if missing_hosts:
@@ -3016,12 +3133,16 @@ def _compile_ip35_firmware(model: dict) -> dict:
     """
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
+    ip53_products = {
+        "origin350", "onyx350-compat",
+        "tezro-deskside-700mhz-4mib-serial-trial",
+    }
     if (firmware is None and
-            model.get("composition", {}).get("product") == "origin350"):
+            model.get("composition", {}).get("product") in ip53_products):
         firmware = machine.get("firmware_config")
         if not isinstance(firmware, dict):
             raise CompileError(
-                "machine.firmware_config is absent; the Origin 350 IP53 "
+                "machine.firmware_config is absent; the IP53 runtime "
                 "profile needs its firmware values")
         return {
             "machine_type": _integer(

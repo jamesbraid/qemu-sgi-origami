@@ -87,7 +87,7 @@
         "required": ["composition", "machine"],
         "properties": {
           "composition": { "required": ["product"], "properties": {
-            "product": { "const": "origin350" }
+            "product": { "enum": ["origin350", "onyx350-compat", "tezro-deskside-700mhz-4mib-serial-trial"] }
           } },
           "machine": {
             "required": ["generation", "harness", "emulation"],
@@ -102,11 +102,11 @@
               "emulation": {
                 "required": ["machine_name", "pic_profiles"],
                 "properties": {
-                  "machine_name": { "const": "origin350" },
+                  "machine_name": { "enum": ["origin350", "onyx350", "tezro"] },
                   "pic_profiles": {
                     "type": "object", "minProperties": 1,
                     "additionalProperties": {
-                      "const": "pic-rev3-bedrock-experimental"
+                      "enum": ["pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-experimental"]
                     }
                   }
                 }
@@ -204,6 +204,12 @@
         "architecture_ip": { "type": "string", "description": "Platform family IP number, e.g. IP27." },
         "kernel_ip": { "type": "string", "description": "Software platform IP number selected by this configuration, e.g. IP27 or IP30." },
         "model_role": { "enum": ["emulation-target", "reference"], "description": "Whether this projection is an Origami target or a hardware-only reference machine." },
+        "construction_pic_profiles": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": { "const": "pic-rev3-bedrock-tezro-experimental" },
+          "description": "Named compatibility assumptions used only when compiling a reference construction; never emitted as a buildable or selectable topology."
+        },
         "firmware_config": {
           "type": "object",
           "required": ["processor_reset_mode", "machine_type", "flash_read_cycles", "flash_write_cycles"],
@@ -263,7 +269,7 @@
               "minProperties": 1,
               "propertyNames": { "$ref": "#/$defs/identifier" },
               "additionalProperties": {
-                "enum": ["pic-rev3-bedrock", "pic-rev3-bedrock-experimental"]
+                "enum": ["pic-rev3-bedrock", "pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-experimental"]
               }
             },
             "system_timekeepers": {

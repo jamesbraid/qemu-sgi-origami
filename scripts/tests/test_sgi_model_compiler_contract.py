@@ -1164,6 +1164,17 @@ class PicIo9DescriptorTests(unittest.TestCase):
 
         self.assertNotIn("ds1742", board)
 
+    def test_tezro_trial_emits_its_linked_io9_clock_resource(self):
+        topology = compile_model(
+            _resolved("tezro-deskside-700mhz-4mib-serial-trial"))
+        board = next(item for item in topology["io_boards"]
+                     if item["id"] == "io9")
+
+        self.assertEqual([item["id"] for item in topology["pci_host_bridges"]],
+                         ["pic-xio-b", "pic-xio-f"])
+        self.assertTrue(board["ds1742"])
+        self.assertEqual(board["ds1742_fresh_year_base"], 1968)
+
     def test_io9_clock_link_schema_is_narrow_and_optional(self):
         from jsonschema import Draft202012Validator
 
@@ -3498,7 +3509,9 @@ class CatalogueJsonTests(unittest.TestCase):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
         self.assertEqual(catalogue["schema"], "sgi-machines")
         self.assertEqual(catalogue["version"], 1)
-        self.assertEqual(set(catalogue), {"schema", "version", "topologies", "offerings"})
+        self.assertEqual(set(catalogue), {
+            "schema", "version", "topologies", "offerings", "references"})
+        self.assertEqual(catalogue["references"], [])
 
     def test_enumerations_are_lower_case_and_hyphenated(self):
         # docs/designs/sn-machine-model-architecture.md's "The compiled

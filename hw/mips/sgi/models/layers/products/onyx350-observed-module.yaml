@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Captured module 001c01 from a customized multi-module Onyx 350.
+layer_version: 1
+sources:
+  onyx350-observed-module: "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: reviewed capture and guide evidence; see direct source records below"
+  living-raptor-01: "docs/library/hinv/living-raptor/01.hinv, SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad; public 2021 Onyx 350 inventory, `hinv -mv`, module 001c01; reports IP53_4CPU 030-2013-001 rev D, four 800 MHz R16000 rev 3.0 with 8 MiB cache, 8192 MiB across logical banks 0-7, IO9 030-1771-006 rev A, 2U_INT_53 030-1809-006 rev D, and IP35prom 6.211"
+  onyx350-guide: "SGI, Onyx 350 Visualization System User's Guide, 007-4632-001, retained Library PDF techpubs:library/manuals/4000/007-4632-001/pdf/007-4632-001.pdf; printed pages 48, 50, 53, 55, 57: base module, distinct L1 and Serial 0 connectors, component block diagram, 4 MiB L2 statement, and IO9 location"
+layer:
+  kind: product
+  id: onyx350-observed-module
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: observed-hardware
+    sources: [onyx350-observed-module]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    provenance: observed-hardware
+    sources: [onyx350-observed-module]
+  memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  data:
+    machine:
+      name: Onyx 350 captured module 001c01
+      model_role: reference
+      notes: >-
+        Captured in a customized six-module system. This model records the
+        observed component subset and does not claim that module 001c01 operated
+        alone or represents a factory population. The eight enabled logical
+        banks do not identify physical DIMM positions. The Onyx 350 guide's
+        4 MiB cache statement and this capture's 8 MiB reading have distinct
+        scopes; neither is generalized to other modules.
+        The capture also reports IP35prom revision 6.211; it does not identify
+        the image or a compatible flash seed.
+    components:
+      - id: module
+        name: Onyx 350 compute module 001c01
+        kind: chassis
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+      - id: ip53-board
+        name: IP53_4CPU node board
+        kind: board
+        hardware_kind: ip53
+        parent: module
+        identity: {part: "030-2013-001"}
+        description: IP53_4CPU board revision D, as reported in module 001c01.
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+      - id: cpu0
+        name: R16000
+        kind: cpu
+        parent: ip53-board
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+        notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
+      - id: cpu1
+        name: R16000
+        kind: cpu
+        parent: ip53-board
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+        notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
+      - id: cpu2
+        name: R16000
+        kind: cpu
+        parent: ip53-board
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+        notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
+      - id: cpu3
+        name: R16000
+        kind: cpu
+        parent: ip53-board
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+        notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
+      - id: memory
+        name: node memory
+        kind: memory
+        parent: ip53-board
+        description: 8192 MiB; enabled logical banks 0 through 7, each 1024 MiB.
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+      - id: io9
+        name: IO9
+        kind: board
+        parent: module
+        identity: {part: "030-1771-006"}
+        description: Revision A, as reported in module 001c01.
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+      - id: two-u-int53
+        name: 2U_INT_53 PIC interface board
+        kind: board
+        hardware_kind: two-u-int53
+        parent: module
+        identity: {part: "030-1809-006"}
+        description: Revision D, as reported in module 001c01.
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, living-raptor-01]
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        parent: module
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        sources: [onyx350-observed-module, onyx350-guide]
+      - id: io9-slot-bus1-slot1
+        name: IO9 PCI-X slot
+        kind: connector
+        parent: module
+        connector:
+          interface: PCI-X
+          location: bus 1, slot 1
+          occupancy: occupied
+        provenance: observed-hardware
+        sources: [onyx350-observed-module, onyx350-guide]
+    evidence_policy: strict
+    buses:
+      - id: sysad0
+        name: SysAD processor interface 0
+        kind: sysad
+        master: cpu0
+        provenance: vendor-document
+        sources: [onyx350-guide]
+      - id: pci-bus-1
+        name: PCI bus 1
+        kind: pci
+        provenance: vendor-document
+        sources: [onyx350-guide]
+    connections:
+      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [onyx350-guide]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [onyx350-guide]}
+      - {component: cpu2, bus: sysad0, role: master, provenance: vendor-document, sources: [onyx350-guide]}
+      - {component: cpu3, bus: sysad0, role: master, provenance: vendor-document, sources: [onyx350-guide]}
+      - {component: io9-slot-bus1-slot1, bus: pci-bus-1, role: endpoint, provenance: vendor-document, sources: [onyx350-guide]}
+      - {component: io9, bus: pci-bus-1, role: endpoint, provenance: vendor-document, sources: [onyx350-guide]}

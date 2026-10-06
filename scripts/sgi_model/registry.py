@@ -8,6 +8,8 @@ PRODUCT_MODELS = {
     "origin2000": "origin2000-rack",
     "origin300": "origin300",
     "origin350": "origin350",
+    "onyx350": "onyx350-compat",
+    "tezro": "tezro-deskside-700mhz-4mib-serial-trial",
     "onyx2": "onyx2-rack",
     "octane": "octane",
     "octane2": "octane2",
@@ -24,6 +26,8 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-pci-expansion-unconnected-uart-experiment",
     "origin300-pci-expansion-pending-register-experiment",
     "origin350",
+    "onyx350-compat",
+    "tezro-deskside-700mhz-4mib-serial-trial",
 )
 
 # Authored reference compositions are useful for comparing product topology,
@@ -31,9 +35,11 @@ IMPLEMENTED_TOPOLOGIES = (
 REFERENCE_TOPOLOGIES = (
     "origin350-reference",
     "onyx350-base",
+    "onyx350-observed-module",
     "tezro-tower-one",
     "tezro-tower-multi",
     "tezro-tower-four",
+    "tezro-deskside-compat",
     "tezro-rack-base",
     "tezro-rack-two-enclosure",
     "onyx4-host-g2",

@@ -1574,6 +1574,18 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
         sgi_machine_ip53_experiment_authorized(machine);
 
     if (r16000) {
+        bool onyx350 = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
+                                 "onyx350") == 0;
+        bool tezro = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
+                               "tezro") == 0;
+        uint32_t expected_mode = onyx350 ? 0x009caf85 : 0x009cad85;
+        uint64_t expected_clock = onyx350 ? 800000000 : 700000000;
+        unsigned int expected_cache_mib = tezro ? 4 : 8;
+
+        if (tezro) {
+            expected_mode = 0x009bad85;
+        }
+
         if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R16000"))) {
             error_setg(errp, TYPE_SGI_SN1_NODE " IP53 experiment requires "
                        "R16000, requested %s", machine->cpu_type);
@@ -1588,16 +1600,19 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
              * agree with that type rather than silently selecting a variant.
              */
             if (strcmp(processor->kind, "R16000") ||
-                processor->clock_hz != 700000000 ||
-                !node->cpuclk || clock_get_hz(node->cpuclk) != 700000000 ||
-                processor->cache_mib != 8 || !processor->has_mode_bits ||
-                processor->mode_bits != 0x009cad85 ||
+                processor->clock_hz != expected_clock ||
+                !node->cpuclk || clock_get_hz(node->cpuclk) != expected_clock ||
+                processor->cache_mib != expected_cache_mib ||
+                !processor->has_mode_bits ||
+                processor->mode_bits != expected_mode ||
                 (processor->has_prid && processor->prid != 0x00000f50) ||
                 (processor->has_fpu_prid &&
                  processor->fpu_prid != 0x00000900)) {
                 error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor %u "
-                           "does not match the authorized 700 MHz, 8 MiB, "
-                           "reset-mode 0x009cad85 R16000 profile", i);
+                           "does not match the authorized %u MHz, %u MiB, "
+                           "reset-mode 0x%08x R16000 profile", i,
+                           (unsigned int)(expected_clock / 1000000),
+                           expected_cache_mib, expected_mode);
                 return false;
             }
         }

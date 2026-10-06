@@ -10,6 +10,9 @@ layer:
   capacity:
     cpu_slots_per_node: 4
     dimm_slots_per_node: 8
+    memory_banks_per_node: 8
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [512, 1024]
     provenance: vendor-document
     sources:
       - "007-4564-001 printed pages 26-28: Tezro tower IP53 board, one/two/four R16000 and eight DIMM slots"
@@ -20,3 +23,14 @@ layer:
       1 GB. The optional rack second enclosure adds memory without processors.
       The slot limits describe the processor-bearing board, not all memory
       positions across two rack enclosures.
+  memory_kits:
+    - id: kit-4096-at-banks-0-5-tezro-deskside
+      dimms: 6
+      dimm_mib: 512
+      banks: [1024, 1024, 512, 512, 512, 512]
+      bank_positions: [0, 1, 2, 3, 4, 5]
+      provenance: derived
+      sources: [tezro-deskside-review]
+      notes: >-
+        Logical bank placement selected for the compatibility composition.
+        It does not identify physical DIMM slots.

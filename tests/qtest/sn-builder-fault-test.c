@@ -563,6 +563,9 @@ static void console_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "io9-missing-pci-head")) {
         console_test_install_pic_descriptor(true, 1);
         console_test_pic_io_boards[2].has_pci_head = false;
+    } else if (!strcmp(value, "io9-no-pci-host")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_pic_io_boards[2].has_pci_host_index = false;
     } else if (!strcmp(value, "io9-bad-pci-host")) {
         console_test_install_pic_descriptor(true, 1);
         console_test_pic_io_boards[2].pci_host_index = 1;
@@ -759,6 +762,8 @@ static SGIModelProcessor bedrock_test_processor = {
     .kind = (char *)"R14000",
     .cache_clock_hz = 250000000,
     .cache_mib = 2,
+    .has_mode_bits = true,
+    .mode_bits = 0,
     .prid = 0x0f24,
     .fpu_prid = 0,
 };
@@ -1113,7 +1118,7 @@ static void bedrock_test_set_construction_fault(Object *obj,
             hosts, ARRAY_SIZE(hosts));
         bedrock_test_topology.xio_attachments = xio_attachment_list(
             attachments, ARRAY_SIZE(attachments));
-        ip53_test_io9.populated = false;
+        ip53_test_io9.populated = true;
         ip53_test_io9.has_ds1742 = false;
         ip53_test_io9.ds1742 = false;
         ip53_test_io9.pci_host_index = 1;
@@ -1154,6 +1159,19 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "ip53-alt-clock")) {
         bedrock_test_install_ip53_descriptor(true);
         ip53_test_identity.clock_hz = 150000000;
+    } else if (!strcmp(value, "ip53-alt-cpu-reset")) {
+        bedrock_test_install_ip53_descriptor(true);
+        bedrock_test_processor.mode_bits = 1;
+    } else if (!strcmp(value, "ip53-alt-cpu-cache")) {
+        bedrock_test_install_ip53_descriptor(true);
+        bedrock_test_processor.cache_mib = 4;
+    } else if (!strcmp(value, "ip53-alt-bank")) {
+        bedrock_test_install_ip53_descriptor(true);
+        ip53_test_bank_mib[2] = 0;
+        ip53_test_bank_mib[3] = 64;
+        ip53_test_bank_mib_list->next->next->value = 0;
+        ip53_test_bank_mib_list->next->next->next->value = 64;
+        ip53_test_bedrock_config.installed_bank_mask = 0x08;
     } else if (!strcmp(value, "ip53-alt-board-id")) {
         bedrock_test_install_ip53_descriptor(true);
         ip53_test_bedrock_config.board_id_word = 0x2001;

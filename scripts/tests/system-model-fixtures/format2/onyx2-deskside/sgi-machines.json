@@ -31,6 +31,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -186,6 +192,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -341,6 +353,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -494,6 +512,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -641,6 +665,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -760,6 +790,7 @@
       "topology": "onyx2-deskside"
     }
   ],
+  "references": [],
   "schema": "sgi-machines",
   "topologies": [
     {

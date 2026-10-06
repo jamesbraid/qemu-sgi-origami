@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Proposed one-node Onyx 350 compatibility profile; choices await independent review.
+layer_version: 1
+sources:
+  ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
+  onyx350-compatibility-proposal: "docs/datasheets/onyx350-observed-host-compatibility.md: proposed Onyx 350 inputs and explicit unknowns; pending independent evidence review"
+  onyx350-flash-candidate: "docs/datasheets/ip53-boot-flash-experiment.md: candidate 800 MHz/8 MiB seed; captured Onyx module reports PROM 6.211 while the selected payload is 6.210"
+  ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
+  ip53-clock-year-review: "docs/reviews/chimera-ip53-clock-identity-policy-review-20261005.md: cleared fresh-seed policy and limits"
+layer:
+  kind: product
+  id: onyx350-compat
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: derived
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    provenance: derived
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal]
+  cpu_selection:
+    default: {clock_mhz: 800, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  data:
+    machine:
+      name: Onyx 350 IP53 software profile
+      model_role: emulation-target
+      notes: >-
+        Proposed one-node profile using the captured 800 MHz, 8 MiB
+        R16000 input tuple, four CPUs, 8 GiB memory, Bedrock at 200 MHz,
+        PIC revision 3 runtime profile and a launcher-configured PROM seed.
+        Reset word 0x009caf85 is an updater-derived candidate, not a measured
+        electrical reset value. The 8 GiB software bank map follows logical
+        banks 0 through 7; it does not claim physical DIMM slot positions or
+        supply SPD bytes or DIMM part identities. The capture reports PROM
+        6.211, while the selected held payload is 6.210. This is a
+        cross-version software trial and does not reproduce the captured
+        firmware or establish fitted flash. Compatibility choices await
+        independent evidence review.
+      firmware_config:
+        processor_reset_mode: 0x009caf85
+        machine_type: 0x00000001
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate]
+      emulation:
+        machine_name: onyx350
+        display_description: SGI Onyx 350 (IP53), approximate software profile
+        profile: ip53-onyx350-compat
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [8192]
+        pic_profiles:
+          pic: pic-rev3-bedrock-experimental
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x51454d554e00"
+            reason: >-
+              Stable synthetic Bedrock identity for this proposed emulation
+              experiment; no physical board serial is supplied.
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [ip53-platform-driver, onyx350-compatibility-proposal,
+                     onyx350-compatibility-proposal, "hw/mips/sgi/sn1-node.c",
+                     "hw/mips/sgi/sn-machine.c"]
+            notes: >-
+              Selects subtype 2 under the public OpenBSD product mapping. The
+              retained low twelve bits, 0x001, are an unmeasured software
+              choice. This does not identify an observed IP53 reset state.
+              The installed bank mask follows the synthetic bank placement
+              above.
+        l1_controllers:
+          l1:
+            reported_type: 55
+            revision: {major: 1, minor: 18, patch: 5}
+            provenance: derived
+            sources: [onyx350-compatibility-proposal, onyx350-compatibility-proposal]
+            notes: >-
+              Product-specific software approximation for the selected local
+              controller, inferred from the 2U_INT_53 product context. This
+              does not establish a physical response, reset value or the
+              identity of a separately queried I/O controller.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: processor reset execution view
+              address: "0x1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high LBOOT execution alias
+              address: "0x100_1fc0_0000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [onyx350-flash-candidate]
+          notes: >-
+            This path and digest identify the raw original base payload accepted
+            by the existing launcher. The launcher constructs the selected 800 MHz seed from this 6.210 payload and records its distinct hash. The captured module reports PROM 6.211; the trial does not establish physical decode or fitted flash.
+      harness:
+        console: l1-uart
+        console_records:
+          - {kind: console, node_id: bedrock, argument: "-serial chardev:l1", launcher_name: l1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_0", launcher_name: ioc4-serial-0}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_1", launcher_name: ioc4-serial-1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_2", launcher_name: ioc4-serial-2}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_3", launcher_name: ioc4-serial-3}
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: onyx350-compat
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate]
+  evidence_policy: strict
