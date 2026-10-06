@@ -12,7 +12,7 @@ module_instances:
     omit_buses: [craylink, xio]
     observed_hardware:
       mode: projected
-      sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing", "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology", "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
+      sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing", "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology", "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
       note: >-
         Base-module population and placement are projected from the captured
         single-module system and the published GIGAchannel conversion topology;

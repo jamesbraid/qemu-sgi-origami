@@ -67,7 +67,7 @@ layer:
         name: PCI
         kind: pci
         provenance: observed-hardware
-        sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"]
+        sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"]
         master: bridge
         notes: >-
           33 MHz PCI, presented by the Bridge. Dual-address cycles carry 64 bits.
@@ -194,13 +194,13 @@ layer:
           and reports no remote link. The dual-module model omits this placeholder
           and supplies its direct peer CrayLink.
 
-      - { component: bridge, bus: pci, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
-      - { component: isp1040, bus: pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
-      - { component: isp1040-1, bus: pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
-      - { component: ioc3, bus: pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
-      - { component: pci-slot-5, bus: pci, role: endpoint, provenance: vendor-document, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
-      - { component: pci-slot-6, bus: pci, role: endpoint, provenance: vendor-document, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
-      - { component: pci-slot-7, bus: pci, role: endpoint, provenance: vendor-document, sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
+      - { component: bridge, bus: pci, role: bridge-downstream, provenance: observed-hardware, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
+      - { component: isp1040, bus: pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: observed-hardware, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
+      - { component: isp1040-1, bus: pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
+      - { component: ioc3, bus: pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: observed-hardware, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"] }
+      - { component: pci-slot-5, bus: pci, role: endpoint, provenance: vendor-document, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
+      - { component: pci-slot-6, bus: pci, role: endpoint, provenance: vendor-document, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
+      - { component: pci-slot-7, bus: pci, role: endpoint, provenance: vendor-document, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
 
       - { component: ioc3, bus: byte-bus, role: master, provenance: datasheet, sources: [ioc3-datasheet-ioc3-byte, timekeeper-datasheet-timekeeper-attachment] }
       - { component: rtc, bus: byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [ioc3-datasheet-ioc3-byte, timekeeper-datasheet-timekeeper-attachment] }
@@ -232,7 +232,7 @@ layer:
         bus: one-wire
         role: endpoint
         provenance: observed-hardware
-        sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200"]
+        sources: ["web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200"]
     # The Hub one-wire responder package/placement question and the flash-versus-
     # memory decode question moved to the Hub one-wire and address-map datasheets'
     # own "Open questions" sections (docs/datasheets/hub-onewire.md,
@@ -243,7 +243,7 @@ layer:
       - id: ioc3-ethernet
         source: ioc3-eth
         provenance: derived
-        sources: ["mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"]
+        sources: ["web:r10000-users-manual-2.0 processor Cause interrupt contract"]
         description: >-
           The IOC3's ethernet interrupt. The first of the chip's two outputs, on PCI
           interrupt pin A.
@@ -258,7 +258,7 @@ layer:
       - id: ioc3-superio
         source: ioc3
         provenance: derived
-        sources: ["mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"]
+        sources: ["web:r10000-users-manual-2.0 processor Cause interrupt contract"]
         description: >-
           The IOC3's second interrupt output, the SuperIO one. Bridge pin 3, ratified
           by James and confirmed on both guests: Linux maps the board part number to
@@ -276,7 +276,7 @@ layer:
       - id: scsi0
         source: isp1040
         provenance: derived
-        sources: ["mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"]
+        sources: ["web:r10000-users-manual-2.0 processor Cause interrupt contract"]
         description: The SCSI adapter's interrupt, by the same path as any PCI device behind the Bridge.
         chain:
           - { at: isp1040, as: "PCI interrupt pin A", mechanism: level }
@@ -288,7 +288,7 @@ layer:
       - id: scsi1
         source: isp1040-1
         provenance: derived
-        sources: ["mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"]
+        sources: ["web:r10000-users-manual-2.0 processor Cause interrupt contract"]
         description: The second SCSI adapter interrupt, independently sourced before the shared Bridge and Hub path.
         chain:
           - { at: isp1040-1, as: "PCI interrupt pin A", mechanism: level }
@@ -328,7 +328,7 @@ layer:
       - id: cpu-timer
         source: cpu0
         provenance: vendor-document
-        sources: ["mips/r10000-users-manual-v2.0.pdf processor count/compare interrupt contract"]
+        sources: ["web:r10000-users-manual-2.0 processor count/compare interrupt contract"]
         description: >-
           The processor's own count and compare. Included so the model accounts for
           every processor interrupt line, but it never leaves the CPU and the Hub
@@ -367,7 +367,7 @@ layer:
         provenance: vendor-document
         parent: logic-carrier
         description: The main system board on the logic carrier.
-        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted", "photos/theretroweb-origin200/sgi-origin2-1-6a784d73a6d3e594546835.jpg solder-side assembly label, marking 030-1025-002 REV M"]
+        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted", "web:theretroweb-origin200-image-2 solder-side assembly label, marking 030-1025-002 REV M"]
 
       - id: pimm
         name: PIMM
@@ -383,7 +383,7 @@ layer:
         provenance: vendor-document
         parent: logic-carrier
         description: The distinct board carrying PCI option slots 5, 6, and 7.
-        sources: ["007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted", "photos/theretroweb-origin200/sgi-origin3-1-6a784d734456f326815695.jpg PCI backplane component side", "photos/theretroweb-origin200/sgi-origin4-1-6a784d7361a61633987402.jpg PCI backplane solder side"]
+        sources: ["007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted", "web:theretroweb-origin200-image-4 PCI backplane component side", "web:theretroweb-origin200-image-5 PCI backplane solder side"]
 
       - id: cpu0
         name: R10000
@@ -397,7 +397,7 @@ layer:
           processor_identification: "0x0926"
           fpu_identification: "0x0900"
           cache_clock_mhz: 90
-        sources: ["mips/r10000-users-manual-v2.0.pdf"]
+        sources: ["web:r10000-users-manual-2.0"]
 
       - id: node-memory
         name: node memory
@@ -720,7 +720,7 @@ layer:
         aliases: ["DP83840AVCE (package marking)"]
         description: The ethernet physical-layer transceiver, reached through the chip's management interface.
         datasheet_contracts: [docs/datasheets/dp83840.md]
-        sources: ["linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface", "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg Ethernet section, package marked DP83840AVCE"]
+        sources: ["linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface", "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"]
 
       - id: isp1040
         name: QLogic ISP1040
@@ -741,7 +741,7 @@ layer:
           hardware_revision: 6
         datasheet_contracts: &isp1040-datasheet-contracts
           - docs/datasheets/isp1040.md
-        sources: ["photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path"]
+        sources: ["web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path"]
         notes: >-
           Two artifacts, and they establish different halves. The capture observes a SCSI adapter
           answering at PCI device 0: it names the FUNCTION and the SLOT and not the part. The part
@@ -767,7 +767,7 @@ layer:
           pci_revision: 5
           hardware_revision: 6
         datasheet_contracts: *isp1040-datasheet-contracts
-        sources: ["photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Fast/Narrow SCSI channel and its 5.25-inch device path"]
+        sources: ["web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Fast/Narrow SCSI channel and its 5.25-inch device path"]
         notes: >-
           Same split as the first channel: the capture names a SCSI adapter at PCI device 1 and not
           which part it is, and the photograph of a real board supplies the ISP1040B marking. The two QLogic
@@ -828,7 +828,7 @@ layer:
         aliases: ["M48T35-70PCI (package marking)", "M48T35 (Linux driver name)", "DS1742W (what OpenBSD prints)", "DS1747"]
         description: Battery-backed non-volatile memory with a real-time clock, on the IOC3's byte bus.
         datasheet_contracts: [docs/datasheets/timekeeper.md]
-        sources: ["photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg battery-backed clock package, marked M48T35-70PCI"]
+        sources: ["web:theretroweb-origin200-image-1 battery-backed clock package, marked M48T35-70PCI"]
         notes: >-
           Byte-bus chip select 0 is what makes this a Timekeeper. Chip selects 1 and 2 mean a
           DS1687 instead, which is the Octane's clock and is indirectly addressed. The two are not
@@ -866,7 +866,7 @@ layer:
         parent: ip29-system-board
         aliases: ["Number In a Can", "MAC NIC", "owmac (OpenBSD driver)"]
         description: Number In a Can (NIC) holding the board's Ethernet address.
-        sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200"]
+        sources: ["web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200"]
         notes: >-
           The capture observes owmac0 and prints the low seven-bit family type. The full family
           byte is decoder-derived rather than directly observed, so this projection keeps the
@@ -896,7 +896,7 @@ layer:
               Write-only control and read-only status share this offset; which one
               an access reaches is decided by the serial-interface-enable bit.
         datasheet_contracts: [docs/datasheets/pcf8584-elsc.md]
-        sources: ["photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg I2C section, package marked PCF8584T", "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113", "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86"]
+        sources: ["web:theretroweb-origin200-image-1 I2C section, package marked PCF8584T", "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113", "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86"]
         notes: >-
           The Origin 200 board photograph directly shows the PCF8584T package. The
           Origin 2000 and Onyx2 manuals independently identify the shared firmware's

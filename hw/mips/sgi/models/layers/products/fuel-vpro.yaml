@@ -70,7 +70,7 @@ layer:
             # so the reply stays the observable unknown-version error.
             mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
             provenance: guest-source
-            sources: ["linux-mips [PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01): brick type 'A' is SGI Fuel", "docs/datasheets/ip34-fuel.md: L1 identity, PROM 6.210 I/O type lookup and L1 firmware revision input"]
+            sources: ["web:lore-kaloz-ip35-35 brick type 'A' is SGI Fuel", "docs/datasheets/ip34-fuel.md: L1 identity, PROM 6.210 I/O type lookup and L1 firmware revision input"]
             notes: >-
               The reported type comes from a published driver table and the
               PROM's accepted set, not a captured Fuel reply. The older
@@ -115,7 +115,7 @@ layer:
           machine_type: 2
           cpu_mode_word: 0x549aa985
           provenance: derived
-          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table, 0x4000-branch rows", "boot-logs/graphica-sgi-o350-chimera-notes.html stripped text lines 751 to 773: a real Fuel's flash -f machine-type prompt answered 2 (SN11)"]
+          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table, 0x4000-branch rows", "web:graphica-o350-chimera-notes stripped text lines 751 to 773: a real Fuel's flash -f machine-type prompt answered 2 (SN11)"]
           notes: Machine type established from the PROM table and one real flash session; the earlier value 1 was Origin 300's and made the PROM report a CPU configuration mismatch.
         machine_name: fuel
         display_description: SGI Fuel (IP34) with VPro

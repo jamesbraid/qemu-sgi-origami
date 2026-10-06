@@ -16,7 +16,7 @@ module_instances:
     omit_buses: [craylink]
     observed_hardware:
       mode: projected
-      sources: ["108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory", "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
+      sources: ["108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory", "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
       note: >-
         Module population and placement are projected from the captured
         single-module system; the loopback example adds only the Crosstown

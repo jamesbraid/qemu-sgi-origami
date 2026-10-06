@@ -730,7 +730,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -760,7 +760,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -993,7 +993,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1023,7 +1023,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -2151,7 +2151,7 @@
       "provenance": "vendor-document",
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ],
       "variants": [
         {

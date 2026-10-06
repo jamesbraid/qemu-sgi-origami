@@ -88,10 +88,10 @@
       "notes": "33 MHz PCI, presented by the Bridge. Dual-address cycles carry 64 bits. The base board also exposes three opaque expansion connectors labelled slots 5, 6, and 7; those physical labels are not inferred PCI device numbers.",
       "provenance": "derived",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -250,7 +250,7 @@
       "regions": [],
       "sources": [
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted",
-        "photos/theretroweb-origin200/sgi-origin2-1-6a784d73a6d3e594546835.jpg solder-side assembly label, marking 030-1025-002 REV M"
+        "web:theretroweb-origin200-image-2 solder-side assembly label, marking 030-1025-002 REV M"
       ]
     },
     {
@@ -276,8 +276,8 @@
       "regions": [],
       "sources": [
         "007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted",
-        "photos/theretroweb-origin200/sgi-origin3-1-6a784d734456f326815695.jpg PCI backplane component side",
-        "photos/theretroweb-origin200/sgi-origin4-1-6a784d7361a61633987402.jpg PCI backplane solder side"
+        "web:theretroweb-origin200-image-4 PCI backplane component side",
+        "web:theretroweb-origin200-image-5 PCI backplane solder side"
       ]
     },
     {
@@ -310,7 +310,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf"
+        "web:r10000-users-manual-2.0"
       ]
     },
     {
@@ -344,7 +344,7 @@
       "sources": [
         "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted, establishes four physical banks and eight DIMM sockets",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -426,7 +426,7 @@
       ],
       "sources": [
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -582,7 +582,7 @@
       ],
       "sources": [
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -608,7 +608,7 @@
       "regions": [],
       "sources": [
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -729,7 +729,7 @@
       "regions": [],
       "sources": [
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -748,7 +748,7 @@
       "regions": [],
       "sources": [
         "linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface",
-        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg Ethernet section, package marked DP83840AVCE"
+        "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"
       ]
     },
     {
@@ -776,10 +776,10 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
+        "web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -807,10 +807,10 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
+        "web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Fast/Narrow SCSI channel and its 5.25-inch device path",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -873,7 +873,7 @@
       "provenance": "vendor-source",
       "regions": [],
       "sources": [
-        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg battery-backed clock package, marked M48T35-70PCI"
+        "web:theretroweb-origin200-image-1 battery-backed clock package, marked M48T35-70PCI"
       ]
     },
     {
@@ -909,9 +909,9 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200",
+        "web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -946,11 +946,11 @@
         }
       ],
       "sources": [
-        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg I2C section, package marked PCF8584T",
+        "web:theretroweb-origin200-image-1 I2C section, package marked PCF8584T",
         "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113",
         "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1032,7 +1032,7 @@
       "provenance": "vendor-document",
       "sources": [
         "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted",
-        "papers/origin200-2000-technical-report-7-chapters.tar.gz Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"
+        "web:origin-technical-report Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"
       ],
       "supported_bank_sizes_mib": [
         32,
@@ -1050,7 +1050,7 @@
           "note": "Module population and placement are projected from the captured single-module system; the loopback example adds only the Crosstown board's record.",
           "sources": [
             "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-            "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+            "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
           ]
         },
         "omit_buses": [
@@ -1207,10 +1207,10 @@
       "provenance": "derived",
       "role": "bridge-downstream",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1221,10 +1221,10 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1235,10 +1235,10 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1249,10 +1249,10 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1262,7 +1262,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
       ]
     },
@@ -1273,7 +1273,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
       ]
     },
@@ -1284,7 +1284,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
       ]
     },
@@ -1410,9 +1410,9 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200",
+        "web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200",
         "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory",
-        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     }
   ],
@@ -1456,7 +1456,7 @@
       "provenance": "derived",
       "source": "base-ioc3-eth",
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+        "web:r10000-users-manual-2.0 processor Cause interrupt contract"
       ]
     },
     {
@@ -1492,7 +1492,7 @@
       "provenance": "derived",
       "source": "base-ioc3",
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+        "web:r10000-users-manual-2.0 processor Cause interrupt contract"
       ]
     },
     {
@@ -1528,7 +1528,7 @@
       "provenance": "derived",
       "source": "base-isp1040",
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+        "web:r10000-users-manual-2.0 processor Cause interrupt contract"
       ]
     },
     {
@@ -1564,7 +1564,7 @@
       "provenance": "derived",
       "source": "base-isp1040-1",
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+        "web:r10000-users-manual-2.0 processor Cause interrupt contract"
       ]
     },
     {
@@ -1651,7 +1651,7 @@
       "provenance": "vendor-document",
       "source": "base-cpu0",
       "sources": [
-        "mips/r10000-users-manual-v2.0.pdf processor count/compare interrupt contract"
+        "web:r10000-users-manual-2.0 processor count/compare interrupt contract"
       ]
     }
   ],
@@ -1729,7 +1729,7 @@
       "provenance": "vendor-document",
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ],
       "variants": [
         {

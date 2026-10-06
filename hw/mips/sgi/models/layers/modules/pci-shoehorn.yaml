@@ -70,7 +70,7 @@ layer:
         bus: upstream
         role: bridge-upstream
         provenance: derived
-        sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]
+        sources: ["web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"]
         notes: >-
           A placeholder each instance binds to its connector's XIO bus
           (bus_bindings); the connector's own attachment carries the widget and
@@ -82,7 +82,7 @@ layer:
         pci_device: 1
         pci_function: 0
         provenance: derived
-        sources: ["graphics/mgras-ip27/nekonomicon-thread-5749-page1.html real Origin 2000 hardware graph with a Cad Duo behind an XIO-to-PCI converter at /hw/module/1/slot/io5/xtalk_pci/pci/1/pckb and pcms", "forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html real Origin 2000 IRIX console naming /hw/module/1/slot/io5/xtalk_pci/pci/1/scsi_ctlr/0 behind another adapter"]
+        sources: ["web:nekonomicon-5749 real Origin 2000 hardware graph with a Cad Duo behind an XIO-to-PCI converter at /hw/module/1/slot/io5/xtalk_pci/pci/1/pckb and pcms", "web:nekonomicon-16727716 real Origin 2000 IRIX console naming /hw/module/1/slot/io5/xtalk_pci/pci/1/scsi_ctlr/0 behind another adapter"]
         notes: >-
           Two real Origin 2000 captures show the card behind the adapter at
           PCI device 1. QEMU's pci-shoehorn preset fixes the same number.

@@ -1304,7 +1304,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1334,7 +1334,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1566,7 +1566,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1596,7 +1596,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1828,7 +1828,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1858,7 +1858,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -2090,7 +2090,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -2120,7 +2120,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -2598,7 +2598,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 9,
       "xio": {
@@ -2611,7 +2611,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 10,
       "xio": {
@@ -2626,7 +2626,7 @@
       "provenance": "vendor-document",
       "role": "bridge-upstream",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 8,
       "xio": {
@@ -2641,7 +2641,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 12,
       "xio": {
@@ -2655,7 +2655,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 15,
       "xio": {
@@ -2669,7 +2669,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 11,
       "xio": {
@@ -2683,7 +2683,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 14,
       "xio": {
@@ -2697,7 +2697,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 13,
       "xio": {
@@ -2710,7 +2710,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 10,
       "xio": {
@@ -2723,7 +2723,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 9,
       "xio": {
@@ -2737,7 +2737,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 14,
       "xio": {
@@ -2751,7 +2751,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 11,
       "xio": {
@@ -2765,7 +2765,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 15,
       "xio": {
@@ -2779,7 +2779,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 12,
       "xio": {
@@ -2793,7 +2793,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 8,
       "xio": {
@@ -2807,7 +2807,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 13,
       "xio": {
@@ -3203,7 +3203,7 @@
       "provenance": "vendor-document",
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ],
       "variants": [
         {

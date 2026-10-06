@@ -13,4 +13,4 @@ connector_population:
       The base profile is the serial-console Fuel. The fuel-vpro profile fits
       the graphics board.
     provenance: derived
-    sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146: a fitted board answers at xtalk/13"]
+    sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146: a fitted board answers at xtalk/13"]

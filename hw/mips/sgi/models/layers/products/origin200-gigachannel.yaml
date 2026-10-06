@@ -128,7 +128,7 @@ layer:
           12.0 retains a read/write NIC register but identifies its MicroLAN
           controller as nonfunctional, so this reference exposes no Crossbow
           one-wire bus or responder.
-        sources: ["asic/sgi-crossbow-asic-spec-rev12.0.pdf printed and PDF pages 13 14 29 63 93 and 129 mapping trusted", "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"]
+        sources: ["web:crossbow-asic-spec-12.0 printed and PDF pages 13 14 29 63 93 and 129 mapping trusted", "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"]
       - id: gigachannel-midplane
         name: GIGAchannel midplane
         kind: board

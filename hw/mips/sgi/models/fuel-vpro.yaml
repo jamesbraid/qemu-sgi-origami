@@ -17,4 +17,4 @@ connector_population:
     occupant: vpro-v12
     reason: One VPro board answers on the XBridge crossbar's widget 13.
     provenance: observed-hardware
-    sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+    sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146", "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]

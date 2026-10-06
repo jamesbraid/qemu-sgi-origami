@@ -22,7 +22,7 @@ layer:
       banks: [256, 256]
       bank_positions: [0, 1]
       provenance: derived
-      sources: ["comp.sys.sgi.hardware <slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net> 2005-08-13: revision F Fuel software inventory reports 256 MiB banks 0 and 1"]
+      sources: ["web:usenet-slrndfs77l revision F Fuel software inventory reports 256 MiB banks 0 and 1"]
       notes: >-
         Emulator test hypothesis only. The reported software bank numbers do
         not establish which physical Bedrock banks receive sockets 0 and 2.

@@ -28,7 +28,7 @@ layer:
             revision the same real board reports.
         provenance: derived
         datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md]
-        sources: ["forum/mimgfx-origin2000-owner-inventory.html real Origin 2000 hinv -vm: Location /hw/module/1/slot/io8/menet, MENET Board part 030-0873-003 rev J; Origin MENET board, module 1 slot 8: Revision 4", "io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf printed pages 1-6 and 1-7, a Bridge and four IOC3s"]
+        sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv -vm: Location /hw/module/1/slot/io8/menet, MENET Board part 030-0873-003 rev J; Origin MENET board, module 1 slot 8: Revision 4", "108-0151-001 printed pages 1-6 and 1-7, a Bridge and four IOC3s"]
       - id: bridge
         name: Bridge
         kind: pci-host-bridge
@@ -45,11 +45,11 @@ layer:
         datasheet_contracts: [docs/datasheets/bridge.md]
         provenance: derived
         parent: menet
-        sources: ["forum/mimgfx-origin2000-owner-inventory.html Origin MENET board, module 1 slot 8: Revision 4 and slot 7: Revision 3"]
-      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf Figure 1-5 printed page 1-7"]}
+        sources: ["web:mimgfx-origin2000-inventory Origin MENET board, module 1 slot 8: Revision 4 and slot 7: Revision 3"]
+      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
       - {id: ioc3-0-ethernet, name: Ethernet MAC 0, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-0, provenance: vendor-document}
       - {id: ioc3-1-ethernet, name: Ethernet MAC 1, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-1, provenance: vendor-document}
       - {id: ioc3-2-ethernet, name: Ethernet MAC 2, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-2, provenance: vendor-document}
@@ -66,19 +66,19 @@ layer:
       - {id: ioc3-3-nic, name: MAC address NIC 3, kind: subfunction, hardware_kind: ioc3-onewire-identity, parent: ioc3-3, provenance: vendor-document}
       - {id: bridge-nic, name: Bridge identity path, kind: subfunction, parent: bridge, provenance: derived}
     buses:
-      - {id: pci, name: MENET PCI, kind: pci, master: bridge, provenance: vendor-document, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf printed page 1-6, a board using a PCI bus as its local bus"]}
+      - {id: pci, name: MENET PCI, kind: pci, master: bridge, provenance: vendor-document, sources: ["108-0151-001 printed page 1-6, a board using a PCI bus as its local bus"]}
     connections:
       - component: bridge
         bus: upstream
         role: bridge-upstream
         provenance: vendor-document
-        sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf printed pages 2-4 and 2-5, the board fits any XIO slot"]
+        sources: ["108-0151-001 printed pages 2-4 and 2-5, the board fits any XIO slot"]
         notes: >-
           A placeholder each instance binds to its connector's XIO bus
           (bus_bindings); the connector's own attachment carries the widget and
           controlling node.
-      - {component: bridge, bus: pci, role: bridge-downstream, provenance: vendor-document, sources: ["io-chip/108-0151-001-iris-4port-fast-ethernet-adapter.pdf Figure 1-5 printed page 1-7"]}
-      - {component: ioc3-0, bus: pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: derived, sources: ["forum/mimgfx-origin2000-owner-inventory.html real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
-      - {component: ioc3-1, bus: pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: derived, sources: ["forum/mimgfx-origin2000-owner-inventory.html real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
-      - {component: ioc3-2, bus: pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: derived, sources: ["forum/mimgfx-origin2000-owner-inventory.html real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
-      - {component: ioc3-3, bus: pci, role: endpoint, pci_device: 3, pci_function: 0, provenance: derived, sources: ["forum/mimgfx-origin2000-owner-inventory.html real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
+      - {component: bridge, bus: pci, role: bridge-downstream, provenance: vendor-document, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {component: ioc3-0, bus: pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: derived, sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
+      - {component: ioc3-1, bus: pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: derived, sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
+      - {component: ioc3-2, bus: pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: derived, sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}
+      - {component: ioc3-3, bus: pci, role: endpoint, pci_device: 3, pci_function: 0, provenance: derived, sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv: Fast Ethernet ef7 to ef10 at module 1, slot io8, pci 0 to 3"]}

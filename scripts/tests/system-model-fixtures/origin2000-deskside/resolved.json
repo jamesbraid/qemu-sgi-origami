@@ -1171,7 +1171,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1201,7 +1201,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1433,7 +1433,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1463,7 +1463,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1695,7 +1695,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1725,7 +1725,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1957,7 +1957,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -1987,7 +1987,7 @@
       "regions": [],
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ]
     },
     {
@@ -2368,7 +2368,7 @@
           "sources": [
             "007-3453-002 printed page 22 PDF page 40, Figure 2-9: a two-node Origin 2000 deskside with a Null Router",
             "007-3453-002 printed page 21 PDF page 39, Table 2-2: XIO slots 7-12 work with a second Node board",
-            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12"
+            "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12"
           ],
           "supported_cpu_populations": [
             [
@@ -2420,7 +2420,7 @@
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
             "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers",
-            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+            "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
           ],
           "supported_cpu_populations": [
             [
@@ -2481,7 +2481,7 @@
           "sources": [
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
-            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants",
+            "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants",
             "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"
           ],
           "supported_cpu_populations": [
@@ -2685,7 +2685,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 10,
       "xio": {
@@ -2698,7 +2698,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 9,
       "xio": {
@@ -2732,7 +2732,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 9,
       "xio": {
@@ -2747,7 +2747,7 @@
       "provenance": "vendor-document",
       "role": "bridge-upstream",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 8,
       "xio": {
@@ -2761,8 +2761,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 15,
       "xio": {
@@ -2776,8 +2776,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 14,
       "xio": {
@@ -2791,8 +2791,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 12,
       "xio": {
@@ -2806,8 +2806,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 11,
       "xio": {
@@ -2821,8 +2821,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 13,
       "xio": {
@@ -2836,8 +2836,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 11,
       "xio": {
@@ -2851,8 +2851,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 12,
       "xio": {
@@ -2866,8 +2866,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 13,
       "xio": {
@@ -2898,7 +2898,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252"
       ],
       "widget": 10,
       "xio": {
@@ -2912,8 +2912,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 14,
       "xio": {
@@ -2927,8 +2927,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 15,
       "xio": {
@@ -2942,8 +2942,8 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+        "web:origin-onyx2-quick-reference-booklet Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
       ],
       "widget": 8,
       "xio": {
@@ -3499,7 +3499,7 @@
       "provenance": "vendor-document",
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
       ],
       "variants": [
         {
