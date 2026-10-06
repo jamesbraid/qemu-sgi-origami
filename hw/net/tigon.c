@@ -26,6 +26,7 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
+#include "system/replay.h"
 
 #define TIGON_PCI_VENDOR_ID     0x10a9   /* Silicon Graphics */
 #define TIGON_PCI_DEVICE_ID     0x0009   /* SGI Tigon */
@@ -1217,7 +1218,7 @@ static void tigon_tx_finish(TigonState *s, uint32_t completed_bds)
     s->defer_backend_rx = false;
     if (s->backend_rx_deferred) {
         s->backend_rx_deferred = false;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
@@ -2190,6 +2191,11 @@ static ssize_t tigon_receive_iov(NetClientState *nc, const struct iovec *iov,
     return tigon_receive_packet(nc, iov, iovcnt, size);
 }
 
+/*
+ * Scheduled through record/replay: delivering a queued frame writes guest
+ * memory and raises an interrupt, so a replay has to do it at the same
+ * instruction its recording did.
+ */
 static void tigon_rx_flush(void *opaque)
 {
     TigonState *s = opaque;
