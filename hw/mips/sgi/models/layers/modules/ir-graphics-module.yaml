@@ -29,10 +29,7 @@ layer:
         hardware_kind: xtown
         provenance: vendor-document
         sources: ["007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board", "007-3439-002 printed page 73 PDF page 87: the Crosstown conversion board"]
-        notes: >-
-          Presents no board record: the real rack's board list has none,
-          and no capture or disassembly reads a widget identity from it
-          (docs/datasheets/onyx2.md, One-wire records).
+        notes: "Presents no board record: the real rack's board list has none, and no capture or disassembly reads a widget identity from it."
 
       - id: graphics-module
         name: Onyx2 graphics module

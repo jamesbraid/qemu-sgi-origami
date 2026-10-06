@@ -323,7 +323,7 @@
         {
           "id": "bedrock-ni",
           "name": "network interface",
-          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (the OpenBSD capture in docs/library/boot-logs.md).",
+          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (an OpenBSD boot capture).",
           "offset": "0x680000",
           "relative_to": "bedrock",
           "size": "0x80000"
@@ -436,7 +436,7 @@
       "hardware_kind": "xbridge",
       "id": "xbridge-crossbar",
       "identity": {
-        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (the OpenBSD captures in docs/library/boot-logs.md).",
+        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (OpenBSD boot captures).",
         "widget_mfg": "0x000",
         "widget_part": "0xd000",
         "widget_revision": 2
@@ -1432,7 +1432,7 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 300",
-    "notes": "One chassis is one Bedrock node with its NUMAlink 3 port cabled to nothing, so the fabric defers as CrayLink does on a one-node Origin 200. The board has no Crossbow chip, but the XBridge's own crossbar section is live: real Origin 300s report widget 0 as a crossbar (ASIC XBOW Rev 2) with the two PCI bridges at widgets 14 and 15, and a verbose PROM trace from one shows the Bedrock entering the crossbar at port 0xa (the captures listed in docs/library/boot-logs.md). One published two-CPU board reports node inventory IP45_2CPU, part 030-1780-001 rev C, with processors A and C installed; the owner's manual and the scan-tools field guide both also name a four-processor configuration (108-0263-004's own \"IP45 4 CPU R14K 500MHZ 2MB\" FRU name), which fits the two remaining slots B and D on the same two processor interfaces. Other captured IP45 boards are 030-1779-001 rev C (500 MHz) and 030-1797-001 rev B (600 MHz), with IO-8 boards 030-1673-003. A second chassis over the NUMAlink cable is a later configuration and out of scope; one owner's two cabled Origin 300s appear as modules 001c01 and 001c02 at nasids 0 and 1, and OpenBSD trapped on them (the OpenBSD captures)."
+    "notes": "One chassis is one Bedrock node with its NUMAlink 3 port cabled to nothing, so the fabric defers as CrayLink does on a one-node Origin 200. The board has no Crossbow chip, but the XBridge's own crossbar section is live: real Origin 300s report widget 0 as a crossbar (ASIC XBOW Rev 2) with the two PCI bridges at widgets 14 and 15, and a verbose PROM trace from one shows the Bedrock entering the crossbar at port 0xa. One published two-CPU board reports node inventory IP45_2CPU, part 030-1780-001 rev C, with processors A and C installed; the owner's manual and the scan-tools field guide both also name a four-processor configuration (108-0263-004's own \"IP45 4 CPU R14K 500MHZ 2MB\" FRU name), which fits the two remaining slots B and D on the same two processor interfaces. Other captured IP45 boards are 030-1779-001 rev C (500 MHz) and 030-1797-001 rev B (600 MHz), with IO-8 boards 030-1673-003. A second chassis over the NUMAlink cable is a later configuration and out of scope; one owner's two cabled Origin 300s appear as modules 001c01 and 001c02 at nasids 0 and 1, and OpenBSD trapped on them (OpenBSD boot captures)."
   },
   "model_version": 1,
   "open_questions": [
@@ -1509,12 +1509,12 @@
         {
           "answer": "leave the region unassigned pending independent IP45 evidence",
           "notes": "current model position",
-          "source": "James, 2026-09-05; docs/library/origin300-identity-evidence.md"
+          "source": "Maintainer decision, 2026-09-05"
         },
         {
           "answer": "propose a guest-specific compatibility response",
           "notes": "not approved; cannot be presented as a fitted ASIC or a hardware reset value",
-          "source": "OpenBSD consumer observation recorded in docs/library/origin300-identity-evidence.md"
+          "source": "OpenBSD consumer observation"
         }
       ],
       "consequence": "OpenBSD has an identification read, but its register name and a boot banner do not establish the physical decoder, complete register value, or a second register on IP45. No identity region is assigned from that evidence alone.",
@@ -1589,7 +1589,7 @@
         {
           "cache_mib": 2,
           "clock_mhz": 500,
-          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985), independently reviewed in docs/reviews/origin300-config0-reset-word-review.md and recorded in docs/datasheets/r14000.md. No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000 (docs/datasheets/r14000.md), so only the literal word is carried, not a named-field encoding.",
+          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985), which was independently reviewed. No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
           "reset_mode_bits": "0x009aa985"
         },
         {

@@ -27,19 +27,5 @@ layer:
     machine:
       name: Origin 300 with the NUMAlink module
       model_role: reference
-      notes: >-
-        One Origin 300 base module on the NUMAlink module's eight-port SN1
-        Router, the tall-rack packaging that scales from two to eight base
-        modules (two to six in the short rack). Ports 1, 6, 7 and 8 accept base
-        modules only; ports 2 through 5 accept a base or a PCI expansion module
-        and carry USB to the L2; the global master is the lowest base module.
-        The one modeled base module reuses the one-chassis Origin 300 base
-        module's full captured hardware population unchanged. Which of the four
-        base-module-only ports a system with fewer than eight modules occupies
-        is not stated by any source read for this record, so this composition
-        does not wire the base module's LINK connector to a specific numbered
-        port; the port-to-U mapping itself is fully cited on the NUMAlink
-        module's own eight connectors. This configuration never compiles:
-        Origami's QEMU consumer accepts one Origin 300 chassis with no NUMAlink
-        module today.
+      notes: "One Origin 300 base module on the NUMAlink module's eight-port SN1 Router, the tall-rack packaging that scales from two to eight base modules (two to six in the short rack). Ports 1, 6, 7 and 8 accept base modules only; ports 2 through 5 accept a base or a PCI expansion module and carry USB to the L2; the global master is the lowest base module. The one modeled base module reuses the one-chassis Origin 300 base module's full captured hardware population unchanged. Which of the four base-module-only ports a system with fewer than eight modules occupies is not stated by any source read for this record, so this composition does not wire the base module's LINK connector to a specific numbered port; the port-to-U mapping itself is fully cited on the NUMAlink module's own eight connectors. This configuration never compiles: QEMU accepts one Origin 300 chassis with no NUMAlink module today."
     evidence_policy: strict
