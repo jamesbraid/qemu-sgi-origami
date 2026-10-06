@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from lib_screen import (ColorVarietyCheck, DarkPixelFractionCheck,
                         DominantColorCheck, ImageSizeCheck,
-                        LitPixelFractionCheck,
+                        InkExtentCheck, LitPixelFractionCheck,
                         NotAllBlackCheck, RegionColorCheck, ScreenCheckError,
                         evaluate_screendump, gamma_decode, gamma_encode,
                         poll_screendump_until_checks_pass, read_ppm)
@@ -105,6 +105,69 @@ class NotAllBlackCheckTest(unittest.TestCase):
 
         self.assertFalse(check.evaluate(width, height, at_threshold)[0])
         self.assertTrue(check.evaluate(width, height, above_threshold)[0])
+
+
+class InkExtentCheckTest(unittest.TestCase):
+
+    WIDTH, HEIGHT = 20, 6
+
+    def frame(self, ink_columns):
+        data = bytearray(solid_frame(self.WIDTH, self.HEIGHT, (200, 180, 180)))
+        for x in ink_columns:
+            for y in range(self.HEIGHT):
+                offset = (y * self.WIDTH + x) * 3
+                data[offset:offset + 3] = b'\0\0\0'
+        return bytes(data)
+
+    def evaluate(self, ink_columns, **overrides):
+        check = InkExtentCheck('field', rect=(2, 0, 16, 6), min_right=9,
+                               max_right=11, **overrides)
+        return check.evaluate(self.WIDTH, self.HEIGHT,
+                              self.frame(ink_columns))
+
+    def test_passes_when_the_ink_ends_inside_the_band(self):
+        for right in (9, 10, 11):
+            self.assertTrue(self.evaluate([3, right])[0], right)
+
+    def test_fails_when_the_ink_stops_short(self):
+        ok, message = self.evaluate([3, 8])
+
+        self.assertFalse(ok)
+        self.assertIn('x=8', message)
+
+    def test_fails_when_the_ink_runs_past_the_band(self):
+        self.assertFalse(self.evaluate([3, 12])[0])
+
+    def test_fails_when_there_is_no_ink(self):
+        ok, message = self.evaluate([])
+
+        self.assertFalse(ok)
+        self.assertIn('no dark pixel', message)
+
+    def test_ink_outside_the_rectangle_is_ignored(self):
+        self.assertFalse(self.evaluate([1, 19])[0])
+
+    def test_lighter_pixels_are_not_ink(self):
+        data = solid_frame(self.WIDTH, self.HEIGHT, (40, 40, 40))
+        check = InkExtentCheck('field', rect=(2, 0, 16, 6), min_right=9,
+                               max_right=11)
+
+        self.assertFalse(check.evaluate(self.WIDTH, self.HEIGHT, data)[0])
+
+    def test_max_channel_sets_what_counts_as_dark(self):
+        data = solid_frame(self.WIDTH, self.HEIGHT, (40, 40, 40))
+        check = InkExtentCheck('field', rect=(2, 0, 16, 6), min_right=2,
+                               max_right=17, max_channel=50)
+
+        self.assertTrue(check.evaluate(self.WIDTH, self.HEIGHT, data)[0])
+
+    def test_rejects_a_region_outside_the_image(self):
+        check = InkExtentCheck('field', rect=(10, 0, 20, 6), min_right=9,
+                               max_right=11)
+
+        with self.assertRaises(ScreenCheckError):
+            check.evaluate(self.WIDTH, self.HEIGHT,
+                           self.frame([10]))
 
 
 class ImageSizeCheckTest(unittest.TestCase):

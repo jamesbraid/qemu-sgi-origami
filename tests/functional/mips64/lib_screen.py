@@ -17,6 +17,10 @@ bounded, general checks rather than an exact pixel-for-pixel golden image:
     (anti-aliasing, minor timing-dependent partial redraws at the moment
     the dump was taken), tight enough to catch a real channel/scaling bug
     -- a range can also detect channel or scaling errors.
+  - InkExtentCheck: does the rightmost column holding a dark pixel in a
+    rectangle fall inside a band. A text field's content grows to the
+    right a few pixels per character, so where the ink ends says how
+    many characters the field holds when the text itself cannot be read.
   - ImageSizeCheck: is the screendump exactly `width` x `height`. A
     guest that switches the display's video mode changes the size of
     the frame QEMU dumps, and every rectangle a later check names only
@@ -181,6 +185,17 @@ def _region_pixels(width, data, rect):
             yield (line[col * 3], line[col * 3 + 1], line[col * 3 + 2])
 
 
+def _region_pixels_at(width, data, rect):
+    """Like _region_pixels(), yielding (x, y, (r, g, b))."""
+    x0, y0, rw, rh = rect
+    for row in range(y0, y0 + rh):
+        offset = row * width * 3 + x0 * 3
+        line = data[offset:offset + rw * 3]
+        for col in range(rw):
+            yield (x0 + col, row,
+                   (line[col * 3], line[col * 3 + 1], line[col * 3 + 2]))
+
+
 @dataclasses.dataclass(frozen=True)
 class NotAllBlackCheck:
     """Fails only when every channel of every pixel is at or below
@@ -243,6 +258,38 @@ class ImageSizeCheck:
         return False, (
             f'screendump is {width}x{height}, expected '
             f'{self.width}x{self.height}')
+
+
+@dataclasses.dataclass(frozen=True)
+class InkExtentCheck:
+    """Fails unless the rightmost column of rect holding a pixel with
+    every channel at or below `max_channel` lies in
+    [min_right, max_right], in screendump x coordinates. A rectangle
+    with no such pixel fails too.
+    """
+    name: str
+    rect: tuple
+    min_right: int
+    max_right: int
+    max_channel: int = 8
+
+    def evaluate(self, width, height, data):
+        del height
+        _validate_region(width, data, self.rect)
+        right = None
+        for x, _y, pixel in _region_pixels_at(width, data, self.rect):
+            if max(pixel) <= self.max_channel and (right is None
+                                                   or x > right):
+                right = x
+        if right is None:
+            return False, (
+                f'{self.name} has no dark pixel, expected ink to end in '
+                f'{self.min_right}-{self.max_right}')
+        if self.min_right <= right <= self.max_right:
+            return True, (f'{self.name} ink ends at x={right}, inside '
+                          f'{self.min_right}-{self.max_right}')
+        return False, (f'{self.name} ink ends at x={right}, outside '
+                       f'{self.min_right}-{self.max_right}')
 
 
 @dataclasses.dataclass(frozen=True)
