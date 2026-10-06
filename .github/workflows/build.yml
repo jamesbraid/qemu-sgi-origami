@@ -1,26 +1,31 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Build QEMU and run native MIPS64 checks. Smoke and the full run's
-# functional part first run the script and model suites, which need no
-# build. Smoke covers changed qtests, SGI unit tests, the one-CPU Linux boot
-# and the source-built ROM suite; full adds every register test and the
-# PROM and IRIX miniroot boots. The two- and four-CPU Linux boots run only
-# in the nightly's Monday, Wednesday and Friday matrix workload. Guest
-# assets are checksum-verified.
+# Build QEMU and run native MIPS64 checks. The pull-request job is the
+# required check and also runs on every merge-queue integration pull
+# request, in parallel with the full run, so it must stay cheap: it builds,
+# runs the script and model suites, the unit tests, the quick generated-ROM
+# functional tests and only the qtests whose own test files the change edits
+# (none for a change to model code), up to a time budget. It runs no Linux,
+# PROM or IRIX boot and not the ROM suite. The full run, which the merge
+# queue dispatches before every land, adds every register test, those boots,
+# the SMP machine cases and the
+# source-built ROM suite. The two- and four-CPU Linux boots run only in the
+# nightly's Monday, Wednesday and Friday matrix workload. Guest assets are
+# checksum-verified.
 # scripts/ci/sgi-check holds the checks themselves, so a developer can run
 # them in the same image; scripts/ci/runner-setup holds the job-container
 # steps around them.
 name: build and register suite
 
 on:
-  # Pull requests run smoke; dispatch selects smoke or full. The merge queue
-  # dispatches full before landing a pull request.
+  # Pull requests run the cheap check; dispatch selects smoke or full. The
+  # merge queue dispatches full before landing a pull request.
   pull_request:
   workflow_dispatch:
     inputs:
       suite:
         description: >-
-          which job a manual or queue dispatch runs: smoke (the fast
-          per-pull-request subset, the default) or full (the complete register
+          which job a manual or queue dispatch runs: smoke (the cheap
+          per-pull-request check, the default) or full (the complete register
           suite plus every boot, the set the merge queue runs before a land).
         type: choice
         options: [smoke, full]
@@ -40,7 +45,12 @@ jobs:
   build-and-qtest:
     if: ${{ github.server_url != 'https://github.com' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke')) }}
     runs-on: ${{ vars.CI_RUNNER }}
-    timeout-minutes: 175
+    # A batch waits for the slower of this check and the full run, so the
+    # selection is capped, not the job: sgi-check runs the qtests an edit
+    # selects only up to a measured time budget and leaves the rest to the
+    # full run. This timeout is a hang guard, well above the budget plus the
+    # build and setup.
+    timeout-minutes: 40
     # Save the current step name for failure reporting.
     env:
       CI_STEP: /tmp/ci-current-step
@@ -55,8 +65,8 @@ jobs:
         password: ${{ secrets.CI_BOT_TOKEN }}
     steps:
       # Forgejo checks out the pull request head here, one commit deep. The
-      # base fetch below deepens only as far as the merge base, so smoke
-      # selects every changed test without downloading the whole history.
+      # base fetch below deepens only as far as the merge base, so the job
+      # finds the edited tests without downloading the whole history.
       - uses: actions/checkout@v4
 
       - name: docker client
@@ -118,11 +128,11 @@ jobs:
               sh -euxc 'git submodule update --init --depth=1
                         python3 scripts/ci/sgi-check build'
 
-      - name: smoke checks
+      - name: edited qtests and unit tests
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          echo "smoke checks" > "$CI_STEP"
+          echo "edited qtests and unit tests" > "$CI_STEP"
           bash scripts/ci/runner-setup run-tests -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e PR_BASE_SHA="$PR_BASE_SHA" \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \

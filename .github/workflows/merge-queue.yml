@@ -54,7 +54,7 @@ jobs:
           LAND_WORKFLOW: "build.yml"
           LAND_INPUTS: "suite=full"
           LAND_CHECK: "build and register suite / full-suite (workflow_dispatch)"
-          # Land up to two green pull requests per smoke build and full suite
+          # Land up to two green pull requests per pull-request check and full suite
           # instead of one each. Two, not more: a batch goes red whenever any
           # member's full suite would, and with about a fifth of full suites
           # red, larger batches split often enough to save nothing. The driver

@@ -126,50 +126,186 @@ class QtestShards(unittest.TestCase):
 class SmokeQtestSetup(unittest.TestCase):
     """Pull requests run the quick setup; the full run stays thorough."""
 
-    def run_smoke(self):
-        calls = []
+    # a-test is quick, b-test is in the slow suite.
+    SUITES = {'qtest-mips64/a-test': {'qtest', 'qtest-mips64'},
+              'qtest-mips64/b-test': {'qtest', 'qtest-mips64', 'slow'}}
 
-        # The quick setup keeps a-test and leaves out b-test.
+    def run_smoke(self, qtests):
+        calls = []
+        self.out = io.StringIO()
+
         def list_meson_tests(build, dest, *selection):
             calls.append(('list', None, selection))
-            Path(dest).write_text('qtest-mips64/a-test\n', encoding='utf-8')
+            Path(dest).write_text('expected\n', encoding='utf-8')
 
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(sgi_check, 'script_suites'), \
-                mock.patch.object(sgi_check, 'rom_suite'), \
+                mock.patch.object(sgi_check, 'rom_suite') as rom, \
                 mock.patch.object(sgi_check, 'required_cases',
                                   return_value=[]), \
                 mock.patch.object(sgi_check, 'select_qtests',
-                                  return_value=(['qtest-mips64/a-test',
-                                                 'qtest-mips64/b-test'],
-                                                False)), \
-                mock.patch.object(sgi_check.Build, 'ninja'), \
+                                  return_value=qtests), \
+                mock.patch.object(sgi_check.Build, 'ninja') as ninja, \
+                mock.patch.object(sgi_check.Build, 'registered_tests',
+                                  return_value=self.SUITES), \
                 mock.patch.object(sgi_check.Build, 'list_meson_tests',
                                   list_meson_tests), \
                 mock.patch.object(sgi_check.Build, 'meson_test',
                                   lambda self, logbase, args, *a, **kw:
-                                  calls.append((logbase, args, kw))):
+                                  calls.append((logbase, args, kw))), \
+                contextlib.redirect_stdout(self.out):
             sgi_check.smoke(argparse.Namespace(build=Path(tmp), base=None))
             selected = (Path(tmp) / 'selected-qtests.txt').read_text()
+        # The boots and the ROM suite belong to the full run; only the
+        # quick generated-ROM tests run here.
+        rom.assert_not_called()
+        built = ninja.call_args.args
+        self.assertFalse([t for t in built if 'linux' in t or 'smp.' in t])
         return calls, selected
 
     def test_qtests_run_quick(self):
-        calls, _ = self.run_smoke()
+        calls, _ = self.run_smoke(['qtest-mips64/a-test'])
         runs = {logbase: kw for logbase, _, kw in calls if logbase != 'list'}
+        rom = sorted(f'smoke-{logbase}' for _, logbase, *_
+                     in sgi_check.GENERATED_ROM_FUNCTIONAL)
+        self.assertEqual(sorted(runs), sorted(['smoke-qtest', 'smoke-unit']
+                                              + rom))
         self.assertEqual(runs['smoke-qtest']['setup'], 'qemu:quick')
-        for logbase in ('smoke-linux', 'smoke-smp', 'smoke-unit'):
-            self.assertNotIn('setup', runs[logbase])
+        self.assertNotIn('setup', runs['smoke-unit'])
 
     def test_only_the_tests_quick_keeps_are_named(self):
-        calls, selected = self.run_smoke()
+        calls, selected = self.run_smoke(['qtest-mips64/a-test',
+                                          'qtest-mips64/b-test'])
         self.assertEqual(selected,
                          'qtest-mips64/a-test\nqtest-mips64/b-test\n')
         lists = [sel for kind, _, sel in calls if kind == 'list']
         self.assertEqual(lists[0][0], '--names-from')
-        self.assertIn('--exclude-suite=slow', lists[0])
-        self.assertIn('--exclude-suite=thorough', lists[0])
         args = {logbase: args for logbase, args, _ in calls}
         self.assertEqual(args['smoke-qtest'], ['qtest-mips64/a-test'])
+
+    def test_over_budget_selection_runs_only_what_fits(self):
+        suites = {f'qtest-mips64/{n}': {'qtest-mips64'} for n in 'abc'}
+        durations = {'qtest-mips64/a': 100, 'qtest-mips64/b': 200,
+                     'qtest-mips64/c': 300}
+        with mock.patch.object(sgi_check, 'SMOKE_QTEST_BUDGET_S', 300), \
+                mock.patch.object(sgi_check, 'read_durations',
+                                  return_value=durations), \
+                mock.patch.object(self, 'SUITES', suites):
+            calls, _ = self.run_smoke(sorted(suites))
+        args = {logbase: args for logbase, args, _ in calls}
+        self.assertEqual(args['smoke-qtest'],
+                         ['qtest-mips64/a', 'qtest-mips64/b'])
+        self.assertIn('over the 300 s budget): qtest-mips64/c',
+                      self.out.getvalue())
+
+    def test_no_selected_qtest_runs_none(self):
+        for qtests in ([], ['qtest-mips64/b-test']):
+            with self.subTest(qtests=qtests):
+                calls, _ = self.run_smoke(qtests)
+                self.assertNotIn('smoke-qtest',
+                                 [logbase for logbase, _, _ in calls])
+                self.assertIn('smoke-unit',
+                              [logbase for logbase, _, _ in calls])
+
+
+class FitBudget(unittest.TestCase):
+    DURATIONS = {'a': 100, 'b': 200, 'c': 50, 'd': 300}
+
+    def test_under_budget_keeps_all(self):
+        kept, left = sgi_check.fit_budget(['b', 'a'], self.DURATIONS, 360)
+        self.assertEqual((kept, left), (['a', 'b'], []))
+
+    def test_over_budget_keeps_the_cheapest_that_fit(self):
+        kept, left = sgi_check.fit_budget(['d', 'b', 'a', 'c'],
+                                          self.DURATIONS, 360)
+        self.assertEqual((kept, left), (['a', 'b', 'c'], ['d']))
+
+    def test_choice_ignores_input_order(self):
+        tests = ['d', 'b', 'a', 'c']
+        self.assertEqual(sgi_check.fit_budget(tests, self.DURATIONS, 300),
+                         sgi_check.fit_budget(tests[::-1], self.DURATIONS,
+                                              300))
+
+    def test_unmeasured_test_counts_as_the_default(self):
+        kept, left = sgi_check.fit_budget(['a', 'new'], self.DURATIONS,
+                                          200, default=150)
+        self.assertEqual((kept, left), (['a'], ['new']))
+
+    def test_one_test_over_budget_runs_nothing(self):
+        self.assertEqual(sgi_check.fit_budget(['d'], self.DURATIONS, 100),
+                         ([], ['d']))
+
+    def test_tree_budget_and_default_are_set(self):
+        self.assertGreater(sgi_check.SMOKE_QTEST_BUDGET_S, 0)
+        self.assertGreater(sgi_check.UNMEASURED_QTEST_S, 0)
+
+
+class SelectQtests(unittest.TestCase):
+    """A pull request runs the qtests whose own files it edits."""
+
+    REGISTERED = {name: set() for name in (
+        'qtest-mips64/a-test', 'qtest-mips64/b-test',
+        'qtest-mips64/c-test')}
+
+    def select(self, changed, base='abc', fork='fork', new_meson=None):
+        """Select with `changed` as the paths the diff reports."""
+        def output(cmd, **kwargs):
+            if cmd[3] == 'diff':
+                return '\n'.join(changed) + '\n'
+            return BASE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for path in changed:
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(
+                    new_meson if path == sgi_check.QTEST_MESON and new_meson
+                    else '', encoding='utf-8')
+            with mock.patch.object(sgi_check, 'SOURCE', root), \
+                    mock.patch.object(sgi_check, 'output', output), \
+                    mock.patch.object(sgi_check, 'merge_base',
+                                      return_value=fork), \
+                    mock.patch.object(sgi_check.Build, 'registered_tests',
+                                      return_value=self.REGISTERED):
+                return sgi_check.select_qtests(
+                    sgi_check.Build(Path(tmp) / 'build'), base)
+
+    def test_model_code_selects_no_qtest(self):
+        self.assertEqual(self.select(['hw/mips/sgi/ip27.c',
+                                      'hw/net/xframe.c',
+                                      'include/hw/mips/sgi.h']), [])
+
+    def test_two_edited_qtests_select_exactly_those(self):
+        self.assertEqual(
+            self.select(['tests/qtest/a-test.c', 'tests/qtest/c-test.c',
+                         'hw/mips/sgi/ip27.c']),
+            ['qtest-mips64/a-test', 'qtest-mips64/c-test'])
+
+    def test_shared_test_code_selects_nothing(self):
+        self.assertEqual(self.select(['tests/qtest/libqtest.c',
+                                      'tests/qtest/libqtest.h']), [])
+
+    def test_source_the_suite_does_not_register_selects_nothing(self):
+        self.assertEqual(self.select(['tests/qtest/other-arch-test.c']), [])
+
+    def test_table_edit_selects_that_test(self):
+        new = BASE.replace("'b-test': 120,", "'b-test': 180,")
+        self.assertEqual(
+            self.select([sgi_check.QTEST_MESON], new_meson=new),
+            ['qtest-mips64/b-test'])
+
+    def test_other_meson_edit_selects_nothing(self):
+        new = BASE.replace('test(test)', 'test(test, x)')
+        self.assertEqual(
+            self.select([sgi_check.QTEST_MESON], new_meson=new), [])
+
+    def test_no_base_selects_nothing(self):
+        self.assertEqual(self.select(['tests/qtest/a-test.c'], base=None),
+                         [])
+
+    def test_no_merge_base_fails(self):
+        with self.assertRaises(SystemExit):
+            self.select(['tests/qtest/a-test.c'], fork=None)
 
 
 class FullPart(unittest.TestCase):

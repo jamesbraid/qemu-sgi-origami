@@ -143,8 +143,9 @@ case "${1-}" in
     ;;
   fetch-base)
     # The checkout is one commit deep. Fetch the pull request's base and
-    # deepen both histories until they meet, so smoke can diff against the
-    # merge base. Without one, smoke selects every qtest.
+    # deepen both histories until they meet, so the pull-request check can
+    # diff against the merge base. Without one it fails, because it cannot
+    # tell which qtests the change edits.
     : "${PR_BASE_SHA:?PR_BASE_SHA is required}"
     case "$PR_BASE_SHA" in
       ????????????????????????????????????????)
@@ -167,9 +168,9 @@ case "${1-}" in
     if fork=$(git merge-base "$PR_BASE_SHA" "$head" 2>/dev/null); then
       echo "merge base: $fork"
     else
-      # Not an error here: smoke finds no merge base either and selects
-      # every qtest.
-      echo "no merge base between $PR_BASE_SHA and $head; smoke will select every qtest"
+      # Not an error here: sgi-check smoke finds no merge base either and
+      # fails with that message.
+      echo "no merge base between $PR_BASE_SHA and $head; the smoke check will fail"
     fi
     ;;
   volume)
