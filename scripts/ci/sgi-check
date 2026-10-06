@@ -42,6 +42,7 @@ CONFIGURE_ARGS = [
 # pythondeps.toml lists as the sgi-model group, but no QEMU binary.
 MODEL_SUITES = [
     'scripts/tests/test_sgi_model_generator.py',
+    'scripts/tests/test_sgi_model_citations.py',
     'scripts/tests/test_sgi_model_resolution.py',
     'scripts/tests/test_sgi_model_export_contract.py',
     'scripts/tests/test_sgi_model_validation_contract.py',

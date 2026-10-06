@@ -346,6 +346,7 @@ scripts/ci/runner-setup
 scripts/sgi-model.py
 scripts/sgi-replay-convert.py
 scripts/sgi_model/__init__.py
+scripts/sgi_model/citations.py
 scripts/sgi_model/exceptions.py
 scripts/sgi_model/model_compile.py
 scripts/sgi_model/model_composition.py
@@ -428,6 +429,7 @@ scripts/tests/system-model-fixtures/too-many-nodes.yaml
 scripts/tests/system-model-fixtures/widget-identities-on-pci.yaml
 scripts/tests/test_archive_source.py
 scripts/tests/test_check_sgi_test_results.py
+scripts/tests/test_sgi_model_citations.py
 scripts/tests/test_sgi_model_compiler_contract.py
 scripts/tests/test_sgi_model_export_contract.py
 scripts/tests/test_sgi_model_generator.py
