@@ -29,7 +29,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)

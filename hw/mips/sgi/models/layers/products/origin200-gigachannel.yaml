@@ -33,7 +33,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)
@@ -215,7 +215,7 @@ layer:
         kind: one-wire
         master: gigachannel-bridge
         provenance: derived
-        sources: ["docs/datasheets/bridge.md one-wire master", "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"]
+        sources: [qemu:docs/specs/sgi-bridge.rst, "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"]
       - {id: gigachannel-pci, name: GIGAchannel PCI, kind: pci, master: gigachannel-bridge, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
     connections:
       - {component: base-cpu1, bus: base-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
@@ -272,7 +272,7 @@ layer:
       - {component: pci-slot-2, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
       - {component: pci-slot-3, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
       - {component: pci-slot-4, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
-      - {component: gigachannel-bridge, bus: gigachannel-bridge-one-wire, role: master, provenance: derived, sources: ["docs/datasheets/bridge.md one-wire master"]}
+      - {component: gigachannel-bridge, bus: gigachannel-bridge-one-wire, role: master, provenance: derived, sources: [qemu:docs/specs/sgi-bridge.rst]}
       - component: gigachannel-identity
         bus: gigachannel-bridge-one-wire
         role: endpoint

@@ -36,7 +36,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)
@@ -66,7 +66,7 @@ layer:
         supported_guests: [irix, linux, openbsd, gentoo]
         install_media: [disk-image, netboot]
         provenance: derived
-        sources: ["tools/origami_lib/prom.py: IOC3_CONSOLE and DEFAULT_FIRMWARE, the harness's own existing per-machine console and firmware defaults", "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/irix_network_suite.py:37: historical DEFAULT_MACHINE harness default", "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection", "tools/origami_lib/sash.py: the debug-leds=off machine option this harness already sets for Origin 200 and no other product", "QEMU commit bd935b711b0d71244c1e59fb1e18e7b73d8a3dfa (\"hw/mips/sgi/sn0: delete the node's synthesized-firmware hooks\") deletes the synthesized-firmware property from the SN0 machine class entirely; origin200-machine no longer has it under any value"]
+        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-console, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus, "QEMU commit bd935b711b0d71244c1e59fb1e18e7b73d8a3dfa (\"hw/mips/sgi/sn0: delete the node's synthesized-firmware hooks\") deletes the synthesized-firmware property from the SN0 machine class entirely; origin200-machine no longer has it under any value"]
       notes: >-
         This model covers the one-module Origin 200 and QEMU's base profile. The
         Owner's Guide also documents a two-module form with three or four CPUs.

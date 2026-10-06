@@ -29,7 +29,7 @@ layer:
         provenance: datasheet
         identity:
           part: "030-1398-001"
-        sources: ["docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack capture web:nekonomicon-16285"]
+        sources: ["web:nekonomicon-16285 board list, GE16-4 io3, part 030-1398-001 revision E"]
 
     connections:
       - component: geometry-identity

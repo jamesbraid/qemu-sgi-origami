@@ -77,6 +77,8 @@ standalone firmware's Hub header and IRIX's own drivers store marker
 values there, nothing ever read back -- and log as unimplemented, not
 as guest misbehavior.
 
+.. _sgi-hub-processor-interface:
+
 Processor interface
 ===================
 
@@ -145,6 +147,8 @@ before resetting and Linux does not. The error-spool addresses keep
 bits 31:3, start at zero from construction (the datasheet's power-on
 value), and survive reset for the marker the firmware parks in
 processor B's.
+
+.. _sgi-hub-interrupts:
 
 Interrupts
 ==========
