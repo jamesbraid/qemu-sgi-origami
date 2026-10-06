@@ -1226,42 +1226,41 @@ static void test_cpu_pio_order_follows_pci_mapping(void)
 {
     QTestState *qts = pic_runtime_cpu_start(
         true,
-        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,"
-        "byte-lane-self-ordered=on");
+        "-device ds1742,id=clock "
+        "-device sgi-ioc4,bus=pic-head-0.0,addr=2,clock-hz=33333333,"
+        "clock=/machine/peripheral/clock/memory-region");
     uint64_t cpu_short = CPU_HEAD(0) + 0x600008;
     uint64_t ordinary = BASE + 0x44000008;
-    uint64_t native = BASE + 0x45000008;
-    uint64_t relocated = BASE + 0x46000008;
+    uint64_t native = BASE + 0x45000000 + 0x87ff8;
+    uint64_t relocated = BASE + 0x46000000 + 0x87ff8;
+    uint64_t cpu_clock = CPU_HEAD(0) + 0x600000 + 0x87ff8;
+    uint8_t clock_control;
 
     pic_short_enable_card(qts, 0, 1, 0x02000000, 0x04000000, 0x3001,
                           PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
-    pic_short_enable_card(qts, 0, 2, 0x03000000, 0x05000000, 0x3009,
-                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x10, 0x05000000);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, PCI_COMMAND_MEMORY);
     qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
     qtest_writeq(qts, ordinary, UINT64_C(0x0123456789abcdef));
     qtest_writeb(qts, cpu_short, 0xa1);
     g_assert_cmphex(qtest_readb(qts, ordinary + 3), ==, 0xa1);
 
     qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x50 | (1U << 12));
-    qtest_writeq(qts, native, UINT64_C(0x0123456789abcdef));
-    qtest_writeb(qts, cpu_short, 0xb2);
-    g_assert_cmphex(qtest_readb(qts, native), ==, 0xb2);
-    qtest_writel(qts, cpu_short, 0x12345678);
-    g_assert_cmphex(qtest_readb(qts, native), ==, 0x12);
-    g_assert_cmphex(qtest_readb(qts, native + 1), ==, 0x34);
-    g_assert_cmphex(qtest_readb(qts, native + 2), ==, 0x56);
-    g_assert_cmphex(qtest_readb(qts, native + 3), ==, 0x78);
+    clock_control = qtest_readb(qts, native) | 0x80;
+    qtest_writeb(qts, cpu_clock, clock_control);
+    qtest_writeb(qts, cpu_clock + 1, 0x42);
+    g_assert_cmphex(qtest_readb(qts, cpu_clock + 1), ==, 0x42);
+    g_assert_cmphex(qtest_readb(qts, native + 1), ==, 0x42);
 
-    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x14, 0x06000000);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x10, 0x06000000);
     qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x60 | (1U << 12));
-    qtest_writeq(qts, relocated, UINT64_C(0x1122334455667788));
-    qtest_writeb(qts, cpu_short, 0xc3);
-    g_assert_cmphex(qtest_readb(qts, relocated), ==, 0xc3);
+    qtest_writeb(qts, cpu_clock + 1, 0x43);
+    g_assert_cmphex(qtest_readb(qts, relocated + 1), ==, 0x43);
 
     qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, 0);
-    qtest_writeb(qts, cpu_short, 0xd4);
+    qtest_writeb(qts, cpu_clock + 1, 0x44);
     qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, PCI_COMMAND_MEMORY);
-    g_assert_cmphex(qtest_readb(qts, relocated), ==, 0xc3);
+    g_assert_cmphex(qtest_readb(qts, relocated + 1), ==, 0x43);
     qtest_quit(qts);
 }
 
@@ -1269,22 +1268,21 @@ static void test_cpu_pio_overlapping_bars_use_active_function(void)
 {
     QTestState *qts = pic_runtime_cpu_start(
         true,
-        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,"
-        "byte-lane-self-ordered=on");
-    uint64_t raw = BASE + 0x45000000ULL + 0x24;
-    uint64_t cpu_short = CPU_HEAD(0) + 0x600024;
+        "-device sgi-ioc4,bus=pic-head-0.0,addr=2,clock-hz=33333333");
+    uint64_t raw = BASE + 0x45000010;
+    uint64_t cpu_short = CPU_HEAD(0) + 0x600010;
 
     pic_short_enable_card(qts, 0, 1, 0x05000000, 0x04000000, 0x3001,
                           PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
-    pic_short_enable_card(qts, 0, 2, 0x05000000, 0x06000000, 0x3009,
-                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 0x10, 0x05000000);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 2) + 4, PCI_COMMAND_MEMORY);
     qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x50 | (1U << 12));
 
-    /* The later native BAR owns the overlapping raw PCI address. */
-    qtest_writel(qts, raw, 0x01234567);
-    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x01234567);
-    qtest_writel(qts, cpu_short, 0x11223344);
-    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x44332211);
+    /* IOC4 owns the overlap: its enable register differs from the fixture's. */
+    qtest_writel(qts, raw, 0x40);
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x40);
+    qtest_writel(qts, cpu_short, 0x20);
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x20000040);
 
     qtest_quit(qts);
 }

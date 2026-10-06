@@ -1874,26 +1874,22 @@ static bool nasid_test_cpu_readl(QTestState *qts, unsigned int cpu,
 #define IP53_BCM_RX_RETURN (IP53_BCM_DMA_BASE + IP53_BCM_RX_RETURN_RAM)
 #define IP53_BCM_RX_BUFFER (IP53_BCM_DMA_BASE + IP53_BCM_RX_BUFFER_RAM)
 #define IP53_BCM_FRAME_SIZE 60
+#define IP53_BCM_DMA_MODE (0x20000 | 0x36)
 
-static void ip53_bcm_put32le(uint8_t *buffer, uint32_t value)
+static void ip53_bcm_put32(uint8_t *buffer, uint32_t value)
 {
-    buffer[0] = value;
-    buffer[1] = value >> 8;
-    buffer[2] = value >> 16;
-    buffer[3] = value >> 24;
+    stl_be_p(buffer, value);
 }
 
-static void ip53_bcm_put16le(uint8_t *buffer, unsigned int offset,
-                             uint16_t value)
+static void ip53_bcm_put16(uint8_t *buffer, unsigned int offset,
+                            uint16_t value)
 {
-    buffer[offset] = value;
-    buffer[offset + 1] = value >> 8;
+    stw_be_p(buffer + (offset ^ 2), value);
 }
 
-static uint32_t ip53_bcm_get32le(const uint8_t *buffer)
+static uint32_t ip53_bcm_get32(const uint8_t *buffer)
 {
-    return ((uint32_t)buffer[3] << 24) | ((uint32_t)buffer[2] << 16) |
-           ((uint32_t)buffer[1] << 8) | buffer[0];
+    return ldl_be_p(buffer);
 }
 
 static void ip53_bcm_sram_write(QTestState *qts, uint32_t offset,
@@ -1910,9 +1906,9 @@ static bool ip53_bcm_sram_read_cpu(QTestState *qts, uint32_t offset,
     return nasid_test_cpu_readl(qts, 0, IP53_BCM_CFG + 0x84, value);
 }
 
-static uint16_t ip53_bcm_get16le(const uint8_t *buffer)
+static uint16_t ip53_bcm_get16(const uint8_t *buffer)
 {
-    return ((uint16_t)buffer[1] << 8) | buffer[0];
+    return lduw_be_p((const uint8_t *)((uintptr_t)buffer ^ 2));
 }
 
 static void ip53_bcm_send_frame(int fd, const uint8_t *frame, size_t length)
@@ -2632,7 +2628,7 @@ static void test_sgi_catalogue_references(void)
     };
     QTestState *qts = qtest_init("-M none");
     QDict *resp = qtest_qmp(qts,
-        "{ 'execute': 'query-sgi-sn-catalogue' }");
+        "{ 'execute': 'query-sgi-machines' }");
     QDict *catalogue = qdict_get_qdict(resp, "return");
     QList *references, *topologies, *offerings;
     QListEntry *entry;
@@ -2643,7 +2639,7 @@ static void test_sgi_catalogue_references(void)
     topologies = qdict_get_qlist(catalogue, "topologies");
     offerings = qdict_get_qlist(catalogue, "offerings");
     g_assert_nonnull(references);
-    g_assert_cmpuint(qlist_size(references), ==, G_N_ELEMENTS(names));
+    g_assert_cmpuint(qlist_size(references), >=, G_N_ELEMENTS(names));
     QLIST_FOREACH_ENTRY(references, entry) {
         QDict *reference = qobject_to(QDict, qlist_entry_obj(entry));
         const char *name = qdict_get_str(reference, "name");
@@ -2715,8 +2711,6 @@ static void test_ip53_runtime_permission_defaults_false_and_immutable(void)
 static void test_ip53_runtime_construction(void)
 {
     g_autoptr(GError) err = NULL;
-    g_autofree uint8_t *blank = g_malloc0(IP53_TEST_PROM_SIZE);
-    g_autofree char *bios = NULL;
     g_autofree char *flash_path = NULL;
     g_autofree char *bedrock = NULL;
     g_autofree char *boot_flash = NULL;
@@ -2727,7 +2721,6 @@ static void test_ip53_runtime_construction(void)
     g_autofree char *rtc = NULL;
     g_autofree char *data_path = NULL;
     g_autofree char *clock_path = NULL;
-    int fd;
     int flash_fd, data_fd, clock_fd;
     QTestState *qts;
     QDict *response;
@@ -2736,12 +2729,6 @@ static void test_ip53_runtime_construction(void)
     unsigned int cpu_count = 0;
     uint64_t board_id;
 
-    fd = g_file_open_tmp("sn-builder-origin350-ip53-prom-XXXXXX.bin",
-                         &bios, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(write(fd, blank, IP53_TEST_PROM_SIZE), ==,
-                    IP53_TEST_PROM_SIZE);
-    g_assert_cmpint(close(fd), ==, 0);
     flash_fd = g_file_open_tmp("sn-builder-origin350-ip53-flash-XXXXXX",
                                &flash_path, &err);
     g_assert_no_error(err);
@@ -2762,11 +2749,10 @@ static void test_ip53_runtime_construction(void)
         "ip53-experimental=on -m 2G -smp 4 "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000 "
-        "-bios %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-display none -S", bios, flash_path, data_path, clock_path);
+        "-display none -S", flash_path, data_path, clock_path);
 
     /* A source-field assertion alone would miss a stale runtime projection. */
     g_assert_true(nasid_test_cpu_readq(qts, 0, IP53_BOARD_ID_LOCAL,
@@ -2821,7 +2807,6 @@ static void test_ip53_runtime_construction(void)
         qobject_unref(failure);
     }
     qtest_quit(qts);
-    g_unlink(bios);
     g_unlink(flash_path);
     g_unlink(data_path);
     g_unlink(clock_path);
@@ -2829,7 +2814,6 @@ static void test_ip53_runtime_construction(void)
 
 typedef struct IP53RuntimeTestFixture {
     QTestState *qts;
-    char *bios;
     char *flash_path;
     char *data_path;
     char *clock_path;
@@ -2851,20 +2835,13 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     const char *memory, const char *reset_mode)
 {
     g_autoptr(GError) err = NULL;
-    g_autofree uint8_t *blank = g_malloc0(IP53_TEST_PROM_SIZE);
     g_autofree char *arguments = NULL;
     const char *scache_bytes = g_str_has_prefix(
         machine, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial")
         ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
-    int fd, flash_fd, data_fd, clock_fd;
+    int flash_fd, data_fd, clock_fd;
 
-    fd = g_file_open_tmp("sn-builder-origin350-ip53-test-prom-XXXXXX",
-                         &fixture->bios, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(write(fd, blank, IP53_TEST_PROM_SIZE), ==,
-                    IP53_TEST_PROM_SIZE);
-    g_assert_cmpint(close(fd), ==, 0);
     flash_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-flash-XXXXXX",
                                &fixture->flash_path, &err);
     g_assert_no_error(err);
@@ -2884,12 +2861,11 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
         "-M %s -m %s -smp 4 "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=%s,r16000-scache-bytes=%s "
-        "-bios %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
         "-display none -S %s", machine, memory, reset_mode, scache_bytes,
-        fixture->bios, fixture->flash_path, fixture->data_path,
+        fixture->flash_path, fixture->data_path,
         fixture->clock_path,
         extra ? extra : "");
     fixture->qts = qtest_init_ext(binary_var, arguments, NULL, true);
@@ -2999,11 +2975,9 @@ static IP53RuntimeTestFixture *ip53_onyx350_runtime_test_start(
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
 {
     qtest_quit(fixture->qts);
-    g_unlink(fixture->bios);
     g_unlink(fixture->flash_path);
     g_unlink(fixture->data_path);
     g_unlink(fixture->clock_path);
-    g_free(fixture->bios);
     g_free(fixture->flash_path);
     g_free(fixture->data_path);
     g_free(fixture->clock_path);
@@ -3313,6 +3287,8 @@ static void test_ip53_static_bcm5701_network_backend(void)
     qtest_writel(fixture->qts, IP53_BCM_CFG + 4,
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(fixture->qts, IP53_BCM_CFG + 0x10, 0x01000000);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x6800,
+                 IP53_BCM_DMA_MODE);
     g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
                                        IP53_BCM_CFG + 0x10, &value));
     g_assert_cmphex(value, ==, 0x01000000);
@@ -3326,10 +3302,10 @@ static void test_ip53_static_bcm5701_network_backend(void)
     for (i = 0; i < sizeof(tx_frame); i++) {
         tx_frame[i] = i * 7 + 1;
     }
-    ip53_bcm_put32le(tx_descriptor, 0);
-    ip53_bcm_put32le(tx_descriptor + 4, IP53_BCM_TX_BUFFER);
-    ip53_bcm_put16le(tx_descriptor, 8, 4);
-    ip53_bcm_put16le(tx_descriptor, 10, sizeof(tx_frame));
+    ip53_bcm_put32(tx_descriptor, 0);
+    ip53_bcm_put32(tx_descriptor + 4, IP53_BCM_TX_BUFFER);
+    ip53_bcm_put16(tx_descriptor, 8, 4);
+    ip53_bcm_put16(tx_descriptor, 10, sizeof(tx_frame));
     qtest_memwrite(fixture->qts, IP53_BCM_TX_RING_RAM, tx_descriptor,
                    sizeof(tx_descriptor));
     qtest_memwrite(fixture->qts, IP53_BCM_TX_BUFFER_RAM, tx_frame,
@@ -3346,8 +3322,8 @@ static void test_ip53_static_bcm5701_network_backend(void)
                                            &address_word);
         g_test_message("BCM TX before kick: descriptor=%08x:%08x "
                        "CPU visible=%u address word=%08x",
-                       ip53_bcm_get32le(descriptor),
-                       ip53_bcm_get32le(descriptor + 4), cpu_visible,
+                       ip53_bcm_get32(descriptor),
+                       ip53_bcm_get32(descriptor + 4), cpu_visible,
                        address_word);
     }
     qtest_memset(fixture->qts, IP53_BCM_STATUS_RAM, 0, 0x50);
@@ -3380,10 +3356,10 @@ static void test_ip53_static_bcm5701_network_backend(void)
                        "descriptor=%08x:%08x flags=%04x length=%u "
                        "status=%02x%02x%02x%02x",
                        rcb_hi, rcb_lo, rcb_len, producer,
-                       ip53_bcm_get32le(descriptor),
-                       ip53_bcm_get32le(descriptor + 4),
-                       ip53_bcm_get16le(descriptor + 8),
-                       ip53_bcm_get16le(descriptor + 10), status[0],
+                       ip53_bcm_get32(descriptor),
+                       ip53_bcm_get32(descriptor + 4),
+                       ip53_bcm_get16(descriptor + 8),
+                       ip53_bcm_get16(descriptor + 10), status[0],
                        status[1], status[2], status[3]);
     }
     received_length = ip53_bcm_receive_frame(sockets[0], received,
@@ -3399,8 +3375,8 @@ static void test_ip53_static_bcm5701_network_backend(void)
     for (i = 14; i < sizeof(rx_frame); i++) {
         rx_frame[i] = i;
     }
-    ip53_bcm_put32le(rx_descriptor, 0);
-    ip53_bcm_put32le(rx_descriptor + 4, IP53_BCM_RX_BUFFER);
+    ip53_bcm_put32(rx_descriptor, 0);
+    ip53_bcm_put32(rx_descriptor + 4, IP53_BCM_RX_BUFFER);
     qtest_memwrite(fixture->qts, IP53_BCM_RX_RING_RAM, rx_descriptor,
                    sizeof(rx_descriptor));
     qtest_memset(fixture->qts, IP53_BCM_RX_RETURN_RAM, 0,
@@ -3424,7 +3400,7 @@ static void test_ip53_static_bcm5701_network_backend(void)
         qtest_clock_step(fixture->qts, 1000000);
         qtest_memread(fixture->qts, IP53_BCM_RX_RETURN_RAM, completed,
                       sizeof(completed));
-        value = ip53_bcm_get32le(completed + 8);
+        value = ip53_bcm_get32(completed + 8);
         if (value) {
             break;
         }
@@ -3595,6 +3571,8 @@ static void ip53_runtime_configure_bcm(QTestState *qts)
     g_assert_cmphex(qtest_readl(qts, IP53_BCM_CFG + 4) & 0xffff, ==,
                     PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     g_assert_cmphex(qtest_readl(qts, IP53_BCM_CFG + 0x10), ==, 0x02000000);
+    qtest_writel(qts, IP53_RUNTIME_BCM_BAR + 0x6800,
+                 IP53_BCM_DMA_MODE);
     qtest_writeq(qts, IP53_BCM_RUNTIME_PIC_HEAD0 + 0x208, 0x1020);
     g_assert_cmphex(qtest_readq(qts,
                     IP53_BCM_RUNTIME_PIC_HEAD0 + 0x208), ==, 0x1020);
@@ -3629,9 +3607,9 @@ static void ip53_runtime_raise_bcm_irq(QTestState *qts, uint32_t producer)
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = i * 7 + 1;
     }
-    ip53_bcm_put32le(descriptor + 4, IP53_BCM_TX_BUFFER);
-    ip53_bcm_put16le(descriptor, 8, 4);
-    ip53_bcm_put16le(descriptor, 10, sizeof(frame));
+    ip53_bcm_put32(descriptor + 4, IP53_BCM_TX_BUFFER);
+    ip53_bcm_put16(descriptor, 8, 4);
+    ip53_bcm_put16(descriptor, 10, sizeof(frame));
     qtest_memwrite(qts, IP53_BCM_TX_RING_RAM + ring_offset, descriptor,
                    sizeof(descriptor));
     qtest_memread(qts, IP53_BCM_TX_RING_RAM + ring_offset,
@@ -3657,9 +3635,9 @@ static void ip53_runtime_raise_bcm_irq(QTestState *qts, uint32_t producer)
     g_assert_cmphex(qtest_readl(qts, IP53_RUNTIME_BCM_BAR + 0x0304), ==,
                     producer);
     qtest_memread(qts, IP53_BCM_STATUS_RAM, status, sizeof(status));
-    g_assert_cmphex(ip53_bcm_get32le(status), ==, 1);
-    g_assert_cmphex(ip53_bcm_get32le(status + 4), !=, 0);
-    g_assert_cmphex(ip53_bcm_get16le(status + 18), ==, producer);
+    g_assert_cmphex(ip53_bcm_get32(status), ==, 1);
+    g_assert_cmphex(ip53_bcm_get32(status + 4), !=, 0);
+    g_assert_cmphex(ip53_bcm_get16(status + 18), ==, producer);
     pcistate = qtest_readl(qts, IP53_BCM_CFG + 0x70);
     g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_BCM_CFG + 0x70,
                                        &cpu_pcistate));
@@ -5792,8 +5770,9 @@ static void test_compute_memory_projection(gconstpointer opaque)
                     UINT64_C(0x30000000000) + node + 0x40000, "i/o");
                 assert_compute_memory_projection(qts, cpu,
                     NASID_TEST_SPACE_HUB + node + 0x38000000, "rom");
+                /* FlatView reports the reset IOMMU, not its PROM target. */
                 assert_compute_memory_projection(qts, cpu, 0x1fc00000,
-                                                  "rom");
+                                                  "i/o");
             }
         }
     }

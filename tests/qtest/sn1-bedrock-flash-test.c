@@ -46,7 +46,7 @@ static unsigned count_lines(const char *text, const char *needle);
 #define IP53_TCG_RAM_CONTROL 0x40000ULL
 #define IP53_TCG_FLASH_MARKER (IP53_TCG_RAM_CONTROL + 8)
 #define IP53_TCG_CODE_OFFSET 0x1000
-#define IP53_TCG_PARK_OFFSET 0x80
+#define IP53_TCG_PARK_OFFSET 0xc0
 #define IP53_TCG_BEDROCK (SPACE_IO + UINT64_C(0x01800000))
 #define IP53_TCG_MD_MEMORY_CONFIG 0x780008ULL
 #define IP53_TCG_MD_INSTALLED_BANKS_0_1 UINT64_C(0x53)
@@ -57,6 +57,7 @@ static unsigned count_lines(const char *text, const char *needle);
 #define IP53_TCG_OLD_MARKER 0xffffULL
 #define IP53_TCG_NEW_MARKER 0x7fffULL
 #define IP53_TCG_RAM_MARKER 0x52414d43ULL
+#define IP53_TCG_RESET_RAM_DONE_MARKER UINT64_C(0x52535444)
 #define IP53_TCG_RESET_STORE_MARKER 0x52535456ULL
 #define IP53_TCG_RESET_STORE_VALUE 0x1234ULL
 #define IP53_TCG_ROUTE_COPY_MARKER UINT64_C(0x524f555445434f50)
@@ -187,25 +188,24 @@ static QTestState *flash_start(const char *image, const char *options,
     return s;
 }
 
-static QTestState *ip53_flash_start(const char *bios, const char *image,
+static QTestState *ip53_flash_start(const char *image,
                                     const char *data, const char *clock,
                                     const char *extra)
 {
-    g_autofree char *quoted_bios = g_shell_quote(bios);
     g_autofree char *quoted_image = g_shell_quote(image);
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
 
     return qtest_initf("-M sn-builder-bedrock-test,"
                        "construction-fault=ip53-pic-io9 "
-                       "-m 64M -smp 1 -cpu R14000 -bios %s "
+                       "-m 64M -smp 1 -cpu R14000 "
                        "-drive if=pflash,file=%s,format=raw,readonly=off "
                        "-drive if=none,id=sgi-ds1742-data-fixture-io9,"
                        "file=%s,format=raw "
                        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,"
                        "file=%s,format=raw "
                        "-display none -S %s",
-                       quoted_bios, quoted_image, quoted_data, quoted_clock,
+                       quoted_image, quoted_data, quoted_clock,
                        extra);
 }
 
@@ -685,7 +685,7 @@ static void ip53_tcg_build_payload(uint8_t *payload, bool high_alias)
         0x01094025,             /* or t0, t0, t1 */
         0xdd0a0020,             /* ld t2, 0x20(t0): PI CPU number */
         0x314a0003,             /* andi t2, t2, 3: unique global slice */
-        0x15400011,             /* bne t2, zero, park */
+        0x15400024,             /* bne t2, zero, park */
         0,
         0x3c0a8001,             /* lui t2, 0x8001: RAM trampoline */
         0x01400008,             /* jr t2 */
@@ -704,6 +704,7 @@ static void ip53_tcg_build_payload(uint8_t *payload, bool high_alias)
         ip53_mips_store(payload, i * 4, startup[i]);
     }
     {
+        /* The flash configurator rewrites 0x60-0xaf of this image. */
         uint32_t park[10];
         size_t count = ip53_mips_load_imm64(
             park, 0, 8, UINT64_C(0x980000001fc00100));
@@ -788,11 +789,10 @@ static void ip53_tcg_build_boundary_payload(uint8_t *payload,
     }
 }
 
-static QTestState *ip53_tcg_flash_start(const char *bios, const char *image,
+static QTestState *ip53_tcg_flash_start(const char *image,
                                         const char *data, const char *clock,
                                         const char *extra)
 {
-    g_autofree char *quoted_bios = g_shell_quote(bios);
     g_autofree char *quoted_image = g_shell_quote(image);
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
@@ -801,14 +801,13 @@ static QTestState *ip53_tcg_flash_start(const char *bios, const char *image,
                        "-cpu R16000,r16000-experimental=on,"
                        "r16000-reset-mode=0x009cad85,"
                        "r16000-scache-bytes=0x800000 "
-                       "-bios %s "
                        "-drive if=pflash,index=0,file=%s,format=raw "
                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                        "format=raw "
                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                        "format=raw "
                        "-accel tcg,thread=single -display none -S %s",
-                       quoted_bios, quoted_image, quoted_data, quoted_clock,
+                       quoted_image, quoted_data, quoted_clock,
                        extra ? extra : "");
 }
 
@@ -921,7 +920,7 @@ static void test_ip53_reset_boundary_tlb_fill_order(void)
         image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
         image_erase_sector(image, 0);
         image_write(image, 0, payload, IP53_EXECUTION_SIZE);
-        s = ip53_tcg_flash_start(bios, image, data, clock, NULL);
+        s = ip53_tcg_flash_start(image, data, clock, NULL);
 
         qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
                      IP53_TCG_MD_INSTALLED_BANKS_0_1);
@@ -1058,7 +1057,7 @@ static void test_ip53_guest_store_refuses_reset_view(void)
         image_erase_sector(image, 0);
         image_write(image, 0, payload, IP53_EXECUTION_SIZE);
         s = static_carrier ? ip53_tcg_static_start(bios, data, clock, extra) :
-            ip53_tcg_flash_start(bios, image, data, clock, extra);
+            ip53_tcg_flash_start(image, data, clock, extra);
 
         qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
                      UINT64_C(0x33));
@@ -1129,7 +1128,7 @@ static void test_ip53_tcg_code_refresh(void)
         image_write(bios, 0, payload, IP53_EXECUTION_SIZE);
         image_erase_sector(image, 0);
         image_write(image, 0, payload, IP53_EXECUTION_SIZE);
-        s = ip53_tcg_flash_start(bios, image, data, clock, NULL);
+        s = ip53_tcg_flash_start(image, data, clock, NULL);
         /* Keep the reset vector uncovered while the fixture starts. */
         qtest_writeq(s, IP53_TCG_BEDROCK + IP53_TCG_MD_MEMORY_CONFIG,
                      UINT64_C(0x33));
@@ -1325,13 +1324,11 @@ static void test_ip53_reset_views_are_shared(void)
 }
 
 /*
- * The builder fixture supplies an IP53 node with a synthetic 1 MiB BIOS.
- * Its writable flash is a separate 16 MiB image. Only the reviewed payload
- * length is visible in the reset and high local execution views.
+ * The builder fixture boots from a writable 16 MiB flash image. Only the
+ * reviewed payload length is visible in the reset and high local views.
  */
 static void test_ip53_execution_views(void)
 {
-    g_autofree char *bios = sized_image("ip53-bios", IP53_PROM_SIZE);
     g_autofree char *image = flash_image("ip53-views");
     g_autofree char *data = sized_image("ip53-views-rtc-data", 0x800);
     g_autofree char *clock = sized_image("ip53-views-rtc-clock", 16);
@@ -1351,7 +1348,7 @@ static void test_ip53_execution_views(void)
                             "trace:pflash_data_write,"
                             "trace:pflash_sector_erase_start -D %s "
                             "-qtest-log /dev/stderr", log);
-    s = ip53_flash_start(bios, image, data, clock, extra);
+    s = ip53_flash_start(image, data, clock, extra);
 
     g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_EXECUTION_SIZE - 8), ==,
                     0x1122334455667788ULL);
@@ -1409,7 +1406,6 @@ static void test_ip53_execution_views(void)
 
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
-    g_assert_cmpint(unlink(bios), ==, 0);
     g_assert_cmpint(unlink(data), ==, 0);
     g_assert_cmpint(unlink(clock), ==, 0);
 }
@@ -1419,8 +1415,6 @@ static void test_ip53_execution_view_migration(void)
     g_autoptr(GError) error = NULL;
     g_autofree char *directory =
         g_dir_make_tmp("sn1-ip53-flash-migration-XXXXXX", &error);
-    g_autofree char *bios = sized_image("ip53-migration-bios",
-                                        IP53_PROM_SIZE);
     g_autofree char *source = flash_image("ip53-migration-source");
     g_autofree char *destination = flash_image("ip53-migration-destination");
     g_autofree char *source_data = sized_image("ip53-migration-source-rtc-data",
@@ -1444,8 +1438,8 @@ static void test_ip53_execution_view_migration(void)
     image_write_be64(destination, 0x204, 0x1111111111111111ULL);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from = ip53_flash_start(bios, source, source_data, source_clock, "");
-    to = ip53_flash_start(bios, destination, destination_data,
+    from = ip53_flash_start(source, source_data, source_clock, "");
+    to = ip53_flash_start(destination, destination_data,
                           destination_clock, "-incoming defer");
 
     flash_program(from, LOCAL, 0x204, 0x1234);
@@ -1471,7 +1465,6 @@ static void test_ip53_execution_view_migration(void)
     /* QEMU removes the migration socket; rmdir below checks cleanup. */
     g_assert_cmpint(unlink(source), ==, 0);
     g_assert_cmpint(unlink(destination), ==, 0);
-    g_assert_cmpint(unlink(bios), ==, 0);
     g_assert_cmpint(unlink(source_data), ==, 0);
     g_assert_cmpint(unlink(source_clock), ==, 0);
     g_assert_cmpint(unlink(destination_data), ==, 0);
@@ -2499,6 +2492,9 @@ static void test_ip53_cpu_accesses_shared_reset_ram(void)
     }
 
     ip53_tcg_build_payload(payload, false);
+    /* A synthetic exception must not fall through into the CPU 0 payload. */
+    ip53_mips_store(payload, 0x380, 0x1000ffff);
+    ip53_mips_store(payload, 0x384, 0);
     /* CPU 0 enables its own low RAM after an actual reset fetch. */
     ip53_mips_store(payload, 15 * 4, ip53_mips_lui(10, 0xbfc0));
     ip53_mips_store(payload, 16 * 4, ip53_mips_ori(10, 10, 0x400));
@@ -2559,7 +2555,8 @@ static void test_ip53_cpu_accesses_shared_reset_ram(void)
     n = ip53_tcg_memory_config(code, n, 0x53);
     n = ip53_tcg_record_load(code, n, cached_reset_ram, 0x40);
     code[n++] = ip53_mips_lui(8, 0x8004);
-    n = ip53_mips_load_imm64(code, n, 9, IP53_TCG_RAM_MARKER);
+    n = ip53_mips_load_imm64(code, n, 9,
+                             IP53_TCG_RESET_RAM_DONE_MARKER);
     code[n++] = ip53_mips_sd(9, 8, 0);
     code[n++] = 0x1000ffff;
     code[n++] = 0;
@@ -2571,7 +2568,8 @@ static void test_ip53_cpu_accesses_shared_reset_ram(void)
                    n * sizeof(uint32_t));
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     ip53_tcg_wait_marker(s, "simultaneous noncoherent PROM and coherent RAM",
-                         IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+                         IP53_TCG_RAM_CONTROL,
+                         IP53_TCG_RESET_RAM_DONE_MARKER);
     qtest_qmp_assert_success(s, "{'execute':'stop'}");
     g_assert_cmphex(qtest_readq(s, IP53_TCG_BEDROCK +
                                IP53_TCG_MD_MEMORY_CONFIG), ==, 0x53);
@@ -2620,7 +2618,8 @@ static void test_ip53_cpu_accesses_shared_reset_ram(void)
                     IP53_TCG_SHARED_RESET_PROM);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     ip53_tcg_wait_marker(s, "reset fetch after clearing overlapping RAM",
-                         IP53_TCG_RAM_CONTROL, IP53_TCG_RAM_MARKER);
+                         IP53_TCG_RAM_CONTROL,
+                         IP53_TCG_RESET_RAM_DONE_MARKER);
     qtest_qmp_assert_success(s, "{'execute':'stop'}");
     qtest_quit(s);
 
