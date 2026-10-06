@@ -154,7 +154,6 @@ config SGI_TEST_FIXTURES
     select SGI_BEDROCK_IO
     select SGI_BRIDGE
     select SGI_COMMAND_PORT
-    select SGI_DMA_BUFFER if PCI
     select SGI_HUB if SGI_SN0
     select SGI_PCI_EXPANSION
     select SGI_PI_GFX

@@ -79,7 +79,6 @@ config ICS1890
 
 config SGI_IOC3_ETH
     bool
-    select SGI_DMA_BUFFER
     select DP83840
     select ICS1890
     select SGI_NET_RX_LATENCY

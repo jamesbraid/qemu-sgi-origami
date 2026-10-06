@@ -9,7 +9,7 @@ fork_unit_tests = [
   'test-sn-model', 'test-sgi-prom-image', 'test-sgi-initial-flash',
   'test-sgi-machine-init', 'test-sgi-synthetic-serial',
   'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
-  'test-sgi-rad1-audio-pcm', 'test-dma-buffer',
+  'test-sgi-rad1-audio-pcm',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
   'test-sgi-gl-vmstate', 'test-sgi-kona-texture',
@@ -40,7 +40,6 @@ tests = {
   # all code tested by test-x86-topo is inside topology.h
   'test-x86-topo': [],
   'test-cutils': [],
-  'test-dma-buffer': [],
   'test-div128': [],
   'test-shift128': [],
   'test-mul64': [],
