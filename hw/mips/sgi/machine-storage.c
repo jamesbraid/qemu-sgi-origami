@@ -119,9 +119,20 @@ static const SGIModelStorageItem *sgi_storage_item(const char *product,
     return NULL;
 }
 
+/*
+ * The block layer rounds a length up to a 512-byte sector, so a 256-byte
+ * file would pass a 512-byte store's check. A regular raw file reports its
+ * real size; any other node has only the rounded length to offer.
+ */
 static int64_t sgi_storage_length(BlockDriverState *bs)
 {
+    int64_t length;
+
     GRAPH_RDLOCK_GUARD_MAINLOOP();
+    length = bdrv_get_full_raw_file_length(bs);
+    if (length != -ENOTSUP) {
+        return length;
+    }
     return bdrv_getlength(bs);
 }
 
