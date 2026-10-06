@@ -4084,7 +4084,7 @@
       "provenance": "derived",
       "sources": [
         "query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds",
-        "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"
+        "qemu:hw/mips/sgi/models/layers/products/origin2000-rack.yaml the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"
       ],
       "supported_guests": [
         "irix"

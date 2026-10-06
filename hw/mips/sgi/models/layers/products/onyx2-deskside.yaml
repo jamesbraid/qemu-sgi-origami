@@ -161,5 +161,5 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image]
         provenance: derived
-        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module"]
+        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", "qemu:hw/mips/sgi/models/layers/products/origin2000-rack.yaml the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module"]
     evidence_policy: strict
