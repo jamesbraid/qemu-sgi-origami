@@ -2436,7 +2436,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack (true-wombat) capture"
+        "docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack capture web:nekonomicon-16285"
       ]
     },
     {
@@ -2492,7 +2492,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records: the true-wombat rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"
+        "docs/datasheets/onyx2.md One-wire records: the web:nekonomicon-16285 rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"
       ]
     }
   ],
@@ -2850,7 +2850,7 @@
           ],
           "sources": [
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12",
-            "docs/datasheets/onyx2.md Node-board populations: the true-wombat rack capture's two-node module keeps both Routers"
+            "docs/datasheets/onyx2.md Node-board populations: the web:nekonomicon-16285 rack capture's two-node module keeps both Routers"
           ],
           "supported_cpu_populations": [
             [
@@ -2898,7 +2898,7 @@
             "router-2"
           ],
           "sources": [
-            "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers",
+            "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture boots PROM 6.156 on node slots 1-3 with both Routers",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
           ],
           "supported_cpu_populations": [
@@ -2958,7 +2958,7 @@
           "sources": [
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants",
-            "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"
+            "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"
           ],
           "supported_cpu_populations": [
             [

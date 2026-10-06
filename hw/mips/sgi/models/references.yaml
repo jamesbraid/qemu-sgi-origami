@@ -449,6 +449,14 @@ web:
     rights: obtain-only
     obtain:
       url: https://nekonomicon.irixnet.org/forum/14/16285/1.html
+  nekonomicon-16729560:
+    title: "Nekochan forum archive thread 16729560, two-node Origin 2200 board list"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16729560/1.html
   nekonomicon-5749:
     title: "Nekochan forum archive thread 5749, page 1"
     publisher: "Nekochan forum archive"
@@ -467,6 +475,14 @@ web:
     obtain:
       url: https://forums.irixnet.org/post-32252.html
       sha256: a16901baff5d6cebabcad7e979c8621d20dc9ddc55551062e7ce82b9c6772eb5
+  irixnet-post-32192:
+    title: "IRIXnet forum post 32192, Onyx2 deskside hinv, board list and gfxinfo -v"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: "https://forums.irixnet.org/showthread.php?mode=linear&tid=4352&pid=32192"
   mimgfx-origin2000-inventory:
     title: "An Origin 2000 owner's hardware page with hinv -vm"
     publisher: "mimgfx"

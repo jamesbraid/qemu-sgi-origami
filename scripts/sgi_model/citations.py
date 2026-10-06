@@ -87,7 +87,8 @@ DECISION = re.compile(r"\bD-0\d{3}\b")
 TOOL = re.compile(r"(^|[\s(`])tools/[a-z]")
 # Internal names for real-hardware captures. A capture is cited by its
 # registry key instead.
-NICKNAMES = re.compile(r"\b(joint-buck|true-wombat)\b")
+NICKNAMES = re.compile(
+    r"\b(joint-buck|true-wombat|model-toad|humble-kiwi|whole-tetra|fancy-akita)\b")
 
 # Fields whose prose the internal-pointer scan reads.
 NOTE_FIELDS = {"notes", "note", "reason", "evidence_gap", "description"}
