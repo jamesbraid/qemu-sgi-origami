@@ -55,6 +55,13 @@ layer:
         remain unsupported. Routes and node inventory are
         not initialized for firmware. Construction support does not establish stock PROM or IRIX acceptance.
       emulation:
+        # Both compute modules use the Origin 300 PROM and CPU profile.
+        ip35_firmware:
+          machine_type: 1
+          cpu_mode_word: 0x549aa985
+          provenance: derived
+          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
+          notes: Origin 300 values carried into the synthetic routed configuration.
         # Synthetic public default rule; physical riser wiring is unresolved.
         option_intx_maps:
           master-bedrock: [1, 5, 1, 5, 2, 6, 2, 6]
@@ -206,39 +213,39 @@ layer:
           reason: Synthetic expansion controller bay for the existing functional startup experiment.
         synthetic_identities:
         - component: master-bedrock
-          serial: '0x0d0c0b0a0908'
+          serial: '0x51454d554e00'
           reason: Stable synthetic node identity; the master keeps the one-chassis Origin 300's value.
         - component: master-xbridge
-          serial: '0x0b0a090807'
+          serial: '0x51454d555800'
           reason: The master's IO-8 identity, the one-chassis Origin 300's value.
         - component: master-ioc3
-          serial: '0x5e7000000002'
+          serial: '0x5e7454d55000'
           reason: The master's IOC3 identity, the one-chassis Origin 300's value.
         - component: slave-bedrock
-          serial: '0x0d0c0b0a0909'
+          serial: '0x51454d554e01'
           reason: Stable synthetic node identity for the slave chassis, one past the master's, as the
             dual-module Origin 200 strides its second node. The captured pairs show distinct barcodes
             per module; the values themselves are a model choice.
         - component: slave-xbridge
-          serial: '0x0b0a090808'
+          serial: '0x51454d555801'
           reason: The slave's IO-8 identity, one past the master's.
         - component: slave-ioc3
-          serial: '0x5e7000000003'
+          serial: '0x5e7454d55001'
           reason: The slave's IOC3 identity, one past the master's.
         - component: expansion-bedrock
-          serial: '0x123456'
-          reason: Preserves the existing expansion experiment synthetic BIC identity.
+          serial: '0x51454d554e02'
+          reason: Marked synthetic expansion BIC identity; no physical part identity is claimed.
         - component: router-router
-          serial: '0x123457'
+          serial: '0x51454d555200'
           reason: Synthetic router descriptor identity; no physical barcode is claimed.
         - component: expansion-u0
-          serial: '0x123458'
+          serial: '0x51454d555802'
           reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
         - component: expansion-u1
-          serial: '0x123459'
+          serial: '0x51454d555803'
           reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
         - component: expansion-u2
-          serial: '0x12345a'
+          serial: '0x51454d555804'
           reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
         initially_operational_crossbow_links:
         - component: master-xbridge-crossbar
@@ -399,7 +406,7 @@ layer:
         hardware_revision: 1
         chip_inputs: 0
       datasheet_contracts:
-      - docs/datasheets/sn1-router.md
+      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
       provenance: derived
       sources:
       - 'docs/datasheets/sn1-router.md: public chip identity and reviewed revision-one inference'
@@ -417,7 +424,7 @@ layer:
       - 'docs/datasheets/sn1-router.md: reviewed generic L1 type 0x52 approximation'
       notes: Explicit noncompute router controller profile through its own UART, with no firmware revision selected.
       datasheet_contracts:
-      - docs/datasheets/sn1-router.md
+      - qemu:docs/specs/sgi-l1.rst#sgi-l1-role
     - id: router-port-1
       name: NUMAlink router port 1
       kind: connector
