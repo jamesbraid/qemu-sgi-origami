@@ -62,6 +62,9 @@
 #
 # @cache-mib: secondary cache size
 #
+# @required-properties: CPU properties the launcher must set
+#     explicitly for this assembly
+#
 # @mode-bits: the CP0_Config0-derived mode word the flash
 #     configuration block and the board latch both compare against,
 #     computed once by the catalogue compiler from this
@@ -78,6 +81,7 @@
             'clock-hz': 'uint64',
             '*cache-clock-hz': 'uint64',
             'cache-mib': 'uint16',
+            '*required-properties': ['str'],
             '*mode-bits': 'uint32' } }
 
 ##
