@@ -935,8 +935,7 @@ layer:
 
     # How this machine describes itself to the guest. The record layout lives in
     # klconfig-layout.yaml and is proved against the reference kernel's headers by
-    # tools/tests/test-klconfig-layout; what follows is the content those
-    # records carry.
+    # a layout test; what follows is the content those records carry.
     #
     # The board list follows what a real machine of this generation emits rather
     # than what would be tidiest: the midplane board carries a module serial number

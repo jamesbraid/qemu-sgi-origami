@@ -13,7 +13,7 @@
 #
 # A composition instances this under its own `baseio` component with
 # `parent: baseio` and binds the placeholder `upstream` bus to that
-# product's own BaseIO PCI bus, the way docs/machines/layers/modules/
+# product's own BaseIO PCI bus, the way layers/modules/
 # onyx2-deskside-module.yaml's directly-authored mediaio-ioc3/
 # mediaio-keyboard-mouse components already do; this module exists so a
 # product built on a shared module layer (onyx2-rack) can select the same

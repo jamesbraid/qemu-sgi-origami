@@ -2,18 +2,13 @@
 # The Onyx2 rack: the eight-processor compute module with a BaseIO-G in IO1
 # and one InfiniteReality pipe whose Xtown occupies IO3, Crossbow 0 widget F,
 # where the real rack capture has it (docs/specs/sgi-onyx2.rst, Rack compute module).
-# Launch it with tools/origami run irix --machine onyx2 (QEMU: -M onyx2,
-# whose default topology this is).
+# Launch it with QEMU: -M onyx2, whose default topology this is.
 configuration_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit. The key left here backs the seventeen connector_population
-# selections below only, whose strict evidence policy
-# (tools/origami_lib/model_validation.py) requires non-empty sources for each one
-# regardless of provenance. It cites only this configuration's own reasoning, not
-# an independently obtainable source, so the checker reports it under "facts whose
-# only sources are internal documents" rather than resolving it; an empty-
-# occupancy selection has no external document to cite in the first place.
+# The key left here backs the seventeen connector_population selections below
+# only, whose strict evidence policy requires non-empty sources for each one
+# regardless of provenance. It cites a page of the specs, not an independently
+# obtainable source; an empty-occupancy selection has no external document to
+# cite in the first place.
 sources:
   rack-pipe-placement: qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-xtown-placement
 layers:
