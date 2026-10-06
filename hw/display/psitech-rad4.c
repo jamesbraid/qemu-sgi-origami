@@ -617,8 +617,6 @@ struct PsitechRad4State {
     uint32_t dma_moved;
     uint32_t dma_next;
     uint32_t dma_descs;
-    /* Virtual time up to which the transfer's bus time has been spent. */
-    int64_t dma_paid_ns;
 
     /* BAR2 framebuffer and mask. */
     uint8_t *framebuffer;
@@ -2087,49 +2085,33 @@ static const MemoryRegionOps rad4_bar0_ops = {
 
 /*
  * DMA channel 0 runs alongside the processor, as the PLX part does: the
- * DMACSR0 store that starts it only latches the transfer, and a virtual-clock
- * timer moves it (the pattern of hw/dma/pl330.c). Each expiry moves what
- * the bus could have moved since the last one, at least RAD4_DMA_SLICE
- * bytes and at most RAD4_DMA_CATCHUP, and runs again at once while still
- * behind, so time the host spends elsewhere between callbacks is made up
- * rather than added to the transfer. That is all the catch-up does: it
- * cannot copy faster than the host can, and a loaded host copies far below
- * the bus rate, so a transfer still takes longer in virtual time than on
- * the bus.
+ * DMACSR0 store that starts it only latches the transfer, and a
+ * virtual-clock timer moves it at host speed (the pattern of
+ * hw/dma/pl330.c). Each expiry moves at most RAD4_DMA_STEP bytes, as
+ * hw/dma/i8257.c bounds each run of its bottom half, and re-arms the timer
+ * one nanosecond on. The bound keeps the time one expiry holds the BQL
+ * short; re-arming a nanosecond on rather than at the current time lets
+ * the main loop run between expiries even while the virtual clock stands
+ * still, as it does under qtest, so no chain is moved in one long pass.
+ * A descriptor fetch counts as 16 bytes against the bound, so a long chain
+ * of small descriptors is bounded too.
  *
- * Stretched transfers matter. The shipped driver gives a transfer
- * size / 20 + 400000 microseconds, size in bytes (about 0.41 s for a
- * 200 KB chain), before it aborts it, and its abort path then deadlocks a
- * uniprocessor guest: it polls for Done while holding the spinlock the
- * completion interrupt needs (driver object listing offsets 0x9eb0-0x9f2c
- * for the timeout, 0x9f4c-0xa0dc for the abort). Real hardware, finishing
- * a 200 KB chain in about 1.5 ms, never gets there.
- *
- * RAD4_DMA_CATCHUP bounds one callback's work, as hw/dma/i8257.c bounds
- * each run of its bottom half, at the cost of how long that callback holds
- * the BQL. 256 KiB covers one of the driver's usual 40-row chains, about
- * 200 KB, in one callback. In one paired run of IRIX 6.5.30's buffered X
- * server on a host at load about 120 on 32 CPUs, against a 64 KiB cap,
- * the 99th-percentile hold rose from 25 ms to 54 ms, but the slowest
- * transfer fell from 324 ms to 221 ms and the closest any transfer came
- * to the driver's timeout widened from 86 ms to 184 ms. A stall is
- * preferable to a deadlocked guest.
- *
- * The rate is an approximation: the PCI 9060 Data Sheet (Version 1.2,
+ * The bus rate is not modelled. The PCI 9060 Data Sheet (Version 1.2,
  * December 1995, page 1) gives "PCI Bus Master transfers up to 132
- * MBytes/sec", one 32-bit dword per clock at its 33 MHz maximum PCI clock
- * (page 71's AC characteristics). Arbitration, wait states, the Bridge's own
- * latency and the board's local bus are not modelled, so this is the
- * chip's upper bound, not a measured transfer time. A descriptor fetch is
- * charged as 16 bytes of bus time, the 16 bytes it reads (inferred: the
- * data sheet gives no fetch timing).
+ * MBytes/sec"; the model completes a chain as fast as the host copies it,
+ * usually faster than that. Done and the interrupts still follow the
+ * chain's last byte, and DMACSR0 reads follow Table 57 throughout, so what
+ * the guest can observe keeps its order and meaning; only how soon it
+ * comes changes. Faster completion can only help the shipped driver, which
+ * gives a transfer size / 20 + 400000 microseconds, size in bytes (about
+ * 0.41 s for a 200 KB chain), before it aborts it, and whose abort path
+ * then deadlocks a uniprocessor guest: it polls for Done while holding the
+ * spinlock the completion interrupt needs (driver object listing offsets
+ * 0x9eb0-0x9f2c for the timeout, 0x9f4c-0xa0dc for the abort).
  */
-#define RAD4_DMA_RATE           132000000   /* bytes per second */
 #define RAD4_DMA_DESC_BYTES     16
 #define RAD4_DMA_SLICE          4096
-#define RAD4_DMA_CATCHUP        (256 * KiB)
-#define RAD4_DMA_SLOT_NS \
-    ((int64_t)RAD4_DMA_SLICE * NANOSECONDS_PER_SECOND / RAD4_DMA_RATE)
+#define RAD4_DMA_STEP           (256 * KiB)
 
 /*
  * DMACSR0 bits a read returns (PCI 9060 Data Sheet Table 57): each channel's
@@ -2368,9 +2350,7 @@ static void rad4_dma_schedule(PsitechRad4State *s)
     if (!s->dma_running || !(s->rom_command & RAD4_DMA_CMD_ENABLE)) {
         timer_del(s->dma_timer);
     } else if (!timer_pending(s->dma_timer)) {
-        /* Starting or resuming: bus time counts from now. */
-        s->dma_paid_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        timer_mod(s->dma_timer, s->dma_paid_ns + RAD4_DMA_SLOT_NS);
+        timer_mod(s->dma_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
     }
 }
 
@@ -2406,7 +2386,7 @@ static void rad4_dma_desc_done(PsitechRad4State *s)
 }
 
 /*
- * Bus time has passed since the last expiry: move what fits in it.
+ * Move the next RAD4_DMA_STEP bytes of the chain.
  *
  * QEMU's MMIO reentrancy guard does not cover timer context, so a transfer
  * aimed at this card's own BARs could reach rad4_dma_command_write() from
@@ -2417,11 +2397,7 @@ static void rad4_dma_desc_done(PsitechRad4State *s)
 static void rad4_dma_timer_cb(void *opaque)
 {
     PsitechRad4State *s = opaque;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    int64_t owed = muldiv64(MAX(now - s->dma_paid_ns, 0), RAD4_DMA_RATE,
-                            NANOSECONDS_PER_SECOND);
-    uint32_t budget = MIN(MAX(owed, RAD4_DMA_SLICE), RAD4_DMA_CATCHUP);
-    uint32_t start = budget;
+    uint32_t budget = RAD4_DMA_STEP;
 
     while (s->dma_running && budget) {
         uint32_t len;
@@ -2454,10 +2430,7 @@ static void rad4_dma_timer_cb(void *opaque)
     if (!s->dma_running) {
         return;
     }
-    s->dma_paid_ns += muldiv64(start - budget, NANOSECONDS_PER_SECOND,
-                               RAD4_DMA_RATE);
-    /* Still behind after a capped run: go again at once. */
-    timer_mod(s->dma_timer, MAX(s->dma_paid_ns + RAD4_DMA_SLOT_NS, now));
+    timer_mod(s->dma_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
 }
 
 /*
@@ -3162,7 +3135,7 @@ static int rad4_post_load(void *opaque, int version_id)
     s->cursor_shown_y_end = -1;
     rad4_ensure_surface(s);
     rad4_update_irq(s);
-    /* A transfer in flight resumes with the next slot of bus time. */
+    /* A transfer in flight resumes with the next expiry. */
     timer_del(s->dma_timer);
     rad4_dma_schedule(s);
     if (s->rec_state == RAD4_REC_RECOGNIZED && s->frame_timer &&
