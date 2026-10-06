@@ -7,7 +7,7 @@
 # connector occupied; the connector supplies the XIO widget,
 # controlling node and physical port. The Bridge's upstream attachment
 # names the placeholder bus `upstream`, which the instance binds to its
-# connector's XIO bus. docs/datasheets/sgi-ioc3-boards.md owns the
+# connector's XIO bus. qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet owns the
 # board's evidence, its model selections and its open questions.
 layer_version: 1
 layer:
@@ -27,7 +27,7 @@ layer:
             rev A. The model presents 030-0873-003 rev J with the Bridge
             revision the same real board reports.
         provenance: derived
-        datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet]
         sources: ["web:mimgfx-origin2000-inventory real Origin 2000 hinv -vm: Location /hw/module/1/slot/io8/menet, MENET Board part 030-0873-003 rev J; Origin MENET board, module 1 slot 8: Revision 4", "108-0151-001 printed pages 1-6 and 1-7, a Bridge and four IOC3s"]
       - id: bridge
         name: Bridge
@@ -46,10 +46,10 @@ layer:
         provenance: derived
         parent: menet
         sources: ["web:mimgfx-origin2000-inventory Origin MENET board, module 1 slot 8: Revision 4 and slot 7: Revision 3"]
-      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3-boards.rst#sgi-ioc3-boards-menet, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
       - {id: ioc3-0-ethernet, name: Ethernet MAC 0, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-0, provenance: vendor-document}
       - {id: ioc3-1-ethernet, name: Ethernet MAC 1, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-1, provenance: vendor-document}
       - {id: ioc3-2-ethernet, name: Ethernet MAC 2, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-2, provenance: vendor-document}

@@ -26,7 +26,7 @@ layer:
         provenance: vendor-document
         sources: ["007-4499-002 printed pages 39 to 40 and 50"]
         identity: {hardware_revision: 2}
-        datasheet_contracts: [docs/datasheets/origin300-pci-expansion-module.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300]
         notes: Explicit inferred revision and synthetic identity belong to the isolated emulator experiment; processor and memory interfaces are unused.
       - id: link-port
         name: PCI expansion LINK connector

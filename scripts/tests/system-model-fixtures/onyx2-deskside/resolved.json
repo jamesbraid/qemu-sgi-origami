@@ -174,7 +174,7 @@
       "name": "BaseIO PCI",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -410,7 +410,7 @@
       },
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -428,7 +428,7 @@
       "parent": "baseio",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -448,7 +448,7 @@
       "parent": "baseio",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -468,7 +468,7 @@
       "parent": "baseio",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -536,7 +536,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-flash"
       ],
       "description": "Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.",
       "id": "baseio-bridge-flash",
@@ -554,7 +554,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/baseio.md",
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-g",
         "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "hardware_kind": "ioc3",
@@ -1733,7 +1733,7 @@
       "provenance": "datasheet",
       "role": "bridge-downstream",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-composition"
       ]
     },
     {
@@ -1744,7 +1744,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-pci"
       ]
     },
     {
@@ -1755,7 +1755,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-pci"
       ]
     },
     {
@@ -1766,7 +1766,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-pci"
       ]
     },
     {
@@ -1778,7 +1778,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/baseio.md BaseIO-G and MediaIO boundary, a real owner's hinv -v listing"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-pci"
       ]
     },
     {

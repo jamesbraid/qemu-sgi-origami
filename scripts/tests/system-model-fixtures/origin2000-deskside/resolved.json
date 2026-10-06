@@ -1077,7 +1077,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/baseio.md"
+        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-flash"
       ],
       "description": "Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.",
       "id": "baseio-bridge-flash",
