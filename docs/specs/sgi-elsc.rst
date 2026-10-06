@@ -1,3 +1,5 @@
+.. _sgi-elsc:
+
 ==========================================
 SGI Origin 200 module system controller
 ==========================================
@@ -367,6 +369,8 @@ refusal costs nothing. The power-on content is unstated, and the
 model blanks it to spaces. ``info elsc`` shows the current content
 of an Origin 2000 build's display.
 
+.. _sgi-elsc-arbitration:
+
 Bus arbitration
 ===============
 
@@ -523,3 +527,52 @@ Monitor access
 alphanumeric display content, any pending response and its owner,
 and the arbitration signal currently presented for the console
 processor, without requiring a trace backend or diagnostic sink.
+
+.. _sgi-elsc-nvram:
+
+Origin 2000 module NVRAM
+========================
+
+An Origin 2000 module keeps its identity (module number, partition) in a
+serial NVRAM on the same I2C bus as the controller, not behind the ASCII
+command protocol. Ratings follow :ref:`sgi-ip30`.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 12 42
+
+   * - Fact
+     - Rating
+     - Source
+   * - The store is addressed 0 to 2047 and addresses 1792 to 2047 are
+       reserved for the system controller's use.
+     - established
+     - 108-0170-001 ``scr`` and ``scw`` command
+       text (PDF pages 58 and 76).
+   * - The module number (1 to 255, 0 unassigned) lives in this NVRAM
+       and is backed up in each node's PROM log.
+     - established
+     - 108-0170-001 section 1.5, printed page 1-4 (PDF 18).
+   * - The NVRAM answers eight consecutive I2C slave addresses from
+       ``0x50``; the top three bits of the 11-bit address pick the slave.
+     - inferred
+     - A 2 KB serial EEPROM conventionally uses ``0x50`` to ``0x57``.
+       Whether it is one part or several is unknown; the addressing
+       arithmetic is the same.
+   * - The module number, a validity marker and the partition number sit
+       in a sixteen-byte controller block at logical 0x700, as bytes 8,
+       0 and 10.
+     - unknown
+     - No public source gives the layout; it is known only from vendor
+       material this page does not cite. The model uses marker
+       ``0x37``, module byte 8 and partition byte 10. Treat the layout
+       as an emulator choice; a stock firmware boot that finds the
+       module assigned is the discriminating test, and a real
+       controller's NVRAM dump would settle it.
+   * - Seeding and persistence: a newly created NVRAM carries the
+       product description's module number and the marker; reset does
+       not reseed it, guest writes persist and migration restores the
+       saved contents.
+     - approximation
+     - Emulator choice so that a stock firmware boot finds an assigned
+       module without first assigning one.

@@ -638,6 +638,22 @@ web:
     obtain:
       url: null
       message_id: "<3EDC9A71.CE2535AA@delm.tas.gov.au>"
+  galles-spider-1997:
+    title: "Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)"
+    publisher: "IEEE Computer Society"
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://dl.acm.org/doi/10.1109/40.566196
+  us-patent-5721819:
+    title: "US patent 5,721,819, Programmable, distributed network routing"
+    publisher: "United States Patent and Trademark Office"
+    kind: paper
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://patents.google.com/patent/US5721819A/en
 
 firmware:
   ip27-prom-6.156:

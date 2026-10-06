@@ -52,7 +52,10 @@ guest hardware that is specific to QEMU.
    sgi-ioc3
    sgi-ip30
    sgi-onyx2
+   sgi-origin2000-module
    sgi-prom-image
    sgi-qlogic-isp
+   sgi-router
    sgi-sn
+   sgi-xbow
    sgi-xbridge
