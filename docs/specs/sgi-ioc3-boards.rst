@@ -43,7 +43,7 @@ an eight-bit enable word attached to the chip's PCI slot (bit 0 Ethernet,
 3 keyboard and mouse, 4 serial A, 5 serial B, 7 clock and interrupt), set by
 a per-board routine matched on the Bridge board record's part prefix
 or, for add-in cards, the card's own record. The words and which prefix
-sets which, read from the shipped kernel by disassembly, are:
+sets which, read from the shipped kernel image, are:
 
 .. list-table::
    :header-rows: 1

@@ -39,8 +39,7 @@ Sources
   owner post (``web:usenet-pigot-3edc9a71``); the 2012 forum thread
   *Building an Onyx 200* (``web:nekonomicon-16726704``); and a two-module
   inventory with a cabinet on each module (``web:nekonomicon-16731033``).
-- The stock IP27 PROM 6.156 payload (``firmware:ip27-prom-6.156``), read by
-  disassembly.
+- The stock IP27 PROM 6.156 payload (``firmware:ip27-prom-6.156``), measured from the image itself.
 
 Public Linux, OpenBSD and NetBSD trees hold no GIGAchannel support: a search
 for the ``XBOX`` name over them returns only unrelated drivers.
@@ -186,7 +185,7 @@ unknown.
    * - C, D, E, F
      - optional XIO boards
      - ``io3``, ``io4``, ``io5``, ``io6``
-     - established by disassembly: ``firmware:ip27-prom-6.156`` Origin 200
+     - established from the stock PROM image: ``firmware:ip27-prom-6.156`` Origin 200
        table at ``0x1fcd1e30`` (widgets 8 to F are ``io7``, ``io1``, node
        slot 1, ``io2``, ``io3``, ``io4``, ``io5``, ``io6``), selected when
        the machine-type word at physical ``0x10000090`` is nonzero; real
@@ -236,14 +235,13 @@ Each item is real-hardware output unless it names another source.
   (``web:nekonomicon-16726704``).
 - **Part-number recognition.** The PROM classifies a board whose identity
   part number starts ``030-1250-`` or ``030-1252-`` as the inventory type
-  that IRIX prints as ``PCI_XIO``. Established by disassembly
+  that IRIX prints as ``PCI_XIO``. Established from the stock PROM image
   (``firmware:ip27-prom-6.156`` classifier at ``0x1fc41538``, which compares
   nine-character prefixes). The part prefix ``030-1264-`` is in a separate
   string list in the same routine; its use is unknown.
 - **Cabinet detection.** The PROM's cabinet detection (``firmware:ip27-prom-6.156``
   routine at ``0x1fc484c0``, called from ``0x1fc527c0``) takes a Crossbow
-  whose widget-0 part number reads ``0x0000`` as the cabinet. Established
-  by disassembly.
+  whose widget-0 part number reads ``0x0000`` as the cabinet. Established from the stock PROM image.
 - **Loopback inventory.** In loopback the PROM inventory matches the
   pre-upgrade one except for the added ``030-1264-001`` record: base I/O at
   ``Slot MotherBoard`` and ``ASIC BRIDGE Rev 3, (widget 8)``. Established
