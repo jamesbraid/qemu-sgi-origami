@@ -53,12 +53,12 @@ guest hardware that is specific to QEMU.
    sgi-hub
    sgi-ioc3
    sgi-ioc3-boards
-   sgi-ip35-address-map
-   sgi-lucent-ohci
    sgi-ip30
-   sgi-onyx2
+   sgi-ip35-address-map
    sgi-l1
+   sgi-lucent-ohci
    sgi-mscsi
+   sgi-onyx2
    sgi-origin2000-module
    sgi-pci-expansion
    sgi-prom-image
