@@ -30,6 +30,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 /* The front-panel eight-character alphanumeric display. */
 #define SGI_ELSC_DISPLAY_CHARS 8
 
+/* The longest "pwr d" delay, in seconds: 600. */
+#define SGI_ELSC_PWR_DOWN_MAX 0x258
+
 /*
  * A destructive command whose effect is deferred until the guest reads its
  * "ok" (see deferred_action/deferred_committed): "rst" resets, "pwr c"
@@ -109,6 +112,11 @@ struct SGIElscState {
      */
     SGIElscState *arb_peer;
     QEMUTimer *arb_timer;
+    /*
+     * The power-down countdown "pwr d <sec>" arms, on the virtual clock in
+     * milliseconds. Each timed request reloads it; expiry shuts down.
+     */
+    QEMUTimer *pwr_down_timer;
     /*
      * Whether this controller publishes grants. Only the master module's
      * controller owns the rotation.

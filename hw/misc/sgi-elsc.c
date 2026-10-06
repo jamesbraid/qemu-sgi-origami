@@ -286,20 +286,28 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         return;
     case 'd': {
         /*
-         * "pwr d <sec>": hex delay, 0 is immediate; the Origin 200
-         * diagnostics guide permits 0x5-0x258 (5-600 seconds). Malformed,
-         * non-hex or out-of-range input returns "err arg". Reply "ok" before
-         * shutdown; the model ignores the requested delay and shuts down
-         * once the ack is read.
+         * "pwr d [<sec>]": power down after a hex delay. One separator
+         * character follows the "d", then up to four hex digits, stopping at
+         * the first non-hex character; further text is ignored, and no digit
+         * at all is no argument. 1 to 0x258 (re)loads the countdown from
+         * this request, so a repeated request moves the deadline either way.
+         * 0 powers down at once, as does no argument while a countdown is
+         * pending; no argument otherwise starts a three-second countdown.
+         * Above 0x258 is "err arg" and changes nothing.
+         *
+         * An immediate power-down replies "ok" first and acts once the ack
+         * is read, as "rst" does. A countdown's expiry needs no ack.
          */
-        uint32_t sec;
+        uint32_t sec = 0;
+        unsigned digits = 0;
+        bool immediate;
 
-        if (len < 6 || text[5] != ' ' ||
-            !elsc_parse_hex(&text[6], len - 6, &sec)) {
-            elsc_frame_response_str(s, "err arg");
-            return;
+        while (len > 6 + digits && digits < 4 &&
+               g_ascii_isxdigit(text[6 + digits])) {
+            sec = sec << 4 | g_ascii_xdigit_value(text[6 + digits]);
+            digits++;
         }
-        if (sec != 0 && (sec < 5 || sec > 0x258)) {
+        if (digits && sec > SGI_ELSC_PWR_DOWN_MAX) {
             elsc_frame_response_str(s, "err arg");
             return;
         }
@@ -308,7 +316,19 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             return;
         }
         elsc_frame_response_str(s, "ok");
+
+        immediate = digits ? sec == 0 : timer_pending(s->pwr_down_timer);
+        if (!immediate) {
+            timer_mod(s->pwr_down_timer,
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      (int64_t)(digits ? sec : 3) * 1000);
+            return;
+        }
         /*
+         * A pending countdown keeps running: the firmware removes power
+         * whether or not this ack is read, so if a new request supersedes
+         * the ack before it commits, the countdown still powers down.
+         *
          * Clearing deferred_committed would demote an acknowledged action to
          * ARMED and lose the commit after the last text byte is fetched. The
          * committed action still fires; log if it is weaker than this request
@@ -894,6 +914,28 @@ static void elsc_fire_committed_action(SGIElscState *s)
     }
 }
 
+/*
+ * The "pwr d" countdown ran out: remove power. Its "ok" was read long ago,
+ * so the shutdown commits at once and runs from a bottom half. It
+ * overrides an action whose ack is still unread; one already committed
+ * fires instead, and the shutdown is logged as lost.
+ */
+static void elsc_pwr_down_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    if (s->deferred_committed) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-elsc: \"pwr d\" countdown expired while a %s is "
+                      "committed; that action fires instead\n",
+                      elsc_action_name(s->deferred_action));
+        return;
+    }
+    s->deferred_action = ELSC_ACTION_SHUTDOWN;
+    s->deferred_committed = true;
+    elsc_fire_committed_action(s);
+}
+
 static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
     /*
@@ -1231,6 +1273,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
+    timer_del(s->pwr_down_timer);
     s->tas_held = false;
     s->tas_lock = 0;
     /* The power-on content is unstated; blank spaces are a model choice. */
@@ -1305,6 +1348,8 @@ static void elsc_realize(DeviceState *dev, Error **errp)
      * first reset does (elsc_reset_exit).
      */
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
+    s->pwr_down_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                     elsc_pwr_down_expired, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -1317,6 +1362,8 @@ static void elsc_unrealize(DeviceState *dev)
     /* timer_free() also cancels a pending expiry before freeing. */
     timer_free(s->arb_timer);
     s->arb_timer = NULL;
+    timer_free(s->pwr_down_timer);
+    s->pwr_down_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
 }
@@ -1372,8 +1419,8 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 14,
-    .minimum_version_id = 14,
+    .version_id = 15,
+    .minimum_version_id = 15,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
@@ -1415,6 +1462,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
          */
         VMSTATE_UINT8(tas_lock, SGIElscState),
         VMSTATE_BOOL(tas_held, SGIElscState),
+        VMSTATE_TIMER_PTR(pwr_down_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
