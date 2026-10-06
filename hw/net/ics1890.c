@@ -2,9 +2,9 @@
 /* Copyright (c) 2026 James Braid */
 /*
  * ICS1890 revision 3. Register tables: ICS1890RevG 10/21/97, pp17-35.
- * Reviewed contract: Origami docs/datasheets/ics1890.md. Packet networking
- * approximates a peer advertising all four supported modes, with a 100ms
- * virtual negotiation delay. Electrical test modes remain unsupported.
+ * Packet networking approximates a peer advertising all four supported
+ * modes, with a 100ms virtual negotiation delay. Electrical test modes
+ * remain unsupported.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"

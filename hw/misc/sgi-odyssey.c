@@ -50,8 +50,7 @@
  * server sends
  * (docs/research/graphics/odyssey-openbsd-public-contract-20260922.md,
  * odyssey-xsgi-2d-command-grammar-20260922.md). The FIFO is
- * hardware-sequenced, not address-counted
- * (docs/datasheets/odyssey.md qtest checklist item 21): every 32-bit or
+ * hardware-sequenced, not address-counted: every 32-bit or
  * 64-bit store is the next word of a command stream that a small state
  * machine below parses one word at a time. Every recognized word, opcode
  * and register is cited at its handler; an unrecognized command word is
@@ -173,14 +172,13 @@
 
 /*
  * The one modeled scanout mode's retrace period, from the compiled 60 Hz
- * 1280x1024 mode-description file (docs/datasheets/odyssey.md, display back
- * end): 1688 total pixels per line x 1066 total lines per frame, blanking
- * included, counted at a 107,964,476 Hz pixel clock -- 59.99998 Hz. There is
- * no VFO or timing register to read this from; on the real board retrace is
- * interrupt-driven by the kernel driver's vertical-retrace handler with
- * software vblank counters, so the period is a modeled parameter, not
- * guest state. SGIScanout counts it on QEMU_CLOCK_VIRTUAL to arm the
- * retrace() hook.
+ * 1280x1024 mode-description file: 1688 total pixels per line x 1066
+ * total lines per frame, blanking included, counted at a 107,964,476 Hz pixel
+ * clock -- 59.99998 Hz. There is no VFO or timing register to read this from;
+ * on the real board retrace is interrupt-driven by the kernel driver's
+ * vertical-retrace handler with software vblank counters, so the period is a
+ * modeled parameter, not guest state. SGIScanout counts it on
+ * QEMU_CLOCK_VIRTUAL to arm the retrace() hook.
  */
 #define ODSY_FRAME_CLOCKS (1688u * 1066u)
 #define ODSY_PIXEL_CLOCK_HZ 107964476u
@@ -215,10 +213,10 @@
 #define ODSY_INT_DEST_VECTOR_SHIFT 24
 
 /*
- * The driver's six-write memory-reset sequence (docs/datasheets/odyssey.md,
- * "0x1004"), the first before any identity read: established as driver
- * behaviour from the shipped kernel, its effect on hardware is unknown. The
- * model accepts and logs each write rather than modeling a reset.
+ * The driver's six-write memory-reset sequence, the first before any
+ * identity read: established as driver behaviour from the shipped kernel, its
+ * effect on hardware is unknown. The model accepts and logs each write rather
+ * than modeling a reset.
  */
 #define ODSY_RESET_CONTROL 0x1004
 
@@ -255,9 +253,9 @@
  * destination shared with a widget field (bits 28:25 of ROUTE_DEST_UPPER)
  * distinct from int_dest_upper/int_dest_lower's own widget field above, and
  * four packed 8-bit vectors in ROUTE_VECTORS, one per routed source. Write
- * only -- the driver never reads any of the three back (docs/datasheets/
- * odyssey.md, "interrupt routing"). The softsync, retrace and DMA-done
- * sources raise through this table (ODSY_ROUTE_VECTOR_*_SHIFT below).
+ * only -- the driver never reads any of the three back. The softsync, retrace
+ * and DMA-done sources raise through this table (ODSY_ROUTE_VECTOR_*_SHIFT
+ * below).
  */
 #define ODSY_ROUTE_DEST_UPPER 0x1044
 #define ODSY_ROUTE_DEST_LOWER 0x104c
@@ -273,8 +271,8 @@
  * The DMA-sync command's (ODSY_REG_HOST_WRITE, below) host-write base: a
  * 48-bit guest physical address split the same way as int_dest_upper/lower,
  * bits 15:0 of the upper half plus all of the lower half. Write only, in
- * the host-address block docs/datasheets/odyssey.md leaves otherwise
- * unmodeled (offsets 0x4000-0x405f).
+ * the host-address block (offsets 0x4000-0x405f) that is otherwise
+ * unmodeled.
  */
 #define ODSY_HOST_WRITE_ADDR_UPPER 0x4034
 #define ODSY_HOST_WRITE_ADDR_LOWER 0x403c
@@ -352,8 +350,7 @@
 #define ODSY_DISPLAYED_BUFFER 0x10d4
 
 /*
- * Front and back storage (docs/datasheets/odyssey.md, "Buffer-selection
- * software contract" and "Buffer swap and retrace"). The model keeps two
+ * Front and back storage. The model keeps two
  * colour buffers and names them by the displayed-buffer bits' sense:
  * buffer 0 is what a window with its ODSY_DISPLAYED_BUFFER bit clear shows,
  * buffer 1 what it shows with the bit set. This is an internal abstraction,
@@ -585,25 +582,24 @@
 
 /*
  * The command FIFO: the guest's only path to painting the framebuffer.
- * Hardware-sequenced, not address-counted (docs/datasheets/odyssey.md
- * qtest checklist item 21), so every store here -- 32-bit or 64-bit -- is
- * the next word of a command stream, never a register at an offset.
- * Write-only: nothing reads it back.
+ * Hardware-sequenced, not address-counted, so every store here -- 32-bit
+ * or 64-bit -- is the next word of a command stream, never a register at an
+ * offset. Write-only: nothing reads it back.
  */
 #define ODSY_CMD_FIFO 0x110000
 
 /*
  * The per-context USER command FIFO. The X server DDX maps the board into each
  * client process and pushes its entire drawing-command stream here (board
- * aperture offset 0x100000; docs/datasheets/odyssey.md user-mappings table),
- * while the kernel driver uses ODSY_CMD_FIFO (0x110000). It carries the same
- * command grammar this interpreter already decodes: a 4-byte store is one FIFO
- * word, an 8-byte store is two. Until this was routed, every user-side drawing
- * word fell through to odyssey_unimplemented() and was dropped, so Xsgi ran and
- * enumerated the board but nothing ever reached the framebuffer and the screen
- * stayed black (docs/analysis/odyssey-screeninit-stall.md). Unlike the kernel
- * port, the user port never carries the command-FIFO self-test preamble, so it
- * does not feed odyssey_selftest_track().
+ * aperture offset 0x100000), while the kernel driver uses ODSY_CMD_FIFO
+ * (0x110000). It carries the same command grammar this interpreter already
+ * decodes: a 4-byte store is one FIFO word, an 8-byte store is two. Until this
+ * was routed, every user-side drawing word fell through to
+ * odyssey_unimplemented() and was dropped, so Xsgi ran and enumerated the board
+ * but nothing ever reached the framebuffer and the screen stayed black
+ * (docs/analysis/odyssey-screeninit-stall.md). Unlike the kernel port, the user
+ * port never carries the command-FIFO self-test preamble, so it does not feed
+ * odyssey_selftest_track().
  */
 #define ODSY_USER_CMD_FIFO 0x100000
 
@@ -611,11 +607,10 @@
  * The per-context command port: a single 8-byte store that is the
  * kernel driver's context switch in full, not a command-FIFO word. Close
  * in the aperture to ODSY_CMD_FIFO above but a distinct mechanism --
- * mapped into user processes at its own page (docs/datasheets/odyssey.md,
- * user-mappings table). The word is (7 << ODSY_CTX_SWITCH_OPCODE_SHIFT) |
- * (new_ctx_id << ODSY_CTX_SWITCH_ID_SHIFT) | ODSY_CTX_SWITCH_VALID
- * (a boot trace read back 0x70000010001 switching to context 1). The
- * driver polls guest RAM at the context shadow address
+ * mapped into user processes at its own page. The word is (7 <<
+ * ODSY_CTX_SWITCH_OPCODE_SHIFT) | (new_ctx_id << ODSY_CTX_SWITCH_ID_SHIFT) |
+ * ODSY_CTX_SWITCH_VALID (a boot trace read back 0x70000010001 switching to
+ * context 1). The driver polls guest RAM at the context shadow address
  * (ODSY_CTX_SHADOW_ADDR_UPPER/_LOWER) plus ODSY_CTX_SWITCH_DONE_OFFSET for
  * a nonzero 32-bit word, with a 15 s timeout and no interrupt -- the
  * kernel driver's context-switch wait reports "CTXSW timeout" on a stall.
@@ -689,8 +684,7 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 
 /*
  * A plain 1-operand register, seen with operand 0x00120000, immediately
- * ahead of the real copy-rect trigger below (docs/datasheets/odyssey.md's
- * command-port table) and, per the same table, ahead of the X module's
+ * ahead of the real copy-rect trigger below and ahead of the X module's
  * pixel-readback sequence too. Its own meaning is not established beyond
  * arity; only ODSY_CMD_COPY_RECT_TRIGGER, not this register, used to be
  * mistaken for the blit entry point (see that constant's comment).
@@ -1354,8 +1348,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * (ODSY_REG_HOST_WRITE) whenever it followed a copy in the real command
  * stream, since 0x658's own operand word left the state machine still
  * expecting nine more literal words. The true trigger, corroborated by
- * both docs/research/graphics/odyssey-xsgi-2d-command-grammar-20260922.md
- * and docs/datasheets/odyssey.md's command-port table, is 0x00002031.
+ * the captured command grammar, is 0x00002031.
  */
 #define ODSY_CMD_COPY_RECT_TRIGGER 0x00002031
 #define ODSY_CMD_COPY_RECT_WORDS 8
@@ -1564,20 +1557,19 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * (docs/reviews/odyssey-fragment-state-evidence-20261001.md).
  *
  * Bit 23's literal sense is NOT the sense fed to the shared layer. The
- * board's own established window transform (docs/datasheets/odyssey.md,
- * "window transform") bakes y' = -(vh/2) y + (h - vy - vh/2 - 1/256) into
- * the ordinary projection matrix odyssey_gl_load_combined() loads, rather
- * than routing through sgi_gl_set_window_matrix()'s window_rows_down path.
- * A single-axis mirror reverses 2D winding exactly once, and the shared
- * header documents that path's own row-direction flip as leaving "facing
- * ... judged as the client sees it" (include/hw/display/sgi/gl-context.h),
- * i.e. window_rows_down carries its own compensation for the mirror it
- * introduces. Odyssey's baked mirror has no such compensation unless this
- * family supplies one, so the literal bit is inverted before it reaches the
- * shared glFrontFace state: register GL_CW feeds SGI_GL_CCW, and register
- * GL_CCW feeds SGI_GL_CW. This cancels the baked mirror's sign flip so the
- * shared rasterizer's front/back test again matches the orientation a
- * client submits.
+ * board's own established window transform bakes y' = -(vh/2) y + (h - vy -
+ * vh/2 - 1/256) into the ordinary projection matrix odyssey_gl_load_combined()
+ * loads, rather than routing through sgi_gl_set_window_matrix()'s
+ * window_rows_down path. A single-axis mirror reverses 2D winding exactly once,
+ * and the shared header documents that path's own row-direction flip as leaving
+ * "facing ... judged as the client sees it"
+ * (include/hw/display/sgi/gl-context.h), i.e. window_rows_down carries its own
+ * compensation for the mirror it introduces. Odyssey's baked mirror has no such
+ * compensation unless this family supplies one, so the literal bit is inverted
+ * before it reaches the shared glFrontFace state: register GL_CW feeds
+ * SGI_GL_CCW, and register GL_CCW feeds SGI_GL_CW. This cancels the baked
+ * mirror's sign flip so the shared rasterizer's front/back test again matches
+ * the orientation a client submits.
  *
  * This inversion is this implementation's own derivation from the above
  * citations, not a literal statement in the evidence review, and has not
@@ -8001,8 +7993,7 @@ static bool odyssey_texture_build_level(SGIOdysseyState *s)
  * Dispatch a fully gathered register-select word or tagged GL opcode.
  * Flush and glyph pixel-mode setup/teardown registers, and any other
  * register-select word whose side effect this model does not need, are
- * accepted no-ops: this model's drawing state has nothing for them to change
- * (docs/datasheets/odyssey.md qtest checklist item 25).
+ * accepted no-ops: this model's drawing state has nothing for them to change.
  */
 static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
 {
@@ -9203,8 +9194,7 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
 }
 
 /*
- * The command FIFO accepts both 32-bit and 64-bit stores
- * (docs/datasheets/odyssey.md qtest checklist item 21). An 8-byte store
+ * The command FIFO accepts both 32-bit and 64-bit stores. An 8-byte store
  * carries two sequential 32-bit command words; which half is logically
  * first is not independently established by any allowed source, so it is
  * modeled by analogy to the backend-selector port's own

@@ -52,7 +52,7 @@ layer:
         bedrock_nodes:
           bedrock:
             # Bits 15:12 are established: OpenBSD reads them and classifies
-            # 0x4 as Fuel (docs/datasheets/ip34-fuel.md). The low nibble is
+            # 0x4 as Fuel. The low nibble is
             # the PIMM speed code PROM 6.210 adds to 0x20 to choose its
             # CPU-configuration table row (docs/research/
             # origin300-flash-cpu-identity.md). 4 selects row 9, the 500 MHz,
@@ -80,7 +80,7 @@ layer:
             # Inferred. The public Linux IP35 series maps L1 brick type 'A'
             # (0x41) to Fuel and '4' to Origin 300, and PROM 6.210's type
             # converter accepts raw '4' or 'A' but rejects 0x61. No Fuel
-            # L1 identity reply is captured (docs/datasheets/ip34-fuel.md).
+            # L1 identity reply is captured.
             reported_type: 65
             # No revision: the two public Fuel captures report 1.48.1 and
             # 1.14.4 and neither is tied to the selected revision G board,
@@ -97,7 +97,7 @@ layer:
           ip34-system-board:
             # Inferred. Mainline Linux assigns subsystem device 0xc30a to
             # the IP34 system board's IOC3; no Fuel configuration-space
-            # value is captured (docs/datasheets/ip34-fuel.md).
+            # value is captured.
             ioc3_subsystem_id: 49930
             mac_source: module-l1
             provenance: guest-source

@@ -898,11 +898,11 @@ static void test_v12_profile_memory_word_bits(void)
 }
 
 /*
- * The driver's six-write memory-reset sequence (docs/datasheets/odyssey.md,
- * "0x1004"). Each write is accepted and logged by name under -d unimp,
- * rather than falling through to the generic "not modeled" message, and
- * the board keeps answering identity afterwards: the model does not reset
- * anything real, it only stops pretending the register does not exist.
+ * The driver's six-write memory-reset sequence. Each write is accepted and
+ * logged by name under -d unimp, rather than falling through to the generic
+ * "not modeled" message, and the board keeps answering identity afterwards: the
+ * model does not reset anything real, it only stops pretending the register
+ * does not exist.
  */
 static void test_reset_control_accepts_six_writes(void)
 {
@@ -1002,9 +1002,8 @@ static void test_board_memory_bound_is_a_guest_error(void)
     qts = board_start(extra);
 
     /*
-     * A destination select's base is a board address in 16-byte units
-     * (docs/datasheets/odyssey.md's command-stream table), so this
-     * profile's 32 MiB is 0x200000 units: 0x200000 itself is the first
+     * A destination select's base is a board address in 16-byte units, so
+     * this profile's 32 MiB is 0x200000 units: 0x200000 itself is the first
      * out-of-range value.
      */
     cmd_push(qts, ODSY_CMD_DEST_SELECT);
@@ -1887,11 +1886,10 @@ static void test_command_fifo_fillrect(void)
 /*
  * The same fillrect sequence test_command_fifo_fillrect drives, paired
  * two words per store instead of one word per store. The command FIFO
- * accepts 64-bit stores too (docs/datasheets/odyssey.md qtest checklist
- * item 21): each carries the next two command words, upper half first
- * (odyssey_cmd_fifo_write(), hw/misc/sgi-odyssey.c) -- an approximation,
- * since no allowed source independently establishes which half is
- * logically first. Driving the identical sequence this way must reach
+ * accepts 64-bit stores too: each carries the next two command words, upper
+ * half first (odyssey_cmd_fifo_write(), hw/misc/sgi-odyssey.c) -- an
+ * approximation, since no allowed source independently establishes which half
+ * is logically first. Driving the identical sequence this way must reach
  * the same framebuffer result regardless, since the parser consumes one
  * word at a time either way. Twenty-three words split unevenly across
  * eleven 64-bit stores and one trailing 32-bit store, proving the two
@@ -3016,8 +3014,7 @@ static void test_unimplemented_reports_have_independent_budgets(void)
 }
 
 /*
- * The kernel driver's context switch (docs/datasheets/odyssey.md's "context
- * shadow address" and "per-context command port"): a single 8-byte store
+ * The kernel driver's context switch: a single 8-byte store
  * to ODSY_CTX_SWITCH_PORT completes instantly by writing a nonzero word
  * into the shadow page ODSY_CTX_SHADOW_ADDR_UPPER/_LOWER name, at the
  * offset the driver polls (ODSY_CTX_SWITCH_DONE_OFFSET) -- no interrupt,
@@ -8307,9 +8304,8 @@ static void test_command_fifo_gl_window_restore(void)
  * BEGIN-0xa image whose header's low byte gives the texel layout. The
  * texels land in the object, not on the screen, and 0x90008116 then
  * restores the kernel's window. The 0x1453 and 0x081d words are opaque to
- * the model; the "Texturing" section of docs/datasheets/odyssey.md lists
- * both among the words each textured draw or upload also pushes, and
- * leaves their contents unknown.
+ * the model; both are among the words each textured draw or upload also
+ * pushes, and their contents are unknown.
  */
 static void upload_begin_xy(QTestState *qts, uint32_t base, uint32_t wunits,
                             uint32_t fmt, uint32_t x, uint32_t y,
@@ -14637,8 +14633,7 @@ static void test_rgba_read_bounds(void)
 }
 
 /*
- * Separate colour buffers (hw/misc/sgi-odyssey.c, ODSY_REG_DRAW_MASK;
- * docs/datasheets/odyssey.md, "Buffer-selection software contract"). The
+ * Separate colour buffers (hw/misc/sgi-odyssey.c, ODSY_REG_DRAW_MASK). The
  * model names its two buffers by the displayed-buffer bits' sense: a window
  * whose ODSY_DISPLAYED_BUFFER bit is clear shows buffer 0, set buffer 1.
  * Register 0x0424 carries the drawing mask the kernel resolves: bits 1:0

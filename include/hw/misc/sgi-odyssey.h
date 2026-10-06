@@ -227,8 +227,7 @@ struct SGIOdysseyState {
      * The second colour buffer: buffer 1 in the displayed-buffer bits'
      * sense, mem above being buffer 0. A board memory of its own, the same
      * shape as mem. Model storage only: where the board
-     * keeps its two buffers, and how it packs them, is unknown
-     * (docs/datasheets/odyssey.md, "Buffer-selection software contract").
+     * keeps its two buffers, and how it packs them, is unknown.
      */
     SGIBoardMemory buffer1_mem;
     uint32_t buffer1_plane;

@@ -605,7 +605,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          * The catalogue's processor part: PRId, inferred from kernel
          * inventory records, and on the R12000 the FPU identification and
          * the approximated reset word with the cache it selects
-         * (Origami docs/datasheets/ip30-r10000.md and ip30-r12000.md).
+         * (docs/specs/sgi-ip30.rst).
          */
         if (!object_property_set_bool(OBJECT(dev), "big-endian", true, errp) ||
             !sgi_cpu_apply_processor(dev, processor, errp) ||

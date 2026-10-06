@@ -203,10 +203,9 @@ layer:
         provenance: observed-hardware
         sources: ["web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200"]
     # The Hub one-wire responder package/placement question and the flash-versus-
-    # memory decode question moved to the Hub one-wire and address-map datasheets'
-    # own "Open questions" sections (docs/datasheets/hub-onewire.md,
-    # docs/datasheets/address-map.md), with their candidate answers and what would
-    # settle them.
+    # memory decode question are open; docs/specs/sgi-hub.rst and
+    # docs/specs/sgi-ip35-address-map.rst give the candidate answers and what
+    # would settle them.
     interrupts:
 
       - id: ioc3-ethernet
