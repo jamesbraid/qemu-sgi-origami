@@ -465,11 +465,16 @@ void gen_count_compare_adjacency_r10k(DisasContext *ctx)
  * the model has none of, but the read or read-exclusive it issues for a
  * block it does not hold is a request the rest of the system sees (R10000
  * User's Manual version 2.0, Table 1-1 and the processor block read
- * protocol). The helper passes it on; machines without coherent bus
- * handlers return immediately, and user-mode has no system to see it.
+ * protocol). The helper passes it on. A machine with no board listening
+ * on the bus has nobody to see the request, the undefined hints do nothing
+ * (Table 1-1), and user-mode has no system at all, so none of those pays
+ * for a helper call: block copy and clear loops prefetch every line.
  */
 static void gen_prefetch_r10k(DisasContext *ctx, int hint, TCGv addr)
 {
+    if (!ctx->prefetch_requests || hint > 7 || hint == 2 || hint == 3) {
+        return;
+    }
 #ifndef CONFIG_USER_ONLY
     gen_helper_r10k_prefetch(tcg_env, addr, tcg_constant_i32(hint));
 #endif

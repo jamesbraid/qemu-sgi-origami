@@ -15306,6 +15306,16 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->performance_counter_pairs = env->cfg.performance_counter_pairs;
     ctx->count_compare_adjacent_recovery =
         env->cfg.count_compare_adjacent_recovery;
+#ifdef CONFIG_USER_ONLY
+    ctx->prefetch_requests = false;
+#else
+    /*
+     * Fixed before the processor first runs and the same on every processor
+     * of the machine, since blocks are shared without it in their flags;
+     * see r10k_cpu_set_bus_handler().
+     */
+    ctx->prefetch_requests = env->r10k && env->r10k->bus_request;
+#endif
     ctx->cmgcr = (env->CP0_Config3 >> CP0C3_CMGCR) & 1;
     /* Restore delay slot state from the tb context.  */
     ctx->hflags = tb_flags & MIPS_HFLAG_TB_MASK;

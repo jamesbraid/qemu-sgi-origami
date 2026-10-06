@@ -56,6 +56,7 @@ typedef struct DisasContext {
     bool partial_lwr_preserves_upper;
     bool has_store_transaction;
     bool count_compare_adjacent_recovery;
+    bool prefetch_requests;
     bool watch_is_physical;
     bool has_cache_diagnostics;
     bool xx_gates_mips4;
