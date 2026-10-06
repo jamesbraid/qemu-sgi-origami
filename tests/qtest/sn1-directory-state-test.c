@@ -539,6 +539,18 @@ static void prefetches(Program *p)
     emit_publish(p, 0x20);
     emit(p, PREF(2, 0, R_T0)); /* an undefined hint */
     emit_publish(p, 0x28);
+    /*
+     * The owner's prefetch of its own line asks nothing either way, so
+     * write it back first: from unowned, a request a load hint makes reads
+     * shared and a store hint's reads exclusive, so each shows.
+     */
+    emit(p, SD(R_ZERO, 0, R_T0));
+    emit_hit_flush(p, 0x30);
+    emit_publish(p, 0x38);
+    emit(p, PREF(8, 0, R_T0)); /* undefined, past the defined range */
+    emit_publish(p, 0x40);
+    emit(p, PREF(3, 0, R_T0)); /* undefined, with a store hint's bit 0 */
+    emit_publish(p, 0x48);
 }
 
 static void test_prefetch(void)
@@ -565,6 +577,10 @@ static void test_prefetch(void)
     g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(0));
     /* An undefined hint does nothing; the dropped copy asks nothing. */
     g_assert_cmphex(result(s, 0x28) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* Undefined hints 8 and 3 ask nothing of the unowned line. */
+    g_assert_cmphex(result(s, 0x38) & DIRECTORY_FIELDS, ==, UNOWNED);
+    g_assert_cmphex(result(s, 0x40) & DIRECTORY_FIELDS, ==, UNOWNED);
+    g_assert_cmphex(result(s, 0x48) & DIRECTORY_FIELDS, ==, UNOWNED);
     finish(s, prom);
 }
 

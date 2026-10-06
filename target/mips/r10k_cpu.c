@@ -7,6 +7,10 @@
 #include "qapi/visitor.h"
 #include "cpu.h"
 #include "internal.h"
+#ifndef CONFIG_USER_ONLY
+#include "qemu/error-report.h"
+#include "system/system.h"
+#endif
 
 /*
  * r10000-prid and r14000-prid: the whole PRId a part reports, whose
@@ -476,6 +480,43 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
     }
 }
 
+#ifndef CONFIG_USER_ONLY
+/*
+ * A machine links a bus-request handler to all of its R10000-family
+ * processors or to none. Translated blocks are shared between a cluster's
+ * processors, and whether a prefetch emits a call is decided at
+ * translation, not carried in the block flags; a board linking some
+ * processors and not others would have a block translated on an unlinked
+ * one drop the linked ones' requests.
+ */
+static void r10k_bus_handler_check(Notifier *notifier, void *data)
+{
+    CPUState *cs;
+
+    CPU_FOREACH(cs) {
+        MIPSCPU *cpu = MIPS_CPU(cs);
+
+        if (cpu->env.r10k && !cpu->env.r10k->bus_request) {
+            error_report("CPU %d has no R10000 bus-request handler while "
+                         "another processor of this machine has one",
+                         cs->cpu_index);
+            abort();
+        }
+    }
+}
+
+static Notifier r10k_bus_handler_notifier = {
+    .notify = r10k_bus_handler_check,
+};
+static bool r10k_bus_handler_check_queued;
+#endif
+
+/*
+ * Translation reads whether a handler exists to decide if a prefetch needs
+ * a call at all, so the board links it before the processor first runs,
+ * never changes it after, and links every processor or none: see
+ * r10k_bus_handler_check(), which runs once the machine is built.
+ */
 void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
                               R10KBusSystemRequestFn handler,
                               void *opaque)
@@ -484,6 +525,12 @@ void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
         cpu->env.r10k->bus_request = handler;
         cpu->env.r10k->bus_request_opaque = opaque;
     }
+#ifndef CONFIG_USER_ONLY
+    if (handler && !r10k_bus_handler_check_queued) {
+        r10k_bus_handler_check_queued = true;
+        qemu_add_machine_init_done_notifier(&r10k_bus_handler_notifier);
+    }
+#endif
 }
 
 void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id)

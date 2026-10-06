@@ -213,12 +213,7 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
     hwaddr paddr;
     int prot;
 
-    if (!env->r10k || !env->r10k->bus_request) {
-        return;
-    }
-    if (hint > 7 || hint == 2 || hint == 3) {
-        return;
-    }
+    /* Translation emits no call for an undefined hint or without a board. */
     if (get_physical_address(env, &paddr, &prot, addr, access,
                              mips_env_mmu_index(env), &attrs) !=
         TLBRET_MATCH || (attrs.mips_cca != 4 && attrs.mips_cca != 5)) {
