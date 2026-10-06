@@ -100,7 +100,11 @@ def measure(pid, operation, units, unit):
         _number(cpu_before, 'initial CPU seconds')
         _number(cpu_after, 'final CPU seconds')
         cpu = _number(cpu_after - cpu_before, 'CPU seconds')
+    # The interval's host monotonic ends let a profile taken alongside the
+    # run select the samples that fall inside measured work.
     return {'status': 'passed', 'result': result, 'units': units, 'unit': unit,
+            'started_monotonic': started,
+            'ended_monotonic': started + wall,
             'wall_seconds': wall, 'cpu_seconds': cpu,
             'units_per_second': units / wall,
             'cpu_seconds_per_unit': None if cpu is None else cpu / units}
