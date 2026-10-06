@@ -34,6 +34,7 @@
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/split-irq.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi-xio-port.h"
@@ -1979,6 +1980,33 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_MEMORY_SPECIAL_ADDRESS),
         sysbus_mmio_get_region(bedrock, 9));
+
+    /*
+     * The L1's "nmi" output reaches every present processor through the
+     * composite's "pi-nmi" inputs, the same path a processor interface's NMI
+     * store takes. Whether the real L1 interrupts all processors or only
+     * enabled ones, and whether it goes through the processor interface at
+     * all, is not established; the Bedrock processor interface datasheet
+     * records this as an approximation. The L1 gates the output on node
+     * power itself.
+     */
+    if (node->nr_cpus) {
+        DeviceState *nmi_split = qdev_new(TYPE_SPLIT_IRQ);
+
+        qdev_prop_set_uint32(nmi_split, "num-lines", node->nr_cpus);
+        object_property_add_child(OBJECT(node), "l1-nmi-split",
+                                  OBJECT(nmi_split));
+        qdev_realize_and_unref(nmi_split, NULL, &error_fatal);
+        qdev_connect_gpio_out_named(node->l1, "nmi", 0,
+                                    qdev_get_gpio_in(nmi_split, 0));
+        for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+            qdev_connect_gpio_out(
+                nmi_split, cpu,
+                qdev_get_gpio_in_named(
+                    node->bedrock, "pi-nmi",
+                    sn1_cpu_slot(node->model_node, cpu)));
+        }
+    }
 
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];

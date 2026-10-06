@@ -1096,6 +1096,77 @@ static void test_baseio_identity_properties(const void *data)
     qtest_quit(qts);
 }
 
+/* Read from the L1 console until @needle has arrived. */
+static void l1_console_until(int fd, const char *needle)
+{
+    g_autoptr(GString) seen = g_string_new(NULL);
+
+    while (!strstr(seen->str, needle)) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        char buf[128];
+        ssize_t n;
+
+        g_assert_cmpint(poll(&pfd, 1, SGI_WAIT_S * 1000), ==, 1);
+        n = read(fd, buf, sizeof(buf));
+        g_assert_cmpint(n, >, 0);
+        g_string_append_len(seen, buf, n);
+    }
+}
+
+static void l1_console_send(int fd, const char *text)
+{
+    g_assert_cmpint(write(fd, text, strlen(text)), ==, strlen(text));
+}
+
+/*
+ * The L1's nmi command reaches every present processor, through the
+ * Bedrock's per-processor NMI inputs: the two processors of a two-processor
+ * Origin 300 sit in slots 0 and 2, so lines 0 and 2 pulse once and the
+ * empty slots stay quiet. The command does nothing once the node is off.
+ * An approximation: see the Bedrock processor-interface datasheet.
+ */
+static void test_l1_nmi_reaches_processors(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M -bios %s -S "
+                      "-no-shutdown "
+                      "-chardev socket,id=l1,fd=%d -serial chardev:l1",
+                      quoted, sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/bedrock", "nmi");
+    l1_console_until(sv[0], "to escape to L1\r\n");
+
+    l1_console_send(sv[0], "\024nmi\r");
+    l1_console_until(sv[0], "to escape to L1\r\n");
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 1), ==, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 2), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 3), ==, 0);
+    /* A pulse: no line stays asserted. */
+    for (unsigned int line = 0; line < 4; line++) {
+        g_assert_false(qtest_get_irq(qts, line));
+    }
+
+    /* The first power-off request is deferred; the second acts. */
+    l1_console_send(sv[0], "\024power down\r");
+    l1_console_until(sv[0], "to escape to L1\r\n");
+    l1_console_send(sv[0], "\024power down\r");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    /* The display reply orders the nmi command before the check. */
+    l1_console_send(sv[0], "nmi\rdisplay\r");
+    l1_console_until(sv[0], "leds:");
+    for (unsigned int line = 0; line < 4; line++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, line), ==,
+                         line == 0 || line == 2);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
+}
+
 static void test_baseio_rejects_unsupported_revision(const void *data)
 {
     const char *args[] = {
@@ -1930,6 +2001,8 @@ int main(int argc, char **argv)
                         test_fuel_zero_identity_inputs);
     qtest_add_data_func("fuel/baseio-identity-properties", prom,
                         test_baseio_identity_properties);
+    qtest_add_data_func("fuel/l1-nmi-reaches-processors", prom,
+                        test_l1_nmi_reaches_processors);
     qtest_add_data_func("fuel/baseio-unsupported-revision", prom,
                         test_baseio_rejects_unsupported_revision);
     status = g_test_run();
