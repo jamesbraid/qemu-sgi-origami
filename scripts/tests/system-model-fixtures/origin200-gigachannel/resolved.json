@@ -1269,7 +1269,7 @@
       "datasheet_contracts": [
         "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
-      "description": "The base board's single-channel Ultra SCSI adapter for the 3.5-inch drives, at PCI device 0. A real Origin 200's own hardware inventory names both chips directly, at PCI device 0 and 1 (docs/component-taxonomy.md's captured `hinv` output); the captured graph shows a disk behind this one.",
+      "description": "The base board's single-channel Ultra SCSI adapter for the 3.5-inch drives, at PCI device 0. A real Origin 200's own hardware inventory names both chips directly, at PCI device 0 and 1, and its captured hardware graph shows a disk behind this one.",
       "id": "base-isp1040",
       "identity": {
         "hardware_revision": 6,
@@ -1301,7 +1301,7 @@
       "datasheet_contracts": [
         "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
-      "description": "The base board's single-channel Fast/Narrow SCSI adapter for the 5.25-inch devices, at PCI device 1. The same ISP1040 part as the `isp1040` Ultra channel is configured for a different board-level interface. A real Origin 200's own hardware inventory reports the identical revision for both (docs/component-taxonomy.md's captured `hinv` output).",
+      "description": "The base board's single-channel Fast/Narrow SCSI adapter for the 5.25-inch devices, at PCI device 1. The same ISP1040 part as the `isp1040` Ultra channel is configured for a different board-level interface. A real Origin 200's own hardware inventory reports the identical revision for both.",
       "id": "base-isp1040-1",
       "identity": {
         "hardware_revision": 6,
