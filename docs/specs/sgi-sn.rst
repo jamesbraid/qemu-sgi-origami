@@ -526,6 +526,21 @@ What is approximated:
 - Two-module systems, a cabinet on the slave module and a converted module
   with neither cabinet nor loopback are not built.
 
+Module power and reset
+======================
+
+An Origin 2000 module controller carries out ``pwr d``, ``pwr c`` and
+``rst`` through its module's power and reset outputs, which the machine
+connects. Once every module's power is off the machine powers down; IRIX
+6.5.30 sends ``pwr d 1`` to every module at ``shutdown -p``. A module
+whose power returns before that power-down is carried out went through
+``pwr c``, a cold restart, and the machine resets. A module reset resets
+the whole machine. QEMU has no per-module power or reset, so a rack of
+several modules approximates both: one module powering off alone is
+logged and does not stop the others, and one module's reset or power
+cycle resets them all. The module's NMI output is not connected; the
+controller model does not implement ``nmi`` and answers it ``err cmd``.
+
 Devices
 =======
 

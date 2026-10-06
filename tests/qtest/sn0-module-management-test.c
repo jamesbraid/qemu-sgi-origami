@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/timer.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
@@ -1054,20 +1055,87 @@ static void test_identity_survives_reset(void)
     qtest_quit(qts);
 }
 
+/* Whether QEMU has taken a power-down, under -no-shutdown. */
+static bool powered_down(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+    bool down = g_str_equal(qdict_get_str(qdict_get_qdict(rsp, "return"),
+                                          "status"), "shutdown");
+
+    qobject_unref(rsp);
+    return down;
+}
+
 /*
- * Nothing in this machine receives a module reset or a power sequence, so the
- * controller refuses those commands. Answering "ok" would tell firmware the
- * reset happened and stop it falling back to its own.
+ * Send a command whose action resets the machine and read its "ok". The
+ * action fires at the NAK that ends the read, so the adapter may be reset
+ * before a helper could wait for that byte or close the transfer: stop at
+ * the NAK and let the wire, which runs on the virtual clock, reach it.
  */
-static void test_destructive_commands_refused(void)
+static void msc_command_then_reset(QTestState *qts, const char *text)
+{
+    uint8_t request[16], response[RESP_CAP], sum = 0;
+    unsigned i, total, len = strlen(text);
+
+    request[0] = len;
+    memcpy(&request[1], text, len);
+    for (i = 0; i < len + 1; i++) {
+        sum += request[i];
+    }
+    request[len + 1] = (uint8_t)-(int)sum;
+
+    g_assert_true(start_transfer(qts, 0, MSC_ADDRESS, false));
+    for (i = 0; i < len + 2; i++) {
+        g_assert_true(send_byte(qts, 0, request[i]));
+    }
+    g_assert_true(restart_transfer(qts, 0, MSC_ADDRESS, true));
+    discard_byte(qts, 0);
+    response[0] = take_byte(qts, 0, false);
+    total = (unsigned)response[0] + 2;
+    g_assert_cmpuint(total, <=, sizeof(response));
+    for (i = 1; i < total - 1; i++) {
+        response[i] = take_byte(qts, 0, false);
+    }
+    adapter_write(qts, 0, I2C_CTRL, CTL_NAK);
+    response[total - 1] = adapter_read(qts, 0, I2C_DATA);
+    g_assert_cmpmem(&response[1], 2, "ok", 2);
+    for (i = 0; i < POLL_STEPS; i++) {
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    qtest_qmp_eventwait(qts, "RESET");
+}
+
+/*
+ * The module controller's reset and power outputs reach the machine. IRIX
+ * powers an Origin 2000 off with "pwr d 1" to every module controller, so
+ * a refused power-down left the guest spinning at halt.
+ */
+static void test_module_reset_reaches_machine(void)
 {
     QTestState *qts = start_module();
 
-    assert_response(qts, 0, "rst", "err cmd");
-    assert_response(qts, 0, "pwr d 0", "err cmd");
-    assert_response(qts, 0, "pwr c", "err cmd");
-    /* A command the module does carry out still answers normally. */
-    assert_response(qts, 0, "ver", "ok");
+    msc_command_then_reset(qts, "rst");
+    qtest_quit(qts);
+}
+
+static void test_module_power_down_reaches_machine(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+
+    assert_response(qts, 0, "pwr d 1", "ok");
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/* "pwr c" removes power and restores it: a cold restart, not a power-off. */
+static void test_module_power_cycle_reaches_machine(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+
+    msc_command_then_reset(qts, "pwr c");
+    g_assert_false(powered_down(qts));
     qtest_quit(qts);
 }
 
@@ -1374,8 +1442,12 @@ int main(int argc, char **argv)
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",
                    test_identity_survives_reset);
-    qtest_add_func("/sn0/o2000-module-management/destructive-refused",
-                   test_destructive_commands_refused);
+    qtest_add_func("/sn0/o2000-module-management/module-reset",
+                   test_module_reset_reaches_machine);
+    qtest_add_func("/sn0/o2000-module-management/module-power-down",
+                   test_module_power_down_reaches_machine);
+    qtest_add_func("/sn0/o2000-module-management/module-power-cycle",
+                   test_module_power_cycle_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
                    test_dip_switches_reach_the_controller);
     qtest_add_func("/sn0/o2000-module-management/module-serial-rom",
