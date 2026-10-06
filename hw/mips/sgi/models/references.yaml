@@ -374,7 +374,7 @@ web:
     locator: line
     rights: public-web
     obtain:
-      url: http://miod.online.fr/software/openbsd/stories/sgi4.html
+      url: https://web.archive.org/web/20260620055955id_/http://miod.online.fr/software/openbsd/stories/sgi4.html
       sha256: 307c9d4678f52b8fb0c43d1690f552fd774ac1620bdf9aa1299c6f85ff40b91e
   usenet-3be33f04:
     title: "comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>"
