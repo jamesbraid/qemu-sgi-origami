@@ -28,6 +28,8 @@
 #define REG_BRIDGE_DEVICE0      (BRIDGE_BASE + BRIDGE_DEVICE0 + REG_DATA)
 
 #define DEV_SWAP_PROGRAMMED     (1u << 13)
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define DEV_SWAP_TRANSLATED     (1u << 20)
 
 /*
  * PCI type 0 configuration space; device 0 is the first of the board's two
@@ -509,20 +511,28 @@ static uint16_t get16le(const uint8_t *b)
 }
 
 /*
- * Reverse each aligned 32-bit word, the correction a word-value ring needs.
+ * The unit the Bridge reverses within: 4 for a swap-clear slot on 32-bit
+ * data phases, the default, 8 on 64-bit phases, and 1 for a swap-set slot,
+ * which places bytes as they are.
+ */
+static size_t placement_unit = 4;
+
+/*
+ * Reverse each aligned unit, the correction a word-value ring needs. The
+ * adapter itself puts bytes on the bus in order; the Bridge's placement is
+ * all that reorders them.
  */
 static void normalise_words(uint8_t *buf, size_t len)
 {
-    size_t i;
+    size_t i, j;
 
-    for (i = 0; i + 4 <= len; i += 4) {
-        uint8_t t = buf[i];
+    for (i = 0; i + placement_unit <= len; i += placement_unit) {
+        for (j = 0; j < placement_unit / 2; j++) {
+            uint8_t t = buf[i + j];
 
-        buf[i] = buf[i + 3];
-        buf[i + 3] = t;
-        t = buf[i + 1];
-        buf[i + 1] = buf[i + 2];
-        buf[i + 2] = t;
+            buf[i + j] = buf[i + placement_unit - 1 - j];
+            buf[i + placement_unit - 1 - j] = t;
+        }
     }
 }
 
@@ -714,14 +724,20 @@ static void build_command(uint8_t *entry, uint32_t handle, uint16_t device,
     normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
 }
 
-/* One 16 KiB ATE must preserve all four 4 KiB scatter-gather segments. */
+/*
+ * One 16 KiB ATE must preserve all four 4 KiB scatter-gather segments. The
+ * same transfer runs against each Bridge swap setting: the card's bytes are
+ * in order on the bus, and rings, status entries and payload all land placed
+ * by the slot, in both directions. data carries bit 0 for a swap-set slot.
+ * The on-board ISP1040 is a 32-bit PCI agent, so its data phases are 32-bit.
+ */
 static void test_write_four_quarters_through_16k_ate(const void *data)
 {
-    bool native = GPOINTER_TO_INT(data);
+    bool swap_set = GPOINTER_TO_INT(data) & 1;
     const char *trace = g_getenv("QEMU_DMA_ISP_TRACE");
     g_autofree char *tracing = trace ? g_strdup_printf(
-        "-trace enable=sgi_hub_ii_*,file=%s/isp-%s-16k.trace",
-        trace, native ? "native" : "buffer") : g_strdup("");
+        "-trace enable=sgi_hub_ii_*,file=%s/isp-16k.trace",
+        trace) : g_strdup("");
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("qtest-isp-ate-write.XXXXXX", &path, NULL);
     QTestState *qts;
@@ -739,9 +755,12 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     qts = qtest_initf(MACHINE_WITH_BRIDGE
                       " -drive id=d0,if=none,file=%s,format=raw"
                       " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=d0"
-                      " -global qlogic-isp1040.dma-buffer=%s %s",
-                      path, native ? "off" : "on", tracing);
+                      " %s", path, tracing);
+    placement_unit = swap_set ? 1 : 4;
     aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, REG_BRIDGE_DEVICE0,
+                 qtest_readl(qts, REG_BRIDGE_DEVICE0) |
+                 (swap_set ? DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED : 0));
     qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
@@ -852,6 +871,7 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
             g_assert_cmphex(guard[k], ==, 0xee);
         }
     }
+    placement_unit = 4;
     qtest_quit(qts);
     close(fd);
     unlink(path);
@@ -1545,9 +1565,10 @@ int main(int argc, char **argv)
                         test_a64_ring_is_word_value);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
                         test_a64_ring_data_out);
-    qtest_add_data_func("sn0/qlogic-isp/write-four-quarters-through-16k-ate",
-                        NULL, test_write_four_quarters_through_16k_ate);
-    qtest_add_data_func("sn0/qlogic-isp/native-four-quarters-through-16k-ate",
+    qtest_add_data_func("sn0/qlogic-isp/four-quarters-swap-clear",
+                        GINT_TO_POINTER(0),
+                        test_write_four_quarters_through_16k_ate);
+    qtest_add_data_func("sn0/qlogic-isp/four-quarters-swap-set",
                         GINT_TO_POINTER(1),
                         test_write_four_quarters_through_16k_ate);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-send-diagnostic", NULL,
