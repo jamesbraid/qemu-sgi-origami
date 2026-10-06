@@ -289,6 +289,8 @@ revision 2, 200 MHz (observed, many machines). No capture shows another
 revision. The raw register value behind IRIX's revision field is
 unknown.
 
+.. _sgi-sn-topology:
+
 Products and topology
 =====================
 
@@ -392,6 +394,8 @@ path on any Scalable Node machine in this tree. A guest reaches its
 kernel or standalone program through the PROM's own TFTP netboot or a
 disk image, the same as real hardware.
 
+.. _sgi-sn-firmware-supply:
+
 Firmware supply
 ===============
 
@@ -439,6 +443,8 @@ that same sequence indefinitely rather than reaching an interactive
 prompt, because nothing carries its own state across the reset the
 PROM performs early in that sequence.
 
+.. _sgi-sn-storage:
+
 Writable storage
 ================
 
@@ -478,6 +484,8 @@ index) or ``id=sgi-gigachannel-flash<C>`` (C the cabinet) for a BASEIO
 PROM flash; and ``-drive if=mtd,index=I`` or ``-drive
 if=none,id=sgi-nvram<I>`` with its ``sgi-nvram<I>-clock`` partner for a
 Timekeeper, I the I/O board index on SN0 and the node on SN1.
+
+.. _sgi-sn-serial-order:
 
 Serial line order
 =================
@@ -600,6 +608,8 @@ PCI buses are ``expansion0-u0-head-e.0``, ``expansion0-u0-head-f.0``,
 unless a caller explicitly attaches a supported card. Physical slot and PCI
 device-number correspondence is not established.
 
+.. _sgi-sn-board-devices:
+
 Board devices
 =============
 
@@ -704,6 +714,8 @@ destination widget is the peer's own business: a Crossbow routes by it, a
 Bridge or a Hub accepts any. A Bridge sends into its link's
 widget-addressed fabric, the destination widget in bits 51:48 and the
 48-bit XIO address below.
+
+.. _sgi-sn-gigachannel:
 
 GIGAchannel expansion cabinet
 -----------------------------

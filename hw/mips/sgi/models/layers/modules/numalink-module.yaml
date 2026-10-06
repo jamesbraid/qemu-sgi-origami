@@ -2,19 +2,6 @@
 # The Origin 300 NUMAlink module: an eight-port SN1 router in its own rack unit,
 # scaling a base-module population from two to eight (tall rack).
 layer_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit; every component fact above has moved to that direct form. The one
-# key left here backs the eight router-to-port buses and their eight connections
-# only, whose strict evidence policy (tools/origami_lib/model_validation.py)
-# requires non-empty sources for every one regardless of provenance -- unlike a
-# component, which may carry none. It cites only the internal closure research
-# note's cabling paragraph, so the checker reports it under "facts whose only
-# sources are internal documents" rather than resolving it; replacing it with an
-# independently obtainable citation is follow-up work on the evidence itself, not
-# a citation-form change.
-sources:
-  sn-family-closure-tall-rack-cabling: "docs/research/sn-family-closure-20260913.md, same paragraph: port-to-U cabling read from the rendered figures and cross-checked against a live six-chassis rack (nekonomicon 16727514): tall rack (Figure 4-2) U28 to port 3, U26 to 2, U24 to 1, U22 to 8, U18 to 7, U16 to 6, U14 to 5, U12 to 4"
 layer:
   kind: module
   id: numalink-module
@@ -54,20 +41,20 @@ layer:
       - {id: port-7, name: "Port 7 (chip G), U18 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U18, occupancy: opaque, notes: Base modules only.}}
       - {id: port-8, name: "Port 8 (chip H), U22 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U22, occupancy: opaque, notes: Base modules only.}}
     buses:
-      - {id: router-port-1, name: Router to port 1, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-2, name: Router to port 2, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-3, name: Router to port 3, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-4, name: Router to port 4, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-5, name: Router to port 5, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-6, name: Router to port 6, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-7, name: Router to port 7, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {id: router-port-8, name: Router to port 8, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-1, name: Router to port 1, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-2, name: Router to port 2, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-3, name: Router to port 3, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-4, name: Router to port 4, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-5, name: Router to port 5, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-6, name: Router to port 6, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-7, name: Router to port 7, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {id: router-port-8, name: Router to port 8, kind: fabric, master: router, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
     connections:
-      - {component: port-1, bus: router-port-1, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-2, bus: router-port-2, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-3, bus: router-port-3, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-4, bus: router-port-4, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-5, bus: router-port-5, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-6, bus: router-port-6, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-7, bus: router-port-7, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
-      - {component: port-8, bus: router-port-8, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-1, bus: router-port-1, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-2, bus: router-port-2, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-3, bus: router-port-3, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-4, bus: router-port-4, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-5, bus: router-port-5, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-6, bus: router-port-6, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-7, bus: router-port-7, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
+      - {component: port-8, bus: router-port-8, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick]}
