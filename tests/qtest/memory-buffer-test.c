@@ -24,6 +24,15 @@
 #define ST_WRITE        (STATUS_ADDR + 0x38)
 #define ST_TRANSACTION  (STATUS_ADDR + 0x40)
 #define ST_READ         (STATUS_ADDR + 0x48)
+#define ST_TARGET       (STATUS_ADDR + 0x50)
+#define ST_ONLY_WRITE   (STATUS_ADDR + 0x58)
+#define ST_MOVED        (STATUS_ADDR + 0x60)
+#define ST_ONLY_READ    (STATUS_ADDR + 0x68)
+#define ST_MOVED_SUM    (STATUS_ADDR + 0x70)
+#define ST_RAM_DIRTY    (STATUS_ADDR + 0x78)
+
+/* The device's RAM sits right below its store, so one range spans both. */
+#define RAM_ADDR        (STORE_ADDR - 256)
 
 /* qtest memory commands go through the first CPU's address space. */
 static const struct {
@@ -331,6 +340,182 @@ static void test_bounce_buffer(void)
     qtest_quit(qts);
 }
 
+static QTestState *start_with_ram(const char *props, const char *extra)
+{
+    QTestState *qts = start(props, extra);
+
+    qtest_sysbus_mmio_map(qts, DEVICE_PATH, 2, RAM_ADDR);
+    return qts;
+}
+
+static uint64_t pattern_sum(size_t len)
+{
+    uint64_t sum = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        sum += (uint8_t)(0xa0 + i);
+    }
+    return sum;
+}
+
+static void check_pattern(QTestState *qts, uint64_t addr, size_t len,
+                          size_t first)
+{
+    uint8_t out[256];
+
+    g_assert_cmpuint(len, <=, sizeof(out));
+    qtest_memread(qts, addr, out, len);
+    for (size_t i = 0; i < len; i++) {
+        g_assert_cmphex(out[i], ==, (uint8_t)(0xa0 + first + i));
+    }
+}
+
+/*
+ * A buffer-only transfer into RAM is a copy that keeps dirty tracking: the
+ * write marks the RAM dirty and the read does not.
+ */
+static void test_buffer_only_ram(void)
+{
+    QTestState *qts = start_with_ram("", "");
+
+    qtest_readq(qts, ST_RAM_DIRTY);
+    g_assert_cmpuint(qtest_readq(qts, ST_RAM_DIRTY), ==, 0);
+    qtest_writeq(qts, ST_TARGET, RAM_ADDR);
+    qtest_writeq(qts, ST_ONLY_WRITE, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_TRANSACTION), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readq(qts, ST_RAM_DIRTY), ==, 1);
+    qtest_writeq(qts, ST_ONLY_READ, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED_SUM), ==, pattern_sum(64));
+    g_assert_cmpuint(qtest_readq(qts, ST_RAM_DIRTY), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 0);
+    check_pattern(qts, RAM_ADDR, 64, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * It stops where an ordinary access would be needed and makes none there:
+ * the RAM half of a range moves, the store without callbacks sees no access
+ * and keeps its bytes.
+ */
+static void test_buffer_only_stops_before_ordinary_region(void)
+{
+    QTestState *qts = start_with_ram(",mode=1", "");
+    uint8_t in[64], out[64];
+
+    fill_pattern(in, sizeof(in), 11);
+    qtest_memwrite(qts, STORE_ADDR, in, sizeof(in));
+    clear_counts(qts);
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR - 64);
+    qtest_writeq(qts, ST_ONLY_WRITE, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 64);
+    qtest_writeq(qts, ST_ONLY_READ, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED_SUM), ==, pattern_sum(64));
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    qtest_memread(qts, STORE_ADDR, out, sizeof(out));
+    g_assert_cmpmem(in, sizeof(in), out, sizeof(out));
+    check_pattern(qts, STORE_ADDR - 64, 64, 0);
+    qtest_quit(qts);
+}
+
+/* From RAM it carries on into a region whose buffer callback accepts. */
+static void test_buffer_only_continues_into_buffer_region(void)
+{
+    QTestState *qts = start_with_ram("", "");
+
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR - 64);
+    qtest_writeq(qts, ST_ONLY_WRITE, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, ST_OFFERED), ==, 64);
+    qtest_writeq(qts, ST_ONLY_READ, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 128);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED_SUM), ==, pattern_sum(128));
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 2);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    check_pattern(qts, STORE_ADDR - 64, 128, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A partial accept is kept and the rest offered again until what is left
+ * is too short to offer: 40 bytes taken 16 at a time move 32.
+ */
+static void test_buffer_only_partial(void)
+{
+    QTestState *qts = start_with_ram(",mode=3", "");
+
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR);
+    qtest_writeq(qts, ST_ONLY_WRITE, 40);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 32);
+    g_assert_cmpuint(qtest_readq(qts, ST_TRANSACTION), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 2);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    check_pattern(qts, STORE_ADDR, 32, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A decline, a range of 8 bytes or less and an unassigned address all
+ * move nothing and make no ordinary access.
+ */
+static void test_buffer_only_moves_nothing(void)
+{
+    QTestState *qts = start_with_ram(",mode=2", "");
+
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR);
+    qtest_writeq(qts, ST_ONLY_WRITE, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 0);
+    qtest_writeq(qts, ST_ONLY_READ, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 2);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    qtest_quit(qts);
+
+    qts = start_with_ram("", "");
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR);
+    qtest_writeq(qts, ST_ONLY_WRITE, 8);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 0);
+    qtest_writeq(qts, ST_TARGET, STATUS_ADDR + 0x10000);
+    qtest_writeq(qts, ST_ONLY_WRITE, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The device's reentrancy guard covers an offer made by a buffer-only
+ * transfer: the callback's re-entry into the same device is refused.
+ */
+static void test_buffer_only_reentrancy_guard(void)
+{
+    QTestState *qts = start_with_ram(",mode=4", "");
+
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR);
+    qtest_writeq(qts, ST_ONLY_READ, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 64);
+    g_assert_cmpuint(qtest_readq(qts, ST_RESULT), ==, MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(qtest_readq(qts, ST_BUFFER), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, ST_SCALAR), ==, 0);
+    qtest_quit(qts);
+}
+
+/* A callback's error result on what it consumed reaches the caller. */
+static void test_buffer_only_error_result(void)
+{
+    QTestState *qts = start_with_ram(",mode=5", "");
+
+    qtest_writeq(qts, ST_TARGET, STORE_ADDR);
+    qtest_writeq(qts, ST_ONLY_WRITE, 32);
+    g_assert_cmpuint(qtest_readq(qts, ST_MOVED), ==, 32);
+    g_assert_cmpuint(qtest_readq(qts, ST_TRANSACTION), ==, MEMTX_ERROR);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     const char *arch = qtest_get_arch();
@@ -370,5 +555,18 @@ int main(int argc, char **argv)
     qtest_add_func("/memory-buffer/declined-keeps-narrow-widths",
                    test_declined_keeps_narrow_widths);
     qtest_add_func("/memory-buffer/bounce-buffer", test_bounce_buffer);
+    qtest_add_func("/memory-buffer/buffer-only-ram", test_buffer_only_ram);
+    qtest_add_func("/memory-buffer/buffer-only-stops-before-ordinary-region",
+                   test_buffer_only_stops_before_ordinary_region);
+    qtest_add_func("/memory-buffer/buffer-only-continues-into-buffer-region",
+                   test_buffer_only_continues_into_buffer_region);
+    qtest_add_func("/memory-buffer/buffer-only-partial",
+                   test_buffer_only_partial);
+    qtest_add_func("/memory-buffer/buffer-only-moves-nothing",
+                   test_buffer_only_moves_nothing);
+    qtest_add_func("/memory-buffer/buffer-only-reentrancy-guard",
+                   test_buffer_only_reentrancy_guard);
+    qtest_add_func("/memory-buffer/buffer-only-error-result",
+                   test_buffer_only_error_result);
     return g_test_run();
 }

@@ -3,8 +3,8 @@
  * Test device for the optional MemoryRegionOps buffer callbacks.
  *
  * MMIO region 0 is a small byte store whose ops may offer read_buffer and
- * write_buffer;
- * region 1 holds 64-bit status and control registers:
+ * write_buffer; region 2 is RAM of the same size, logged for
+ * DIRTY_MEMORY_VGA; region 1 holds 64-bit status and control registers:
  *
  *   0x00  scalar callbacks since reset (write: clear both counters)
  *   0x08  buffer callbacks since reset
@@ -18,6 +18,14 @@
  *   0x38  write N: address_space_write() N bytes of 0xa0 + i to region 0
  *   0x40  result of the last transaction started at 0x38 or 0x48
  *   0x48  write N: address_space_read() N bytes of region 0
+ *   0x50  target address of the buffer-only transfers below
+ *   0x58  write N: address_space_write_buffer_only() N bytes of 0xa0 + i
+ *         at the target; the result goes to 0x40
+ *   0x60  bytes the last buffer-only transfer moved
+ *   0x68  write N: address_space_read_buffer_only() N bytes at the target;
+ *         the result goes to 0x40
+ *   0x70  sum of the bytes the last buffer-only read moved
+ *   0x78  read: whether region 2 is dirty since the last read, then clear
  *
  * The mode property selects the buffer callback's behaviour:
  *
@@ -37,6 +45,7 @@
 #include "qemu/module.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
+#include "system/ramblock.h"
 
 #define TYPE_MEMORY_BUFFER_TESTDEV "memory-buffer-testdev"
 OBJECT_DECLARE_SIMPLE_TYPE(MemoryBufferTestState, MEMORY_BUFFER_TESTDEV)
@@ -58,6 +67,7 @@ struct MemoryBufferTestState {
     MemoryRegionOps ops;
     MemoryRegion store;
     MemoryRegion status;
+    MemoryRegion ram;
     EventNotifier notifier;
     bool notifier_ready;
 
@@ -72,6 +82,9 @@ struct MemoryBufferTestState {
     uint64_t offered;
     uint64_t mapped_sum;
     uint64_t transaction;
+    uint64_t target;
+    uint64_t moved;
+    uint64_t moved_sum;
     uint8_t bytes[MEMORY_BUFFER_TESTDEV_BYTES];
 };
 
@@ -199,6 +212,43 @@ static void memory_buffer_testdev_transfer(MemoryBufferTestState *s,
                                       is_write);
 }
 
+static void memory_buffer_testdev_buffer_only(MemoryBufferTestState *s,
+                                              hwaddr len, bool is_write)
+{
+    uint8_t bytes[MEMORY_BUFFER_TESTDEV_BYTES * 2];
+    MemTxResult result;
+
+    len = MIN(len, sizeof(bytes));
+    if (is_write) {
+        for (hwaddr i = 0; i < len; i++) {
+            bytes[i] = 0xa0 + i;
+        }
+        s->moved = address_space_write_buffer_only(&address_space_memory,
+                                                   s->target,
+                                                   MEMTXATTRS_UNSPECIFIED,
+                                                   bytes, len, &result);
+    } else {
+        s->moved = address_space_read_buffer_only(&address_space_memory,
+                                                  s->target,
+                                                  MEMTXATTRS_UNSPECIFIED,
+                                                  bytes, len, &result);
+        s->moved_sum = 0;
+        for (hwaddr i = 0; i < s->moved; i++) {
+            s->moved_sum += bytes[i];
+        }
+    }
+    s->transaction = result;
+}
+
+static bool memory_buffer_testdev_ram_dirty(MemoryBufferTestState *s)
+{
+    g_autofree DirtyBitmapSnapshot *snap =
+        memory_region_snapshot_and_clear_dirty(&s->ram, 0, s->size,
+                                               DIRTY_MEMORY_VGA);
+
+    return memory_region_snapshot_get_dirty(&s->ram, snap, 0, s->size);
+}
+
 static uint64_t status_read(void *opaque, hwaddr addr, unsigned size)
 {
     MemoryBufferTestState *s = opaque;
@@ -216,6 +266,14 @@ static uint64_t status_read(void *opaque, hwaddr addr, unsigned size)
         return s->mapped_sum;
     case 0x40:
         return s->transaction;
+    case 0x50:
+        return s->target;
+    case 0x60:
+        return s->moved;
+    case 0x70:
+        return s->moved_sum;
+    case 0x78:
+        return memory_buffer_testdev_ram_dirty(s);
     default:
         return 0;
     }
@@ -240,6 +298,13 @@ static void status_write(void *opaque, hwaddr addr, uint64_t value,
     case 0x38:
     case 0x48:
         memory_buffer_testdev_transfer(s, MIN(value, s->size), addr == 0x38);
+        break;
+    case 0x50:
+        s->target = value;
+        break;
+    case 0x58:
+    case 0x68:
+        memory_buffer_testdev_buffer_only(s, value, addr == 0x58);
         break;
     default:
         break;
@@ -298,10 +363,19 @@ static void memory_buffer_testdev_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->store);
 
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "memory-buffer-testdev.status", 0x50);
+                          "memory-buffer-testdev.status", 0x80);
     /* Control writes start their own transactions into region 0. */
     s->status.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
+
+    /* Not migrated, so a second instance needs no unique RAM block name. */
+    if (!memory_region_init_ram_flags_nomigrate(&s->ram, OBJECT(s),
+                                                "memory-buffer-testdev.ram",
+                                                s->size, 0, errp)) {
+        return;
+    }
+    memory_region_set_log(&s->ram, true, DIRTY_MEMORY_VGA);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->ram);
 }
 
 static void memory_buffer_testdev_unrealize(DeviceState *dev)
