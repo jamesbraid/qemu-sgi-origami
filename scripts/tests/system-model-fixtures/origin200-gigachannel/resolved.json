@@ -2228,8 +2228,8 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/specs/sgi-bridge.rst",
+        "web:dmesgd-8994 lines 184-202 shows the Bridge, IOC3 and one-wire MAC of the real Origin 200, not the firmware base-I/O record"
       ]
     },
     {
