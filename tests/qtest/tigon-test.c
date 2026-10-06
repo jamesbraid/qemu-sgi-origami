@@ -223,9 +223,15 @@ static void tigon_setup_rings(TigonTest *t, bool dma_be)
     QTestState *q = t->qs->qts;
 
     t->dma_be = dma_be;
+    /*
+     * The data byte swap is set either way: frames then cross the bus as a
+     * byte stream, which is what a driver wants in host memory on any host.
+     * Only the descriptor byte swap follows the host's order.
+     */
     reg_wr(t, TI_GCR_OPMODE, dma_be ?
            (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
-            TI_OPMODE_BYTESWAP_DATA) : 0);
+            TI_OPMODE_BYTESWAP_DATA) :
+           (TI_OPMODE_WORDSWAP_BD | TI_OPMODE_BYTESWAP_DATA));
 
     t->gib         = qmalloc(t->qs, GIB_SIZE);
     t->ev_ring     = qmalloc(t->qs, EVENT_RING_CNT * 8);
@@ -370,6 +376,27 @@ static void test_register_config_roundtrip(void)
                     TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
                     TI_OPMODE_BYTESWAP_DATA);
 
+    tigon_stop(&t);
+}
+
+/*
+ * The model runs the card as a 32-bit PCI agent, so PCI State bit 20, set
+ * on a 32-bit bus (manual Table 31), reads set from reset and after the
+ * value IRIX writes, which has it clear; the other bits keep what was
+ * written.
+ */
+#define TI_PCI_STATE            0x05c
+#define TI_PCISTATE_32BIT_BUS   0x00100000u
+
+static void test_pci_state_reports_a_32bit_bus(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    g_assert_cmphex(reg_rd(&t, TI_PCI_STATE), ==, TI_PCISTATE_32BIT_BUS);
+    reg_wr(&t, TI_PCI_STATE, 0x760600b4);
+    g_assert_cmphex(reg_rd(&t, TI_PCI_STATE), ==,
+                    0x760600b4 | TI_PCISTATE_32BIT_BUS);
     tigon_stop(&t);
 }
 
@@ -722,7 +749,8 @@ static void test_operational_ring_migration(void)
     g_assert_cmphex(dma_ldl(&to, to.ev_ring), ==,
                     (uint32_t)TI_EV_FIRMWARE_UP << 24);
     g_assert_cmphex(dma_ldl(&to, to.ev_prod), ==, 1);
-    g_assert_cmphex(reg_rd(&to, TI_GCR_OPMODE), ==, 0);
+    g_assert_cmphex(reg_rd(&to, TI_GCR_OPMODE), ==,
+                    TI_OPMODE_WORDSWAP_BD | TI_OPMODE_BYTESWAP_DATA);
 
     /* The consumer index crossed with the device: this is the second slot. */
     qtest_memwrite(to.qs->qts, to.tx_buf, test_frame, sizeof(test_frame));
@@ -1115,6 +1143,8 @@ int main(int argc, char **argv)
     qtest_add_func("tigon/chip-rev-and-reset", test_chip_rev_and_reset);
     qtest_add_func("tigon/register-config-roundtrip",
                    test_register_config_roundtrip);
+    qtest_add_func("tigon/pci-state-reports-a-32bit-bus",
+                   test_pci_state_reports_a_32bit_bus);
     qtest_add_func("tigon/station-addr-par", test_station_addr_par);
     qtest_add_func("tigon/station-addr-eeprom", test_station_addr_eeprom);
     qtest_add_func("tigon/firmware-up-requires-gib",

@@ -46,8 +46,13 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
  * device 2 is IOC3; 3 is the first free slot, and its widget window is the
  * first of the six 1 MB windows (sn0-bridge-test.c's own window table).
  */
-#define TIGON_SLOT      3
-#define WINDOW_TIGON    (BRIDGE_BASE + 0x700000)
+#define TIGON_NARROW_SLOT 3
+/* Option slot 5 drives REQ64#; the Tigon still runs 32-bit phases there. */
+#define TIGON_WIRED_SLOT  5
+static unsigned int tigon_slot = TIGON_NARROW_SLOT;
+#define TIGON_SLOT      tigon_slot
+#define WINDOW_TIGON    (BRIDGE_BASE + (tigon_slot == TIGON_WIRED_SLOT ? \
+                                        0x900000 : 0x700000))
 
 /* PCI type 0 configuration space through the Bridge. */
 #define BRIDGE_CFG0     0x020000
@@ -472,17 +477,6 @@ static QTestState *tigon_init_netdev_128m_dma_traced(int guest_fd,
                        guest_fd, logfile);
 }
 
-static QTestState *tigon_init_netdev_dma_routes_traced(
-    int guest_fd, const char *logfile)
-{
-    return qtest_initf("-M origin200 "
-                       "-netdev socket,fd=%d,id=n0 "
-                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
-                       "-d trace:tigon_dma,trace:tigon_payload_dma_route,"
-                       "trace:tigon_descriptor_dma_route -D %s",
-                       guest_fd, logfile);
-}
-
 static char *tigon_test_log_new(void)
 {
     char *logfile = NULL;
@@ -548,18 +542,6 @@ static unsigned count_tigon_dma_in_range(const char *log, uint64_t start,
             count++;
         }
         cursor += sizeof(event) - 1;
-    }
-    return count;
-}
-
-static unsigned count_log_matches(const char *log, const char *needle)
-{
-    const char *cursor = log;
-    unsigned count = 0;
-
-    while ((cursor = strstr(cursor, needle)) != NULL) {
-        count++;
-        cursor += strlen(needle);
     }
     return count;
 }
@@ -795,75 +777,6 @@ static void test_descriptor_dma_batches_producer_last(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
-    unlink(logfile);
-}
-
-/* Repeated traffic uses the cached descriptor route for every ordered DMA. */
-static void test_descriptor_dma_route_used_for_traffic(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    g_autofree char *logfile = tigon_test_log_new();
-    g_autofree char *log = NULL;
-    uint8_t got[sizeof(test_frame)];
-    gsize traffic_start;
-    unsigned i;
-    SgiWait w;
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev_dma_routes_traced(sv[1], logfile);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-    go_operational(qts);
-    g_assert_true(g_file_get_contents(logfile, &log, &traffic_start, NULL));
-    g_clear_pointer(&log, g_free);
-
-    /* One doorbell drains two transmit payloads. */
-    for (i = 0; i < 2; i++) {
-        uint64_t desc = TX_RING_PHYS + (uint64_t)i * 16;
-        uint64_t payload = TX_BUF_PHYS + (uint64_t)i * 0x100;
-
-        qtest_memwrite(qts, payload, test_frame, sizeof(test_frame));
-        write_rcb_addr(qts, desc, payload);
-        qtest_writel(qts, desc + 8,
-                     ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
-        qtest_writel(qts, desc + 12, 0);
-    }
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
-    for (i = 0; i < 2; i++) {
-        g_assert_cmpint(net_recv_frame(sv[0], got, sizeof(got)), ==,
-                        sizeof(test_frame));
-        g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
-    }
-
-    /* Two incoming packets exercise the receive payload route too. */
-    for (i = 0; i < 2; i++) {
-        post_std_rx_buffer(qts, i, RX_BUF_PHYS + (uint64_t)i * 0x100,
-                           i, 2048);
-    }
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
-    net_send_frame(sv[0], test_frame, sizeof(test_frame));
-    net_send_frame(sv[0], test_frame, sizeof(test_frame));
-    sgi_wait_start(&w, "two returned frames");
-    for (;;) {
-        if (qtest_readl(qts, RETURN_PROD_PHYS) == 2) {
-            break;
-        }
-        sgi_wait_pause(&w, 5000);
-        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
-    }
-    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 2);
-
-    qtest_quit(qts);
-    close(sv[0]);
-    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
-    g_assert_cmpuint(count_log_matches(log, "tigon_payload_dma_route "), ==,
-                     1);
-    g_assert_cmpuint(count_log_matches(log + traffic_start, "tigon_dma "),
-                     ==, 10);
-    g_assert_cmpuint(count_log_matches(log + traffic_start,
-                                       "tigon_descriptor_dma_route "), ==,
-                     10);
     unlink(logfile);
 }
 
@@ -1142,28 +1055,25 @@ static unsigned count_lines_with(const char *text, const char *needle)
 }
 
 /*
- * Payload must use plain DMA, not the Bridge's word placement. Both routes
- * produce identical wire bytes: per-word reversal cancels the card's word
- * consumption, but the placement path dispatches once per doubleword and
- * limits throughput. The trace distinguishes them. Nonzero descriptor
- * placement counts prove tracing is active; payload counts on the plain route
- * prove the address matches. Both addresses derive from the buffer constant,
- * so moving it updates both. A trace format change fails the positive check
- * first. Placement logs a fabric address; plain DMA logs the device's raw PCI
- * address.
+ * Payload goes through the card's own bus-master DMA like the descriptors, so
+ * it crosses the slot's Bridge placement. With the card's data byte swap
+ * clear and the slot swap-clear on 32-bit phases the two reversals cancel,
+ * which is why the wire bytes match the guest's frame; the trace shows the
+ * placement taking the payload buffer too, and no transfer taking a route
+ * that skips the Bridge. The placement logs the host address of each
+ * doubleword it moves, so a payload transfer shows as a line ending in the
+ * buffer's first doubleword's address.
  */
-static void test_payload_skips_lane_swap(const void *data)
+static void test_payload_follows_placement(const void *data)
 {
-    g_autofree char *swap_needle =
-        g_strdup_printf("addr 0x%x", TX_BUF_PHYS >> 16);
-    g_autofree char *plain_needle =
-        g_strdup_printf("plain addr 0x%" PRIx64,
-                        (uint64_t)(IOVA(TX_BUF_PHYS) >> 8));
+    g_autofree char *payload_needle =
+        g_strdup_printf("%" PRIx64 " size",
+                        (uint64_t)(TX_BUF_DIRECT_PHYS & ~7u));
     char *logfile = NULL;
     char *log = NULL;
     int fd;
 
-    fd = g_file_open_tmp("tigon-lane-swap-XXXXXX", &logfile, NULL);
+    fd = g_file_open_tmp("tigon-placement-XXXXXX", &logfile, NULL);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
@@ -1172,10 +1082,10 @@ static void test_payload_skips_lane_swap(const void *data)
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
     /* Control: the word placement saw the descriptor and ring traffic. */
     g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement.word "), >, 0);
-    /* Control: the payload buffer's address showed up on the plain route. */
-    g_assert_cmpuint(count_lines_with(log, plain_needle), >, 0);
-    /* The payload buffer never crossed the swap window. */
-    g_assert_cmpuint(count_lines_with(log, swap_needle), ==, 0);
+    /* The payload buffer crossed the placement as well. */
+    g_assert_cmpuint(count_lines_with(log, payload_needle), >, 0);
+    /* And no transfer took a route that skips the Bridge. */
+    g_assert_cmpuint(count_lines_with(log, "plain addr"), ==, 0);
 
     g_free(log);
     unlink(logfile);
@@ -4213,6 +4123,206 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The card's own data byte swap against every Bridge placement.
+ *
+ * OPMODE BYTESWAP_DATA set puts a frame on the bus as a byte stream; clear,
+ * each aligned 32-bit word is reversed. That is the model's reading of the
+ * public driver names and the datasheet's per-word premise, an approximation
+ * (no Tigon reference is held). The Bridge then places each bus byte:
+ * identity in a swap-set slot and p ^ 3 in a swap-clear one, since the model
+ * makes the Tigon a 32-bit agent; the matrix runs it in unwired device 3 and
+ * in option slot 5, which drives REQ64#, and the placement must not change.
+ * A frame byte at address a therefore sits in memory
+ * at (a & ~7) + ((a & 7) ^ t ^ u), t being 3 with the swap clear and 0 set,
+ * u the Bridge's unit. Descriptors are written the way the card reads them:
+ * with BYTESWAP_BD set each word is big-endian on the bus, and every bus byte
+ * is placed by u. The frame goes at an unaligned address with an odd length,
+ * against a sentinel. The IRIX configuration is swap-clear, 32-bit, data swap
+ * clear, where the two reversals cancel.
+ */
+#define MATRIX_OPMODE_BD    (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD)
+
+static void tg_put_word(QTestState *qts, uint64_t addr, uint32_t v,
+                        unsigned int u)
+{
+    unsigned int l;
+
+    for (l = 0; l < 4; l++) {
+        uint8_t b = v >> (24 - 8 * l);      /* big-endian on the bus */
+
+        qtest_memwrite(qts, (addr & ~7ULL) + (((addr & 7) + l) ^ u), &b, 1);
+    }
+}
+
+static uint32_t tg_get_word(QTestState *qts, uint64_t addr, unsigned int u)
+{
+    uint32_t v = 0;
+    unsigned int l;
+
+    for (l = 0; l < 4; l++) {
+        uint8_t b;
+
+        qtest_memread(qts, (addr & ~7ULL) + (((addr & 7) + l) ^ u), &b, 1);
+        v = (v << 8) | b;
+    }
+    return v;
+}
+
+static void tg_put_hostaddr(QTestState *qts, uint64_t at, uint64_t v,
+                            unsigned int u)
+{
+    tg_put_word(qts, at, v >> 32, u);
+    tg_put_word(qts, at + 4, v, u);
+}
+
+static QTestState *matrix_boot(int *host_fd, bool swap_set, bool wired,
+                               bool data_swap)
+{
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_recv_timeout(sv[0], 5);
+    *host_fd = sv[0];
+    tigon_slot = wired ? TIGON_WIRED_SLOT : TIGON_NARROW_SLOT;
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device tigon,addr=%u,mac=" TIGON_MAC ",netdev=n0"
+                      ",rx-arrival-latency-us=0", sv[1], tigon_slot);
+    close(sv[1]);
+
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                 (swap_set ? DEV_SWAP_DIRECT : 0));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 MATRIX_OPMODE_BD | (data_swap ? TI_OPMODE_BYTESWAP_DATA : 0));
+    return qts;
+}
+
+static void matrix_expect(uint8_t *want, size_t want_len, const uint8_t *frame,
+                          size_t frame_len, uint64_t base, uint64_t addr,
+                          unsigned int m)
+{
+    size_t i;
+
+    memset(want, 0xee, want_len);
+    for (i = 0; i < frame_len; i++) {
+        uint64_t a = addr + i;
+
+        want[(a & ~7ULL) + ((a & 7) ^ m) - base] = frame[i];
+    }
+}
+
+static void run_matrix_tx(bool swap_set, bool wired, bool data_swap)
+{
+    unsigned int u = swap_set ? 0 : 3;
+    unsigned int m = (data_swap ? 0 : 3) ^ u;
+    uint64_t base = TX_BUF_DIRECT_PHYS - 10;
+    uint8_t want[96], got[2048];
+    int host_fd;
+    QTestState *qts = matrix_boot(&host_fd, swap_set, wired, data_swap);
+    size_t len;
+
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, TX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, TX_CONS_PHYS, 0, 8);
+    tg_put_hostaddr(qts, GIB_PHYS + GIB_TX_RCB, IOVA(TX_RING_PHYS), u);
+    tg_put_word(qts, GIB_PHYS + GIB_TX_RCB + 8,
+                (512u << 16) | TI_RCB_FLAG_HOST_RING, u);
+    tg_put_hostaddr(qts, GIB_PHYS + GIB_TX_CONS_PTR, IOVA(TX_CONS_PHYS), u);
+    publish_gib_at(qts, IOVA(GIB_PHYS));
+    release_cpu(qts);
+
+    matrix_expect(want, sizeof(want), test_frame_direct,
+                  sizeof(test_frame_direct), base, TX_BUF_DIRECT_PHYS, m);
+    qtest_memwrite(qts, base, want, sizeof(want));
+    tg_put_hostaddr(qts, TX_RING_PHYS + 0, IOVA(TX_BUF_DIRECT_PHYS), u);
+    tg_put_word(qts, TX_RING_PHYS + 8,
+                ((uint32_t)sizeof(test_frame_direct) << 16) | TI_BDFLAG_END,
+                u);
+    tg_put_word(qts, TX_RING_PHYS + 12, 0, u);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(host_fd, got, sizeof(got));
+    g_test_message("tx swap=%u wired=%u data_swap=%u", swap_set, wired,
+                   data_swap);
+    g_assert_cmpint(len, ==, sizeof(test_frame_direct));
+    g_assert_cmpmem(got, len, test_frame_direct, sizeof(test_frame_direct));
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
+static void run_matrix_rx(bool swap_set, bool wired, bool data_swap)
+{
+    unsigned int u = swap_set ? 0 : 3;
+    unsigned int m = (data_swap ? 0 : 3) ^ u;
+    uint64_t base = RX_BUF_DIRECT_PHYS - 10;
+    uint8_t want[96], got[96];
+    int host_fd;
+    QTestState *qts = matrix_boot(&host_fd, swap_set, wired, data_swap);
+    unsigned int i;
+
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, STD_RX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, RETURN_RING_PHYS, 0, 0x4000);
+    qtest_memset(qts, RETURN_PROD_PHYS, 0, 8);
+    tg_put_hostaddr(qts, GIB_PHYS + GIB_STD_RX_RCB, IOVA(STD_RX_RING_PHYS), u);
+    tg_put_hostaddr(qts, GIB_PHYS + GIB_RETURN_RCB, IOVA(RETURN_RING_PHYS), u);
+    tg_put_word(qts, GIB_PHYS + GIB_RETURN_RCB + 8, 2048u << 16, u);
+    tg_put_hostaddr(qts, GIB_PHYS + GIB_RETURN_PROD_PTR,
+                    IOVA(RETURN_PROD_PHYS), u);
+    publish_gib_at(qts, IOVA(GIB_PHYS));
+    release_cpu(qts);
+
+    memset(got, 0xee, sizeof(got));
+    qtest_memwrite(qts, base, got, sizeof(got));
+    tg_put_hostaddr(qts, STD_RX_RING_PHYS + 0, IOVA(RX_BUF_DIRECT_PHYS), u);
+    tg_put_word(qts, STD_RX_RING_PHYS + 8, 2048, u);
+    tg_put_word(qts, STD_RX_RING_PHYS + 12, (uint32_t)TI_BDTYPE_RECV_BD << 16,
+                u);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(host_fd, rx_frame_direct, sizeof(rx_frame_direct));
+    for (i = 0; i < 200; i++) {
+        if (tg_get_word(qts, RETURN_PROD_PHYS, u) == 1) {
+            break;
+        }
+        g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
+    }
+    g_test_message("rx swap=%u wired=%u data_swap=%u", swap_set, wired,
+                   data_swap);
+    g_assert_cmphex(tg_get_word(qts, RETURN_PROD_PHYS, u), ==, 1);
+    g_assert_cmphex(tg_get_word(qts, RETURN_RING_PHYS + 8, u) & 0xffff, ==,
+                    sizeof(rx_frame_direct));
+
+    matrix_expect(want, sizeof(want), rx_frame_direct,
+                  sizeof(rx_frame_direct), base, RX_BUF_DIRECT_PHYS, m);
+    qtest_memread(qts, base, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
+static void test_dma_placement_matrix(const void *data)
+{
+    unsigned int c;
+
+    for (c = 0; c < 8; c++) {
+        bool swap_set = c & 1, wired = c & 2, data_swap = c & 4;
+
+        run_matrix_tx(swap_set, wired, data_swap);
+        run_matrix_rx(swap_set, wired, data_swap);
+    }
+    tigon_slot = TIGON_NARROW_SLOT;
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4229,8 +4339,6 @@ int main(int argc, char **argv)
                         NULL, test_user_backend_reply_waits_for_transmit);
     qtest_add_data_func("/sn0/tigon/descriptor-dma-batches-producer-last",
                         NULL, test_descriptor_dma_batches_producer_last);
-    qtest_add_data_func("/sn0/tigon/descriptor-dma-route-used-for-traffic",
-                        NULL, test_descriptor_dma_route_used_for_traffic);
     qtest_add_data_func("/sn0/tigon/transmit-payload-dma-error", NULL,
                         test_transmit_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/transmit-fragment-dma-error-retry", NULL,
@@ -4273,8 +4381,10 @@ int main(int argc, char **argv)
                         test_misc_conf_reads_back);
     qtest_add_data_func("/sn0/tigon/receive-reports-checksums", NULL,
                         test_receive_reports_checksums);
-    qtest_add_data_func("/sn0/tigon/payload-skips-lane-swap", NULL,
-                        test_payload_skips_lane_swap);
+    qtest_add_data_func("/sn0/tigon/dma-placement-matrix", NULL,
+                        test_dma_placement_matrix);
+    qtest_add_data_func("/sn0/tigon/payload-follows-placement", NULL,
+                        test_payload_follows_placement);
     qtest_add_data_func("/sn0/tigon/set-mac-command-updates-filter", NULL,
                         test_set_mac_command_updates_filter);
     qtest_add_data_func("/sn0/tigon/reset-restores-configured-mac", NULL,

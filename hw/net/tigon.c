@@ -20,7 +20,6 @@
 #include "qapi/error.h"
 #include "hw/net/tigon.h"
 #include "hw/pci/pci.h"
-#include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "migration/vmstate.h"
@@ -36,6 +35,11 @@
 #define TI_MISC_LOCAL_CTL       0x044
 #define TI_MISC_CONF            0x050
 #define TI_PCI_STATE            0x05c
+/*
+ * PCI State bit 20 reads set on a 32-bit bus (manual Table 31). The model
+ * runs the card as a 32-bit agent in every slot, so the bit always reads set.
+ */
+#define TI_PCISTATE_32BIT_BUS   0x00100000u
 #define TI_WINBASE              0x068
 #define TI_WINDATA              0x06c
 #define TI_CPU_STATE            0x140
@@ -447,9 +451,11 @@ static void tigon_completion_irq(TigonState *s, bool rx,
  * byte-swap-descriptor bit so the chip delivers host (big-endian) order, and
  * the register header's descriptor structs change field order under the same
  * condition. This model honours it rather than assuming a fixed order. The
- * swap bit selects big-endian PCI-DMA accessors, matching the "chip delivers
- * big-endian, Bridge transparent" path that this fork's other NIC models
- * behind the SGI Bridge also take.
+ * swap bit selects big-endian words on the bus, little-endian when clear. The
+ * word-swap-descriptor bit is not modelled: the model reads each 64-bit host
+ * address high word first, the layout both public drivers and IRIX write with
+ * it set. What the bit does to other descriptor words, and how wide it acts,
+ * is not recorded anywhere held.
  */
 static bool tigon_bd_bigendian(TigonState *s)
 {
@@ -459,14 +465,6 @@ static bool tigon_bd_bigendian(TigonState *s)
 enum {
     TIGON_MAX_BD_WORDS = 8,
 };
-
-static inline SGIDMABufferContext *
-tigon_descriptor_dma(TigonState *s, const char *direction, uint64_t addr,
-                      uint32_t len)
-{
-    trace_tigon_descriptor_dma_route(direction, addr, len);
-    return &s->descriptor_dma;
-}
 
 /*
  * Keep each descriptor in one ordered DMA request. Completion and producer
@@ -482,10 +480,7 @@ static MemTxResult tigon_dma_read_words(TigonState *s, uint64_t addr,
 
     assert(count > 0 && count <= TIGON_MAX_BD_WORDS);
     bytes = count * sizeof(*words);
-    /* At most 32 bytes: native DMA avoids the buffer cache setup cost. */
-    result = dma_memory_read(
-        tigon_descriptor_dma(s, "read", addr, bytes)->as,
-        addr, words, bytes, MEMTXATTRS_UNSPECIFIED);
+    result = pci_dma_read(PCI_DEVICE(s), addr, words, bytes);
     trace_tigon_dma("read", addr, bytes, result);
     if (result != MEMTX_OK) {
         memset(words, 0, bytes);
@@ -514,9 +509,7 @@ static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
         raw[i] = bigendian ? cpu_to_be32(words[i])
                            : cpu_to_le32(words[i]);
     }
-    result = dma_memory_write(
-        tigon_descriptor_dma(s, "write", addr, bytes)->as,
-        addr, raw, bytes, MEMTXATTRS_UNSPECIFIED);
+    result = pci_dma_write(PCI_DEVICE(s), addr, raw, bytes);
     trace_tigon_dma("write", addr, bytes, result);
     return result;
 }
@@ -567,31 +560,87 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
 }
 
 /*
- * Frame payload DMA. Payload is a byte stream, and on every correctly
- * programmed pairing its net transform is identity: the card applies no
- * byte-lane swap of its own to frame data, so the model moves it verbatim.
- * Behind the SGI Bridge that must not ride the byte-lane swap window. The
- * slot's swap is required for descriptors, which read as word values, and
- * per-word dispatch through the window was measured as this device's dominant
- * throughput cost, so payload takes the Bridge's plain DMA route: full
- * decode and node-qualified fabric routing, byte lanes alone skipped. On a
- * machine without the Bridge the device's own bus space is already plain.
+ * Frame payload DMA. The chip's data byte swap (OPMODE BYTESWAP_DATA)
+ * decides how a frame crosses the bus: set, a byte stream; clear, each
+ * aligned 32-bit word reversed. The Tigon manual says data is normally
+ * byte-swapped in groups of four bytes, with a per-operation No Swap bit, and
+ * public Linux acenic sets BYTESWAP_DATA on both byte orders to get frames in
+ * order; how the firmware maps that flag onto No Swap is not documented, so
+ * this reading is an approximation. IRIX clears it, and its frames arrive
+ * intact only if the Bridge then reverses each 32-bit word, its 32-bit
+ * swap-clear placement. IRIX also sets PciState bit 18, which turns the
+ * card's DMA word swap off; the model applies no word swap. A transfer's lane
+ * in its word is its bus address modulo 4.
+ *
+ * Like every other transfer here it goes through pci_dma_*; what the host
+ * bridge does to the bytes is the bridge's business. A write touches only the
+ * lanes it covers.
  */
+static MemTxResult tigon_dma_frame_xfer(TigonState *s, uint64_t addr,
+                                        uint8_t *buf, uint32_t len,
+                                        bool is_write)
+{
+    PCIDevice *pdev = PCI_DEVICE(s);
+    bool bswap = s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] &
+                 TI_OPMODE_BYTESWAP_DATA;
+    uint32_t i = 0, j;
+    MemTxResult res;
+
+    if (bswap) {
+        return is_write ? pci_dma_write(pdev, addr, buf, len)
+                        : pci_dma_read(pdev, addr, buf, len);
+    }
+
+    if (!is_write) {
+        uint64_t astart = addr & ~(uint64_t)3;
+        uint32_t lead = addr - astart;
+        uint32_t span = (lead + len + 3) & ~3u;
+        g_autofree uint8_t *tmp = g_malloc(span);
+
+        res = pci_dma_read(pdev, astart, tmp, span);
+        if (res == MEMTX_OK) {
+            for (j = 0; j < len; j++) {
+                buf[j] = tmp[(lead + j) ^ 3];
+            }
+        }
+        return res;
+    }
+
+    while (i < len) {
+        uint64_t a = addr + i;
+
+        if ((a & 3) == 0 && len - i >= 4) {
+            uint32_t run = (len - i) & ~3u;
+            g_autofree uint8_t *tmp = g_malloc(run);
+
+            for (j = 0; j < run; j++) {
+                tmp[j ^ 3] = buf[i + j];
+            }
+            res = pci_dma_write(pdev, a, tmp, run);
+            i += run;
+        } else {
+            uint8_t b = buf[i];
+
+            res = pci_dma_write(pdev, a ^ 3, &b, 1);
+            i++;
+        }
+        if (res != MEMTX_OK) {
+            return res;
+        }
+    }
+    return MEMTX_OK;
+}
+
 static MemTxResult tigon_dma_read_frame(TigonState *s, uint64_t addr,
                                         uint8_t *dst, uint32_t len)
 {
-    /*
-     * Ordered descriptor reads precede this; ordered status writes publish
-     * it.
-     */
-    return dma_memory_read_relaxed(s->payload_as, addr, dst, len);
+    return tigon_dma_frame_xfer(s, addr, dst, len, false);
 }
 
 static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
                                          const uint8_t *src, uint32_t len)
 {
-    /* Ordered return and producer writes publish these packet bytes. */
-    return dma_memory_write_relaxed(s->payload_as, addr, src, len);
+    return tigon_dma_frame_xfer(s, addr, (uint8_t *)src, len, true);
 }
 
 static MemTxResult tigon_dma_write_frame_iov(TigonState *s, uint64_t addr,
@@ -836,9 +885,7 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
                       ((uint32_t)s->station_addr.a[4] << 8) |
                       s->station_addr.a[5], bigendian);
 
-    result = sgi_dma_buffer_write(
-        tigon_descriptor_dma(s, "write", addr, sizeof(image)),
-        addr, image, sizeof(image));
+    result = pci_dma_write(PCI_DEVICE(s), addr, image, sizeof(image));
     trace_tigon_dma("write", addr, sizeof(image), result);
     trace_tigon_stats(addr, s->stat_rx_ucast, s->stat_tx_ucast, result);
     return result;
@@ -1464,7 +1511,7 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
     case TI_MISC_CONF:
         return s->misc_conf;
     case TI_PCI_STATE:
-        return s->pci_state;
+        return s->pci_state | TI_PCISTATE_32BIT_BUS;
     case TI_WINBASE:
         return s->win_base;
     case TI_CPU_STATE:
@@ -2230,7 +2277,6 @@ static void tigon_reset_hold(Object *obj, ResetType type)
 static void tigon_realize(PCIDevice *dev, Error **errp)
 {
     TigonState *s = TIGON(dev);
-    AddressSpace *plain;
 
     if (s->sram_size == 0) {
         error_setg(errp, "tigon: sram-size must be non-zero");
@@ -2274,15 +2320,6 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
     memory_region_add_subregion(&s->bar, 0, &s->reg);
     memory_region_add_subregion(&s->bar, TIGON_SRAM_WINDOW, &s->sram_win);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
-
-    /*
-     * The device cannot move buses after realize, so resolve both routes
-     * once.
-     */
-    sgi_dma_buffer_init_pci(&s->descriptor_dma, dev);
-    plain = sgi_bridge_plain_dma_as(dev);
-    s->payload_as = plain ? plain : pci_get_address_space(dev);
-    trace_tigon_payload_dma_route(plain ? "bridge-plain" : "pci");
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->station_addr = s->conf.macaddr;
