@@ -394,6 +394,24 @@ to. A forwarding region can meet this by accepting only when its onward
 range is RAM and moving the bytes there with address_space_read() or
 address_space_write(), which keeps dirty tracking intact.
 
+A forwarding region whose onward range is not plain RAM, but another
+region with buffer callbacks, can pass a buffer on with
+address_space_read_buffer_only() or address_space_write_buffer_only().
+They move the longest prefix that lies in RAM or that buffer callbacks
+take, and stop at the first part that would need an ordinary access
+without accessing it, returning the length moved. Nothing they touch
+dispatches an ordinary access, so they cannot cause side effects or change
+the memory map part way; the caller returns the moved prefix, and the core
+then makes ordinary accesses for the rest, each translated afresh.
+
+A caller that converts in units wider than a byte returns only whole
+units. If the buffer-only call stopped inside a unit, the bytes of that
+unit it moved are moved again, unchanged, by the ordinary accesses that
+follow, and a caller left with no whole unit declines although those bytes
+have moved. This is the one exception to a decline leaving the device
+unchanged: the bytes went only to RAM or to regions that took them as a
+buffer, and the same bytes arrive there again.
+
 API Reference
 -------------
 

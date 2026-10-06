@@ -3550,6 +3550,100 @@ MemTxResult address_space_write(const AddressSpace *as, hwaddr addr,
     return result;
 }
 
+/*
+ * One step of a buffer-only transfer, a read into @rbuf or a write from
+ * @wbuf: RAM is copied, a region with the matching buffer callback is
+ * offered the rest of its section, and anything else, or a declined offer,
+ * moves nothing and returns 0.
+ */
+static hwaddr flatview_buffer_only_step(FlatView *fv, hwaddr addr,
+                                        MemTxAttrs attrs, uint8_t *rbuf,
+                                        const uint8_t *wbuf, hwaddr len,
+                                        MemTxResult *result)
+{
+    bool is_write = wbuf != NULL;
+    hwaddr l = len, buffer_len, mr_addr, done;
+    MemoryRegion *mr;
+    uint8_t *ram_ptr;
+    bool release_lock;
+
+    mr = flatview_translate_with_buffer(fv, addr, &mr_addr, &l, &buffer_len,
+                                        is_write, attrs);
+    if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
+        return 0;
+    }
+    if (memory_access_is_direct(mr, is_write, attrs)) {
+        ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, &l, false,
+                                      is_write);
+        if (is_write) {
+            qemu_ram_move(ram_ptr, wbuf, l);
+            invalidate_and_set_dirty(mr, mr_addr, l);
+        } else {
+            qemu_ram_move(rbuf, ram_ptr, l);
+        }
+        *result = MEMTX_OK;
+        return l;
+    }
+    if (buffer_len <= 8 ||
+        !(is_write ? !!mr->ops->write_buffer : !!mr->ops->read_buffer)) {
+        return 0;
+    }
+    release_lock = prepare_mmio_access(mr);
+    if (is_write) {
+        done = memory_region_dispatch_write_buffer(mr, mr_addr, wbuf,
+                                                   buffer_len, attrs, result);
+    } else {
+        done = memory_region_dispatch_read_buffer(mr, mr_addr, rbuf,
+                                                  buffer_len, attrs, result);
+    }
+    if (release_lock) {
+        bql_unlock();
+    }
+    return done;
+}
+
+static hwaddr address_space_buffer_only(const AddressSpace *as, hwaddr addr,
+                                        MemTxAttrs attrs, uint8_t *rbuf,
+                                        const uint8_t *wbuf, hwaddr len,
+                                        MemTxResult *result)
+{
+    hwaddr done = 0, l;
+    MemTxResult step;
+    FlatView *fv;
+
+    *result = MEMTX_OK;
+    RCU_READ_LOCK_GUARD();
+    fv = address_space_to_flatview(as);
+    while (done < len) {
+        l = flatview_buffer_only_step(fv, addr + done, attrs,
+                                      rbuf ? rbuf + done : NULL,
+                                      wbuf ? wbuf + done : NULL,
+                                      len - done, &step);
+        if (!l) {
+            break;
+        }
+        *result |= step;
+        done += l;
+    }
+    return done;
+}
+
+hwaddr address_space_read_buffer_only(const AddressSpace *as, hwaddr addr,
+                                      MemTxAttrs attrs, void *buf,
+                                      hwaddr len, MemTxResult *result)
+{
+    return address_space_buffer_only(as, addr, attrs, buf, NULL, len,
+                                     result);
+}
+
+hwaddr address_space_write_buffer_only(const AddressSpace *as, hwaddr addr,
+                                       MemTxAttrs attrs, const void *buf,
+                                       hwaddr len, MemTxResult *result)
+{
+    return address_space_buffer_only(as, addr, attrs, NULL, buf, len,
+                                     result);
+}
+
 MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
                              MemTxAttrs attrs, void *buf,
                              hwaddr len, bool is_write)

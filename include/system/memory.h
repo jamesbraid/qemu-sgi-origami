@@ -2517,6 +2517,41 @@ MemTxResult address_space_write(const AddressSpace *as, hwaddr addr,
                                 const void *buf, hwaddr len);
 
 /**
+ * address_space_read_buffer_only: read only what moves without narrow dispatch
+ * @as: #AddressSpace to be accessed
+ * @addr: address within that address space
+ * @attrs: memory transaction attributes
+ * @buf: buffer the data is read into
+ * @len: the number of bytes to read
+ * @result: set to the combined result of the bytes moved
+ *
+ * Reads the longest prefix of the range that lies in RAM or is taken by
+ * regions' read_buffer callbacks, and stops at the first part that would
+ * need an ordinary access, without accessing it.  Returns the length moved.
+ * See docs/devel/memory.rst.
+ */
+hwaddr address_space_read_buffer_only(const AddressSpace *as, hwaddr addr,
+                                      MemTxAttrs attrs, void *buf,
+                                      hwaddr len, MemTxResult *result);
+
+/**
+ * address_space_write_buffer_only: write only what moves without narrow
+ * dispatch
+ * @as: #AddressSpace to be accessed
+ * @addr: address within that address space
+ * @attrs: memory transaction attributes
+ * @buf: buffer with the data to write
+ * @len: the number of bytes to write
+ * @result: set to the combined result of the bytes moved
+ *
+ * The write counterpart of address_space_read_buffer_only(), offering
+ * write_buffer callbacks.  RAM keeps its dirty tracking.
+ */
+hwaddr address_space_write_buffer_only(const AddressSpace *as, hwaddr addr,
+                                       MemTxAttrs attrs, const void *buf,
+                                       hwaddr len, MemTxResult *result);
+
+/**
  * address_space_write_rom: write to address space, including ROM.
  *
  * This function writes to the specified address space, but will
