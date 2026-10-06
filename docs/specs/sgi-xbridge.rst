@@ -318,7 +318,7 @@ forwards nothing in that case. The 1024-cycle window in which a port
 ignores further reset patterns is not modeled.
 
 Super Bridge and the six-head fixture
-====================================
+=====================================
 
 The ``superbridge`` property selects the strap mode at construction.
 It exposes two independent leaf endpoints, named by their physical
