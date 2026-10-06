@@ -101,7 +101,7 @@ layer:
             ioc3_subsystem_id: 49930
             mac_source: module-l1
             provenance: guest-source
-            sources: ["Mainline Linux arch/mips/pci/pci-xtalk-bridge.c: IP34 IOC3 subsystem device 0xc30a", "docs/datasheets/ioc3.md: board variants", hw/mips/sgi/baseio.c]
+            sources: ["linux:db2ddb871435 arch/mips/pci/pci-xtalk-bridge.c: IP34 IOC3 subsystem device 0xc30a", "docs/datasheets/ioc3.md: board variants", hw/mips/sgi/baseio.c]
             notes: >-
               The IOC3 subsystem ID is a public driver expectation, not a
               captured Fuel value. The supplied MAC policy is unchanged.
