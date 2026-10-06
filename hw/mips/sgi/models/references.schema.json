@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qemu.invalid/schema/sgi-model-references-v1.json",
+  "title": "SGI machine-model reference registry",
+  "description": "The public sources the machine models cite. A citation names a document by its SGI document number, a web source as web:<key>, a source tree as <tree>:<commit>, or a firmware image as firmware:<key>.",
+
+  "type": "object",
+  "required": ["references_version", "trees", "documents", "web", "firmware"],
+  "additionalProperties": false,
+  "properties": {
+    "references_version": { "const": 1 },
+    "trees": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/tree" }
+    },
+    "documents": {
+      "type": "object",
+      "description": "SGI documents, keyed by document number and revision.",
+      "propertyNames": { "pattern": "^[0-9]{3}-[0-9]{4}-[0-9]{3}$" },
+      "additionalProperties": { "$ref": "#/$defs/reference" }
+    },
+    "web": {
+      "type": "object",
+      "description": "Other public sources: pages, posts, photographs, specifications and papers without an SGI document number.",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/reference" }
+    },
+    "firmware": {
+      "type": "object",
+      "description": "Stock firmware images, identified by product, version and SHA-256. Facts read from an image cite it; a reader checks them against the same image.",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/firmware" }
+    }
+  },
+
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rights": {
+      "enum": ["published", "public-web", "obtain-only"],
+      "description": "published: issued by its publisher for readers. public-web: posted openly by its author. obtain-only: publicly obtainable with no redistribution grant; cite and link it, never copy it."
+    },
+    "tree": {
+      "type": "object",
+      "required": ["title", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "url": {
+          "type": ["string", "null"],
+          "description": "A public clone URL, or null when no public location is known."
+        },
+        "browse": { "type": "string", "description": "A web view of the same repository." },
+        "branch": { "type": "string", "description": "The branch the cited commits sit on." },
+        "public_location": { "const": "unknown" },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "if": { "properties": { "url": { "type": "null" } } },
+      "then": { "required": ["public_location", "note"] },
+      "else": { "not": { "required": ["public_location"] } }
+    },
+    "reference": {
+      "type": "object",
+      "required": ["title", "publisher", "kind", "locator", "rights", "obtain"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "publisher": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["manual", "service-doc", "asic-spec", "part-datasheet",
+                   "web-post", "capture", "photo", "paper"]
+        },
+        "locator": {
+          "enum": ["page", "section", "line", "post", "entry", "region", "hunk"],
+          "description": "What a citation's locator picks out within the source."
+        },
+        "rights": { "$ref": "#/$defs/rights" },
+        "obtain": {
+          "type": "object",
+          "required": ["url"],
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": ["string", "null"], "pattern": "^https?://" },
+            "archive": { "type": "string", "pattern": "^https?://" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "message_id": { "type": "string", "pattern": "^<[^>]+>$" }
+          },
+          "anyOf": [
+            { "properties": { "url": { "type": "string" } } },
+            { "required": ["message_id"] }
+          ]
+        }
+      }
+    },
+    "firmware": {
+      "type": "object",
+      "required": ["title", "publisher", "kind", "product", "version", "locator", "rights", "obtain"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "publisher": { "type": "string", "minLength": 1 },
+        "kind": { "const": "firmware" },
+        "product": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "banner": { "type": "string", "description": "The version line the image prints." },
+        "locator": { "const": "address", "description": "A citation names an address, table or string within the image." },
+        "rights": { "$ref": "#/$defs/rights" },
+        "obtain": {
+          "type": "object",
+          "required": ["distribution", "image", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "distribution": { "type": "string", "minLength": 1 },
+            "image": {
+              "enum": ["payload", "container"],
+              "description": "Which bytes sha256 covers: the code payload, or the whole file as distributed."
+            },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "container_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    }
+  }
+}

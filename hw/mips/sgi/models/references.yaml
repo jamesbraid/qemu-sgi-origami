@@ -1,0 +1,569 @@
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# The public references the machine models cite. A model citation names an
+# entry here by its id, so a reader can find and check the source without
+# any other repository. references.schema.json describes the fields, and
+# scripts/sgi_model/citations.py checks the models' citations against them.
+#
+# rights says what a reader may do with the source: published documents and
+# public-web pages can be read where the url points; obtain-only sources are
+# public but carry no redistribution grant, so cite and link them, never
+# copy them into this tree.
+
+references_version: 1
+
+trees:
+  linux:
+    title: "Linux kernel, mainline"
+    url: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+    browse: https://github.com/torvalds/linux
+  linux-history:
+    title: "Linux kernel history from before the move to git"
+    url: https://git.kernel.org/pub/scm/linux/kernel/git/tglx/history.git
+  linux-mips:
+    title: "Linux/MIPS tree, including the abandoned linux-2.4 branch"
+    url: https://git.kernel.org/pub/scm/linux/kernel/git/ralf/linux.git
+  openbsd-sgi:
+    title: "OpenBSD with the sgi port kept alive, branch sgi-is-alive-at-7.9"
+    url: https://github.com/the-machine-hall/openbsd-sgi
+    branch: sgi-is-alive-at-7.9
+  linux-ip35:
+    title: "Linux kernel with IP35 platform support"
+    url: null
+    public_location: unknown
+    note: >-
+      The cited commit is not in mainline Linux, and no public repository
+      carrying it is known. Facts citing it need another public source.
+
+documents:
+  007-3439-002:
+    title: "Origin and Onyx2 Theory of Operations Manual"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3439-002/pdf/007-3439-002.pdf
+  007-3453-002:
+    title: "Origin2000 Deskside Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3453-002/pdf/007-3453-002.pdf
+  007-3454-005:
+    title: "Silicon Graphics Onyx2 Deskside Workstation Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3454-005/pdf/007-3454-005.pdf
+  007-3456-003:
+    title: "Origin2000 Rackmount Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3456-003/pdf/007-3456-003.pdf
+  007-3457-005:
+    title: "Silicon Graphics Onyx2 Rackmount Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3457-005/pdf/007-3457-005.pdf
+  007-3708-002:
+    title: "Origin 200 and Origin 200 GIGAchannel Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3708-002/pdf/007-3708-002.pdf
+  007-3709-002:
+    title: "Origin 200 and Origin 200 GIGAchannel Maintenance Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3709-002/pdf/007-3709-002.pdf
+  007-3791-002:
+    title: "Preparing for an Installation of a 33 to 256 Processor System HR-04122-0B Origin Systems Last Modified: August 1999"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3791-002/pdf/007-3791-002.pdf
+  007-4264-002:
+    title: "SGI Onyx 3000 Series Graphics System Hardware Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4264-002/pdf/007-4264-002.pdf
+  007-4311-002:
+    title: "SGI Origin 3000 Series Technical Configuration Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4311-002/pdf/007-4311-002.pdf
+  007-4365-001:
+    title: "SGI Origin 300 User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4365-001/pdf/007-4365-001.pdf
+  007-4365-002:
+    title: "SGI Origin 300 User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4365-002/pdf/007-4365-002.pdf
+  007-4480-001:
+    title: "Silicon Graphics Fuel Visual Workstation Hardware User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4480-001/pdf/007-4480-001.pdf
+  007-4498-002:
+    title: "SGI Origin 300 System with NUMAlink Module User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4498-002/pdf/007-4498-002.pdf
+  007-4499-002:
+    title: "PCI Expansion Module User's Guide (5.0-V Support and/or 3.3-V Support)"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4499-002/pdf/007-4499-002.pdf
+  007-4564-001:
+    title: "Silicon Graphics Tezro Visual Workstation Hardware User's Guide: Tower Configuration"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4564-001/pdf/007-4564-001.pdf
+  007-4566-001:
+    title: "SGI Origin 350 Server System User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4566-001/pdf/007-4566-001.pdf
+  007-4632-001:
+    title: "SGI Onyx 350 Visualization System User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4632-001/pdf/007-4632-001.pdf
+  007-4634-002:
+    title: "Silicon Graphics Onyx4 UltimateVision User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4634-002/pdf/007-4634-002.pdf
+  007-4643-003:
+    title: "Silicon Graphics Tezro Visual Workstation Hardware User's Guide Rackmount Configuration"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4643-003/pdf/007-4643-003.pdf
+  108-0151-001:
+    title: "IRIS 4-Port Fast Ethernet Adapter with Asynchronous Serial XIO Board Installation Instructions"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0151-001.pdf
+      sha256: 0ded1c77fcb75f6377b571d32675b263fad8a709511b85c2d27293ac342b518a
+  108-0161-002:
+    title: "Origin2000 Power-On Diagnostics"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0161-002.pdf
+      sha256: 438b478d38ef856c5141c1533944f9bdc11f694cfa02d2dc6a4b9ffd26a25969
+  108-0164-002:
+    title: "Origin2000 and Onyx2 Diagnostic Roadmap"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0164-002.pdf
+      sha256: fee8fe51c9bf7433dd04a155218fc0de552d68baadde84cb5de510c76ba33e6f
+  108-0170-001:
+    title: "Origin200/2000 IP27 PROM Technical Reference Manual"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0170-001.pdf
+      sha256: 08ad68675afffe7e00327b286c0586624f0b1a1f70878e34d3e1e18de423854e
+  108-0175-001:
+    title: "Configuring XIO Boards in the Origin2000 System"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0175-001.pdf
+      sha256: 7edacbe39825e4465bc9b46bb24cc3f564ee29350fcf0a256f141284cfb8a802
+  108-0187-001:
+    title: "Origin200 GIGAchannel Upgrade Installation Instructions"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0187-001.pdf
+      sha256: ec04eb39af14f2c500653a5ba923b8274221899b6fbd8ba1125c60692f227d80
+  108-0240-002:
+    title: "Origin 3000 System Architecture"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0240-002.pdf
+      sha256: cc7e3387c2403bf19b5bcd01dadf146eb4ca25787fade97e64b9b0dd4b57e471
+  108-0263-004:
+    title: "Scan Tools for SGI Origin 300 System and SGI 3000 Family"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0263-004.pdf
+      sha256: c313d3229f2720a39c9d33f5135715acf032552eaf2dda80307bc4f77dd7404a
+  108-0264-004:
+    title: "sMDK-based Field Diagnostics for SGI Origin 300 System and SGI 3000 Family"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0264-004.pdf
+      sha256: 535bda2d0de4ee9a86d79c0d1ebbb1d54ceadd52677d3395e430f50f39ebfcc7
+
+web:
+  origin-onyx2-quick-reference-booklet:
+    title: "SGI Hardware Quick-reference Booklet, Origin and Onyx2 Series"
+    publisher: "Silicon Graphics"
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-origin3400/origin-hardware-quick-reference-booklet.pdf
+      sha256: 75f82fa4123bec59e81b2e4f1330ee03e2a714e7d5b6e9216c919648a704fb04
+  hmm-408-b:
+    title: "HMM-408-B Illustrated Parts Catalog for Origin 2000, Onyx2, Cray Origin 2000 and MetaRouter"
+    publisher: "Silicon Graphics"
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/HMM-408-B.pdf
+      sha256: abc06bc37773997eebdc31c369549c784af41057ac814592b1bd9b3545fd4a03
+  r10000-users-manual-2.0:
+    title: "MIPS R10000 Microprocessor User's Manual, Version 2.0"
+    publisher: "MIPS Technologies"
+    kind: part-datasheet
+    locator: page
+    rights: published
+    obtain:
+      url: https://nekofiles.irixnet.org/Documents/doc/R10000/User_Manual/t5.ver.2.0.book.pdf
+      sha256: 6023b060b52e136cc3bda8a4ed348b3eb9a99d7947f2390eedf775d431213006
+  origin-technical-report:
+    title: "Origin200 and Origin2000 Technical Report"
+    publisher: "Silicon Graphics"
+    kind: paper
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: http://www.sgidepot.co.uk/origin/origin_techrep.tar.gz
+      sha256: 93fad3353ec58e2dd286dd46c17cdf83024b93a40643df20160b6eacb79c566b
+  crossbow-asic-spec-12.0:
+    title: "Crossbow (XBow) ASIC Specification, Revision 12.0"
+    publisher: "Silicon Graphics"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.mrynet.com/FTP/Hardware/sgi/SGI_Crossbow_ASIC_Specification-Revision_12.0-19961018.pdf
+      sha256: 899b7dcf35733a069b1336056e47548dab6502381b6f1ec31c02c0adea50ec94
+  xbridge-asic-spec-0.5:
+    title: "XBridge ASIC Specification, Revision 0.5 for Rev A silicon"
+    publisher: "Silicon Graphics"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.mrynet.com/FTP/Hardware/sgi/SGI-Xbridge_ASIC_Specification-Revision_0.5_for_Rev_A_Si-19980611.pdf
+      sha256: a6a462d72148a3ce545a0ea3d82174f10b1a6cb5c9e42cc49506536193475d8d
+  dmesgd-8994:
+    title: "OpenBSD dmesg of a real Origin 200, dmesgd entry 8994"
+    publisher: "NYC*BUG dmesgd"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://dmesgd.nycbug.org/index.cgi?do=view&id=8994
+      sha256: bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f
+  graphica-o350-chimera-notes:
+    title: "SGI O350 Chimera notes: L1 sessions, Origin 350 and Fuel boots"
+    publisher: "just.graphica.com.au"
+    kind: capture
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://just.graphica.com.au/tips/sgi-o350-chimera-notes/
+      sha256: a839d88fdd9703e8d5ed03c290282d144c9339302cddbfc7d1912a0e04e77f44
+  miod-openbsd-sgi-story:
+    title: "The OpenBSD/sgi story, all parts"
+    publisher: "Miod Vallat"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: http://miod.online.fr/software/openbsd/stories/sgiall.html
+      sha256: 48e6ce0c6dd3eb7eeb9546ea77813180100271e8cd060f0742fdddff94f96036
+  tingo-fuel-irix-console:
+    title: "SGI Fuel IRIX console, hinv, gfxinfo and l1cmd output"
+    publisher: "Torfinn Ingolfsen"
+    kind: capture
+    locator: section
+    rights: public-web
+    obtain:
+      url: http://tingo.homedns.org/oldcomp/sgi_fuel_14k/irix/
+      sha256: 2e7d14868e2b4a0f8d1cb49c22426129189c4a03a8009439d978fb52e65f502c
+  marc-openbsd-sgi-125897882029839:
+    title: "openbsd-sgi list, 2009-11-23, \"Origin 300 Installation Issues\""
+    publisher: "MARC mailing-list archive"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://marc.info/?l=openbsd-sgi&m=125897882029839&w=2
+      sha256: 1086c05d42003e92190ec9a9d0f5b831306842f7779f870cf3f6c8a1adaab0b1
+  marc-openbsd-sgi-139223952727384:
+    title: "openbsd-sgi list, 2014-02-12, \"Origin 300 with NUMA link\""
+    publisher: "MARC mailing-list archive"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://marc.info/?l=openbsd-sgi&m=139223952727384&w=2
+      sha256: 77a8c5379587a47b764b371912b76ae7663c651e08c4ff08878d0f926569fa84
+  sgi-pca-numbers:
+    title: "SGI PCA part-number list"
+    publisher: "happy-yapph (community list)"
+    kind: web-post
+    locator: entry
+    rights: public-web
+    obtain:
+      url: https://happy-yapph.github.io/sgi-pca-numbers/
+      sha256: c7d2ad8f1325ad57f17c33e98b0a25ef2cb6932fffbb0d123a720d8338e31376
+  preterhuman-origin-200:
+    title: "SGI Origin 200"
+    publisher: "Higher Intellect wiki"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://wiki.preterhuman.net/SGI_Origin_200
+      sha256: 7e952adb35a1a913c08d8671192ac3f3ff7b7d8de27c1a86d87ba84913323fb4
+  nekonomicon-16727716:
+    title: "Nekochan forum archive thread 16727716, \"Origin is sick\""
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/3/16727716/1.html
+      sha256: 599c1184414c9aee5eb5e5beae3ee0d294ef00bf6448ae211ef4377ad07dc074
+  nekonomicon-17314:
+    title: "Nekochan forum archive thread 17314, two-chassis Origin 300 hinv"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/17314/1.html
+      sha256: c0d20e4506627527b71727bd589a0abd9c8df4876a96ba599731a8be2261e267
+  nekonomicon-16726611:
+    title: "Nekochan forum archive thread 16726611, two-CPU Origin 300 inventory"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16726611/1.html
+      sha256: f8d6be9eb8ab2595a9d430f198f6d6cac5b9f0011af6a3e9307cb7d33f15b0bc
+  nekonomicon-16729141:
+    title: "Nekochan forum archive thread 16729141, Origin 350 L1 session"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16729141/1.html
+      sha256: 2216d1ab857e81b3a9d01251448d62259913bf5eba54738e7f537fed84f3ca96
+  nekonomicon-16285:
+    title: "Nekochan forum archive thread 16285, Onyx2 rack IRIX listings"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16285/1.html
+  nekonomicon-5749:
+    title: "Nekochan forum archive thread 5749, page 1"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/3/5749/1.html
+      sha256: ba496ee97b510dac8afbe309e668a8fa14515f45762b8b61901797393b01f019
+  irixnet-post-32252:
+    title: "IRIXnet forum post 32252, four-CPU IP27 hinv on IRIX 6.5.30"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/post-32252.html
+      sha256: a16901baff5d6cebabcad7e979c8621d20dc9ddc55551062e7ce82b9c6772eb5
+  mimgfx-origin2000-inventory:
+    title: "An Origin 2000 owner's hardware page with hinv -vm"
+    publisher: "mimgfx"
+    kind: capture
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://www.mimgfx.visualcortexlab.com/?page=hw&sec=sgi&sub=origin2000
+      sha256: f655cf3bdfbcc35f87bb164260f7379d77c6554052ca52ee133e13ea2ea58553
+  sgi-sh-fuel-repair-attempt:
+    title: "sgi.sh forums, \"Fuel repair attempt\""
+    publisher: "sgi.sh forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.sgi.sh/index.php?threads/fuel-repair-attempt.1430/
+      sha256: b7dade27aa8bb64d121b6e8f8dd8c4ec36e3c219969e5d9204a6fe299c431a73
+  theretroweb-origin200-image-1:
+    title: "Origin 200 IP29 system board, component side (image 1 of 5)"
+    publisher: "The Retro Web, photograph by Petros Savvas"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://theretroweb.com/motherboard/image/sgi-origin-1-6a784d737f602597049387.jpg
+      sha256: e954e6e3b8389e75c3decdda1f53cadfeb21add85e24da673126bac61621be8d
+  theretroweb-origin200-image-2:
+    title: "Origin 200 IP29 system board, solder side (image 2 of 5)"
+    publisher: "The Retro Web, photograph by Petros Savvas"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://theretroweb.com/motherboard/image/sgi-origin2-1-6a784d73a6d3e594546835.jpg
+      sha256: 0da4808bf91ada2d803eedc94a20ecc2966f670990b2c86939cd4b938530bf81
+  theretroweb-origin200-image-4:
+    title: "Origin 200 PCI backplane, component side (image 4 of 5)"
+    publisher: "The Retro Web, photograph by Petros Savvas"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://theretroweb.com/motherboard/image/sgi-origin3-1-6a784d734456f326815695.jpg
+      sha256: 5a3d75139d76c0c2eb90076f0ef3410aa8b340ae40a38150d7d15fe9f7acfdac
+  theretroweb-origin200-image-5:
+    title: "Origin 200 PCI backplane, solder side (image 5 of 5)"
+    publisher: "The Retro Web, photograph by Petros Savvas"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://theretroweb.com/motherboard/image/sgi-origin4-1-6a784d7361a61633987402.jpg
+      sha256: 9f8f11fc059dda4a8a4350f193a78ab15b57fd36744e63e34d200bdb340c781a
+  lore-kaloz-ip35-35:
+    title: "[PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01)"
+    publisher: "linux-mips mailing list"
+    kind: web-post
+    locator: hunk
+    rights: public-web
+    obtain:
+      url: https://lore.kernel.org/r/d4ea8cf57059fa4544c7be577c6a8033d65ced9a.1790857966.git.kaloz@kernel.org
+  usenet-slrndfs77l:
+    title: "comp.sys.sgi.hardware, 2005-08-13, Message-ID <slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net>"
+
+firmware:
+  ip27-prom-6.156:
+    title: "IP27 node-board PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 200, Origin 2000 and Onyx2 IP27 node boards"
+    version: "6.156"
+    banner: "SGI Version 6.156  built 11:27:56 AM Nov 18, 2003"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img"
+      image: payload
+      sha256: c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd
+  ip35-prom-6.210:
+    title: "IP35 PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 300, Origin 350, Onyx 350, Fuel and Tezro IP35-family node boards"
+    version: "6.210"
+    banner: "SGI Version 6.210  built 02:33:51 PM Aug 26, 2004"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, /usr/cpu/firmware/ip35prom.img"
+      image: payload
+      sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+      container_sha256: d74b4b7ef9c11c66692019db9af698104595be7a0573a86feae8a83441921318

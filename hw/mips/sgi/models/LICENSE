@@ -3,8 +3,9 @@ BSD 3-Clause License
 Copyright (c) 2026, James Braid
 All rights reserved.
 
-This license applies to the original machine model YAML files and
-system-model.schema.json in this directory, and to the SGI model generator
+This license applies to the original machine model YAML files,
+system-model.schema.json, and the reference registry references.yaml and
+references.schema.json in this directory, and to the SGI model generator
 and its tests in scripts/sgi-model.py, scripts/sgi_model/, and
 scripts/tests/test_sgi_model_*.py. It also applies to the generated catalogue
 outputs hw/mips/sgi/sgi-machines.json and hw/mips/sgi/sn-model.json.
