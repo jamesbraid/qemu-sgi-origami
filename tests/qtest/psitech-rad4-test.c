@@ -2681,6 +2681,41 @@ static void test_dma_word_and_byte_paths_agree(void)
 }
 
 /*
+ * An upload that matches the framebuffer except for a few words stores
+ * those words, under the plane mask, and leaves every word around them as
+ * it was. The merge stores only the run between the first and last word
+ * that changes, so this checks both ends of that run and the words inside
+ * it that did not change.
+ */
+static void test_dma_partly_unchanged_upload(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t words[64], want[64];
+
+    for (unsigned w = 0; w < ARRAY_SIZE(words); w++) {
+        words[w] = 0x00010203u * (w + 1);
+        bar2_write(qts, 0x1000 + 4 * w, words[w]);
+    }
+    memcpy(want, words, sizeof(want));
+    words[5] ^= 0xff00ff00u;
+    words[40] ^= 0x00ff00ffu;
+    words[63] ^= 0xffffffffu;
+    want[5] ^= 0x0000ff00u;
+    want[40] ^= 0x000000ffu;
+    want[63] ^= 0x0000ffffu;
+
+    bar2_write(qts, B_MASK, 0x0000ffffu);
+    dma_upload_words(qts, 0x1000, words, ARRAY_SIZE(words));
+    bar2_write(qts, B_MASK, 0xffffffffu);
+    for (unsigned w = 0; w < ARRAY_SIZE(want); w++) {
+        g_assert_cmphex(bar2_read(qts, 0x1000 + 4 * w), ==, want[w]);
+    }
+    g_assert_cmphex(bar2_read(qts, 0x1000 + 4 * 64), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * A Local-space descriptor pointer at or past the framebuffer's own end
  * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
  * clear, the same failure convention test_dma_abort_recovers_a_failed_
@@ -4094,6 +4129,8 @@ int main(int argc, char **argv)
                    test_dma_upload_honors_mask);
     qtest_add_func("/psitech-rad4/dma-unchanged-rows-stay-clean",
                    test_dma_unchanged_rows_stay_clean);
+    qtest_add_func("/psitech-rad4/dma-partly-unchanged-upload",
+                   test_dma_partly_unchanged_upload);
     qtest_add_func("/psitech-rad4/dma-interrupt-enables",
                    test_dma_interrupt_enables);
     qtest_add_func("/psitech-rad4/dma-descriptor-interrupt",
