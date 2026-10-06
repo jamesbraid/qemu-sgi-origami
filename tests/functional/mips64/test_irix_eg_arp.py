@@ -3,7 +3,8 @@
 # Peer-originated ARP reply on an IRIX eg adapter.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Boot installed IRIX and require eg0 to answer one peer ARP request."""
+"""Boot installed IRIX and require the eg interface to answer one peer ARP
+request."""
 
 import os
 import socket
@@ -14,6 +15,7 @@ from qemu_test import skipSlowTest
 from qemu_test.asset import LocalAsset
 
 from lib_net import IrixConsole, arp_request_frame, drive_irix_to_shell
+from lib_net import irix_interface_at_pci_slot
 from lib_net import parse_arp_frame
 from lib_prom import FIRMWARE_REL, MACHINES, file_sha256
 
@@ -24,6 +26,8 @@ PROM_SHA256 = (
 DISK_SHA256 = (
     "15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12")
 GUEST_IP = "10.0.2.15"
+# An add-in card goes in the first Origin 200 option slot, PCI device 5.
+ADDIN_SLOT = 5
 PEER_IP = "10.0.2.2"
 GUEST_MAC = bytes.fromhex("02005d270001")
 PEER_MAC = bytes.fromhex("02005d270002")
@@ -68,23 +72,26 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
             vm.add_args(
                 "-nic", "none",
                 "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
-                "-device", (f"{device_model},netdev=netdev,addr=4,mac="
-                            f"{configured_mac.hex(':')}"))
+                "-device", (f"{device_model},netdev=netdev,"
+                            f"addr={ADDIN_SLOT},"
+                            f"mac={configured_mac.hex(':')}"))
         vm.launch()
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
                           test.log_file(f"irix-{adapter}-arp-console.log"),
                           exited=lambda: vm.exitcode() is not None)
         drive_irix_to_shell(con, 1200)
+        ifname = guest_ifname or irix_interface_at_pci_slot(
+            con, adapter, ADDIN_SLOT)
         if adapter == "eg":
-            test.assertEqual(con.run("egconfig -f 1 eg0", "egconfig", 180), 0)
-        ifname = guest_ifname or ("eg0" if adapter == "eg" else "tg1")
+            test.assertEqual(con.run(f"egconfig -f 1 {ifname}", "egconfig",
+                                     180), 0)
         test.assertEqual(con.run(
             f"ifconfig {ifname} inet {GUEST_IP} "
             "netmask 0xffffff00 up", "ifup", 60), 0)
         if adapter == "tg":
-            con.expect(rb"tg1: Link up[^\r\n]*", 180,
-                       what="the tg1 link-up notice")
+            con.expect(ifname.encode() + rb": Link up[^\r\n]*", 180,
+                       what=f"the {ifname} link-up notice")
         con.capture_value(f"ifconfig {ifname}", "ifcheck",
                           rb"(UP)[,>]", 60)
 

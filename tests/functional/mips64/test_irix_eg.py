@@ -21,7 +21,7 @@ performance:
 - IP/TCP/UDP proof: netstat -s protocol counters before and after, so the
   segments/datagrams the guest's stacks actually processed are recorded,
   not merely that a program exited 0.
-- Device-level receive proof: eg0's own Ipkts counter (netstat -in) read
+- Device-level receive proof: eg's own Ipkts counter (netstat -in) read
   before and after the byte-checked TCP transfer, so the frames are shown
   to have crossed the adapter's own receive ring and not merely the
   guest's TCP stack. This is IRIX on purpose: IRIX's eg driver silently
@@ -55,8 +55,8 @@ monitor to Start System.
 
 The network back end is placed only on the eg (tigon) device, at a real
 Origin 200 PCI option slot; the machine's on-board IOC3 Ethernet is left
-with no back end (-nic none), so the only configured interface is eg0 and
-the transfer can only have crossed eg.
+with no back end (-nic none), so the only configured interface is the eg one
+and the transfer can only have crossed eg.
 
 eg_perf_verdict() below is the PASS/FAIL contract; its own docstring says
 why each clause is scored the way it is.
@@ -85,7 +85,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import (HarnessError, IrixConsole,  # noqa: E402
-                     drive_irix_to_shell)
+                     drive_irix_to_shell, irix_interface_at_pci_slot)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
 
 def mtu_probe_result(rc, output):
@@ -151,7 +151,7 @@ def eg_perf_verdict(login_reached, eg_up, results, rx=None):
         counts for each timed stream. Each checked copy records host, sender,
         and guest byte counts plus host/guest checksums.
 
-    rx: {"ipkts_before": int or None, "ipkts_after": int or None} -- eg0's
+    rx: {"ipkts_before": int or None, "ipkts_after": int or None} -- eg's
         received-packet counter read either side of the byte-checked TCP
         transfer, or None when it was not collected (the parallel-mode leg
         returns before this point and carries no rx clause).
@@ -356,11 +356,12 @@ MEMORY_MIB = 128
 GATEWAY = "10.0.2.2"
 GUEST_ADDR = "10.0.2.15"
 
-# The eg (tigon) device sits at this Origin 200 PCI option slot; IRIX names
-# the first Gigabit Ethernet adapter there eg0 (confirmed by hinv in the eg
-# bring-up captures).
-EG_ADDR = 4
-IFACE = "eg0"
+# The eg (tigon) device sits in the first Origin 200 PCI option slot, device
+# 5 (the slots are PCI IDs 5, 6 and 7, Origin200 Owner's Guide 007-3415-003,
+# printed page 12). Its interface name comes from hinv at run time
+# (irix_interface_at_pci_slot): ioconfig, not the slot, decides it, and the
+# installed disk calls a Tigon in slot 5 eg1 because slot 4 once held eg0.
+EG_ADDR = 5
 EG_MAC = "52:54:00:12:34:56"
 
 # The real multiuser IRIX boot budget the absorbed eg_net leg measured
@@ -699,12 +700,12 @@ if QemuSystemTest is not None:
                 return None
 
         def _read_ipkts(self, con, tag):
-            """eg0's received-packet counter from netstat -i, or None if it
+            """eg's received-packet counter from netstat -i, or None if it
             could not be read. netstat -in columns are
             Name Mtu Network Address Ipkts ... so Ipkts is field 5."""
             try:
                 return int(con.capture_value(
-                    "netstat -in | awk '$1 ~ /^" + IFACE +
+                    "netstat -in | awk '$1 ~ /^" + self.iface +
                     "/ {print \"IPKTS=\" $5; exit}'",
                     tag, rb"IPKTS=(\d+)", timeout=60))
             except HarnessError:
@@ -717,7 +718,7 @@ if QemuSystemTest is not None:
 
         def _eg_board_statistics(self, con):
             status, output = self._command_output(
-                con, f"egcmd {IFACE} STAT_GET", "egstats", timeout=120)
+                con, f"egcmd {self.iface} STAT_GET", "egstats", timeout=120)
             values = {}
             for line in output.splitlines():
                 match = re.fullmatch(
@@ -861,7 +862,8 @@ if QemuSystemTest is not None:
                             "/usr/bsd:$PATH; export PATH", "shinit2",
                             timeout=120)
 
-                con.run("egconfig -f 1 " + IFACE, "egc", timeout=180)
+                self.iface = irix_interface_at_pci_slot(con, "eg", EG_ADDR)
+                con.run("egconfig -f 1 " + self.iface, "egc", timeout=180)
                 if NETDEV:
                     # A raw peer answers ARP and counts what arrives; it speaks
                     # no TCP, so this measures one thing only -- how fast the
@@ -869,7 +871,7 @@ if QemuSystemTest is not None:
                     # configured for. That is the quantity the per-packet cost
                     # bounds, measured without the user-mode stack in the way.
                     con.run("ifconfig %s inet %s netmask 0xffffff00 up"
-                            % (IFACE, RAW_GUEST_IP), "rawup", timeout=60)
+                            % (self.iface, RAW_GUEST_IP), "rawup", timeout=60)
                     results["raw_ping"] = con.capture_value(
                         "ping -c 3 %s | awk '/packets received/ "
                         "{print \"RX=\" $4}'" % RAW_PEER_IP,
@@ -881,10 +883,10 @@ if QemuSystemTest is not None:
                             "rawblast", timeout=900)
                     results["raw_done"] = True
                     return
-                con.run(f"ifconfig {IFACE} inet {GUEST_ADDR} "
+                con.run(f"ifconfig {self.iface} inet {GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
-                    con.capture_value("ifconfig " + IFACE, "ifs",
+                    con.capture_value("ifconfig " + self.iface, "ifs",
                                       rb"(UP)[,>]", timeout=60)
                     eg_up = True
                 except HarnessError:
@@ -895,34 +897,35 @@ if QemuSystemTest is not None:
                 self.assertEqual(hinv_status, 0, "hinv -v failed")
                 self.assertRegex(
                     hinv, r"(?m)^\s*Gigabit Ethernet:.*\b" +
-                    re.escape(IFACE) + r"\b",
-                    "hinv -v did not identify " + IFACE)
+                    re.escape(self.iface) + r"\b",
+                    "hinv -v did not identify " + self.iface)
 
                 ifconfig_status, ifconfig = self._command_output(
-                    con, "ifconfig " + IFACE, "eg-ifconfig")
-                self.assertEqual(ifconfig_status, 0, "ifconfig eg0 failed")
+                    con, "ifconfig " + self.iface, "eg-ifconfig")
+                self.assertEqual(ifconfig_status, 0,
+                                 "ifconfig of the eg interface failed")
                 self.assertRegex(
-                    ifconfig, r"(?m)^[ \t]*#?[ \t]*" + re.escape(IFACE) +
+                    ifconfig, r"(?m)^[ \t]*#?[ \t]*" + re.escape(self.iface) +
                     r":.*flags=[0-9a-fA-F]+<[^>]*\bUP\b",
-                    "ifconfig did not report eg0 up")
+                    "ifconfig did not report the eg interface up")
                 self.assertRegex(
                     ifconfig, r"(?m)^[ \t]+inet " + re.escape(GUEST_ADDR) +
                     r"(?:[ \t]|$)",
-                    "ifconfig did not read back eg0's address")
+                    "ifconfig did not read back the eg address")
 
                 if JUMBO:
                     try:
                         mtu = con.capture_value(
                             "netstat -in | awk '$1 == \"%s\" || "
                             "$1 == \"%s*\" {print \"M=\" $2; exit}'"
-                            % (IFACE, IFACE),
+                            % (self.iface, self.iface),
                             "jumbo_mtu", rb"M=(\d+)", timeout=60)
                     except HarnessError as error:
-                        self.fail(f"could not read eg0 MTU from netstat -in: "
-                                  f"{error}")
+                        self.fail("could not read the eg MTU from "
+                                  f"netstat -in: {error}")
                     self.assertEqual(int(mtu), JUMBO_MTU,
                                      "netstat -in did not report the jumbo "
-                                     "MTU on eg0")
+                                     "MTU on the eg interface")
 
                 if PARALLEL:
                     # One stream first for the per-stream baseline, then N
@@ -1059,7 +1062,7 @@ if QemuSystemTest is not None:
                     con, "tcp", "packets received", "segb")
 
                 # --- TCP byte-verify (host -> guest, saved by ttcp -r) ---
-                # Also the leg the Ipkts clause attaches to: eg0's own
+                # Also the leg the Ipkts clause attaches to: eg's own
                 # received-packet counter must climb across this transfer,
                 # proving the bytes crossed the adapter's receive ring and
                 # not merely the guest's TCP stack (the now-absorbed
@@ -1294,7 +1297,7 @@ if QemuSystemTest is not None:
                 for want in (9000, 4096, 2048):
                     try:
                         output_start = len(con.buf)
-                        rc = con.run(f"ifconfig {IFACE} mtu {want}",
+                        rc = con.run(f"ifconfig {self.iface} mtu {want}",
                                      f"mtu{want}", timeout=60)
                         output = bytes(con.buf[output_start:]).decode(
                             "utf-8", "replace")
@@ -1304,7 +1307,7 @@ if QemuSystemTest is not None:
                 try:
                     mtu["reported"] = con.capture_value(
                         "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
-                        % IFACE, "mtushow", rb"M=(\d+)", timeout=60)
+                        % self.iface, "mtushow", rb"M=(\d+)", timeout=60)
                 except HarnessError:
                     mtu["reported"] = None
                 results["mtu"] = mtu

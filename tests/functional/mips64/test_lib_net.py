@@ -37,7 +37,7 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      transfer_result_pattern,
                      arp_request_frame, parse_arp_frame,
                      build_udp_fragments, parse_ipv4_udp_fragment,
-                     reassemble_udp_fragments)
+                     reassemble_udp_fragments, gigabit_interface_pattern)
 from test_irix_tg import tg_acceptance_verdict
 
 
@@ -160,6 +160,30 @@ def _icmp_ipv4_frame(src_ip, dst_ip, valid_checksum=True, icmp_type=8,
             + identifier.to_bytes(2, "big")
             + sequence.to_bytes(2, "big") + payload)
     return eth + header + icmp
+
+
+class GigabitInterfacePatternTests(unittest.TestCase):
+    """The interface name comes from the hinv line for the fitted slot."""
+
+    EG = b"Gigabit Ethernet: eg1, module 1, PCI slot 5, firmware version 0.0.0"
+    TG = b"Gigabit Ethernet: tg1, module 1, PCI bus 0 slot 5"
+
+    def test_reads_the_eg_name_in_its_slot(self):
+        m = re.search(gigabit_interface_pattern("eg", 5), self.EG)
+        self.assertEqual(m.group(1), b"eg1")
+
+    def test_reads_the_tg_name_in_its_bus_and_slot_form(self):
+        m = re.search(gigabit_interface_pattern("tg", 5), self.TG)
+        self.assertEqual(m.group(1), b"tg1")
+
+    def test_ignores_another_slot_or_adapter(self):
+        self.assertIsNone(re.search(gigabit_interface_pattern("eg", 4),
+                                    self.EG))
+        self.assertIsNone(re.search(gigabit_interface_pattern("eg", 5),
+                                    self.TG))
+        self.assertIsNone(re.search(
+            gigabit_interface_pattern("eg", 5),
+            b"Gigabit Ethernet: eg1, module 1, PCI slot 50"))
 
 
 class DhcpKindTests(unittest.TestCase):

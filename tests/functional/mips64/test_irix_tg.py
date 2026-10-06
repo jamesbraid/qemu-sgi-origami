@@ -3,8 +3,9 @@
 # IRIX tg (Broadcom BCM570x) network bring-up: boot the installed 6.5.30 disk
 # on the real IP27 PROM, log in, bring up the tg adapter, wait for its link,
 # ping the SLIRP gateway, and read the interface's own packet counters back --
-# tg1's Ipkts and Opkts climbing (with no input errors) is the device-level
-# proof that frames crossed both the adapter's receive and transmit rings.
+# tg's Ipkts and Opkts climbing (with no input errors) is the
+# device-level proof that frames crossed both the adapter's receive and transmit
+# rings.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """
@@ -14,10 +15,11 @@ IRIX on purpose -- the tg adapter is an IRIX-era SGI Ethernet option, so IRIX's
 own tg driver is the receiver whose behaviour the model must satisfy.
 
 What it proves: with a network back end placed only on the tg (bcm570x) device
-at a real Origin 200 PCI option slot, IRIX names the adapter tg1, its driver
-brings the link up (the NOTICE "tg1: Link up: ... Mbps"), and a burst of pings
-to the SLIRP gateway moves tg1's own interface counters -- transmitted packets
-climb (the adapter's transmit DMA put the echo requests on the wire) and
+at a real Origin 200 PCI option slot, IRIX lists the adapter in hinv at that
+slot (its name, tg1 on the installed disk, is read from there), its driver
+brings the link up (the NOTICE "<name>: Link up: ... Mbps"), and a burst of
+pings to the SLIRP gateway moves the interface's own counters -- transmitted
+packets climb (the adapter's transmit DMA put the echo requests on the wire) and
 received packets climb with zero input errors (its receive DMA took the gateway
 replies back off it, clean). That is a full round-trip exercise of the device's
 data path, transmit and receive, checked at the counters the driver itself
@@ -31,14 +33,14 @@ capture has eight gateway echo replies, each matching a guest request by
 sequence and exact payload, while the guest ping still prints "0 packets
 received". The capture establishes that the reply reached the adapter's link;
 it does not establish that IRIX accepted it. This test therefore checks the
-wire match and tg1's Ipkts/Opkts in `netstat -in` (both must climb, Ierrs must
-stay zero) together with the driver's link-up notice, without treating the
-ping summary as proof of delivery to the guest. The register, ring and DMA
-contract is exercised separately by the tg qtest.
+wire match and the tg interface's Ipkts/Opkts in `netstat -in` (both must
+climb, Ierrs must stay zero) together with the driver's link-up notice, without
+treating the ping summary as proof of delivery to the guest. The register, ring
+and DMA contract is exercised separately by the tg qtest.
 
 The network back end is placed only on the tg device; the machine's on-board
-IOC3 Ethernet is left with no back end (-nic none), so tg1 is the only interface
-that can carry the pings.
+IOC3 Ethernet is left with no back end (-nic none), so the tg interface is the
+only one that can carry the pings.
 
 tg_acceptance_verdict() below is the PASS/FAIL contract; its own
 docstring says why each clause is scored the way it is.
@@ -70,6 +72,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
                      arp_resolution, drive_irix_to_shell,
+                     irix_interface_at_pci_slot,
                      icmp_echo_exchange, icmp_ipv4_exchange,  # noqa: E402
                      summarise_pcap)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
@@ -104,12 +107,12 @@ def _command_output_text(output, command, tag):
         "utf-8", errors="replace")
 
 
-def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up,
+def tg_acceptance_verdict(login_reached, tg_present, tg_up, link_up,
                           tg_flags, board, traffic):
     """Decide PASS/FAIL for one IRIX tg bring-up run.
 
-    login_reached, tg1_present, tg_up, link_up: booleans for the four
-    milestones above. tg_flags is the set printed by `ifconfig tg1`;
+    login_reached, tg_present, tg_up, link_up: booleans for the four
+    milestones above. tg_flags is the set printed by `ifconfig` for it;
     board carries the tgconfig readback and options-file checks.
 
     traffic: a dict of the interface's own counters, read from `netstat -in`
@@ -127,11 +130,11 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up,
 
     if not login_reached:
         problems.append("the guest never reached a root shell")
-    if not tg1_present:
-        problems.append("tg1 not present in ifconfig -a")
+    if not tg_present:
+        problems.append("the tg interface is not present in ifconfig -a")
     if not tg_up:
         problems.append(
-            "`ifconfig tg1 ... up` did not return to a shell prompt "
+            "`ifconfig <tg> ... up` did not return to a shell prompt "
             "(console wedged)")
     if not link_up:
         problems.append(
@@ -158,17 +161,17 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up,
         problems.append(
             "tgconfig -g does not match /etc/config/tgconfig.options")
     if not {"L2IPFRAG", "L2TCPSEG"} <= set(tg_flags):
-        problems.append("tg1 is missing the L2IPFRAG or L2TCPSEG flag")
+        problems.append("tg is missing the L2IPFRAG or L2TCPSEG flag")
 
     ib = traffic.get("ipkts_before")
     ia = traffic.get("ipkts_after")
     if ia is None or ib is None:
         problems.append(
-            "tg1's received-packet counter could not be read before and "
+            "tg's received-packet counter could not be read before and "
             "after the pings")
     elif ia <= ib:
         problems.append(
-            f"tg1's received-packet counter did not climb over the pings "
+            f"tg's received-packet counter did not climb over the pings "
             f"({ib} -> {ia}): no frames arrived over the adapter's receive "
             f"ring")
 
@@ -176,19 +179,19 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up,
     oa = traffic.get("opkts_after")
     if oa is None or ob is None:
         problems.append(
-            "tg1's transmitted-packet counter could not be read before and "
+            "tg's transmitted-packet counter could not be read before and "
             "after the pings")
     elif oa <= ob:
         problems.append(
-            f"tg1's transmitted-packet counter did not climb over the pings "
+            f"tg's transmitted-packet counter did not climb over the pings "
             f"({ob} -> {oa}): the adapter put no frames on the wire")
 
     ie = traffic.get("ierrs_after")
     if ie is None:
-        problems.append("tg1's input-error counter could not be read")
+        problems.append("tg's input-error counter could not be read")
     elif ie != 0:
         problems.append(
-            f"tg1 reported {ie} input errors; the frames did not arrive clean")
+            f"tg reported {ie} input errors; the frames did not arrive clean")
 
     if traffic.get("arp_cache_cold") is not True:
         problems.append(
@@ -273,15 +276,18 @@ MEMORY_MIB = 128
 GATEWAY = "10.0.2.2"
 GUEST_ADDR = "10.0.2.15"
 
-# The tg (bcm570x) device sits at this Origin 200 PCI option slot; IRIX names
-# the Broadcom Gigabit Ethernet adapter there tg1 (confirmed by the tg bring-up
-# captures). A card MAC is passed on the command line, matching the bring-up
-# invocation; the driver takes the system Ethernet address regardless.
-TG_ADDR = 4
+# The tg (bcm570x) device sits in the first Origin 200 PCI option slot,
+# device 5 (the slots are PCI IDs 5, 6 and 7, Origin200 Owner's Guide
+# 007-3415-003, printed page 12), which the machine wires to the 64-bit data
+# path the card needs. Its interface name comes from hinv at run time
+# (irix_interface_at_pci_slot): ioconfig, not the slot, decides it, and the
+# installed disk calls it tg1. A card MAC is passed on the command line,
+# matching the bring-up invocation; the driver takes the system Ethernet
+# address regardless.
+TG_ADDR = 5
 TG_MAC = "52:54:00:bc:57:01"
-IFACE = "tg1"
 
-# Pings to the gateway, enough that tg1's counters move well past a single
+# Pings to the gateway, enough that tg's counters move well past a single
 # frame in each direction (each echo is one TX frame and, answered, one RX
 # frame, plus the opening ARP exchange).
 PING_COUNT = 8
@@ -321,13 +327,13 @@ if QemuSystemTest is not None:
             '15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12')
 
         def _read_counters(self, con, tag):
-            """tg1's (Ipkts, Ierrs, Opkts) from netstat -in, each an int or
+            """tg's (Ipkts, Ierrs, Opkts) from netstat -in, each an int or
             None if it could not be read. netstat -in columns are
             Name Mtu Network Address Ipkts Ierrs Opkts ... so Ipkts is field 5,
             Ierrs field 6, Opkts field 7."""
             try:
                 triple = con.capture_value(
-                    "netstat -in | awk '$1 ~ /^" + IFACE +
+                    "netstat -in | awk '$1 ~ /^" + self.iface +
                     "/ {print \"CNT=\" $5 \",\" $6 \",\" $7; exit}'",
                     tag, rb"CNT=(\d+,\d+,\d+)", timeout=60)
             except HarnessError:
@@ -372,23 +378,25 @@ if QemuSystemTest is not None:
             return arp_neighbor_line(output, GATEWAY)
 
         def _configure_tg(self, con):
-            """Bring tg1 up with the SLIRP guest address on its own subnet (the
+            """Find the tg interface's name in hinv, then bring it up with the
+            SLIRP guest address on its own subnet (the
             gateway is directly reachable, no route needed). Returns
-            (tg1_present, tg_up): whether tg1 shows in `ifconfig -a` and whether
+            (tg_present, tg_up): whether it shows in `ifconfig -a` and whether
             it reports UP."""
-            con.run("hinv | grep -i ether", "hinv", timeout=60)
-            con.run(f"ifconfig {IFACE} inet {GUEST_ADDR} "
+            self.iface = irix_interface_at_pci_slot(con, "tg", TG_ADDR)
+            con.run(f"ifconfig {self.iface} inet {GUEST_ADDR} "
                     "netmask 0xffffff00 up", "ifup", timeout=60)
             present = False
             try:
                 con.capture_value("ifconfig -a", "ifall",
-                                  rb"(" + IFACE.encode() + rb"):", timeout=60)
+                                  rb"(" + self.iface.encode() + rb"):",
+                                  timeout=60)
                 present = True
             except HarnessError:
                 present = False
             up = False
             try:
-                con.capture_value("ifconfig " + IFACE, "ifshow",
+                con.capture_value("ifconfig " + self.iface, "ifshow",
                                   rb"(UP)[,>]", timeout=60)
                 up = True
             except HarnessError:
@@ -396,7 +404,7 @@ if QemuSystemTest is not None:
             flags = set()
             try:
                 flag_text = con.capture_value(
-                    "ifconfig " + IFACE, "ifflags",
+                    "ifconfig " + self.iface, "ifflags",
                     rb"flags=[^<]*<([^>]+)>", timeout=60)
                 flags = {flag.strip() for flag in flag_text.split(",")}
             except HarnessError:
@@ -407,9 +415,9 @@ if QemuSystemTest is not None:
             """Wait for the tg driver's link-up NOTICE on the console. Returns
             (link_up, line): the boolean and the matched notice text (or None)."""
             try:
-                m = con.expect(rb"" + IFACE.encode() + rb": Link up[^\r\n]*",
+                m = con.expect(self.iface.encode() + rb": Link up[^\r\n]*",
                                LINK_TIMEOUT_SECONDS,
-                               what="the tg1 link-up notice")
+                               what=f"the {self.iface} link-up notice")
                 return True, m.group(0).decode("utf-8", errors="replace")
             except HarnessError:
                 return False, None
@@ -417,7 +425,7 @@ if QemuSystemTest is not None:
         def _ping(self, con):
             """Ping the gateway. The exit code is ignored on purpose: over SLIRP
             the guest ping reports 100% loss even when the replies arrived (a
-            SLIRP ICMP-id artifact), so this test reads tg1's own counters
+            SLIRP ICMP-id artifact), so this test reads tg's own counters
             instead."""
             try:
                 con.run(f"ping -c {PING_COUNT} {GATEWAY}", "ping",
@@ -466,7 +474,7 @@ if QemuSystemTest is not None:
             con = IrixConsole(vm.console_socket, log_path,
                               exited=lambda: vm.exitcode() is not None)
             login_reached = False
-            tg1_present = False
+            tg_present = False
             tg_up = False
             tg_flags = set()
             board = {}
@@ -480,7 +488,7 @@ if QemuSystemTest is not None:
                 try:
                     drive_irix_to_shell(con, LOGIN_BUDGET_SECONDS)
                     login_reached = True
-                    tg1_present, tg_up, tg_flags = self._configure_tg(con)
+                    tg_present, tg_up, tg_flags = self._configure_tg(con)
                     board = self._read_board_configuration(con)
                     link_up, link_line = self._await_link(con)
                     arp_cache_cold = (
@@ -560,7 +568,7 @@ if QemuSystemTest is not None:
                 "icmp_echo_matching_replies": echo_wire["matching_replies"],
             }
             report = tg_acceptance_verdict(
-                login_reached, tg1_present, tg_up, link_up, tg_flags,
+                login_reached, tg_present, tg_up, link_up, tg_flags,
                 board, traffic)
 
             summary_path = self.log_file('irix-tg-summary.json')
@@ -568,7 +576,7 @@ if QemuSystemTest is not None:
                 json.dump({
                     'schema': 1,
                     'login_reached': login_reached,
-                    'tg1_present': tg1_present,
+                    'tg_present': tg_present,
                     'tg_up': tg_up,
                     'link_up': link_up,
                     'link_line': link_line,

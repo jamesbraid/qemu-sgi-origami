@@ -3,7 +3,8 @@
 # Peer-originated ARP reply on an IRIX tg adapter.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Boot installed IRIX and require tg1 to answer one peer ARP request."""
+"""Boot installed IRIX and require the tg interface to answer one peer ARP
+request."""
 
 from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv
 from qemu_test import skipSlowTest
