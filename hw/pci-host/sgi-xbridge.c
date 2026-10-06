@@ -147,45 +147,6 @@ static void xbridge_set_pin(void *opaque, int pin, int level)
     }
 }
 
-static MemTxResult xbridge_swap_read(void *opaque, hwaddr addr,
-                                     uint64_t *value, unsigned size,
-                                     MemTxAttrs attrs)
-{
-    struct XBridgeTarget *target = opaque;
-    uint8_t bytes[4] = { 0 };
-    MemTxResult result;
-
-    /* The implementation width is four; the helpers' wider cases are not. */
-    assert(size <= sizeof(bytes));
-    result = address_space_read(&target->as, addr ^ (4 - size), attrs,
-                                bytes, size);
-    *value = ldn_be_p(bytes, size);
-    return result;
-}
-
-static MemTxResult xbridge_swap_write(void *opaque, hwaddr addr,
-                                      uint64_t value, unsigned size,
-                                      MemTxAttrs attrs)
-{
-    struct XBridgeTarget *target = opaque;
-    uint8_t bytes[4];
-
-    assert(size <= sizeof(bytes));
-    stn_be_p(bytes, size, value);
-    return address_space_write(&target->as, addr ^ (4 - size), attrs,
-                               bytes, size);
-}
-
-static const MemoryRegionOps xbridge_swap_ops = {
-    .read_with_attrs = xbridge_swap_read,
-    .write_with_attrs = xbridge_swap_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
-};
-
 static uint64_t xbridge_flush_read(void *opaque, hwaddr addr, unsigned size)
 {
     return 0;
@@ -302,9 +263,8 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
-    *placement = sgi_dma_placement_select(
-        swap,
-        s->dma_64bit & (1U << dma->slot));
+    placement = sgi_dma_placement_select(
+        swap, s->dma_64bit & (1U << dma->slot));
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
         entry.target_as = sgi_dma_placement_as(&dma->source, placement);
