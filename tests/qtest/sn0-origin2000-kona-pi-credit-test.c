@@ -293,8 +293,9 @@ static void test_owed_credits_migrate(void)
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
     qtest_qmp_eventwait(from, "STOP");
     sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
     g_assert_cmpuint(credit(to), ==, TOTAL - 1);
-    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    sgi_migrate_resume(to);
     store_word(to, 0);
     g_assert_cmpuint(credit(to), ==, TOTAL);
     assert_probe_answered(to);

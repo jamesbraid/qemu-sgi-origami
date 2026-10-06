@@ -1716,7 +1716,7 @@ static void test_xbow_link_reset_lifecycle(void)
                     ==, 0);
 
     migrate_module(from, to);
-    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    sgi_migrate_resume(to);
     qtest_clock_step(to, XBOW_LINK_RESET_NS - 7 - 1);
     g_assert_cmphex(xbow_read(to, XBOW_LINK8_STATUS) & XBOW_LINK_ALIVE, ==, 0);
     qtest_clock_step(to, 1);

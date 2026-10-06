@@ -1050,7 +1050,7 @@ static void migration_run(FlashMigration *m)
     qtest_qmp_assert_success(m->from,
         "{'execute': 'migrate', 'arguments': {'uri': %s}}", m->uri);
     sgi_wait_migration(m->from, "completed");
-    qtest_qmp_assert_success(m->to, "{'execute': 'cont'}");
+    sgi_migrate_resume(m->to);
 }
 
 static void migration_finish(FlashMigration *m)

@@ -2899,7 +2899,7 @@ static void test_rad_transfer_migration(void)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    sgi_migrate_resume(to);
     octane_rad_startup_check(to, false);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x2c) >> 18, ==, 1);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x30), ==, 26);

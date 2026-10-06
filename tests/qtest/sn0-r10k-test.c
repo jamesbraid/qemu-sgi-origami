@@ -383,7 +383,7 @@ static void test_nmi_latch_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    sgi_migrate_resume(to);
 
     qtest_set_irq_in(to, dest_path, "nmi", 0, 1);
     g_usleep(10 * POLL_INTERVAL_US);
