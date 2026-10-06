@@ -349,6 +349,8 @@ static bool ds1742_shift_fresh_seed(DS1742State *s, struct tm *tm,
                                      Error **errp)
 {
     int year = tm->tm_year + 1900;
+    time_t stamp;
+    struct tm mapped;
 
     if (!s->fresh_year_base) {
         return true;
@@ -360,11 +362,12 @@ static bool ds1742_shift_fresh_seed(DS1742State *s, struct tm *tm,
                    s->fresh_year_base, year);
         return false;
     }
-    /* The guest sees the year relative to fresh_year_base. Keep the weekday
-     * from the unshifted seed; it follows that guest-visible calendar even
-     * when the mapped Gregorian year has a different weekday. */
+    /* This emulator policy uses the remapped year for the running calendar. */
     tm->tm_year = 2000 + (year - (int)s->fresh_year_base) % 100 - 1900;
     s->epoch = mktimegm(tm);
+    stamp = s->epoch;
+    gmtime_r(&stamp, &mapped);
+    s->weekday = mapped.tm_wday + 1;
     s->control = to_bcd((tm->tm_year + 1900) / 100);
     return true;
 }
