@@ -52,7 +52,7 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
             provenance: derived
-            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", qemu:hw/mips/sgi/sn1-node.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
             notes: >-
               The board-identification word is the established Fuel
               product code with the PIMM speed code of the fitted 500 MHz,
@@ -92,12 +92,12 @@ layer:
           scsi:
             revision: 6
             provenance: derived
-            sources: [hw/scsi/qlogic-isp.c]
+            sources: [qemu:hw/scsi/qlogic-isp.c, qemu:docs/specs/sgi-qlogic-isp.rst]
             notes: Preserves the implemented ISP12160 class revision. The Fuel silicon revision is unverified.
           ioc3:
             revision: 1
             provenance: derived
-            sources: [include/hw/misc/sgi-ioc3.h]
+            sources: [qemu:include/hw/misc/sgi-ioc3.h, qemu:docs/specs/sgi-ioc3.rst]
             notes: Preserves the implemented IOC3 class revision. The Fuel silicon revision is unverified.
         system_timekeepers:
           ip34-system-board:

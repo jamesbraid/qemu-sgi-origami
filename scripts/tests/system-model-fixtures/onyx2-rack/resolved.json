@@ -2488,7 +2488,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2497,7 +2497,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2506,7 +2506,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2515,7 +2515,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2524,7 +2524,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2533,7 +2533,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2542,7 +2542,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2561,7 +2561,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2570,7 +2570,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2579,7 +2579,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2588,7 +2588,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2597,7 +2597,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2606,7 +2606,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2615,7 +2615,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2624,7 +2624,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -2633,7 +2633,7 @@
         "provenance": "derived",
         "reason": "Select a module without optional boards or external fabric cables.",
         "sources": [
-          "The four-node reference composition explicitly selects this connector empty."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       }
     ],
