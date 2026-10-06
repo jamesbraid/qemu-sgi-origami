@@ -46,9 +46,12 @@ guest hardware that is specific to QEMU.
    r10000-coherence
    sgi-bridge
    sgi-elsc
+   sgi-gigachannel
+   sgi-graphics
    sgi-hub
    sgi-ioc3
    sgi-ip30
+   sgi-onyx2
    sgi-prom-image
    sgi-qlogic-isp
    sgi-sn

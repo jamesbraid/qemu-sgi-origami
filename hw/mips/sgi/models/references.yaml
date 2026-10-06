@@ -588,6 +588,56 @@ web:
     obtain:
       url: null
       message_id: "<slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net>"
+  preterhuman-impact:
+    title: "IMPACT"
+    publisher: "Higher Intellect wiki"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://wiki.preterhuman.net/IMPACT
+  nekonomicon-16723250:
+    title: "Nekochan forum archive thread 16723250, Onyx2 deskside PROM hinv -v"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/3/16723250/1.html
+  sgistuff-collection-2200:
+    title: "SGIstuff collection, Onyx2 deskside inventory and board list"
+    publisher: "SGIstuff"
+    kind: capture
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: http://www.sgistuff.net/collection/systems/2200.html
+  nekonomicon-16726704:
+    title: "Nekochan forum archive thread 16726704, \"Building an Onyx 200. Success\""
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/3/16726704/1.html
+  nekonomicon-16731033:
+    title: "Nekochan forum archive thread 16731033, two-module Origin 200 with a GIGAchannel cabinet on each module"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16731033/1.html
+      sha256: 201c2518d5c09981a91630449b853dd45e871daa2c17647169e92a08dfcd1d29
+  usenet-pigot-3edc9a71:
+    title: "comp.sys.sgi.marketplace, 2003-06-03, Re: Have 3 Origin 200 XBOX Gigachannel Exp. NEW FACTORY BOXES"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3EDC9A71.CE2535AA@delm.tas.gov.au>"
 
 firmware:
   ip27-prom-6.156:
