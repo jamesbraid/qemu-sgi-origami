@@ -1379,8 +1379,8 @@ static void rad4_disable_scanout(PsitechRad4State *s)
  * latches the status of an unrequested frame and gates only the interrupt.
  * Nothing in the shipped software would see the difference. The only
  * driver code testing status bit 0x20 is its interrupt handler, which runs
- * on a requested frame. A scan of the standalone X server's and rad4d's
- * disassembly finds no instruction loading the control register's BAR2
+ * on a requested frame. A scan of the standalone X server and rad4d
+ * binaries finds no instruction loading the control register's BAR2
  * offset (0xf00000) as a constant, so neither appears to poll it. Were
  * the status latched regardless and only the interrupt gated, setting bit
  * 1 to wait for a frame would raise a stale interrupt at once.
