@@ -521,6 +521,33 @@ web:
     obtain:
       url: https://theretroweb.com/motherboard/image/sgi-origin4-1-6a784d7361a61633987402.jpg
       sha256: 9f8f11fc059dda4a8a4350f193a78ab15b57fd36744e63e34d200bdb340c781a
+  ebay-277925514107-image-1:
+    title: "Origin 200 XIO-to-PCI carrier, PCI-XTALK ADAPTER board with its daughter card (photograph 1)"
+    publisher: "eBay listing 277925514107, seller's photograph"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://i.ebayimg.com/images/g/318AAeSw0rNp66gd/s-l1600.jpg
+      sha256: 4be7da4c221ca248bc30343d7ee3a8bc0743995d871ce8c4c22c4f596670298b
+  ebay-277925514107-image-3:
+    title: "PCI-XTALK ADAPTER board, silkscreen and assembly label (photograph 3)"
+    publisher: "eBay listing 277925514107, seller's photograph"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://i.ebayimg.com/images/g/65EAAeSw171p66ge/s-l1600.jpg
+      sha256: 658f1e97477890441fcf9068272939918f5b6220205a8808f3a93f39d17e5a9a
+  ebay-277925514107-image-5:
+    title: "PCI-XTALK ADAPTER board, Bridge ASIC area (photograph 5)"
+    publisher: "eBay listing 277925514107, seller's photograph"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://i.ebayimg.com/images/g/2RwAAeSwmT1p66ge/s-l1600.jpg
+      sha256: 2a7b26e77982ae594508e780dbd0c8382e9261ebc4836d6fb193809c7cd982c4
   lore-kaloz-ip35-35:
     title: "[PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01)"
     publisher: "linux-mips mailing list"
