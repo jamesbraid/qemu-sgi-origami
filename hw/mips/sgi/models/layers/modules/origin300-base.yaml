@@ -42,7 +42,7 @@ layer:
           the two-processor population fits. A Bedrock carries two processor
           interfaces of two processors each; the Origin 300 ships with two or
           four, and the four-processor population fits all four slots below.
-        sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "108-0263-004 (Origin 300 scan tools guide), configuration names", "007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
+        sources: ["web:nekonomicon-16726611 IP45_2CPU, processors A and C", "108-0263-004 (Origin 300 scan tools guide), configuration names", "007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
 
       - id: cpu1
         name: R14000
@@ -54,7 +54,7 @@ layer:
         description: >-
           Processor C on processor interface 1, the first slot of that
           interface; fitted in both the two- and four-processor populations.
-        sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]
+        sources: ["web:nekonomicon-16726611 IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]
 
       - id: cpu2
         name: R14000
@@ -246,7 +246,7 @@ layer:
             is the IO-8 board's own SGI part number (007-4365-002), the one
             physical board both PCI heads below sit on.
         datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
-        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 17, 41, 44 to 46, 132", "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"]
+        sources: ["web:xbridge-asic-spec-0.5 printed pages 17, 41, 44 to 46, 132", "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"]
         notes: >-
           Same programming model as the Bridge with the deltas the XBridge datasheet
           lists; the device-window layout is unchanged. The translation-table size is
@@ -283,7 +283,7 @@ layer:
             offset: "0x0"
             size: "0x100_0000"
             notes: Small window 0; every public consumer also reaches it through big window 6 (the widget-0 window packet).
-        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs line 33"]
+        sources: ["web:xbridge-asic-spec-0.5 printed pages 20, 31, 44 and 71", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs line 33"]
         notes: >-
           Inferred first from the chip specification and the board's port list, then
           observed in three owners' inventories and one verbose PROM trace; secondhand
@@ -307,7 +307,7 @@ layer:
             space: io
             offset: "0x0e00_0000"
             size: "0x100_0000"
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"]
 
       - id: xbridge-bridge-f
         name: XBridge bridge at port 0xf
@@ -326,7 +326,7 @@ layer:
             space: io
             offset: "0x0f00_0000"
             size: "0x100_0000"
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"]
 
       - id: ioc3
         name: IOC3
@@ -361,7 +361,7 @@ layer:
             system-board value 0xc303. An Origin 300 configuration-space capture
             replaces the placeholder.
         datasheet_contracts: [docs/datasheets/ioc3.md, docs/datasheets/dp83840.md]
-        sources: ["108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers", "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and both interrupt sources", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"]
+        sources: ["108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers", "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and both interrupt sources", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"]
 
       - {id: ioc3-ethernet, name: Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: datasheet}
       - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: datasheet}
@@ -397,7 +397,7 @@ layer:
             The subsystem fields are unobserved. The emulator exposes unavailable
             values instead of inheriting QEMU's unrelated generic PCI defaults.
         datasheet_contracts: [docs/datasheets/isp12160.md]
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and interrupt pin", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183: 33 MHz bus and matching function", "007-4365-002 printed pages 1, 12 and 14", "108-0264-004 Table 2-4, printed page 2-11"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and interrupt pin", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183: 33 MHz bus and matching function", "007-4365-002 printed pages 1, 12 and 14", "108-0264-004 Table 2-4, printed page 2-11"]
 
       - id: usb
         name: USB controller (OHCI)
@@ -419,7 +419,7 @@ layer:
             placeholders so current QEMU does not inject unrelated 0x1af4:0x1100
             defaults. An Origin 300 configuration-space capture replaces them.
         datasheet_contracts: [docs/datasheets/lucent-ohci.md]
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11", "007-4365-002 printed page 12"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11", "007-4365-002 printed page 12"]
 
       - id: pci-option-slot-1
         name: PCI option slot 1
@@ -434,7 +434,7 @@ layer:
             associates that device with head-E XBridge interrupt number 1. The
             card's PCI Interrupt Pin field and the riser's source-to-pin wiring are
             not established.
-        sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"]
+        sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"]
 
       - id: pci-option-slot-2
         name: PCI option slot 2
@@ -449,7 +449,7 @@ layer:
             associates that device with head-E XBridge interrupt number 2. The
             card's PCI Interrupt Pin field and the riser's source-to-pin wiring are
             not established.
-        sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"]
+        sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"]
 
       - id: l1
         name: L1 system controller
@@ -547,7 +547,7 @@ layer:
         kind: pci
         master: xbridge-bridge-f
         provenance: observed-hardware
-        sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11"]
+        sources: ["web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11"]
         notes: >-
           OpenBSD reports it as a 33 MHz PCI bus on real Origin 300s. The fixed
           functions are 00:01.0, 00:04.0 and 00:05.0 behind widget 15.
@@ -557,7 +557,7 @@ layer:
         kind: pci
         master: xbridge-bridge-e
         provenance: observed-hardware
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "007-4365-002 printed pages 1, 9 and 12"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "007-4365-002 printed pages 1, 9 and 12"]
         notes: >-
           An empty bus is observed at 66 MHz. The two physical 64-bit universal
           slots can run at 33 or 66 MHz and are empty on the base model.
@@ -581,7 +581,7 @@ layer:
 
     connections:
       - { component: cpu0, bus: sysad0, role: master, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
-      - { component: cpu1, bus: sysad1, role: master, provenance: observed-hardware, sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: cpu1, bus: sysad1, role: master, provenance: observed-hardware, sources: ["web:nekonomicon-16726611 IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
       - { component: cpu2, bus: sysad0, role: master, provenance: vendor-document, sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
       - { component: cpu3, bus: sysad1, role: master, provenance: vendor-document, sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
       - { component: bedrock, bus: sysad0, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
@@ -599,19 +599,19 @@ layer:
         widget: 0
         provenance: observed-hardware
         notes: Widget 0 in XBridge mode, reported as ASIC XBOW Rev 2 by real Origin 300s.
-        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71"]
-      - { component: xbridge-bridge-e, bus: xio, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
-      - { component: xbridge-bridge-f, bus: xio, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
+        sources: ["web:xbridge-asic-spec-0.5 printed pages 20, 31, 44 and 71"]
+      - { component: xbridge-bridge-e, bus: xio, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"] }
+      - { component: xbridge-bridge-f, bus: xio, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"] }
       - { component: xio-connector, bus: xio, role: endpoint, widget: 11, provenance: derived, sources: ["007-4365-002 printed page 8", "108-0240-002 printed page 2-26: XBridge Crosstown2 ports A and B are 10 and 11"], notes: "Port 0xb is the model's existing approximation; the physical connector assignment has not been measured." }
-      - { component: xbridge-bridge-f, bus: pci-io8, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
-      - { component: xbridge-bridge-e, bus: pci-option, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
-      - { component: scsi, bus: pci-io8, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"] }
-      - { component: ioc3, bus: pci-io8, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "108-0264-004 Table 2-4, printed page 2-11"] }
-      - { component: usb, bus: pci-io8, role: endpoint, pci_device: 5, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"] }
+      - { component: xbridge-bridge-f, bus: pci-io8, role: bridge-downstream, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"] }
+      - { component: xbridge-bridge-e, bus: pci-option, role: bridge-downstream, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "web:xbridge-asic-spec-0.5 printed pages 44 and 123"] }
+      - { component: scsi, bus: pci-io8, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
+      - { component: ioc3, bus: pci-io8, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "108-0264-004 Table 2-4, printed page 2-11"] }
+      - { component: usb, bus: pci-io8, role: endpoint, pci_device: 5, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
       - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [ioc3-datasheet] }
       - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [ioc3-datasheet-origin-300, timekeeper-datasheet] }
-      - { component: pci-option-slot-1, bus: pci-option, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"] }
-      - { component: pci-option-slot-2, bus: pci-option, role: endpoint, pci_device: 2, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"] }
+      - { component: pci-option-slot-1, bus: pci-option, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
+      - { component: pci-option-slot-2, bus: pci-option, role: endpoint, pci_device: 2, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
       - { component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: ["007-4365-002 printed page 14, Table 1-2"] }
       - { component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: ["007-4365-002 printed page 8"] }
 
@@ -623,7 +623,7 @@ layer:
           The fixed board route is ISP12160 INTA to head-F physical pin 1. Every
           pending-bit and processor destination after that pin is programmed by
           the guest.
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: scsi, as: "PCI INTA at 00:01.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 1", mechanism: wire }
@@ -637,7 +637,7 @@ layer:
         description: >-
           The IOC3 SuperIO block has a separate board output to head-F physical pin
           0. It does not share the Ethernet function's PCI INTA route.
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: ioc3, as: "SuperIO interrupt output", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 0", mechanism: wire }
@@ -651,7 +651,7 @@ layer:
         description: >-
           The IOC3 Ethernet PCI function asserts INTA at 00:04.0, wired to head-F
           physical pin 4 independently of the SuperIO output.
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: ioc3, as: "Ethernet PCI INTA at 00:04.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 4", mechanism: wire }
@@ -666,7 +666,7 @@ layer:
           The OHCI controller's INTA at 00:05.0 is wired to head-F physical pin 5.
           The observed Bedrock interrupt number 59 is a guest allocation, not board
           wiring.
-        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: usb, as: "PCI INTA at 00:05.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 5", mechanism: wire }

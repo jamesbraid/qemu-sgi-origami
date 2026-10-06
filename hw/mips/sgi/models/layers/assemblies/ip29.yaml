@@ -16,7 +16,7 @@ layer:
     supported_dimm_sizes_mib: [16, 32, 64, 256]
     supported_bank_sizes_mib: [32, 64, 128, 512]
     provenance: vendor-document
-    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted", "papers/origin200-2000-technical-report-7-chapters.tar.gz Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"]
+    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted", "web:origin-technical-report Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"]
   memory_kits:
     - id: kit-64
       dimms: 2

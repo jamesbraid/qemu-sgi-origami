@@ -13,7 +13,7 @@ module_instances:
     adopt_roots: true
     observed_hardware:
       mode: direct
-      sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15", "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"]
+      sources: ["web:marc-openbsd-sgi-139223952727384 lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15", "web:nekonomicon-17314 IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"]
       note: >-
         Reuses the existing Origin 300 compute component observations. The
         additional PCI expansion connection remains an explicit experiment.

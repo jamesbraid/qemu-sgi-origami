@@ -85,7 +85,7 @@
       "notes": "OpenBSD reports it as a 33 MHz PCI bus on real Origin 300s. The fixed functions are 00:01.0, 00:04.0 and 00:05.0 behind widget 15.",
       "provenance": "observed-hardware",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "108-0264-004 Table 2-4, printed page 2-11"
       ]
     },
@@ -97,8 +97,8 @@
       "notes": "An empty bus is observed at 66 MHz. The two physical 64-bit universal slots can run at 33 or 66 MHz and are empty on the base model.",
       "provenance": "observed-hardware",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "007-4365-002 printed pages 1, 9 and 12"
       ]
     },
@@ -151,7 +151,7 @@
       "processor_slice": "A",
       "provenance": "observed-hardware",
       "sources": [
-        "origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C",
+        "web:nekonomicon-16726611 IP45_2CPU, processors A and C",
         "108-0263-004 (Origin 300 scan tools guide), configuration names",
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"
@@ -182,7 +182,7 @@
       "processor_slice": "C",
       "provenance": "observed-hardware",
       "sources": [
-        "origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C",
+        "web:nekonomicon-16726611 IP45_2CPU, processors A and C",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"
       ]
     },
@@ -421,7 +421,7 @@
       },
       "provenance": "datasheet",
       "sources": [
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 17, 41, 44 to 46, 132",
+        "web:xbridge-asic-spec-0.5 printed pages 17, 41, 44 to 46, 132",
         "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"
       ]
     },
@@ -457,7 +457,7 @@
         }
       ],
       "sources": [
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71",
+        "web:xbridge-asic-spec-0.5 printed pages 20, 31, 44 and 71",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs line 33"
       ]
     },
@@ -478,9 +478,9 @@
         }
       ],
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ]
     },
     {
@@ -500,9 +500,9 @@
         }
       ],
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ]
     },
     {
@@ -530,7 +530,7 @@
       "sources": [
         "108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers",
         "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet",
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and both interrupt sources",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and both interrupt sources",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"
       ]
@@ -597,8 +597,8 @@
       "name": "QLogic ISP12160",
       "provenance": "observed-hardware",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and interrupt pin",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183: 33 MHz bus and matching function",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and interrupt pin",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183: 33 MHz bus and matching function",
         "007-4365-002 printed pages 1, 12 and 14",
         "108-0264-004 Table 2-4, printed page 2-11"
       ]
@@ -621,8 +621,8 @@
       "name": "USB controller (OHCI)",
       "provenance": "observed-hardware",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "108-0264-004 Table 2-4, printed page 2-11",
         "007-4365-002 printed page 12"
       ]
@@ -640,7 +640,7 @@
       "provenance": "observed-hardware",
       "sources": [
         "007-4365-002 printed pages 9 and 12",
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"
       ]
     },
     {
@@ -656,7 +656,7 @@
       "provenance": "observed-hardware",
       "sources": [
         "007-4365-002 printed pages 9 and 12",
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"
       ]
     },
     {
@@ -811,7 +811,7 @@
       "provenance": "derived",
       "sources": [
         "D-0023: minimum documented Origin 300 product configuration",
-        "Two-CPU Origin 300 inventory: https://nekonomicon.irixnet.org/forum/14/16726611/1.html (IP45_2CPU, slices A and C)",
+        "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
       ]
@@ -852,7 +852,7 @@
       "provenance": "observed-hardware",
       "role": "master",
       "sources": [
-        "origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C",
+        "web:nekonomicon-16726611 IP45_2CPU, processors A and C",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"
       ]
     },
@@ -912,7 +912,7 @@
       "provenance": "observed-hardware",
       "role": "bridge-upstream",
       "sources": [
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71"
+        "web:xbridge-asic-spec-0.5 printed pages 20, 31, 44 and 71"
       ],
       "widget": 0
     },
@@ -922,9 +922,9 @@
       "provenance": "observed-hardware",
       "role": "bridge-upstream",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ],
       "widget": 14
     },
@@ -934,9 +934,9 @@
       "provenance": "observed-hardware",
       "role": "bridge-upstream",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ],
       "widget": 15
     },
@@ -958,9 +958,9 @@
       "provenance": "observed-hardware",
       "role": "bridge-downstream",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ]
     },
     {
@@ -969,9 +969,9 @@
       "provenance": "observed-hardware",
       "role": "bridge-downstream",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
+        "web:xbridge-asic-spec-0.5 printed pages 44 and 123"
       ]
     },
     {
@@ -982,8 +982,8 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"
       ]
     },
     {
@@ -994,7 +994,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
         "108-0264-004 Table 2-4, printed page 2-11"
       ]
     },
@@ -1006,8 +1006,8 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"
       ]
     },
     {
@@ -1038,7 +1038,7 @@
       "role": "endpoint",
       "sources": [
         "007-4365-002 printed pages 9 and 12",
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"
       ]
     },
     {
@@ -1049,7 +1049,7 @@
       "role": "endpoint",
       "sources": [
         "007-4365-002 printed pages 9 and 12",
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"
       ]
     },
     {
@@ -1107,8 +1107,8 @@
       "provenance": "observed-hardware",
       "source": "scsi",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
       ]
@@ -1147,8 +1147,8 @@
       "provenance": "observed-hardware",
       "source": "ioc3",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
       ]
@@ -1187,8 +1187,8 @@
       "provenance": "observed-hardware",
       "source": "ioc3",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
       ]
@@ -1227,8 +1227,8 @@
       "provenance": "observed-hardware",
       "source": "usb",
       "sources": [
-        "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
-        "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
+        "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
+        "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
       ]

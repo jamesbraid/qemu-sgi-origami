@@ -29,7 +29,7 @@ layer:
             cache and processor revision 2.3. The PRId low byte 0x23 follows
             the public MIPS revision encoding; the full CP0 word was not
             captured, so zero upper bits are a compatibility choice.
-        sources: ["007-4480-001 printed page 30: Fuel processor options", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 98 to 110 and 138 to 151: revision G board and processor inventory", "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 77 and 225 to 230: R14000 implementation and revision mask"]
+        sources: ["007-4480-001 printed page 30: Fuel processor options", "web:tingo-fuel-irix-console raw HTML lines 98 to 110 and 138 to 151: revision G board and processor inventory", "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 77 and 225 to 230: R14000 implementation and revision mask"]
       - id: node-memory
         name: node memory
         kind: memory
@@ -58,7 +58,7 @@ layer:
             board. Both are software labels, not Bedrock register reads,
             and neither establishes a reset value or a universal revision.
         datasheet_contracts: [docs/datasheets/bedrock-processor-interface.md, docs/datasheets/bedrock-local-block.md, docs/datasheets/bedrock-io-interface.md]
-        sources: ["007-4480-001 printed pages 127 to 130: power-on test components", "fuel/sgi-sh-fuel-repair-attempt.html: PROM 6.201 inventory, Bedrock revision 2", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 132 to 145: HUB revision 2"]
+        sources: ["007-4480-001 printed pages 127 to 130: power-on test components", "web:sgi-sh-fuel-repair-attempt PROM 6.201 inventory, Bedrock revision 2", "web:tingo-fuel-irix-console raw HTML lines 132 to 145: HUB revision 2"]
       - id: xbridge
         name: XBridge
         kind: pci-host-bridge
@@ -73,7 +73,7 @@ layer:
             Both bridge heads report revision 2 in the cited Fuel capture.
             No Fuel board part number is established by this source.
         datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
-        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+        sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
       - id: xbridge-crossbar
         name: XBridge crossbar section
         kind: crossbar
@@ -83,9 +83,9 @@ layer:
         provenance: observed-hardware
         description: The capture reports XXBow revision 2 at widget 0.
         datasheet_contracts: [docs/datasheets/xbridge.md]
-        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
-      - {id: xbridge-bridge-e, name: XBridge head at widget 14, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {id: xbridge-bridge-f, name: XBridge head at widget 15, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+        sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
+      - {id: xbridge-bridge-e, name: XBridge head at widget 14, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {id: xbridge-bridge-f, name: XBridge head at widget 15, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
       - id: scsi
         name: QLogic ISP12160
         kind: storage-hba
@@ -93,7 +93,7 @@ layer:
         hardware_kind: isp12160
         provenance: observed-hardware
         datasheet_contracts: [docs/datasheets/isp12160.md]
-        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]
+        sources: ["web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541"]
       - id: ioc3
         name: IOC3
         kind: io-controller
@@ -105,8 +105,8 @@ layer:
           port attach through IOC3. The Fuel PCI subsystem bytes and interrupt
           wiring have not been observed.
         datasheet_contracts: [docs/datasheets/ioc3.md]
-        sources: ["007-4480-001 printed pages 6 and 28: external ports", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
-      - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
+        sources: ["007-4480-001 printed pages 6 and 28: external ports", "web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541", "web:tingo-fuel-irix-console raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
+      - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 135", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
       - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
       - {id: ioc3-serial-b, name: serial port B, kind: subfunction, hardware_kind: ioc3-serial-b, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
       - {id: ioc3-parallel, name: parallel port, kind: subfunction, hardware_kind: ioc3-parallel, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed page 28"]}
@@ -134,7 +134,7 @@ layer:
             compatibility choices; no Fuel PCI configuration dump confirms
             those bytes.
         datasheet_contracts: [docs/datasheets/lucent-ohci.md]
-        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312", "docs/reviews/fuel-usb-variants-review-20260927.md"]
+        sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312", "docs/reviews/fuel-usb-variants-review-20260927.md"]
       - id: graphics-connector
         name: graphics board connector
         kind: connector
@@ -149,7 +149,7 @@ layer:
             Fuel IRIX inventory lists its board under xtalk/13 and OpenBSD
             reports Odyssey at XXBow widget 13. The composition records
             whether a board is fitted.
-        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146: ASTODYB board at /hw/module/001c01/Ibrick/xtalk/13", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541: Odyssey at xbow0 widget 13"]
+        sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146: ASTODYB board at /hw/module/001c01/Ibrick/xtalk/13", "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541: Odyssey at xbow0 widget 13"]
       - id: l1
         name: L1 system controller
         kind: system-controller
@@ -163,21 +163,21 @@ layer:
     buses:
       - {id: sysad0, name: processor interface, kind: sysad, master: cpu0, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
       - {id: crosstalk, name: crosstalk, kind: xio, master: bedrock, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/xtalk/xtalkaddrs.h"]}
-      - {id: pci-widget-14, name: PCI at widget 14, kind: pci, master: xbridge-bridge-e, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {id: pci-widget-15, name: PCI at widget 15, kind: pci, master: xbridge-bridge-f, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {id: pci-widget-14, name: PCI at widget 14, kind: pci, master: xbridge-bridge-e, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {id: pci-widget-15, name: PCI at widget 15, kind: pci, master: xbridge-bridge-f, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
     connections:
       - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["007-4480-001 printed page 30"]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
-      - {component: bedrock, bus: crosstalk, role: master, widget: 10, provenance: observed-hardware, sources: ["boot-logs/graphica-sgi-o350-chimera-notes.html raw HTML lines 1904 to 1905 and 2029 to 2030"]}
-      - {component: xbridge-crossbar, bus: crosstalk, role: bridge-upstream, widget: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: xbridge-bridge-e, bus: crosstalk, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: xbridge-bridge-f, bus: crosstalk, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: graphics-connector, bus: crosstalk, role: endpoint, widget: 13, provenance: observed-hardware, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: xbridge-bridge-e, bus: pci-widget-14, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: xbridge-bridge-f, bus: pci-widget-15, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
-      - {component: scsi, bus: pci-widget-15, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]}
-      - {component: ioc3, bus: pci-widget-15, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]}
-      - {component: usb, bus: pci-widget-15, role: endpoint, pci_device: 5, pci_function: 0, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 152: revision G identity and PCI device 5", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541: widget 15 on an unidentified board revision"]}
+      - {component: bedrock, bus: crosstalk, role: master, widget: 10, provenance: observed-hardware, sources: ["web:graphica-o350-chimera-notes raw HTML lines 1904 to 1905 and 2029 to 2030"]}
+      - {component: xbridge-crossbar, bus: crosstalk, role: bridge-upstream, widget: 0, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-e, bus: crosstalk, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-f, bus: crosstalk, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: graphics-connector, bus: crosstalk, role: endpoint, widget: 13, provenance: observed-hardware, sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146", "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-e, bus: pci-widget-14, role: bridge-downstream, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-f, bus: pci-widget-15, role: bridge-downstream, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
+      - {component: scsi, bus: pci-widget-15, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541"]}
+      - {component: ioc3, bus: pci-widget-15, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541"]}
+      - {component: usb, bus: pci-widget-15, role: endpoint, pci_device: 5, pci_function: 0, provenance: derived, sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: revision G identity and PCI device 5", "web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541: widget 15 on an unidentified board revision"]}
     interrupts:
       - id: scsi-interrupt
         source: scsi

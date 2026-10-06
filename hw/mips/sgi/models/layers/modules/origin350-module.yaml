@@ -26,7 +26,7 @@ layer:
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         identity: {hardware_revision: 2, clock_mhz: 200}
         provenance: observed-hardware
-        sources: ["https://nekonomicon.irixnet.org/forum/14/16729141/1.html: Origin 350 hinv -v reports ASIC BEDROCK Rev 2, 200 MHz"]
+        sources: ["web:nekonomicon-16729141 Origin 350 hinv -v reports ASIC BEDROCK Rev 2, 200 MHz"]
         notes: >-
           This is the Bedrock ASIC revision printed by the Origin 350 inventory.
           The same inventory separately prints ASIC XBOW Rev 3. It does not

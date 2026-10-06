@@ -30,7 +30,7 @@ layer:
             carrier, so that the carrier is this cardcage is an inference.
         provenance: vendor-document
         datasheet_contracts: [docs/datasheets/sgi-pci-shoebox.md]
-        sources: ["007-3456-003 PCI Carrier Assembly and Figure 2-11 printed page 34 PDF page 54; XIO Board Slots printed page 98 PDF page 118", "forum/irixnet-post-32252-ip27-6.5.30-hinv.html real IP27 hinv: PCI-XIO Board part 030-1062-002 rev C at io2, Origin PCI XIO board module 1 slot 2 Revision 3", "reference/sgi-pca-numbers.html 030-1062-002 Origin 2000 PCI cardcage, PCI_XIO"]
+        sources: ["007-3456-003 PCI Carrier Assembly and Figure 2-11 printed page 34 PDF page 54; XIO Board Slots printed page 98 PDF page 118", "web:irixnet-post-32252 real IP27 hinv: PCI-XIO Board part 030-1062-002 rev C at io2, Origin PCI XIO board module 1 slot 2 Revision 3", "web:sgi-pca-numbers 030-1062-002 Origin 2000 PCI cardcage, PCI_XIO"]
       - id: bridge
         name: Bridge
         kind: pci-host-bridge
