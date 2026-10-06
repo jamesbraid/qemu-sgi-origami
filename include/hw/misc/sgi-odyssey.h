@@ -128,7 +128,7 @@ struct SGIOdysseyState {
     uint32_t intr_flags;
     uint32_t intr_enable;
     uint32_t flctl_config;
-    uint32_t sw_sync;
+    uint32_t sw_token;
 
     /*
      * The routed-interrupt destination and per-source vector table

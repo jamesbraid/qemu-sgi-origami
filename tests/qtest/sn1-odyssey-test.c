@@ -69,7 +69,7 @@
 #define ODSY_STATUS0 0x1064
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_FLCTL_CONFIG 0x1070
-#define ODSY_SW_SYNC 0x107c
+#define ODSY_SW_TOKEN 0x107c
 #define ODSY_BUZZ_1 0x1078
 #define ODSY_BUZZ_2 0x1088
 #define ODSY_BUZZ_3 0x1098
@@ -1084,8 +1084,8 @@ static void test_interrupt_registers(void)
     g_assert_cmphex(reg_read(qts, ODSY_INTR_ENABLE_SET), ==, 0xffffffff);
 
     /* The software-sync pair: a token written, then read back. */
-    reg_write(qts, ODSY_SW_SYNC, 0x5a5a5a5a);
-    g_assert_cmphex(reg_read(qts, ODSY_SW_SYNC), ==, 0x5a5a5a5a);
+    reg_write(qts, ODSY_SW_TOKEN, 0x5a5a5a5a);
+    g_assert_cmphex(reg_read(qts, ODSY_SW_TOKEN), ==, 0x5a5a5a5a);
 
     qtest_quit(qts);
 }
@@ -1520,7 +1520,7 @@ static void test_reset_restores_the_documented_values(void)
 
     reg_write(qts, ODSY_CONTROL, 0xdeadbeef);
     reg_write(qts, ODSY_INTR_ENABLE_SET, 0xffffffff);
-    reg_write(qts, ODSY_SW_SYNC, 0x12345678);
+    reg_write(qts, ODSY_SW_TOKEN, 0x12345678);
     reg_write(qts, ODSY_NIC, NIC_PULSE(520) | NIC_SAMPLE(65));
     reg_write(qts, ODSY_XT_REQ_TIMEOUT, 0xdeadbeef);
     reg_write(qts, ODSY_FLCTL_CONFIG, 0xdeadbeef);
@@ -1531,7 +1531,7 @@ static void test_reset_restores_the_documented_values(void)
 
     g_assert_cmphex(reg_read(qts, ODSY_CONTROL), ==, SLOT);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_ENABLE_SET), ==, 0);
-    g_assert_cmphex(reg_read(qts, ODSY_SW_SYNC), ==, 0);
+    g_assert_cmphex(reg_read(qts, ODSY_SW_TOKEN), ==, 0);
     g_assert_cmphex(reg_read(qts, ODSY_NIC), ==, 0);
     g_assert_cmphex(reg_read(qts, ODSY_XT_REQ_TIMEOUT), ==,
                      XT_REQ_TIMEOUT_RESET);
