@@ -153,7 +153,7 @@ layer:
             - {name: node-zero remote Hub-special boot view, address: "0x100_38000000", payload_offset: "0x0", size: "0x1686a8"}
           second_selection: {address: "0x100_1a000000", size: "0x0080_0000"}
           provenance: derived
-          sources: ["docs/machines/layers/products/origin300.yaml: existing bounded IP35 PROM compatibility carrier", "docs/decisions/D-0024-origin300-stock-prom-reset-carrier.md"]
+          sources: ["qemu:hw/mips/sgi/models/layers/products/origin300.yaml existing bounded IP35 PROM compatibility carrier", "docs/decisions/D-0024-origin300-stock-prom-reset-carrier.md"]
           notes: >-
             This boot spike reuses the Origin 300 emulator's bounded views of
             the operator-supplied IP35 PROM payload. The physical Fuel reset
