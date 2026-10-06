@@ -11,10 +11,11 @@
 Boots the same kernel and installed disk as the network transfer test
 (see that file's own docstring for where they come from and why 128 MiB),
 with one addition on the command line: `-device
-xframe,addr=4.0,subsystem-vendor-id=0x10a9,netdev=n1,mac=02:00:5d:00:00:01`
+xframe,addr=5.0,subsystem-vendor-id=0x10a9,netdev=n1,mac=02:00:5d:00:00:01`
 plus a matching `-netdev user,id=n1`, putting this fork's emulated Xframe
-10G Ethernet adapter (hw/net/xframe.c) at PCI slot 4 on the machine's one
-PCI bus.
+10G Ethernet adapter (hw/net/xframe.c) at PCI device 5 on the machine's one
+PCI bus: the first Origin 200 option slot, since the slots provide PCI IDs
+5, 6 and 7 (Origin200 Owner's Guide 007-3415-003, printed page 12).
 
 This is a REAL boot, not a scaffold: stock OpenBSD 6.9's GENERIC-IP27
 kernel already exists and already carries no driver matching vendor 0x17d5
@@ -26,7 +27,7 @@ slot -- is something this asset can satisfy today, unlike test_openbsd_xge.py.
 xframe_pci_verdict() below is the check this file wires to a real boot.
 Its expected text was derived and cross-checked against OpenBSD's own
 source, the real kernel binary these tests boot, and this fork's own
-xframe device model: the device is composed at PCI slot 4 function 0 with
+xframe device model: the device is composed at PCI device 5 function 0 with
 vendor 0x17d5 and product 0x5831, and stock GENERIC-IP27 has no driver
 matching that pair, so autoconfiguration reports it by name and declares
 it not configured.
@@ -95,12 +96,12 @@ from lib_prom_sash import RELEASES
 # comes first: it is proof PCI autoconfiguration ran at all, before this
 # looks for the xframe line specifically.
 XFRAME_UNCLAIMED_RE = re.compile(
-    r'"Neterion Xframe" rev 0x[0-9a-fA-F]{2} at pci0 dev 4 function 0 '
+    r'"Neterion Xframe" rev 0x[0-9a-fA-F]{2} at pci0 dev 5 function 0 '
     r'not configured')
 STAGES = (
     ('never reached PCI bus enumeration (no "pci0 at ... bus ..." line)',
      re.compile(r"pci0 at \S+ bus \d+")),
-    ('never saw the xframe adapter reported unclaimed at pci0 dev 4 '
+    ('never saw the xframe adapter reported unclaimed at pci0 dev 5 '
      'function 0 -- expected a line naming vendor 0x17d5 ("Neterion") '
      'product 0x5831 ("Xframe") as "not configured"',
      XFRAME_UNCLAIMED_RE),
@@ -110,7 +111,7 @@ STAGES = (
 def xframe_pci_verdict(transcript):
     """PASS iff transcript shows, in order: the guest's PCI bus
     enumerated and then the xframe adapter reported unclaimed at that
-    bus, PCI slot 4 function 0 -- and no trip wire fires before that
+    bus, PCI device 5 function 0 -- and no trip wire fires before that
     unclaimed-device line is reached (or anywhere in the transcript, if
     it is never reached).
 
@@ -144,7 +145,7 @@ MEMORY_MIB = 128
 # on.
 BOOT_TIMEOUT_SECONDS = 300
 
-# The xframe device under test: PCI slot 4 function 0, a subsystem vendor
+# The xframe device under test: PCI device 5 function 0, a subsystem vendor
 # ID distinct from the card's own vendor ID (0x10a9 is Winbond, not
 # 0x17d5 -- exercising that the two are read from different config-space
 # fields, not asserted by this test but harmless to carry), and a
@@ -152,7 +153,7 @@ BOOT_TIMEOUT_SECONDS = 300
 # `-nic user` for its network back end.
 XFRAME_ARGS = (
     '-netdev', 'user,id=n1',
-    '-device', ('xframe,addr=4.0,subsystem-vendor-id=0x10a9,'
+    '-device', ('xframe,addr=5.0,subsystem-vendor-id=0x10a9,'
                'netdev=n1,mac=02:00:5d:00:00:01'),
 )
 
