@@ -60,7 +60,7 @@
 #define PROFILE_ENABLE_A 0x150
 #define PROFILE_ENABLE_B 0x158
 #define PENDING_ALIAS 0x180
-#define ERROR_SET 0x3f8
+#define ERROR_PENDING_WRITE 0x3f8
 #define ERROR_PENDING 0x400
 #define ERROR_MASK_A 0x408
 #define ERROR_MASK_B 0x410
@@ -550,14 +550,14 @@ static void test_masks_remap_and_isolation(void)
     qtest_writeq(s, XB(0x120), 1);
     qtest_writeq(s, XB(0x190), 1);
 
-    qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
+    qtest_writeq(s, PI(0, ERROR_PENDING_WRITE), (1ULL << 3) | (1ULL << 26));
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
                     (1ULL << 3) | (1ULL << 26));
-    qtest_writeq(s, PI(0, ERROR_SET), 0);
+    qtest_writeq(s, PI(0, ERROR_PENDING_WRITE), 0);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==, 0);
-    qtest_writeq(s, PI(0, ERROR_SET), 1ULL << 24);
+    qtest_writeq(s, PI(0, ERROR_PENDING_WRITE), 1ULL << 24);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==, 0);
-    qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
+    qtest_writeq(s, PI(0, ERROR_PENDING_WRITE), (1ULL << 3) | (1ULL << 26));
     qtest_writeq(s, PI(0, ERROR_MASK_A), 1ULL << 3);
     qtest_writeq(s, PI(0, ERROR_MASK_B), 1ULL << 26);
     g_assert_true(qtest_get_irq(s, 4));
@@ -863,8 +863,8 @@ static void test_error_pending_survives_reset(void)
 {
     QTestState *s = start("");
 
-    qtest_writeq(s, PI(0, ERROR_SET), (1ULL << 3) | (1ULL << 26));
-    qtest_writeq(s, PI(1, ERROR_SET), 1ULL << 34);
+    qtest_writeq(s, PI(0, ERROR_PENDING_WRITE), (1ULL << 3) | (1ULL << 26));
+    qtest_writeq(s, PI(1, ERROR_PENDING_WRITE), 1ULL << 34);
     qtest_writeq(s, NI(0x08), 4);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_PENDING)), ==,
                     (1ULL << 3) | (1ULL << 26));
