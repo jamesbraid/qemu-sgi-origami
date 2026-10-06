@@ -853,7 +853,7 @@ foreach dir : target_dirs
                 depends: [test_deps, qtest_emulator, emulator_modules],
                 env: qtest_env,
                 args: ['--tap', '-m', 'perf', '-p',
-                       '/mips64/sn0/bridge/dma-buffer-speed'],
+                       '/mips64/sn0/bridge/dma-speed'],
                 protocol: 'tap', timeout: 0, suite: ['speed'])
     endif
 

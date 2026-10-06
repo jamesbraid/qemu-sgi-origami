@@ -2848,16 +2848,15 @@ typedef struct IOC3DMATest {
     QPCIBar bar;
 } IOC3DMATest;
 
-static void ioc3_dma_test_start(IOC3DMATest *s, bool native, bool r32,
-                                 bool memory_only, const char *extra)
+static void ioc3_dma_test_start(IOC3DMATest *s, bool r32, bool memory_only,
+                                 const char *extra)
 {
     s->qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
         "-device sgi-ioc3,id=ioc3,bus=pci,addr=04.0 "
-        "-device sgi-bridge-dma-test,bus=pci,addr=05.0,dma-buffer=%s,"
+        "-device sgi-bridge-dma-test,bus=pci,addr=05.0,"
         "dma-r32=%s,memory-only=%s,"
         "dma-memory=/machine/peripheral/ioc3/sgi-ioc3.pci-dma[0] %s",
-        native ? "off" : "on", r32 ? "on" : "off",
-        memory_only ? "on" : "off", extra);
+        r32 ? "on" : "off", memory_only ? "on" : "off", extra);
     s->bus = qpci_init_sgi_bridge(s->qts, NULL);
     s->ioc3 = qpci_device_find(s->bus, QPCI_DEVFN(4, 0));
     s->probe = qpci_device_find(s->bus, QPCI_DEVFN(5, 0));
@@ -2888,7 +2887,7 @@ static void ioc3_dma_test_transfer(IOC3DMATest *s, uint32_t address,
 }
 
 /* Short requests and every residue keep native partial-word placement. */
-static void test_dma_buffer_prefix_alignment(const void *data)
+static void test_dma_prefix_alignment(const void *data)
 {
     const unsigned tails[] = { 24, 25, 26, 27, 28, 29, 30, 31, 1500, 1514 };
     const uint32_t dest = 0x02004000, source = 0x02008000;
@@ -2897,12 +2896,12 @@ static void test_dma_buffer_prefix_alignment(const void *data)
     for (unsigned i = 0; i < sizeof(bytes); i++) {
         bytes[i] = i + 0x30;
     }
-    for (unsigned mode = 0; mode < 8; mode++) {
-        bool native = mode & 1, swap = mode & 2, r32 = mode & 4;
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool swap = mode & 1, r32 = mode & 2;
         bool converted = swap != r32;
         IOC3DMATest s;
 
-        ioc3_dma_test_start(&s, native, r32, false, "");
+        ioc3_dma_test_start(&s, r32, false, "");
         qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
         qtest_memwrite(s.qts, source, bytes, sizeof(bytes));
         for (unsigned residue = 0; residue < 8; residue++) {
@@ -2916,8 +2915,8 @@ static void test_dma_buffer_prefix_alignment(const void *data)
                                   tails[n - G_N_ELEMENTS(lengths)];
                 unsigned start = 8 + residue;
 
-                g_test_message("native=%d swap=%d r32=%d residue=%u len=%u",
-                               native, swap, r32, residue, length);
+                g_test_message("swap=%d r32=%d residue=%u len=%u",
+                               swap, r32, residue, length);
                 memset(expected, 0xee, sizeof(expected));
                 for (unsigned i = 0; i < length; i++) {
                     expected[(start + i) ^ (converted ? 3 : 0)] = 0x30 + i;
@@ -2946,17 +2945,16 @@ static void test_dma_buffer_prefix_alignment(const void *data)
     }
 }
 
-static void test_dma_buffer_prefix_rejection(const void *data)
+static void test_dma_prefix_rejection(const void *data)
 {
     const uint32_t dest = 0x02004000;
     uint8_t seen[32], expected[sizeof(seen)];
 
     memset(expected, 0xee, sizeof(expected));
-    for (unsigned mode = 0; mode < 4; mode++) {
-        bool memory_only = mode & 2;
+    for (unsigned memory_only = 0; memory_only < 2; memory_only++) {
         IOC3DMATest s;
 
-        ioc3_dma_test_start(&s, mode & 1, false, memory_only, "");
+        ioc3_dma_test_start(&s, false, memory_only, "");
         if (!memory_only) {
             uint16_t command = qpci_config_readw(s.ioc3, PCI_COMMAND);
 
@@ -2974,18 +2972,18 @@ static void test_dma_buffer_prefix_rejection(const void *data)
 }
 
 /* Fault results combine, and later mapped pages still receive DMA. */
-static void test_dma_buffer_prefix_pages(const void *data)
+static void test_dma_prefix_pages(const void *data)
 {
     const uint32_t first = 0x02004000, second = 0x02010000;
     const uint32_t third = 0x02018000, dest = 0x02020000;
     uint8_t seen[48], expected[sizeof(seen)];
 
-    for (unsigned mode = 0; mode < 8; mode++) {
-        bool native = mode & 1, swap = mode & 2, large = mode & 4;
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool swap = mode & 1, large = mode & 2;
         unsigned page = large ? 16384 : 4096;
         IOC3DMATest s;
 
-        ioc3_dma_test_start(&s, native, false, false, "");
+        ioc3_dma_test_start(&s, false, false, "");
         qtest_writel(s.qts, 0x40000224, swap ? 1U << 20 : 0);
         if (large) {
             qtest_writel(s.qts, 0x40000024,
@@ -2997,8 +2995,7 @@ static void test_dma_buffer_prefix_pages(const void *data)
             uint64_t sample = fault == 1 ? 0x0000353433323130ULL :
                               0x3736353433323130ULL;
 
-            g_test_message("native=%d swap=%d page=%u fault=%u",
-                           native, swap, page, fault);
+            g_test_message("swap=%d page=%u fault=%u", swap, page, fault);
             qtest_writeq(s.qts, 0x40010000, fault == 2 ? 0 : first | 1);
             qtest_writeq(s.qts, 0x40010008, fault == 1 ? 0 : second | 1);
             qtest_writeq(s.qts, 0x40010010, third | 1);
@@ -3095,7 +3092,7 @@ static void test_pci_dma_buffer_route(const void *data)
         g_auto(GStrv) lines = NULL;
 
         g_test_message("swap=%d start=%u", swap, start);
-        ioc3_dma_test_start(&s, true, false, false, extra);
+        ioc3_dma_test_start(&s, false, false, extra);
         qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
 
         memset(expected, 0xee, sizeof(expected));
@@ -3150,14 +3147,14 @@ static void test_pci_dma_buffer_route(const void *data)
 }
 
 /* The one-byte overlap must not split the native prefix or four-byte body. */
-static void test_dma_buffer_prefix_mmio(const void *data)
+static void test_dma_prefix_mmio(const void *data)
 {
     const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
 
-    for (unsigned mode = 0; mode < 8; mode++) {
+    for (unsigned mode = 0; mode < 4; mode++) {
         IOC3DMATest s;
-        bool native = mode & 1, swap = mode & 2;
-        unsigned residue = mode & 4 ? 2 : 6;
+        bool swap = mode & 1;
+        unsigned residue = mode & 2 ? 2 : 6;
         unsigned length = 28 - residue;
         g_autofree char *path = trace_dir ? g_strdup_printf(
             "%s/ioc3-mmio-%u.trace", trace_dir, mode) :
@@ -3171,7 +3168,7 @@ static void test_dma_buffer_prefix_mmio(const void *data)
         g_auto(GStrv) lines = NULL;
         unsigned callbacks = 0, consumed = 0;
 
-        ioc3_dma_test_start(&s, native, false, false, extra);
+        ioc3_dma_test_start(&s, false, false, extra);
         qtest_sysbus_mmio_map(s.qts, "/machine/peripheral/transfer-ram",
                               1, 0x05000000);
         qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
@@ -6581,14 +6578,14 @@ int main(int argc, char **argv)
                         test_the_ethernet_transmit_honours_total_byte_count);
     qtest_add_data_func("sn0/ioc3/dma-buffer-payloads", NULL,
                         test_dma_buffer_payloads);
-    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-alignment", NULL,
-                        test_dma_buffer_prefix_alignment);
-    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-rejection", NULL,
-                        test_dma_buffer_prefix_rejection);
-    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-pages", NULL,
-                        test_dma_buffer_prefix_pages);
-    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-mmio", NULL,
-                        test_dma_buffer_prefix_mmio);
+    qtest_add_data_func("sn0/ioc3/dma-prefix-alignment", NULL,
+                        test_dma_prefix_alignment);
+    qtest_add_data_func("sn0/ioc3/dma-prefix-rejection", NULL,
+                        test_dma_prefix_rejection);
+    qtest_add_data_func("sn0/ioc3/dma-prefix-pages", NULL,
+                        test_dma_prefix_pages);
+    qtest_add_data_func("sn0/ioc3/dma-prefix-mmio", NULL,
+                        test_dma_prefix_mmio);
     qtest_add_data_func("sn0/ioc3/pci-dma-buffer-route", NULL,
                         test_pci_dma_buffer_route);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
