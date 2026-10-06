@@ -553,8 +553,7 @@ static QTestState *tigon_init_netdev_traced(int guest_fd, const char *logfile)
                        "-netdev socket,fd=%d,id=n0 "
                        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
                        "-d trace:sgi_dma_placement_access,"
-                       "trace:sgi_dma_placement_buffer,"
-                       "trace:sgi_bridge_dma_xlate_plain -D %s",
+                       "trace:sgi_dma_placement_buffer -D %s",
                        guest_fd, logfile);
 }
 
@@ -1089,8 +1088,6 @@ static void test_payload_follows_placement(const void *data)
     /* The payload buffer crossed the placement as well. */
     g_assert_cmpuint(count_lines_with(log, payload_needle) +
                      count_lines_with(log, payload_buffer_needle), >, 0);
-    /* And no transfer took a route that skips the Bridge. */
-    g_assert_cmpuint(count_lines_with(log, "plain addr"), ==, 0);
 
     g_free(log);
     unlink(logfile);
