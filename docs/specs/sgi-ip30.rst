@@ -77,10 +77,212 @@ Public captures and accounts:
   edition, U10278EJ3V0UM00, May 1998, printed pages 184-185 (reset mode
   bits) and 366 (R12000 clock divider encodings).
 
-The Octane2 population also rests on an inventory (``hinv -mvv``, a
-hardware-graph listing and three PROM-monitor reads) of one physical
-Octane2 taken by its owner for this work. No public copy of that
-inventory exists; facts resting on it say so.
+The Octane2 population also rests on measurements the owner of one
+physical Octane2 took for this work, recorded in
+:ref:`sgi-ip30-octane2-inventory`. Facts resting on them cite the
+sub-section that holds the read.
+
+.. _sgi-ip30-octane2-inventory:
+
+Octane2 owner measurements
+==========================
+
+These are the measurements the owner of one physical Octane2 took for
+this project. The machine ran IRIX 6.5.30m, reached over the network
+shell for the IRIX commands, and its PROM Command Monitor for the
+``dump`` reads; the V12 graphics board was fitted. Commands and returned
+values are reproduced exactly. Board barcodes, Laser IDs, serial numbers
+and MAC addresses are left out. The owner ran the PROM-monitor sessions
+and supplied their full output. No read is a reset value: each shows what
+this one machine answered at the stated moment.
+
+.. _sgi-ip30-octane2-hinv:
+
+Inventory (``hinv -mvv``, ``uname -R``), 2026-09-26
+---------------------------------------------------
+
+``uname -R`` printed ``6.5 6.5.30m``. A repeated ``hinv -mvv`` agreed with
+the first. The inventory reports:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Component
+     - Reported value
+   * - Processor
+     - one 360 MHz IP30 R12000, chip revision 3.5, 2 MiB secondary cache
+   * - HEART
+     - revision F
+   * - IP30 board
+     - ``030-1467-001``, revision B
+   * - Frontplane
+     - ``FP1``, ``030-0891-003``, revision H
+   * - Power supply
+     - ``PWR.SPPLY.ER``, ``060-0035-002``, revision A, under
+       ``/hw/node/xtalk/15/pci/2``
+   * - Memory
+     - 256 MiB total (one 256 MiB bank was later seen configured)
+   * - Crossbow
+     - ASIC revision 1.4
+   * - Processor module
+     - ``PM10360MHZ``, ``030-1590-002``, revision B
+   * - SCSI
+     - two integral QL1040B controllers, revision 2; the disk is unit 1
+       on controller 0
+   * - Onboard I/O
+     - IOC3 serial ports ``tty1`` and ``tty2``, parallel ``plp1``,
+       Ethernet ``ef0``, RAD audio revision 12.0
+   * - Graphics
+     - V12 board at widget 11
+
+The inventory shows neither which bay holds the disk nor how controller 0
+maps to a PCI device number, and it reports no register values.
+
+.. _sgi-ip30-octane2-graph:
+
+Hardware graph, 2026-09-26
+--------------------------
+
+A read-only ``ls -l`` of the running hardware graph showed SCSI links under
+``/hw/node/xtalk/15/pci/0`` and ``/hw/node/xtalk/15/pci/1``. The first
+resolves to ``/hw/node/xtalk/15/pci/0/scsi_ctlr/0``, whose ``target``
+directory holds ``1``, whose ``lun`` directory holds ``0``; that LUN holds
+a ``disk`` directory and a ``scsi`` device node. The installed disk is
+therefore PCI device 0, SCSI target 1, LUN 0 as the kernel names it. This
+is kernel bookkeeping, not an electrical measurement. No device node was
+opened.
+
+.. _sgi-ip30-octane2-prom-header:
+
+PROM headers, 2026-09-27
+------------------------
+
+``/usr/sbin/flash -V`` exited zero and printed the loaded primary PROM
+header as version ``4.17``, length ``682448`` bytes, programmed
+``2026-08-16 23:59:56 GMT``, ``7`` reloads; the recovery header reads
+version ``4.9``, length ``147198`` bytes, same time and count.
+``/usr/sbin/flash -d`` exited zero with no output. The flash contents
+were not dumped or hashed.
+
+.. _sgi-ip30-octane2-xbow-id:
+
+Crossbow widget identification, 2026-09-28
+------------------------------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0x9000000010000004#1
+   0x9000000010000004:   50000001
+
+One 32-bit read of the Crossbow widget-zero identification word. Bits
+31:28 give raw revision code 5 (established for this board at PROM
+time).
+
+.. _sgi-ip30-octane2-heart-id:
+
+HEART widget identification and low memory, 2026-09-29
+------------------------------------------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000000#1
+   0x9000000018000000:           6c00106d
+   >> dump -d -x 0x9000000000002000#1
+   0x9000000000002000:                  0
+
+The first is one 64-bit read of the HEART widget identification word,
+``0x000000006c00106d`` (revision 6, part ``0xc001``, manufacturer
+``0x36``) on a HEART revision F machine. The second is one 64-bit read at
+physical ``0x2000`` and returned zero. Both returned without an
+exception.
+
+.. _sgi-ip30-octane2-heart-status:
+
+HEART widget status, 2026-09-29
+-------------------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000008#1
+   0x9000000018000008:                 60
+
+One 64-bit read of physical ``0x18000008``, the HEART widget status slot:
+``0x0000000000000060``. It is not a power-on value, and a single read
+shows neither read side effects nor what the status bits mean.
+
+.. _sgi-ip30-octane2-heart-bank:
+
+HEART bank, 2026-09-27
+----------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffaff00020#4
+   0xffffffffaff00020:   81470000          0          0          0
+
+Four 32-bit words from the HEART memory bank descriptor area. The first
+decodes as valid, size code 7 (256 MiB), density code 5, base code 0
+(physical ``0x20000000``) under the public HEART field definitions; the
+other three are zero. This agrees with the 256 MiB inventory total and
+shows one configured bank at monitor time. It does not identify DIMM
+sockets or a reset value.
+
+.. _sgi-ip30-octane2-alt-flash:
+
+Alternate flash aperture, 2026-09-27
+------------------------------------
+
+.. code-block:: text
+
+   >> dump -h -x 0xffffffffbfe00000#1
+   0xffffffffbfe00000:   ffff
+
+One 16-bit read at physical ``0x1fe00000``, Bridge widget 15's alternate
+flash aperture at offset ``0xe00000``, on IP30 revision B with HEART
+revision F during the PROM monitor. It names no fitted chip and says
+nothing about other bytes of the aperture.
+
+.. _sgi-ip30-octane2-heart-widget:
+
+HEART widget registers, 2026-09-27
+----------------------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000060#2
+   0x9000000018000060:                  0           3ff7fc0f
+
+Two consecutive 64-bit words in the HEART widget window: offset ``0x60``
+returned zero and ``0x68`` returned ``0x3ff7fc0f``, during the PROM
+session, with no register writes.
+
+.. _sgi-ip30-octane2-heart-timeout:
+
+HEART request timeout, 2026-09-27
+---------------------------------
+
+.. code-block:: text
+
+   >>dump -d -x 0x9000000018000028#1
+   0x9000000018000028:                 28
+
+One 64-bit read of the widget request-timeout slot at offset ``0x28``:
+``0x28`` after PROM startup. It is not a cold-reset value.
+
+.. _sgi-ip30-octane2-rad:
+
+Onboard RAD class and revision, 2026-09-30
+------------------------------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0x900000001f023008#1
+   0x900000001f023008:         c0
+
+An aligned 32-bit read of Bridge device 3, function 0, configuration
+register ``0x08`` (not BAR0 memory). The word ``0x000000c0`` gives PCI
+class ``0x000000`` and revision ``0xc0``, at PROM time on IP30 revision B
+with HEART revision F. It does not show cold reset or write masks.
 
 .. _sgi-ip30-products:
 
@@ -105,7 +307,7 @@ Products
      - one R12000, 360 MHz, 2 MiB secondary cache
      - 256 MiB
      - ``030-1467-001`` revision B
-     - the unpublished owner inventory
+     - the owner's ``hinv -mvv`` (:ref:`sgi-ip30-octane2-hinv`)
 
 ``octane`` (established, with one model choice): the Technical Report's
 standard configurations (page 7-1) include 128 MiB single-processor
@@ -117,8 +319,8 @@ reports 256 MiB; pairing its board and processor with 128 MiB is a
 model choice. A 175 MHz, 128 MiB Octane also exists (the OpenBSD
 capture), so memory size does not fix processor speed.
 
-``octane2`` (established for one unpublished machine): the inventory
-reports one 360 MHz R12000 chip revision 3.5 with 2 MiB secondary cache,
+``octane2`` (established for one machine, :ref:`sgi-ip30-octane2-hinv`):
+the inventory reports one 360 MHz R12000 chip revision 3.5 with 2 MiB secondary cache,
 256 MiB, HEART revision F, board ``030-1467-001`` revision B and Crossbow
 ASIC revision 1.4. Its V12 graphics board is not part of the emulated
 configuration.
@@ -152,16 +354,19 @@ Components and connections
      - onboard PCI devices 0 and 1, function 0
      - established: the OpenBSD capture (ISP1020 revision 5); the Octane2
        inventory reports QL1040B parts and its hardware graph places them
-       at devices 0 and 1
+       at devices 0 and 1 (:ref:`sgi-ip30-octane2-hinv`,
+       :ref:`sgi-ip30-octane2-graph`)
    * - IOC3
      - onboard PCI device 2, function 0
      - established: OpenBSD ``ip30.h`` (``IP30_IOC_SLOTNO``), Linux
        ``pci-xtalk-bridge.c``, and the OpenBSD capture (revision 1)
    * - RAD1 audio
      - onboard PCI device 3, function 0, identity ``10a9:0005``
-     - established for the captured Octane (revision ``0xc0``); the
-       Octane2's PCI revision byte is unknown (its inventory prints
-       ``12.0``, which is not a PCI revision byte)
+     - established for the captured Octane (revision ``0xc0``) and for
+       the owner's Octane2, whose PROM-monitor read of configuration
+       register ``0x08`` returned class ``0x000000`` and revision ``0xc0``
+       (:ref:`sgi-ip30-octane2-rad`); its inventory's ``12.0`` is not a
+       PCI revision byte
    * - DS1685-family clock
      - behind IOC3
      - established: the OpenBSD capture reports a DS1687
@@ -183,11 +388,12 @@ layers):
   inferred, not established.
 - ``octane2``: HEART widget identification word ``0x6c00106d``
   (revision 6, part ``0xc001``, manufacturer ``0x36``), read on the
-  owner's machine from the PROM monitor and consistent with its
-  inventory's HEART revision F (established, unpublished). Crossbow
+  owner's machine from the PROM monitor
+  (:ref:`sgi-ip30-octane2-heart-id`) and consistent with its
+  inventory's HEART revision F (established). Crossbow
   revision 5, from a PROM-monitor read of its identification word
-  ``0x50000001`` beside an inventory revision of 1.4 (established,
-  unpublished). Bridge revision 3 is an approximation: the inventory
+  ``0x50000001`` (:ref:`sgi-ip30-octane2-xbow-id`) beside an inventory
+  revision of 1.4 (established). Bridge revision 3 is an approximation: the inventory
   does not report the Octane2 Bridge revision, and the value is carried
   over from the earlier Octane.
 
@@ -195,9 +401,11 @@ layers):
 
 The model answers the HEART widget status word (widget register offset
 ``0x8``) with ``0x60`` on the ``octane2`` only, where the HEART revision
-is 6; the ``octane`` returns no such word. No public source documents the
-value, and its origin is not recorded here, so the word is an approximation: an emulator choice that a PROM-monitor read of the
-HEART widget status register on a revision F HEART would settle.
+is 6; the ``octane`` returns no such word. A PROM-monitor read on the
+owner's HEART revision F Octane2 returned exactly ``0x60``
+(:ref:`sgi-ip30-octane2-heart-status`), so the word is established for
+that machine at PROM time. It is not a reset value, and the Octane's
+HEART is unmeasured.
 
 IOC3 general-purpose input 2 tells the two products apart in software:
 OpenBSD reads it as 1 for Octane and 0 for Octane2 (``ip30.h``,
@@ -257,7 +465,7 @@ implementation code ``0x09``, and the published inventory reports chip
 revision 2.7. No raw PRId read was published.
 
 ``octane2`` fits an R12000 at 360 MHz with 2 MiB secondary cache
-(established, unpublished inventory).
+(established, :ref:`sgi-ip30-octane2-hinv`).
 
 .. _sgi-ip30-r12000-defaults:
 
@@ -276,13 +484,14 @@ property named:
      - Rating
    * - PRId ``0x0e35``
      - ``r12000-prid``
-     - inferred: the running IRIX kernel on the owner's machine recorded
-       this word; Linux ``cpu.h`` gives the R12000 implementation code
-       ``0x0e`` and the inventory reports revision 3.5. It is kernel
-       inventory state, not a raw CP0 read.
+     - inferred: Linux ``cpu.h`` gives the R12000 implementation code
+       ``0x0e`` and the owner's inventory reports chip revision 3.5
+       (:ref:`sgi-ip30-octane2-hinv`). No raw PRId read of this word is
+       recorded.
    * - FPU identification ``0x0900``
      - ``r12000-fpu-id``
-     - inferred: the same kernel record; not a raw CP1 read
+     - approximation: no recorded measurement gives this word; the
+       inventory prints no FPU revision for the Octane2
    * - Reset mode word ``0x001aa683``
      - ``r12000-reset-mode``
      - approximation: big-endian, secondary-cache size code ``010``
@@ -293,8 +502,8 @@ property named:
        no source gives the word this board drives.
    * - Secondary cache 2 MiB
      - ``r12000-scache-bytes``
-     - established by the inventory; the model derives it from the reset
-       word
+     - established by the inventory (:ref:`sgi-ip30-octane2-hinv`); the
+       model derives it from the reset word
    * - Secondary-cache block 32 words
      - ``r12000-scache-block-words``
      - approximation: derived from the chosen reset word; the fitted
@@ -395,7 +604,7 @@ one-wire bus beside its Ethernet-address part.
      - ``PM10360MHZ``
      - ``030-1590-002``
      - B
-     - unpublished owner inventory
+     - owner inventory (:ref:`sgi-ip30-octane2-hinv`)
    * - ``octane2`` system board
      - ``IP30``
      - ``030-1467-001``
@@ -412,7 +621,8 @@ one-wire bus beside its Ethernet-address part.
      - A
      - same
 
-Names, parts and revisions are established from the inventories. The
+Names, parts and revisions are established from the inventories
+(:ref:`sgi-ip30-octane2-hinv` for the Octane2). The
 rest of each record is not:
 
 - Record format (inferred): the OpenBSD capture enumerates one 16 Kbit
@@ -450,8 +660,8 @@ This is an open question. What is known:
   inventories; the SGIStuff page describes the board change). Neither
   source identifies a flash part.
 - On the owner's revision B Octane2, one 16-bit PROM-monitor read at
-  ``0x1fe00000`` returned ``0xffff`` (established, unpublished; one
-  word only).
+  ``0x1fe00000`` returned ``0xffff`` (established,
+  :ref:`sgi-ip30-octane2-alt-flash`; one word only).
 
 Unknown: the fitted flash part and its capacity, which Bridge select it
 sits on, the strap value, the upper address wiring and protection pins,
@@ -525,7 +735,7 @@ These are emulator choices for launchers, not hardware facts.
 - PROM dialogue ``none``: no launcher-driven PROM dialogue is defined.
 - Disk bus ``scsi``: the boot disk attaches to the first onboard SCSI
   controller. The owner's hardware graph places its disk at PCI device
-  0, target 1; the physical bay and channel wiring are unknown.
+  0, target 1 (:ref:`sgi-ip30-octane2-graph`); the physical bay and channel wiring are unknown.
 - Netboot adapter ``none``; supported guest ``irix``; default CPU
   model R10000 or R12000.
 

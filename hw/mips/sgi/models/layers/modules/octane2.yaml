@@ -38,14 +38,15 @@ layer:
       kind: node-asic
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-heart-status
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-octane2-heart-id
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-octane2-heart-status
       parent: ip30-board
       hardware_kind: heart
       identity:
         widget_revision: 6
         widget_id_64: '0x6c00106d'
         widget_status_f_measured: true
-        # Emulator choice: see sgi-ip30.rst, HEART widget status word.
+        # Measured: the owner's PROM read returned 0x60 (sgi-ip30.rst, sgi-ip30-octane2-heart-status).
     - id: memory
       name: memory
       kind: memory
@@ -58,7 +59,7 @@ layer:
       kind: crossbar
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-octane2-xbow-id
       parent: ip30-board
       hardware_kind: xbow
       crossbar:
