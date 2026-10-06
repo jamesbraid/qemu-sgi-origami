@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from sgi_model.model_composition import validate_initialization_policy
 from sgi_model.model_compile import CompileError
 from sgi_model.model_emit import (
-    _is_origin350_ip53_profile,
+    _is_ip53_runtime_profile,
     _validate_export_profiles,
     _validate_origin350_ip53_consoles,
     render_catalogue_json,
@@ -34,7 +34,8 @@ class IP53RuntimeExportTests(unittest.TestCase):
         return {
             "composition": {"product": "origin350"},
             "machine": {
-                "emulation": {"machine_name": "origin350"},
+                "emulation": {"machine_name": "origin350",
+                              "profile": "ip53-origin350"},
                 "harness": {"launch_recipe": "ip53-discovery"},
             },
         }
@@ -76,12 +77,12 @@ class IP53RuntimeExportTests(unittest.TestCase):
 
     def test_export_scope_requires_exact_product_machine_and_recipe(self):
         model = self.experiment_model()
-        self.assertTrue(_is_origin350_ip53_profile(model))
+        self.assertTrue(_is_ip53_runtime_profile(model))
         _validate_export_profiles(model, {"pci_host_bridges": [{
             "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
         model["composition"]["product"] = "onyx350-base"
-        self.assertFalse(_is_origin350_ip53_profile(model))
-        with self.assertRaisesRegex(CompileError, "restricted"):
+        self.assertFalse(_is_ip53_runtime_profile(model))
+        with self.assertRaisesRegex(CompileError, "registered IP53 profile"):
             _validate_export_profiles(model, {"pci_host_bridges": [{
                 "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
         with self.assertRaisesRegex(CompileError, "qtest-only"):
