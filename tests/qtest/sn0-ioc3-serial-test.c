@@ -13,6 +13,7 @@
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -298,14 +299,39 @@ static size_t fill_socket_send_queue_exact(int fd)
     return filled;
 }
 
+/*
+ * Read exactly len bytes within one overall deadline. A bare read() returns
+ * -1 with EAGAIN once SO_RCVTIMEO lapses, which says nothing about how much
+ * arrived, so poll for the remainder and report where it stopped.
+ */
 static void read_exact(int fd, uint8_t *buf, size_t len)
 {
+    int64_t deadline = g_get_monotonic_time() +
+                       IOC3_SERIAL_SOCKET_TIMEOUT_SECS * G_USEC_PER_SEC;
     size_t got = 0;
 
     while (got < len) {
-        ssize_t n = read(fd, buf + got, len - got);
+        int64_t left = (deadline - g_get_monotonic_time()) / 1000;
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        ssize_t n;
+        int ready;
 
-        if (n < 0 && errno == EINTR) {
+        if (left <= 0) {
+            g_test_message("read: %zu of %zu bytes after %d seconds",
+                           got, len, IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+            g_assert_not_reached();
+        }
+        ready = poll(&pfd, 1, MIN(left, INT_MAX));
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+        g_assert_cmpint(ready, >=, 0);
+        if (ready == 0) {
+            continue;
+        }
+        n = read(fd, buf + got, len - got);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN ||
+                      errno == EWOULDBLOCK)) {
             continue;
         }
         g_assert_cmpint(n, >, 0);
@@ -967,7 +993,7 @@ static void test_a_transmit_entry_sends_its_four_characters(const void *data)
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
 
-    g_assert_cmpint(read(sock, got, sizeof(got)), ==, (int)sizeof(got));
+    read_exact(sock, (uint8_t *)got, sizeof(got));
     g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
 
     /* The engine reports where it got to, in the same eight-byte units. */
@@ -1433,7 +1459,7 @@ static void test_port_b_transmits_through_serial_hd_1(const void *data)
     write_transmit_entry(qts, RING_TX(1), 0, out, control);
     qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 8);
 
-    g_assert_cmpint(read(fd, got, sizeof(got)), ==, (int)sizeof(got));
+    read_exact(fd, (uint8_t *)got, sizeof(got));
     g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
 
     close(fd);
@@ -1644,7 +1670,7 @@ static void test_an_empty_slot_ends_the_entry(const void *data)
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
 
-    g_assert_cmpint(read(sock, got, 2), ==, 2);
+    read_exact(sock, (uint8_t *)got, 2);
     g_assert_cmpint(memcmp(got, out, 2), ==, 0);
 
     /* Nothing follows the two characters the entry actually carried. */
@@ -1687,7 +1713,7 @@ static void test_the_walk_wraps_at_the_end_of_the_ring(const void *data)
     write_transmit_entry(qts, RING_TX(0), RING_SIZE - 8, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 0);
 
-    g_assert_cmpint(read(sock, got, sizeof(got)), ==, (int)sizeof(got));
+    read_exact(sock, (uint8_t *)got, sizeof(got));
     g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8, ==, 0);
 
