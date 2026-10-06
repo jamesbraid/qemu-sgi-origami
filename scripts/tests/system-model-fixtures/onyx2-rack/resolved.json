@@ -636,7 +636,7 @@
       "name": "Pipe one-wire identity chain",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     }
   ],
@@ -2330,8 +2330,8 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/onyx2.md",
-        "docs/datasheets/infinitereality-host-interface.md"
+        "qemu:docs/specs/sgi-onyx2.rst",
+        "qemu:docs/specs/sgi-graphics.rst#sgi-graphics-kona"
       ],
       "hardware_kind": "kona",
       "id": "io3-pipe",
@@ -2342,13 +2342,14 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md Role and Pipe identity"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-role",
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-identity"
       ]
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/onyx2.md",
-        "docs/datasheets/infinitereality-host-interface.md"
+        "qemu:docs/specs/sgi-onyx2.rst",
+        "qemu:docs/specs/sgi-graphics.rst#sgi-graphics-kona"
       ],
       "hardware_kind": "xg",
       "id": "io3-xg",
@@ -2364,7 +2365,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md Widget part number",
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-identity",
         "linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"
       ]
     },
@@ -2378,7 +2379,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -2391,7 +2392,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -2404,7 +2405,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -2552,7 +2553,7 @@
         "provenance": "derived",
         "reason": "Fit the Xtown for pipe 0 into IO3, the slot the real rack capture uses, cabled to the pipe in the graphics module.",
         "sources": [
-          "docs/datasheets/onyx2.md Xtown placement and pipe limits: the real rack capture has its one pipe at io3, Crossbow 0 widget F."
+          "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-xtown-placement"
         ]
       },
       {
@@ -2832,7 +2833,7 @@
           ],
           "sources": [
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12",
-            "docs/datasheets/onyx2.md Node-board populations: the web:nekonomicon-16285 rack capture's two-node module keeps both Routers"
+            "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-populations"
           ],
           "supported_cpu_populations": [
             [
@@ -3811,7 +3812,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md How a pipe reaches the compute module"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-link"
       ]
     },
     {
@@ -3820,7 +3821,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -3830,7 +3831,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -3850,7 +3851,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     }
   ],

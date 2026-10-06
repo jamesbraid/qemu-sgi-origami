@@ -73,7 +73,7 @@ layer:
           notes: The QEMU Odyssey default; no V-brick board revision was measured.
         parent: vbrick
         provenance: vendor-document
-        datasheet_contracts: [docs/datasheets/odyssey.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey]
         sources: ["007-4264-002 printed pages 10, 52 and 54"]
         notes: Its widget route, revision, NIC, memory and display option are unresolved.
     buses:

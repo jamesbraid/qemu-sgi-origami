@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
-# IO1 and one InfiniteReality pipe on XIO4 (docs/datasheets/onyx2.md,
+# IO1 and one InfiniteReality pipe on XIO4 (docs/specs/sgi-onyx2.rst,
 # Deskside). layers/modules/onyx2-deskside-module.yaml holds the chassis.
 layer_version: 1
 layer:
@@ -15,7 +15,7 @@ layer:
     - [2, 2]
     provenance: vendor-document
     sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors"]
-    # One or two node boards, node slot 1 first (docs/datasheets/onyx2.md,
+    # One or two node boards, node slot 1 first (docs/specs/sgi-onyx2.rst,
     # Node-board populations). The deskside's one Crossbow carries every
     # XIO slot, so a single node board controls all of them.
     node_populations:
@@ -86,7 +86,7 @@ layer:
         flash_read_cycles: 8
         flash_write_cycles: 1
         provenance: derived
-        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface, "docs/datasheets/onyx2.md Node slot codes: the deskside codes need configuration-flags bit 0 clear, which the stock image carries."]
+        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface, qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes]
       emulation:
         machine_name: onyx2
         display_description: SGI Onyx2 deskside, one InfiniteReality pipe on XIO4

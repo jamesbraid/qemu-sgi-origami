@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 rack: the eight-processor Origin 2000 compute module with a
 # BaseIO-G in IO1 and one InfiniteReality pipe in a graphics module, cabled
-# from an Xtown in IO3 (docs/datasheets/onyx2.md, Rack). Firmware and IRIX
+# from an Xtown in IO3 (docs/specs/sgi-onyx2.rst, Rack compute module). Firmware and IRIX
 # name its slots exactly as an Origin 2000's; what makes it an Onyx2 is the
 # BaseIO-G and the KONA widget behind the Xtown. IO3 is where the real rack
 # capture web:nekonomicon-16285 has its one pipe, Crossbow 0 widget F.
@@ -21,7 +21,7 @@ layer:
     # The compute module's rows are the Origin 2000 rack module's
     # (layers/products/origin2000-rack.yaml): the pipe's Xtown in IO3 is
     # Crossbow 0's, which node 1 controls at every count, and one pipe
-    # needs only one node board (docs/datasheets/onyx2.md, Node-board
+    # needs only one node board (docs/specs/sgi-onyx2.rst, Node-board
     # populations).
     node_populations:
     - node_slots: [1]
@@ -40,7 +40,7 @@ layer:
       xio_slots: {pci-expansion: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
       grade: established
-      sources: ["web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", "docs/datasheets/onyx2.md Node-board populations: the web:nekonomicon-16285 rack capture's two-node module keeps both Routers"]
+      sources: ["web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-populations]
     - node_slots: [1, 2, 3]
       routers: [router-1, router-2]
       fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3]
