@@ -781,6 +781,96 @@ logged and does not stop the others, and one module's reset or power
 cycle resets them all. The module's NMI output is not connected; the
 controller model does not implement ``nmi`` and answers it ``err cmd``.
 
+.. _sgi-sn-fuel-interrupts:
+
+Fuel onboard interrupt routing (approximation)
+==============================================
+
+The ``fuel`` machine wires the four interrupt sources on its widget-15
+XBridge head (head F) to these XBridge interrupt inputs:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Source
+     - PCI position
+     - XBridge head F input
+   * - ISP12160 SCSI, PCI INTA
+     - device 1
+     - 1
+   * - IOC3 SuperIO output (serial, parallel, keyboard)
+     - device 4
+     - 0
+   * - IOC3 Ethernet, PCI INTA
+     - device 4
+     - 4
+   * - OHCI USB, PCI INTA
+     - device 5
+     - 5
+
+From each input onwards the path is the guest's: XBridge sends the
+interrupt write the guest programmed, the crossbar routes it to the
+Bedrock's host port (widget ``0xa`` in the model), and the guest's chosen pending
+bit, processor mask and interrupt line deliver it.
+
+.. _sgi-sn-fuel-interrupts-limitation:
+
+Limitation
+----------
+
+This is a board-wiring approximation. The physical traces from these
+devices to XBridge inputs on any Fuel board revision are unknown, and
+the model's selected board is ``030-1707-003`` revision G, while the
+evidence below comes from a Fuel of unstated revision. Whether the
+routing differs between board revisions is unknown. A board schematic
+or an interrupt trace on an identified revision G Fuel would settle it.
+
+.. _sgi-sn-fuel-interrupts-evidence:
+
+Evidence
+--------
+
+- Miod Vallat, OpenBSD/sgi story, single-page edition,
+  http://miod.online.fr/software/openbsd/stories/sgiall.html, retained
+  copy SHA-256
+  ``48e6ce0c6dd3eb7eeb9546ea77813180100271e8cd060f0742fdddff94f96036``,
+  lines 5676-5695: an OpenBSD 4.5-current boot on a Fuel reports
+  XBridge revision 2 at widget 15, ``isp0`` at device 1 with ``irq 1``,
+  ``ioc0`` at device 4 with ``superio irq 0, ethernet irq 4``, and
+  ``ohci0`` at device 5 with ``irq 5``. These are the bridge interrupt
+  indices OpenBSD registered handlers on, not measured pins. An earlier
+  boot on the same page (lines 5530-5552) reports SuperIO ``irq 6``
+  and a lost serial transmit interrupt, so the SuperIO index was not
+  fixed across boots.
+- OpenBSD/sgi at ``2df91d80c104636deeef8124252ddd5951b55fbf``,
+  ``sys/arch/sgi/xbow/xbridge.c`` lines 204-213 and 1220-1288: PCI pin
+  A or C maps to the device number, pin B or D to the device number
+  XOR 4, and a synthetic onboard-IOC3 pin D selects the first empty
+  slot. ``sys/arch/sgi/pci/ioc.c`` lines 391-456 requests pin A for
+  Ethernet and that synthetic pin for SuperIO. This explains devices 1,
+  4 and 5 mapping to inputs 1, 4 and 5 as driver policy, and SuperIO's
+  index 0 as the first empty slot when slot 0 is empty.
+
+Together these are a public software mapping and one machine's
+handler report. They are not a measured Fuel trace or proof of
+interrupt delivery. The selection of this routing passed an
+independent evidence review before it was implemented.
+
+.. _sgi-sn-fuel-interrupts-test:
+
+Discriminating test
+-------------------
+
+``tests/qtest/sn1-fuel-test.c`` raises each source on its own and
+checks that only its selected head-F interrupt bit is set and that the
+interrupt reaches Bedrock, then lowers and acknowledges it:
+``fuel/scsi-interrupt``, ``fuel/ioc3-superio-interrupt``,
+``fuel/ioc3-ethernet-interrupt`` and ``fuel/ohci-interrupt``, with
+``fuel/ioc3-superio-interrupt-reset`` and
+``fuel/ioc3-superio-interrupt-migration`` covering reset and migration.
+A wrong input number fails these tests. They check the model against
+this table; they cannot check the table against a physical board.
+
 Devices
 =======
 
