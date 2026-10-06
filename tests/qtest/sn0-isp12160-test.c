@@ -3052,7 +3052,7 @@ static void test_migration_preserves_distinct_state(const void *data)
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
-    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    sgi_migrate_resume(to);
 
     for (i = 0; i < ARRAY_SIZE(migrate_probe_mbox); i++) {
         g_assert_cmphex(isp_readw(to, ISP_MAILBOX(migrate_probe_mbox[i])),
@@ -3456,7 +3456,7 @@ static void test_full_ring_holds_completions_and_migrates_them(const void *data)
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
-    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    sgi_migrate_resume(to);
 
     /* The three ring entries, then the two held ones, then the stalled
      * TUR. */

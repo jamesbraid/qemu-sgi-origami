@@ -688,7 +688,7 @@ static void test_active_counter(const void *opaque)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    sgi_migrate_resume(to);
     after = wait_for_change(to, before);
     delta = after - before;
     g_test_message("%s on %s before=%" PRIu32 " after=%" PRIu32
@@ -818,7 +818,7 @@ static void test_r10000_scache_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    sgi_migrate_resume(to);
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
 
@@ -891,8 +891,9 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
     assert_r16000_properties(to, capacity, capacity->reset_mode);
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    sgi_migrate_resume(to);
     qtest_writeq(to, STATE_PHYS + CAPACITY_COMMAND_OFF, 1);
     wait_for_state(to, CAPACITY_DONE_OFF, CACHE_DONE_MAGIC);
 

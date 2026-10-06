@@ -97,4 +97,23 @@ static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
     sgi_wait_migration(from, "completed");
 }
 
+/*
+ * Start the destination @to once it has loaded the incoming stream, and
+ * check that it runs. The source reporting "completed" only means it has
+ * sent the stream. A "cont" that reaches the destination while it is still
+ * loading just asks for an autostart, and when the source was stopped the
+ * load then restores its paused runstate, so the guest never runs. Upstream's
+ * migration test framework waits on the destination for the same reason.
+ */
+static inline void sgi_migrate_resume(QTestState *to)
+{
+    QDict *status;
+
+    sgi_wait_migration(to, "completed");
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    status = qtest_qmp_assert_success_ref(to, "{ 'execute': 'query-status' }");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+    qobject_unref(status);
+}
+
 #endif /* SGI_MIGRATE_H */
