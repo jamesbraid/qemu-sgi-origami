@@ -1420,111 +1420,38 @@ static void test_no_supervisor_on_i2c(const void *data)
 }
 
 /*
- * "dsc N C" sets one character of the eight-character alphanumeric
- * display (hardware guide, MSC command table). The second node's PROM
- * slave writes its per-node status character with exactly this command
- * during bring-up, and "err cmd" left it retrying forever with
- * processors 2 and 3 never starting. The display is not guest-readable
- * through any documented command, so content is asserted through
- * "info elsc", the way the suite already reads queue state.
+ * The Origin 200 build of the controller has no front-panel display: "dsc"
+ * and "dsp" are not in its command table and answer "err cmd". The PROM and
+ * kernel send both on every machine and ignore the reply, so the refusal is
+ * harmless. Its version field is its own.
  */
-static void test_dsc_sets_display_character(const void *data)
+static void test_origin200_build_commands(const void *data)
 {
+    const char *display[] = { "dsc 4 E", "dsc 1 A", "dsp testing", "dsp",
+                              "dsc" };
     uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
+    unsigned req_len, resp_len, i;
     g_autofree char *out = NULL;
 
     elsc_reset();
 
-    req_len = build_request(req, "dsc 4 E");
+    for (i = 0; i < ARRAY_SIZE(display); i++) {
+        req_len = build_request(req, display[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 7);
+        assert_response_begins(resp, "err cmd");
+    }
+
+    req_len = build_request(req, "ver");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
+    g_assert_cmpuint(resp[0], ==, 11);
+    g_assert_cmpmem(&resp[1], 11, "ok V 3.1S  ", 11);
 
+    /* Nothing to show: "info elsc" prints no display for this build. */
     out = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(out, "display: \"    E   \""));
-}
-
-/* A position past the eight-character display is an argument error. */
-static void test_dsc_bad_position_gets_err_arg(const void *data)
-{
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
-
-    elsc_reset();
-
-    req_len = build_request(req, "dsc 8 E");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
-}
-
-/*
- * The character may be any ASCII other than nul, including a space,
- * so the parse must be positional, not split on whitespace.
- */
-static void test_dsc_space_character_is_legal(const void *data)
-{
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
-    g_autofree char *out = NULL;
-
-    elsc_reset();
-
-    req_len = build_request(req, "dsp AAAAAAAA");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    assert_response_begins(resp, "ok");
-
-    req_len = build_request(req, "dsc 4  ");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
-
-    out = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(out, "display: \"AAAA AAA\""));
-}
-
-/*
- * "dsp M" overwrites from position 0 and leaves the remaining
- * positions unaltered: the hardware guide's own example, "dsp testing"
- * replacing seven characters and leaving the eighth. A message longer
- * than the display is rejected and must leave the content untouched.
- */
-static void test_dsp_overwrites_leaving_the_tail(const void *data)
-{
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
-    g_autofree char *after_dsp = NULL;
-    g_autofree char *after_reject = NULL;
-
-    elsc_reset();
-
-    req_len = build_request(req, "dsc 7 Z");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    assert_response_begins(resp, "ok");
-
-    req_len = build_request(req, "dsp testing");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
-
-    after_dsp = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(after_dsp, "display: \"testingZ\""));
-
-    req_len = build_request(req, "dsp ninechars");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
-
-    after_reject = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(after_reject, "display: \"testingZ\""));
+    g_assert_null(strstr(out, "display:"));
 }
 
 /*
@@ -1823,15 +1750,13 @@ static void test_rst_performs_machine_reset(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
-    g_autofree char *out = NULL;
 
     elsc_reset();
 
-    /* Leave a mark on the display the reset must clear. */
-    req_len = build_request(req, "dsc 4 E");
+    /* Leave a mark the reset must clear: take the test-and-set lock. */
+    req_len = build_request(req, "tas A");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
+    assert_response_begins(resp, "ok 0");
 
     /* "rst" answers ok and the reset really fires. */
     req_len = build_request(req, "rst");
@@ -1843,9 +1768,11 @@ static void test_rst_performs_machine_reset(const void *data)
     /* The reset actually happened, not just an "ok". */
     qtest_qmp_eventwait(qts, "RESET");
 
-    /* And it cleared controller state: the display is blank again. */
-    out = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(out, "display: \"        \""));
+    /* And it cleared controller state: the lock is free again. */
+    req_len = build_request(req, "tas B");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "ok 0");
 }
 
 /*
@@ -1880,20 +1807,18 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
  * The deferred reset is tied to the specific "rst" ack. If the ack is left
  * unread and a new request supersedes the pending response, the reset is
  * dropped. Otherwise consuming the new, unrelated response would fire it.
- * A mark left on the display survives, proving no reset ran.
+ * A held test-and-set lock survives, proving no reset ran.
  */
 static void test_rst_reset_dropped_on_supersession(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
-    g_autofree char *out = NULL;
 
     elsc_reset();
 
-    req_len = build_request(req, "dsc 4 E");
+    req_len = build_request(req, "tas A");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
+    assert_response_begins(resp, "ok 0");
 
     /* Issue "rst" but leave its ack unread. */
     elsc_request_without_read(qts, "rst");
@@ -1904,9 +1829,11 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     assert_response_begins(resp, "ok ");
 
-    /* No reset ran: the display mark is still there. */
-    out = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(out, "display: \"    E   \""));
+    /* No reset ran: the lock is still held. */
+    req_len = build_request(req, "tas B");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "ok A");
 }
 
 /*
@@ -2720,14 +2647,8 @@ int main(int argc, char **argv)
                         test_escape_byte_is_not_queued);
     qtest_add_data_func("sn0/elsc/no-supervisor-on-i2c", NULL,
                         test_no_supervisor_on_i2c);
-    qtest_add_data_func("sn0/elsc/dsc-sets-display-character", NULL,
-                        test_dsc_sets_display_character);
-    qtest_add_data_func("sn0/elsc/dsc-bad-position-gets-err-arg", NULL,
-                        test_dsc_bad_position_gets_err_arg);
-    qtest_add_data_func("sn0/elsc/dsc-space-character-is-legal", NULL,
-                        test_dsc_space_character_is_legal);
-    qtest_add_data_func("sn0/elsc/dsp-overwrites-leaving-the-tail", NULL,
-                        test_dsp_overwrites_leaving_the_tail);
+    qtest_add_data_func("sn0/elsc/origin200-build-commands", NULL,
+                        test_origin200_build_commands);
     qtest_add_data_func("sn0/elsc/boot-acceptance-sequence", NULL,
                         test_boot_acceptance_sequence);
     qtest_add_data_func("sn0/elsc/info-elsc-dump-empty", NULL,

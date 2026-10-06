@@ -894,6 +894,7 @@ static void mgmt_init(Object *obj)
      * a shared module the grants are real address-only wire traffic.
      */
     qdev_prop_set_bit(DEVICE(s->msc), "arbitration", false);
+    qdev_prop_set_string(DEVICE(s->msc), "build", "origin2000");
     i2c_slave_set_address(I2C_SLAVE(s->msc), SGI_O2000_MSC_ADDRESS);
     object_property_add_alias(obj, "chardev", OBJECT(s->msc), "chardev");
     object_property_add_alias(obj, "dip-switches", OBJECT(s->msc),

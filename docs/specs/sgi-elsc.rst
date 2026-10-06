@@ -10,6 +10,13 @@ the console of last resort after a failed power-on diagnostic. QEMU
 models it as an I2C slave (``hw/misc/sgi-elsc.c``) on the same bus as
 each node's PCF8584 controller.
 
+The same controller program, built a second way, is the module
+controller of an Origin 2000 module. The ``build`` property selects
+which: ``origin200`` (the default) or ``origin2000``, which the Origin
+2000 module-management device sets on its own controller. The builds
+differ in the commands they answer and in their version token; this
+page names each difference where it applies.
+
 This page describes the register-level contract the model implements.
 
 ASCII command protocol
@@ -39,7 +46,9 @@ Command vocabulary
 ------------------
 
 ``ver``
-    Answered ``ok`` plus a version token. The firmware requires the
+    Answered ``ok`` plus the build's eight-character version field:
+    ``V 3.1S`` and two spaces for the Origin 200 build, ``VER 3.2`` and
+    one space for the Origin 2000 build. The firmware requires the
     ``ok`` but does not interpret the token; the first token
     including its terminator must fit in eight bytes.
 
@@ -69,16 +78,20 @@ Command vocabulary
     sending ``pas``.
 
 ``dsp <message>``
+    Origin 2000 build only; the Origin 200 build answers ``err cmd``.
     Writes a message onto the alphanumeric display: up to eight
-    ASCII characters other than nul, overwriting from position 0 and
-    leaving the remaining positions unaltered. Answered a plain
+    printable characters, spaces included, overwriting from the
+    first position and leaving the rest unaltered. The message stops
+    at the first unprintable character and anything past eight is
+    dropped. An empty message is ``err arg``; otherwise a plain
     ``ok``.
 
 ``dsc <position> <character>``
-    Writes one display character; the position is a digit from 0 to
-    7, and the character is any ASCII character other than nul -- a
-    space included, so the argument bytes are read by position
-    rather than split on whitespace. Answered a plain ``ok``.
+    Origin 2000 build only; the Origin 200 build answers ``err cmd``.
+    Writes one display character. Spaces before each argument are
+    skipped, so the position is the digit ``1`` to ``8``, for display
+    positions 0 to 7, and the character is printable and never a
+    space. Anything else is ``err arg``; otherwise a plain ``ok``.
 
 ``pwr q``
     The power-on query, which the PROM issues once at power-on to
@@ -108,7 +121,12 @@ Command vocabulary
     shutdown. 0 powers down at once, as does a request with no delay
     while a countdown is pending; a request with no delay otherwise
     starts a three-second countdown. A delay above 0x258 is ``err arg``
-    and changes nothing. ``pwr r`` queries the redundant supplies, is
+    and changes nothing. ``pwr r`` is documented for controller
+    firmware 3.3S and later; the 6.5.7-era source of both builds lacks
+    it, so the model answers it while reporting the older version
+    field from ``ver``, a mixed version no real controller presents.
+    The IRIX kernel and IO6 PROM query it and skip the supply report
+    on an error. ``pwr r`` queries the redundant supplies, is
     read-only and ungated, and answers a per-module record for each
     supply tagged ``tag:present:health`` -- ``m:y:ok`` / ``m:y:fl`` /
     ``m:n`` for the master and ``s:y:ok`` / ``s:y:fl`` / ``s:n`` for the
@@ -209,6 +227,15 @@ Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
 a negative reply but not a stalled bus.
+
+Some commands the controller firmware answers over I2C are not
+modelled and get that ``err cmd`` too: ``clr``, ``fan``, ``fsc``,
+``nmi``, ``see``, ``sel``, ``tmp`` and ``tst`` in both builds, and
+``pwr u``; ``aut`` in the Origin 200 build; ``key`` and ``vlm`` in the
+Origin 2000 build, whose ``sla`` would answer ``ok`` and do nothing.
+Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
+Replies with no value are framed ``ok`` here, where the firmware sends
+``ok`` and a trailing space; every IRIX parser accepts both.
 
 Deferred destructive actions
 ----------------------------
@@ -329,18 +356,16 @@ hardware is known to do.
 Alphanumeric display
 --------------------
 
-The controller drives the module's front-panel eight-character
-alphanumeric display. The SGI Origin2000 and Onyx2 hardware guide
-documents both display commands, neither in its
-supervisor-restricted set, and shows what firmware writes there:
-per-node hex status codes, placed a character at a time -- which is
-how a launching node's slave processor uses ``dsc`` during
-bring-up, so answering ``err cmd`` wedged a two-node boot with the
-slave retrying its status write forever. Malformed arguments are
-answered ``err arg``. The manual does not state the power-on
-content (the model blanks it to spaces) or what an over-length
-``dsp`` message does (the model rejects it); ``info elsc`` shows
-the current content.
+An Origin 2000 module controller drives the module's front-panel
+eight-character alphanumeric display. The IRIX 6.5.30 IP27 PROM
+writes each node's boot progress there as two hex digits, at
+positions 2s-1 and 2s for slot s, and the IO6 PROM and the kernel
+write short messages with ``dsp``. They send the same commands on an
+Origin 200, whose controller build has no display and answers ``err
+cmd``; every sender ignores the reply and none retries, so the
+refusal costs nothing. The power-on content is unstated, and the
+model blanks it to spaces. ``info elsc`` shows the current content
+of an Origin 2000 build's display.
 
 Bus arbitration
 ===============

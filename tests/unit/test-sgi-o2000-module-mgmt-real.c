@@ -1151,13 +1151,13 @@ static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
 
     sgi_elsc_reinitialize(s);
     /* More terminal events before polling must not duplicate the action. */
-    expect_response(f, "ver", "ok 1.0");
+    expect_response(f, "ver", "ok VER 3.2 ");
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_true(f->module->pulse_active);
     advance_to(f->module->pulse_deadline);
-    expect_response(f, "ver", "ok 1.0");
+    expect_response(f, "ver", "ok VER 3.2 ");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_false(f->module->pulse_active);
@@ -1183,7 +1183,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     stop_transfer(f, 0);
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
-    expect_response(f, "ver", "ok 1.0");
+    expect_response(f, "ver", "ok VER 3.2 ");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_NONE);
@@ -1232,7 +1232,7 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     expect_response(f, "get", "acp 0 N");
     expect_response(f, "tas B", "ok A");
     g_assert_cmpmem(s->display, sizeof(s->display), "RETAINED", 8);
-    expect_response(f, "dsc 0 X", "ok");
+    expect_response(f, "dsc 1 X", "ok");
     g_assert_cmpmem(s->display, sizeof(s->display), "XETAINED", 8);
     expect_response(f, "rst", "ok");
     drain_actions();
