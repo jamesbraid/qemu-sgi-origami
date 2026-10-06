@@ -6,7 +6,7 @@
 A graphics device's pass condition cannot be a console-text match: the
 thing under test is what landed in the framebuffer, and the whole point of
 a screendump check is to look at that instead. This module reads the PPM
-QEMU's own `screendump` QMP/HMP command writes and judges it with two
+QEMU's own `screendump` QMP/HMP command writes and judges it with
 bounded, general checks rather than an exact pixel-for-pixel golden image:
 
   - NotAllBlackCheck: is any pixel above a small threshold at all. This is
@@ -17,6 +17,11 @@ bounded, general checks rather than an exact pixel-for-pixel golden image:
     (anti-aliasing, minor timing-dependent partial redraws at the moment
     the dump was taken), tight enough to catch a real channel/scaling bug
     -- a range can also detect channel or scaling errors.
+  - ImageSizeCheck: is the screendump exactly `width` x `height`. A
+    guest that switches the display's video mode changes the size of
+    the frame QEMU dumps, and every rectangle a later check names only
+    means something at the size it was measured at, so a mode-change
+    test asserts the size first.
 
 Deliberately not attempted here: exact pixel-for-pixel comparison against a
 saved reference image. This project's own terminology reserves "golden" for
@@ -223,6 +228,21 @@ class RegionColorCheck:
         return False, (
             f'{self.name} averaged {rounded}, outside the expected range '
             f'{self.min_rgb}-{self.max_rgb}')
+
+
+@dataclasses.dataclass(frozen=True)
+class ImageSizeCheck:
+    """Fails unless the screendump is exactly `width` x `height` pixels."""
+    width: int
+    height: int
+
+    def evaluate(self, width, height, data):
+        del data
+        if (width, height) == (self.width, self.height):
+            return True, f'screendump is {width}x{height}, as expected'
+        return False, (
+            f'screendump is {width}x{height}, expected '
+            f'{self.width}x{self.height}')
 
 
 @dataclasses.dataclass(frozen=True)
