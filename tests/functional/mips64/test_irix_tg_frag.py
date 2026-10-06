@@ -3,7 +3,8 @@
 # Bidirectional fragmented UDP on an IRIX tg adapter.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Require tg1 to reassemble a peer datagram and transmit one UDP datagram."""
+"""Require the tg interface to reassemble a peer datagram and transmit one UDP
+datagram."""
 
 from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv
 from qemu_test import skipSlowTest

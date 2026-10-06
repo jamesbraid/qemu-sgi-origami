@@ -406,10 +406,12 @@ if base.QemuSystemTest is not None:
             try:
                 base.drive_irix_to_shell(con, base.LOGIN_BUDGET_SECONDS)
                 login = True
-                con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
+                iface = base.irix_interface_at_pci_slot(con, "tg",
+                                                        base.TG_ADDR)
+                con.run(f"ifconfig {iface} inet {base.GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
-                    con.capture_value("ifconfig " + base.IFACE, "ifs",
+                    con.capture_value("ifconfig " + iface, "ifs",
                                       rb"(UP)[,>]", timeout=60)
                     tg_up = True
                 except base.HarnessError:

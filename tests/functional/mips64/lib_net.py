@@ -368,6 +368,25 @@ class IrixConsole(Console):
     STEP_TIMEOUT = 300
 
 
+def irix_interface_at_pci_slot(con, prefix, slot, timeout=60):
+    """IRIX's name for the prefix ("eg", "tg") Gigabit Ethernet adapter in
+    PCI slot `slot`, read from hinv. ioconfig numbers a card it has not
+    seen after every one the disk already knows, so the name depends on
+    the disk's history, not on the card or the slot: the installed disk
+    calls a Tigon moved to slot 5 eg1 because slot 4 once held eg0. hinv
+    prints "PCI slot N" for eg and "PCI bus B slot N" for tg."""
+    return con.capture_value("hinv", f"{prefix}-name",
+                             gigabit_interface_pattern(prefix, slot), timeout)
+
+
+def gigabit_interface_pattern(prefix, slot):
+    """hinv's Gigabit Ethernet line for the prefix adapter in PCI slot
+    `slot`, capturing the interface name."""
+    return (rb"Gigabit Ethernet: (" + prefix.encode() +
+            rb"\d+), module \d+, PCI (?:bus \d+ )?slot " +
+            str(slot).encode() + rb"\b")
+
+
 def drive_irix_to_shell(con, budget):
     """Boot the installed IRIX disk through the PROM and enter /bin/sh."""
     deadline = time.monotonic() + budget

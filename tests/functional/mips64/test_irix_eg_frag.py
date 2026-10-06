@@ -3,7 +3,8 @@
 # Bidirectional fragmented UDP on an IRIX eg adapter.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Require eg0 to reassemble a peer datagram and transmit one UDP datagram."""
+"""Require the eg interface to reassemble a peer datagram and transmit one UDP
+datagram."""
 
 import os
 import re
@@ -16,6 +17,7 @@ from qemu_test import skipSlowTest
 from qemu_test.asset import LocalAsset
 
 from lib_net import (IrixConsole, build_udp_fragments, drive_irix_to_shell,
+                     irix_interface_at_pci_slot,
                      parse_ipv4_udp_fragment, reassemble_udp_fragments)
 from lib_prom import FIRMWARE_REL, MACHINES, file_sha256
 
@@ -26,6 +28,8 @@ PROM_SHA256 = (
 DISK_SHA256 = (
     "15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12")
 GUEST_IP = "10.0.2.15"
+# An add-in card goes in the first Origin 200 option slot, PCI device 5.
+ADDIN_SLOT = 5
 PEER_IP = "10.0.2.2"
 GUEST_MAC = bytes.fromhex("02005d270001")
 PEER_MAC = bytes.fromhex("02005d270002")
@@ -145,24 +149,26 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
             vm.add_args(
                 "-nic", "none",
                 "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
-                "-device", (f"{device_model},netdev=netdev,addr=4,mac="
-                            f"{configured_mac.hex(':')}"))
+                "-device", (f"{device_model},netdev=netdev,"
+                            f"addr={ADDIN_SLOT},"
+                            f"mac={configured_mac.hex(':')}"))
         vm.launch()
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
                           test.log_file(f"irix-{adapter}-frag-console.log"),
                           exited=lambda: vm.exitcode() is not None)
         drive_irix_to_shell(con, BOOT_TIMEOUT_SECONDS)
+        guest_ifname = guest_ifname or irix_interface_at_pci_slot(
+            con, adapter, ADDIN_SLOT)
         if adapter == "eg":
-            test.assertEqual(con.run("egconfig -f 1 eg0", "egconfig",
-                                     STEP_TIMEOUT_SECONDS), 0)
-        guest_ifname = guest_ifname or ("eg0" if adapter == "eg" else "tg1")
+            test.assertEqual(con.run(f"egconfig -f 1 {guest_ifname}",
+                                     "egconfig", STEP_TIMEOUT_SECONDS), 0)
         test.assertEqual(con.run(
             f"ifconfig {guest_ifname} inet {GUEST_IP} "
             "netmask 0xffffff00 up", "ifup", STEP_TIMEOUT_SECONDS), 0)
         if adapter == "tg":
-            con.expect(rb"tg1: Link up[^\r\n]*", 180,
-                       what="the tg1 link-up notice")
+            con.expect(guest_ifname.encode() + rb": Link up[^\r\n]*", 180,
+                       what=f"the {guest_ifname} link-up notice")
         con.capture_value(f"ifconfig {guest_ifname}", "ifcheck",
                           rb"(UP)[,>]", STEP_TIMEOUT_SECONDS)
         # Install the peer mapping so the guest's outbound datagram uses
