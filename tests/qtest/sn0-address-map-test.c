@@ -14,6 +14,7 @@
 #include "qobject/qlist.h"
 #include "sgi-prom-container.h"
 #include "sgi-test.h"
+#include "sgi-mips-emit.h"
 #include "sgi-wait.h"
 
 /* Node zero's window, and the space the Hub answers uncached references
@@ -515,21 +516,25 @@ static void test_flash_wide_read_in_command_mode(const void *data)
     flash_cpu_emit(image, &at, 0);
 
     at = FLASH_CPU_HANDLER;
-    flash_cpu_emit(image, &at, 0x3c1aa020); /* lui k0, 0xa020 */
-    flash_cpu_emit(image, &at, 0x341bdead); /* ori k1, zero, 0xdead */
-    flash_cpu_emit(image, &at, 0xff5b0000); /* sd k1, 0(k0) */
-    flash_cpu_emit(image, &at, 0x1000ffff); /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, mips_lui(26, 0xa020)); /* lui k0, 0xa020 */
+    /* ori k1, zero, 0xdead */
+    flash_cpu_emit(image, &at, mips_ori(27, 0, 0xdead));
+    flash_cpu_emit(image, &at, mips_sd(27, 26, 0)); /* sd k1, 0(k0) */
+    /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
     flash_cpu_emit(image, &at, 0);
 
     at = FLASH_CPU_CODE;
-    flash_cpu_emit(image, &at, 0x3c08bfc0); /* lui t0, 0xbfc0 */
-    flash_cpu_emit(image, &at, 0x65080068); /* daddiu t0, t0, 0x68 */
-    flash_cpu_emit(image, &at, 0xdd090000); /* ld t1, 0(t0) */
-    flash_cpu_emit(image, &at, 0x3c1aa020); /* lui k0, 0xa020 */
-    flash_cpu_emit(image, &at, 0xff490008); /* sd t1, 8(k0) */
-    flash_cpu_emit(image, &at, 0x341b0055); /* ori k1, zero, 0x55 */
-    flash_cpu_emit(image, &at, 0xff5b0000); /* sd k1, 0(k0) */
-    flash_cpu_emit(image, &at, 0x1000ffff); /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, mips_lui(8, 0xbfc0)); /* lui t0, 0xbfc0 */
+    /* daddiu t0, t0, 0x68 */
+    flash_cpu_emit(image, &at, mips_daddiu(8, 8, 0x68));
+    flash_cpu_emit(image, &at, mips_ld(9, 8, 0)); /* ld t1, 0(t0) */
+    flash_cpu_emit(image, &at, mips_lui(26, 0xa020)); /* lui k0, 0xa020 */
+    flash_cpu_emit(image, &at, mips_sd(9, 26, 8)); /* sd t1, 8(k0) */
+    flash_cpu_emit(image, &at, mips_ori(27, 0, 0x55)); /* ori k1, zero, 0x55 */
+    flash_cpu_emit(image, &at, mips_sd(27, 26, 0)); /* sd k1, 0(k0) */
+    /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
     flash_cpu_emit(image, &at, 0);
 
     stq_be_p(image + CONFIG_OFFSET + FIELD_MAGIC, CONFIG_MAGIC);

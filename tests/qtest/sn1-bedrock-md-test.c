@@ -4,6 +4,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 
@@ -3508,16 +3509,13 @@ static void emit(uint8_t *image, unsigned *offset, uint32_t instruction)
 static void emit_load64(uint8_t *image, unsigned *offset, unsigned reg,
                         uint64_t value)
 {
-    emit(image, offset, 0x34000000 | reg << 16 | (value >> 48));
-    emit(image, offset, reg << 16 | reg << 11 | 16 << 6 | 0x38);
-    emit(image, offset, 0x34000000 | reg << 21 | reg << 16 |
-         ((value >> 32) & 0xffff));
-    emit(image, offset, reg << 16 | reg << 11 | 16 << 6 | 0x38);
-    emit(image, offset, 0x34000000 | reg << 21 | reg << 16 |
-         ((value >> 16) & 0xffff));
-    emit(image, offset, reg << 16 | reg << 11 | 16 << 6 | 0x38);
-    emit(image, offset, 0x34000000 | reg << 21 | reg << 16 |
-         (value & 0xffff));
+    emit(image, offset, mips_ori(reg, 0, value >> 48));
+    emit(image, offset, mips_dsll(reg, reg, 16));
+    emit(image, offset, mips_ori(reg, reg, (value >> 32) & 0xffff));
+    emit(image, offset, mips_dsll(reg, reg, 16));
+    emit(image, offset, mips_ori(reg, reg, (value >> 16) & 0xffff));
+    emit(image, offset, mips_dsll(reg, reg, 16));
+    emit(image, offset, mips_ori(reg, reg, value & 0xffff));
 }
 
 static char *create_prom(void)
@@ -3531,39 +3529,41 @@ static char *create_prom(void)
     stl_be_p(image, 0x100000ff); /* beq zero, zero, 0x400 */
 
     emit_load64(image, &offset, 27, UINT64_C(0x9000000000000110));
-    emit(image, &offset, 0x401a6800); /* mfc0 k0, Cause */
-    emit(image, &offset, 0xaf7a0000); /* sw k0, 0(k1) */
-    emit(image, &offset, 0x401a7000); /* mfc0 k0, EPC */
-    emit(image, &offset, 0x275a0004); /* addiu k0, k0, 4 */
-    emit(image, &offset, 0x409a7000); /* mtc0 k0, EPC */
+    emit(image, &offset, mips_mfc0(26, 13)); /* mfc0 k0, Cause */
+    emit(image, &offset, mips_sw(26, 27, 0)); /* sw k0, 0(k1) */
+    emit(image, &offset, mips_mfc0(26, 14)); /* mfc0 k0, EPC */
+    emit(image, &offset, mips_addiu(26, 26, 4)); /* addiu k0, k0, 4 */
+    emit(image, &offset, mips_mtc0(26, 14)); /* mtc0 k0, EPC */
     emit(image, &offset, 0x42000018); /* eret */
     emit(image, &offset, 0);          /* nop */
 
     offset = 0x400;
-    emit(image, &offset, 0x400c6000); /* mfc0 t4, Status */
-    emit(image, &offset, 0x358c0080); /* ori t4, t4, Status.KX */
-    emit(image, &offset, 0x240dfffb); /* addiu t5, zero, ~Status.ERL */
-    emit(image, &offset, 0x018d6024); /* and t4, t4, t5 */
-    emit(image, &offset, 0x408c6000); /* mtc0 t4, Status */
+    emit(image, &offset, mips_mfc0(12, 12)); /* mfc0 t4, Status */
+    emit(image, &offset, mips_ori(12, 12, 0x80)); /* ori t4, t4, Status.KX */
+    /* addiu t5, zero, ~Status.ERL */
+    emit(image, &offset, mips_addiu(13, 0, -5));
+    emit(image, &offset, mips_and(12, 12, 13)); /* and t4, t4, t5 */
+    emit(image, &offset, mips_mtc0(12, 12)); /* mtc0 t4, Status */
     emit(image, &offset, 0x000000c0); /* ehb */
 
     emit_load64(image, &offset, 8, UINT64_C(0x9000000140000000));
     emit_load64(image, &offset, 1, UINT64_C(0x1111222233334444));
-    emit(image, &offset, 0xa5010006); /* sh at, 6(t0) */
+    emit(image, &offset, mips_sh(1, 8, 6)); /* sh at, 6(t0) */
     emit_load64(image, &offset, 1, UINT64_C(0x5555666677778888));
-    emit(image, &offset, 0xa5010004); /* sh at, 4(t0) */
+    emit(image, &offset, mips_sh(1, 8, 4)); /* sh at, 4(t0) */
     emit_load64(image, &offset, 1, UINT64_C(0x9999aaaabbbbcccc));
-    emit(image, &offset, 0xa5010002); /* sh at, 2(t0) */
+    emit(image, &offset, mips_sh(1, 8, 2)); /* sh at, 2(t0) */
 
     emit_load64(image, &offset, 8, UINT64_C(0x9000000000000100));
     emit_load64(image, &offset, 1, UINT64_C(0x5555666677770000));
-    emit(image, &offset, 0xa5010000); /* sh at, 0(t0) */
+    emit(image, &offset, mips_sh(1, 8, 0)); /* sh at, 0(t0) */
     emit_load64(image, &offset, 8, UINT64_C(1));
-    emit(image, &offset, 0xa5010000); /* unaligned sh at, 0(t0) */
+    emit(image, &offset, mips_sh(1, 8, 0)); /* unaligned sh at, 0(t0) */
     emit_load64(image, &offset, 8, UINT64_C(0x9000000000000100));
-    emit(image, &offset, 0x340b0001); /* ori t3, zero, 1 */
-    emit(image, &offset, 0xfd0b0008); /* sd t3, 8(t0) */
-    emit(image, &offset, 0x1000ffff); /* beq zero, zero, self */
+    emit(image, &offset, mips_ori(11, 0, 1)); /* ori t3, zero, 1 */
+    emit(image, &offset, mips_sd(11, 8, 8)); /* sd t3, 8(t0) */
+    /* beq zero, zero, self */
+    emit(image, &offset, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
     emit(image, &offset, 0);          /* nop */
 
     fd = g_file_open_tmp("sn1-bedrock-ecc-cpu-XXXXXX.bin", &path, &error);
@@ -3647,20 +3647,21 @@ static char *create_prom_top_line(void)
     stl_be_p(image, 0x100000ff); /* beq zero, zero, 0x400 */
 
     emit_load64(image, &offset, 27, UINT64_C(0x9000000000000110));
-    emit(image, &offset, 0x401a6800); /* mfc0 k0, Cause */
-    emit(image, &offset, 0xaf7a0000); /* sw k0, 0(k1) */
-    emit(image, &offset, 0x401a7000); /* mfc0 k0, EPC */
-    emit(image, &offset, 0x275a0004); /* addiu k0, k0, 4 */
-    emit(image, &offset, 0x409a7000); /* mtc0 k0, EPC */
+    emit(image, &offset, mips_mfc0(26, 13)); /* mfc0 k0, Cause */
+    emit(image, &offset, mips_sw(26, 27, 0)); /* sw k0, 0(k1) */
+    emit(image, &offset, mips_mfc0(26, 14)); /* mfc0 k0, EPC */
+    emit(image, &offset, mips_addiu(26, 26, 4)); /* addiu k0, k0, 4 */
+    emit(image, &offset, mips_mtc0(26, 14)); /* mtc0 k0, EPC */
     emit(image, &offset, 0x42000018); /* eret */
     emit(image, &offset, 0);          /* nop */
 
     offset = 0x400;
-    emit(image, &offset, 0x400c6000); /* mfc0 t4, Status */
-    emit(image, &offset, 0x358c0080); /* ori t4, t4, Status.KX */
-    emit(image, &offset, 0x240dfffb); /* addiu t5, zero, ~Status.ERL */
-    emit(image, &offset, 0x018d6024); /* and t4, t4, t5 */
-    emit(image, &offset, 0x408c6000); /* mtc0 t4, Status */
+    emit(image, &offset, mips_mfc0(12, 12)); /* mfc0 t4, Status */
+    emit(image, &offset, mips_ori(12, 12, 0x80)); /* ori t4, t4, Status.KX */
+    /* addiu t5, zero, ~Status.ERL */
+    emit(image, &offset, mips_addiu(13, 0, -5));
+    emit(image, &offset, mips_and(12, 12, 13)); /* and t4, t4, t5 */
+    emit(image, &offset, mips_mtc0(12, 12)); /* mtc0 t4, Status */
     emit(image, &offset, 0x000000c0); /* ehb */
 
     /*
@@ -3669,18 +3670,19 @@ static char *create_prom_top_line(void)
      */
     emit_load64(image, &offset, 8, UINT64_C(0x9000000149fffff8));
     emit_load64(image, &offset, 1, UINT64_C(0x1111222233334444));
-    emit(image, &offset, 0xa5010006); /* sh 6(t0): res 0x00 -> 0x4444 */
+    emit(image, &offset, mips_sh(1, 8, 6)); /* sh 6(t0): res 0x00 -> 0x4444 */
     emit_load64(image, &offset, 1, UINT64_C(0x5555666677778888));
-    emit(image, &offset, 0xa5010004); /* sh 4(t0): res 0x10 -> 0x5555 */
+    emit(image, &offset, mips_sh(1, 8, 4)); /* sh 4(t0): res 0x10 -> 0x5555 */
     emit_load64(image, &offset, 1, UINT64_C(0x9999aaaabbbbcccc));
-    emit(image, &offset, 0xa5010002); /* sh 2(t0): res 0x20 -> 0xaaaa */
+    emit(image, &offset, mips_sh(1, 8, 2)); /* sh 2(t0): res 0x20 -> 0xaaaa */
     emit_load64(image, &offset, 1, UINT64_C(0xddddeeee13572468));
-    emit(image, &offset, 0xa5010000); /* sh 0(t0): res 0x30 -> 0x1357 */
+    emit(image, &offset, mips_sh(1, 8, 0)); /* sh 0(t0): res 0x30 -> 0x1357 */
 
     emit_load64(image, &offset, 8, UINT64_C(0x9000000000000100));
-    emit(image, &offset, 0x340b0001); /* ori t3, zero, 1 */
-    emit(image, &offset, 0xfd0b0008); /* sd t3, 8(t0) */
-    emit(image, &offset, 0x1000ffff); /* beq zero, zero, self */
+    emit(image, &offset, mips_ori(11, 0, 1)); /* ori t3, zero, 1 */
+    emit(image, &offset, mips_sd(11, 8, 8)); /* sd t3, 8(t0) */
+    /* beq zero, zero, self */
+    emit(image, &offset, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
     emit(image, &offset, 0);          /* nop */
 
     fd = g_file_open_tmp("sn1-bedrock-ecc-cpu-top-XXXXXX.bin", &path, &error);

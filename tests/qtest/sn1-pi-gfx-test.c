@@ -20,6 +20,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
+#include "sgi-mips-emit.h"
 
 #define NODE_SHIFT 33
 #define NODE(n) ((uint64_t)(n) << NODE_SHIFT)
@@ -74,13 +75,6 @@
 #define R_T3 11
 #define R_S0 16
 #define R_S1 17
-#define OPC_BEQ 4
-#define OPC_BNE 5
-#define OPC_ANDI 12
-#define OPC_ORI 13
-#define OPC_DADDIU 25
-#define OPC_LD 55
-#define OPC_SD 63
 #define CP0_STATUS 12
 #define STATUS_KX 0x80
 
@@ -96,30 +90,24 @@ static void emit(Image *p, uint32_t word)
     p->pos += 4;
 }
 
-static void emit_i(Image *p, unsigned int op, unsigned int rs,
-                   unsigned int rt, uint16_t imm)
-{
-    emit(p, (op << 26) | (rs << 21) | (rt << 16) | imm);
-}
-
 static void emit_li64(Image *p, unsigned int rt, uint64_t value)
 {
-    emit_i(p, OPC_ORI, R_ZERO, rt, value >> 48);
+    emit(p, mips_ori(rt, R_ZERO, value >> 48));
     for (unsigned int shift = 32; ; shift -= 16) {
-        emit(p, (rt << 16) | (rt << 11) | (16 << 6) | 0x38); /* dsll 16 */
-        emit_i(p, OPC_ORI, rt, rt, value >> shift);
+        emit(p, mips_dsll(rt, rt, 16));
+        emit(p, mips_ori(rt, rt, value >> shift));
         if (shift == 0) {
             break;
         }
     }
 }
 
-static unsigned int emit_branch(Image *p, unsigned int op, unsigned int rs,
+static unsigned int emit_branch(Image *p, uint32_t op, unsigned int rs,
                                 unsigned int rt)
 {
     unsigned int at = p->pos;
 
-    emit_i(p, op, rs, rt, 0);
+    emit(p, mips_branch(op, rs, rt, 0));
     emit(p, 0);
     return at;
 }
@@ -140,33 +128,33 @@ static void build_store_server(Image *p)
         stl_be_p(p->bytes + offset, 0x1000ffff); /* beq zero, zero, self */
     }
     p->pos = 0x400;
-    emit(p, 0x40000000 | (R_T0 << 16) | (CP0_STATUS << 11)); /* mfc0 */
-    emit_i(p, OPC_ORI, R_T0, R_T0, STATUS_KX);
-    emit(p, 0x40800000 | (R_T0 << 16) | (CP0_STATUS << 11)); /* mtc0 */
+    emit(p, mips_mfc0(R_T0, CP0_STATUS));
+    emit(p, mips_ori(R_T0, R_T0, STATUS_KX));
+    emit(p, mips_mtc0(R_T0, CP0_STATUS));
     for (unsigned int i = 0; i < 4; i++) {
         emit(p, 0);
     }
 
     /* s1 = this physical slot's mailbox: the CPU number's two bits. */
     emit_li64(p, R_S0, UINT64_C(0x9200000001000000));
-    emit_i(p, OPC_LD, R_S0, R_T2, 0x20);
-    emit_i(p, OPC_ANDI, R_T2, R_T2, 3);
-    emit(p, (R_T2 << 16) | (R_T2 << 11) | (4 << 6) | 0x38); /* dsll 4 */
+    emit(p, mips_ld(R_T2, R_S0, 0x20));
+    emit(p, mips_andi(R_T2, R_T2, 3));
+    emit(p, mips_dsll(R_T2, R_T2, 4));
     emit_li64(p, R_S1, UINT64_C(0x9000000000000000) | MAILBOX);
-    emit(p, (R_S1 << 21) | (R_T2 << 16) | (R_S1 << 11) | 0x2d); /* daddu */
+    emit(p, mips_daddu(R_S1, R_S1, R_T2));
 
     loop = p->pos;
-    emit_i(p, OPC_LD, R_S1, R_T1, 0);
-    at = emit_branch(p, OPC_BEQ, R_T1, R_ZERO);
+    emit(p, mips_ld(R_T1, R_S1, 0));
+    at = emit_branch(p, MIPS_OPC_BEQ, R_T1, R_ZERO);
     patch_branch(p, at, loop);
-    emit_i(p, OPC_LD, R_S1, R_T3, 8);
+    emit(p, mips_ld(R_T3, R_S1, 8));
     store = p->pos;
-    emit_i(p, OPC_SD, R_T3, R_ZERO, 0);
-    emit_i(p, OPC_DADDIU, R_T1, R_T1, (uint16_t)-1);
-    at = emit_branch(p, OPC_BNE, R_T1, R_ZERO);
+    emit(p, mips_sd(R_ZERO, R_T3, 0));
+    emit(p, mips_daddiu(R_T1, R_T1, -1));
+    at = emit_branch(p, MIPS_OPC_BNE, R_T1, R_ZERO);
     patch_branch(p, at, store);
-    emit_i(p, OPC_SD, R_S1, R_ZERO, 0);
-    at = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
+    emit(p, mips_sd(R_ZERO, R_S1, 0));
+    at = emit_branch(p, MIPS_OPC_BEQ, R_ZERO, R_ZERO);
     patch_branch(p, at, loop);
 }
 

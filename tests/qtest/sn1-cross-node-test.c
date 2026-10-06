@@ -14,6 +14,7 @@
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
+#include "sgi-mips-emit.h"
 
 #define MACHINE_ARGS "-M origin300,topology=origin300-two-chassis " \
                      "-cpu R14000 -smp 4 -m 1024"
@@ -747,64 +748,54 @@ static void test_prom_copy_range_leaves_at_handoff(void)
 #define DIRECTORY_GO (DIRECTORY_FLAGS + 0x38)
 #define DIRECTORY_READY (DIRECTORY_FLAGS + 0x40)
 
-static uint32_t mips_i(unsigned op, int rs, int rt, uint16_t imm)
-{
-    return (op << 26) | (rs << 21) | (rt << 16) | imm;
-}
-
-static uint32_t mips_r(int rs, int rt, int rd, unsigned funct)
-{
-    return (rs << 21) | (rt << 16) | (rd << 11) | funct;
-}
-
 static char *create_remote_directory_prom(void)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
     const uint32_t code[] = {
-        0x400c6000,                     /* mfc0 t4, Status */
-        0x358c0080,                     /* ori t4, t4, Status.KX */
-        0x408c6000,                     /* mtc0 t4, Status */
-        0x00000000,                     /* nop */
-        mips_i(0x0f, 0, 8, 0xa030),     /* lui t0, 0xa030 -- own flags */
-        mips_i(0x23, 8, 9, 0),          /* lw t1, 0(t0) -- node tag */
-        mips_i(0x04, 9, 0, 34),         /* beq t1, zero, spin */
-        0x00000000,
-        mips_i(0x0f, 0, 12, 0x9200),    /* lui t4, 0x9200 */
-        mips_r(0, 12, 12, 0x3c),        /* dsll32 t4, t4, 0 */
-        mips_i(0x0f, 0, 11, 0x0100),    /* lui t3, 0x0100 */
-        mips_r(12, 11, 12, 0x2d),       /* daddu t4, t4, t3 */
-        mips_i(0x37, 12, 12, 0x20),     /* ld t4, 0x20(t4) -- CPU number */
-        mips_i(0x0c, 12, 12, 3),        /* andi t4, t4, 3 */
-        mips_i(0x05, 12, 0, 26),        /* bne t4, zero, spin */
-        0x00000000,
-        mips_i(0x0d, 0, 11, 1),         /* ori t3, zero, 1 */
-        mips_i(0x3f, 8, 11, 0x40),      /* sd t3, 0x40(t0) -- ready */
-        mips_i(0x23, 8, 9, 0x38),       /* go: lw t1, 0x38(t0) */
-        mips_i(0x04, 9, 0, 0xfffe),     /* beq t1, zero, go */
-        0x00000000,
-        mips_i(0x0f, 0, 10, 0xa800),    /* lui t2, 0xa800 */
-        mips_r(0, 10, 10, 0x3c),        /* dsll32 t2, t2, 0 */
-        mips_i(0x0f, 0, 11, 0x0058),    /* lui t3, 0x0058 -- the line */
-        mips_r(10, 11, 10, 0x2d),       /* daddu t2, t2, t3 */
-        mips_i(0x0f, 0, 13, 0x9000),    /* lui t5, 0x9000 */
-        mips_i(0x0d, 13, 13, 0x0001),   /* ori t5, t5, 1 */
-        mips_r(0, 13, 13, 0x3c),        /* dsll32 t5, t5, 0 */
-        mips_i(0x0f, 0, 11, 0xc00b),    /* lui t3, 0xc00b -- its word */
-        mips_r(0, 11, 11, 0x3c),        /* dsll32 t3, t3, 0 */
-        mips_r(0, 11, 11, 0x3e),        /* dsrl32 t3, t3, 0 */
-        mips_r(13, 11, 13, 0x2d),       /* daddu t5, t5, t3 */
-        mips_i(0x2f, 10, 0x17, 0),      /* cache HitWBInv(S), 0(t2) */
-        mips_i(0x37, 13, 11, 0),        /* ld t3, 0(t5) */
-        mips_i(0x3f, 8, 11, 0x20),      /* sd t3, 0x20(t0) */
-        mips_i(0x37, 10, 11, 0),        /* ld t3, 0(t2) -- cached load */
-        0x0000000f,                     /* sync */
-        mips_i(0x37, 13, 11, 0),        /* ld t3, 0(t5) */
-        mips_i(0x3f, 8, 11, 0x28),      /* sd t3, 0x28(t0) */
-        mips_i(0x0d, 0, 11, 1),         /* ori t3, zero, 1 */
-        mips_i(0x3f, 8, 11, 0x30),      /* sd t3, 0x30(t0) */
-        0x1000ffff,                     /* spin: beq zero, zero, spin */
-        0x00000000,
+        mips_mfc0(12, 12),                   /* mfc0 t4, Status */
+        mips_ori(12, 12, 0x80),              /* ori t4, t4, Status.KX */
+        mips_mtc0(12, 12),                   /* mtc0 t4, Status */
+        mips_nop(),                          /* nop */
+        mips_lui(8, 0xa030),                 /* lui t0, 0xa030 -- own flags */
+        mips_lw(9, 8, 0),                    /* lw t1, 0(t0) -- node tag */
+        mips_branch(MIPS_OPC_BEQ, 9, 0, 34), /* beq t1, zero, spin */
+        mips_nop(),
+        mips_lui(12, 0x9200),                /* lui t4, 0x9200 */
+        mips_dsll32(12, 12),                 /* dsll32 t4, t4, 0 */
+        mips_lui(11, 0x0100),                /* lui t3, 0x0100 */
+        mips_daddu(12, 12, 11),              /* daddu t4, t4, t3 */
+        mips_ld(12, 12, 0x20),               /* ld t4, 0x20(t4) -- CPU number */
+        mips_andi(12, 12, 3),                /* andi t4, t4, 3 */
+        mips_branch(MIPS_OPC_BNE, 12, 0, 26), /* bne t4, zero, spin */
+        mips_nop(),
+        mips_ori(11, 0, 1),                  /* ori t3, zero, 1 */
+        mips_sd(11, 8, 0x40),                /* sd t3, 0x40(t0) -- ready */
+        mips_lw(9, 8, 0x38),                 /* go: lw t1, 0x38(t0) */
+        mips_branch(MIPS_OPC_BEQ, 9, 0, -2), /* beq t1, zero, go */
+        mips_nop(),
+        mips_lui(10, 0xa800),                /* lui t2, 0xa800 */
+        mips_dsll32(10, 10),                 /* dsll32 t2, t2, 0 */
+        mips_lui(11, 0x0058),                /* lui t3, 0x0058 -- the line */
+        mips_daddu(10, 10, 11),              /* daddu t2, t2, t3 */
+        mips_lui(13, 0x9000),                /* lui t5, 0x9000 */
+        mips_ori(13, 13, 0x0001),            /* ori t5, t5, 1 */
+        mips_dsll32(13, 13),                 /* dsll32 t5, t5, 0 */
+        mips_lui(11, 0xc00b),                /* lui t3, 0xc00b -- its word */
+        mips_dsll32(11, 11),                 /* dsll32 t3, t3, 0 */
+        mips_dsrl32(11, 11),                 /* dsrl32 t3, t3, 0 */
+        mips_daddu(13, 13, 11),              /* daddu t5, t5, t3 */
+        mips_cache(0x17, 10, 0),             /* cache HitWBInv(S), 0(t2) */
+        mips_ld(11, 13, 0),                  /* ld t3, 0(t5) */
+        mips_sd(11, 8, 0x20),                /* sd t3, 0x20(t0) */
+        mips_ld(11, 10, 0),                  /* ld t3, 0(t2) -- cached load */
+        mips_sync(),                         /* sync */
+        mips_ld(11, 13, 0),                  /* ld t3, 0(t5) */
+        mips_sd(11, 8, 0x28),                /* sd t3, 0x28(t0) */
+        mips_ori(11, 0, 1),                  /* ori t3, zero, 1 */
+        mips_sd(11, 8, 0x30),                /* sd t3, 0x30(t0) */
+        0x1000ffff,                          /* spin: beq zero, zero, spin */
+        mips_nop(),
     };
     char *path = NULL;
     int fd;

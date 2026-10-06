@@ -11,6 +11,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -68,20 +69,6 @@
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
 #define STREAM_ADVANCE      (1u << 26)
 
-#define OPC_SPECIAL         (0x00u << 26)
-#define OPC_BEQ             (0x04u << 26)
-#define OPC_BNE             (0x05u << 26)
-#define OPC_ADDIU           (0x09u << 26)
-#define OPC_ORI             (0x0du << 26)
-#define OPC_CACHE           (0x2fu << 26)
-#define OPC_AND             (0x24u | OPC_SPECIAL)
-#define OPC_LUI             (0x0fu << 26)
-#define OPC_CP0             (0x10u << 26)
-#define OPC_LD              (0x37u << 26)
-#define OPC_SD              (0x3fu << 26)
-#define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
-#define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
-#define OPC_SYNC            (0x0fu | OPC_SPECIAL)
 
 #define R_ZERO              0
 #define R_T0                8
@@ -161,35 +148,35 @@ static void emit_branch(GuestImage *img, unsigned int target)
 {
     int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
 
-    emit(img, OPC_BEQ | (off & 0xffff));
+    emit(img, mips_branch(MIPS_OPC_BEQ, R_ZERO, R_ZERO, off));
 }
 
 static void emit_bne(GuestImage *img, int rs, int rt, unsigned int target)
 {
     int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
 
-    emit(img, OPC_BNE | (rs << 21) | (rt << 16) | (off & 0xffff));
+    emit(img, mips_branch(MIPS_OPC_BNE, rs, rt, off));
 }
 
 static void emit_mfc0(GuestImage *img, int rt, int rd, int sel)
 {
-    emit(img, OPC_MFC0 | (rt << 16) | (rd << 11) | sel);
+    emit(img, mips_mfc0(rt, rd) | sel);
 }
 
 static void emit_mtc0(GuestImage *img, int rt, int rd, int sel)
 {
-    emit(img, OPC_MTC0 | (rt << 16) | (rd << 11) | sel);
+    emit(img, mips_mtc0(rt, rd) | sel);
 }
 
 static void emit_load_u32(GuestImage *img, int rt, uint32_t value)
 {
-    emit(img, OPC_LUI | (rt << 16) | (value >> 16));
-    emit(img, OPC_ORI | (rt << 21) | (rt << 16) | (value & 0xffff));
+    emit(img, mips_lui(rt, value >> 16));
+    emit(img, mips_ori(rt, rt, value & 0xffff));
 }
 
 static void emit_cache(GuestImage *img, int operation, int base, uint16_t off)
 {
-    emit(img, OPC_CACHE | (base << 21) | (operation << 16) | off);
+    emit(img, mips_cache(operation, base, off));
 }
 
 static void cache_address(uint32_t paddr, uint16_t *hi, int16_t *off)
@@ -250,18 +237,18 @@ static void emit_cache_value(GuestImage *img, int reg, int16_t off,
                              uint64_t result_off)
 {
     emit_mfc0(img, R_T0, CP0_TAGLO, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | result_off);
+    emit(img, mips_sd(R_T0, R_T2, result_off));
     emit_mfc0(img, R_T0, CP0_TAGHI, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | (result_off + 8));
+    emit(img, mips_sd(R_T0, R_T2, (result_off + 8)));
     emit_mfc0(img, R_T0, CP0_ERRCTL, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | (result_off + 16));
+    emit(img, mips_sd(R_T0, R_T2, (result_off + 16)));
     emit_cache(img, 0x1b, reg, off ^ 8);
     emit_mfc0(img, R_T0, CP0_TAGLO, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | (result_off + 24));
+    emit(img, mips_sd(R_T0, R_T2, (result_off + 24)));
     emit_mfc0(img, R_T0, CP0_TAGHI, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | (result_off + 32));
+    emit(img, mips_sd(R_T0, R_T2, (result_off + 32)));
     emit_mfc0(img, R_T0, CP0_ERRCTL, 0);
-    emit(img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | (result_off + 40));
+    emit(img, mips_sd(R_T0, R_T2, (result_off + 40)));
 }
 
 static void write_capacity_guest_image(int fd, uint32_t capacity)
@@ -276,12 +263,12 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
     emit_branch(&img, CACHE_START);
     emit(&img, 0);
     img.pos = CAPACITY_START;
-    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
+    emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
     emit_mfc0(&img, R_T0, CP0_CONFIG0, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CAPACITY_CONFIG_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CAPACITY_CONFIG_OFF));
 
     for (unsigned int i = 0; i < ARRAY_SIZE(tags); i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | tags[i].address_hi);
+        emit(&img, mips_lui(R_T1, tags[i].address_hi));
         emit_load_u32(&img, R_T0, tags[i].taglo);
         emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
         emit_load_u32(&img, R_T0, tags[i].taghi);
@@ -289,7 +276,7 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_cache(&img, 0x0b, R_T1, tags[i].address_off);
     }
     for (unsigned int i = 0; i < ARRAY_SIZE(data); i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | data[i].address_hi);
+        emit(&img, mips_lui(R_T1, data[i].address_hi));
         emit_load_u32(&img, R_T0, data[i].taglo);
         emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
         emit_load_u32(&img, R_T0, data[i].taghi);
@@ -299,12 +286,11 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_cache(&img, 0x1f, R_T1, data[i].address_off);
     }
     emit_load_u32(&img, R_T0, CACHE_READY_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CAPACITY_READY_OFF);
-    emit(&img, OPC_SYNC);
+    emit(&img, mips_sd(R_T0, R_T2, CAPACITY_READY_OFF));
+    emit(&img, mips_sync());
 
     img.pos = CAPACITY_LOOP;
-    emit(&img, OPC_LD | (R_T2 << 21) | (R_T0 << 16) |
-              CAPACITY_COMMAND_OFF);
+    emit(&img, mips_ld(R_T0, R_T2, CAPACITY_COMMAND_OFF));
     emit_bne(&img, R_T0, R_ZERO, CAPACITY_READ);
     emit(&img, 0);
     emit_branch(&img, CAPACITY_LOOP);
@@ -312,19 +298,19 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
 
     img.pos = CAPACITY_READ;
     for (unsigned int i = 0; i < ARRAY_SIZE(tags); i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | tags[i].address_hi);
+        emit(&img, mips_lui(R_T1, tags[i].address_hi));
         emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_cache(&img, 0x07, R_T1, tags[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                  (CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE));
+        emit(&img, mips_sd(R_T0, R_T2,
+                           CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE));
         emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                  (CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE + 8));
+        emit(&img, mips_sd(R_T0, R_T2,
+                           CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE + 8));
     }
     for (unsigned int i = 0; i < ARRAY_SIZE(data); i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | data[i].address_hi);
+        emit(&img, mips_lui(R_T1, data[i].address_hi));
         emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_mtc0(&img, R_ZERO, CP0_ERRCTL, 0);
@@ -333,20 +319,20 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
                          CAPACITY_DATA_OFF + i * CAPACITY_DATA_STRIDE);
     }
 
-    emit(&img, OPC_LUI | (R_T1 << 16) | tags[2].address_hi);
+    emit(&img, mips_lui(R_T1, tags[2].address_hi));
     emit_cache(&img, 0x03, R_T1, tags[2].address_off);
     for (unsigned int i = 0; i < ARRAY_SIZE(tags); i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | tags[i].address_hi);
+        emit(&img, mips_lui(R_T1, tags[i].address_hi));
         emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_cache(&img, 0x07, R_T1, tags[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                  (CAPACITY_INVALID_TAG_OFF + i * CACHE_TAG_STRIDE));
+        emit(&img, mips_sd(R_T0, R_T2,
+                           CAPACITY_INVALID_TAG_OFF + i * CACHE_TAG_STRIDE));
     }
     emit_load_u32(&img, R_T0, CACHE_DONE_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CAPACITY_DONE_OFF);
-    emit(&img, OPC_SYNC);
+    emit(&img, mips_sd(R_T0, R_T2, CAPACITY_DONE_OFF));
+    emit(&img, mips_sync());
 
     img.pos = CAPACITY_HALT;
     emit_branch(&img, CAPACITY_HALT);
@@ -434,25 +420,24 @@ static void write_guest_image(int fd, const TestConfig *config)
 
     img.pos = CODE_START;
     emit_mfc0(&img, R_T0, CP0_STATUS, 0);
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T1 << 16) | 0xfffb);
-    emit(&img, OPC_AND | (R_T0 << 21) | (R_T1 << 16) | (R_T0 << 11));
+    emit(&img, mips_addiu(R_T1, R_ZERO, -5));
+    emit(&img, mips_and(R_T0, R_T0, R_T1));
     emit_mtc0(&img, R_T0, CP0_STATUS, 0);
     emit(&img, 0);
 
-    emit(&img, OPC_LUI | (R_T0 << 16) | (INITIAL_COUNT >> 16));
-    emit(&img, OPC_ORI | (R_T0 << 21) | (R_T0 << 16) |
-               (INITIAL_COUNT & 0xffff));
+    emit(&img, mips_lui(R_T0, (INITIAL_COUNT >> 16)));
+    emit(&img, mips_ori(R_T0, R_T0, INITIAL_COUNT & 0xffff));
     emit_mtc0(&img, R_T0, CP0_PERFORMANCE, config->counter_sel);
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | PERF_KERNEL);
+    emit(&img, mips_addiu(R_T0, R_ZERO, PERF_KERNEL));
     emit_mtc0(&img, R_T0, CP0_PERFORMANCE, config->control_sel);
-    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | READY_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | READY_OFF);
+    emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
+    emit(&img, mips_addiu(R_T0, R_ZERO, READY_MAGIC));
+    emit(&img, mips_sd(R_T0, R_T2, READY_OFF));
 
     img.pos = MAIN_LOOP;
     emit_mfc0(&img, R_T0, CP0_PERFORMANCE, config->counter_sel);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | COUNT_OFF);
-    emit(&img, OPC_SYNC);
+    emit(&img, mips_sd(R_T0, R_T2, COUNT_OFF));
+    emit(&img, mips_sync());
     emit_branch(&img, MAIN_LOOP);
     emit(&img, 0);
 
@@ -475,9 +460,9 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
     emit(&img, 0);
 
     img.pos = CACHE_START;
-    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
+    emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
     for (i = 0; i < nprobes; i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | probes[i].address_hi);
+        emit(&img, mips_lui(R_T1, probes[i].address_hi));
         emit_load_u32(&img, R_T0, probes[i].taglo);
         emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
         emit_load_u32(&img, R_T0, probes[i].taghi);
@@ -500,12 +485,11 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
     emit_mtc0(&img, R_T0, CP0_ERRCTL, 0);
     emit_cache(&img, 0x1f, R_T1, 8);
     emit_load_u32(&img, R_T0, CACHE_READY_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_READY_OFF);
-    emit(&img, OPC_SYNC);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_READY_OFF));
+    emit(&img, mips_sync());
 
     img.pos = CACHE_LOOP;
-    emit(&img, OPC_LD | (R_T2 << 21) | (R_T0 << 16) |
-               CACHE_COMMAND_OFF);
+    emit(&img, mips_ld(R_T0, R_T2, CACHE_COMMAND_OFF));
     emit_bne(&img, R_T0, R_ZERO, CACHE_READ);
     emit(&img, 0);
     emit_branch(&img, CACHE_LOOP);
@@ -513,27 +497,27 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
 
     img.pos = CACHE_READ;
     for (i = 0; i < nprobes; i++) {
-        emit(&img, OPC_LUI | (R_T1 << 16) | probes[i].address_hi);
+        emit(&img, mips_lui(R_T1, probes[i].address_hi));
         emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_cache(&img, 0x07, R_T1, probes[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                   (CACHE_TAGLO_OFF + i * CACHE_TAG_STRIDE));
+        emit(&img, mips_sd(R_T0, R_T2,
+                           CACHE_TAGLO_OFF + i * CACHE_TAG_STRIDE));
         emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                   (CACHE_TAGHI_OFF + i * CACHE_TAG_STRIDE));
+        emit(&img, mips_sd(R_T0, R_T2,
+                           CACHE_TAGHI_OFF + i * CACHE_TAG_STRIDE));
     }
     emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
     emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
     emit_mtc0(&img, R_ZERO, CP0_ERRCTL, 0);
     emit_cache(&img, 0x1b, R_T1, 8);
     emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DATA_LO_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_DATA_LO_OFF));
     emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DATA_HI_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_DATA_HI_OFF));
     emit_mfc0(&img, R_T0, CP0_ERRCTL, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_ECC_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_ECC_OFF));
     emit_load_u32(&img, R_T0, CACHE_SENTINEL);
     emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
     emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
@@ -541,14 +525,14 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
     emit_mtc0(&img, R_T0, CP0_ERRCTL, 0);
     emit_cache(&img, 0x1b, R_T1, 0);
     emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_OTHER_LO_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_OTHER_LO_OFF));
     emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_OTHER_HI_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_OTHER_HI_OFF));
     emit_mfc0(&img, R_T0, CP0_ERRCTL, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_OTHER_ECC_OFF);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_OTHER_ECC_OFF));
     emit_load_u32(&img, R_T0, CACHE_DONE_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DONE_OFF);
-    emit(&img, OPC_SYNC);
+    emit(&img, mips_sd(R_T0, R_T2, CACHE_DONE_OFF));
+    emit(&img, mips_sync());
 
     img.pos = CACHE_DONE;
     emit_branch(&img, CACHE_DONE);

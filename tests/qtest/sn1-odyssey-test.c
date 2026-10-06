@@ -16,6 +16,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-test.h"
+#include "sgi-mips-emit.h"
 #include "sgi-migrate.h"
 
 #define MACHINE "-M origin300,topology=origin300-v12-direct " \
@@ -413,11 +414,10 @@ static void credit_emit(uint8_t *image, unsigned *pos, uint32_t word)
 static void credit_li64(uint8_t *image, unsigned *pos, unsigned reg,
                         uint64_t value)
 {
-    credit_emit(image, pos, (13 << 26) | (reg << 16) | (value >> 48));
+    credit_emit(image, pos, mips_ori(reg, 0, value >> 48));
     for (unsigned shift = 32; ; shift -= 16) {
-        credit_emit(image, pos, (reg << 16) | (reg << 11) | (16 << 6) | 0x38);
-        credit_emit(image, pos, (13 << 26) | (reg << 21) | (reg << 16) |
-                    ((value >> shift) & 0xffff));
+        credit_emit(image, pos, mips_dsll(reg, reg, 16));
+        credit_emit(image, pos, mips_ori(reg, reg, (value >> shift) & 0xffff));
         if (!shift) {
             break;
         }
@@ -440,26 +440,26 @@ static void test_processor_credit_return(void)
     int fd;
 
     stl_be_p(image, 0x100000ff); /* branch to 0x400 */
-    credit_emit(image, &pos, 0x40086000); /* mfc0 t0, status */
-    credit_emit(image, &pos, 0x35080080); /* enable 64-bit kernel addresses */
-    credit_emit(image, &pos, 0x40886000); /* mtc0 t0, status */
+    credit_emit(image, &pos, mips_mfc0(8, 12)); /* mfc0 t0, status */
+    credit_emit(image, &pos, mips_ori(8, 8, 0x80)); /* 64-bit kernel addrs */
+    credit_emit(image, &pos, mips_mtc0(8, 12)); /* mtc0 t0, status */
     for (unsigned i = 0; i < 4; i++) {
         credit_emit(image, &pos, 0);
     }
     credit_li64(image, &pos, 16, UINT64_C(0x9000000000000000) | box);
     loop = pos;
-    credit_emit(image, &pos, 0xde090000); /* ld t1, 0(s0): store count */
-    credit_emit(image, &pos, 0x1120fffe); /* wait while count is zero */
+    credit_emit(image, &pos, mips_ld(9, 16, 0)); /* ld t1, 0(s0): store count */
+    credit_emit(image, &pos, mips_branch(MIPS_OPC_BEQ, 9, 0, -2)); /* wait */
     credit_emit(image, &pos, 0);
-    credit_emit(image, &pos, 0xde0a0008); /* ld t2, 8(s0): target */
-    credit_emit(image, &pos, 0xfd400000); /* sd zero, 0(t2) */
-    credit_emit(image, &pos, 0x6529ffff); /* decrement count */
-    credit_emit(image, &pos, 0x1520fffd); /* repeat store */
+    credit_emit(image, &pos, mips_ld(10, 16, 8)); /* ld t2, 8(s0): target */
+    credit_emit(image, &pos, mips_sd(0, 10, 0)); /* sd zero, 0(t2) */
+    credit_emit(image, &pos, mips_daddiu(9, 9, -1)); /* decrement count */
+    credit_emit(image, &pos, mips_branch(MIPS_OPC_BNE, 9, 0, -3)); /* repeat */
     credit_emit(image, &pos, 0);
-    credit_emit(image, &pos, 0xfe000000); /* publish completion */
+    credit_emit(image, &pos, mips_sd(0, 16, 0)); /* publish completion */
     branch = pos;
-    credit_emit(image, &pos, 0x10000000 |
-                (uint16_t)(((int)loop - (int)branch - 4) / 4));
+    credit_emit(image, &pos, mips_branch(MIPS_OPC_BEQ, 0, 0,
+                                         ((int)loop - (int)branch - 4) / 4));
     credit_emit(image, &pos, 0);
     fd = g_file_open_tmp("odyssey-credit-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);

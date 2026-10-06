@@ -37,6 +37,15 @@
 #define MIPS_OPC_LUI      (0x0fu << 26)
 #define MIPS_OPC_LD       (0x37u << 26)
 #define MIPS_OPC_SD       (0x3fu << 26)
+#define MIPS_OPC_BEQ      (0x04u << 26)
+#define MIPS_OPC_BNE      (0x05u << 26)
+#define MIPS_OPC_ANDI     (0x0cu << 26)
+#define MIPS_OPC_ORI      (0x0du << 26)
+#define MIPS_OPC_DADDIU   (0x19u << 26)
+#define MIPS_OPC_LW       (0x23u << 26)
+#define MIPS_OPC_SH       (0x29u << 26)
+#define MIPS_OPC_SW       (0x2bu << 26)
+#define MIPS_OPC_CACHE    (0x2fu << 26)
 #define MIPS_OPC_AND      (0x24u | MIPS_OPC_SPECIAL)
 #define MIPS_OPC_CP0      (0x10u << 26)
 #define MIPS_OPC_MFC0     (MIPS_OPC_CP0 | (0x00u << 21))
@@ -61,6 +70,81 @@ static inline uint32_t mips_ld(int rt, int base, uint16_t off)
 static inline uint32_t mips_sd(int rt, int base, uint16_t off)
 {
     return MIPS_OPC_SD | (base << 21) | (rt << 16) | off;
+}
+
+static inline uint32_t mips_ori(int rt, int rs, uint16_t imm)
+{
+    return MIPS_OPC_ORI | (rs << 21) | (rt << 16) | imm;
+}
+
+static inline uint32_t mips_andi(int rt, int rs, uint16_t imm)
+{
+    return MIPS_OPC_ANDI | (rs << 21) | (rt << 16) | imm;
+}
+
+static inline uint32_t mips_daddiu(int rt, int rs, int16_t imm)
+{
+    return MIPS_OPC_DADDIU | (rs << 21) | (rt << 16) | (uint16_t)imm;
+}
+
+static inline uint32_t mips_lw(int rt, int base, uint16_t off)
+{
+    return MIPS_OPC_LW | (base << 21) | (rt << 16) | off;
+}
+
+static inline uint32_t mips_sh(int rt, int base, uint16_t off)
+{
+    return MIPS_OPC_SH | (base << 21) | (rt << 16) | off;
+}
+
+static inline uint32_t mips_sw(int rt, int base, uint16_t off)
+{
+    return MIPS_OPC_SW | (base << 21) | (rt << 16) | off;
+}
+
+/* @op is the cache operation, which sits in the rt field. */
+static inline uint32_t mips_cache(int op, int base, uint16_t off)
+{
+    return MIPS_OPC_CACHE | (base << 21) | (op << 16) | off;
+}
+
+/* R-type: sll/dsll style shifts take the amount in @sa, others pass 0. */
+static inline uint32_t mips_rtype(int rs, int rt, int rd, int sa,
+                                  unsigned funct)
+{
+    return MIPS_OPC_SPECIAL | (rs << 21) | (rt << 16) | (rd << 11) |
+           (sa << 6) | funct;
+}
+
+/* I-type with @op unshifted, as the manuals tabulate it. */
+static inline uint32_t mips_itype(unsigned op, int rs, int rt, uint16_t imm)
+{
+    return (op << 26) | (rs << 21) | (rt << 16) | imm;
+}
+
+static inline uint32_t mips_daddu(int rd, int rs, int rt)
+{
+    return mips_rtype(rs, rt, rd, 0, 0x2d);
+}
+
+static inline uint32_t mips_dsll(int rd, int rt, int sa)
+{
+    return mips_rtype(0, rt, rd, sa, 0x38);
+}
+
+static inline uint32_t mips_dsll32(int rd, int rt)
+{
+    return mips_rtype(0, rt, rd, 0, 0x3c);
+}
+
+static inline uint32_t mips_dsrl32(int rd, int rt)
+{
+    return mips_rtype(0, rt, rd, 0, 0x3e);
+}
+
+static inline uint32_t mips_sync(void)
+{
+    return 0x0f;
 }
 
 static inline uint32_t mips_and(int rd, int rs, int rt)
