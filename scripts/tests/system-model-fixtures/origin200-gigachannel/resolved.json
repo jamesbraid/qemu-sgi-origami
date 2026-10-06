@@ -580,7 +580,7 @@
       "parent": "gigachannel-chassis",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ]
     },
     {
@@ -596,7 +596,7 @@
       "parent": "gigachannel-chassis",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ]
     },
     {
@@ -612,7 +612,7 @@
       "parent": "gigachannel-chassis",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ]
     },
     {
@@ -628,7 +628,7 @@
       "parent": "gigachannel-chassis",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ]
     },
     {
@@ -644,7 +644,7 @@
       "parent": "gigachannel-chassis",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ]
     },
     {
@@ -1770,7 +1770,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ],
       "widget": 11
     },
@@ -1793,7 +1793,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ],
       "widget": 12
     },
@@ -1816,7 +1816,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ],
       "widget": 13
     },
@@ -1839,7 +1839,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ],
       "widget": 14
     },
@@ -1862,7 +1862,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+        "firmware:ip27-prom-6.156 widget-to-slot table: Crossbow link assignment"
       ],
       "widget": 15
     },
