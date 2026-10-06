@@ -601,13 +601,6 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
     sgi_bridge_aim_window(s, slot);
 }
 
-/* Only the explicit test override bypasses ordinary PCI placement. */
-static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
-                                             unsigned int slot)
-{
-    return !(s->byte_lane_exempt & (1u << slot));
-}
-
 /* Only the low two bits move: lanes are defined within one word. */
 static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 {
@@ -697,27 +690,23 @@ static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
 
 /* Raw PCI bytes are packed according to the programmed-I/O swap bit. */
 /*
- * One window cycle of up to four bytes, corrected if the caller needs it: a
- * byte, halfword or word, and each half of a 32-bit device's split
- * doubleword. impl.max caps size at four here; the assert makes that bound
- * visible to the compiler's array-bounds check, the eight-byte doubleword
- * being the caller's. Parameterized on a plain base and a correction flag
- * rather than a slot: the per-device windows pass their slot's own base and
- * its explicit test override, the inbound PIO translated window always
- * corrects from PCI address zero
- * and leaves word lanes unswapped.
+ * One corrected window cycle of up to four bytes: a byte, halfword or word,
+ * and each half of a 32-bit device's split doubleword. impl.max caps size at
+ * four here; the assert makes that bound visible to the compiler's
+ * array-bounds check, the eight-byte doubleword being the caller's.
+ * Parameterized on a plain base rather than a slot: the per-device windows
+ * pass their slot's own base, the inbound PIO translated window corrects
+ * from PCI address zero and leaves word lanes unswapped.
  * device is the number a failure records.
  */
 static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
                                                unsigned int device,
-                                               hwaddr base, bool correct,
-                                               bool swap,
+                                               hwaddr base, bool swap,
                                                AddressSpace *space,
                                                hwaddr addr, unsigned int size,
                                                uint64_t *value)
 {
-    hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
-    hwaddr target = base + offset;
+    hwaddr target = base + sgi_bridge_window_correct(addr, size);
     uint8_t bytes[4] = { 0 };
     MemTxResult result;
 
@@ -737,19 +726,18 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
  */
 static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
                                                 unsigned int device,
-                                                hwaddr base, bool correct,
-                                                bool swap,
+                                                hwaddr base, bool swap,
                                                 AddressSpace *space,
                                                 hwaddr addr, uint64_t *value)
 {
     uint64_t word0, word1;
     MemTxResult result;
 
-    result = sgi_bridge_window_read_word(s, device, base, correct, swap, space,
-                                         addr, 4, &word0);
+    result = sgi_bridge_window_read_word(s, device, base, swap, space, addr, 4,
+                                         &word0);
     if (result == MEMTX_OK) {
-        result = sgi_bridge_window_read_word(s, device, base, correct, swap,
-                                             space, addr + 4, 4, &word1);
+        result = sgi_bridge_window_read_word(s, device, base, swap, space,
+                                             addr + 4, 4, &word1);
     }
     *value = result == MEMTX_OK ? (word0 << 32) | word1 : 0;
     return result;
@@ -770,7 +758,6 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
                                           unsigned int size, uint64_t *value)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
-    bool correct = sgi_bridge_slot_needs_correction(s, slot);
     hwaddr base = s->device_window_base[slot];
 
     if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
@@ -785,12 +772,12 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
     }
 
     if (size == 8) {
-        return sgi_bridge_window_read_split(s, slot, base, correct,
+        return sgi_bridge_window_read_split(s, slot, base,
                                             dev & DEV_SWAP_PROGRAMMED, space,
                                             addr, value);
     }
 
-    return sgi_bridge_window_read_word(s, slot, base, correct,
+    return sgi_bridge_window_read_word(s, slot, base,
                                        dev & DEV_SWAP_PROGRAMMED, space, addr,
                                        size, value);
 }
@@ -801,13 +788,12 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
  */
 static void sgi_bridge_window_write_word(SGIBridgeState *s,
                                          unsigned int device, hwaddr base,
-                                         bool correct, bool swap,
+                                         bool swap,
                                          AddressSpace *space,
                                          hwaddr addr, uint64_t val,
                                          unsigned int size)
 {
-    hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
-    hwaddr target = base + offset;
+    hwaddr target = base + sgi_bridge_window_correct(addr, size);
     uint8_t bytes[4];
 
     assert(size <= sizeof(bytes));
@@ -833,7 +819,6 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
                                     uint64_t val, unsigned int size)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
-    bool correct = sgi_bridge_slot_needs_correction(s, slot);
     hwaddr base = s->device_window_base[slot];
 
     if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
@@ -852,16 +837,16 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
     }
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, slot, base, correct,
+        sgi_bridge_window_write_word(s, slot, base,
                                      dev & DEV_SWAP_PROGRAMMED, space, addr,
                                      val >> 32, 4);
-        sgi_bridge_window_write_word(s, slot, base, correct,
+        sgi_bridge_window_write_word(s, slot, base,
                                      dev & DEV_SWAP_PROGRAMMED, space,
                                      addr + 4, val, 4);
         return;
     }
 
-    sgi_bridge_window_write_word(s, slot, base, correct,
+    sgi_bridge_window_write_word(s, slot, base,
                                  dev & DEV_SWAP_PROGRAMMED, space, addr, val,
                                  size);
 }
@@ -954,7 +939,7 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
  * produced byte-identical screendumps to a corrected boot. See the header
  * comment on SGI_BRIDGE_PIO_XLATE_BASE for what was tested and what remains
  * unexplained. RAD4's wrong login-screen colors are confirmed independent
- * of this flag.
+ * of the correction.
  */
 static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
                                              uint64_t *data, unsigned size,
@@ -963,11 +948,11 @@ static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        return sgi_bridge_window_read_split(s, 0, 0, true, false,
+        return sgi_bridge_window_read_split(s, 0, 0, false,
                                             &s->pci_mmio_as, addr, data);
     }
 
-    return sgi_bridge_window_read_word(s, 0, 0, true, false,
+    return sgi_bridge_window_read_word(s, 0, 0, false,
                                        &s->pci_mmio_as, addr, size, data);
 }
 
@@ -978,14 +963,14 @@ static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, 0, 0, true, false,
+        sgi_bridge_window_write_word(s, 0, 0, false,
                                      &s->pci_mmio_as, addr, val >> 32, 4);
-        sgi_bridge_window_write_word(s, 0, 0, true, false,
+        sgi_bridge_window_write_word(s, 0, 0, false,
                                      &s->pci_mmio_as, addr + 4, val, 4);
         return MEMTX_OK;
     }
 
-    sgi_bridge_window_write_word(s, 0, 0, true, false,
+    sgi_bridge_window_write_word(s, 0, 0, false,
                                  &s->pci_mmio_as, addr, val, size);
     return MEMTX_OK;
 }
@@ -1356,15 +1341,6 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         old = *held;
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
-            /* Swap on an exempt slot is not reproduced; say so. */
-            if ((*held & (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED)) &&
-                (s->byte_lane_exempt & (1U << slot))) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-bridge: slot %u holds a device this model "
-                              "exempts from the DMA byte swap, and the guest "
-                              "enabled swapping for it; the transfer will not "
-                              "be permuted\n", slot);
-            }
             sgi_bridge_aim_window(s, slot);
         } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
             sgi_bridge_onewire_slot(s, (uint32_t)val);
@@ -2063,9 +2039,8 @@ static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
 
-    /* Local space never crosses the swapper; the override is test-only. */
-    if (pci_addr < BRIDGE_PCI_TRANSLATED ||
-        (s->byte_lane_exempt & (1U << slot))) {
+    /* Local space never crosses the swapper. */
+    if (pci_addr < BRIDGE_PCI_TRANSLATED) {
         return SGI_DMA_PLACEMENT_IDENTITY;
     }
     return sgi_dma_placement_select(
@@ -2676,12 +2651,6 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_BOOL("flash-select", SGIBridgeState, flash_select, false),
     DEFINE_PROP_BOOL("flash-reject-invalid-writes", SGIBridgeState,
                      flash_reject_invalid_writes, false),
-    /*
-     * Forces slots exempt whatever their cards say, for a test or a debug run
-     * that wants the answer a card cannot be asked for. Cards declare
-     * themselves; this is the override, not the mechanism.
-     */
-    DEFINE_PROP_UINT32("byte-lane-exempt", SGIBridgeState, byte_lane_exempt, 0),
     /*
      * Slots wired to the 64-bit data path, whose REQ64# the board drives
      * at reset, one bit per slot. The chip itself does not drive it, so
