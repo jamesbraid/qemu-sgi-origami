@@ -137,8 +137,7 @@ PCI placement
        ``0xbf`` BaseIO-G, ``0x7a`` MediaIO) agree with those
        populations.
      - approximation
-     - The words were read from the stock IRIX 6.5.30 kernel by
-       disassembly, a shipped binary rather than vendor source; they
+     - The words were read from the stock IRIX 6.5.30 kernel binary, a shipped image rather than vendor source; they
        are not independently citable, and the populations above are the
        public statement.
 

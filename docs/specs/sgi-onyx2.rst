@@ -63,8 +63,8 @@ Public software: the widget identity tables in Linux
 (``arch/mips/include/asm/xtalk/xwidget.h``) and OpenBSD's sgi port
 (``sys/arch/sgi/xbow/xbowdevs``).
 
-The stock IP27 PROM 6.156 payload (``firmware:ip27-prom-6.156``) is read
-by disassembly. A fact read from it names the image address. The IRIX
+The stock IP27 PROM 6.156 payload (``firmware:ip27-prom-6.156``) is measured from
+the image itself. A fact read from it names the image address. The IRIX
 6.5.30 kernel carries copies of the same tables, byte for byte, which the
 author also read; that kernel is not a registered source and the facts
 below rest on the PROM alone.
@@ -187,7 +187,7 @@ exists only for this chassis:
      - ``io1``
      - BaseIO-G
 
-Established by disassembly (``firmware:ip27-prom-6.156`` table at
+Established from the stock PROM image (``firmware:ip27-prom-6.156`` table at
 ``0x1fcd1dd0``; the companion node-slot-to-widget table at ``0x1fcd1ea8`` and
 the I/O-slot-to-widget table at ``0x1fcd1f88`` give the same rows from the
 other direction). A real deskside's PROM ``hinv -v`` prints ``BASEIO IO
@@ -210,7 +210,7 @@ and ``0x52`` for ``n2``. The PROM's decoder at ``0x1fc461fc`` turns the low
 three bits of the Hub slot-identity register into them: raw 3 gives ``n1`` and
 raw 2 gives ``n2``, where an eight-processor module uses raw 7 to 4 for
 ``n1`` to ``n4``. Only the low three bits decode; raw 0 and 1 decode as
-invalid. Established by disassembly (``firmware:ip27-prom-6.156`` address
+invalid. Established from the stock PROM image (``firmware:ip27-prom-6.156`` address
 ``0x1fc461fc``). A real deskside's IRIX ``hinv`` prints node memory as
 ``Module 1/Slot 81`` and ``Slot 82``, the two codes in decimal
 (``web:irixnet-post-32192``). Established.
@@ -220,7 +220,7 @@ The deskside decode needs bit 0 of the 32-bit word at physical
 flash's firmware configuration block, beside the machine-type field at
 ``0x90``. With the bit set, raw 3 and 2 decode as ordinary node slots 5 and 6
 instead. A deskside's flash must therefore carry the bit clear, and the real
-deskside's ``Slot 81/82`` shows it clear. Established by disassembly
+deskside's ``Slot 81/82`` shows it clear. Established from the stock PROM image
 (``firmware:ip27-prom-6.156`` address ``0x1fc461fc`` and its caller) and the
 capture. The stock image carries the bit clear, so the model needs no
 setting. What the bit means otherwise is unknown, and what the deskside
@@ -241,8 +241,7 @@ lists one, where the rack lists ``r1`` and ``r2``. Established
 The PROM's partner-node probe (``firmware:ip27-prom-6.156`` routine at
 ``0x1fc470a0``, called at ``0x1fc4ff88``) tries an empty route, then a
 one-hop route out of port 4 or 5 chosen by slot parity, for a deskside slot
-code. Otherwise it routes through Router port 6. Established by
-disassembly. That this models a direct Hub-to-Hub link through the Null
+code. Otherwise it routes through Router port 6. Established from the stock PROM image. That this models a direct Hub-to-Hub link through the Null
 Router is inferred.
 
 In both deskside captures ``n2`` holds NASID 0 and ``n1`` NASID 1
@@ -296,7 +295,7 @@ printed pages 33-36; HMQ-380-C Tables 41 and 42, printed pages 130-131).
      - ``io3``
      - ``io9``
 
-Established by disassembly (``firmware:ip27-prom-6.156`` tables at
+Established from the stock PROM image (``firmware:ip27-prom-6.156`` tables at
 ``0x1fcd1df0`` for Crossbow 0 and ``0x1fcd1e10`` for Crossbow 1). The
 booklet's ``xbstat`` table (HMQ-380-C printed page 250) agrees on rows B to
 F. It labels widget 8 "BaseIO" only, with no Crossbow 1 entry, and prints
@@ -433,7 +432,7 @@ How firmware chooses the widget map
 
 There is no machine-type word for an Onyx2. The PROM routine at
 ``0x1fc419cc`` (its error text names it as the widget-to-slot routine) picks
-a table from the hardware, in this order. Established by disassembly
+a table from the hardware, in this order. Established from the stock PROM image
 (``firmware:ip27-prom-6.156`` address ``0x1fc419cc``):
 
 1. Widgets outside 8 to 15 give an invalid slot.
@@ -470,8 +469,7 @@ in Linux and OpenBSD. Established (Linux
 42; :ref:`sgi-graphics-widget-identities`). The PROM's graphics classifier
 (``firmware:ip27-prom-6.156`` address ``0x1fc4291c``) gives part ``0xc102``
 board type ``0x51`` and the name ``kona``, gives other graphics parts their
-own types and every unknown graphics part a generic name. Established by
-disassembly.
+own types and every unknown graphics part a generic name. Established from the stock PROM image.
 
 The deskside pipe presents the same identity: its PROM prints ``KONA
 Graphics Board, Module 1, Slot io4`` and the classifier names a board
@@ -550,7 +548,7 @@ Unknowns
    * - Which upper Hub slot-identity bits the deskside midplane drives
      - A deskside ``hinv`` that prints the register, or a midplane pinout
    * - Why ``n2`` takes NASID 0 on a two-node deskside
-     - Disassembly of the PROM's NASID assignment for class 5 slots
+     - The PROM's NASID assignment for class 5 slots, read from the image
    * - Which node is wired to Crossbow 1 widgets 9 and A
      - A midplane drawing or wiring table
    * - Whether the Xtown or Ktown has a host-readable register
