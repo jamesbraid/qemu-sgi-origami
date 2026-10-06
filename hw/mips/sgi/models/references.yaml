@@ -708,8 +708,8 @@ web:
     locator: page
     rights: obtain-only
     obtain:
-      url: https://datasheetspdf.com/pdf/613977/Lucent/USS-312/1
-      sha256: 0752255bb111833180e57c8c8d09e12a5a18fd465e59a4bc755e63f7b23af5eb
+      url: https://datasheet.octopart.com/USS312TC-Lucent-datasheet-180610558.pdf
+      sha256: 5e4b19ced7d90480afcc1d6b8eea663f100f85b3321d98eaaf078c411bd53a45
   galles-spider-1997:
     title: "Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)"
     publisher: "IEEE Computer Society"
