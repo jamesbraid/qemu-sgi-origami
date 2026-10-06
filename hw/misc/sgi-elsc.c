@@ -20,9 +20,14 @@
 #include "qapi/type-helpers.h"
 #include "trace.h"
 
-/* Firmware ignores the token but its first eight bytes must fit a buffer. */
-#define SGI_ELSC_VERSION "1.0"
-QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION) > 8);
+/*
+ * Each build's version field, all eight characters of it. Firmware ignores
+ * the token but its first eight bytes must fit a buffer.
+ */
+#define SGI_ELSC_VERSION_ORIGIN200  "V 3.1S  "
+#define SGI_ELSC_VERSION_ORIGIN2000 "VER 3.2 "
+QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION_ORIGIN200) != 9);
+QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION_ORIGIN2000) != 9);
 
 static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
 {
@@ -177,15 +182,21 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
 }
 
 /*
- * "dsp": overwrite the display from position 0, leaving the remaining
- * positions unaltered. What an over-length message does is unobserved;
- * rejecting it whole is the conservative choice.
+ * "dsp <text>": the Origin 2000 build's eight-character front-panel message.
+ * Up to eight characters, spaces included, overwrite the display from its
+ * first position and leave the rest alone. The text stops at the first
+ * unprintable character and anything past eight is dropped. An empty
+ * message is a bad argument.
  */
 static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
 {
-    unsigned n = len - 4;
+    unsigned n = 0;
 
-    if (n > SGI_ELSC_DISPLAY_CHARS || memchr(&text[4], '\0', n)) {
+    while (4 + n < len && n < SGI_ELSC_DISPLAY_CHARS &&
+           g_ascii_isprint(text[4 + n])) {
+        n++;
+    }
+    if (n == 0) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
@@ -194,18 +205,28 @@ static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
 }
 
 /*
- * "dsc N C": one display character. Parsed positionally; the firmware sends
- * "dsc %x %c", and C may be any ASCII character but nul, a space included, so
- * splitting on whitespace would reject a legal command.
+ * "dsc <pos> <ch>": one display character on the Origin 2000 build. Spaces
+ * before each argument are skipped, so the position is the digit 1 to 8,
+ * for display positions 0 to 7, and the character is printable and never a
+ * space. The PROM sends "dsc %x %c" with positions 2s-1 and 2s for slot s.
  */
 static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
 {
-    if (len != 7 || text[3] != ' ' || text[5] != ' ' ||
-        text[4] < '0' || text[4] > '7' || text[6] == '\0') {
+    unsigned i = 3;
+    char pos;
+
+    while (i < len && text[i] == ' ') {
+        i++;
+    }
+    pos = i < len ? text[i++] : '\0';
+    while (i < len && text[i] == ' ') {
+        i++;
+    }
+    if (pos < '1' || pos > '8' || i == len || !g_ascii_isgraph(text[i])) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    s->display[text[4] - '0'] = text[6];
+    s->display[pos - '1'] = text[i];
     elsc_frame_response_str(s, "ok");
 }
 
@@ -599,7 +620,9 @@ static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
     if (len == 3 && memcmp(text, "ver", 3) == 0) {
-        elsc_frame_response_str(s, "ok " SGI_ELSC_VERSION);
+        elsc_frame_response_str(s, s->origin2000 ?
+                                "ok " SGI_ELSC_VERSION_ORIGIN2000 :
+                                "ok " SGI_ELSC_VERSION_ORIGIN200);
         return;
     }
     if (len == 3 && memcmp(text, "get", 3) == 0) {
@@ -618,13 +641,20 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         elsc_handle_acp_command(s, text, len);
         return;
     }
-    if (len >= 4 && memcmp(text, "dsp ", 4) == 0) {
-        elsc_handle_dsp(s, text, len);
-        return;
-    }
-    if (len >= 4 && memcmp(text, "dsc ", 4) == 0) {
-        elsc_handle_dsc(s, text, len);
-        return;
+    /*
+     * The display commands exist only in the Origin 2000 build; the Origin
+     * 200 build has no front-panel display and answers them "err cmd". The
+     * PROM and kernel ignore the reply on both machines.
+     */
+    if (s->origin2000 && len >= 3 && (len == 3 || text[3] == ' ')) {
+        if (memcmp(text, "dsp", 3) == 0) {
+            elsc_handle_dsp(s, text, len);
+            return;
+        }
+        if (memcmp(text, "dsc", 3) == 0) {
+            elsc_handle_dsc(s, text, len);
+            return;
+        }
     }
     if (len >= 3 && memcmp(text, "pwr", 3) == 0) {
         elsc_handle_pwr(s, text, len);
@@ -1333,6 +1363,15 @@ static void elsc_realize(DeviceState *dev, Error **errp)
 {
     SGIElscState *s = SGI_ELSC(dev);
 
+    if (!g_strcmp0(s->build, "origin2000")) {
+        s->origin2000 = true;
+    } else if (!s->build || !g_strcmp0(s->build, "origin200")) {
+        s->origin2000 = false;
+    } else {
+        error_setg(errp, "sgi-elsc: build must be origin200 or origin2000, "
+                   "not '%s'", s->build);
+        return;
+    }
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
     s->arb_positions = ELSC_RING_POSITION_COUNT;
     /*
@@ -1474,6 +1513,7 @@ static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT8("dip-switches", SGIElscState, dip_switches, 0),
     /* Only the master module controller publishes arbitration grants. */
     DEFINE_PROP_BOOL("arbitration", SGIElscState, arbitration, true),
+    DEFINE_PROP_STRING("build", SGIElscState, build),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
 
@@ -1540,17 +1580,19 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
         }
         g_string_append(buf, preview < s->rx_queue_len ? "\"...\n" : "\"\n");
     }
-    g_string_append(buf, "  display: \"");
-    for (i = 0; i < SGI_ELSC_DISPLAY_CHARS; i++) {
-        uint8_t c = s->display[i];
+    if (s->origin2000) {
+        g_string_append(buf, "  display: \"");
+        for (i = 0; i < SGI_ELSC_DISPLAY_CHARS; i++) {
+            uint8_t c = s->display[i];
 
-        if (c >= 0x20 && c < 0x7f) {
-            g_string_append_c(buf, c);
-        } else {
-            g_string_append_printf(buf, "\\x%02x", c);
+            if (c >= 0x20 && c < 0x7f) {
+                g_string_append_c(buf, c);
+            } else {
+                g_string_append_printf(buf, "\\x%02x", c);
+            }
         }
+        g_string_append(buf, "\"\n");
     }
-    g_string_append(buf, "\"\n");
     if (resp_pending) {
         g_string_append_printf(buf,
                                "  pending response: %u byte(s) for "

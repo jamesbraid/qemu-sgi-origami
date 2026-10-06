@@ -1139,6 +1139,59 @@ static void test_module_power_cycle_reaches_machine(void)
     qtest_quit(qts);
 }
 
+/*
+ * The Origin 2000 build drives the module's eight-character display. A
+ * "dsc" position is the digit 1 to 8 for display positions 0 to 7, which
+ * is what the PROM sends as 2s-1 and 2s for slot s, and the character is
+ * printable and never a space. "dsp" overwrites from the first position,
+ * stops at eight and leaves the rest alone. The display is not readable
+ * over the bus, so content is read through "info elsc".
+ */
+static void test_origin2000_display(void)
+{
+    QTestState *qts = start_module();
+    const char *refused[] = { "dsc 0 X", "dsc 9 X", "dsc 4  ", "dsc", "dsp" };
+    g_autofree char *after_dsc = NULL;
+    g_autofree char *after_dsp = NULL;
+    g_autofree char *after_long = NULL;
+    g_autofree char *after_spaced = NULL;
+    g_autofree char *after_stop = NULL;
+    unsigned i;
+
+    assert_response(qts, 0, "dsc 1 A", "ok");
+    assert_response(qts, 0, "dsc 8 Z", "ok");
+    after_dsc = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_dsc, "display: \"A      Z\""));
+
+    for (i = 0; i < ARRAY_SIZE(refused); i++) {
+        assert_response(qts, 0, refused[i], "err arg");
+    }
+
+    assert_response(qts, 0, "dsp testing", "ok");
+    after_dsp = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_dsp, "display: \"testingZ\""));
+
+    assert_response(qts, 0, "dsp ninechars", "ok");
+    after_long = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_long, "display: \"ninechar\""));
+
+    /* Spaces before each argument are skipped. */
+    assert_response(qts, 0, "dsc  2   Q", "ok");
+    after_spaced = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_spaced, "display: \"nQnechar\""));
+
+    /*
+     * The message's own leading spaces are characters, and it stops at
+     * the first unprintable one, leaving the rest of the display.
+     */
+    assert_response(qts, 0, "dsp  ab\x01zz", "ok");
+    after_stop = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_stop, "display: \" abechar\""));
+
+    assert_response(qts, 0, "ver", "ok VER 3.2 ");
+    qtest_quit(qts);
+}
+
 static const uint8_t module_rom[8] = {
     0x09, 0x01, 0x4d, 0x55, 0x4d, 0x45, 0x51, 0x67,
 };
@@ -1442,6 +1495,8 @@ int main(int argc, char **argv)
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",
                    test_identity_survives_reset);
+    qtest_add_func("/sn0/o2000-module-management/origin2000-display",
+                   test_origin2000_display);
     qtest_add_func("/sn0/o2000-module-management/module-reset",
                    test_module_reset_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-down",

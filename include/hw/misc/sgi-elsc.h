@@ -122,6 +122,13 @@ struct SGIElscState {
      * controller owns the rotation.
      */
     bool arbitration;
+    /*
+     * build: which build of the controller firmware this is, "origin200" or
+     * "origin2000". One program built two ways, differing in the commands
+     * it answers and its version string. origin2000 is the parsed result.
+     */
+    char *build;
+    bool origin2000;
     /* Hub-supplied local population, used to find a grant's queue owner. */
     uint32_t num_cpus;
     /*
