@@ -274,27 +274,23 @@ static void dma_fill(QTestState *qts, uint64_t address, uint8_t seed)
     card_write(qts, 0xc, 1);
 }
 
-static void test_dma_buffer_attributes(void)
+static void test_dma_attributes(void)
 {
-    for (unsigned mode = 0; mode < 4; mode++) {
-        unsigned native = !(mode % 2);
-        bool converted = mode / 2;
+    for (unsigned converted = 0; converted < 2; converted++) {
         for (unsigned memory = 0; memory < 2; memory++) {
             for (unsigned early = 0; early < 2; early++) {
                 g_autofree char *extra = g_strdup_printf(
-                    "-global sgi-bridge-dma-test.dma-buffer=%s "
                     "-global sgi-bridge-dma-test.memory-only=%s "
                     "-global sgi-bridge-dma-test.dma-r32=%s",
-                    native ? "off" : "on", memory ? "on" : "off",
-                    converted ? "on" : "off");
+                    memory ? "on" : "off", converted ? "on" : "off");
                 QTestState *qts = transport_start(extra);
                 uint32_t address = 0x40000000 + (early ? 0 : 4092);
                 uint8_t seen[8];
                 MemTxResult result = memory ? MEMTX_ACCESS_ERROR :
                                              MEMTX_DECODE_ERROR;
 
-                g_test_message("native=%u converted=%u memory=%u early=%u",
-                               native, converted, memory, early);
+                g_test_message("converted=%u memory=%u early=%u",
+                               converted, memory, early);
                 qtest_writeq(qts, BASE + 0x10000, early ? 0 : 0x8a21);
                 qtest_memset(qts, TARGET_A + 0x8ffc, 0xee, sizeof(seen));
                 card_write(qts, 0, address);
@@ -330,123 +326,102 @@ static void test_dma_buffer_attributes(void)
     }
 }
 
-static void test_dma_buffer_conversion(void)
+static void test_dma_conversion(void)
 {
-    uint64_t native_data = 0, native_reads = 0, native_overlap = 0;
+    QTestState *qts = transport_start(
+        "-global sgi-xio-test-target.memory-kind=overlap-mmio "
+        "-global sgi-xio-test-target.overlap-offset=0x8000 "
+        "-global sgi-bridge-dma-test.dma-r32=on");
+    uint64_t data, reads, overlap;
 
-    for (unsigned order = 0; order < 2; order++) {
-        unsigned native = !order;
-        g_autofree char *extra = g_strdup_printf(
-            "-global sgi-xio-test-target.memory-kind=overlap-mmio "
-            "-global sgi-xio-test-target.overlap-offset=0x8000 "
-            "-global sgi-bridge-dma-test.dma-r32=on "
-            "-global sgi-bridge-dma-test.dma-buffer=%s",
-            native ? "off" : "on");
-        QTestState *qts = transport_start(extra);
-        uint64_t data, reads, overlap;
-
-        qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 1,
-                              TARGET_A + 0x10000);
-        reg_write(qts, 0x80, 0xa00000);
-        card_write(qts, 0x14, 0x80008000);
-        card_write(qts, 0, 0x80009000);
-        card_write(qts, 4, 8);
-        card_write(qts, 0xc, 2);
-        g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
-        data = card_read(qts, 0x2c) | ((uint64_t)card_read(qts, 0x30) << 32);
-        reads = qtest_readq(qts, TARGET_A + 0x10000 + 48);
-        overlap = qtest_readq(qts, TARGET_A + 0x10000 + 72);
-        if (native) {
-            native_data = data;
-            native_reads = reads;
-            native_overlap = overlap;
-            g_assert_cmphex(data, ==, 0x67452301fecdab89ULL);
-            g_assert_cmpuint(reads, ==, 3);
-            g_assert_cmpuint(overlap, ==, 1);
-        } else {
-            g_assert_cmphex(data, ==, native_data);
-            g_assert_cmpuint(reads, ==, native_reads);
-            g_assert_cmpuint(overlap, ==, native_overlap);
-        }
-        g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 56), ==, 2);
-        g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64), ==, 4);
-        qtest_quit(qts);
-    }
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 1,
+                          TARGET_A + 0x10000);
+    reg_write(qts, 0x80, 0xa00000);
+    card_write(qts, 0x14, 0x80008000);
+    card_write(qts, 0, 0x80009000);
+    card_write(qts, 4, 8);
+    card_write(qts, 0xc, 2);
+    g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
+    data = card_read(qts, 0x2c) | ((uint64_t)card_read(qts, 0x30) << 32);
+    reads = qtest_readq(qts, TARGET_A + 0x10000 + 48);
+    overlap = qtest_readq(qts, TARGET_A + 0x10000 + 72);
+    g_assert_cmphex(data, ==, 0x67452301fecdab89ULL);
+    g_assert_cmpuint(reads, ==, 3);
+    g_assert_cmpuint(overlap, ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 56), ==, 2);
+    g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64), ==, 4);
+    qtest_quit(qts);
 }
 
-static void test_dma_buffer_memory(void)
+static void test_dma_memory(void)
 {
     const char *kinds[] = {
         "ram", "readonly", "ram-device", "rom-device", "overlap-mmio",
     };
 
     for (unsigned kind = 0; kind < G_N_ELEMENTS(kinds); kind++) {
-        for (unsigned native = 0; native < 2; native++) {
-            unsigned length = kind == 4 ? 8 : 64;
-            g_autofree char *extra = g_strdup_printf(
-                "-global sgi-xio-test-target.memory-kind=%s "
-                "-global sgi-bridge-dma-test.dma-buffer=%s",
-                kinds[kind], native ? "off" : "on");
-            QTestState *qts = transport_start(extra);
-            uint8_t expected[64], seen[64];
+        unsigned length = kind == 4 ? 8 : 64;
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-xio-test-target.memory-kind=%s", kinds[kind]);
+        QTestState *qts = transport_start(extra);
+        uint8_t expected[64], seen[64];
 
-            for (unsigned i = 0; i < length; i++) {
-                expected[i] = 0x40 + i;
-            }
-            if (kind == 0) {
-                qtest_memwrite(qts, TARGET_A + SCRATCH, expected, length);
-            } else {
-                qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 1,
-                                      TARGET_A + 0x10000);
-            }
-            reg_write(qts, 0x80, 0xa00000);
-            card_write(qts, 0x14, 0x80008000);
-            card_write(qts, 0, 0x80009000);
-            card_write(qts, 4, length);
-            card_write(qts, 0xc, 2);
-            g_assert_cmphex(card_read(qts, 0x28), ==,
-                            kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
-            if (kind == 4) {
-                g_assert_cmphex(card_read(qts, 0x2c), ==, 0x89abcdef);
-                g_assert_cmphex(card_read(qts, 0x30), ==, 0x01234567);
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 48),
-                                 ==, 1);
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
-                                 ==, 8);
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
-                                 ==, 0);
-            } else {
-                g_assert_cmphex(card_read(qts, 0x2c), ==, 0x43424140);
-                g_assert_cmphex(card_read(qts, 0x30), ==, 0x47464544);
-                if (kind != 1 && kind != 3) {
-                    qtest_memread(qts, TARGET_A + 0x9000, seen, length);
-                    g_assert_cmpmem(seen, length, expected, length);
-                }
-            }
-            card_write(qts, 0, 0x80008000);
-            card_write(qts, 8, 0x70);
-            card_write(qts, 0xc, 1);
-            g_assert_cmphex(card_read(qts, 0x28), ==,
-                            kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
-            /* The real cached write must preserve the caller's source. */
-            g_assert_cmphex(card_read(qts, 0x2c), ==, 0x73727170);
-            g_assert_cmphex(card_read(qts, 0x30), ==, 0x77767574);
-            if (kind == 4) {
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 56),
-                                 ==, 2);
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
-                                 ==, 8);
-                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
-                                 ==, 0);
-            } else {
-                qtest_memread(qts, TARGET_A + SCRATCH, seen, length);
-                for (unsigned i = 0; i < length; i++) {
-                    g_assert_cmpuint(seen[i], ==,
-                        (kind == 1 || kind == 3 ? 0x40 : 0x70) + i);
-                }
-            }
-            qtest_quit(qts);
+        for (unsigned i = 0; i < length; i++) {
+            expected[i] = 0x40 + i;
         }
+        if (kind == 0) {
+            qtest_memwrite(qts, TARGET_A + SCRATCH, expected, length);
+        } else {
+            qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 1,
+                                  TARGET_A + 0x10000);
+        }
+        reg_write(qts, 0x80, 0xa00000);
+        card_write(qts, 0x14, 0x80008000);
+        card_write(qts, 0, 0x80009000);
+        card_write(qts, 4, length);
+        card_write(qts, 0xc, 2);
+        g_assert_cmphex(card_read(qts, 0x28), ==,
+                        kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
+        if (kind == 4) {
+            g_assert_cmphex(card_read(qts, 0x2c), ==, 0x89abcdef);
+            g_assert_cmphex(card_read(qts, 0x30), ==, 0x01234567);
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 48),
+                             ==, 1);
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
+                             ==, 8);
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
+                             ==, 0);
+        } else {
+            g_assert_cmphex(card_read(qts, 0x2c), ==, 0x43424140);
+            g_assert_cmphex(card_read(qts, 0x30), ==, 0x47464544);
+            if (kind != 1 && kind != 3) {
+                qtest_memread(qts, TARGET_A + 0x9000, seen, length);
+                g_assert_cmpmem(seen, length, expected, length);
+            }
+        }
+        card_write(qts, 0, 0x80008000);
+        card_write(qts, 8, 0x70);
+        card_write(qts, 0xc, 1);
+        g_assert_cmphex(card_read(qts, 0x28), ==,
+                        kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
+        /* The write leaves the card's own source bytes intact. */
+        g_assert_cmphex(card_read(qts, 0x2c), ==, 0x73727170);
+        g_assert_cmphex(card_read(qts, 0x30), ==, 0x77767574);
+        if (kind == 4) {
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 56),
+                             ==, 2);
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
+                             ==, 8);
+            g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
+                             ==, 0);
+        } else {
+            qtest_memread(qts, TARGET_A + SCRATCH, seen, length);
+            for (unsigned i = 0; i < length; i++) {
+                g_assert_cmpuint(seen[i], ==,
+                    (kind == 1 || kind == 3 ? 0x40 : 0x70) + i);
+            }
+        }
+        qtest_quit(qts);
     }
 }
 
@@ -1117,7 +1092,6 @@ static void place_copy(QTestState *qts, unsigned route, bool swap,
 typedef struct PlaceWidth {
     uint8_t req64;      /* the head's req64-slots: the board's wiring */
     bool card64;        /* the card type is a 64-bit PCI agent */
-    bool native;
 } PlaceWidth;
 
 /* Doubleword placement only for a 64-bit card in a wired slot. */
@@ -1134,9 +1108,7 @@ static unsigned place_unit(const PlaceWidth *w, bool swap)
 static QTestState *place_start_with(const PlaceWidth *w, const char *more)
 {
     g_autofree char *extra = g_strdup_printf(
-        "-global sgi-bridge-dma-test.dma-buffer=%s "
-        "-global sgi-xbridge-head.req64-slots=0x%x %s",
-        w->native ? "off" : "on", w->req64, more);
+        "-global sgi-xbridge-head.req64-slots=0x%x %s", w->req64, more);
     QTestState *qts = transport_start_card(w->card64 ?
                                            "sgi-bridge-dma-test-64bit" :
                                            "sgi-bridge-dma-test", extra);
@@ -1236,19 +1208,17 @@ static void test_placement_after_reset(const void *data)
 }
 
 static const PlaceWidth place_widths[] = {
-    { 1u << PLACE_SLOT, true, false },
-    { 1u << PLACE_SLOT, true, true },
+    { 1u << PLACE_SLOT, true },
     /* A 32-bit card in a wired slot. */
-    { 1u << PLACE_SLOT, false, false },
-    { 1u << PLACE_SLOT, false, true },
+    { 1u << PLACE_SLOT, false },
     /*
      * A 64-bit card in an unwired slot beside wired ones, and on a board
      * that wires nothing.
      */
-    { (uint8_t)~(1u << PLACE_SLOT), true, false },
-    { 0, true, true },
+    { (uint8_t)~(1u << PLACE_SLOT), true },
+    { 0, true },
     /* Every slot wired. */
-    { 0xff, true, false },
+    { 0xff, true },
 };
 
 /*
@@ -1285,8 +1255,7 @@ static void add_placement_tests(void)
     for (unsigned i = 0; i < G_N_ELEMENTS(place_widths); i++) {
         const PlaceWidth *w = &place_widths[i];
         g_autofree char *suffix = g_strdup_printf(
-            "req64-%02x-%s-%s", w->req64, w->card64 ? "card64" : "card32",
-            w->native ? "native" : "buffer");
+            "req64-%02x-%s", w->req64, w->card64 ? "card64" : "card32");
         g_autofree char *matrix = g_strdup_printf(
             "/sn1/xbridge/dma-placement/matrix/%s", suffix);
         g_autofree char *refusals = g_strdup_printf(
@@ -1950,11 +1919,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/config-doubleword", test_config_doubleword);
     qtest_add_func("/sn1/xbridge/config-type1", test_config_type1);
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
-    qtest_add_func("/sn1/xbridge/dma-buffer-conversion",
-                   test_dma_buffer_conversion);
-    qtest_add_func("/sn1/xbridge/dma-buffer-memory", test_dma_buffer_memory);
-    qtest_add_func("/sn1/xbridge/dma-buffer-attributes",
-                   test_dma_buffer_attributes);
+    qtest_add_func("/sn1/xbridge/dma-conversion", test_dma_conversion);
+    qtest_add_func("/sn1/xbridge/dma-memory", test_dma_memory);
+    qtest_add_func("/sn1/xbridge/dma-attributes", test_dma_attributes);
     qtest_add_func("/sn1/xbridge/interrupt-packets", test_interrupt_packets);
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",

@@ -1152,11 +1152,9 @@ static void test_dma_unaligned_start(const void *data)
 }
 
 /* Large writes and reads must preserve nonadjacent translated pages. */
-static void test_dma_buffer_pages(const void *data)
+static void test_dma_pages(const void *data)
 {
-    bool native = GPOINTER_TO_INT(data);
-    QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
-                                 ",dma-buffer=%s", native ? "off" : "on");
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
     const unsigned length = PAGE_SIZE_4K + 139;
     const unsigned start = 1;
     g_autofree uint8_t *seen = g_malloc0(PAGE_SIZE_4K);
@@ -1204,61 +1202,54 @@ static void test_dma_buffer_pages(const void *data)
 
 
 /* Endpoint and Bridge conversions cancel over noncontiguous mapped pages. */
-static void test_dma_buffer_converted_pages(const void *data)
+static void test_dma_converted_pages(const void *data)
 {
     const unsigned start = PAGE_SIZE_4K - 8;
     const unsigned length = 139;
     const hwaddr destination = 0x300000;
     uint8_t seen[PAGE_SIZE_4K];
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD ",dma-r32=on");
 
-    for (unsigned native = 1; ; native--) {
-        QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
-            ",dma-buffer=%s,dma-r32=on", native ? "off" : "on");
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, 0);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0xa));
+    qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa));
+    qtest_memset(qts, TARGET_PAGE_A, SWAP_SENTINEL, PAGE_SIZE_4K);
+    qtest_memset(qts, TARGET_PAGE_B, SWAP_SENTINEL, PAGE_SIZE_4K);
+    bridge_transfer(qts, PCI_TRANSLATED + start, length, SWAP_SEED);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                    MEMTX_OK);
+    for (unsigned page = 0; page < 2; page++) {
+        hwaddr target = page ? TARGET_PAGE_B : TARGET_PAGE_A;
 
-        bridge_start_the_transfer_source(qts);
-        bridge_source_with_swap(qts, 0);
-        qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0xa));
-        qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa));
-        qtest_memset(qts, TARGET_PAGE_A, SWAP_SENTINEL, PAGE_SIZE_4K);
-        qtest_memset(qts, TARGET_PAGE_B, SWAP_SENTINEL, PAGE_SIZE_4K);
-        bridge_transfer(qts, PCI_TRANSLATED + start, length, SWAP_SEED);
-        g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
-                        MEMTX_OK);
-        for (unsigned page = 0; page < 2; page++) {
-            hwaddr target = page ? TARGET_PAGE_B : TARGET_PAGE_A;
-
-            qtest_memread(qts, target, seen, sizeof(seen));
-            for (unsigned i = 0; i < sizeof(seen); i++) {
-                unsigned pci = page * PAGE_SIZE_4K + i;
-                uint8_t expected = pci >= start && pci < start + length ?
-                    (uint8_t)(SWAP_SEED + pci - start) : SWAP_SENTINEL;
-
-                g_assert_cmphex(seen[i], ==, expected);
-            }
-        }
-        qtest_memset(qts, destination - 8, SWAP_SENTINEL, length + 16);
-        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
-                     PCI_TRANSLATED + start);
-        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, destination);
-        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
-        g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
-                        MEMTX_OK);
-        qtest_memread(qts, destination - 8, seen, length + 16);
-        for (unsigned i = 0; i < length + 16; i++) {
-            unsigned logical = (i - 8) ^ 3;
-            uint8_t expected = logical < length ?
-                (uint8_t)(SWAP_SEED + logical) : SWAP_SENTINEL;
+        qtest_memread(qts, target, seen, sizeof(seen));
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            unsigned pci = page * PAGE_SIZE_4K + i;
+            uint8_t expected = pci >= start && pci < start + length ?
+                (uint8_t)(SWAP_SEED + pci - start) : SWAP_SENTINEL;
 
             g_assert_cmphex(seen[i], ==, expected);
         }
-        qtest_quit(qts);
-        if (!native) {
-            break;
-        }
     }
+    qtest_memset(qts, destination - 8, SWAP_SENTINEL, length + 16);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                 PCI_TRANSLATED + start);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, destination);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                    MEMTX_OK);
+    qtest_memread(qts, destination - 8, seen, length + 16);
+    for (unsigned i = 0; i < length + 16; i++) {
+        unsigned logical = (i - 8) ^ 3;
+        uint8_t expected = logical < length ?
+            (uint8_t)(SWAP_SEED + logical) : SWAP_SENTINEL;
+
+        g_assert_cmphex(seen[i], ==, expected);
+    }
+    qtest_quit(qts);
 }
 
-static void test_dma_buffer_speed(const void *data)
+static void test_dma_speed(const void *data)
 {
     const unsigned lengths[] = { 16, 64, 1024, 1500, 4096, 65536 };
     const char *trace = g_getenv("QEMU_DMA_BENCH_TRACE");
@@ -1267,91 +1258,83 @@ static void test_dma_buffer_speed(const void *data)
 
     for (unsigned i = 0; i < G_N_ELEMENTS(lengths); i++) {
         for (unsigned swap = 0; swap < 2; swap++) {
-            for (unsigned order = 0; order < 2; order++) {
-                unsigned native = order ^ ((i + swap) & 1);
-                unsigned length = lengths[i];
-                unsigned repeats = trace ? 1 : length < 4096 ? 4096 : 256;
-                g_autofree char *tracing = trace ? g_strdup_printf(
-                    "-trace enable=sgi_hub_ii_*,file=%s/hub-%s-%u-%u.trace",
-                    trace, native ? "native" : "buffer", swap, length) :
-                    g_strdup("");
-                QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
-                    ",dma-buffer=%s,repetitions=%u %s",
-                    native ? "off" : "on", repeats, tracing);
-                g_autofree uint8_t *seen = g_malloc(length + 2 * guard);
-                int64_t begin, elapsed;
+            unsigned length = lengths[i];
+            unsigned repeats = trace ? 1 : length < 4096 ? 4096 : 256;
+            g_autofree char *tracing = trace ? g_strdup_printf(
+                "-trace enable=sgi_hub_ii_*,file=%s/hub-%u-%u.trace",
+                trace, swap, length) :
+                g_strdup("");
+            QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
+                ",repetitions=%u %s", repeats, tracing);
+            g_autofree uint8_t *seen = g_malloc(length + 2 * guard);
+            int64_t begin, elapsed;
 
-                bridge_start_the_transfer_source(qts);
-                bridge_source_with_swap(qts, swap ? DEV_SWAP_DIRECT : 0);
-                qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0xaU << 20);
-                qtest_memset(qts, TARGET_PAGE_A - guard, SWAP_SENTINEL,
-                              length + 2 * guard);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
-                             0x80000000U | TARGET_PAGE_A);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, SWAP_SEED);
-                if (!trace) {
-                    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
-                }
-                begin = g_get_monotonic_time();
+            bridge_start_the_transfer_source(qts);
+            bridge_source_with_swap(qts, swap ? DEV_SWAP_DIRECT : 0);
+            qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0xaU << 20);
+            qtest_memset(qts, TARGET_PAGE_A - guard, SWAP_SENTINEL,
+                          length + 2 * guard);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                         0x80000000U | TARGET_PAGE_A);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, SWAP_SEED);
+            if (!trace) {
                 qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
-                elapsed = g_get_monotonic_time() - begin;
-                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
-                                MEMTX_OK);
-                qtest_memread(qts, TARGET_PAGE_A - guard, seen,
-                               length + 2 * guard);
-                for (unsigned j = 0; j < length + 2 * guard; j++) {
-                    unsigned index = swap ? j - guard : (j - guard) ^ 3;
-                    uint8_t expected = j < guard || j >= guard + length ?
-                        SWAP_SENTINEL : (uint8_t)(SWAP_SEED + index);
-
-                    g_assert_cmpuint(seen[j], ==, expected);
-                }
-                g_test_message("%s order=%u swap32=%u length=%u repeats=%u "
-                               "us=%" PRId64 " ns/transfer=%.2f MiB/s=%.2f",
-                               native ? "native" : "buffer", order, !swap,
-                               length, repeats, elapsed,
-                               (double)elapsed * 1000 / repeats,
-                               (double)length * repeats * 1000000 / elapsed /
-                               (1 << 20));
-
-                /* The opposite read control leaves one R32 conversion. */
-                bridge_source_with_swap(qts, swap ? 0 : DEV_SWAP_DIRECT);
-                qtest_memset(qts, destination - guard, SWAP_SENTINEL,
-                              length + 2 * guard);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
-                             0x80000000U | TARGET_PAGE_A);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
-                             destination);
-                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
-                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
-                                MEMTX_OK);
-                qtest_memread(qts, destination - guard, seen,
-                               length + 2 * guard);
-                for (unsigned j = 0; j < length + 2 * guard; j++) {
-                    uint8_t expected = j < guard || j >= guard + length ?
-                        SWAP_SENTINEL :
-                        (uint8_t)(SWAP_SEED + ((j - guard) ^ 3));
-
-                    g_assert_cmpuint(seen[j], ==, expected);
-                }
-                qtest_quit(qts);
             }
+            begin = g_get_monotonic_time();
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+            elapsed = g_get_monotonic_time() - begin;
+            g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                            MEMTX_OK);
+            qtest_memread(qts, TARGET_PAGE_A - guard, seen,
+                           length + 2 * guard);
+            for (unsigned j = 0; j < length + 2 * guard; j++) {
+                unsigned index = swap ? j - guard : (j - guard) ^ 3;
+                uint8_t expected = j < guard || j >= guard + length ?
+                    SWAP_SENTINEL : (uint8_t)(SWAP_SEED + index);
+
+                g_assert_cmpuint(seen[j], ==, expected);
+            }
+            g_test_message("swap32=%u length=%u repeats=%u "
+                           "us=%" PRId64 " ns/transfer=%.2f MiB/s=%.2f",
+                           !swap, length, repeats, elapsed,
+                           (double)elapsed * 1000 / repeats,
+                           (double)length * repeats * 1000000 / elapsed /
+                           (1 << 20));
+
+            /* The opposite read control leaves one R32 conversion. */
+            bridge_source_with_swap(qts, swap ? 0 : DEV_SWAP_DIRECT);
+            qtest_memset(qts, destination - guard, SWAP_SENTINEL,
+                          length + 2 * guard);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                         0x80000000U | TARGET_PAGE_A);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                         destination);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+            g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                            MEMTX_OK);
+            qtest_memread(qts, destination - guard, seen,
+                           length + 2 * guard);
+            for (unsigned j = 0; j < length + 2 * guard; j++) {
+                uint8_t expected = j < guard || j >= guard + length ?
+                    SWAP_SENTINEL :
+                    (uint8_t)(SWAP_SEED + ((j - guard) ^ 3));
+
+                g_assert_cmpuint(seen[j], ==, expected);
+            }
+            qtest_quit(qts);
         }
     }
 }
 
-static void test_dma_buffer_faults(const void *data)
+static void test_dma_faults(const void *data)
 {
-    for (unsigned mode = 0; mode < 4; mode++) {
-        unsigned native = mode % 2;
-        bool converted = mode / 2;
+    for (unsigned converted = 0; converted < 2; converted++) {
         for (unsigned memory = 0; memory < 2; memory++) {
             for (unsigned early = 0; early < 3; early++) {
                 QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
-                    ",dma-buffer=%s,memory-only=%s,dma-r32=%s",
-                    native ? "off" : "on", memory ? "on" : "off",
-                    converted ? "on" : "off");
+                    ",memory-only=%s,dma-r32=%s",
+                    memory ? "on" : "off", converted ? "on" : "off");
                 uint32_t address = early == 2 ? PCI_TRANSLATED + 128 * 4096 :
                     PCI_TRANSLATED + (early ? 0 : PAGE_SIZE_4K - 4);
                 uint8_t seen[8];
@@ -1365,8 +1348,8 @@ static void test_dma_buffer_faults(const void *data)
                  */
                 bool refused = early || (memory && converted);
 
-                g_test_message("native=%u memory=%u early=%u",
-                               native, memory, early);
+                g_test_message("converted=%u memory=%u early=%u",
+                               converted, memory, early);
                 bridge_start_the_transfer_source(qts);
                 bridge_source_with_swap(qts, DEV_SWAP_TRANSLATED);
                 qtest_writeq(qts, ATE(0),
@@ -1406,58 +1389,54 @@ static void test_dma_buffer_faults(const void *data)
     }
 }
 
-static void test_dma_buffer_hub_claims(const void *data)
+static void test_dma_hub_claims(const void *data)
 {
-    for (unsigned native = 0; native < 2; native++) {
-        QTestState *qts = qtest_initf(MACHINE_TWO_NODE DMA_CARD
-                                     ",bus=pci,dma-buffer=%s",
-                                     native ? "off" : "on");
-        uint8_t pattern[64], seen[64];
+    QTestState *qts = qtest_init(MACHINE_TWO_NODE DMA_CARD ",bus=pci");
+    uint8_t pattern[64], seen[64];
 
-        for (unsigned i = 0; i < sizeof(pattern); i++) {
-            pattern[i] = SWAP_SEED + i;
-        }
-        g_assert_cmphex(qtest_readl(qts, CFG0(DMA_SLOT, 0)), !=, NO_CARD);
-        bridge_start_the_transfer_source(qts);
-        bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
-        qtest_writel(qts, REG(0x108), 1U << 9);
-        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0x300000);
-        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, sizeof(pattern));
-        for (unsigned step = 0; step < 4; step++) {
-            uint64_t address = step == 3 ?
-                0xa000000200bc4000ULL : 0xa000000100bc4000ULL;
-            bool claimed = step == 1 || step == 3;
-
-            if (step == 1) {
-                sn0_program_nasid(qts, 1);
-                qtest_memwrite(qts, NODE1_SYS_ADDR, pattern, sizeof(pattern));
-            } else if (step == 2) {
-                sn0_program_nasid(qts, 2);
-            }
-            qtest_memset(qts, 0x300000, SWAP_SENTINEL, sizeof(seen));
-            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, address);
-            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI,
-                         address >> 32);
-            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
-            g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
-                            claimed ? MEMTX_OK : MEMTX_DECODE_ERROR);
-            qtest_memread(qts, 0x300000, seen, sizeof(seen));
-            for (unsigned i = 0; i < sizeof(seen); i++) {
-                g_assert_cmpuint(seen[i], ==,
-                                 claimed ? pattern[i] : SWAP_SENTINEL);
-            }
-            if (!claimed) {
-                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c),
-                                ==, 0);
-                g_assert_cmphex(qtest_readl(qts, REG(0x060)), ==, 0);
-                g_assert_cmphex(qtest_readl(qts, REG(0x068)), ==, 0);
-            }
-        }
-        qtest_quit(qts);
+    for (unsigned i = 0; i < sizeof(pattern); i++) {
+        pattern[i] = SWAP_SEED + i;
     }
+    g_assert_cmphex(qtest_readl(qts, CFG0(DMA_SLOT, 0)), !=, NO_CARD);
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    qtest_writel(qts, REG(0x108), 1U << 9);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0x300000);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, sizeof(pattern));
+    for (unsigned step = 0; step < 4; step++) {
+        uint64_t address = step == 3 ?
+            0xa000000200bc4000ULL : 0xa000000100bc4000ULL;
+        bool claimed = step == 1 || step == 3;
+
+        if (step == 1) {
+            sn0_program_nasid(qts, 1);
+            qtest_memwrite(qts, NODE1_SYS_ADDR, pattern, sizeof(pattern));
+        } else if (step == 2) {
+            sn0_program_nasid(qts, 2);
+        }
+        qtest_memset(qts, 0x300000, SWAP_SENTINEL, sizeof(seen));
+        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, address);
+        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI,
+                     address >> 32);
+        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+        g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                        claimed ? MEMTX_OK : MEMTX_DECODE_ERROR);
+        qtest_memread(qts, 0x300000, seen, sizeof(seen));
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            g_assert_cmpuint(seen[i], ==,
+                             claimed ? pattern[i] : SWAP_SENTINEL);
+        }
+        if (!claimed) {
+            g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c),
+                            ==, 0);
+            g_assert_cmphex(qtest_readl(qts, REG(0x060)), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, REG(0x068)), ==, 0);
+        }
+    }
+    qtest_quit(qts);
 }
 
-static void test_dma_buffer_master_disabled(const void *data)
+static void test_dma_master_disabled(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
     uint8_t sentinel[64], seen[64];
@@ -2050,7 +2029,6 @@ static void place_copy(QTestState *qts, unsigned route, unsigned start,
 typedef struct PlaceWidth {
     unsigned slot;
     bool card64;        /* the card type is a 64-bit PCI agent */
-    bool native;        /* plain address_space_rw, not the buffer layer */
 } PlaceWidth;
 
 /* Doubleword placement only for a 64-bit card in a wired slot. */
@@ -2067,11 +2045,10 @@ static unsigned place_unit(const PlaceWidth *w, bool swap)
 static QTestState *place_start_with(const PlaceWidth *w, const char *extra)
 {
     place_slot = w->slot;
-    return qtest_initf(MACHINE_WITH_BRIDGE
-                       " -device %s,addr=%u,dma-buffer=%s%s",
+    return qtest_initf(MACHINE_WITH_BRIDGE " -device %s,addr=%u%s",
                        w->card64 ? "sgi-bridge-dma-test-64bit" :
                                    "sgi-bridge-dma-test",
-                       w->slot, w->native ? "off" : "on", extra);
+                       w->slot, extra);
 }
 
 static QTestState *place_start(const PlaceWidth *w)
@@ -2181,13 +2158,11 @@ static void test_dma_placement_after_reset(const void *data)
 }
 
 static const PlaceWidth place_widths[] = {
-    { DMA_SLOT, true, false },
-    { DMA_SLOT, true, true },
+    { DMA_SLOT, true },
     /* A 32-bit card in a wired slot. */
-    { DMA_SLOT, false, false },
-    { DMA_SLOT, false, true },
+    { DMA_SLOT, false },
     /* A 64-bit card in a slot that does not drive REQ64#. */
-    { PLACE_UNWIRED_SLOT, true, false },
+    { PLACE_UNWIRED_SLOT, true },
 };
 
 /*
@@ -2316,7 +2291,6 @@ static void test_dma_placement_long(const void *data)
         " -d trace:sgi_dma_placement_buffer -D %s", path);
     QTestState *qts;
 
-    assert(w->native);
     qts = place_start_with(w, trace);
     place_prepare(qts);
     for (unsigned route = 0; route < PLACE_ROUTES; route++) {
@@ -2393,24 +2367,20 @@ static void add_dma_placement_tests(void)
     for (unsigned i = 0; i < ARRAY_SIZE(place_widths); i++) {
         const PlaceWidth *w = &place_widths[i];
         g_autofree char *suffix = g_strdup_printf(
-            "slot%u-%s-%s", w->slot, w->card64 ? "card64" : "card32",
-            w->native ? "native" : "buffer");
+            "slot%u-%s", w->slot, w->card64 ? "card64" : "card32");
         g_autofree char *matrix = g_strdup_printf(
             "sn0/bridge/dma-placement/matrix/%s", suffix);
         g_autofree char *refusals = g_strdup_printf(
             "sn0/bridge/dma-placement/refusals/%s", suffix);
         g_autofree char *reset = g_strdup_printf(
             "sn0/bridge/dma-placement/reset/%s", suffix);
+        g_autofree char *long_name = g_strdup_printf(
+            "sn0/bridge/dma-placement/long/%s", suffix);
 
         qtest_add_data_func(matrix, w, test_dma_placement_matrix);
         qtest_add_data_func(refusals, w, test_dma_placement_refusals);
         qtest_add_data_func(reset, w, test_dma_placement_after_reset);
-        if (w->native) {
-            g_autofree char *long_name = g_strdup_printf(
-                "sn0/bridge/dma-placement/long/%s", suffix);
-
-            qtest_add_data_func(long_name, w, test_dma_placement_long);
-        }
+        qtest_add_data_func(long_name, w, test_dma_placement_long);
         if (w->slot == DMA_SLOT) {
             g_autofree char *converted = g_strdup_printf(
                 "sn0/bridge/dma-placement/converted/%s", suffix);
@@ -4395,7 +4365,6 @@ static void test_dma_placement_buffer_declines_mmio(void)
 {
     g_autofree char *path = place_log_path();
     g_autofree char *extra = g_strdup_printf(
-        "-global sgi-bridge-dma-test.dma-buffer=off "
         "-device sgi-xio-test-target,id=mm,memory-kind=overlap-mmio,size=64K "
         "-d trace:sgi_dma_placement_buffer,trace:sgi_dma_placement_access "
         "-D %s", path);
@@ -4724,68 +4693,63 @@ static void test_a_chip_error_carries_the_widget_destination(void)
 /* All DMA decoders retain bit 47 and the last bytes of the 48-bit slot. */
 static void test_full_packet_dma(void)
 {
-    unsigned plain, big, lane;
+    unsigned big, lane;
 
-    for (plain = 0; plain < 2; plain++) {
-        for (big = 0; big < 2; big++) {
-            for (lane = 0; lane < 2; lane++) {
-                g_autofree char *extra = g_strdup_printf(
-                    "-device sgi-xio-test-target,id=full,size=1M "
-                    "-global sgi-bridge-dma-test.plain-dma=%s",
-                    plain ? "on" : "off");
-                QTestState *qts = head_start_with(extra);
-                uint64_t end = 1ULL << 48;
-                uint64_t last = end - DMA_LEN;
-                uint64_t page = big ? 16384 : 4096;
-                uint64_t at = (15ULL << 48) | last;
-                uint64_t routes[] = {
-                    0xfffffff0ULL,
-                    0x40000000ULL | (page - DMA_LEN),
-                    (15ULL << 60) | last,
-                };
-                unsigned route, i;
-                uint8_t bytes[DMA_LEN];
+    for (big = 0; big < 2; big++) {
+        for (lane = 0; lane < 2; lane++) {
+            QTestState *qts = head_start_with(
+                "-device sgi-xio-test-target,id=full,size=1M");
+            uint64_t end = 1ULL << 48;
+            uint64_t last = end - DMA_LEN;
+            uint64_t page = big ? 16384 : 4096;
+            uint64_t at = (15ULL << 48) | last;
+            uint64_t routes[] = {
+                0xfffffff0ULL,
+                0x40000000ULL | (page - DMA_LEN),
+                (15ULL << 60) | last,
+            };
+            unsigned route, i;
+            uint8_t bytes[DMA_LEN];
 
-                qtest_sysbus_mmio_map(qts, "/machine/peripheral/full", 0,
-                                     (15ULL << 48) | (end - (1ULL << 20)));
-                widget_card_start(qts);
-                if (lane) {
-                    qtest_writel(qts, WIDGET_REG(BRIDGE_DEVICE(CARD_SLOT)),
-                                 DEV_MEMORY_SPACE | (WIDGET_CARD_MMIO >> 20));
-                }
-                if (big) {
-                    uint32_t control = qtest_readl(qts, WIDGET_REG(0x20));
-                    qtest_writel(qts, WIDGET_REG(0x20), control | (1U << 21));
-                }
-                qtest_writel(qts, WIDGET_REG(BRIDGE_DIRECT_MAP),
-                             (15U << 20) | 0x1ffff);
-                qtest_writeq(qts, WIDGET_ATE(0), (end - page) | (15U << 8) | 1);
-                for (route = 0; route < G_N_ELEMENTS(routes); route++) {
-                    uint8_t seed = 0x40 + route * 0x20;
-                    widget_card_transfer(qts, routes[route], seed);
-                    qtest_memread(qts, at, bytes, sizeof(bytes));
-                    for (i = 0; i < sizeof(bytes); i++) {
-                        unsigned index = lane && !plain ? i ^ 3 : i;
-                        g_assert_cmpuint(bytes[i], ==, seed + index);
-                    }
-                    /* Read through the same decoder into a distinct range. */
-                    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE,
-                                 (uint32_t)routes[route]);
-                    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE_HI,
-                                 routes[route] >> 32);
-                    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS,
-                                 (uint32_t)(routes[route] - DMA_LEN));
-                    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS_HI,
-                                 (routes[route] - DMA_LEN) >> 32);
-                    qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_GO, 2);
-                    qtest_memread(qts, at - DMA_LEN, bytes, sizeof(bytes));
-                    for (i = 0; i < sizeof(bytes); i++) {
-                        unsigned index = lane && !plain ? i ^ 3 : i;
-                        g_assert_cmpuint(bytes[i], ==, seed + index);
-                    }
-                }
-                qtest_quit(qts);
+            qtest_sysbus_mmio_map(qts, "/machine/peripheral/full", 0,
+                                 (15ULL << 48) | (end - (1ULL << 20)));
+            widget_card_start(qts);
+            if (lane) {
+                qtest_writel(qts, WIDGET_REG(BRIDGE_DEVICE(CARD_SLOT)),
+                             DEV_MEMORY_SPACE | (WIDGET_CARD_MMIO >> 20));
             }
+            if (big) {
+                uint32_t control = qtest_readl(qts, WIDGET_REG(0x20));
+                qtest_writel(qts, WIDGET_REG(0x20), control | (1U << 21));
+            }
+            qtest_writel(qts, WIDGET_REG(BRIDGE_DIRECT_MAP),
+                         (15U << 20) | 0x1ffff);
+            qtest_writeq(qts, WIDGET_ATE(0), (end - page) | (15U << 8) | 1);
+            for (route = 0; route < G_N_ELEMENTS(routes); route++) {
+                uint8_t seed = 0x40 + route * 0x20;
+                widget_card_transfer(qts, routes[route], seed);
+                qtest_memread(qts, at, bytes, sizeof(bytes));
+                for (i = 0; i < sizeof(bytes); i++) {
+                    unsigned index = lane ? i ^ 3 : i;
+                    g_assert_cmpuint(bytes[i], ==, seed + index);
+                }
+                /* Read through the same decoder into a distinct range. */
+                qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE,
+                             (uint32_t)routes[route]);
+                qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_SOURCE_HI,
+                             routes[route] >> 32);
+                qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS,
+                             (uint32_t)(routes[route] - DMA_LEN));
+                qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_ADDRESS_HI,
+                             (routes[route] - DMA_LEN) >> 32);
+                qtest_writel(qts, WIDGET_WINDOW0 + DMA_REG_GO, 2);
+                qtest_memread(qts, at - DMA_LEN, bytes, sizeof(bytes));
+                for (i = 0; i < sizeof(bytes); i++) {
+                    unsigned index = lane ? i ^ 3 : i;
+                    g_assert_cmpuint(bytes[i], ==, seed + index);
+                }
+            }
+            qtest_quit(qts);
         }
     }
 }
@@ -5040,21 +5004,15 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/dma-unaligned-start", NULL,
                         test_dma_unaligned_start);
     if (g_test_perf()) {
-        qtest_add_data_func("sn0/bridge/dma-buffer-speed", NULL,
-                            test_dma_buffer_speed);
+        qtest_add_data_func("sn0/bridge/dma-speed", NULL, test_dma_speed);
     }
-    qtest_add_data_func("sn0/bridge/dma-buffer-pages", NULL,
-                        test_dma_buffer_pages);
-    qtest_add_data_func("sn0/bridge/dma-native-pages", GINT_TO_POINTER(1),
-                        test_dma_buffer_pages);
-    qtest_add_data_func("sn0/bridge/dma-buffer-converted-pages", NULL,
-                        test_dma_buffer_converted_pages);
-    qtest_add_data_func("sn0/bridge/dma-buffer-faults", NULL,
-                        test_dma_buffer_faults);
-    qtest_add_data_func("sn0/bridge/dma-buffer-hub-claims", NULL,
-                        test_dma_buffer_hub_claims);
-    qtest_add_data_func("sn0/bridge/dma-buffer-master-disabled", NULL,
-                        test_dma_buffer_master_disabled);
+    qtest_add_data_func("sn0/bridge/dma-pages", NULL, test_dma_pages);
+    qtest_add_data_func("sn0/bridge/dma-converted-pages", NULL,
+                        test_dma_converted_pages);
+    qtest_add_data_func("sn0/bridge/dma-faults", NULL, test_dma_faults);
+    qtest_add_data_func("sn0/bridge/dma-hub-claims", NULL, test_dma_hub_claims);
+    qtest_add_data_func("sn0/bridge/dma-master-disabled", NULL,
+                        test_dma_master_disabled);
     qtest_add_data_func("sn0/bridge/dma-zero-length", NULL,
                         test_dma_zero_length);
     qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,

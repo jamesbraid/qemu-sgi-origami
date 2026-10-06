@@ -919,8 +919,8 @@ static void test_ioc3_prefix_source_dma(void)
     const uint64_t head = VIEW(2), card = head + 0x400000;
     uint8_t seen[32], expected[sizeof(seen)];
 
-    for (unsigned mode = 0; mode < 8; mode++) {
-        bool native = mode & 1, swap = mode & 2, denied = mode & 4;
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool swap = mode & 1, denied = mode & 2;
         g_autofree char *path = trace_dir ? g_strdup_printf(
             "%s/ioc3-xbridge-%u.trace", trace_dir, mode) :
             g_strdup_printf("ioc3-xbridge-%u-%u.trace",
@@ -930,10 +930,9 @@ static void test_ioc3_prefix_source_dma(void)
             "-global sgi-bedrock-io.device-mask-reset=0x%" PRIx64 " "
             "-device sgi-ioc3,id=ioc3,bus=fixture1-head-e.0,addr=0 "
             "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=1,"
-            "dma-buffer=%s,"
             "dma-memory=/machine/peripheral/ioc3/sgi-ioc3.pci-dma[0] "
             "-trace enable=sgi_xbridge_dma_packet,file=%s",
-            UINT64_MAX - denied, native ? "off" : "on", path);
+            UINT64_MAX - denied, path);
         QTestState *s = assembly_start(extra);
         g_autofree char *trace = NULL;
         g_auto(GStrv) lines = NULL;

@@ -79,17 +79,12 @@ static const uint64_t window_offset[8] = {
 /* Slots on node 0's Bridge; the base I/O functions use 0 to 2. */
 #define SLOT_NATIVE         3   /* plain memory API transfers */
 #define SLOT_FACE           5   /* DMA linked to the Hub's inbound face */
-#define SLOT_BUFFER         6   /* the batched buffer interface */
-#define SLOT_FACE_BUFFER    7   /* linked to the face, batched interface */
 
 #define HUB_FACE(node)      "/machine/node" #node "/hub/sgi-hub.ii.packet[0]"
 
 #define CARDS(bus, node) \
-    " -device sgi-bridge-dma-test,bus=" bus ",addr=3,dma-buffer=off" \
-    " -device sgi-bridge-dma-test,bus=" bus ",addr=5,dma-buffer=off," \
-    "dma-memory=" HUB_FACE(node) \
-    " -device sgi-bridge-dma-test,bus=" bus ",addr=6,dma-buffer=on" \
-    " -device sgi-bridge-dma-test,bus=" bus ",addr=7,dma-buffer=on," \
+    " -device sgi-bridge-dma-test,bus=" bus ",addr=3" \
+    " -device sgi-bridge-dma-test,bus=" bus ",addr=5," \
     "dma-memory=" HUB_FACE(node)
 
 #define MACHINE_SINGLE      "-M origin200 -m 128M" CARDS("pci", 0)
@@ -119,14 +114,11 @@ static void cards_ready(QTestState *qts, unsigned int node, uint32_t swap_bits)
     qtest_writel(qts, REG(node, BRIDGE_DIRECT_MAP), 0);
     card_in_slot(qts, node, SLOT_NATIVE, swap_bits);
     card_in_slot(qts, node, SLOT_FACE, 0);
-    card_in_slot(qts, node, SLOT_BUFFER, swap_bits);
-    card_in_slot(qts, node, SLOT_FACE_BUFFER, 0);
 }
 
 static void card_swap(QTestState *qts, unsigned int node, uint32_t swap_bits)
 {
     card_in_slot(qts, node, SLOT_NATIVE, swap_bits);
-    card_in_slot(qts, node, SLOT_BUFFER, swap_bits);
 }
 
 /* One fill or copy; returns the card's transaction result. */
@@ -234,26 +226,23 @@ static const uint32_t lengths[] = {
 static void test_bridge_dma_bytes(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_SINGLE);
-    const unsigned int slots[] = { SLOT_NATIVE, SLOT_BUFFER };
 
     cards_ready(qts, 0, 0);
     for (unsigned int swap = 0; swap < 2; swap++) {
         card_swap(qts, 0, swap ? 0 : DEV_SWAP_DIRECT);
-        for (unsigned int s = 0; s < G_N_ELEMENTS(slots); s++) {
-            for (unsigned int l = 0; l < G_N_ELEMENTS(lengths); l++) {
-                for (unsigned int align = 0; align < 8; align++) {
-                    uint64_t start = TARGET + 0xff8 + align;
-
-                    check_fill(qts, 0, 0, slots[s], PCI_DIRECT64(0), start,
-                               lengths[l], swap, 0x11 + l + align);
-                }
-            }
+        for (unsigned int l = 0; l < G_N_ELEMENTS(lengths); l++) {
             for (unsigned int align = 0; align < 8; align++) {
-                check_copy(qts, slots[s], TARGET + 0x3ff8 + align,
-                           SOURCE + 0x1ff8 + align, 1500, swap);
-                check_copy(qts, slots[s], TARGET + 0x3ff8 + align,
-                           SOURCE + 0x1ff8 + ((align + 3) & 7), 61, swap);
+                uint64_t start = TARGET + 0xff8 + align;
+
+                check_fill(qts, 0, 0, SLOT_NATIVE, PCI_DIRECT64(0), start,
+                           lengths[l], swap, 0x11 + l + align);
             }
+        }
+        for (unsigned int align = 0; align < 8; align++) {
+            check_copy(qts, SLOT_NATIVE, TARGET + 0x3ff8 + align,
+                       SOURCE + 0x1ff8 + align, 1500, swap);
+            check_copy(qts, SLOT_NATIVE, TARGET + 0x3ff8 + align,
+                       SOURCE + 0x1ff8 + ((align + 3) & 7), 61, swap);
         }
     }
     qtest_quit(qts);
@@ -263,15 +252,12 @@ static void test_bridge_dma_bytes(const void *data)
 static void test_face_dma_bytes(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_SINGLE);
-    const unsigned int slots[] = { SLOT_FACE, SLOT_FACE_BUFFER };
 
     cards_ready(qts, 0, 0);
-    for (unsigned int s = 0; s < G_N_ELEMENTS(slots); s++) {
-        for (unsigned int l = 0; l < G_N_ELEMENTS(lengths); l++) {
-            for (unsigned int align = 0; align < 8; align++) {
-                check_fill(qts, 0, 0, slots[s], 0, TARGET + 0xff8 + align,
-                           lengths[l], false, 0x23 + l + align);
-            }
+    for (unsigned int l = 0; l < G_N_ELEMENTS(lengths); l++) {
+        for (unsigned int align = 0; align < 8; align++) {
+            check_fill(qts, 0, 0, SLOT_FACE, 0, TARGET + 0xff8 + align,
+                       lengths[l], false, 0x23 + l + align);
         }
     }
     qtest_quit(qts);
@@ -296,7 +282,6 @@ static uint64_t read_be64(QTestState *qts, uint64_t address)
 static void test_decoded_ranges(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_SINGLE);
-    const unsigned int slots[] = { SLOT_FACE, SLOT_FACE_BUFFER };
     const uint64_t pend = HUB_LOCAL + PI_INT_PEND0;
     const uint64_t scratch = TARGET + 0x100;
     const uint64_t refused[] = {
@@ -304,63 +289,60 @@ static void test_decoded_ranges(const void *data)
         XIO_IO_VIEW | 0x1000, XIO_IO_VIEW | 0x01800098ULL,
         XIO_IDENTITY + 8, (1ULL << 46) | 0x1000,
     };
+    const unsigned int slot = SLOT_FACE, level = 50;
     uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
 
     cards_ready(qts, 0, 0);
-    for (unsigned int s = 0; s < G_N_ELEMENTS(slots); s++) {
-        unsigned int slot = slots[s];
-        unsigned int level = 50 + s;
 
-        /* The identity probe: whole doubleword reads only. */
+    /* The identity probe: whole doubleword reads only. */
+    qtest_memset(qts, scratch, 0xee, 16);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
+                              XIO_IDENTITY, 8, 0), ==, RESULT_OK);
+    g_assert_cmphex(read_be64(qts, scratch), ==, status);
+    qtest_memset(qts, scratch, 0xee, 16);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
+                              XIO_IDENTITY, 4, 0), ==, RESULT_ERROR);
+    g_assert_cmphex(read_be64(qts, scratch), ==, 0xeeeeeeeeeeeeeeeeULL);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL, XIO_IDENTITY,
+                              0, 8, 0), ==, RESULT_ERROR);
+
+    /* Interrupt-modify: whole doubleword writes only. */
+    g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==, 0);
+    qtest_writeq(qts, scratch, INT_MODIFY_SET | level);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
+                              XIO_INT_MODIFY(0) + 4, scratch + 4, 4, 0),
+                     ==, RESULT_ERROR);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
+                              XIO_INT_MODIFY(0), scratch, 4, 0),
+                     ==, RESULT_ERROR);
+    g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==, 0);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
+                              XIO_INT_MODIFY(0), scratch, 8, 0),
+                     ==, RESULT_OK);
+    g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==,
+                    1ULL << level);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch + 8,
+                              XIO_INT_MODIFY(0), 8, 0), ==, RESULT_ERROR);
+
+    /* Everything else the Hub does not decode fails whole. */
+    for (unsigned int i = 0; i < G_N_ELEMENTS(refused); i++) {
+        g_test_message("slot %u refuses 0x%" PRIx64, slot, refused[i]);
+        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL, refused[i],
+                                  0, 8, 0x5a), ==, RESULT_ERROR);
         qtest_memset(qts, scratch, 0xee, 16);
         g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
-                                  XIO_IDENTITY, 8, 0), ==, RESULT_OK);
-        g_assert_cmphex(read_be64(qts, scratch), ==, status);
-        qtest_memset(qts, scratch, 0xee, 16);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
-                                  XIO_IDENTITY, 4, 0), ==, RESULT_ERROR);
-        g_assert_cmphex(read_be64(qts, scratch), ==, 0xeeeeeeeeeeeeeeeeULL);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL, XIO_IDENTITY,
-                                  0, 8, 0), ==, RESULT_ERROR);
-
-        /* Interrupt-modify: whole doubleword writes only. */
-        g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==, 0);
-        qtest_writeq(qts, scratch, INT_MODIFY_SET | level);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
-                                  XIO_INT_MODIFY(0) + 4, scratch + 4, 4, 0),
-                         ==, RESULT_ERROR);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
-                                  XIO_INT_MODIFY(0), scratch, 4, 0),
-                         ==, RESULT_ERROR);
-        g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==, 0);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY,
-                                  XIO_INT_MODIFY(0), scratch, 8, 0),
-                         ==, RESULT_OK);
-        g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==,
-                        1ULL << level);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch + 8,
-                                  XIO_INT_MODIFY(0), 8, 0), ==, RESULT_ERROR);
-
-        /* Everything else the Hub does not decode fails whole. */
-        for (unsigned int i = 0; i < G_N_ELEMENTS(refused); i++) {
-            g_test_message("slot %u refuses 0x%" PRIx64, slot, refused[i]);
-            g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL, refused[i],
-                                      0, 8, 0x5a), ==, RESULT_ERROR);
-            qtest_memset(qts, scratch, 0xee, 16);
-            g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
-                                      refused[i], 8, 0), ==, RESULT_ERROR);
-            g_assert_cmphex(read_be64(qts, scratch), ==,
-                            0xeeeeeeeeeeeeeeeeULL);
-        }
-
-        /* A node number nobody holds fails in the claim layer. */
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL,
-                                  5 * NODE_STRIDE + TARGET, 0, 8, 0x5a), ==,
-                         RESULT_DECODE_ERROR);
-        g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
-                                  5 * NODE_STRIDE + TARGET, 8, 0), ==,
-                         RESULT_DECODE_ERROR);
+                                  refused[i], 8, 0), ==, RESULT_ERROR);
+        g_assert_cmphex(read_be64(qts, scratch), ==,
+                        0xeeeeeeeeeeeeeeeeULL);
     }
+
+    /* A node number nobody holds fails in the claim layer. */
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_FILL,
+                              5 * NODE_STRIDE + TARGET, 0, 8, 0x5a), ==,
+                     RESULT_DECODE_ERROR);
+    g_assert_cmpuint(card_run(qts, 0, slot, DMA_GO_COPY, scratch,
+                              5 * NODE_STRIDE + TARGET, 8, 0), ==,
+                     RESULT_DECODE_ERROR);
     qtest_quit(qts);
 }
 
@@ -408,30 +390,24 @@ static void test_memory_takes_no_callback(const void *data)
     QTestState *qts = qtest_initf(MACHINE_SINGLE
                                   " -trace enable=sgi_hub_ii_packet_access,"
                                   "file=%s", path);
-    const unsigned int bridged[] = { SLOT_NATIVE, SLOT_BUFFER };
-    const unsigned int faced[] = { SLOT_FACE, SLOT_FACE_BUFFER };
     unsigned int memory, interrupts;
 
     cards_ready(qts, 0, 0);
     for (unsigned int swap = 0; swap < 2; swap++) {
         card_swap(qts, 0, swap ? 0 : DEV_SWAP_DIRECT);
-        for (unsigned int s = 0; s < G_N_ELEMENTS(bridged); s++) {
-            g_assert_cmpuint(card_run(qts, 0, bridged[s], DMA_GO_FILL,
-                                      PCI_DIRECT64(TARGET + 3), 0, 4099, 1),
-                             ==, RESULT_OK);
-            g_assert_cmpuint(card_run(qts, 0, bridged[s], DMA_GO_COPY,
-                                      PCI_DIRECT64(TARGET + 0x2001),
-                                      PCI_DIRECT64(SOURCE + 6), 1500, 0),
-                             ==, RESULT_OK);
-        }
-    }
-    for (unsigned int s = 0; s < G_N_ELEMENTS(faced); s++) {
-        g_assert_cmpuint(card_run(qts, 0, faced[s], DMA_GO_FILL, TARGET + 5,
-                                  0, 4099, 1), ==, RESULT_OK);
-        g_assert_cmpuint(card_run(qts, 0, faced[s], DMA_GO_COPY,
-                                  TARGET + 0x2001, SOURCE + 6, 1500, 0),
+        g_assert_cmpuint(card_run(qts, 0, SLOT_NATIVE, DMA_GO_FILL,
+                                  PCI_DIRECT64(TARGET + 3), 0, 4099, 1),
+                         ==, RESULT_OK);
+        g_assert_cmpuint(card_run(qts, 0, SLOT_NATIVE, DMA_GO_COPY,
+                                  PCI_DIRECT64(TARGET + 0x2001),
+                                  PCI_DIRECT64(SOURCE + 6), 1500, 0),
                          ==, RESULT_OK);
     }
+    g_assert_cmpuint(card_run(qts, 0, SLOT_FACE, DMA_GO_FILL, TARGET + 5,
+                              0, 4099, 1), ==, RESULT_OK);
+    g_assert_cmpuint(card_run(qts, 0, SLOT_FACE, DMA_GO_COPY,
+                              TARGET + 0x2001, SOURCE + 6, 1500, 0),
+                     ==, RESULT_OK);
     qtest_writeq(qts, SOURCE, INT_MODIFY_SET | 52);
     g_assert_cmpuint(card_run(qts, 0, SLOT_FACE, DMA_GO_COPY,
                               XIO_INT_MODIFY(0), SOURCE, 8, 0), ==, RESULT_OK);
@@ -475,46 +451,40 @@ static void assert_untouched(QTestState *qts, uint64_t base, size_t span)
 static void test_node_qualified_routing(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_DUAL);
-    const unsigned int slots[] = { SLOT_NATIVE, SLOT_BUFFER };
     const uint32_t sizes[] = { 3, 8, 61, 1500, 4100 };
+    const uint64_t far = FAR_NUMBER * NODE_STRIDE;
 
     sn0_program_nasid(qts, 1);
     cards_ready(qts, 1, 0);
     for (unsigned int swap = 0; swap < 2; swap++) {
         card_swap(qts, 1, swap ? 0 : DEV_SWAP_DIRECT);
-        for (unsigned int s = 0; s < G_N_ELEMENTS(slots); s++) {
-            for (unsigned int l = 0; l < G_N_ELEMENTS(sizes); l++) {
-                uint64_t start = TARGET + 0xffb;
-                uint64_t lo = start - GUARD, span = sizes[l] + 2 * GUARD;
+        for (unsigned int l = 0; l < G_N_ELEMENTS(sizes); l++) {
+            uint64_t start = TARGET + 0xffb;
+            uint64_t lo = start - GUARD, span = sizes[l] + 2 * GUARD;
 
-                /* Number 0 from node 1: node 0's RAM. */
-                qtest_memset(qts, NODE_STRIDE + lo, 0xee, span);
-                check_fill(qts, 0, 1, slots[s], PCI_DIRECT64(0), start,
-                           sizes[l], swap, 0x31 + l);
-                assert_untouched(qts, NODE_STRIDE + lo, span);
+            /* Number 0 from node 1: node 0's RAM. */
+            qtest_memset(qts, NODE_STRIDE + lo, 0xee, span);
+            check_fill(qts, 0, 1, SLOT_NATIVE, PCI_DIRECT64(0), start,
+                       sizes[l], swap, 0x31 + l);
+            assert_untouched(qts, NODE_STRIDE + lo, span);
 
-                /* Number 1 from node 1: its own. */
-                qtest_memset(qts, lo, 0xee, span);
-                check_fill(qts, NODE_STRIDE, 1, slots[s],
-                           PCI_DIRECT64(NODE_STRIDE), start, sizes[l], swap,
-                           0x41 + l);
-                assert_untouched(qts, lo, span);
-            }
+            /* Number 1 from node 1: its own. */
+            qtest_memset(qts, lo, 0xee, span);
+            check_fill(qts, NODE_STRIDE, 1, SLOT_NATIVE,
+                       PCI_DIRECT64(NODE_STRIDE), start, sizes[l], swap,
+                       0x41 + l);
+            assert_untouched(qts, lo, span);
         }
     }
 
     renumber(qts, 1, FAR_NUMBER);
     card_swap(qts, FAR_NUMBER, DEV_SWAP_DIRECT);
-    for (unsigned int s = 0; s < G_N_ELEMENTS(slots); s++) {
-        uint64_t far = FAR_NUMBER * NODE_STRIDE;
-
-        check_fill(qts, far, FAR_NUMBER, slots[s], PCI_DIRECT64(far),
-                   TARGET + 0x2003, 1500, false, 0x61 + s);
-        /* The old number is nobody's now. */
-        g_assert_cmpuint(card_run(qts, FAR_NUMBER, slots[s], DMA_GO_FILL,
-                                  PCI_DIRECT64(NODE_STRIDE + TARGET), 0, 64,
-                                  0), ==, RESULT_DECODE_ERROR);
-    }
+    check_fill(qts, far, FAR_NUMBER, SLOT_NATIVE, PCI_DIRECT64(far),
+               TARGET + 0x2003, 1500, false, 0x61);
+    /* The old number is nobody's now. */
+    g_assert_cmpuint(card_run(qts, FAR_NUMBER, SLOT_NATIVE, DMA_GO_FILL,
+                              PCI_DIRECT64(NODE_STRIDE + TARGET), 0, 64,
+                              0), ==, RESULT_DECODE_ERROR);
     qtest_quit(qts);
 }
 
@@ -526,7 +496,7 @@ static void check_window_works(QTestState *qts, uint8_t seed,
 
     check_fill(qts, 0, 0, SLOT_NATIVE, PCI_DIRECT64(0), TARGET + 0x5,
                1500, false, seed);
-    check_fill(qts, 0, 0, SLOT_BUFFER, PCI_DIRECT64(0), TARGET + 0x1003,
+    check_fill(qts, 0, 0, SLOT_NATIVE, PCI_DIRECT64(0), TARGET + 0x1003,
                4100, false, seed + 1);
     check_fill(qts, 0, 0, SLOT_FACE, 0, TARGET + 0x3001, 61, false, seed + 2);
     g_assert_cmphex(qtest_readq(qts, pend) & (1ULL << level), ==, 0);
