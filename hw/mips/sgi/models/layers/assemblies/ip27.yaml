@@ -21,7 +21,7 @@ layer:
     # banks not allowed on IP27 node boards", PROM 6.156 string table).
     supported_bank_sizes_mib: [64, 128, 512]
     provenance: vendor-document
-    sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted", "007-3439-002 printed p.35: 16-Mb parts support up to 1 GB per node in increments of 64 or 128 MB, 64-Mb parts up to 4 GB in increments of 512 MB, always in DIMM pairs", "IP27 PROM 6.156 string \"256 MB dimm banks not allowed on IP27 node boards\", printed as it disables such a bank"]
+    sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted", "007-3439-002 printed p.35: 16-Mb parts support up to 1 GB per node in increments of 64 or 128 MB, 64-Mb parts up to 4 GB in increments of 512 MB, always in DIMM pairs", "firmware:ip27-prom-6.156 string \"256 MB dimm banks not allowed on IP27 node boards\", printed as it disables such a bank"]
   memory_kits:
     - id: kit-64
       dimms: 2

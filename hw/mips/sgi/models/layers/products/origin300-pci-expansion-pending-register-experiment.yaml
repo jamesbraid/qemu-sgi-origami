@@ -98,7 +98,7 @@ layer:
           machine_type: 1
           cpu_mode_word: 0x549aa985
           provenance: derived
-          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
           notes: The values every Origin 300 run has flashed, now carried as data; established against the PROM's own table.
         machine_name: origin300
         display_description: SGI Origin 300 (IP45), synthetic expansion UART and pending-register experiment
