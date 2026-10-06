@@ -674,6 +674,8 @@ static void elsc_request_without_read(QTestState *qts, const char *text)
 
     req_len = build_request(req, text);
 
+    /* Enable the interface: a reset leaves it off, so nothing else may. */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
@@ -1100,12 +1102,6 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
                               explicit_zero + I2C_CTRL) & I2C_PCF_LRB,
                     ==, 0);
 
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
-                                sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    assert_response_begins(resp, "ok");
-
     req_len = build_request(req, "rst");
     resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
                                 sizeof(resp));
@@ -1392,44 +1388,34 @@ static void test_escape_byte_is_not_queued(const void *data)
 }
 
 /*
- * Supervisor gating: a protected command answers "err perm" before "pas",
- * and succeeds once the correct password has been given; "pas" itself
- * rejects a password that is not exactly four characters.
+ * The controller's supervisor mode belongs to the operator's serial line.
+ * Over I2C "pas" is not a command, in any form, and the destructive
+ * commands it would gate there run without it: IRIX sends "pwr d" and
+ * "rst" and never "pas".
  */
-static void test_supervisor_gating(const void *data)
+static void test_no_supervisor_on_i2c(const void *data)
 {
+    const char *pas_forms[] = { "pas", "pas none", "pas ab", "pas s abcd" };
     uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
+    unsigned req_len, resp_len, i;
 
     elsc_reset();
 
-    /* Protected before authenticating. */
-    req_len = build_request(req, "rst");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 8);
-    assert_response_begins(resp, "err perm");
+    for (i = 0; i < ARRAY_SIZE(pas_forms); i++) {
+        req_len = build_request(req, pas_forms[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 7);
+        assert_response_begins(resp, "err cmd");
+    }
 
-    /* A password of the wrong length. */
-    req_len = build_request(req, "pas ab");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
-
-    /* The factory-default password, exactly four characters. */
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
-
-    /* Protected command now succeeds. */
+    /* A destructive command with no "pas" ever sent. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
     assert_response_begins(resp, "ok");
+    qtest_qmp_eventwait(qts, "RESET");
 }
 
 /*
@@ -1825,8 +1811,8 @@ static void test_hbt_watchdog_control(const void *data)
 }
 
 /*
- * "rst" is the controller's module reset, supervisor-gated. Once
- * authenticated it performs a real machine reset, not the no-op the model
+ * "rst" is the controller's module reset. It performs a real machine
+ * reset, not the no-op the model
  * used to answer. A panic reboot treats "ok" as "the reset happened" and
  * does not fall back to its own hardware reset, so the reset must actually
  * fire; this asserts QEMU's RESET event, the way sn0-hub-test checks a
@@ -1846,20 +1832,7 @@ static void test_rst_performs_machine_reset(const void *data)
     g_assert_cmpuint(resp[0], ==, 2);
     assert_response_begins(resp, "ok");
 
-    /* Refused before authenticating. */
-    req_len = build_request(req, "rst");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 8);
-    assert_response_begins(resp, "err perm");
-
-    /* Authenticate with the factory-default password. */
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
-
-    /* Now "rst" answers ok and the reset really fires. */
+    /* "rst" answers ok and the reset really fires. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
@@ -1884,15 +1857,10 @@ static void test_rst_performs_machine_reset(const void *data)
  */
 static void test_rst_reset_waits_for_ack_read(const void *data)
 {
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
+    uint8_t resp[RESP_CAP];
+    unsigned resp_len;
 
     elsc_reset();
-
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Write "rst" and end the transaction without reading the response. */
     elsc_request_without_read(qts, "rst");
@@ -1926,11 +1894,6 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
     g_assert_cmpuint(resp[0], ==, 2);
     assert_response_begins(resp, "ok");
 
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
-
     /* Issue "rst" but leave its ack unread. */
     elsc_request_without_read(qts, "rst");
 
@@ -1954,15 +1917,10 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
  */
 static void test_rst_reset_fires_without_stop(const void *data)
 {
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, i, total;
+    uint8_t resp[RESP_CAP];
+    unsigned i, total;
 
     elsc_reset();
-
-    req_len = build_request(req, "pas none");
-    elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; the ack is left pending. */
     elsc_request_without_read(qts, "rst");
@@ -2003,11 +1961,6 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     unsigned req_len, i;
 
     elsc_reset();
-
-    req_len = build_request(req, "pas none");
-    elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; the ack is left pending (ARMED). */
     elsc_request_without_read(qts, "rst");
@@ -2067,16 +2020,11 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
  */
 static void test_rst_reset_releases_i2c_bus(const void *data)
 {
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, i, total;
+    uint8_t resp[RESP_CAP];
+    unsigned i, total;
     uint8_t page7_byte0;
 
     elsc_reset();
-
-    req_len = build_request(req, "pas none");
-    elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; leave the ack pending. */
     elsc_request_without_read(qts, "rst");
@@ -2143,19 +2091,14 @@ static void test_rst_reset_survives_migration(const void *data)
     g_autofree gchar *dest_cmdline = NULL;
     GError *err = NULL;
     QTestState *from, *to;
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len, resp_len;
+    uint8_t resp[RESP_CAP];
+    unsigned resp_len;
 
     tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
     g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init("-M origin200");
-
-    req_len = build_request(req, "pas none");
-    elsc_transact(from, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Accept "rst" but leave its ack unread: the reset is ARMED, not
      * fired. */
@@ -2197,19 +2140,13 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     g_autofree gchar *dest_cmdline = NULL;
     GError *err = NULL;
     QTestState *from, *to;
-    uint8_t req[16], resp[RESP_CAP];
-    unsigned req_len;
+    uint8_t resp[RESP_CAP];
 
     tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
     g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init("-M origin200");
-
-    req_len = build_request(req, "pas none");
-    elsc_transact(from, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /*
      * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' (the
@@ -2411,10 +2348,9 @@ static void test_tas_lock_nul_owner(const void *data)
 /*
  * The remaining power subcommands (firmware command contract), none
  * boot-driven. This covers the response contract with no real action: the
- * read-only "pwr r" (redundant-supply query) is ungated, the destructive "pwr
- * d <sec>"/"pwr c" are supervisor-gated like "rst", and out-of-range or extra
- * arguments are "err arg". The actions themselves are checked in the shutdown
- * and power-cycle tests below.
+ * read-only "pwr r" (redundant-supply query) answers the supply records, and
+ * out-of-range or extra arguments are "err arg". The destructive "pwr d" and
+ * "pwr c" actions are checked in the shutdown and power-cycle tests below.
  */
 static void test_pwr_control_subcommands(const void *data)
 {
@@ -2424,33 +2360,15 @@ static void test_pwr_control_subcommands(const void *data)
     elsc_reset();
 
     /*
-     * The read-only supply query needs no supervisor. The wire response is a
-     * per-module record per supply, tagged tag:present:health,
-     * "ok m:y:ok s:y:ok" with both supplies modelled present and healthy.
+     * The wire response is a per-module record per supply, tagged
+     * tag:present:health, "ok m:y:ok s:y:ok" with both supplies modelled
+     * present and healthy.
      */
     req_len = build_request(req, "pwr r");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 16);
     assert_response_begins(resp, "ok m:y:ok s:y:ok");
-
-    /* Destructive power-down/cycle are refused before authenticating. */
-    req_len = build_request(req, "pwr d 3c");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 8);
-    assert_response_begins(resp, "err perm");
-
-    req_len = build_request(req, "pwr c");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 8);
-    assert_response_begins(resp, "err perm");
-
-    /* Authenticate with the factory-default password. */
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /*
      * Out-of-range (below 5, above 0x258) and non-hex delays are err arg, as
@@ -2473,7 +2391,7 @@ static void test_pwr_control_subcommands(const void *data)
 }
 
 /*
- * A supervised "pwr d <sec>" answers "ok" and then, once the ack is read,
+ * "pwr d <sec>" answers "ok" and then, once the ack is read,
  * shuts the machine down, verified by QEMU's SHUTDOWN event. "-no-shutdown"
  * keeps QEMU alive in the shutdown state so the event can be observed.
  */
@@ -2482,11 +2400,6 @@ static void test_pwr_down_shuts_down(const void *data)
     QTestState *qts = qtest_init("-M origin200 -no-shutdown");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
-
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     /* Immediate power-down: "ok", then the shutdown fires. */
     req_len = build_request(req, "pwr d 0");
@@ -2501,7 +2414,7 @@ static void test_pwr_down_shuts_down(const void *data)
 }
 
 /*
- * A supervised "pwr c" answers "ok" and then, once the ack is read,
+ * "pwr c" answers "ok" and then, once the ack is read,
  * power-cycles the machine: a machine reset, verified by the RESET event.
  */
 static void test_pwr_cycle_resets(const void *data)
@@ -2510,11 +2423,6 @@ static void test_pwr_cycle_resets(const void *data)
     unsigned req_len, resp_len;
 
     elsc_reset();
-
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmpuint(resp[0], ==, 2);
-    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
@@ -2526,21 +2434,13 @@ static void test_pwr_cycle_resets(const void *data)
 }
 
 /*
- * "pwr d" checks the non-hex delay before the supervisor password. Nonzero
- * values outside 5..0x258 return "err arg" even without authentication.
- * Zero skips the range check and means immediate shutdown. Valid requests
- * without authentication return "err perm".
+ * Nonzero "pwr d" delays outside 5..0x258 return "err arg" and arm nothing.
  */
-static void test_pwr_down_range_checked_before_auth(const void *data)
+static void test_pwr_down_range_checked(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len, i;
-    /* Below 5 or above 0x258: err arg, before the password check is even
-     * consulted. */
     const char *out_of_range[] = { "pwr d 1", "pwr d 4", "pwr d 259" };
-    /* In range (and 0), so the password check applies: err perm without a
-     * password. */
-    const char *in_range[] = { "pwr d 0", "pwr d 5", "pwr d 258" };
 
     elsc_reset();
 
@@ -2550,13 +2450,6 @@ static void test_pwr_down_range_checked_before_auth(const void *data)
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
         g_assert_cmpuint(resp[0], ==, 7);
         assert_response_begins(resp, "err arg");
-    }
-    for (i = 0; i < ARRAY_SIZE(in_range); i++) {
-        req_len = build_request(req, in_range[i]);
-        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-        g_assert_cmpuint(resp[0], ==, 8);
-        assert_response_begins(resp, "err perm");
     }
 }
 
@@ -2582,10 +2475,7 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     assert_response_begins(resp, "ok 0");
 
-    /* Authenticate and power-cycle. */
-    req_len = build_request(req, "pas none");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    assert_response_begins(resp, "ok");
+    /* Power-cycle. */
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     assert_response_begins(resp, "ok");
@@ -2690,8 +2580,8 @@ int main(int argc, char **argv)
                         test_get_returns_queued_console_input);
     qtest_add_data_func("sn0/elsc/escape-byte-is-not-queued", NULL,
                         test_escape_byte_is_not_queued);
-    qtest_add_data_func("sn0/elsc/supervisor-gating", NULL,
-                        test_supervisor_gating);
+    qtest_add_data_func("sn0/elsc/no-supervisor-on-i2c", NULL,
+                        test_no_supervisor_on_i2c);
     qtest_add_data_func("sn0/elsc/dsc-sets-display-character", NULL,
                         test_dsc_sets_display_character);
     qtest_add_data_func("sn0/elsc/dsc-bad-position-gets-err-arg", NULL,
@@ -2737,8 +2627,8 @@ int main(int argc, char **argv)
                         test_pwr_down_shuts_down);
     qtest_add_data_func("sn0/elsc/pwr-cycle-resets", NULL,
                         test_pwr_cycle_resets);
-    qtest_add_data_func("sn0/elsc/pwr-down-range-checked-before-auth", NULL,
-                        test_pwr_down_range_checked_before_auth);
+    qtest_add_data_func("sn0/elsc/pwr-down-range-checked", NULL,
+                        test_pwr_down_range_checked);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
     qtest_add_data_func("sn0/elsc/nic-onewire-identity", NULL,

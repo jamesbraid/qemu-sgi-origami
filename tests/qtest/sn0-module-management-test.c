@@ -415,9 +415,9 @@ static void test_windows_are_separate_adapters(void)
 /*
  * One controller, answering whichever node's window asks. Four controllers,
  * one per node, would answer "ver" just as happily, so the discriminator is
- * the supervisor latch: it is opened from one node and every other node finds
- * it already open. A per-node controller would answer the second node "err
- * perm" instead, because that one was never given the password.
+ * the test-and-set lock cell: it is taken from one node and every other node
+ * finds it already held. A per-node controller would answer another node
+ * "ok 0" instead, because its own cell was never taken.
  */
 static void test_controller_answers_every_node(void)
 {
@@ -427,9 +427,9 @@ static void test_controller_answers_every_node(void)
     for (node = 0; node < ADAPTER_COUNT; node++) {
         assert_response(qts, node, "ver", "ok");
     }
-    assert_response(qts, 0, "pas none", "ok");
+    assert_response(qts, 0, "tas A", "ok 0");
     for (node = 1; node < ADAPTER_COUNT; node++) {
-        assert_response(qts, node, "rst", "err cmd");
+        assert_response(qts, node, "tas B", "ok A");
     }
     qtest_quit(qts);
 }
@@ -1063,7 +1063,6 @@ static void test_destructive_commands_refused(void)
 {
     QTestState *qts = start_module();
 
-    assert_response(qts, 0, "pas none", "ok");
     assert_response(qts, 0, "rst", "err cmd");
     assert_response(qts, 0, "pwr d 0", "err cmd");
     assert_response(qts, 0, "pwr c", "err cmd");

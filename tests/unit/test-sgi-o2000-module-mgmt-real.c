@@ -976,7 +976,7 @@ static void test_nacked_receive_allows_repeated_start(
  */
 static void test_destructive_command(Fixture *f, gconstpointer unused)
 {
-    static const char *const commands[] = { "pas none", "rst" };
+    static const char *const commands[] = { "ver", "rst" };
     uint8_t request[16], response[96];
     unsigned c, i, len, total;
 
@@ -1030,7 +1030,7 @@ static void test_destructive_command(Fixture *f, gconstpointer unused)
  */
 static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
 {
-    static const char *const commands[] = { "pas none", "rst" };
+    static const char *const commands[] = { "ver", "rst" };
     uint8_t request[16], response[96];
     unsigned c, i, len, total;
 
@@ -1094,9 +1094,6 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     uint8_t response[96];
     unsigned total;
 
-    total = msc_command(f, 0, "pas none", response, sizeof(response));
-    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
-
     /* A pulse is running, so the controller cannot start another action. */
     g_assert_true(sgi_sn0_module_management_pulse_reset(f->module));
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
@@ -1115,10 +1112,7 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpint(memcmp(&response[1], "err", 3), ==, 0);
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
 
-    /*
-     * Accept the command again after the pulse. Reinitialisation clears
-     * protocol queues but retains the supervisor password check.
-     */
+    /* Accept the command again after the pulse. */
     advance_to(f->module->pulse_deadline);
     total = msc_command(f, 0, "rst", response, sizeof(response));
     g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
@@ -1150,7 +1144,6 @@ static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
 {
     SGIElscState *s = f->module->msc;
 
-    expect_response(f, "pas none", "ok");
     expect_response(f, "rst", "ok");
     g_assert_true(s->deferred_committed);
     g_assert_true(s->deferred_scheduled);
@@ -1174,7 +1167,6 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
 {
     SGIElscState *s = f->module->msc;
 
-    expect_response(f, "pas none", "ok");
     msc_begin_response(f, 0, "rst");
     if (partial) {
         /* Stop before the wire prefetch reaches the acknowledgement end. */
@@ -1195,7 +1187,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_NONE);
-    /* The retained supervisor password check permits another action. */
+    /* Another action is accepted. */
     expect_response(f, "rst", "ok");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
@@ -1208,7 +1200,6 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     static const uint8_t input[] = { 's', 't', 'a', 'l', 'e', 0x14, 'x' };
     static const uint8_t fresh[] = { 'N' };
 
-    expect_response(f, "pas none", "ok");
     expect_response(f, "dsp RETAINED", "ok");
     expect_response(f, "tas A", "ok 0");
     qemu_chr_be_write(f->chr, input, sizeof(input));

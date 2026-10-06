@@ -60,9 +60,13 @@ Command vocabulary
     hexadecimal: a bare ``ok`` parses as zero characters accepted
     and livelocks the firmware's output queue.
 
-``pas <4 characters>``
-    Supervisor-mode gate for protected commands. The factory default
-    password is ``none``; the model implements no way to change it.
+``pas``
+    Not a command on this channel: answered ``err cmd``. The controller
+    has a supervisor mode, entered with ``pas`` and a password, but it
+    exists only on the operator's serial line and gates nothing that
+    arrives over I2C. The controller datasheet records this from the
+    controller firmware; IRIX sends ``pwr d`` and ``rst`` without ever
+    sending ``pas``.
 
 ``dsp <message>``
     Writes a message onto the alphanumeric display: up to eight
@@ -95,8 +99,8 @@ Command vocabulary
 ``pwr d <sec>`` / ``pwr c`` / ``pwr r``
     The remaining power control, none boot-driven. ``pwr d <sec>``
     schedules a delayed power-down and ``pwr c`` power-cycles, both
-    answered a bare ``ok``; both are destructive and supervisor-gated
-    like ``rst`` (``err perm`` without supervisor mode). The power-down
+    answered a bare ``ok``; both are destructive and, like ``rst``,
+    need no supervisor mode over I2C. The power-down
     delay is hex seconds: 0 is immediate, otherwise the guide's range
     0x5 to 0x258 (5 to 600 seconds); an out-of-range or non-hex delay is
     ``err arg``. ``pwr r`` queries the redundant supplies, is read-only
@@ -131,10 +135,9 @@ Command vocabulary
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error
-    recovery, never a normal boot. Supervisor-gated: without supervisor
-    mode it answers ``err perm``. Once authenticated it answers ``ok``
-    and requests an immediate machine reset, deferred until the caller
-    has read the ``ok`` so the ack is never lost. There is no
+    recovery, never a normal boot. It answers ``ok`` and requests an
+    immediate machine reset, deferred until the caller has read the
+    ``ok`` so the ack is never lost. There is no
     delayed-reset form -- the delay belongs to ``pwr d``. A caller
     treats ``ok`` as proof the reset happened and does not fall back to
     its own hardware reset, so the reset is performed rather than
