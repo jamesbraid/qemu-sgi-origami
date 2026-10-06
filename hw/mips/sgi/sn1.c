@@ -28,50 +28,32 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
+    const char *topology = product;
     bool ip53 = g_str_equal(product, "origin350") ||
                 g_str_equal(product, "onyx350") ||
                 g_str_equal(product, "tezro");
-    const char *topology = g_str_equal(product, "onyx350") ?
-        "onyx350-compat" :
-        g_str_equal(product, "tezro") ?
-        "tezro-deskside-700mhz-4mib-serial-trial" : product;
-    const SGIModelTopology *t = sgi_model_find_topology(topology);
+    const SGIModelTopology *t;
 
+    if (g_str_equal(product, "onyx350")) {
+        topology = "onyx350-compat";
+    } else if (g_str_equal(product, "tezro")) {
+        topology = "tezro-deskside-700mhz-4mib-serial-trial";
+    }
+    t = sgi_model_find_topology(topology);
     g_assert(t);
     smc->product = product;
+    /* Preflight still requires topology= for products without a default. */
     smc->default_topology = topology;
     mc->desc = t->description;
     mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
                                  sgi_sn1_r14000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
-    /* A product's default population is also its smallest accepted one. */
     mc->min_cpus = mc->default_cpus;
     mc->max_cpus = sgi_machine_product_max_cpus(product);
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn1.ram";
     sgi_machine_class_add_storage(oc);
 }
-
-static const TypeInfo sn1_machine_types[] = {
-    {
-        .name          = MACHINE_TYPE_NAME("origin300"),
-        .parent        = TYPE_SGI_SN_MACHINE,
-        .class_init    = sn1_machine_class_init,
-        .class_data    = "origin300",
-    },
-    {
-        .name          = MACHINE_TYPE_NAME("origin350"),
-        .parent        = TYPE_SGI_SN_MACHINE,
-        .class_init    = sn1_machine_class_init,
-        .class_data    = "origin350",
-    },
-    {
-        .name          = MACHINE_TYPE_NAME("fuel"),
-        .parent        = TYPE_SGI_SN_MACHINE,
-        .class_init    = sn1_machine_class_init,
-        .class_data    = "fuel",
-    },
-};
 
 static const TypeInfo sn1_machine_types[] = {
     {

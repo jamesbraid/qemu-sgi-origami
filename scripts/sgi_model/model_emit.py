@@ -348,11 +348,8 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
     NVRAM geometry, a crossbar's manufacturer or part id, a Router's port
     count, a flash's named views, an XIO attachment's decode mask and
     discovery widget) left for the device model that already owns it.
-    `product` names which product this topology belongs to -- not a
-    compiled field, but the fact `sgi_model_default_topology()` needs to
-    pick a product's default topology out of the catalogue at load time,
-    the same structural rule this module's own default-topology lookup
-    used to apply at compile time.
+    `product` scopes topology= selection. Products with several profiles
+    cannot use topology name alone to choose one at runtime.
     """
     result = {
         "name": topology["name"],
@@ -656,11 +653,14 @@ def _networks_for(topology: dict) -> list[dict]:
     return networks
 
 
-def default_topology(machine_name: str, product_models: dict[str, dict]) -> str:
-    """The topology QEMU builds for a product when no topology= is given:
-    the product of its base composition (`model_inputs.MACHINE_FILENAMES`),
-    whatever further topologies the product compiles.
-    """
+def default_topology(
+    machine_name: str, product_models: dict[str, dict]
+) -> str | None:
+    """Return the topology QEMU builds when no topology= is given, if any."""
+    from .registry import PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY
+
+    if machine_name in PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY:
+        return None
     return product_models[machine_name]["composition"]["product"]
 
 
@@ -1089,7 +1089,9 @@ def _offerings_for(model: dict, topology: dict,
             offerings.append({
                 "product": machine_name,
                 "topology": configuration_name,
-                "default-topology": default_topology(machine_name, product_models),
+                **({"default-topology": selected_default}
+                   if (selected_default := default_topology(
+                       machine_name, product_models)) is not None else {}),
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
                 "machine-options": _machine_options(

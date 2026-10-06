@@ -1793,8 +1793,8 @@
 # @topology: `topology=` value this offering is for
 #
 # @default-topology: the topology @product builds with no `topology=`,
-#     so a launcher can pick a product's default when none of its
-#     topologies is named for it
+#     when one exists; absence means the launcher must require an
+#     explicit topology selection.
 #
 # @display-name: human-readable name of this configuration
 #
