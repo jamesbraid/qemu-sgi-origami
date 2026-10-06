@@ -105,8 +105,7 @@
       "sources": [
         "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -484,8 +483,7 @@
       ],
       "sources": [
         "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted, establishes four physical banks and eight DIMM sockets",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -561,8 +559,7 @@
         }
       ],
       "sources": [
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -717,8 +714,7 @@
         }
       ],
       "sources": [
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -743,8 +739,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -864,8 +859,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -914,8 +908,7 @@
       "sources": [
         "web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -945,8 +938,7 @@
       "sources": [
         "web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Fast/Narrow SCSI channel and its 5.25-inch device path",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1010,8 +1002,7 @@
       "regions": [],
       "sources": [
         "web:theretroweb-origin200-image-1 battery-backed clock package, marked M48T35-70PCI",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1048,8 +1039,7 @@
       "regions": [],
       "sources": [
         "web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1087,8 +1077,7 @@
         "web:theretroweb-origin200-image-1 I2C section, package marked PCF8584T",
         "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113",
         "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -1985,8 +1974,7 @@
           "mode": "direct",
           "note": "The node-0 module retains direct observations from the captured base module; the capture does not establish the node-1 population.",
           "sources": [
-            "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-            "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+            "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
           ]
         },
         "omit_buses": [
@@ -2199,8 +2187,7 @@
       "sources": [
         "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -2213,8 +2200,7 @@
       "sources": [
         "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -2227,8 +2213,7 @@
       "sources": [
         "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -2241,8 +2226,7 @@
       "sources": [
         "web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2",
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -2390,8 +2374,8 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/specs/sgi-bridge.rst",
+        "web:dmesgd-8994 lines 184-202 shows the Bridge, IOC3 and one-wire MAC of the real Origin 200, not the firmware base-I/O record"
       ]
     },
     {
@@ -2401,8 +2385,7 @@
       "role": "endpoint",
       "sources": [
         "web:dmesgd-8994 lines 197-199, observes owmac0 on the real Origin 200",
-        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
-        "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"
+        "web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
       ]
     },
     {
@@ -2696,8 +2679,8 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/specs/sgi-bridge.rst",
+        "web:dmesgd-8994 lines 184-202 shows the Bridge, IOC3 and one-wire MAC of the real Origin 200, not the firmware base-I/O record"
       ]
     },
     {

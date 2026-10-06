@@ -1701,7 +1701,7 @@ class SystemModelResolutionTests(unittest.TestCase):
             "bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f",
             sources,
         )
-        self.assertIn("b6a76788b894308b8c46f217acca3e63af3bd7e9", sources)
+        self.assertNotIn("b6a76788b894308b8c46f217acca3e63af3bd7e9", sources)
         self.assertNotIn(
             "bce829db7275946a0204b5c34fd9a2144d9514b290229645766cc48feb72b5a1",
             sources,

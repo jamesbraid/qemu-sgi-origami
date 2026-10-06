@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Reusable physical Origin 200 module; capacity belongs to the IP29 assembly.
 layer_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit; every fact above has moved to that direct form. The ten keys left
-# here back buses, connections, and interrupts only, whose strict evidence policy
-# (tools/origami_lib/model_validation.py) requires non-empty sources for every one
-# regardless of provenance -- unlike a component, which may carry none. Each of
-# these ten cites only an internal datasheet, boot-log capture, or library note, so
-# the checker reports them under "facts whose only sources are internal documents"
-# rather than resolving them; replacing them with an independently obtainable
-# citation, or moving the bus/connection to `provenance: unsourced` with a stated
-# `evidence_gap`, is follow-up work on the evidence itself, not a citation-form change.
-sources:
-  boot-logs-b6a7678-b: "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card"
 layer:
   kind: module
   id: logic-carrier
@@ -200,11 +187,16 @@ layer:
       - { component: ioc3, bus: one-wire, role: master, provenance: guest-source, sources: [qemu:docs/specs/sgi-ioc3.rst] }
       - { component: bridge, bus: bridge-one-wire, role: master, provenance: guest-source, sources: [qemu:docs/specs/sgi-bridge.rst] }
       - { component: hub-md, bus: hub-one-wire, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-hub.rst] }
+      # Base-I/O is a firmware record type here, not a physical BaseIO card. No
+      # public source shows the identity the firmware records, so the sources
+      # support only the surrounding Bridge, IOC3 and one-wire structure.
       - component: board-identity
         bus: bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: [boot-logs-b6a7678-b, qemu:docs/specs/sgi-bridge.rst]
+        sources:
+          - qemu:docs/specs/sgi-bridge.rst
+          - "web:dmesgd-8994 lines 184-202 shows the Bridge, IOC3 and one-wire MAC of the real Origin 200, not the firmware base-I/O record"
       - component: nic-mac
         bus: one-wire
         role: endpoint

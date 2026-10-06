@@ -12,7 +12,7 @@ module_instances:
     omit_buses: [craylink]
     observed_hardware:
       mode: direct
-      sources: ["web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f", "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"]
+      sources: ["web:dmesgd-8994 SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
       note: >-
         The node-0 module retains direct observations from the captured base
         module; the capture does not establish the node-1 population.
