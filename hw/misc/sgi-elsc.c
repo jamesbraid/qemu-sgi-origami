@@ -177,23 +177,6 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
 }
 
 /*
- * "pas": supervisor password check; the factory default password is "none".
- */
-static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
-{
-    if (len != 8 || text[3] != ' ') {
-        elsc_frame_response_str(s, "err arg");
-        return;
-    }
-    if (memcmp(&text[4], "none", 4) == 0) {
-        s->supervisor = true;
-        elsc_frame_response_str(s, "ok");
-    } else {
-        elsc_frame_response_str(s, "err perm");
-    }
-}
-
-/*
  * "dsp": overwrite the display from position 0, leaving the remaining
  * positions unaltered. What an over-length message does is unobserved;
  * rejecting it whole is the conservative choice.
@@ -303,12 +286,11 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         return;
     case 'd': {
         /*
-         * "pwr d <sec>" requires the supervisor password, as "rst" does. Hex
-         * delay: 0 is immediate; the Origin 200 diagnostics guide permits
-         * 0x5-0x258 (5-600 seconds). Malformed, non-hex or out-of-range input
-         * returns "err arg" before the password check, never "err perm".
-         * Reply "ok" before shutdown; the model ignores the requested delay
-         * and shuts down once the ack is read.
+         * "pwr d <sec>": hex delay, 0 is immediate; the Origin 200
+         * diagnostics guide permits 0x5-0x258 (5-600 seconds). Malformed,
+         * non-hex or out-of-range input returns "err arg". Reply "ok" before
+         * shutdown; the model ignores the requested delay and shuts down
+         * once the ack is read.
          */
         uint32_t sec;
 
@@ -319,10 +301,6 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         }
         if (sec != 0 && (sec < 5 || sec > 0x258)) {
             elsc_frame_response_str(s, "err arg");
-            return;
-        }
-        if (!s->supervisor) {
-            elsc_frame_response_str(s, "err perm");
             return;
         }
         if (!elsc_module_can_execute(s, ELSC_ACTION_SHUTDOWN)) {
@@ -349,17 +327,13 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
     }
     case 'c':
         /*
-         * "pwr c" requires the supervisor password and replies "ok" before
-         * the reset, as "rst" does. CYCLE is a cold restart: its bottom half
-         * re-arms the cold-power latch when the action fires after the ack. A
-         * superseded request causes neither reset nor false cold-power bit.
+         * "pwr c" replies "ok" before the reset, as "rst" does. CYCLE is a
+         * cold restart: its bottom half re-arms the cold-power latch when
+         * the action fires after the ack. A superseded request causes
+         * neither reset nor false cold-power bit.
          */
         if (len != 5) {
             elsc_frame_response_str(s, "err arg");
-            return;
-        }
-        if (!s->supervisor) {
-            elsc_frame_response_str(s, "err perm");
             return;
         }
         if (!elsc_module_can_execute(s, ELSC_ACTION_CYCLE)) {
@@ -385,9 +359,8 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         return;
     case 'r':
         /*
-         * "pwr r": redundant-supply query, read-only and exempt from the
-         * supervisor password check. The wire response is a per-module record
-         * for each supply, tagged tag:present:health:
+         * "pwr r": redundant-supply query, read-only. The wire response is a
+         * per-module record for each supply, tagged tag:present:health:
          * "m:y:ok"/"m:y:fl"/"m:n" for the master and "s:y:ok"/"s:y:fl"/"s:n"
          * for the slave. The present flag (y/n) separates an absent supply
          * ("m:n") from a failed one ("m:y:fl"), and health is "ok" or "fl".
@@ -633,10 +606,6 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         elsc_handle_dsc(s, text, len);
         return;
     }
-    if (len >= 3 && memcmp(text, "pas", 3) == 0) {
-        elsc_handle_pas(s, text, len);
-        return;
-    }
     if (len >= 3 && memcmp(text, "pwr", 3) == 0) {
         elsc_handle_pwr(s, text, len);
         return;
@@ -657,7 +626,7 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         /*
          * Module reset: panic reboot and fatal-error recovery only, never a
          * normal boot. No delayed-reset form; the hex delay belongs to
-         * "pwr d". Supervisor-gated. A caller treats "ok" as proof the reset
+         * "pwr d". A caller treats "ok" as proof the reset
          * happened and does not fall back to its own hardware reset, so the
          * reset must fire. It is deferred until the guest has read "ok":
          * committed at the fetch of the last frame byte that completes the
@@ -673,10 +642,6 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
          * rather than refuse; a true module-scoped reset would need a
          * machine-level signal.
          */
-        if (!s->supervisor) {
-            elsc_frame_response_str(s, "err perm");
-            return;
-        }
         /*
          * A module owner decides what a reset reaches, and it is asked before
          * the acknowledgement is framed rather than after. Answering "ok" for
@@ -1226,10 +1191,10 @@ static int elsc_can_receive(void *opaque)
  * The controller's own reinitialisation, which its recovery timeout and its
  * reset and power paths reach. Reinitialisation clears the protocol queues
  * and nothing else, so the framing state goes and the rest stays: the
- * supervisor password check, the display, the lock and any committed
- * destructive action are not queues, and no source says a reinitialisation
- * disturbs them. An in-flight request is abandoned. An action already
- * acknowledged to a guest still happens.
+ * display, the lock and any committed destructive action are not queues,
+ * and no source says a reinitialisation disturbs them. An in-flight
+ * request is abandoned. An action already acknowledged to a guest still
+ * happens.
  *
  * Two of the fields cleared here are a model choice rather than a contract.
  * Queued alternate-console input goes with the framing, and so does the
@@ -1263,7 +1228,6 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->arb_signal = 0;
     s->rx_queue_len = 0;
     s->in_escape = false;
-    s->supervisor = false;
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
@@ -1408,8 +1372,8 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 13,
-    .minimum_version_id = 13,
+    .version_id = 14,
+    .minimum_version_id = 14,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
@@ -1422,7 +1386,6 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
         VMSTATE_BOOL(in_escape, SGIElscState),
-        VMSTATE_BOOL(supervisor, SGIElscState),
         VMSTATE_UINT8(dip_switches, SGIElscState),
         VMSTATE_UINT8(arb_signal, SGIElscState),
         /*

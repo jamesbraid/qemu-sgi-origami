@@ -80,7 +80,7 @@
 #define ARB_SLOT0_NS            (10000 * 1000)
 #define ARB_PARTIAL_NS          (400 * 1000)
 
-#define ELSC_VMSTATE_VERSION        13
+#define ELSC_VMSTATE_VERSION        14
 #define ELSC_RXBUF_VMSTATE_SIZE     97
 #define ELSC_TXBUF_VMSTATE_SIZE     96
 #define ELSC_ARB_CODE_VMSTATE_OFFSET \

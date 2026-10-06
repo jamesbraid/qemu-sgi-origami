@@ -207,14 +207,12 @@ CTL_ACK = 0x01
 # Precomputed rather than assembled by
 # the guest program, which has no need to compute a checksum it never
 # varies.
-PAS_NONE = bytes([0x08]) + b'pas none' + bytes([0xe4])
 RST = bytes([0x03]) + b'rst' + bytes([0xa4])
 
-# Every response this exercise drives back is "ok" (length 2): the
-# controller's factory-default password is "none", and "rst" is answered
-# once "pas none" has set the supervisor flag. The guest program never
-# reads the content, only completes the framing, so the fixed length is
-# all it needs.
+# The one response this exercise drives back is "ok" (length 2): "rst"
+# needs no supervisor mode over I2C. The guest program never reads the
+# content, only completes the framing, so the fixed length is all it
+# needs.
 RESP_TOTAL = 4
 
 
@@ -244,7 +242,7 @@ class ElscProgram(MipsProgram):
         a STOP. The STOP is the boundary event that fires any deferred
         action the response's last text byte has already committed
         (elsc_fire_committed_action in hw/misc/sgi-elsc.c) -- for "rst"
-        once "pas none" has authenticated, that is the reset itself.
+        that is the reset itself.
         """
         self.write_reg(R_S4, CTL_PIN | CTL_ESO)
         self.write_reg(R_S3, ELSC_ADDR << 1)
@@ -262,7 +260,7 @@ class ElscProgram(MipsProgram):
 
 
 def build_elsc_reset():
-    """Slice A authenticates and resets the machine while slice B spins,
+    """Slice A resets the machine while slice B spins,
     CYCLES times over; then each slice publishes its own done word."""
     program = ElscProgram()
 
@@ -300,10 +298,6 @@ def build_elsc_reset():
     # follows the reset takes the next one.
     program.emit(mips_i(0x3f, R_S0, R_T5, STATE_PHASE))          # sd
 
-    # A machine reset clears the controller's supervisor flag
-    # (elsc_reset_hold in hw/misc/sgi-elsc.c), so authenticate fresh every
-    # cycle before the destructive command.
-    program.elsc_command(PAS_NONE)
     program.elsc_command(RST)
     program.spin()
 
@@ -337,10 +331,10 @@ def elsc_committing_write(line):
     above matches the Hub's port-reset register, so the machine's own
     placement of the Hub window does not appear here twice.
 
-    Both "pas none" and "rst" end their transaction with an identical
-    STOP write -- only the second one commits a deferred action -- so
-    this matches every occurrence and lib_mips.reset_windows() picks the
-    one that actually precedes a given reset. The board's own two-pass
+    Every ELSC transaction ends with an identical STOP write -- only an
+    "rst" one commits a deferred action -- so this matches every
+    occurrence and lib_mips.reset_windows() picks the one that actually
+    precedes a given reset. The board's own two-pass
     reset (hw/mips/sgi/sn0.c) resets each processor twice at machine
     start, before the guest has written anything; that leading run has no
     preceding write, which is how that reader skips it.

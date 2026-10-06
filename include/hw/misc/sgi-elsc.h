@@ -139,12 +139,6 @@ struct SGIElscState {
     bool in_escape;   /* discarding a controller command typed on the line */
 
     /*
-     * Supervisor mode protects destructive commands (page 124 of the Origin
-     * 200 Owner's Guide); "pas" sets it, factory default "none".
-     */
-    bool supervisor;
-
-    /*
      * Cold power-on latch, read once by "pwr q". Set when the controller
      * first powers up (realize), never re-armed by a warm reset, and cleared
      * when read, so only the first query in a power cycle sees it. The
