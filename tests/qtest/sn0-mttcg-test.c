@@ -1866,6 +1866,25 @@ static void build_gdb_peer_hold(GuestImage *img)
     }
 }
 
+/*
+ * Start a destination loaded from a stopped source. The source reporting
+ * "completed" means it has sent the stream, not that the destination has
+ * read it. A "cont" that lands while the destination is still loading only
+ * asks for an autostart, and the load then restores the source's paused
+ * runstate over it, so the guest never runs. Upstream's migration framework
+ * waits on the destination for the same reason.
+ */
+static void gdb_peer_resume_destination(QTestState *to)
+{
+    QDict *status;
+
+    sgi_wait_migration(to, "completed");
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    status = qtest_qmp_assert_success_ref(to, "{ 'execute': 'query-status' }");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+    qobject_unref(status);
+}
+
 static int gdb_peer_socket(const char *path)
 {
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
@@ -2159,9 +2178,10 @@ static void test_gdb_peer_hold(const void *data)
             qobject_unref(migration_reply);
         }
         sgi_migrate_stopped(qts, migration_uri);
+        sgi_wait_migration(to, "completed");
         g_test_message("Hub after destination load: %" PRIu64,
                        qtest_readq(to, GH_HUB_COUNT));
-        qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+        gdb_peer_resume_destination(to);
         close(gdb);
         qtest_quit(qts);
         qts = to;
@@ -2482,7 +2502,7 @@ static void test_gdb_sn1_hold(const void *data)
             "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
             migration_uri);
         sgi_migrate_stopped(qts, migration_uri);
-        qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+        gdb_peer_resume_destination(to);
         close(gdb);
         gdb_closed = true;
         qtest_quit(qts);
