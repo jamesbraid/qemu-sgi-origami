@@ -25,8 +25,7 @@ import re
 
 from lib_matrix import (AttemptResult, MatrixError, matrix_rows, qemu_args,
                         verdict)
-from lib_graphics_matrix import SCENARIOS, peek_row, parse_row
-from lib_input import run_script
+from lib_graphics_matrix import SCENARIOS, peek_row, parse_row, run_steps
 from lib_prom import drive_console
 from lib_screen import (ScreenCheckError,
                         poll_screendump_until_checks_pass)
@@ -107,9 +106,9 @@ def _boot_one_attempt(test, cell, attempt_index):
         if not reached:
             return AttemptResult(reached_pass=False, signature='timeout')
 
-        run_script(vm, scenario.input_steps)
+        run_steps(test, vm, name, scenario.input_steps)
 
-        screendump_path = test.scratch_file(f'{name}.ppm')
+        screendump_path = test.log_file(f'{name}.ppm')
         try:
             poll_screendump_until_checks_pass(
                 test, vm, screendump_path, scenario.screen_checks,
