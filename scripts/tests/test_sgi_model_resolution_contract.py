@@ -1922,7 +1922,7 @@ class SystemModelResolutionTests(unittest.TestCase):
 
                 self.assertEqual(
                     flash["datasheet_contracts"],
-                    ["docs/datasheets/boot-flash.md"],
+                    ["qemu:docs/specs/sgi-prom-image.rst"],
                 )
 
     def test_reference_module_composition_remains_graphless(self):

@@ -400,8 +400,8 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/xbridge.md",
-        "docs/datasheets/bridge.md"
+        "qemu:docs/specs/sgi-xbridge.rst",
+        "qemu:docs/specs/sgi-bridge.rst"
       ],
       "description": "The SN1 XIO-to-PCI part: a Crossbow crossbar section fused with two Bridge sections, one PCI bus each. A mode pin straps it as a crossbar with the two bridges on internal ports 0xe and 0xf and six external ports (XBridge mode), or as two independent bridges with the crossbar disabled (Super Bridge mode). The IP45 runs XBridge mode: observed on three real Origin 300s, whose inventories report a crossbar at widget 0 and bridges at widgets 14 and 15.",
       "hardware_kind": "xbridge",
@@ -430,7 +430,7 @@
         "kind": "xbridge"
       },
       "datasheet_contracts": [
-        "docs/datasheets/xbridge.md"
+        "qemu:docs/specs/sgi-xbridge.rst"
       ],
       "description": "Widget 0 in XBridge mode: the chip's internal Crossbow, with the two PCI bridges on ports 0xe and 0xf, six external XIO ports 8 to 0xd, and the Bedrock entering at port 0xa. Real Origin 300s report it as \"ASIC XBOW Rev 2, on CBrick\"; the verbose PROM trace prints \"HUB at 0x0 attached as widget 0xa\" and \"Check_master: link 10 is master\".",
       "hardware_kind": "xbridge",
@@ -507,8 +507,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/ioc3.md",
-        "docs/datasheets/dp83840.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "The same chip the Origin 200 uses, on the IO-8 assembly at PCI device 4. On the Origin 300 it exposes serial A and B, the parallel function, the byte-bus Timekeeper and the board's 10/100 Ethernet, and no keyboard or mouse controller. No rear-panel parallel connector is established by the reviewed IO-8 connector inventory. The chip includes its one-wire engine, but this board does not fit the IOC3 Ethernet-address identity part: the address comes from the brick EEPROM through the L1. Serial A is the guest console; serial B is the second rear-panel serial port. Emulator chardev index 0 is reserved for the separate L1 management channel, with IOC3 A and B on indexes 1 and 2. The integration contract uses explicit population mask 0x17 and selects M48T35-compatible timekeeper-kind 1 as a documented compatibility choice whose clearance depends on the required Origin 300 qtest.",
       "hardware_kind": "ioc3",
@@ -569,7 +568,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/timekeeper.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "Emulator compatibility choice for IOC3 byte-bus select 0. This does not identify the physical IP45 package or establish its complete decode.",
       "hardware_kind": "m48t35",
@@ -581,7 +580,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/isp12160.md"
+        "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
       "description": "Ultra3 at 160 MB/s with one internal and one external channel, at PCI device 1 on the IO-8's bus. Real Origin 300s report it as \"QL12160, low voltage differential\" with PCI ids 0x1077:0x1216 (printed in decimal as 4215, 4630); OpenBSD names the same part on a Fuel.",
       "hardware_kind": "isp12160",

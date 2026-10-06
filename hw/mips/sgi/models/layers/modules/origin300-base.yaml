@@ -242,7 +242,7 @@ layer:
             revision 2; the crossbar half is the separate component below. part
             is the IO-8 board's own SGI part number (007-4365-002), the one
             physical board both PCI heads below sit on.
-        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
         sources: ["web:xbridge-asic-spec-0.5 printed pages 17, 41, 44 to 46, 132", "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"]
         notes: >-
           Same programming model as the Bridge with the deltas the XBridge datasheet
@@ -272,7 +272,7 @@ layer:
             them for a crossbar face; OpenBSD attaches the same chip as "XXBow
             revision 2", the part 0xd000 identity, on a Fuel and on two real Origin
             300s (the OpenBSD captures in docs/library/boot-logs.md).
-        datasheet_contracts: [docs/datasheets/xbridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
         regions:
           - id: widget-0-registers
             name: widget 0 registers
@@ -357,7 +357,7 @@ layer:
             explicit device placeholder so it does not inherit the Origin 200
             system-board value 0xc303. An Origin 300 configuration-space capture
             replaces the placeholder.
-        datasheet_contracts: [docs/datasheets/ioc3.md, docs/datasheets/dp83840.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
         sources: ["108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers", "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and both interrupt sources", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"]
 
       - {id: ioc3-ethernet, name: Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: datasheet}
@@ -370,7 +370,7 @@ layer:
         hardware_kind: m48t35
         parent: ioc3
         provenance: derived
-        datasheet_contracts: [docs/datasheets/timekeeper.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
         description: >-
           Emulator compatibility choice for IOC3 byte-bus select 0. This does not
           identify the physical IP45 package or establish its complete decode.
@@ -393,7 +393,7 @@ layer:
           notes: >-
             The subsystem fields are unobserved. The emulator exposes unavailable
             values instead of inheriting QEMU's unrelated generic PCI defaults.
-        datasheet_contracts: [docs/datasheets/isp12160.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
         sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and interrupt pin", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183: 33 MHz bus and matching function", "007-4365-002 printed pages 1, 12 and 14", "108-0264-004 Table 2-4, printed page 2-11"]
 
       - id: usb

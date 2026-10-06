@@ -543,6 +543,23 @@ class CheckSystemModelTests(unittest.TestCase):
         ]
         self.assertDocumentPasses(model)
 
+    def test_datasheet_contracts_accept_a_specs_page_and_label(self):
+        model = self.checker_module.load_system_model(INPUTS / "origin200.yaml")
+        for contract in ("qemu:docs/specs/sgi-hub.rst",
+                         "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology"):
+            with self.subTest(contract=contract):
+                changed = copy.deepcopy(model)
+                next(component for component in changed["components"]
+                     if component["id"] == "hub")["datasheet_contracts"] = [contract]
+                self.assertDocumentPasses(changed)
+        for contract in ("qemu:docs/specs/Sgi-Hub.rst", "qemu:docs/specs/sgi-hub.md",
+                         "qemu:docs/system/sgi-hub.rst", "docs/specs/sgi-hub.rst"):
+            with self.subTest(contract=contract):
+                changed = copy.deepcopy(model)
+                next(component for component in changed["components"]
+                     if component["id"] == "hub")["datasheet_contracts"] = [contract]
+                self.assertDocumentFails(changed, "schema:")
+
     def test_datasheet_contracts_keep_nonempty_unique_path_shape(self):
         model = self.checker_module.load_system_model(INPUTS / "origin200.yaml")
         hub = next(component for component in model["components"]

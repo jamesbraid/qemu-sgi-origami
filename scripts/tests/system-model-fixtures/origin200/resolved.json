@@ -309,12 +309,7 @@
         "SN0 Hub"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/hub-processor-interface.md",
-        "docs/datasheets/hub-memory-directory.md",
-        "docs/datasheets/hub-io-interface.md",
-        "docs/datasheets/hub-network-interface.md",
-        "docs/datasheets/hub-bte.md",
-        "docs/datasheets/hub-onewire.md"
+        "qemu:docs/specs/sgi-hub.rst"
       ],
       "description": "The node controller. Memory controller, directory-coherence engine, interrupt controller, XIO port and fabric port in one chip. The processor interface is the face it turns towards the node's two R10000s.",
       "id": "hub",
@@ -505,7 +500,7 @@
         "xbridge (OpenBSD driver name, even on IP27)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/bridge.md"
+        "qemu:docs/specs/sgi-bridge.rst"
       ],
       "description": "The XIO widget that presents a PCI bus, translates DMA through address-translation entries, and gathers device interrupts.",
       "id": "bridge",
@@ -539,7 +534,7 @@
         "SGI IOC3 (PCI identification)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "The multifunction PCI device capable of two serial ports, 10/100 ethernet, a PS/2 keyboard and mouse controller, general-purpose I/O, a one-wire bus and a byte-wide expansion bus. What this board connects is a separate question from what the chip can do.",
       "id": "ioc3",
@@ -669,7 +664,7 @@
         "DP83840AVCE (package marking)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/dp83840.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "The ethernet physical-layer transceiver, reached through the chip's management interface.",
       "id": "enet-phy",
@@ -690,7 +685,7 @@
         "qlw (OpenBSD driver)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/isp1040.md"
+        "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
       "description": "The base board's single-channel Ultra SCSI adapter for the 3.5-inch drives, at PCI device 0. A real Origin 200's own hardware inventory names both chips directly, at PCI device 0 and 1 (docs/component-taxonomy.md's captured `hinv` output); the captured graph shows a disk behind this one.",
       "id": "isp1040",
@@ -718,7 +713,7 @@
         "qlw (OpenBSD driver)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/isp1040.md"
+        "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
       "description": "The base board's single-channel Fast/Narrow SCSI adapter for the 5.25-inch devices, at PCI device 1. The same ISP1040 part as the `isp1040` Ultra channel is configured for a different board-level interface. A real Origin 200's own hardware inventory reports the identical revision for both (docs/component-taxonomy.md's captured `hinv` output).",
       "id": "isp1040-1",
@@ -740,7 +735,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/boot-flash.md"
+        "qemu:docs/specs/sgi-prom-image.rst"
       ],
       "description": "One megabyte of firmware storage, presented at two addresses.",
       "id": "boot-flash",
@@ -786,7 +781,7 @@
         "DS1747"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/timekeeper.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "Battery-backed non-volatile memory with a real-time clock, on the IOC3's byte bus.",
       "id": "rtc",
@@ -840,7 +835,7 @@
         "PCD8584 (a different Philips part, miscited for this one in a vendor driver comment)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "description": "The Philips I2C-bus controller wired into the Hub's local register space. It is the only path from the Hub onto the I2C bus, and the system controller answers as a slave on that bus. A generic third-party part rather than an SGI design, which is why it is named by its part number.",
       "id": "pcf8584",
@@ -877,7 +872,7 @@
         "Entry Level System Controller"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "description": "The Origin 200's instance of the SN0 Module System Controller (MSC; \"ELSC\" is SGI's own older name for the same part): a separate board answering as a slave on the I2C bus the PCF8584 masters. It takes a checksummed ASCII command and response protocol covering power control, reset and switch readback on the Origin 200 (the family protocol also carries an 8-character display and multi-module commands the Origin 200 has no hardware for), and separately multiplexes a serial terminal on its own rear diagnostic connector onto the same link.",
       "id": "sgi-elsc",
@@ -898,7 +893,7 @@
         "NVRAM (the firmware's own term for it)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "description": "A serial non-volatile store answering as a slave on the same I2C bus the system controller sits on. It holds the module, partition, domain, cluster and cell numbers, the supervisor password, the debug-switch values and the built-in-self-test flag.",
       "id": "i2c-nvram",
@@ -910,7 +905,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "description": "A single-byte read and write target answering on the Hub's I2C bus at slave address 0x20, driven directly by a pair of firmware routines the interactive monitor calls.",
       "id": "i2c-device-20",

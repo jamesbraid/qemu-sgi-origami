@@ -42,14 +42,14 @@ layer:
             Real MENET boards report Bridge revisions 3 and 4; the rev J
             board the model's record copies reports 4. The model
             implements Bridge D behavior.
-        datasheet_contracts: [docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
         provenance: derived
         parent: menet
         sources: ["web:mimgfx-origin2000-inventory Origin MENET board, module 1 slot 8: Revision 4 and slot 7: Revision 3"]
-      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
-      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, docs/datasheets/ioc3.md], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-0, name: IOC3 for ef port 0 and serial ports 1-2, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-1, name: IOC3 for ef port 1 and serial ports 3-4, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-2, name: IOC3 for ef port 2 and serial ports 5-6, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
+      - {id: ioc3-3, name: IOC3 for ef port 3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1}, datasheet_contracts: [docs/datasheets/sgi-ioc3-boards.md, qemu:docs/specs/sgi-ioc3.rst], provenance: vendor-document, parent: menet, sources: ["108-0151-001 Figure 1-5 printed page 1-7"]}
       - {id: ioc3-0-ethernet, name: Ethernet MAC 0, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-0, provenance: vendor-document}
       - {id: ioc3-1-ethernet, name: Ethernet MAC 1, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-1, provenance: vendor-document}
       - {id: ioc3-2-ethernet, name: Ethernet MAC 2, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3-2, provenance: vendor-document}

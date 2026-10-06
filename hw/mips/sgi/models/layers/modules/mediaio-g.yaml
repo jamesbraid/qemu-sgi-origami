@@ -36,7 +36,7 @@ layer:
           notes: >-
             The MediaIO daughtercard's own IOC3; docs/datasheets/baseio.md,
             "BaseIO-G and MediaIO boundary".
-        datasheet_contracts: [docs/datasheets/baseio.md, docs/datasheets/ioc3.md]
+        datasheet_contracts: [docs/datasheets/baseio.md, qemu:docs/specs/sgi-ioc3.rst]
         provenance: datasheet
 
       - id: keyboard-mouse

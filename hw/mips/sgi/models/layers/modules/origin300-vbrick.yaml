@@ -52,7 +52,7 @@ layer:
             node's XBridge. The V-brick's fitted revision is unknown.
         parent: vbrick
         provenance: vendor-document
-        datasheet_contracts: [docs/datasheets/xbridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
         sources: ["007-4264-002 printed pages 52 and 54"]
         notes: The physical port assignment and cascade behavior remain unresolved.
       - id: l1

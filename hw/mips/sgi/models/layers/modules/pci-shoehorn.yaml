@@ -45,7 +45,7 @@ layer:
           notes: >-
             The photographed ASIC is marked Bridge Rev D, SGI 099-0125-007;
             the same Bridge D encoding the BaseIO's Bridge selects.
-        datasheet_contracts: [docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
         provenance: derived
         parent: pci-shoehorn
         sources: ["web:ebay-277925514107-image-5 board ASIC marked LSI L2A0710 Bridge Rev D, 099-0125-007"]
@@ -58,7 +58,7 @@ layer:
           notes: >-
             SGI option board 030-1155-002 carrying one IOC3 with Ethernet and
             a PS/2 keyboard and mouse. Its PCI subsystem id is not captured.
-        datasheet_contracts: [docs/datasheets/sgi-cad-duo-pci-card.md, docs/datasheets/ioc3.md]
+        datasheet_contracts: [docs/datasheets/sgi-cad-duo-pci-card.md, qemu:docs/specs/sgi-ioc3.rst]
         provenance: datasheet
         parent: pci-shoehorn
       - {id: cad-duo-ethernet, name: Cad Duo Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: cad-duo, provenance: datasheet}
