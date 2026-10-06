@@ -28,24 +28,7 @@ layer:
     machine:
       name: Origin 300
       model_role: emulation-target
-      notes: >-
-        One chassis is one Bedrock node with its NUMAlink 3 port cabled to nothing,
-        so the fabric defers as CrayLink does on a one-node Origin 200. The board has
-        no Crossbow chip, but the XBridge's own crossbar section is live: real Origin
-        300s report widget 0 as a crossbar (ASIC XBOW Rev 2) with the two PCI bridges
-        at widgets 14 and 15, and a verbose PROM trace from one shows the Bedrock
-        entering the crossbar at port 0xa (the captures listed in
-        docs/library/boot-logs.md). One published two-CPU board reports node
-        inventory IP45_2CPU, part 030-1780-001 rev C, with processors A and C
-        installed; the owner's manual and the scan-tools field guide both also
-        name a four-processor configuration (108-0263-004's own "IP45 4 CPU
-        R14K 500MHZ 2MB" FRU name), which fits the two remaining slots B and D
-        on the same two processor interfaces. Other captured IP45 boards are
-        030-1779-001 rev C (500 MHz) and 030-1797-001 rev B (600 MHz), with
-        IO-8 boards 030-1673-003. A second
-        chassis over the NUMAlink cable is a later configuration and out of scope;
-        one owner's two cabled Origin 300s appear as modules 001c01 and 001c02 at
-        nasids 0 and 1, and OpenBSD trapped on them (the OpenBSD captures).
+      notes: "One chassis is one Bedrock node with its NUMAlink 3 port cabled to nothing, so the fabric defers as CrayLink does on a one-node Origin 200. The board has no Crossbow chip, but the XBridge's own crossbar section is live: real Origin 300s report widget 0 as a crossbar (ASIC XBOW Rev 2) with the two PCI bridges at widgets 14 and 15, and a verbose PROM trace from one shows the Bedrock entering the crossbar at port 0xa. One published two-CPU board reports node inventory IP45_2CPU, part 030-1780-001 rev C, with processors A and C installed; the owner's manual and the scan-tools field guide both also name a four-processor configuration (108-0263-004's own \"IP45 4 CPU R14K 500MHZ 2MB\" FRU name), which fits the two remaining slots B and D on the same two processor interfaces. Other captured IP45 boards are 030-1779-001 rev C (500 MHz) and 030-1797-001 rev B (600 MHz), with IO-8 boards 030-1673-003. A second chassis over the NUMAlink cable is a later configuration and out of scope; one owner's two cabled Origin 300s appear as modules 001c01 and 001c02 at nasids 0 and 1, and OpenBSD trapped on them (OpenBSD boot captures)."
       emulation:
         bedrock_nodes:
           bedrock:

@@ -32,7 +32,7 @@
       "id": "io",
       "name": "I/O",
       "node_stride": "0x1_0000_0000",
-      "notes": "Sixteen small windows of 16 MB fill offsets 0x0000_0000 to 0x0fff_ffff, widget N at N times 16 MB. Seven big windows of 512 MB start at 0x2000_0000. Small window 0 and big window 6 are two views of the same widget, and both decode: Linux reads widget 0's identification register through the small window by its raw address, OpenBSD reaches the same device through the big window, so both paths have to work. See docs/datasheets/address-map.md for the small-window-0 reversal history.",
+      "notes": "Sixteen small windows of 16 MB fill offsets 0x0000_0000 to 0x0fff_ffff, widget N at N times 16 MB. Seven big windows of 512 MB start at 0x2000_0000. Small window 0 and big window 6 are two views of the same widget, and both decode: Linux reads widget 0's identification register through the small window by its raw address, OpenBSD reaches the same device through the big window, so both paths have to work.",
       "provenance": "public-header",
       "selector": 1,
       "sources": [
@@ -663,7 +663,7 @@
     {
       "id": "router-board-1",
       "identity": {
-        "notes": "Selected catalog part cleared in docs/reviews/origin2000-board-and-configuration-procedure-review-20260905.md; suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
+        "notes": "Selected catalog part (independently reviewed); suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
         "part": "030-0841-002"
       },
       "kind": "board",
@@ -750,7 +750,7 @@
     {
       "id": "router-board-2",
       "identity": {
-        "notes": "Selected catalog part cleared in docs/reviews/origin2000-board-and-configuration-procedure-review-20260905.md; suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
+        "notes": "Selected catalog part (independently reviewed); suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
         "part": "030-0841-002"
       },
       "kind": "board",
@@ -883,7 +883,7 @@
     {
       "id": "baseio",
       "identity": {
-        "notes": "Selected server IO6 catalog part cleared in docs/reviews/origin2000-board-and-configuration-procedure-review-20260905.md.",
+        "notes": "Selected server IO6 catalog part (independently reviewed).",
         "part": "030-1124-002"
       },
       "kind": "board",
@@ -905,7 +905,7 @@
       "hardware_kind": "bridge",
       "id": "baseio-bridge",
       "identity": {
-        "notes": "Select Bridge D; encodings independently cleared in docs/reviews/origin2000-component-revision-encoding-review-20260905.md.",
+        "notes": "Select Bridge D; the revision encodings were independently reviewed.",
         "widget_mfg": "0x36",
         "widget_part": "0xc002",
         "widget_revision": 4
@@ -928,7 +928,7 @@
       "hardware_kind": "ioc3",
       "id": "baseio-ioc3",
       "identity": {
-        "notes": "Select the revision 1 component supported by docs/datasheets/ioc3.md; subsystem compatibility is a separate software policy.",
+        "notes": "Select the revision 1 component supported by the IOC3 page (docs/specs/sgi-ioc3.rst); subsystem compatibility is a separate software policy.",
         "pci_revision": 1
       },
       "kind": "io-controller",
@@ -948,7 +948,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",
@@ -968,7 +968,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",
@@ -3215,7 +3215,7 @@
         {
           "cache_mib": 4,
           "clock_mhz": 195,
-          "notes": "Reset mode cleared by the independent firmware-configuration review (candidate 7a0508cb6f18b5d8441b8e0dca30f8e386d503fd, docs/reviews/origin2000-firmware-configuration-review-20260905.md) recomputed from IRIX 6.5.7 configuration data and reconciled with the public processor manual and SGI service procedure; docs/datasheets/origin2000-cache-configuration.md records the clearance. This is not the product's selected default (that is 180 MHz/1 MiB); no product here authors it. Identity registers and cache clock for this SKU are not established by any held source and are absent here.",
+          "notes": "Reset mode cleared by the independent firmware-configuration review recomputed from IRIX 6.5.7 configuration data and reconciled with the public processor manual and SGI service procedure. This is not the product's selected default (that is 180 MHz/1 MiB); no product here authors it. Identity registers and cache clock for this SKU are not established by any held source and are absent here.",
           "reset_mode": {
             "cache_test_mode": false,
             "coherent_request_target": "external-agent",

@@ -114,10 +114,7 @@ layer:
         hub_ni_revision_overrides:
         - component: node-board-1-hub
           ni_revision: 5
-          reason: >-
-            Graphics-capable SN0 nodes report Hub NI revision code 5 in every
-            capture found, as the onyx2-rack product layer records.
-            docs/datasheets/hub-network-interface.md holds the citation chain.
+          reason: "Graphics-capable SN0 nodes report Hub NI revision code 5 in every capture found, as the onyx2-rack product layer records."
         - component: node-board-2-hub
           ni_revision: 5
           reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.

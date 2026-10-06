@@ -147,10 +147,7 @@ layer:
             relative_to: bedrock
             offset: "0x680000"
             size: "0x80000"
-            notes: >-
-              Port status bit 18 reads clear on real Origin 300s, one chassis and two
-              cabled: OpenBSD prints "Machine is in M mode." (the OpenBSD capture in
-              docs/library/boot-logs.md).
+            notes: "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (an OpenBSD boot capture)."
           - id: bedrock-xb
             name: internal crossbar
             relative_to: bedrock
@@ -267,11 +264,7 @@ layer:
           widget_part: "0xd000"
           widget_mfg: "0x000"
           widget_revision: 2
-          notes: >-
-            Part and manufacturer as OpenBSD's device table and the specification give
-            them for a crossbar face; OpenBSD attaches the same chip as "XXBow
-            revision 2", the part 0xd000 identity, on a Fuel and on two real Origin
-            300s (the OpenBSD captures in docs/library/boot-logs.md).
+          notes: "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (OpenBSD boot captures)."
         datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
         regions:
           - id: widget-0-registers
@@ -728,8 +721,8 @@ layer:
         question: How should IP45 board identification be modeled without independent decoder evidence?
         about: [bedrock]
         candidates:
-          - {answer: "leave the region unassigned pending independent IP45 evidence", source: "James, 2026-09-05; docs/library/origin300-identity-evidence.md", notes: "current model position"}
-          - {answer: "propose a guest-specific compatibility response", source: "OpenBSD consumer observation recorded in docs/library/origin300-identity-evidence.md", notes: "not approved; cannot be presented as a fitted ASIC or a hardware reset value"}
+          - {answer: "leave the region unassigned pending independent IP45 evidence", source: "Maintainer decision, 2026-09-05", notes: "current model position"}
+          - {answer: "propose a guest-specific compatibility response", source: "OpenBSD consumer observation", notes: "not approved; cannot be presented as a fitted ASIC or a hardware reset value"}
         consequence: OpenBSD has an identification read, but its register name and a boot banner do not establish the physical decoder, complete register value, or a second register on IP45. No identity region is assigned from that evidence alone.
         settled_by: Independent IP45 hardware documentation or a hardware register capture with address, width and value. A PROM trace can establish firmware use, not the physical decoder.
       - id: physical-reset-decoder

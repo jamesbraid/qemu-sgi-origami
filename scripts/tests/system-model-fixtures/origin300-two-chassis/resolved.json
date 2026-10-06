@@ -461,7 +461,7 @@
         {
           "id": "bedrock-ni",
           "name": "network interface",
-          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (the OpenBSD capture in docs/library/boot-logs.md).",
+          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (an OpenBSD boot capture).",
           "offset": "0x680000",
           "relative_to": "master-bedrock",
           "size": "0x80000"
@@ -577,7 +577,7 @@
       "hardware_kind": "xbridge",
       "id": "master-xbridge-crossbar",
       "identity": {
-        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (the OpenBSD captures in docs/library/boot-logs.md).",
+        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (OpenBSD boot captures).",
         "widget_mfg": "0x000",
         "widget_part": "0xd000",
         "widget_revision": 2
@@ -1117,7 +1117,7 @@
         {
           "id": "bedrock-ni",
           "name": "network interface",
-          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (the OpenBSD capture in docs/library/boot-logs.md).",
+          "notes": "Port status bit 18 reads clear on real Origin 300s, one chassis and two cabled: OpenBSD prints \"Machine is in M mode.\" (an OpenBSD boot capture).",
           "offset": "0x680000",
           "relative_to": "slave-bedrock",
           "size": "0x80000"
@@ -1233,7 +1233,7 @@
       "hardware_kind": "xbridge",
       "id": "slave-xbridge-crossbar",
       "identity": {
-        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (the OpenBSD captures in docs/library/boot-logs.md).",
+        "notes": "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (OpenBSD boot captures).",
         "widget_mfg": "0x000",
         "widget_part": "0xd000",
         "widget_revision": 2
@@ -2908,12 +2908,12 @@
         {
           "answer": "leave the region unassigned pending independent IP45 evidence",
           "notes": "current model position",
-          "source": "James, 2026-09-05; docs/library/origin300-identity-evidence.md"
+          "source": "Maintainer decision, 2026-09-05"
         },
         {
           "answer": "propose a guest-specific compatibility response",
           "notes": "not approved; cannot be presented as a fitted ASIC or a hardware reset value",
-          "source": "OpenBSD consumer observation recorded in docs/library/origin300-identity-evidence.md"
+          "source": "OpenBSD consumer observation"
         }
       ],
       "consequence": "OpenBSD has an identification read, but its register name and a boot banner do not establish the physical decoder, complete register value, or a second register on IP45. No identity region is assigned from that evidence alone.",
@@ -3050,12 +3050,12 @@
         {
           "answer": "leave the region unassigned pending independent IP45 evidence",
           "notes": "current model position",
-          "source": "James, 2026-09-05; docs/library/origin300-identity-evidence.md"
+          "source": "Maintainer decision, 2026-09-05"
         },
         {
           "answer": "propose a guest-specific compatibility response",
           "notes": "not approved; cannot be presented as a fitted ASIC or a hardware reset value",
-          "source": "OpenBSD consumer observation recorded in docs/library/origin300-identity-evidence.md"
+          "source": "OpenBSD consumer observation"
         }
       ],
       "consequence": "OpenBSD has an identification read, but its register name and a boot banner do not establish the physical decoder, complete register value, or a second register on IP45. No identity region is assigned from that evidence alone.",
@@ -3131,7 +3131,7 @@
         {
           "cache_mib": 2,
           "clock_mhz": 500,
-          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985), independently reviewed in docs/reviews/origin300-config0-reset-word-review.md and recorded in docs/datasheets/r14000.md. No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000 (docs/datasheets/r14000.md), so only the literal word is carried, not a named-field encoding.",
+          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985), which was independently reviewed. No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
           "reset_mode_bits": "0x009aa985"
         },
         {

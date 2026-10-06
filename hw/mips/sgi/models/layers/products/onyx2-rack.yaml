@@ -138,46 +138,20 @@ layer:
         board_identity_overrides:
         - component: baseio
           part: "030-0734-002"
-          reason: >-
-            The rack's BaseIO is a BaseIO-G: the MediaIO daughtercard fitted
-            under this board (the mediaio- module instance in
-            docs/machines/onyx2-rack.yaml) already selects QEMU's io6g
-            preset through its keyboard-mouse subfunction. The shared
-            origin2000-module.yaml layer authors the plain BaseIO part
-            030-1124-002 on this board for every product that reuses it, so
-            this override states the BaseIO-G base board part the real rack
-            capture lists (docs/datasheets/onyx2.md, Product identity).
+          reason: "The rack's BaseIO is a BaseIO-G: the MediaIO daughtercard fitted under this board (the MediaIO module instance in the Onyx2 rack composition) already selects QEMU's io6g preset through its keyboard-mouse subfunction. The shared origin2000-module.yaml layer authors the plain BaseIO part 030-1124-002 on this board for every product that reuses it, so this override states the BaseIO-G base board part the real rack capture lists."
         hub_ni_revision_overrides:
         - component: node-board-1-hub
           ni_revision: 5
-          reason: >-
-            Graphics-capable SN0 nodes report Hub NI revision code 5 in every
-            capture found: a two-module Origin 200 listing a KONA board
-            prints ASIC HUB Rev 5 on both node boards, and an Onyx2 also
-            reports code 5, with no machine reporting code 4.
-            docs/datasheets/hub-network-interface.md and
-            docs/provenance.md#origin-2000-graphics-module-hub-ni-revision-override-2026-09-20
-            record the citation chain. The reusable node-board module's own
-            code 3 (Hub 2.1) stays the baseline for every product this
-            override does not name.
+          reason: "Graphics-capable SN0 nodes report Hub NI revision code 5 in every capture found: a two-module Origin 200 listing a KONA board prints ASIC HUB Rev 5 on both node boards, and an Onyx2 also reports code 5, with no machine reporting code 4. The reusable node-board module's own code 3 (Hub 2.1) stays the baseline for every product this override does not name."
         - component: node-board-2-hub
           ni_revision: 5
-          reason: >-
-            Matches node-board-1-hub: a module's Hubs share one manufactured
-            revision, not a per-node mix. See node-board-1-hub's own reason
-            and docs/datasheets/hub-network-interface.md.
+          reason: "Matches node-board-1-hub: a module's Hubs share one manufactured revision, not a per-node mix. See node-board-1-hub's own reason."
         - component: node-board-3-hub
           ni_revision: 5
-          reason: >-
-            Matches node-board-1-hub: a module's Hubs share one manufactured
-            revision, not a per-node mix. See node-board-1-hub's own reason
-            and docs/datasheets/hub-network-interface.md.
+          reason: "Matches node-board-1-hub: a module's Hubs share one manufactured revision, not a per-node mix. See node-board-1-hub's own reason."
         - component: node-board-4-hub
           ni_revision: 5
-          reason: >-
-            Matches node-board-1-hub: a module's Hubs share one manufactured
-            revision, not a per-node mix. See node-board-1-hub's own reason
-            and docs/datasheets/hub-network-interface.md.
+          reason: "Matches node-board-1-hub: a module's Hubs share one manufactured revision, not a per-node mix. See node-board-1-hub's own reason."
         initial_module_numbers:
         - component: compute-module
           number: 1

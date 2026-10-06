@@ -38,21 +38,7 @@ layer:
         provenance: vendor-document
         sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
         master: hub
-        notes: >-
-          Point-to-point packet protocol between the Hub, the crossbar and the I/O
-          widgets. Endpoints are numbered widgets, 0 through 15. SGI's system
-          documents call the link, connector and protocol XIO; its chip
-          specifications call the same things Crosstalk.
-
-          A widget number is scoped to one crossbar and does not identify a board
-          machine-wide. A real Origin 2000 enumerating itself prints widget 14 twice,
-          on two different boards, because it has more than one crossbar. This
-          machine has none at all, so every widget number on it is unambiguous — and
-          that is the condition under which a machine-wide-identifier assumption
-          would pass every check anyone here could write. The uniqueness check in
-          tools/origami model check is already scoped per bus rather than per machine,
-          which is the correct scoping and not a coincidence to rely on; a second
-          crossbar would need a second bus entry rather than a wider check.
+        notes: "Point-to-point packet protocol between the Hub, the crossbar and the I/O widgets. Endpoints are numbered widgets, 0 through 15. SGI's system documents call the link, connector and protocol XIO; its chip specifications call the same things Crosstalk.\nA widget number is scoped to one crossbar and does not identify a board machine-wide. A real Origin 2000 enumerating itself prints widget 14 twice, on two different boards, because it has more than one crossbar. This machine has none at all, so every widget number on it is unambiguous — and that is the condition under which a machine-wide-identifier assumption would pass every check anyone here could write. The checker's widget-uniqueness test is already scoped per bus rather than per machine, which is the correct scoping and not a coincidence to rely on; a second crossbar would need a second bus entry rather than a wider check."
 
       - id: pci
         name: PCI
