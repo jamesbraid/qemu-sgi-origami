@@ -1509,14 +1509,12 @@ static unsigned int sgi_machine_compute_serial_line(
 }
 
 /*
- * A crossbar's manufacturer id and part number are fixed by which chip
- * it is (docs/designs/sn-machine-model-architecture.md's own
- * SGIModelCrossbarKind split: a standalone Crossbow versus an XBridge's
- * internal crossbar section), the same on every machine fitting either,
- * so the compiled catalogue no longer carries them. The manufacturer id
- * is zero for both kinds measured so far; the part number is what every
- * measured configuration's descriptor named before the ownership-rule
- * trim.
+ * A crossbar's manufacturer id and part number are fixed by which chip it is
+ * (the SGIModelCrossbarKind split: a standalone Crossbow versus an XBridge's
+ * internal crossbar section), the same on every machine fitting either, so the
+ * compiled catalogue no longer carries them. The manufacturer id is zero for
+ * both kinds measured so far; the part number is what every measured
+ * configuration's descriptor named before the ownership-rule trim.
  */
 #define SGI_MACHINE_CROSSBAR_MANUFACTURER 0
 

@@ -512,7 +512,7 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * this IOC3 is single-connection, so its shared interrupt lands on the
  * chip's own PCI INTA, which the Bridge's favoured per-slot mapping sends
  * to input 6. The board IOC3 at device 2 rides input 4 instead. Confirmed
- * by 6.5.30 disassembly of the IOC3 interrupt-allocation path and a live
+ * from the IRIX 6.5.30 kernel's IOC3 interrupt-allocation code and a live
  * IRIX 6.5.30 io6g boot whose keyboard and mouse enumerate at pci/6.
  */
 #define BASEIO_G_MIO_IOC3_IRQ_PIN  6

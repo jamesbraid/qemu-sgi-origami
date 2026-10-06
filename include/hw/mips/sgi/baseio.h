@@ -2,18 +2,16 @@
 /*
  * sgi-baseio: SGI's base I/O functional unit -- the IOC3 plus SCSI
  * controllers, and on the IO-8 a USB controller, as PCI devices behind an
- * XIO-to-PCI bridge -- as one device with a preset per shipped
- * board design (docs/designs/sn-machine-model-architecture.md, "Base
- * I/O"). This device does not own the bridge or XBridge chip itself:
- * the carrier (the SN0 node for IP29's onboard I/O, the XIO BaseIO card,
- * the SN1 node for the IO-8) creates that chip, sets its own identity
- * properties and realizes it, then hands this device the chip's PCI bus
- * by link property. sgi_baseio_preset_lookup() exposes each preset's
- * chip-identity defaults (the carrier's own "board-part"/"revision" to
- * set on its Bridge or XBridge before this device ever exists) so the
- * default lives in exactly one table, matching every other board's
- * design-part-number default (see sgi-ip29-io's deleted header comment,
- * carried forward here).
+ * XIO-to-PCI bridge -- as one device with a preset per shipped board design.
+ * This device does not own the bridge or XBridge chip itself: the carrier (the
+ * SN0 node for IP29's onboard I/O, the XIO BaseIO card, the SN1 node for the
+ * IO-8) creates that chip, sets its own identity properties and realizes it,
+ * then hands this device the chip's PCI bus by link property.
+ * sgi_baseio_preset_lookup() exposes each preset's chip-identity defaults (the
+ * carrier's own "board-part"/"revision" to set on its Bridge or XBridge before
+ * this device ever exists) so the default lives in exactly one table, matching
+ * every other board's design-part-number default (see sgi-ip29-io's deleted
+ * header comment, carried forward here).
  */
 #ifndef HW_MIPS_SGI_BASEIO_H
 #define HW_MIPS_SGI_BASEIO_H
