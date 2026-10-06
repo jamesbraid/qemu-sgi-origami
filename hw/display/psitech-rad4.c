@@ -2178,16 +2178,54 @@ static uint32_t rad4_dma_local_byte(uint32_t local_addr)
 static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
                            const uint8_t *buf, uint32_t len)
 {
-    uint32_t i;
+    uint32_t i = 0;
 
-    for (i = 0; i < len; i++) {
+    /*
+     * Whole local dwords go as one word: PCI byte lane n is bit 8n of a
+     * little-endian dword, which is where the big-endian framebuffer word
+     * keeps local byte n, so this is the byte rule four lanes at a time.
+     * Only a span's unaligned head and tail go byte by byte.
+     */
+    while (i < len) {
         uint32_t addr = local_addr + i;
-        uint8_t mask = s->mask >> (8 * (addr % 4));
-        uint8_t *dst = s->framebuffer + rad4_dma_local_byte(addr);
+        uint8_t mask, *dst;
 
+        if (addr % 4 == 0 && len - i >= 4) {
+            uint8_t *word = s->framebuffer + addr;
+
+            stl_be_p(word, (ldl_be_p(word) & ~s->mask) |
+                           (ldl_le_p(buf + i) & s->mask));
+            i += 4;
+            continue;
+        }
+        mask = s->mask >> (8 * (addr % 4));
+        dst = s->framebuffer + rad4_dma_local_byte(addr);
         *dst = (*dst & ~mask) | (buf[i] & mask);
+        i++;
     }
     rad4_mark_dirty_range(s, local_addr, len);
+}
+
+/*
+ * Read @len framebuffer bytes from local byte address @local_addr for PCI,
+ * whole local dwords at a time where they fit, as rad4_dma_merge() writes.
+ */
+static void rad4_dma_fetch(PsitechRad4State *s, uint32_t local_addr,
+                           uint8_t *buf, uint32_t len)
+{
+    uint32_t i = 0;
+
+    while (i < len) {
+        uint32_t addr = local_addr + i;
+
+        if (addr % 4 == 0 && len - i >= 4) {
+            stl_le_p(buf + i, ldl_be_p(s->framebuffer + addr));
+            i += 4;
+            continue;
+        }
+        buf[i] = s->framebuffer[rad4_dma_local_byte(addr)];
+        i++;
+    }
 }
 
 /*
@@ -2206,9 +2244,7 @@ static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
 
     assert(len <= sizeof(buf));
     if (local_to_pci) {
-        for (off = 0; off < len; off++) {
-            buf[off] = s->framebuffer[rad4_dma_local_byte(local_addr + off)];
-        }
+        rad4_dma_fetch(s, local_addr, buf, len);
         if (pci_dma_write(&s->pci, pci_addr, buf, len) == MEMTX_OK) {
             return true;
         }

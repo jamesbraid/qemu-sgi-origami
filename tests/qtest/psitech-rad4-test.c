@@ -2469,6 +2469,120 @@ static void test_dma_unaligned_spans(void)
 }
 
 /*
+ * DMA against a byte-by-byte reference of the PCI 9060's rule (data sheet
+ * page 6, section 2.2.2.5 and section 3.6.3.3): byte i goes from PCI byte
+ * P + i to local byte L + i, under its own byte lane of the plane mask on
+ * upload, and only bytes inside the span change on either side. PCI byte
+ * Q is host byte Q ^ 3 behind the swap-clear slot, and local byte A is
+ * lane A % 4 of the word BAR2 reads. Spans cover whole aligned words,
+ * unaligned heads and tails, and spans inside one word, under every plane
+ * mask the shipped X server uses.
+ */
+#define EQ_LOCAL    0x200u
+#define EQ_WINDOW   32u
+#define EQ_PCI      (DMA_SRC_PHYS + 0x1000)
+
+static const struct {
+    uint32_t local_off, pci_off, len;
+} dma_eq_spans[] = {
+    { 0, 0, 16 },   /* whole words, both sides aligned */
+    { 1, 1, 15 },   /* unaligned head */
+    { 0, 0, 13 },   /* unaligned tail */
+    { 1, 3, 10 },   /* both, with PCI and local alignment differing */
+    { 2, 0, 1 },    /* one byte */
+    { 1, 2, 2 },    /* inside one word */
+    { 3, 1, 6 },    /* across one word boundary */
+    { 4, 2, 24 },   /* aligned local, unaligned PCI */
+};
+
+static const uint32_t dma_eq_masks[] = {
+    0xffffffffu, 0x00ffffffu, 0x0f000000u, 0xf0000000u,
+};
+
+static uint8_t eq_local_byte(const uint32_t *words, uint32_t off)
+{
+    return words[off / 4] >> (8 * (off % 4));
+}
+
+static void eq_fill(QTestState *qts, uint32_t *fb, uint8_t *host,
+                    unsigned seed)
+{
+    bar2_write(qts, B_MASK, 0xffffffffu);
+    for (unsigned w = 0; w < EQ_WINDOW / 4; w++) {
+        fb[w] = 0xa0a1a2a3u ^ (w * 0x01010101u) ^ (seed << 4);
+        bar2_write(qts, EQ_LOCAL + 4 * w, fb[w]);
+    }
+    for (unsigned b = 0; b < EQ_WINDOW; b++) {
+        host[b] = 0x40 + b + seed;
+    }
+    qtest_memwrite(qts, EQ_PCI, host, EQ_WINDOW);
+}
+
+static void eq_run(QTestState *qts, uint32_t pci, uint32_t local,
+                   uint32_t len, uint32_t flags)
+{
+    dma_write_descriptor(qts, DMA_DESC_LOCAL, PCI_DMA_DIRECT | pci, local,
+                         len, DMA_DESC_END_OF_CHAIN | flags);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, DMA_DESC_LOCAL);
+    dma_run(qts);
+    g_assert_true(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                  DMA_STATUS_DONE);
+}
+
+static void test_dma_word_and_byte_paths_agree(void)
+{
+    QTestState *qts = rad4_init();
+    unsigned seed = 0;
+
+    for (unsigned m = 0; m < ARRAY_SIZE(dma_eq_masks); m++) {
+        for (unsigned c = 0; c < ARRAY_SIZE(dma_eq_spans); c++, seed++) {
+            uint32_t lo = dma_eq_spans[c].local_off;
+            uint32_t po = dma_eq_spans[c].pci_off;
+            uint32_t len = dma_eq_spans[c].len;
+            uint32_t mask = dma_eq_masks[m];
+            uint32_t fb[EQ_WINDOW / 4], want[EQ_WINDOW / 4];
+            uint8_t host[EQ_WINDOW], back[EQ_WINDOW];
+
+            /* Upload: PCI bytes into local bytes under the mask. */
+            eq_fill(qts, fb, host, seed);
+            memcpy(want, fb, sizeof(want));
+            for (uint32_t i = 0; i < len; i++) {
+                uint32_t a = lo + i;
+                uint32_t lane = 8 * (a % 4);
+                uint32_t m8 = (mask >> lane) & 0xff;
+                uint32_t pci_byte = host[(po + i) ^ 3];
+
+                want[a / 4] = (want[a / 4] & ~(m8 << lane)) |
+                              ((pci_byte & m8) << lane);
+            }
+            bar2_write(qts, B_MASK, mask);
+            eq_run(qts, EQ_PCI + po, EQ_LOCAL + lo, len, 0);
+            bar2_write(qts, B_MASK, 0xffffffffu);
+            for (unsigned w = 0; w < EQ_WINDOW / 4; w++) {
+                g_assert_cmphex(bar2_read(qts, EQ_LOCAL + 4 * w), ==,
+                                want[w]);
+            }
+
+            /* Readback: local bytes into PCI bytes, mask not involved. */
+            eq_fill(qts, fb, host, seed + 1);
+            memcpy(back, host, sizeof(back));
+            for (uint32_t i = 0; i < len; i++) {
+                back[(po + i) ^ 3] = eq_local_byte(fb, lo + i);
+            }
+            bar2_write(qts, B_MASK, mask);
+            eq_run(qts, EQ_PCI + po, EQ_LOCAL + lo, len,
+                   DMA_DESC_LOCAL_TO_PCI);
+            qtest_memread(qts, EQ_PCI, host, sizeof(host));
+            for (unsigned b = 0; b < EQ_WINDOW; b++) {
+                g_assert_cmphex(host[b], ==, back[b]);
+            }
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
  * A Local-space descriptor pointer at or past the framebuffer's own end
  * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
  * clear, the same failure convention test_dma_abort_recovers_a_failed_
@@ -3917,6 +4031,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-looping-chain", test_dma_looping_chain);
     qtest_add_func("/psitech-rad4/dma-unaligned-spans",
                    test_dma_unaligned_spans);
+    qtest_add_func("/psitech-rad4/dma-word-and-byte-paths-agree",
+                   test_dma_word_and_byte_paths_agree);
     qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
                    test_dma_local_descriptor_out_of_bounds);
     qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",
