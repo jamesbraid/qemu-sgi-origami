@@ -15,23 +15,23 @@ layer:
       bits: '58:57'
       count: 4
       provenance: derived
-      sources: &id001
-      - docs/datasheets/ip30-machine.md
-      - docs/datasheets/ip30-octane2-machine.md
+      sources:
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-space-selection
     processors:
     - part: r10000
       variants:
       - clock_mhz: 195
         cache_mib: 1
       provenance: derived
-      sources: *id001
+      sources:
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-processors
     - part: r12000
       variants:
       - clock_mhz: 360
         cache_mib: 2
         # Approximation. The module's sampled reset word is unknown; only
         # SS=010 follows from the reported 2 MiB cache
-        # (docs/datasheets/ip30-r12000.md). This is the word the
+        # (docs/specs/sgi-ip30.rst, R12000 catalogue defaults). This is the word the
         # emulator's Octane2 qtests have run with: big-endian, SS=010,
         # SB=1 (32-word blocks), Kseg0 algorithm 3, and the remaining
         # divisor and mode fields chosen only to be valid encodings.
@@ -41,9 +41,11 @@ layer:
           The machine's r12000-reset-mode, r12000-scache-bytes and
           r12000-scache-block-words properties override it.
       provenance: derived
-      sources: *id001
+      sources:
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-processors
     address_spaces:
     - id: physical
       name: IP30 physical address space
       provenance: derived
-      sources: *id001
+      sources:
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-address-map

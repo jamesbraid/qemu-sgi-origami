@@ -13,14 +13,14 @@ layer:
     - - 1
     provenance: derived
     sources:
-    - docs/datasheets/ip30-machine.md
+    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-topology
   population:
     nodes: 1
     cpus_per_node:
     - 1
     provenance: derived
     sources:
-    - docs/datasheets/ip30-machine.md
+    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-topology
   cpu_selection:
     default:
       clock_mhz: 195
@@ -38,15 +38,15 @@ layer:
         display_description: SGI Octane (IP30)
         lifecycle: implemented
         profile: serial
-        # The fitted part, its select and the strap are unknown (Origami
-        # docs/datasheets/ip30-flash.md). Select 0 with the strap low is
+        # The fitted part, its select and the strap are unknown (docs/specs/sgi-ip30.rst,
+        # Boot flash wiring). Select 0 with the strap low is
         # the compatibility default every launch has used.
         boot_flash_wiring:
           select: false
           strap: false
           provenance: unsourced
           sources:
-          - docs/datasheets/ip30-flash.md
+          - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-flash-wiring
           notes: Unknown wiring; the compatibility default, not a measured board.
         system_timekeepers:
           ip30-board:
@@ -54,7 +54,7 @@ layer:
             initial_ip27_fixture: false
             provenance: derived
             sources:
-            - docs/datasheets/ip30-machine.md
+            - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-timekeeper
             - hw/mips/sgi/octane.c
             notes: The board's IOC3 drives a DS1685-family clock, whose 512-byte NVRAM and the model's 24-byte clock record a new machine starts zeroed; the part treats an all-zero image as fresh.
         emulator_constraints:
@@ -85,8 +85,8 @@ layer:
         disk_bus: scsi
         netboot_adapter: none
         default_topology: octane
-        # The candidate part's 1 MiB array (Origami docs/designs/
-        # ip30-flash-configuration.md), which the reviewed CFI01 boot flash
+        # The candidate part's 1 MiB array (docs/specs/sgi-ip30.rst,
+        # Boot flash wiring), which the reviewed CFI01 boot flash
         # ("hw/mips/sgi: use CFI01 for Octane boot flash") implements and
         # octane.c sizes from this catalogue entry. The fitted physical
         # part is still unknown.
@@ -98,4 +98,4 @@ layer:
         provenance: derived
         sources:
         - hw/mips/sgi/octane.c
-        - docs/datasheets/ip30-machine.md
+        - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-launch

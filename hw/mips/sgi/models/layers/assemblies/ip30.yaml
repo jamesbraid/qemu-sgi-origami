@@ -18,9 +18,8 @@ layer:
     - 128
     - 256
     provenance: derived
-    sources: &id001
-    - docs/datasheets/ip30-machine.md
-    - docs/datasheets/ip30-octane2-machine.md
+    sources:
+    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
     notes: Processor capacity is restricted to the existing single-processor emulator profiles.
   memory_kits:
   - id: kit-128
@@ -29,11 +28,13 @@ layer:
     banks:
     - 128
     provenance: derived
-    sources: *id001
+    sources:
+    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
   - id: kit-256
     dimms: 2
     dimm_mib: 128
     banks:
     - 256
     provenance: derived
-    sources: *id001
+    sources:
+    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
