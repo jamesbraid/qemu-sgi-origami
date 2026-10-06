@@ -17,6 +17,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/misc/sgi-pio-forward.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/mips/sgi-net-port.h"
 #include "hw/mips/sgi/net-cable.h"
@@ -209,6 +210,8 @@ struct SGIHubState {
         unsigned int slice;
     } pi_path[SGI_HUB_PROCESSORS];
     AddressSpace pi_view_as[SGI_HUB_PROCESSORS];
+    /* Each slice's I/O-space forwarding into pi_view_as. */
+    SGIPioForward pi_forward[SGI_HUB_PROCESSORS];
     MemoryRegion pi_io[SGI_HUB_PROCESSORS];
     bool pi_io_installed;
 

@@ -18,6 +18,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
+#include "hw/misc/sgi-pio-forward.h"
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "qom/object.h"
 #include "hw/block/flash.h"
@@ -249,6 +250,9 @@ struct SGIBridgeState {
      */
     AddressSpace pci_mmio_as;
     AddressSpace pci_io_as;
+    /* Window cycles into each space, through sgi_bridge_forward(). */
+    SGIPioForward pci_mmio_forward;
+    SGIPioForward pci_io_forward;
 
     /*
      * Two windows per slot at the same address, one per PCI space, exactly

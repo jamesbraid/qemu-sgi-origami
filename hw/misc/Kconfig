@@ -269,9 +269,13 @@ config K230_DECOMP_GZIP
 
 source macio/Kconfig
 
+config SGI_PIO_FORWARD
+    bool
+
 config SGI_HUB
     bool
     select SGI_PI_GFX
+    select SGI_PIO_FORWARD
     select AT24C
     select ONEWIRE
     select PCF8584

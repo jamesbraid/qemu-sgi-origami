@@ -4411,9 +4411,9 @@ static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
         return MEMTX_ERROR;
     }
     previous = sgi_pi_gfx_mark_store(false);
-    result = address_space_read(&s->pi_view_as[path->slice],
-                                s->io_space_base + addr, attrs,
-                                bytes + 8 - size, size);
+    result = sgi_pio_forward_read(&s->pi_forward[path->slice],
+                                  s->io_space_base + addr, attrs,
+                                  bytes + 8 - size, size);
     sgi_pi_gfx_unmark_store(previous);
     *data = ldq_be_p(bytes);
     if (result != MEMTX_OK) {
@@ -4441,9 +4441,9 @@ static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
                                      "sgi-hub");
     stq_be_p(bytes, data);
     previous = sgi_pi_gfx_mark_store(counted);
-    result = address_space_write(&s->pi_view_as[path->slice],
-                                 s->io_space_base + addr, attrs,
-                                 bytes + 8 - size, size);
+    result = sgi_pio_forward_write(&s->pi_forward[path->slice],
+                                   s->io_space_base + addr, attrs,
+                                   bytes + 8 - size, size);
     sgi_pi_gfx_unmark_store(previous);
     return result;
 }
@@ -4485,6 +4485,8 @@ static bool sgi_hub_init_processor_paths(SGIHubState *s, Error **errp)
         s->pi_path[slice].slice = slice;
         address_space_init(&s->pi_view_as[slice], s->cpu_sysmem[slice],
                            view_name);
+        sgi_pio_forward_init(&s->pi_forward[slice], &s->pi_view_as[slice],
+                             view_name);
         memory_region_init_io(&s->pi_io[slice], OBJECT(s),
                               &sgi_hub_pi_io_ops, &s->pi_path[slice],
                               io_name, SGI_HUB_IO_SPACE_SIZE);
@@ -5187,6 +5189,7 @@ static void sgi_hub_unrealize(DeviceState *dev)
                 memory_region_del_subregion(s->pi_io[i].container,
                                             &s->pi_io[i]);
             }
+            sgi_pio_forward_destroy(&s->pi_forward[i]);
             address_space_destroy(&s->pi_view_as[i]);
         }
         s->pi_io_installed = false;

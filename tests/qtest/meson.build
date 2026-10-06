@@ -419,6 +419,7 @@ sn0_machine_qtests = \
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-pi-gfx-test',
+                                                   'sn0-pio-forward-test',
                                                    'sn0-pi-link-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
