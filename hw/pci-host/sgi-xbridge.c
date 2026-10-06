@@ -185,9 +185,11 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
 
     result = s->packet_sender(s->packet_opaque, s, address, buffer, size,
                               write, &source);
-    trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                                source.widget, source.device, address,
-                                size, write, result);
+    if (trace_event_get_state_backends(TRACE_SGI_XBRIDGE_DMA_PACKET)) {
+        trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                     source.widget, source.device, address,
+                                     size, write, result);
+    }
     return result;
 }
 
@@ -274,10 +276,13 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     entry.perm = IOMMU_RW;
 
 out:
-    trace_sgi_xbridge_dma_translate(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                                   REG(s, 0x20) & 15, dma->slot, addr,
-                                   widget, entry.translated_addr,
-                                   entry.addr_mask, entry.perm, flag);
+    /* The clock read alone is a tenth of a DMA step; skip it when unused. */
+    if (trace_event_get_state_backends(TRACE_SGI_XBRIDGE_DMA_TRANSLATE)) {
+        trace_sgi_xbridge_dma_translate(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                        REG(s, 0x20) & 15, dma->slot, addr,
+                                        widget, entry.translated_addr,
+                                        entry.addr_mask, entry.perm, flag);
+    }
     return entry;
 }
 
