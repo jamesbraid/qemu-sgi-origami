@@ -196,6 +196,9 @@ SPD files. The installed-guest tests pin their disk inputs:
      - ``firmware/6.5.30/ip27prom.payload.bin`` and
        ``irix/6.5.30/root.qcow2`` (SHA-256
        ``15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12``)
+   * - ``func-mips64-irix_record_replay``
+     - The same IP27 PROM and ``irix/6.5.30/root.qcow2``, read through
+       a per-run qcow2 overlay
    * - ``func-mips64-irix_origin300_installed_boot``
      - The IP35 PROM (SHA-256
        ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``),

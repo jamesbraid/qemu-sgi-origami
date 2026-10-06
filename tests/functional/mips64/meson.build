@@ -153,6 +153,10 @@ test_mips64_timeouts = {
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
+  # Record and replay an installed IRIX boot with disk and network traffic.
+  # Each run took about a minute when measured; the script bounds each at
+  # 900s for a heavily loaded host.
+  'irix_record_replay' : 1980,
   # Boot the two-processor Origin 300 from its installed IRIX 6.5.30
   # disk through the stock IP35 PROM to a root shell and run level 2.
   'irix_origin300_installed_boot' : 960,
@@ -337,6 +341,7 @@ tests_mips64_system_thorough = [
   'irix_diag_origin300_torpedo',
   'irix_diag_origin300_4cpu_torpedo',
   'irix_installed_boot',
+  'irix_record_replay',
   'irix_origin300_installed_boot',
   'irix_fuel_installed_boot',
   'mgras_desktop',
