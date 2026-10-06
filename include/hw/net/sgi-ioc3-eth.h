@@ -10,7 +10,6 @@
 #define HW_NET_SGI_IOC3_ETH_H
 
 #include "hw/core/sysbus.h"
-#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/net/dp83840.h"
 #include "hw/net/ics1890.h"
 #include "hw/net/net-rx-latency.h"
@@ -162,8 +161,6 @@ struct SGIIOC3EthState {
     /* The parent's bus-master view, linked before realize. */
     MemoryRegion *dma_mr;
     AddressSpace dma_as;
-    SGIDMABufferContext dma_context;
-    bool dma_buffer;
 
     uint32_t enet_reg[SGI_IOC3_ENET_REGS];
     /*

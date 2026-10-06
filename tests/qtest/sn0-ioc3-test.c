@@ -2792,15 +2792,13 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 
 /*
  * Assert the route a received payload took, independently of its bytes. The
- * Hub maps the memory view straight onto RAM, so neither of its inbound
- * traces may see the payload. The Bridge's byte placement still sees it: on
- * the native route every payload word passes through it, one access at a
- * time or as part of a buffer the conversion passes on, while the batched
- * interface moves whole doublewords itself and leaves only an unaligned head
- * and a sub-doubleword tail, under two doublewords between them, to the swap.
+ * Hub maps the memory view straight onto RAM, so its inbound trace may not
+ * see the payload. The Bridge's byte placement still sees it: every payload
+ * word passes through it, one access at a time or as part of a buffer the
+ * conversion passes on.
  */
 static void assert_dma_payload_trace(const char *path, uint32_t start,
-                                     unsigned length, bool native)
+                                     unsigned length)
 {
     g_autofree char *trace = NULL;
     g_auto(GStrv) lines = NULL;
@@ -2813,9 +2811,7 @@ static void assert_dma_payload_trace(const char *path, uint32_t start,
         unsigned size, write;
 
         if (sscanf(lines[i], "sgi_hub_ii_packet_access addr=0x%" SCNx64
-                   " size=%u write=%u", &addr, &size, &write) == 3 ||
-            sscanf(lines[i], "sgi_hub_ii_dma_buffer addr=0x%" SCNx64
-                   " len=%u write=%u", &addr, &size, &write) == 3) {
+                   " size=%u write=%u", &addr, &size, &write) == 3) {
             g_assert_false(addr < start + length && addr + size > start);
             continue;
         }
@@ -2830,14 +2826,9 @@ static void assert_dma_payload_trace(const char *path, uint32_t start,
             callbacks++;
         }
     }
-    if (native) {
-        g_assert_cmpuint(swapped, >=, length);
-    } else {
-        g_assert_cmpuint(swapped, <, 16);
-    }
-    g_test_message("RX offset=%u length=%u %s swap callbacks=%u",
-                   start & 0xfff, length, native ? "native" : "buffer",
-                   callbacks);
+    g_assert_cmpuint(swapped, >=, length);
+    g_test_message("RX offset=%u length=%u swap callbacks=%u",
+                   start & 0xfff, length, callbacks);
 }
 
 typedef struct IOC3DMATest {
@@ -3206,7 +3197,7 @@ static void test_dma_prefix_mmio(const void *data)
 }
 
 /* Whole payloads traverse IOC3, Bridge and the Hub's current RAM mapping. */
-static void test_dma_buffer_payloads(const void *data)
+static void test_dma_payloads(const void *data)
 {
     const unsigned lengths[] = { 60, 64, 94, 1024, 1186, 1500, 1514 };
     const unsigned offsets[] = { 42, 64, 66, 68, 70 };
@@ -3226,95 +3217,85 @@ static void test_dma_buffer_payloads(const void *data)
     for (unsigned size = 0; size < G_N_ELEMENTS(lengths); size++) {
         for (unsigned off = 0; off < G_N_ELEMENTS(offsets); off++) {
             unsigned offset = offsets[off];
+            unsigned length = lengths[size];
+            size_t span = offset + length + 8;
+            g_autofree char *path = trace ? g_strdup_printf(
+                "%s/ioc3-%u-%u.trace", trace, offset, length) :
+                g_strdup_printf("ioc3-payload-%u-%u.trace",
+                                (unsigned)getpid(), g_random_int());
+            g_autofree char *tracing = g_strdup_printf(
+                "-trace enable=sgi_hub_ii_* "
+                "-trace enable=sgi_dma_placement_access "
+                "-trace enable=sgi_dma_placement_buffer,file=%s", path);
+            QTestState *qts;
+            int sv[2];
 
-            for (unsigned order = 0; order < 2; order++) {
-                bool native = order ^ ((size + offset / 2) & 1);
-                unsigned length = lengths[size];
-                size_t span = offset + length + 8;
-                g_autofree char *path = trace ? g_strdup_printf(
-                    "%s/ioc3-%s-%u-%u.trace", trace,
-                    native ? "native" : "buffer", offset, length) :
-                    g_strdup_printf("ioc3-payload-%u-%u.trace",
-                                    (unsigned)getpid(), g_random_int());
-                g_autofree char *tracing = g_strdup_printf(
-                    "-trace enable=sgi_hub_ii_* "
-                    "-trace enable=sgi_dma_placement_access "
-                    "-trace enable=sgi_dma_placement_buffer,file=%s", path);
-                g_autofree char *extra = g_strdup_printf(
-                    "-global sgi-ioc3-eth.dma-buffer=%s %s",
-                    native ? "off" : "on", tracing);
-                QTestState *qts;
-                int sv[2];
-
-                g_test_message("%s order=%u offset=%u length=%u",
-                               native ? "native" : "buffer", order,
-                               offset, length);
-                g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-                net_socket_set_recv_timeout(sv[0], 10);
-                qts = sn0_ioc3_attach_with_netdev_options(sv[1], extra);
-                qtest_writel(qts, MAC_CONTROL,
-                    MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
-                    MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(offset / 2));
-                qtest_memset(qts, payload - sizeof(guard), 0xee,
-                             length + 2 * sizeof(guard));
-                qtest_memwrite(qts, payload, frame, length);
-                qtest_writel(qts, desc, length | TXD_BUF1_VALID);
-                qtest_writel(qts, desc + 4, length << TXD_BUF1_LEN_SHIFT);
-                qtest_writel(qts, desc + 8, 0);
-                qtest_writel(qts, desc + 12, pci_dma_address(payload));
-                qtest_writel(qts, TX_RING_HI, 0);
-                qtest_writel(qts, TX_RING_LO, pci_dma_address(desc));
-                qtest_writel(qts, TX_PRODUCE, 128);
-                g_assert_cmpuint(net_socket_recv_frame(sv[0], seen,
-                                                      sizeof(seen)), ==,
-                                 length);
-                g_assert_cmpmem(seen, length, frame, length);
-                qtest_memread(qts, payload, seen, length);
-                g_assert_cmpmem(seen, length, frame, length);
-                for (unsigned side = 0; side < 2; side++) {
-                    qtest_memread(qts, side ? payload + length :
-                                  payload - sizeof(guard),
-                                  guard, sizeof(guard));
-                    for (unsigned i = 0; i < sizeof(guard); i++) {
-                        g_assert_cmphex(guard[i], ==, 0xee);
-                    }
+            g_test_message("offset=%u length=%u", offset, length);
+            g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+            net_socket_set_recv_timeout(sv[0], 10);
+            qts = sn0_ioc3_attach_with_netdev_options(sv[1], tracing);
+            qtest_writel(qts, MAC_CONTROL,
+                MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
+                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(offset / 2));
+            qtest_memset(qts, payload - sizeof(guard), 0xee,
+                         length + 2 * sizeof(guard));
+            qtest_memwrite(qts, payload, frame, length);
+            qtest_writel(qts, desc, length | TXD_BUF1_VALID);
+            qtest_writel(qts, desc + 4, length << TXD_BUF1_LEN_SHIFT);
+            qtest_writel(qts, desc + 8, 0);
+            qtest_writel(qts, desc + 12, pci_dma_address(payload));
+            qtest_writel(qts, TX_RING_HI, 0);
+            qtest_writel(qts, TX_RING_LO, pci_dma_address(desc));
+            qtest_writel(qts, TX_PRODUCE, 128);
+            g_assert_cmpuint(net_socket_recv_frame(sv[0], seen,
+                                                  sizeof(seen)), ==,
+                             length);
+            g_assert_cmpmem(seen, length, frame, length);
+            qtest_memread(qts, payload, seen, length);
+            g_assert_cmpmem(seen, length, frame, length);
+            for (unsigned side = 0; side < 2; side++) {
+                qtest_memread(qts, side ? payload + length :
+                              payload - sizeof(guard),
+                              guard, sizeof(guard));
+                for (unsigned i = 0; i < sizeof(guard); i++) {
+                    g_assert_cmphex(guard[i], ==, 0xee);
                 }
-                qtest_memset(qts, rxbuf, 0xee, span);
-                qtest_writel(qts, ring, 0);
-                qtest_writel(qts, ring + 4, pci_dma_address(rxbuf));
-                qtest_writel(qts, RX_RING_HI, 0);
-                qtest_writel(qts, RX_RING_LO, pci_dma_address(ring));
-                qtest_writel(qts, RX_PRODUCE, 8);
-                net_socket_send_frame(sv[0], frame, length);
-                sgi_wait_start(&w, "receive consume index");
-                for (;;) {
-                    if (qtest_readl(qts, RX_CONSUME)) {
-                        break;
-                    }
-                    sgi_wait_pause(&w, 10000);
-                    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
-                }
-                g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
-                qtest_memread(qts, rxbuf, received, span);
-                g_assert_cmphex(ldl_be_p(received) & 0x87ff0000, ==,
-                                0x80000000 | ((length + 4) << 16));
-                g_assert_cmphex(ldl_be_p(received + 4) & ENET_RXE_GOODPKT, ==,
-                                ENET_RXE_GOODPKT);
-                g_assert_cmpmem(received + offset, length, frame, length);
-                for (unsigned i = 8; i < span; i++) {
-                    if (i < offset || i >= offset + length + 4) {
-                        g_assert_cmphex(received[i], ==, 0xee);
-                    } else if (i >= offset + length) {
-                        g_assert_cmphex(received[i], ==, 0);
-                    }
-                }
-                qtest_quit(qts);
-                assert_dma_payload_trace(path, rxbuf + offset, length, native);
-                if (!trace) {
-                    g_assert_cmpint(g_unlink(path), ==, 0);
-                }
-                close(sv[0]);
             }
+            qtest_memset(qts, rxbuf, 0xee, span);
+            qtest_writel(qts, ring, 0);
+            qtest_writel(qts, ring + 4, pci_dma_address(rxbuf));
+            qtest_writel(qts, RX_RING_HI, 0);
+            qtest_writel(qts, RX_RING_LO, pci_dma_address(ring));
+            qtest_writel(qts, RX_PRODUCE, 8);
+            net_socket_send_frame(sv[0], frame, length);
+            sgi_wait_start(&w, "receive consume index");
+            for (;;) {
+                if (qtest_readl(qts, RX_CONSUME)) {
+                    break;
+                }
+                sgi_wait_pause(&w, 10000);
+                qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
+            }
+            g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+            qtest_memread(qts, rxbuf, received, span);
+            g_assert_cmphex(ldl_be_p(received) & 0x87ff0000, ==,
+                            0x80000000 | ((length + 4) << 16));
+            g_assert_cmphex(ldl_be_p(received + 4) & ENET_RXE_GOODPKT, ==,
+                            ENET_RXE_GOODPKT);
+            g_assert_cmpmem(received + offset, length, frame, length);
+            for (unsigned i = 8; i < span; i++) {
+                if (i < offset || i >= offset + length + 4) {
+                    g_assert_cmphex(received[i], ==, 0xee);
+                } else if (i >= offset + length) {
+                    g_assert_cmphex(received[i], ==, 0);
+                }
+            }
+            qtest_quit(qts);
+            assert_dma_payload_trace(path, rxbuf + offset, length);
+            if (!trace) {
+                g_assert_cmpint(g_unlink(path), ==, 0);
+            }
+            close(sv[0]);
         }
     }
 }
@@ -6576,8 +6557,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-honours-total-byte-count",
                         NULL,
                         test_the_ethernet_transmit_honours_total_byte_count);
-    qtest_add_data_func("sn0/ioc3/dma-buffer-payloads", NULL,
-                        test_dma_buffer_payloads);
+    qtest_add_data_func("sn0/ioc3/dma-payloads", NULL, test_dma_payloads);
     qtest_add_data_func("sn0/ioc3/dma-prefix-alignment", NULL,
                         test_dma_prefix_alignment);
     qtest_add_data_func("sn0/ioc3/dma-prefix-rejection", NULL,
