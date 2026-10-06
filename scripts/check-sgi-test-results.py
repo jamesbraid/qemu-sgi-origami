@@ -72,35 +72,6 @@ def read_expected(path):
     return expected
 
 
-def read_skip_allowlist(path):
-    """Read exact Meson suite and normalized testcase identities."""
-    try:
-        lines = path.read_text(encoding='utf-8').splitlines()
-    except OSError as exc:
-        raise ResultError(
-            f"cannot read skipped identity allowlist {path}: {exc}") from exc
-
-    identities = []
-    for number, line in enumerate(lines, 1):
-        if not line.strip() or line.lstrip().startswith('#'):
-            continue
-        fields = line.split('\t')
-        if len(fields) != 2 or not all(fields):
-            raise ResultError(
-                f"invalid skipped identity on line {number} in {path}")
-        identities.append(tuple(fields))
-    if not identities:
-        raise ResultError(f"skipped identity allowlist {path} is empty")
-    duplicates = sorted(
-        identity for identity, count in Counter(identities).items()
-        if count > 1)
-    if duplicates:
-        raise ResultError(
-            'duplicate skipped identities: ' + ', '.join(
-                f'{suite}::{case}' for suite, case in duplicates))
-    return set(identities)
-
-
 def _count_attribute(element, attribute, actual, context):
     value = element.get(attribute)
     if value is None:
@@ -115,7 +86,7 @@ def _count_attribute(element, attribute, actual, context):
             f"{context} declares {declared} {attribute} but contains {actual}")
 
 
-def read_report(path, optional_skips=()):
+def read_report(path):
     if not path.is_file():
         raise ResultError(f"JUnit report does not exist: {path}")
     try:
@@ -148,7 +119,6 @@ def read_report(path, optional_skips=()):
     suites = {}
     failures = []
     skips = []
-    allowed_skips = set(optional_skips)
     for case in cases:
         name = case.get('name')
         if not name:
@@ -158,8 +128,7 @@ def read_report(path, optional_skips=()):
         for key in {name, _testcase_name(name), _suite_name(name),
                     identity}:
             found.setdefault(key, []).append(case)
-        skip_identity = (_suite_name(classname or ''), _testcase_name(name))
-        if case.findall('skipped') and skip_identity not in allowed_skips:
+        if case.findall('skipped'):
             skips.append(identity)
         if case.findall('failure') or case.findall('error'):
             failures.append(identity)
@@ -280,15 +249,12 @@ def main(argv=None):
                              'listing ROM identities')
     parser.add_argument('--expect', type=Path,
                         help='UTF-8 file with one required identity per line')
-    parser.add_argument('--allow-skips-from', type=Path,
-                        help='exact optional skip identities for this run')
     args = parser.parse_args(argv)
 
     try:
         if args.list_rom_identities is not None:
             if (args.expect or args.prefix or args.suite or
-                    args.exclude_suite or args.names_from or
-                    args.allow_skips_from):
+                    args.exclude_suite or args.names_from):
                 parser.error('Meson selection options do not apply to '
                              '--list-rom-identities')
             if args.require_rom_target is not None:
@@ -298,8 +264,7 @@ def main(argv=None):
             print('\n'.join(rom_identities(args.list_rom_identities)))
             return 0
         if args.list_meson_tests is not None:
-            if (args.expect or args.require_rom_target or
-                    args.allow_skips_from):
+            if args.expect or args.require_rom_target:
                 parser.error('--expect and --require-rom-target do not apply '
                              'to --list-meson-tests')
             names = read_expected(args.names_from) if args.names_from else None
@@ -315,9 +280,7 @@ def main(argv=None):
                 args.require_rom_target):
             parser.error('Meson selection options do not apply to --junit')
         expected = read_expected(args.expect)
-        optional_skips = (read_skip_allowlist(args.allow_skips_from)
-                          if args.allow_skips_from else ())
-        report = read_report(args.junit, optional_skips)
+        report = read_report(args.junit)
         validate(report, expected)
     except ResultError as exc:
         print(f'check-sgi-test-results: {exc}', file=sys.stderr)
