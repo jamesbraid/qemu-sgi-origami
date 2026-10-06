@@ -1178,6 +1178,9 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "ip53-alt-l1-type")) {
         bedrock_test_install_ip53_descriptor(true);
         bedrock_test_l1.reported_type = 0x35;
+    } else if (!strcmp(value, "ip53-alt-product")) {
+        bedrock_test_install_ip53_descriptor(true);
+        bedrock_test_topology.product = (char *)"tezro";
     } else if (!strcmp(value, "ip53-ni3-widget2")) {
         bedrock_test_install_ip53_descriptor(true);
         ip53_test_identity.ni_revision = 3;

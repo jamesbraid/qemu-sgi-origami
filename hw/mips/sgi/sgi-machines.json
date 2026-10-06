@@ -13607,7 +13607,6 @@
         4
       ],
       "default-cpu-model": "R16000",
-      "default-topology": "tezro-deskside-700mhz-4mib-serial-trial",
       "dimms-per-node": [
         6
       ],

@@ -21,7 +21,10 @@ from .model_compile import compile_model
 from .model_emit import default_topology, render_catalogue_json, render_manifest
 from .model_shared import install_generated_outputs
 
-from .registry import PRODUCT_MODELS, PRODUCT_NAMES, REFERENCE_TOPOLOGIES
+from .registry import (
+    PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY, PRODUCT_MODELS, PRODUCT_NAMES,
+    REFERENCE_TOPOLOGIES,
+)
 from .model_validation import load_checked_system_models, discover_model_paths
 
 SN_MODEL_JSON = "hw/mips/sgi/sn-model.json"
@@ -33,20 +36,17 @@ _MACHINE_NAMES = PRODUCT_NAMES
 
 def _check_default_topology(topologies: list[dict], machine_names: dict[str, str],
                             product_models: dict[str, dict]) -> None:
-    """Raise unless every product has an unambiguous default topology, the
-    same structural rule `sgi_model_default_topology()` now applies itself
-    at load time (a compiled topology named exactly like its product is
-    that product's default; failing that, the product's base composition,
-    which every offering names as its `default-topology`; a product with
-    only one compiled topology has an unambiguous default regardless of its
-    name): a config error is
-    caught here, at export time, rather than deferred to a boot-time QEMU
-    failure with no source model to point at.
+    """Require an implicit default unless the product requires topology=.
+
+    Products in PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY remain available, but
+    have no implicit default and must name a topology.
     """
     by_machine: dict[str, list[str]] = {}
     for topology in topologies:
         by_machine.setdefault(machine_names[topology["name"]], []).append(topology["name"])
     for machine_name, names in by_machine.items():
+        if machine_name in PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY:
+            continue
         if machine_name in names or len(names) == 1:
             continue
         try:

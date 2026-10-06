@@ -312,7 +312,10 @@ static void check_io_board_presets(const SGIModelTopology *t)
     for (entry = t->io_boards; entry; entry = entry->next) {
         SGIModelIoBoardPreset preset = entry->value->preset;
 
-        g_assert_true(entry->value->has_attachment);
+        if (entry->value->carrier !=
+            SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED) {
+            g_assert_true(entry->value->has_attachment);
+        }
         g_assert_true(preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IP30 ||
@@ -320,6 +323,7 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6G ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_IO9 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL ||
@@ -330,7 +334,8 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_ODYSSEY ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK);
         if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
-            preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+            preset != SGI_MODEL_IO_BOARD_PRESET_FUEL &&
+            preset != SGI_MODEL_IO_BOARD_PRESET_IO9) {
             g_assert_nonnull(entry->value->part);
             g_assert_true(entry->value->has_revision);
             g_assert_true(entry->value->has_serial);
@@ -494,14 +499,15 @@ static void check_slots_are_unoccupied(const SGIModelTopology *t)
 }
 
 /*
- * A Bedrock topology has one fitted base I/O board per node. Both XBridge
- * heads are present in xio-attachments, including the empty head.
+ * Bedrock topologies using IO8 or Fuel have one fitted base I/O board per
+ * node. Both XBridge heads are present, including the empty head.
  */
 static void check_bedrock_has_populated_io(const SGIModelTopology *t)
 {
     size_t nodes = node_count(t);
     g_autofree bool *seen = g_new0(bool, nodes);
     const SGIModelIoBoardList *entry;
+    bool checked = false;
 
     if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
         return;
@@ -515,6 +521,7 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
              entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL)) {
             continue;
         }
+        checked = true;
         while (index-- && attachment) {
             attachment = attachment->next;
         }
@@ -523,6 +530,9 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
         g_assert_cmpuint(attachment->value->node_index, <, nodes);
         g_assert_false(seen[attachment->value->node_index]);
         seen[attachment->value->node_index] = true;
+    }
+    if (!checked) {
+        return;
     }
     for (size_t i = 0; i < nodes; i++) {
         g_assert_true(seen[i]);
@@ -1254,6 +1264,28 @@ static void test_io_peer_population_rejects_missing_cable(void)
     error_free(err);
 }
 
+static void test_tezro_requires_explicit_topology(void)
+{
+    const SGIModelTopology *trial = sgi_model_find_topology(
+        "tezro-deskside-700mhz-4mib-serial-trial");
+    const SGIModelOfferingList *offering;
+    bool found = false;
+
+    g_assert_nonnull(trial);
+    g_assert_null(sgi_model_default_topology("tezro"));
+    for (offering = sgi_model_catalogue()->offerings; offering;
+         offering = offering->next) {
+        if (strcmp(offering->value->product, "tezro")) {
+            continue;
+        }
+        found = true;
+        g_assert_cmpstr(offering->value->topology, ==,
+                        "tezro-deskside-700mhz-4mib-serial-trial");
+        g_assert_null(offering->value->default_topology);
+    }
+    g_assert_true(found);
+}
+
 static void test_existing_population_views(void)
 {
     /* Like the embedded catalogue, inputs outlive all cached projections. */
@@ -1505,6 +1537,8 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
                          "origin300-vbrick",
                          test_origin300_graphics_attachment);
+    g_test_add_func("/sn-model/tezro-requires-explicit-topology",
+                    test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",
                     test_existing_population_views);
     g_test_add_func("/sn-model/io-peer/population-preserved",

@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include "qemu/bswap.h"
+#include "hw/core/clock.h"
 #include "hw/pci/pci_regs.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -2910,17 +2911,76 @@ static void test_tezro_trial_builds_two_pic_hosts(void)
                                            "pic-pic-xio-b");
     g_autofree char *pic_f = qom_child_type(fixture->qts, "/machine",
                                            "pic-pic-xio-f");
+    QTestState *qts = fixture->qts;
+    g_autoptr(QDict) response = NULL;
+    QList *cpus;
+    const QListEntry *entry;
+    uint64_t widget_b = IP53_IO_SPACE + UINT64_C(11) * UINT64_C(0x1000000);
+    uint64_t widget_f = IP53_IO_SPACE + UINT64_C(15) * UINT64_C(0x1000000);
+    uint64_t pic_b_route = widget_b + UINT64_C(0x130);
+    uint64_t pic_f_route = widget_f + UINT64_C(0x130);
     uint32_t aux;
+    unsigned int cpu_count = 0;
+    static const uint16_t bank_mib[] = { 1024, 1024, 512, 512, 512, 512, 0, 0 };
 
     g_assert_cmpstr(pic_b, ==, "sgi-pic");
     g_assert_cmpstr(pic_f, ==, "sgi-pic");
-    /* Widget zero follows the PIC host that owns the model's IO9 board. */
-    g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
-                                       IP53_IO_SPACE + 0x2fc, &aux));
+    g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "board-id-word"),
+                    ==, 0x2001);
+    g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "l1-type-code"),
+                    ==, 0x37);
+    for (unsigned int bank = 0; bank < G_N_ELEMENTS(bank_mib); bank++) {
+        g_autofree char *property = g_strdup_printf("installed-bank%u-mib",
+                                                     bank);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/bedrock", property),
+                         ==, bank_mib[bank]);
+    }
+
+    response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    cpus = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(cpus); entry; entry = qlist_next(entry)) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *path = qdict_get_str(cpu, "qom-path");
+
+        g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
+        g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+                        0x009bad85);
+        g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
+                        0x400000);
+        cpu_count++;
+    }
+    g_assert_cmpuint(cpu_count, ==, 4);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
+                                  "qtest-clock-period"), ==,
+                     CLOCK_PERIOD_FROM_HZ(700000000));
+
+    /* Widget zero marks only widget 15 as the IO9-owning PIC. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x2fc, &aux));
     g_assert_cmphex(aux & (1U << 5), ==, 1U << 5);
-    g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
-                                       IP53_IO_SPACE + 0x1fc, &aux));
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x1fc, &aux));
     g_assert_cmphex(aux & (1U << 5), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x21000), ==,
+                    UINT32_C(0x100a10a9));
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x21008) & 0xff, ==, 0x53);
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x23000), ==,
+                    UINT32_C(0x12161077));
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x23008) & 0xff, ==, 0x06);
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x24000), ==,
+                    UINT32_C(0x164514e4));
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x24008) & 0xff, ==, 0x00);
+    g_assert_cmphex(qtest_readl(qts, widget_b + 0x21000), ==,
+                    UINT32_C(0xffffffff));
+
+    /* Separate PICs retain and reset their own interrupt-route registers. */
+    qtest_writeq(qts, pic_b_route, UINT64_C(0x1122334455667788));
+    qtest_writeq(qts, pic_f_route, UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(qts, pic_b_route), ==,
+                    UINT64_C(0x1122334455667788));
+    g_assert_cmphex(qtest_readq(qts, pic_f_route), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(qts, pic_b_route), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, pic_f_route), ==, 0);
     ip53_runtime_test_stop(fixture);
 }
 
@@ -2945,7 +3005,7 @@ static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
     g_free(fixture);
 }
 
-static void test_ip53_origin_to_onyx_migration_refused(void)
+static void test_ip53_origin_to_onyx_machine_type_migration_refused(void)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *dir = g_dir_make_tmp(
@@ -7449,8 +7509,12 @@ int main(int argc, char **argv)
                    test_ip53_runtime_construction);
     qtest_add_func("sn/builder/tezro-trial-builds-two-pic-hosts",
                    test_tezro_trial_builds_two_pic_hosts);
-    qtest_add_func("sn/builder/ip53-origin-to-onyx-migration-refused",
-                   test_ip53_origin_to_onyx_migration_refused);
+    qtest_add_func(
+        "sn/builder/ip53-origin-to-onyx-machine-type-migration-refused",
+        test_ip53_origin_to_onyx_machine_type_migration_refused);
+    qtest_add_data_func(
+        "sn/builder/ip53-same-machine-type-profile-migration-refused",
+        "ip53-alt-product", test_ip53_fingerprint_migration);
     qtest_add_func("sn/builder/onyx350-compat-composition",
                    test_ip53_onyx350_compat_composition);
     qtest_add_func("sn/builder/ip53-integrated-bte-reset-overlap",
