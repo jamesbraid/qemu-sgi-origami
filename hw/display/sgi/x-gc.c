@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Bounded native X GC decoding for the SGI display model.
- * See the reviewed InfiniteReality command grammar's GC forms.
+ * See the InfiniteReality command grammar's GC forms.
  * Canonical CI8/RGB8 values are model subsets, not visual identities.
  */
 #include "qemu/osdep.h"

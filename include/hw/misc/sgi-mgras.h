@@ -158,7 +158,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
  * XMAP overlay mode, one entry per WID, selected by the same index byte at
  * 0x071c88 as the main mode. The stock X server writes 0xc1, 0xc9, 0xd1,
  * 0xd9, 0x1f1 and 0x1f9 for WIDs 0-5 and 0 for the rest. Inferred from
- * captured desktop sessions: bit 0 enables the overlay for that WID and
+ * desktop-session captures: bit 0 enables the overlay for that WID and
  * bits 7:3 select its colour map -- WID 1's 0xc9 names map 25, the map the
  * server loads with the popup-menu palette (entry 1 grey 0xc1c1c1, entry 2
  * black) that menu fills and text on the overlay visual draw with. Bit 8

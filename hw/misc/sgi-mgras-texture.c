@@ -235,8 +235,8 @@
  * A 36- or 48-bit texel's two words may be more than the client allots
  * (the report's 48-bit texels); no traced program kept one.
  *
- * TRAM save and restore, established from the disassembly of the kernel's
- * texture I/O member of mgras.a (SHA-256 5cd14335...) and from the traced
+ * TRAM save and restore, established from the kernel's texture I/O code
+ * (a member of mgras.a, SHA-256 5cd14335...) and from the traced
  * words. When a new context's run overlaps another's, the kernel writes
  * base 0 and saves each of the other's blocks: as 0x7f08 register pairs
  * TXSIZE 0xd6d6 (a 64 by 8,192 shape), TXLOD 0, TXCLAMPSIZE 0x80000,
@@ -281,7 +281,7 @@
  * the client's restore; any other 0x9d10 opens a transfer to the GE the
  * model does not take, whose kick moves nothing and is logged. The
  * OpenGL client's fast pixel path also sends 0x9d10 before its kick
- * (from its disassembly); it was not traced, and the load routine and the
+ * (from the client's code); it was not traced, and the load routine and the
  * 64-by-8,192 shape are what the model keys on to keep it out. That a
  * transfer neither reads nor writes the colour planes is inferred: each
  * names texture memory and no raster box.
