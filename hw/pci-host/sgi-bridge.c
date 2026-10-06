@@ -2075,10 +2075,10 @@ static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
 }
 
 /*
- * The decode shared by every DMA route and the batched provider. A slot's
- * own route (slot >= 0) places its bytes by the slot's swap bits; the plain
- * route (slot < 0) never does. It exists for byte-stream transfers whose
- * swap nothing observes, so paying a per-word dispatch for it buys nothing.
+ * The decode shared by every DMA route. A slot's own route (slot >= 0)
+ * places its bytes by the slot's swap bits; the plain route (slot < 0) never
+ * does. It exists for byte-stream transfers whose swap nothing observes, so
+ * paying a per-word dispatch for it buys nothing.
  * *placement reports the placement the entry's target applies.
  */
 static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
@@ -2249,79 +2249,6 @@ static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
         slot %= SGI_BRIDGE_DEVICES;
     }
     return &s->dma[slot].as;
-}
-
-static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
-                                           void *buf, dma_addr_t *len,
-                                           DMADirection dir, MemTxAttrs attrs,
-                                           const SGIDMABufferRequest *request,
-                                           MemTxResult *result)
-{
-    struct SGIBridgeDeviceDMA *dma = opaque;
-    SGIBridgeState *s = dma->s;
-    bool write = dir == DMA_DIRECTION_FROM_DEVICE;
-    IOMMUTLBEntry entry;
-    hwaddr translated, length, span;
-    SGIDMAPlacement placement;
-    bool correct;
-    SGIDMABufferRequest composed = *request;
-
-    if (attrs.memory ||
-        (request->swap32 && ((addr & 3) || *len < 4 ||
-                            (request->max_access_size &&
-                             request->max_access_size < 4)))) {
-        return false;
-    }
-    entry = sgi_bridge_translate_common(s, dma->slot, addr,
-                                        write ? IOMMU_WO : IOMMU_RO,
-                                        &placement);
-    span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
-    length = span;
-    if (!(entry.perm & (1 << write))) {
-        length = memory_access_size(&s->dma_denied, length, addr);
-        if (request->swap32 || request->max_access_size) {
-            length = MIN(span, request->swap32 ? 4 :
-                               request->max_access_size);
-        }
-        *result = sgi_dma_buffer_native_rw(&s->dma_denied_as, addr, buf,
-                                            length, dir, attrs, request);
-    } else {
-        translated = (entry.translated_addr & ~entry.addr_mask) |
-                     (addr & entry.addr_mask);
-        /* Only the word placement composes with a converted request. */
-        correct = placement == SGI_DMA_PLACEMENT_WORD;
-        composed.swap32 ^= correct;
-        if (!sgi_dma_buffer_try_rw(correct ? &s->fabric_as : entry.target_as,
-                                   translated, buf, &length, dir, attrs,
-                                   &composed, result)) {
-            if (correct) {
-                length = memory_access_size(entry.target_as->root,
-                    MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
-            }
-            /* The outer facade splits the operation before leaf dispatch. */
-            if (request->swap32 || request->max_access_size) {
-                length = MIN(span, request->swap32 ? 4 :
-                                   request->max_access_size);
-            }
-            *result = sgi_dma_buffer_native_rw(entry.target_as, translated, buf,
-                                               length, dir, attrs, request);
-        }
-    }
-    *len = length;
-    return true;
-}
-
-static const SGIDMABufferProvider *
-sgi_bridge_dma_buffer_provider(Object *owner, MemoryRegion *mr)
-{
-    SGIBridgeState *s = SGI_BRIDGE(owner);
-
-    for (unsigned slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
-        if (mr == &s->dma[slot].iommu.parent_obj) {
-            return &s->dma[slot].provider;
-        }
-    }
-    return NULL;
 }
 
 static const PCIIOMMUOps sgi_bridge_iommu_ops = {
@@ -2691,11 +2618,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
     memory_region_add_subregion(&s->widget, SGI_BRIDGE_CFG0_BASE, &s->cfg0);
 
-    memory_region_init(&s->dma_denied, obj, "sgi-bridge.dma-denied",
-                       UINT64_MAX);
-    address_space_init(&s->dma_denied_as, &s->dma_denied,
-                       "sgi-bridge.dma-denied");
-
     /* One set of placements for the chip: per-slot decision, shared action. */
     sgi_dma_placement_init(&s->placement, obj, "sgi-bridge.placement",
                            &s->fabric_as,
@@ -2708,8 +2630,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 
         s->dma[slot].s = s;
         s->dma[slot].slot = slot;
-        s->dma[slot].provider.transfer = sgi_bridge_dma_buffer_transfer;
-        s->dma[slot].provider.opaque = &s->dma[slot];
         memory_region_init_iommu(&s->dma[slot].iommu,
                                  sizeof(s->dma[slot].iommu),
                                  TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION, obj,
@@ -2762,7 +2682,6 @@ static void sgi_bridge_unrealize(DeviceState *dev)
         address_space_destroy(&s->dma[slot].as);
     }
     sgi_dma_placement_destroy(&s->placement);
-    address_space_destroy(&s->dma_denied_as);
     address_space_destroy(&s->pci_io_as);
     address_space_destroy(&s->pci_mmio_as);
     address_space_destroy(&s->fabric_as);
@@ -2944,7 +2863,6 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     pc->connect = sgi_bridge_xio_port_connect;
     pc->reset_input = sgi_bridge_xio_port_reset_input;
     pc->request_dropped = sgi_bridge_xio_port_request_dropped;
-    SGI_DMA_BUFFER_CLASS(oc)->get_provider = sgi_bridge_dma_buffer_provider;
 }
 
 static const TypeInfo sgi_bridge_types[] = {
@@ -2956,7 +2874,6 @@ static const TypeInfo sgi_bridge_types[] = {
         .class_init = sgi_bridge_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },
-            { TYPE_SGI_DMA_BUFFER },
             { TYPE_SGI_XIO_PORT },
             { },
         },

@@ -8,7 +8,6 @@
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "system/memory.h"
-#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "qom/object.h"
 
@@ -180,7 +179,6 @@ struct SGIXBridgeHeadState {
     struct XBridgeDMA {
         IOMMUMemoryRegion iommu;
         AddressSpace as;
-        SGIDMABufferProvider provider;
         SGIXBridgeHeadState *head;
         unsigned slot;
         /* Packet mode: the placements, each sending with this slot's id. */
