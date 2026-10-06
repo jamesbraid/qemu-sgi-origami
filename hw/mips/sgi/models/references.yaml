@@ -656,6 +656,15 @@ web:
     obtain:
       url: null
       message_id: "<9uhh6o$j75@dispatch.concentric.net>"
+  usenet-8ns2m5:
+    title: "comp.sys.sgi.hardware, 2000-08-21, Octane Graphics Problem, Message-ID <8ns2m5$7u0$1@nnrp1.deja.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<8ns2m5$7u0$1@nnrp1.deja.com>"
   usenet-7psh8j:
     title: "comp.sys.sgi.admin, 1999-08-23, firmware level on fiber channel cards, Message-ID <7psh8j$pos$1@nnrp1.deja.com>"
     publisher: "Usenet"

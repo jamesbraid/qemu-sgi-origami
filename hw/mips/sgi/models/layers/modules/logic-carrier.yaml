@@ -183,7 +183,7 @@ layer:
       - { component: rtc, bus: byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [qemu:docs/specs/sgi-ioc3.rst] }
 
       - { component: pcf8584, bus: i2c, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
-      - { component: sgi-elsc, bus: i2c, role: endpoint, i2c_address: 0x08, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
+      - { component: sgi-elsc, bus: i2c, role: endpoint, i2c_address: 0x08, provenance: vendor-document, sources: ["108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113", "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86"], notes: "The manuals tie the controller to the PCF8584 system-controller path. The slave address 0x08 is an emulator choice; no public source states it." }
       - { component: i2c-nvram, bus: i2c, role: endpoint, i2c_address: 0x50, i2c_address_count: 8, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
 
       - { component: hub-md, bus: directory-bus, role: master, provenance: vendor-document, sources: ["007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"] }
@@ -902,16 +902,17 @@ layer:
       - id: i2c-nvram
         name: I2C configuration NVRAM
         kind: flash
-        provenance: vendor-source
+        provenance: vendor-document
+        sources: ["108-0170-001 section 1.5, printed page 1-4 (PDF page 18): module number lives in this NVRAM", "108-0170-001 scr and scw command text, PDF page 76 (printed 4-22): addresses 0 to 2047, 1792 to 2047 reserved for the system controller"]
         parent: cpu-module
-        aliases: ["NVRAM (the firmware's own term for it)"]
+        aliases: ["NVRAM"]
         description: >-
           A serial non-volatile store answering as a slave on the same I2C bus the
-          system controller sits on. It holds the module, partition, domain, cluster
-          and cell numbers, the supervisor password, the debug-switch values and the
-          built-in-self-test flag.
+          system controller sits on. It holds the module number (1 to 255, 0
+          unassigned); the model also keeps a validity marker and the partition number
+          there, which is an emulator choice.
         datasheet_contracts:
-          - qemu:docs/specs/sgi-elsc.rst
+          - qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram
         notes: >-
           NOT the same part as the machine's other non-volatile store: the clock
           component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at
@@ -930,23 +931,16 @@ layer:
       - id: i2c-device-20
         name: Unidentified I2C device at slave address 0x20
         kind: flash
-        provenance: vendor-source
+        provenance: unsourced
         parent: cpu-module
         description: >-
-          A single-byte read and write target answering on the Hub's I2C bus at slave
-          address 0x20, driven directly by a pair of firmware routines the interactive
-          monitor calls.
-        datasheet_contracts:
-          - qemu:docs/specs/sgi-elsc.rst
+          A single-byte read and write target at I2C slave address 0x20 on the
+          Hub's bus. No public source states that a device answers there or what it
+          is, so its existence, address and function are an emulator choice.
         notes: >-
-          WHAT THIS DEVICE IS HAS NOT BEEN ESTABLISHED, and the reviewed datasheet deliberately
-          declines to guess. The entry exists because an unidentified part that provably answers is
-          inventory: a model implementing only the system controller leaves this address unanswered,
-          and leaving the entry out because the part cannot be named is the omission a completeness
-          audit exists to surface rather than a reason to stay silent. The `kind` is a PLACEHOLDER
-          and should not be read as a claim -- the enum has no value for an unidentified device, and
-          nothing establishes that this one is storage. What would settle it is a firmware routine
-          read for what it does with the byte, or a board document naming a part at this address.
+          The `kind` is a placeholder and not a claim; the enum has no value for an
+          unidentified device. A board document naming a part at this address, or a
+          register-level capture from a real module, would settle it.
 
     # How this machine describes itself to the guest. The record layout lives in
     # klconfig-layout.yaml and is proved against the reference kernel's headers by

@@ -17,7 +17,7 @@ Sources: *Origin2000/Onyx2 Illustrated Parts Catalog* (``web:hmm-408-b``,
 printed page 33, "XIO Options"); the one-module Origin 200 GIGAchannel
 ``hinv -vm`` on the SGI preservation wiki (``web:preterhuman-origin-200``);
 an Origin 2000 PROM ``hinv -v`` (``web:nekonomicon-16727716``); an owner's
-Origin 2000 ``hinv -m`` (``web:usenet-9uhh6o``); Linux
+Origin 2000 ``hinv -m`` (``web:usenet-9uhh6o``); an Octane ``hinv -m`` (``web:usenet-8ns2m5``); Linux
 ``arch/mips/include/asm/sn/klconfig.h`` at
 ``linux:db2ddb87143519e20a95aa36c60b36107b736a58``; and the stock PROM
 ``firmware:ip27-prom-6.156``.
@@ -36,8 +36,10 @@ Composition
      - Rating and source
    * - Part numbers
      - ``030-0872-004`` PCA MSCSI and ``030-1243-001`` PCA MSCSI B;
-       ``030-1281-001`` also prints as MSCSI. How the three differ is
-       unknown.
+       ``030-1281-001`` also prints as MSCSI, at revision D
+       (``web:usenet-8ns2m5``). ``030-1243-001`` prints at revision F
+       (``web:preterhuman-origin-200``) and revision G
+       (``web:usenet-9uhh6o``). How the three parts differ is unknown.
      - established: parts catalogue page 33 for the first two,
        ``web:preterhuman-origin-200`` for the third. A catalogue entry
        for each would settle the difference.

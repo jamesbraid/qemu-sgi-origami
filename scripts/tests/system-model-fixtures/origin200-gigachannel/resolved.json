@@ -1494,31 +1494,32 @@
     },
     {
       "aliases": [
-        "NVRAM (the firmware's own term for it)"
+        "NVRAM"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
       ],
-      "description": "A serial non-volatile store answering as a slave on the same I2C bus the system controller sits on. It holds the module, partition, domain, cluster and cell numbers, the supervisor password, the debug-switch values and the built-in-self-test flag.",
+      "description": "A serial non-volatile store answering as a slave on the same I2C bus the system controller sits on. It holds the module number (1 to 255, 0 unassigned); the model also keeps a validity marker and the partition number there, which is an emulator choice.",
       "id": "base-i2c-nvram",
       "kind": "flash",
       "name": "I2C configuration NVRAM",
       "notes": "NOT the same part as the machine's other non-volatile store: the clock component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at chip select 0, and this is a separate device on the HUB'S I2C BUS, reached by raw transactions the system controller never sees. The distinction's history is in the pcf8584-elsc datasheet's behavioral notes. It answers EIGHT CONSECUTIVE SLAVE ADDRESSES FROM 0x50, the top three bits of an eleven-bit byte address choosing among them and the low byte addressing within one. Whether that is one 2 KB part consuming eight addresses or several smaller ones is not established, and the firmware cannot tell either. The system controller's own reserved area is the last of the eight, which SGI's PROM Technical Reference corroborates independently by reserving the top 256 bytes for the controller's use. The `kind` is the least-wrong available value: this is an EEPROM rather than flash, and what the field is carrying here is the role of non-volatile storage.",
       "parent": "base-cpu-module",
-      "provenance": "vendor-source",
-      "regions": []
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0170-001 section 1.5, printed page 1-4 (PDF page 18): module number lives in this NVRAM",
+        "108-0170-001 scr and scw command text, PDF page 76 (printed 4-22): addresses 0 to 2047, 1792 to 2047 reserved for the system controller"
+      ]
     },
     {
-      "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
-      ],
-      "description": "A single-byte read and write target answering on the Hub's I2C bus at slave address 0x20, driven directly by a pair of firmware routines the interactive monitor calls.",
+      "description": "A single-byte read and write target at I2C slave address 0x20 on the Hub's bus. No public source states that a device answers there or what it is, so its existence, address and function are an emulator choice.",
       "id": "base-i2c-device-20",
       "kind": "flash",
       "name": "Unidentified I2C device at slave address 0x20",
-      "notes": "WHAT THIS DEVICE IS HAS NOT BEEN ESTABLISHED, and the reviewed datasheet deliberately declines to guess. The entry exists because an unidentified part that provably answers is inventory: a model implementing only the system controller leaves this address unanswered, and leaving the entry out because the part cannot be named is the omission a completeness audit exists to surface rather than a reason to stay silent. The `kind` is a PLACEHOLDER and should not be read as a claim -- the enum has no value for an unidentified device, and nothing establishes that this one is storage. What would settle it is a firmware routine read for what it does with the byte, or a board document naming a part at this address.",
+      "notes": "The `kind` is a placeholder and not a claim; the enum has no value for an unidentified device. A board document naming a part at this address, or a register-level capture from a real module, would settle it.",
       "parent": "base-cpu-module",
-      "provenance": "vendor-source",
+      "provenance": "unsourced",
       "regions": []
     }
   ],
@@ -2147,10 +2148,12 @@
       "bus": "base-i2c",
       "component": "base-sgi-elsc",
       "i2c_address": 8,
-      "provenance": "datasheet",
+      "notes": "The manuals tie the controller to the PCF8584 system-controller path. The slave address 0x08 is an emulator choice; no public source states it.",
+      "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113",
+        "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86"
       ]
     },
     {

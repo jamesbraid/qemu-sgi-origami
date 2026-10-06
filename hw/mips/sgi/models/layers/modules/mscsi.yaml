@@ -22,8 +22,9 @@ layer:
           part: "030-1243-001"
           notes: >-
             SGI's parts catalogue lists 030-1243-001 as PCA MSCSI B.
-            Real inventories print it at revisions F, G and M, and a second
-            part number, 030-1281-001 rev D, under the same MSCSI name. The
+            Real inventories print it at revisions F (web:preterhuman-origin-200)
+            and G (web:usenet-9uhh6o), and a second part number, 030-1281-001
+            rev D (web:usenet-8ns2m5), under the same MSCSI name. The
             model presents 030-1243-001 rev F, the board the one-module
             GIGAchannel inventory lists at io4, with the Bridge revision
             that inventory reports.
