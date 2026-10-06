@@ -159,7 +159,7 @@ def reached_kernel_entry(transcript):
 
 
 # The release this test's real boot drives. 6.5.30 is the miniroot the
-# single-CPU IRIX bring-up runs against; its PROM and kernel digests are
+# IRIX bring-up runs against; its PROM and kernel digests are
 # checked below so a stale or wrong-release asset is caught before a boot
 # is spent on it.
 RELEASE = "6.5.30"
@@ -184,7 +184,7 @@ KERNEL_SHA256 = (
     "cbdb02ea5d334ecac949a6524a363e6c945f94baf438d41e8d9248eda0377bdf"
 )
 
-# sash-gate's own single-CPU budget (tools/sashlib.py) is 1200s for the
+# sash-gate's own budget (tools/sashlib.py) is 1200s for the
 # whole run; this test drives only the boot-and-direct-boot leg, but the
 # miniroot kernel is a 12 MiB image the PROM fetches over SLIRP TFTP before
 # it even enters, so a larger margin than test_prom_sash's is kept, a

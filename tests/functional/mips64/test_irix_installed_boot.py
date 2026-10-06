@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 #
 # IRIX installed-disk boot: boot the plain installed IRIX disk on a
-# single-CPU Origin 200, log in as root, and require the system to have
+# two-CPU Origin 200, log in as root, and require the system to have
 # reached run level 2
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Boot the installed IRIX 6.5.30 disk on a single-CPU Origin 200.
+"""Boot the installed IRIX 6.5.30 disk on a two-CPU Origin 200.
 
 The test starts from `irix/6.5.30/root.qcow2`; it does not run the
 installer. It requires a root login, run level 2, the expected release
@@ -34,11 +34,11 @@ FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
 DISK_REL = os.path.join('irix', RELEASE, 'root.qcow2')
 
-# The installed IRIX single-node machine: one CPU, 64 MiB, the release's
-# own PROM, user-mode networking so IRIX's network init completes without
-# a server -- the same profile test_irix_diag.py boots (root.qcow2 is the
-# base root-diags.qcow2 is built from; nothing between power-on and login
-# differs between the two disks).
+# The installed IRIX single-node machine: lib_prom's CPU count, 64 MiB,
+# the release's own PROM, user-mode networking so IRIX's network init
+# completes without a server -- the profile test_irix_diag.py boots
+# (root.qcow2 is the base root-diags.qcow2 is built from; nothing between
+# power-on and login differs between the two disks).
 MEMORY_MIB = 64
 
 # The plain boot to a root login measured about 265s real on a quiet
