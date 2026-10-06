@@ -13,16 +13,7 @@ layer_version: 1
 # citation, or moving the bus/connection to `provenance: unsourced` with a stated
 # `evidence_gap`, is follow-up work on the evidence itself, not a citation-form change.
 sources:
-  ioc3-datasheet-ioc3-byte: "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence"
-  timekeeper-datasheet-timekeeper-attachment: "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
-  pcf8584-elsc-datasheet: "docs/datasheets/pcf8584-elsc.md"
-  ioc3-datasheet-72-81: "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
-  bridge-datasheet-731-745: "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
-  hub-onewire-datasheet-hub-one: "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
   boot-logs-b6a7678-b: "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card"
-  bridge-datasheet-731-745-b: "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire consumer"
-  hub-processor-interface-datasheet-hub-pi: "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract"
-  sn0-linux-register-map: "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
 layer:
   kind: module
   id: logic-carrier
@@ -78,7 +69,7 @@ layer:
         name: IOC3 byte bus
         kind: byte-bus
         provenance: datasheet
-        sources: [ioc3-datasheet-ioc3-byte, timekeeper-datasheet-timekeeper-attachment]
+        sources: [qemu:docs/specs/sgi-ioc3.rst]
         master: ioc3
         notes: Four device selects for byte-wide devices outside the chip.
 
@@ -86,7 +77,7 @@ layer:
         name: I2C
         kind: i2c
         provenance: datasheet
-        sources: [pcf8584-elsc-datasheet]
+        sources: [qemu:docs/specs/sgi-elsc.rst]
         master: pcf8584
         notes: The PCF8584 masters the system-controller and configuration-NVRAM bus.
 
@@ -94,7 +85,7 @@ layer:
         name: MicroLAN
         kind: one-wire
         provenance: guest-source
-        sources: [ioc3-datasheet-72-81]
+        sources: [qemu:docs/specs/sgi-ioc3.rst]
         master: ioc3
         notes: >-
           The Dallas single-wire bus. SGI's own register block for it is named
@@ -105,7 +96,7 @@ layer:
         name: Bridge one-wire line
         kind: one-wire
         provenance: guest-source
-        sources: [bridge-datasheet-731-745]
+        sources: [qemu:docs/specs/sgi-bridge.rst]
         master: bridge
         notes: >-
           **A different bus from the IOC3's MicroLAN**, and the distinction is
@@ -126,7 +117,7 @@ layer:
         name: Hub one-wire line
         kind: one-wire
         provenance: datasheet
-        sources: [hub-onewire-datasheet-hub-one]
+        sources: [qemu:docs/specs/sgi-hub.rst]
         master: hub-md
         notes: >-
           The Hub memory/directory interface owns this third one-wire master. The
@@ -202,12 +193,12 @@ layer:
       - { component: pci-slot-6, bus: pci, role: endpoint, provenance: vendor-document, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
       - { component: pci-slot-7, bus: pci, role: endpoint, provenance: vendor-document, sources: ["web:dmesgd-8994 lines 188, 192, and 197, records PCI devices 0, 1, and 2", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"], notes: "Physical slot label only; no installed PCI card is selected." }
 
-      - { component: ioc3, bus: byte-bus, role: master, provenance: datasheet, sources: [ioc3-datasheet-ioc3-byte, timekeeper-datasheet-timekeeper-attachment] }
-      - { component: rtc, bus: byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [ioc3-datasheet-ioc3-byte, timekeeper-datasheet-timekeeper-attachment] }
+      - { component: ioc3, bus: byte-bus, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-ioc3.rst] }
+      - { component: rtc, bus: byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [qemu:docs/specs/sgi-ioc3.rst] }
 
-      - { component: pcf8584, bus: i2c, role: master, provenance: datasheet, sources: [pcf8584-elsc-datasheet] }
-      - { component: sgi-elsc, bus: i2c, role: endpoint, i2c_address: 0x08, provenance: datasheet, sources: [pcf8584-elsc-datasheet] }
-      - { component: i2c-nvram, bus: i2c, role: endpoint, i2c_address: 0x50, i2c_address_count: 8, provenance: datasheet, sources: [pcf8584-elsc-datasheet] }
+      - { component: pcf8584, bus: i2c, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
+      - { component: sgi-elsc, bus: i2c, role: endpoint, i2c_address: 0x08, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
+      - { component: i2c-nvram, bus: i2c, role: endpoint, i2c_address: 0x50, i2c_address_count: 8, provenance: datasheet, sources: [qemu:docs/specs/sgi-elsc.rst] }
 
       - { component: hub-md, bus: directory-bus, role: master, provenance: vendor-document, sources: ["007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"] }
       - { component: node-memory, bus: directory-bus, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"] }
@@ -220,14 +211,14 @@ layer:
           Attachment to MD is settled. Selection against RAM at the overlapping
           node offset is not.
 
-      - { component: ioc3, bus: one-wire, role: master, provenance: guest-source, sources: [ioc3-datasheet-72-81] }
-      - { component: bridge, bus: bridge-one-wire, role: master, provenance: guest-source, sources: [bridge-datasheet-731-745] }
-      - { component: hub-md, bus: hub-one-wire, role: master, provenance: datasheet, sources: [hub-onewire-datasheet-hub-one] }
+      - { component: ioc3, bus: one-wire, role: master, provenance: guest-source, sources: [qemu:docs/specs/sgi-ioc3.rst] }
+      - { component: bridge, bus: bridge-one-wire, role: master, provenance: guest-source, sources: [qemu:docs/specs/sgi-bridge.rst] }
+      - { component: hub-md, bus: hub-one-wire, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-hub.rst] }
       - component: board-identity
         bus: bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: [boot-logs-b6a7678-b, bridge-datasheet-731-745-b]
+        sources: [boot-logs-b6a7678-b, qemu:docs/specs/sgi-bridge.rst]
       - component: nic-mac
         bus: one-wire
         role: endpoint
@@ -300,7 +291,7 @@ layer:
       - id: rt-counter
         source: hub-pi
         provenance: datasheet
-        sources: [hub-processor-interface-datasheet-hub-pi, sn0-linux-register-map]
+        sources: [qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts, "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"]
         description: The Hub's real-time counter comparator for this processor.
         chain:
           - { at: hub-pi, as: "counter reaches this processor's compare value", mechanism: level }
@@ -309,7 +300,7 @@ layer:
       - id: profiling
         source: hub-pi
         provenance: datasheet
-        sources: [hub-processor-interface-datasheet-hub-pi, sn0-linux-register-map]
+        sources: [qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts, "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"]
         description: The profiling comparator, which raises on both processors.
         chain:
           - { at: hub-pi, as: "profiling compare", mechanism: level }
@@ -318,7 +309,7 @@ layer:
       - id: hub-error
         source: hub
         provenance: datasheet
-        sources: [hub-processor-interface-datasheet-hub-pi, sn0-linux-register-map]
+        sources: [qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts, "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"]
         description: Hub errors, from the error-pending register gated by this processor's error mask.
         chain:
           - { at: hub, as: "error-pending register", mechanism: level }
@@ -397,7 +388,7 @@ layer:
           processor_identification: "0x0926"
           fpu_identification: "0x0900"
           cache_clock_mhz: 90
-        sources: ["web:r10000-users-manual-2.0"]
+        sources: ["web:r10000-users-manual-2.0 section 14.13, PRId register, printed page 255: implementation number 0x09"]
 
       - id: node-memory
         name: node memory

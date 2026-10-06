@@ -2436,7 +2436,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack capture web:nekonomicon-16285"
+        "web:nekonomicon-16285 board list, GE16-4 io3, part 030-1398-001 revision E"
       ]
     },
     {
@@ -2492,7 +2492,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records: the web:nekonomicon-16285 rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"
+        "web:nekonomicon-16285 board list, KTOWN io3, part 030-1067-001 revision F"
       ]
     }
   ],
@@ -4066,8 +4066,7 @@
       "provenance": "derived",
       "sources": [
         "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
-        "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.",
-        "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface"
       ]
     },
     "generation": "SN0",

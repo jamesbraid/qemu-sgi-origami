@@ -117,8 +117,7 @@
       "notes": "Four device selects for byte-wide devices outside the chip.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -129,7 +128,7 @@
       "notes": "The PCF8584 masters the system-controller and configuration-NVRAM bus.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -140,7 +139,7 @@
       "notes": "The Dallas single-wire bus. SGI's own register block for it is named MicroLAN. Real and emulated Origin 200 systems supply an Ethernet-address NIC here.",
       "provenance": "guest-source",
       "sources": [
-        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -151,7 +150,7 @@
       "notes": "**A different bus from the IOC3's MicroLAN**, and the distinction is load-bearing. The Bridge has its own one-wire master at widget offset 0x00_00b0, driven a bit at a time \u2014 bit 0 samples the wire, bit 1 says the slot finished, a write starts a slot with its low-drive and remaining times packed in. Linux and OpenBSD read the layout the same way, but their timings differ slightly, so a model must key off the sequence of slots rather than exact microseconds.\n**Mainline Linux will not boot without it.** It reads the board-identity NIC before doing anything else with the Bridge, and a failed read makes the driver return a deferred-probe error so the Bridge never attaches \u2014 no PCI bus, no I/O controller, no console, no disk, and a deferred-probe message as the only clue.",
       "provenance": "guest-source",
       "sources": [
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -162,7 +161,7 @@
       "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The current model implements an empty bus. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+        "qemu:docs/specs/sgi-hub.rst"
       ]
     },
     {
@@ -221,8 +220,7 @@
       "notes": "Four device selects for byte-wide devices outside the chip.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -233,7 +231,7 @@
       "notes": "The PCF8584 masters the system-controller and configuration-NVRAM bus.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -244,7 +242,7 @@
       "notes": "The Dallas single-wire bus. SGI's own register block for it is named MicroLAN. Real and emulated Origin 200 systems supply an Ethernet-address NIC here.",
       "provenance": "guest-source",
       "sources": [
-        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -255,7 +253,7 @@
       "notes": "**A different bus from the IOC3's MicroLAN**, and the distinction is load-bearing. The Bridge has its own one-wire master at widget offset 0x00_00b0, driven a bit at a time \u2014 bit 0 samples the wire, bit 1 says the slot finished, a write starts a slot with its low-drive and remaining times packed in. Linux and OpenBSD read the layout the same way, but their timings differ slightly, so a model must key off the sequence of slots rather than exact microseconds.\n**Mainline Linux will not boot without it.** It reads the board-identity NIC before doing anything else with the Bridge, and a failed read makes the driver return a deferred-probe error so the Bridge never attaches \u2014 no PCI bus, no I/O controller, no console, no disk, and a deferred-probe message as the only clue.",
       "provenance": "guest-source",
       "sources": [
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -266,7 +264,7 @@
       "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The current model implements an empty bus. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+        "qemu:docs/specs/sgi-hub.rst"
       ]
     },
     {
@@ -453,7 +451,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "web:r10000-users-manual-2.0"
+        "web:r10000-users-manual-2.0 section 14.13, PRId register, printed page 255: implementation number 0x09"
       ]
     },
     {
@@ -1257,7 +1255,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "web:r10000-users-manual-2.0"
+        "web:r10000-users-manual-2.0 section 14.13, PRId register, printed page 255: implementation number 0x09"
       ]
     },
     {
@@ -2294,8 +2292,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2305,8 +2302,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2315,7 +2311,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2325,7 +2321,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2336,7 +2332,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2373,7 +2369,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2382,7 +2378,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -2391,7 +2387,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+        "qemu:docs/specs/sgi-hub.rst"
       ]
     },
     {
@@ -2401,7 +2397,7 @@
       "role": "endpoint",
       "sources": [
         "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire consumer"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -2600,8 +2596,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2611,8 +2606,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
-        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2621,7 +2615,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2631,7 +2625,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2642,7 +2636,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/pcf8584-elsc.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ]
     },
     {
@@ -2679,7 +2673,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -2688,7 +2682,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -2697,7 +2691,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+        "qemu:docs/specs/sgi-hub.rst"
       ]
     },
     {
@@ -2707,7 +2701,7 @@
       "role": "endpoint",
       "sources": [
         "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
-        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire consumer"
+        "qemu:docs/specs/sgi-bridge.rst"
       ]
     },
     {
@@ -2892,8 +2886,8 @@
       "provenance": "datasheet",
       "source": "node0-hub-pi",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -2914,8 +2908,8 @@
       "provenance": "datasheet",
       "source": "node0-hub-pi",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -2941,8 +2935,8 @@
       "provenance": "datasheet",
       "source": "node0-hub",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -3128,8 +3122,8 @@
       "provenance": "datasheet",
       "source": "node1-hub-pi",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -3150,8 +3144,8 @@
       "provenance": "datasheet",
       "source": "node1-hub-pi",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -3177,8 +3171,8 @@
       "provenance": "datasheet",
       "source": "node1-hub",
       "sources": [
-        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
-        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
     {
@@ -3269,8 +3263,9 @@
       },
       "provenance": "derived",
       "sources": [
-        "docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values",
-        "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"
+        "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block",
+        "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values",
+        "qemu:docs/specs/sgi-prom-image.rst"
       ]
     },
     "generation": "SN0",

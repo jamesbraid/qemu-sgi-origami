@@ -58,7 +58,7 @@ layer:
         provenance: datasheet
         identity:
           part: "030-1067-001"
-        sources: ["docs/datasheets/onyx2.md One-wire records: the web:nekonomicon-16285 rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"]
+        sources: ["web:nekonomicon-16285 board list, KTOWN io3, part 030-1067-001 revision F"]
 
     connections:
       - component: xtown

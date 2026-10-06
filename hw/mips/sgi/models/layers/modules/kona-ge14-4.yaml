@@ -29,7 +29,7 @@ layer:
         provenance: datasheet
         identity:
           part: "030-1129-002"
-        sources: ["docs/datasheets/onyx2.md One-wire records: GE14-4 030-1129-002 in the real deskside capture web:irixnet-post-32192"]
+        sources: ["web:irixnet-post-32192 board list, GE14-4 board part 030-1129-002 revision F at /hw/module/1/slot/io4/kona"]
 
     connections:
       - component: geometry-identity

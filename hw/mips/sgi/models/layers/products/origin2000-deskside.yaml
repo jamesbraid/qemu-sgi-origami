@@ -122,7 +122,7 @@ layer:
         flash_read_cycles: 8
         flash_write_cycles: 1
         provenance: derived
-        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.", "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."]
+        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface]
       emulation:
         machine_name: origin2000
         display_description: SGI Origin 2000 deskside

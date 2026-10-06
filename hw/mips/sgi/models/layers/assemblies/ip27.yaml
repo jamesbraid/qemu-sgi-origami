@@ -34,4 +34,4 @@ layer:
       dimm_mib: 64
       banks: [128, 128]
       provenance: observed-hardware
-      sources: ["docs/library/ip27-real-machine-enumeration.md: a real Origin 2000's hinv -v reports node n1 as \"Memory on board, 256 MBytes (Standard)\" in \"Bank 0, 128 MBytes (Standard)\" and \"Bank 1, 128 MBytes (Standard)\"", "007-3439-002 printed p.35: 16-Mb parts give 128 MB increments in DIMM pairs"]
+      sources: ["web:nekonomicon-16727716 hinv -v listing, IP27 Node Board in Module 1 slot n1: \"Memory on board, 256 MBytes (Standard)\", \"Bank 0, 128 MBytes (Standard)\" and \"Bank 1, 128 MBytes (Standard)\"", "007-3439-002 printed p.35: 16-Mb parts give 128 MB increments in DIMM pairs"]

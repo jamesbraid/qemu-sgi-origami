@@ -3765,8 +3765,7 @@
       "provenance": "derived",
       "sources": [
         "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
-        "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.",
-        "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."
+        "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface"
       ]
     },
     "generation": "SN0",
@@ -3784,7 +3783,7 @@
       "sources": [
         "query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds",
         "tools/origami_lib/launch.py: LaunchProfile.requires_node_proms",
-        "tools/origami_lib/irix.py: run irix's --machine choices name origin200, origin2000 and origin300 for IRIX only; run sash and run mdk restrict --machine to origin200 and origin2000"
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata"
       ],
       "supported_guests": [
         "irix"

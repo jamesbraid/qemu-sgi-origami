@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Published dual-module product limits and the four-CPU emulator projection.
 layer_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit; every other fact above has moved to that direct form. The two keys
-# left here back the firmware configuration fact only, whose strict evidence policy
-# (tools/origami_lib/model_validation.py) requires non-empty sources regardless of
-# provenance -- unlike a component, which may carry none. Both cite only an internal
-# datasheet, so the checker reports them under "facts whose only sources are
-# internal documents" rather than resolving them; replacing them with an
-# independently obtainable citation is follow-up work on the evidence itself, not a
-# citation-form change.
-sources:
-  firmware-structures-datasheet-boot-flash: "docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values"
-  address-map-datasheet-origin-200: "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"
 layer:
   kind: product
   id: origin200-dual
@@ -43,7 +30,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: [firmware-structures-datasheet-boot-flash, address-map-datasheet-origin-200]
+        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)
