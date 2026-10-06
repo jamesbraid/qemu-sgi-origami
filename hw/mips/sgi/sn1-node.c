@@ -1656,12 +1656,9 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
             g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
         const SGIModelProcessor *processor =
             sn1_cpu_processor(node->model_node, i);
-        uint32_t prid = processor->prid;
         bool r16000 = node->ip53_assembly_validated &&
             sgi_machine_ip53_experiment_authorized(machine);
-        const char *cpu_type = r16000 ? machine->cpu_type : prid == 0x0f23 ?
-            MIPS_CPU_TYPE_NAME("sgi-r14000-rev23") : machine->cpu_type;
-        DeviceState *cpu_dev = qdev_new(cpu_type);
+        DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
         /*
