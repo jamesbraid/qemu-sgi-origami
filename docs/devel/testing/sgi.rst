@@ -317,8 +317,8 @@ Host prerequisites for qtests
 A qtest that needs something from its host, such as ``/dev/net/tun`` or
 ``xorrisofs``, skips when it is absent, so a developer without it still gets a
 clean run. ``tests/qtest/prereq.h`` turns that skip into a failure when
-``QEMU_TEST_REQUIRE_<NAME>`` is set to anything but ``0``. CI cannot tolerate
-a skip, because the JUnit checker rejects every skipped case, so
+``QEMU_TEST_REQUIRE_<NAME>`` is set to anything but ``0``. CI's JUnit checker
+rejects every skipped case unless the skip is declared as shown below, so
 ``scripts/ci/runner-setup run-tests`` sets the variable for each prerequisite
 its image and runners provide:
 
@@ -326,16 +326,22 @@ its image and runners provide:
   ``/dev/net/tun``, which the BCM570x and Xframe vnet-header cases open.
   ``run-tests`` passes the device and ``CAP_NET_ADMIN`` to the container.
 
-``QEMU_TEST_REQUIRE_XORRISOFS``
-  ``xorrisofs``, which ``cdrom-test`` uses to build its boot image. Without
-  it ``cdrom-test`` registers one case that reports the missing prerequisite.
+``QEMU_TEST_REQUIRE_XORRISOFS`` and ``QEMU_TEST_REQUIRE_SGI_RENDER_NODE``
+  ``xorrisofs``, which ``cdrom-test`` uses to build its boot image, and a DRM
+  render node named by ``QEMU_TEST_SGI_RENDER_NODE``, for the KONA host-GPU
+  renderer cases. CI provides neither and does not set these variables.
+  ``cdrom-test`` only boots upstream's Magnum, Malta and PICA-61 boards, none
+  of them SGI, so the build image does not install ``xorriso``. Without
+  ``xorrisofs`` ``cdrom-test`` registers one case that reports the missing
+  prerequisite, so the binary is never empty.
 
-``QEMU_TEST_REQUIRE_SGI_RENDER_NODE``
-  A DRM render node named by ``QEMU_TEST_SGI_RENDER_NODE``, for the KONA
-  host-GPU renderer cases. No CI runner exposes one, so CI leaves this
-  variable unset. A skipped case would fail CI's skip check, so those cases
-  are not registered when no node is set. With a node, or with the variable
-  set, they register and a missing node fails them.
+A prerequisite CI lacks is declared, not listed in the source:
+``run-tests`` exports ``QEMU_TEST_UNAVAILABLE=SGI_RENDER_NODE,XORRISOFS``, a
+comma-separated list of names. Every prerequisite skip carries the reason
+``prerequisite unavailable: <NAME> (...)``, and
+``scripts/check-sgi-test-results.py`` accepts a skip only when its reason
+names a prerequisite in ``QEMU_TEST_UNAVAILABLE``. Every other skip is an
+error.
 
 To require selected results, use a unique Meson log base and remove its earlier
 report before the run:

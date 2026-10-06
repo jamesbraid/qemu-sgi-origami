@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import importlib.util
 import json
+import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -118,6 +119,42 @@ class CheckSgiTestResults(unittest.TestCase):
         self.junit.unlink()
         with self.assertRaisesRegex(ResultError, 'does not exist'):
             read_report(self.junit)
+
+    def _write_prereq_skip(self, name):
+        self.write_report(f'''<testsuite tests="2" failures="0"
+            errors="0" skipped="1">
+          <testcase name="required"/>
+          <testcase name="1 /mips64/kona/renderer/real-gl">
+            <skipped />
+            <system-out>prerequisite unavailable: {name} (not set)</system-out>
+          </testcase>
+        </testsuite>''')
+
+    def test_accepts_skip_of_a_declared_unavailable_prerequisite(self):
+        self._write_prereq_skip('SGI_RENDER_NODE')
+        read_report(self.junit, {'SGI_RENDER_NODE'})
+
+    def test_rejects_skip_of_an_undeclared_prerequisite(self):
+        self._write_prereq_skip('TAP')
+        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+            read_report(self.junit, {'SGI_RENDER_NODE'})
+
+    def test_rejects_prerequisite_skip_when_nothing_is_declared(self):
+        self._write_prereq_skip('SGI_RENDER_NODE')
+        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+            read_report(self.junit)
+
+    def test_declaration_comes_from_the_environment(self):
+        self._write_prereq_skip('SGI_RENDER_NODE')
+        self.write_expected('required\n')
+        args = ['--junit', str(self.junit), '--expect', str(self.expected)]
+        with mock.patch.dict(os.environ,
+                             {'QEMU_TEST_UNAVAILABLE': 'TAP,SGI_RENDER_NODE'}):
+            with redirect_stdout(StringIO()):
+                self.assertEqual(checker.main(args), 0)
+        with mock.patch.dict(os.environ, {'QEMU_TEST_UNAVAILABLE': 'TAP'}):
+            with redirect_stderr(StringIO()):
+                self.assertEqual(checker.main(args), 1)
 
     def test_rejects_skip_even_when_another_case_passes(self):
         self.write_report('''<testsuite tests="2" failures="0"

@@ -6,6 +6,11 @@
  * A developer without one gets a skip. CI sets QEMU_TEST_REQUIRE_<NAME>=1
  * for each prerequisite its image and runners provide, and then a missing
  * one fails the case instead of hiding behind a skip.
+ *
+ * A prerequisite CI cannot provide is declared in QEMU_TEST_UNAVAILABLE, a
+ * comma-separated list of names. The skip reason always starts with
+ * "prerequisite unavailable: <NAME>", which scripts/check-sgi-test-results.py
+ * matches against that list. Any other skip is an error there.
  */
 #ifndef QTEST_PREREQ_H
 #define QTEST_PREREQ_H
@@ -30,7 +35,10 @@ static inline void qtest_prereq_missing(const char *name, const char *what)
         g_test_message("QEMU_TEST_REQUIRE_%s is set but: %s", name, what);
         g_test_fail();
     } else {
-        g_test_skip(what);
+        g_autofree char *reason =
+            g_strdup_printf("prerequisite unavailable: %s (%s)", name, what);
+
+        g_test_skip(reason);
     }
 }
 

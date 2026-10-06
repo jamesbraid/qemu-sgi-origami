@@ -7015,27 +7015,16 @@ int main(int argc, char **argv)
                    test_texture_8x8_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/missing-provider",
                         GUINT_TO_POINTER(0), test_renderer_fixture);
-    /*
-     * CI has no render node, and its skip check rejects a skipped case.
-     * Register the host-GPU cases only where a node is supplied or the
-     * environment requires one, in which case a missing node fails them.
-     */
-    if (g_getenv("QEMU_TEST_SGI_RENDER_NODE") ||
-        qtest_prereq_required("SGI_RENDER_NODE")) {
-        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
-                            GUINT_TO_POINTER(1), test_renderer_fixture);
-        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                            "gpu-to-cpu-migration",
-                            GUINT_TO_POINTER(1), test_renderer_migration);
-        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                            "cpu-to-gpu-migration",
-                            GUINT_TO_POINTER(0), test_renderer_migration);
-        qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
-                       test_renderer_excluded_state);
-    } else {
-        g_test_message("host-GPU renderer cases not registered: "
-                       "QEMU_TEST_SGI_RENDER_NODE is not set");
-    }
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
+                        GUINT_TO_POINTER(1), test_renderer_fixture);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "gpu-to-cpu-migration",
+                        GUINT_TO_POINTER(1), test_renderer_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "cpu-to-gpu-migration",
+                        GUINT_TO_POINTER(0), test_renderer_migration);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
+                   test_renderer_excluded_state);
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/native",
                         GINT_TO_POINTER(0), test_native_colour_matrix);
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",
