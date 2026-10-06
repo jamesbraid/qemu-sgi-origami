@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * sgi-xio-baseio: an Origin 2000 and Onyx2 XIO I/O board built from a
- * Bridge and an sgi-baseio preset behind it -- the standard BaseIO
- * ("io6"), the BaseIO-G ("io6g"), the MENET ("menet") or the MSCSI
- * ("mscsi"). An sgi-xio-board subclass: the removable-card carrier
- * docs/designs/sn-machine-model-architecture.md's "Base I/O"
- * table names. See sgi-baseio's own header and hw/mips/sgi/baseio.c for
- * the population this board's preset builds; this file owns only what
- * is specific to the card: its own Bridge and the card's fitted-part
- * identity.
+ * sgi-xio-baseio: an Origin 2000 and Onyx2 XIO I/O board built from a Bridge
+ * and an sgi-baseio preset behind it -- the standard BaseIO ("io6"), the
+ * BaseIO-G ("io6g"), the MENET ("menet") or the MSCSI ("mscsi"). An
+ * sgi-xio-board subclass: the removable-card carrier the machine catalogue's
+ * BaseIO entries name. See sgi-baseio's own header and hw/mips/sgi/baseio.c
+ * for the population this board's preset builds; this file owns only what is
+ * specific to the card: its own Bridge and the card's fitted-part identity.
  *
  * "fabric" passes straight through to the internal Bridge: which Crossbow
  * port receives this board's packets is a fact about the machine this

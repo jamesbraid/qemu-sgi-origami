@@ -1717,20 +1717,17 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                        "bedrock-reset", 0));
 
     /*
-     * The XBridge is a fitted part of the IP45 node board itself, as the
-     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
-     * "Node devices"): this file creates it directly, the family builder's
-     * own device like every other product's onboard base I/O. An XIO
-     * link joins it to the Bedrock's own XIO port before either
-     * realizes: the link (hw/mips/sgi/xio-link.c) hands the XBridge the
-     * Bedrock's packet face as the chip's "fabric" -- what its own
-     * widget-0 conditions and both heads' interrupts reach the host
-     * through. The IO-8's fixed devices
-     * are a separate sgi-baseio (the "io8" preset) the machine places on
-     * the chip's own head F, through the same board path every other
-     * product's base I/O goes through (sgi_machine_instantiate_io_board()
-     * in sn-machine.c, via sn1_node_xbridge_pci_bus() below) once the
-     * chip itself has realized.
+     * The XBridge is a fitted part of the IP45 node board itself, as the L1
+     * and the boot flash are: this file creates it directly, the family
+     * builder's own device like every other product's onboard base I/O. An XIO
+     * link joins it to the Bedrock's own XIO port before either realizes: the
+     * link (hw/mips/sgi/xio-link.c) hands the XBridge the Bedrock's packet
+     * face as the chip's "fabric" -- what its own widget-0 conditions and both
+     * heads' interrupts reach the host through. The IO-8's fixed devices are a
+     * separate sgi-baseio (the "io8" preset) the machine places on the chip's
+     * own head F, through the same board path every other product's base I/O
+     * goes through (sgi_machine_instantiate_io_board() in sn-machine.c, via
+     * sn1_node_xbridge_pci_bus() below) once the chip itself has realized.
      */
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
@@ -2001,9 +1998,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * composite's "pi-nmi" inputs, the same path a processor interface's NMI
      * store takes. Whether the real L1 interrupts all processors or only
      * enabled ones, and whether it goes through the processor interface at
-     * all, is not established; the Bedrock processor interface datasheet
-     * records this as an approximation. The L1 gates the output on node
-     * power itself.
+     * all, is not established; docs/specs/sgi-bedrock.rst records this as an
+     * approximation. The L1 gates the output on node power itself.
      */
     if (node->nr_cpus) {
         DeviceState *nmi_split = qdev_new(TYPE_SPLIT_IRQ);
