@@ -91,7 +91,14 @@ class ClassifyTests(unittest.TestCase):
                          ["malformed"])
         self.assertEqual(classes("openbsd:2df91d80c104 sys/arch/sgi/x.c", self.registry),
                          ["unregistered"])
-        self.assertEqual(classes("linux-ip35:9f613a321ea0 asm/sn/pic.h", self.registry),
+        self.assertEqual(classes(
+            "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 "
+            "arch/mips/include/asm/sn/pic.h", self.registry), [])
+        # A tree with no known public location is reported, not trusted.
+        homeless = copy.deepcopy(self.registry)
+        homeless["trees"]["linux-ip35"] = {
+            "title": "t", "url": None, "public_location": "unknown", "note": "n"}
+        self.assertEqual(classes("linux-ip35:9f613a321ea0 asm/sn/pic.h", homeless),
                          ["unknown-tree"])
         # Prose that merely opens with "word:" is not a tree citation.
         self.assertEqual(classes("query-sgi-machines: the node flash items", self.registry),

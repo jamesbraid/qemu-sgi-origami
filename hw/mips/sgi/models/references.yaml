@@ -28,12 +28,19 @@ trees:
     url: https://github.com/the-machine-hall/openbsd-sgi
     branch: sgi-is-alive-at-7.9
   linux-ip35:
-    title: "Linux kernel with IP35 platform support"
-    url: null
-    public_location: unknown
+    title: "Linux kernel with IP35 platform support, branch sgi-ip35"
+    author: Alastair Bridgewater
+    url: https://archive.org/download/git.linux-mips.org_bundles_20240209/git%3A__git.linux-mips.org_pub_scm_nyef_linux-ip35.bundle
+    sha256: 3df0ede74539ed9a08ec70ba2fb945b8aa7ebda1b551b18e8c5a96b97b83572c
+    branch: sgi-ip35
     note: >-
-      The cited commit is not in mainline Linux, and no public repository
-      carrying it is known. Facts citing it need another public source.
+      An out-of-tree Linux port to the Origin 300 and Origin 3000 (GPL). Its
+      original home, git.linux-mips.org/pub/scm/nyef/linux-ip35, is gone;
+      an FTP index of it survives at
+      https://www.mmnt.net/db/0/0/ftp.linux-mips.org/pub/scm/nyef/linux-ip35/.
+      The url is a git bundle of the whole repository kept by the Internet
+      Archive in the Linux/MIPS bundle set of 2024-02-09. Clone it with
+      git clone, then check out the cited commit.
 
 documents:
   007-3439-002:

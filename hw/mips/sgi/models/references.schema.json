@@ -51,6 +51,8 @@
           "description": "A public clone URL, or null when no public location is known."
         },
         "browse": { "type": "string", "description": "A web view of the same repository." },
+        "author": { "type": "string", "description": "Who wrote an out-of-tree repository." },
+        "sha256": { "$ref": "#/$defs/sha256", "description": "SHA-256 of the file at url, when url names a bundle or archive rather than a clone address." },
         "branch": { "type": "string", "description": "The branch the cited commits sit on." },
         "public_location": { "const": "unknown" },
         "note": { "type": "string", "minLength": 1 }
