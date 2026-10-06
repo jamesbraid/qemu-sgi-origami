@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Expected synthetic L1 identity records, written by the launcher's
- * reviewed Python encoders (node_eeprom.py and io8_eeprom.py in the
- * Origami repository) before QEMU built them itself. The board areas'
- * serials have since become the marked synthetic ones for instance 0,
- * "EMUN00" for the node board and "EMUI00" for the IO8, each area's
- * checksum byte following; every other byte is still the encoders'.
+ * Expected synthetic L1 identity records, written by the launcher's Python
+ * encoders (node_eeprom.py and io8_eeprom.py) before QEMU built them itself.
+ * The board areas' serials have since become the marked synthetic ones for
+ * instance 0, "EMUN00" for the node board and "EMUI00" for the IO8, each
+ * area's checksum byte following; every other byte is still the encoders'.
  *
  * Inputs: node boards IP45_2CPU 030-1780-001 -C and IP45_4CPU 030-1779-001
  * -C; IO8 board addresses 08:00:69:12:34:56 (the default), one past it,
