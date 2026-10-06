@@ -365,9 +365,10 @@ GUEST_ADDR = "10.0.2.15"
 EG_ADDR = 5
 EG_MAC = "52:54:00:12:34:56"
 
-# The real multiuser IRIX boot budget the absorbed eg_net leg measured
-# sufficient for a single-CPU boot: the PROM's own power-on diagnostics,
-# then the kernel, then init to a console login.
+# The real multiuser IRIX boot budget: the PROM's own power-on diagnostics,
+# then the kernel, then init to a console login. The absorbed eg_net leg
+# measured it sufficient for one CPU on single-thread TCG; whole runs of this
+# test with two CPUs on multi-threaded TCG take about two minutes.
 _DEFAULT_LOGIN_BUDGET_SECONDS = 1200
 
 
@@ -411,10 +412,10 @@ ACCEL = os.environ.get('EG_PERF_ACCEL', IRIX_ACCEL)
 SOAK_ROUNDS = int(os.environ.get('EG_PERF_SOAK_ROUNDS', '0'))
 SOAK_BYTES = int(os.environ.get('EG_PERF_SOAK_BYTES', str(4 * 1024 * 1024)))
 
-# How long to wait for a root shell. The default is the one the eg transfer
-# test proved sufficient for a single-CPU boot; a different machine shape, or
-# a busy host, can want more, and a boot that is still making progress when
-# the budget runs out reads as a device failure and is not one.
+# How long to wait for a root shell. The default is the boot budget above; a
+# slower machine shape, or a busy host, can want more, and a boot that is
+# still making progress when the budget runs out reads as a device failure
+# and is not one.
 LOGIN_BUDGET_SECONDS = int(
     os.environ.get('EG_PERF_LOGIN_BUDGET', str(_DEFAULT_LOGIN_BUDGET_SECONDS)))
 

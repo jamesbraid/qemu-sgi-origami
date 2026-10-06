@@ -37,11 +37,12 @@ FIRMWARE_SHA256 = ('c2c69bf33c375b43ec7ac511fab41ddf'
 FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 
-# Accelerator and CPU count for the IRIX guest boot tests. Defaults are the
-# long-standing single-thread, one-CPU shape; set IRIX_TEST_ACCEL and
-# IRIX_TEST_SMP to run the same tests under multi-threaded TCG.
-IRIX_ACCEL = os.environ.get('IRIX_TEST_ACCEL', 'tcg,thread=single')
-IRIX_SMP = os.environ.get('IRIX_TEST_SMP', '1')
+# Accelerator and CPU count for the IRIX guest boot tests: multi-threaded
+# TCG with two CPUs, the Origin 200's full complement. IRIX_TEST_ACCEL and
+# IRIX_TEST_SMP override them. Single-thread TCG with more than one CPU also
+# needs the round-robin kick period lib_matrix.py pins.
+IRIX_ACCEL = os.environ.get('IRIX_TEST_ACCEL', 'tcg,thread=multi')
+IRIX_SMP = os.environ.get('IRIX_TEST_SMP', '2')
 
 # How long a boot test waits for its console to reach the state it is
 # driving toward. 840 keeps the usual 60s margin under the 900s meson
