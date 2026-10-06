@@ -2794,7 +2794,8 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
  * Assert the route a received payload took, independently of its bytes. The
  * Hub maps the memory view straight onto RAM, so neither of its inbound
  * traces may see the payload. The Bridge's byte placement still sees it: on
- * the native route every payload word passes through it, while the batched
+ * the native route every payload word passes through it, one access at a
+ * time or as part of a buffer the conversion passes on, while the batched
  * interface moves whole doublewords itself and leaves only an unaligned head
  * and a sub-doubleword tail, under two doublewords between them, to the swap.
  */
@@ -2819,9 +2820,11 @@ static void assert_dma_payload_trace(const char *path, uint32_t start,
             continue;
         }
         /* The placement names the word before its lanes are exchanged. */
-        if (sscanf(lines[i], "sgi_dma_placement_access %*s write "
-                   "addr 0x%" SCNx64 " host 0x%*x size %u",
-                   &addr, &size) == 2 &&
+        if ((sscanf(lines[i], "sgi_dma_placement_access %*s write "
+                    "addr 0x%" SCNx64 " host 0x%*x size %u",
+                    &addr, &size) == 2 ||
+             sscanf(lines[i], "sgi_dma_placement_buffer %*s write "
+                    "addr 0x%" SCNx64 " len %u", &addr, &size) == 2) &&
             addr >= (start & ~3U) && addr < start + length) {
             swapped += size;
             callbacks++;
@@ -3052,13 +3055,12 @@ static void test_dma_buffer_prefix_pages(const void *data)
 }
 
 /*
- * The chip's conversion takes a long transfer as one buffer when what lies
- * beyond it is RAM: behind a swap-set slot the Bridge passes bytes straight
- * to memory, so the whole words go in one onward transfer and only a
- * partial word at either end goes one access at a time. Behind a swap-clear
- * slot the Bridge's placement is a callback region, so the conversion
- * declines and the placement sees the same 4-byte accesses as before. The
- * bytes are the per-access rule's either way.
+ * The chip's conversion takes a long transfer as one buffer and passes its
+ * whole words on as one; only a partial word at either end goes one access
+ * at a time. Behind a swap-set slot the Bridge passes the bytes straight to
+ * memory. Behind a swap-clear slot the Bridge's placement takes them as a
+ * buffer of its own, in the conversion's 1024-byte pieces, because RAM lies
+ * beyond it. The bytes are the per-access rule's either way.
  */
 static void test_pci_dma_buffer_route(const void *data)
 {
@@ -3089,7 +3091,7 @@ static void test_pci_dma_buffer_route(const void *data)
         g_autofree char *copy_write = g_strdup_printf(
             "write addr 0x%x len %u", 0x80000000 | dest, length);
         IOC3DMATest s;
-        unsigned buffers, narrow = 0;
+        unsigned buffers, narrow = 0, placed = 0;
         g_auto(GStrv) lines = NULL;
 
         g_test_message("swap=%d start=%u", swap, start);
@@ -3128,25 +3130,22 @@ static void test_pci_dma_buffer_route(const void *data)
 
             if (strstr(lines[i], "sgi_ioc3_pci_dma_buffer")) {
                 buffers++;
-                if (swap) {
-                    g_assert_true(strstr(lines[i], buffer_write) ||
-                                  strstr(lines[i], buffer_read) ||
-                                  strstr(lines[i], copy_write));
-                }
+                g_assert_true(strstr(lines[i], buffer_write) ||
+                              strstr(lines[i], buffer_read) ||
+                              strstr(lines[i], copy_write));
+            } else if (strstr(lines[i], "sgi_dma_placement_buffer")) {
+                placed++;
             } else if (sscanf(lines[i], "sgi_dma_placement_access %*s %*s "
                               "addr 0x%*x host 0x%*x size %u", &size) == 1) {
-                g_assert_cmpuint(size, <=, 4);
+                g_assert_cmpuint(size, <, 4);
                 narrow += size;
             }
         }
-        if (swap) {
-            /* The write, the copy's read and the copy's write. */
-            g_assert_cmpuint(buffers, ==, 3);
-            g_assert_cmpuint(narrow, ==, 0);
-        } else {
-            g_assert_cmpuint(buffers, ==, 0);
-            g_assert_cmpuint(narrow, ==, 3 * length);
-        }
+        /* The write, the copy's read and the copy's write. */
+        g_assert_cmpuint(buffers, ==, 3);
+        /* Two pieces each; two bytes either side of an unaligned range. */
+        g_assert_cmpuint(placed, ==, swap ? 0 : 6);
+        g_assert_cmpuint(narrow, ==, swap || !start ? 0 : 8);
     }
 }
 
@@ -3242,7 +3241,8 @@ static void test_dma_buffer_payloads(const void *data)
                                     (unsigned)getpid(), g_random_int());
                 g_autofree char *tracing = g_strdup_printf(
                     "-trace enable=sgi_hub_ii_* "
-                    "-trace enable=sgi_dma_placement_access,file=%s", path);
+                    "-trace enable=sgi_dma_placement_access "
+                    "-trace enable=sgi_dma_placement_buffer,file=%s", path);
                 g_autofree char *extra = g_strdup_printf(
                     "-global sgi-ioc3-eth.dma-buffer=%s %s",
                     native ? "off" : "on", tracing);
