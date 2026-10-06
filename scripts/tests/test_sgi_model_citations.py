@@ -135,33 +135,78 @@ class ClassifyTests(unittest.TestCase):
 
 
 class CheckTests(unittest.TestCase):
-    def test_fact_classes(self):
+    def check_layer(self, layer, registry=None):
         with tempfile.TemporaryDirectory() as temp:
             models = pathlib.Path(temp)
             for name in (citations.REGISTRY, citations.REGISTRY_SCHEMA):
                 shutil.copy(INPUTS / name, models / name)
-            (models / "layer.yaml").write_text(textwrap.dedent("""\
-                sources:
-                  short: "007-3708-002 printed page 5"
-                facts:
-                  # run it with tools/origami; see docs/research/x.md
-                  - {provenance: vendor-document, sources: [short]}  # PR 12
-                  - {provenance: derived, sources: ["hw/mips/sgi/octane.c"]}
-                  - {provenance: derived, sources: ["The composition selects it."]}  # fine
-                  - {provenance: vendor-source, sources: ["web:dmesgd-8994 line 3"]}
-                  - provenance: derived
-                    sources: ["web:dmesgd-8994 line 3"]
-                    notes: "see docs/notebooks/x.md"
-                open_questions:
-                  - {id: q, question: "what does D-0024 say?"}
-                """))
-            report = citations.check(models, ROOT)
+            if registry is not None:
+                (models / citations.REGISTRY).write_text(yaml.safe_dump(registry))
+            (models / "layer.yaml").write_text(textwrap.dedent(layer))
+            return citations.check(models, ROOT)
+
+    def test_each_failing_class_fails_the_check(self):
+        def fact(source, provenance="derived"):
+            return f"facts:\n  - {{provenance: {provenance}, sources: [{source!r}]}}\n"
+        cases = {
+            "malformed": fact("web:Bad_Key page 1"),
+            "unregistered": fact("web:no-such-key page 1"),
+            "origami-path": fact("docs/research/note.md: a finding"),
+            "decision-id": fact("D-0023: a decision"),
+            "tool-path": fact("see tools/x.py"),
+            "library-path": fact("sgi-hw/booklet.pdf Table 41"),
+            "bare-url": fact("see https://example.org/x"),
+            "nickname": fact("the two-node capture model-toad"),
+            "vendor-source": fact("web:dmesgd-8994 line 3", "vendor-source"),
+            "qemu-code-only": fact("hw/mips/sgi/octane.c"),
+            "free-text-only": fact("The composition selects it."),
+            "missing-locator": fact("007-3708-002"),
+            "unpinned-commit": fact("linux:arch/mips/include/asm/sn/ioc3.h"),
+            "internal-note": "notes: see docs/notebooks/x.md\n",
+        }
+        self.assertEqual(set(cases) | {"unknown-tree"}, set(citations.FAILING))
+        for cls, layer in cases.items():
+            with self.subTest(cls=cls):
+                report = self.check_layer(layer)
+                self.assertGreaterEqual(report.count(cls), 1)
+                self.assertTrue(any(line.startswith(f"{cls}:")
+                                    for line in report.failures), report.failures)
+
+    def test_a_tree_with_no_public_location_fails_the_check(self):
+        registry = citations.load_registry(INPUTS)
+        registry["trees"]["linux-ip35"] = {
+            "title": "t", "url": None, "public_location": "unknown", "note": "n"}
+        report = self.check_layer(
+            "facts:\n  - {provenance: derived, sources: "
+            "['linux-ip35:9f613a321ea0 asm/sn/pic.h']}\n", registry)
+        self.assertEqual(report.count("unknown-tree"), 1)
+        self.assertTrue(report.failures)
+
+    def test_comments_fail_the_check(self):
+        report = self.check_layer(
+            "# run it with tools/origami\nfacts: []  # see PR 12\n")
+        self.assertEqual(report.count("internal-note"), 2)
+        self.assertEqual(len(report.failures), 2)
+
+    def test_informational_classes_do_not_fail(self):
+        report = self.check_layer(
+            "facts:\n"
+            "  - {provenance: observed-hardware, sources: "
+            "['firmware:ip27-prom-6.156 string \"x\"']}\n"
+            "  - {provenance: vendor-document, sources: "
+            "['web:nekonomicon-16727716 post 2']}\n")
+        self.assertEqual(report.count("firmware"), 1)
+        self.assertEqual(report.count("obtain-only"), 2)
         self.assertEqual(report.failures, [])
-        self.assertEqual((report.entries, report.facts), (5, 5))
-        self.assertEqual(report.count("qemu-code-only"), 1)
-        self.assertEqual(report.count("free-text-only"), 1)
-        self.assertEqual(report.count("vendor-source"), 1)
-        self.assertEqual(report.count("internal-note"), 4)
+        self.assertEqual(set(citations.INFORMATIONAL), {"firmware", "obtain-only"})
+
+    def test_clean_citations_pass(self):
+        report = self.check_layer(
+            "sources:\n  short: '007-3708-002 printed page 5'\n"
+            "facts:\n  - {provenance: vendor-document, sources: [short]}  # fine\n"
+            "  - {provenance: derived, sources: ['web:dmesgd-8994 line 3']}\n")
+        self.assertEqual(report.failures, [])
+        self.assertEqual((report.entries, report.facts), (2, 2))
 
     def test_comments_are_found_outside_quotes(self):
         text = 'a: "x # not a comment"\nb: 1  # a comment\n# whole line\nc: it#s\n'
