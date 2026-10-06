@@ -11,7 +11,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
-#include "qapi/qapi-types-sgi-sn.h"
+#include "qapi/qapi-types-sgi-machines.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "system/qtest.h"
