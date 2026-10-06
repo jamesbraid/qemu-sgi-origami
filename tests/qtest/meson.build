@@ -531,7 +531,7 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ? \
     ['sgi-ioc4-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_PIC') and
-   config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST') and
+   config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_PCI_BRIDGE') ?
     ['sgi-pic-test'] : []) + \
   sn0_mgras_qtests + \
