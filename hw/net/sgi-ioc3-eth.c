@@ -149,14 +149,20 @@ static bool sgi_ioc3_eth_rx_pending(SGIIOC3EthState *s, uint64_t buf_addr)
     return false;
 }
 
-static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
+/*
+ * Whether a frame can be staged now. *buf_addr is the receive ring entry
+ * read on the way, when one was read and the read succeeded, so a receive
+ * can stage into it without fetching the same entry again.
+ */
+static bool sgi_ioc3_eth_rx_ready(SGIIOC3EthState *s, uint64_t *buf_addr,
+                                  bool *fetched)
 {
-    SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
     uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
     uint32_t need = SGI_IOC3_ENET_MCR_RX_DMA_EN | SGI_IOC3_ENET_MCR_RX_EN;
     uint32_t produce;
-    uint64_t ring_base, buf_addr;
+    uint64_t ring_base;
 
+    *fetched = false;
     if (s->defer_backend_rx) {
         s->backend_rx_deferred = true;
         return false;
@@ -196,24 +202,39 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
      * it: if a completion for an earlier use of the same address is still
      * held, wait for it to publish rather than overwrite it. A refused entry
      * fetch is not this check's to report; deliver() makes and logs that same
-     * read shortly after and drops the frame there.
+     * read shortly after and drops the frame there. With no completion held
+     * no buffer can be pending, so the entry is left for deliver() to read.
      */
+    if (!s->rx_latency.count) {
+        return true;
+    }
     ring_base = ((uint64_t)sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_HI)
                 << 32) |
                (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_LO) &
                 SGI_IOC3_ENET_RX_BASE_MASK);
-    if (ldq_be_dma(&s->dma_as, ring_base + s->rx_consume_staged, &buf_addr,
-                   MEMTXATTRS_UNSPECIFIED) == MEMTX_OK &&
-        sgi_ioc3_eth_rx_pending(s, buf_addr)) {
-        return false;
+    if (ldq_be_dma(&s->dma_as, ring_base + s->rx_consume_staged, buf_addr,
+                   MEMTXATTRS_UNSPECIFIED) == MEMTX_OK) {
+        *fetched = true;
+        if (sgi_ioc3_eth_rx_pending(s, *buf_addr)) {
+            return false;
+        }
     }
 
     return true;
 }
 
+static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
+{
+    SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
+    uint64_t buf_addr;
+    bool fetched;
+
+    return sgi_ioc3_eth_rx_ready(s, &buf_addr, &fetched);
+}
+
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool short_circuit,
-                                    bool immediate);
+                                    bool immediate, const uint64_t *entry);
 
 /* Linux's ioc3_hash(): low six CRC bits, themselves bit-reversed. */
 static unsigned int sgi_ioc3_eth_mcast_hash(const uint8_t *addr)
@@ -278,8 +299,10 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
                                     size_t size)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
+    uint64_t buf_addr;
+    bool fetched;
 
-    if (!sgi_ioc3_eth_can_receive(nc)) {
+    if (!sgi_ioc3_eth_rx_ready(s, &buf_addr, &fetched)) {
         trace_sgi_ioc3_eth_rx_refused(
             sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
             sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
@@ -293,7 +316,8 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
         return size;
     }
 
-    return sgi_ioc3_eth_deliver(s, buf, size, false, false);
+    return sgi_ioc3_eth_deliver(s, buf, size, false, false,
+                                fetched ? &buf_addr : NULL);
 }
 
 static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
@@ -359,11 +383,12 @@ static bool sgi_ioc3_eth_rx_publish(void *opaque, const void *record)
  * receive(), so can_receive() never ran for it. The line's room and the
  * target buffer's own held completion are both checked here instead, and a
  * full line or a buffer still held is the same overrun any other receive
- * gets.
+ * gets. entry, when not NULL, is the ring entry the receive's own readiness
+ * check has just read; the engine fetches each entry once.
  */
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool short_circuit,
-                                    bool immediate)
+                                    bool immediate, const uint64_t *entry)
 {
     SGIIOC3EthRxDone done;
     uint32_t consume, offset, mcr, word0, word1, lenlo, lenhi, wire_len;
@@ -400,8 +425,10 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                 SGI_IOC3_ENET_RX_BASE_MASK);
 
     /* A refused entry fetch leaves no destination; drop the frame. */
-    if (ldq_be_dma(&s->dma_as, ring_base + consume, &buf_addr,
-                   MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (entry) {
+        buf_addr = *entry;
+    } else if (ldq_be_dma(&s->dma_as, ring_base + consume, &buf_addr,
+                          MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc3-eth: receive ring entry at 0x%" PRIx64
                       " cannot be read; the frame is dropped\n",
@@ -685,7 +712,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         if (len > 0) {
             if (loopback) {
                 sgi_ioc3_eth_deliver(s, s->frame, len,
-                                     sgi_ioc3_eth_mac_loopback(s), true);
+                                     sgi_ioc3_eth_mac_loopback(s), true,
+                                     NULL);
             } else if (!s->phy_ics1890 ||
                        ics1890_data_enabled(&s->ics_phy)) {
                 s->defer_backend_rx = true;
