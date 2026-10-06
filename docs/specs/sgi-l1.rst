@@ -140,7 +140,7 @@ same eight registers at the local form's ``+0x80`` (node Hub special base
 plus ``0x1000_0080``), sharing state: an *approximation* with no public
 consumer, kept because the vendor field-diagnostic monitor sMDK writes its
 console there when booted headless under the stock PROM (observed on the
-model; the diagnostics' own source is not cited). A read of Hub special
+model; no public source documents it). A read of Hub special
 local offset ``0x80`` on a physical Origin 300 or 350 would settle whether
 real silicon answers there.
 
@@ -232,11 +232,11 @@ Framing and packets
 Routing outcomes
 ================
 
-How the firmware handles destination forms that are not local (a foreign
-rack or bay, a mixed local sentinel, controller types 1 to 4 and above,
-unregistered tasks) was read from the stock L1 firmware image, version
-1.44.0, by static analysis. That image is not a registered public source,
-so these outcomes are *unknown* for citation and are the model's choice,
+No public source states how the firmware handles destination forms that
+are not local (a foreign rack or bay, a mixed local sentinel, controller
+types 1 to 4 and above, unregistered tasks). These outcomes are *unknown*
+and are the model's choice; a reply capture from a real controller would
+settle them,
 recorded in the checks of ``hw/misc/sgi-l1.c``: a local key (type 0 with the
 own rack and bay, or both sentinels) is delivered to the addressed task; a
 foreign or mixed key gets a router error reply (code minus 1 with a

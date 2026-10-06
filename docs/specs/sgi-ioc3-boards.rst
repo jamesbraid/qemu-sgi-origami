@@ -50,12 +50,15 @@ sets which, read from the shipped kernel by disassembly, are:
    :widths: 30 18 52
 
    * - Board (prefix)
-     - IRIX word
-     - Linux and OpenBSD population (established, the public sources)
-   * - IP29 system board (``030-1025-``, ``-1244-``, ``-1291-``,
-       ``-1308-``, ``-1389-``)
+     - IRIX 6.5.30 kernel word (observed in the shipped binary)
+     - Linux and OpenBSD population (public sources)
+   * - IP29 system board (``030-1025-``, ``-1244-``, ``-1389-``)
      - ``0xff``
      - Linux ``bridge_setup_ip29_baseio`` (sets Bridge pin 3 for line B).
+   * - IP29 system board (``030-1291-``, ``-1308-``)
+     - ``0xff``
+     - No public source names these prefixes; the kernel observation is
+       the only basis.
    * - BaseIO IO6 (``030-1023-``, ``-1124-``)
      - ``0xb7``
      - Linux ``bridge_setup_ip27_baseio``, line B to pin 4: Ethernet,

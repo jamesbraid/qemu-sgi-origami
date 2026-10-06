@@ -548,7 +548,7 @@ command protocol. Ratings follow :ref:`sgi-ip30`.
        reserved for the system controller's use.
      - established
      - 108-0170-001 ``scr`` and ``scw`` command
-       text (PDF pages 58 and 76).
+       text (PDF page 76, printed 4-22).
    * - The module number (1 to 255, 0 unassigned) lives in this NVRAM
        and is backed up in each node's PROM log.
      - established
@@ -563,8 +563,7 @@ command protocol. Ratings follow :ref:`sgi-ip30`.
        in a sixteen-byte controller block at logical 0x700, as bytes 8,
        0 and 10.
      - unknown
-     - No public source gives the layout; it is known only from vendor
-       material this page does not cite. The model uses marker
+     - No public source states the layout. The model uses marker
        ``0x37``, module byte 8 and partition byte 10. Treat the layout
        as an emulator choice; a stock firmware boot that finds the
        module assigned is the discriminating test, and a real

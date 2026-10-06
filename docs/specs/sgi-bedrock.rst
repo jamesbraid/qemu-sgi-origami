@@ -27,12 +27,8 @@ no reset values** for the processor interface, network interface or I/O
 interface and only two software constants for the crossbar parameters
 register (``hubxb_next.h`` lines 29-30, used by no consumer), so every reset
 value is *unknown* as hardware and an emulator choice (zero unless stated)
-in the model. A register capture of a real Bedrock would settle them. The
-Bedrock's silicon revision is likewise unknown: IRIX inventories print
-"Bedrock revision 2" (Fuel) and "HUB revision 2" (a revision G Fuel board)
-as software labels, not register reads
-(``web:sgi-sh-fuel-repair-attempt``, ``web:tingo-fuel-irix-console`` lines
-132-145).
+in the model. A register capture of a real Bedrock would settle them.
+The silicon revision is likewise unknown (see :ref:`sgi-bedrock-lb`).
 
 .. _sgi-bedrock-pi:
 
@@ -134,6 +130,11 @@ Three are on the boot path:
   own node number and writes the node number and region size with one
   64-bit store of the whole word (measured from the stock image,
   ``firmware:ip35-prom-6.210``).
+  The silicon revision in bits 31:28 is unknown: IRIX inventories print
+  "Bedrock revision 2" (Fuel) and "HUB revision 2" (a revision G Fuel
+  board) as software labels, not register reads
+  (``web:sgi-sh-fuel-repair-attempt``, ``web:tingo-fuel-irix-console`` lines
+  132-145).
 - scratch register 2 at ``0x608010``, the reboot request mailbox OpenBSD
   writes (:ref:`sgi-ip35-address-map-handoff`);
 - scratch register 3's read-set-if-zero alias, which the Itanium port uses
@@ -155,7 +156,7 @@ The network interface is the NUMAlink 3 port (108-0240-002 printed page
 2-14). On a one-chassis Origin 300 it is cabled to nothing: the port status
 reads no link and M mode, and it carries the node reset. Two chassis
 joined by a NUMAlink 3 cable are a shipping configuration ("A single
-system image of 4, 6, or 8 processors is available by interconnecting two
+system image (SSI) of 4, 6, or 8 processors is available by interconnecting two
 SGI Origin 300 servers via a NUMAlink 3 cable", 007-4365-002 printed page
 1; the rear LINK connector takes the cable at 1.6 GB/s each way, page 8;
 the operator sets the slave's system id above the master's and cables
@@ -178,7 +179,8 @@ I/O interface
 
 The I/O interface is the Bedrock's crosstalk port: it translates a device's
 DMA request into the crossbar's format, forwards it to memory, and holds
-the two block-transfer engines (108-0240-002 printed page 2-16). The header
+the two block-transfer engines (``IIO_BASE_BTE0`` and ``IIO_BASE_BTE1``,
+``hubio_next.h`` lines 78-79). The header
 defines 135 registers (``hubio.h``). The inspected public MIPS consumers
 use three: the seven translation entries (``0x400160`` to ``0x400190``,
 :ref:`sgi-ip35-address-map-io`); the link control and status register at
