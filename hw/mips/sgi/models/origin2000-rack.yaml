@@ -2,8 +2,8 @@
 # The Origin 2000 rack module: the eight-processor module with its two
 # Standard Routers, one to four node boards (nodes=, four by default), the
 # BaseIO in IO1 and every other XIO slot empty. A shipped Origin 2000 has no
-# graphics. Launch it with tools/origami run irix --machine origin2000
-# (QEMU: -M origin2000, whose default topology this is).
+# graphics. Launch it with
+# QEMU: -M origin2000, whose default topology this is.
 configuration_version: 1
 layers:
 - layers/architectures/sn0.yaml

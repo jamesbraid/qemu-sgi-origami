@@ -2,8 +2,7 @@
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
 # IO1 (Crossbow widget F) and one InfiniteReality pipe on XIO4 (widget 8)
 # with no Ktown (docs/specs/sgi-onyx2.rst, Deskside). Launch it with
-# tools/origami run irix --machine onyx2 --topology onyx2-deskside
-# (QEMU: -M onyx2,topology=onyx2-deskside).
+# QEMU: -M onyx2,topology=onyx2-deskside.
 #
 # Each node board's physical_slot carries the Hub slot bits this midplane
 # drives: 3 in node slot 1 and 2 in node slot 2, which firmware and IRIX

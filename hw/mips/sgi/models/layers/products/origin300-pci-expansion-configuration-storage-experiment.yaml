@@ -74,7 +74,7 @@ layer:
         # compares the block with the CPU-configuration table row its PIMM
         # speed code selects; Origin 300's 0x8000-branch rows carry machine
         # type 1 (SN10) and the 500 MHz, 2 MiB row's mode word is
-        # 0x549aa985 (Origami docs/research/origin300-flash-cpu-identity.md).
+        # 0x549aa985.
         ip35_firmware:
           machine_type: 1
           cpu_mode_word: 0x549aa985

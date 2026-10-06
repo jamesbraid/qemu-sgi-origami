@@ -12,8 +12,7 @@ layer:
     dimm_slots_per_node: 4
     memory_banks_per_node: 8
     # One locational bank per fitted DIMM: the reviewed placement maps the
-    # guide's two populated DIMM slots straight onto two locational banks
-    # (docs/reviews/bedrock-fitted-bank-presence-contract-review-20260912.md),
+    # guide's two populated DIMM slots straight onto two locational banks,
     # not the paired two-DIMMs-per-bank rule the Hub family's IP27/IP29
     # boards use.
     dimms_per_bank: 1

@@ -5,9 +5,7 @@
 # That it is the product SGI's kernels call the PCI "shoebox" is an
 # inference, not a naming fact the manual states: see
 # qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-carrier. A composition fits it into the IO2
-# connector the way it fits the shoehorn (docs/designs/
-# 2026-09-05-origin2000-generated-descriptor.md, "A fitted board in an
-# occupied connector"). The slots are empty; a user fits cards with -device.
+# connector the way it fits the shoehorn. The slots are empty; a user fits cards with -device.
 layer_version: 1
 layer:
   kind: module
