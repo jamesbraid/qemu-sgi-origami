@@ -13,12 +13,9 @@ hw/mips/sgi/models/references.yaml or this tree:
     firmware:<key> <locator>           firmware:ip27-prom-6.156 string "..."
     qemu:<path>[#label]                qemu:docs/specs/sgi-ip27.rst#label
 
-The check runs in report mode. It fails only on a citation that uses one
-of those forms wrongly: a malformed id, or one the registry or the tree
-does not hold. Everything else a public reader could not follow is
-reported by class and counted, so the counts can fall commit by commit
-until the check can fail on them too. Firmware citations are reported for
-the record and never fail.
+The check fails on every class of finding except two informational ones:
+a citation of a stock firmware image, and of a source a reader can obtain
+but may not redistribute. Both are listed for the record.
 
     python3 scripts/sgi_model/citations.py [--list CLASS]
 """
@@ -40,10 +37,10 @@ MODELS = ROOT / "hw/mips/sgi/models"
 REGISTRY = "references.yaml"
 REGISTRY_SCHEMA = "references.schema.json"
 
-FAILING = ("malformed", "unregistered")
-
-# What each reported class means, in the order the summary prints them.
-REPORTED = {
+# Findings that fail the check, in the order the summary prints them.
+FAILING = {
+    "malformed": "citation does not parse as one of the forms above",
+    "unregistered": "id the registry or this tree does not hold",
     "origami-path": "names a document outside this tree",
     "decision-id": "names a decision record",
     "tool-path": "names a tools/ program",
@@ -56,7 +53,11 @@ REPORTED = {
     "missing-locator": "registered id with no locator",
     "unpinned-commit": "source-tree path with no commit",
     "unknown-tree": "commit in a tree with no known public location",
-    "internal-note": "notes or open-question text with an internal pointer",
+    "internal-note": "notes, open questions or comments with an internal pointer",
+}
+
+# Findings listed for the record that never fail the check.
+INFORMATIONAL = {
     "firmware": "cites a stock firmware image",
     "obtain-only": "cites a source with no redistribution grant",
 }
@@ -127,10 +128,10 @@ class Report:
         lines = [f"citations: {self.entries} entries on {self.facts} facts "
                  f"in {self.files} files"]
         lines.append("failing:")
-        for cls in FAILING:
-            lines.append(f"  {self.count(cls):5d}  {cls}")
-        lines.append("reported:")
-        for cls, meaning in REPORTED.items():
+        for cls, meaning in FAILING.items():
+            lines.append(f"  {self.count(cls):5d}  {cls}: {meaning}")
+        lines.append("informational:")
+        for cls, meaning in INFORMATIONAL.items():
             lines.append(f"  {self.count(cls):5d}  {cls}: {meaning}")
         return "\n".join(lines)
 
