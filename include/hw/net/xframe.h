@@ -296,7 +296,6 @@ struct XframeState {
     /* The netdev frontend. */
     NICConf conf;
     NICState *nic;
-    AddressSpace *payload_as;   /* immutable, borrowed payload DMA route */
     /* Host-side transmit offload helper; neither field is migrated. */
     struct NetTxPkt *tx_pkt;
     bool has_vnet_hdr;
