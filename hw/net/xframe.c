@@ -33,7 +33,7 @@
 #include "hw/net/xframe.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
-#include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci/pci-64bit.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
@@ -1749,6 +1749,8 @@ static void xframe_stat_timer_cb(void *opaque)
  */
 #define XFRAME_SWAPPER_CTRL_TXD_R_SE  (1ULL << 44)
 #define XFRAME_SWAPPER_CTRL_RXD_R_SE  (1ULL << 30)
+#define XFRAME_SWAPPER_CTRL_TXF_R_SE  (1ULL << 40)     /* s2BIT(23) */
+#define XFRAME_SWAPPER_CTRL_RXF_W_SE  (1ULL << 26)     /* s2BIT(37) */
 
 /*
  * Decode/encode one descriptor control word in the byte order SWAPPER_CTRL
@@ -1914,27 +1916,87 @@ static void xframe_tx_pkt_release(void *context, void *base, size_t len)
 }
 
 /*
- * Frame payload is a byte stream, so the model copies it verbatim (see the
- * descriptor byte-order note above). The slot's own DMA route may byte-lane
- * correct, which is right for descriptors: the card reads those as word
- * values, and wrong for a verbatim copy: it would reverse each aligned
- * 32-bit group, and cost one dispatch per word doing it. Payload therefore
- * takes the Bridge's plain route, the same decode and node-qualified fabric
- * routing with the byte lanes alone skipped, so its order no longer depends
- * on what a guest programs into the Bridge's Device register. Descriptors,
- * completions and the statistics block stay on ordered pci_dma_*, which is
- * the publication boundary. A machine with no Bridge is already plain.
+ * Frame payload goes over the bus as a byte stream unless the frame path's
+ * swap-enable bit is set. Public drivers set the frame paths' flip-enable
+ * bits on every host and their swap-enable bits on none (Linux s2io_set_swapper
+ * leaves TXF_R_SE and RXF_W_SE clear on both byte orders, where it sets the
+ * descriptor paths' swap-enable bits on a little-endian host), and the
+ * descriptor paths read big-endian while their swap-enable bit is clear.
+ * The model carries that over: a set swap-enable bit on a frame path reverses
+ * the bytes of each aligned 64-bit word as they cross the bus, the same
+ * reading the descriptor paths take, and the flip-enable bits are not
+ * modelled. This is an approximation: no Xframe reference is held, so what
+ * either bit does to frame data is not established.
+ *
+ * Like the descriptors it goes through pci_dma_*; what the host bridge does
+ * to the bytes is the bridge's business. A transfer's lane in the 64-bit word
+ * is its bus address modulo 8. A write touches only the lanes it covers.
  */
+static MemTxResult xframe_frame_xfer(XframeState *s, uint64_t addr,
+                                     uint8_t *buf, size_t len, bool is_write,
+                                     bool swap)
+{
+    PCIDevice *pdev = PCI_DEVICE(s);
+    size_t i = 0, j;
+    MemTxResult res;
+
+    if (!swap) {
+        return is_write ? pci_dma_write(pdev, addr, buf, len)
+                        : pci_dma_read(pdev, addr, buf, len);
+    }
+
+    if (!is_write) {
+        uint64_t astart = addr & ~(uint64_t)7;
+        size_t lead = addr - astart;
+        size_t span = (lead + len + 7) & ~(size_t)7;
+        g_autofree uint8_t *tmp = g_malloc(span);
+
+        res = pci_dma_read(pdev, astart, tmp, span);
+        if (res == MEMTX_OK) {
+            for (j = 0; j < len; j++) {
+                buf[j] = tmp[(lead + j) ^ 7];
+            }
+        }
+        return res;
+    }
+
+    while (i < len) {
+        uint64_t a = addr + i;
+
+        if ((a & 7) == 0 && len - i >= 8) {
+            size_t run = (len - i) & ~(size_t)7;
+            g_autofree uint8_t *tmp = g_malloc(run);
+
+            for (j = 0; j < run; j++) {
+                tmp[j ^ 7] = buf[i + j];
+            }
+            res = pci_dma_write(pdev, a, tmp, run);
+            i += run;
+        } else {
+            uint8_t b = buf[i];
+
+            res = pci_dma_write(pdev, a ^ 7, &b, 1);
+            i++;
+        }
+        if (res != MEMTX_OK) {
+            return res;
+        }
+    }
+    return MEMTX_OK;
+}
+
 static MemTxResult xframe_dma_read_frame(XframeState *s, uint64_t addr,
                                          uint8_t *dst, size_t len)
 {
-    return dma_memory_read_relaxed(s->payload_as, addr, dst, len);
+    return xframe_frame_xfer(s, addr, dst, len, false,
+                             s->swapper_ctrl & XFRAME_SWAPPER_CTRL_TXF_R_SE);
 }
 
 static MemTxResult xframe_dma_write_frame(XframeState *s, uint64_t addr,
                                           const uint8_t *src, size_t len)
 {
-    return dma_memory_write_relaxed(s->payload_as, addr, src, len);
+    return xframe_frame_xfer(s, addr, (uint8_t *)src, len, true,
+                             s->swapper_ctrl & XFRAME_SWAPPER_CTRL_RXF_W_SE);
 }
 
 static bool xframe_tx_offload(XframeState *s, size_t frame_len, uint16_t mss)
@@ -3160,7 +3222,6 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     XframeState *s = XFRAME(dev);
     DeviceState *d = DEVICE(dev);
     NetClientState *nc;
-    AddressSpace *plain;
     unsigned i;
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -3228,9 +3289,6 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_64,
                      &s->pif_mmio);
     pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->txp_mmio);
-
-    plain = sgi_bridge_plain_dma_as(dev);
-    s->payload_as = plain ? plain : pci_get_address_space(dev);
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&xframe_net_info, &s->conf,
@@ -3523,6 +3581,8 @@ static const TypeInfo xframe_types[] = {
         .class_init = xframe_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            /* A 64-bit PCI and PCI-X card (xframe.md, bus attach). */
+            { INTERFACE_PCI_64BIT_DEVICE },
             { },
         },
     },

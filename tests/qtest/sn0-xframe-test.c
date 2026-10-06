@@ -10,10 +10,13 @@
 /*
  * xframe-test.c covers native little-endian PC cycles without a host Bridge.
  * Here a free PCI slot exercises Bridge correction over Xframe's native
- * little-endian MMIO and DMA. The NIC slot leaves DEV swap bits clear;
- * DEV_64BIT_DEVICE makes each 64-bit register access one eight-byte cycle,
- * composing to identity after the Bridge's 64-bit-device fix. Descriptors
- * use byte-lane correction; payload bytes use plain DMA.
+ * little-endian MMIO and DMA. The NIC slot leaves DEV swap bits clear unless
+ * a test sets them; DEV_64BIT_DEVICE makes each 64-bit register access one
+ * eight-byte cycle, composing to identity after the Bridge's 64-bit-device
+ * fix. All DMA, descriptors and payload, goes through the card's bus-master
+ * address space and takes the slot's placement; the placement matrix at the
+ * end sets the card's own frame-path swap controls against each Bridge swap
+ * setting and slot width.
  */
 #include <netinet/in.h>
 #include "sgi-test.h"
@@ -41,13 +44,22 @@
  * corrects by slot, so any free slot would do, and a non-exempt one is what
  * puts the byte-lane path in front of the device's DMA.
  */
-#define XFRAME_SLOT             3
+#define XFRAME_NARROW_SLOT      3
 #define XFRAME_IRQ_SLOT         4
+/*
+ * Option slot 5 is wired to the 64-bit data path; device 3 is not. The
+ * Xframe is a 64-bit agent, so it runs 64-bit data phases only in slot 5.
+ */
+#define XFRAME_WIDE_SLOT        5
+static int xframe_slot = XFRAME_NARROW_SLOT;
+#define XFRAME_SLOT             xframe_slot
 
 /* The per-slot device register: 32 bits in the low half of an 8-byte slot. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
 #define DEV_SWAP_PROGRAMMED     (1u << 13)   /* programmed register swap */
 #define DEV_64BIT_DEVICE        (1u << 22)   /* doubleword in one cycle */
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define DEV_SWAP_TRANSLATED     (1u << 20)
 
 /* Type 0 configuration space: eight devices 4 KB apart. */
 #define BRIDGE_CFG0             0x020000
@@ -61,9 +73,12 @@
 /*
  * The slot's window sits at a fixed widget offset the Bridge derives from the
  * slot number (2 MB for the first two slots, 1 MB thereafter, laid end to
- * end): slot 3 is the fourth window, 0x200000 + 2 * 2 MB + 1 MB.
+ * end): slot 3 is the fourth window, 0x200000 + 2 * 2 MB + 1 MB, and
+ * slot 5 the sixth, at 0x900000.
  */
-#define WINDOW_SLOT3            (BRIDGE_BASE + 0x700000)
+#define WINDOW_XFRAME           (BRIDGE_BASE + \
+                                 (xframe_slot == XFRAME_WIDE_SLOT ? \
+                                  0x900000 : 0x700000))
 #define WINDOW_SLOT4            (BRIDGE_BASE + 0x800000)
 
 /* Bridge pin 4 routes the slot-4 INTA level to Hub interrupt 14. */
@@ -271,36 +286,36 @@ static uint64_t ldq_be_buf(const uint8_t *b)
 }
 
 /*
- * Reverse each aligned 32-bit word: the correction the Bridge's byte-lane DMA
- * path needs for this non-exempt slot with its swap bits clear. A device that
- * DMA-reads a byte buffer in its own little-endian order sees the canonical
- * bytes back once the guest has laid them out word-reversed, and a byte
- * buffer the device DMA-writes reads back canonical once reversed again.
- * the same transform in both directions (sn0-qlogic-isp-test.c's
- * normalise_words). The length is a multiple of four here, so every chunk is
- * one aligned word.
+ * The unit the Bridge reverses within: 4 for a swap-clear slot on 32-bit data
+ * phases, the default; 8 on 64-bit phases; 1 for a swap-set slot, which
+ * places bytes as they are. The card puts bytes on the bus in order, so a
+ * buffer the guest lays out under this unit is what the card reads, and a
+ * buffer the card writes reads back canonical once reversed again
+ * (sn0-qlogic-isp-test.c's normalise_words). Lengths and addresses here are
+ * multiples of the unit.
  */
+static size_t placement_unit = 4;
+static uint32_t slot_swap_bits;
+
 static void normalise_words(uint8_t *buf, size_t len)
 {
-    size_t i;
+    size_t i, j;
 
-    for (i = 0; i + 4 <= len; i += 4) {
-        uint8_t t = buf[i];
+    for (i = 0; i + placement_unit <= len; i += placement_unit) {
+        for (j = 0; j < placement_unit / 2; j++) {
+            uint8_t t = buf[i + j];
 
-        buf[i] = buf[i + 3];
-        buf[i + 3] = t;
-        t = buf[i + 1];
-        buf[i + 1] = buf[i + 2];
-        buf[i + 2] = t;
+            buf[i + j] = buf[i + placement_unit - 1 - j];
+            buf[i + placement_unit - 1 - j] = t;
+        }
     }
 }
 
 /*
- * Descriptor memory as the device sees it: write canonical bytes
- * word-reversed so a device DMA-read recovers them, and read a device
- * DMA-write back word-reversed to recover the canonical bytes it wrote.
- * Packet payload does not use these helpers; it is copied byte-for-byte
- * through plain DMA.
+ * Guest memory as the device sees it: write canonical bytes placed by the
+ * slot so a device DMA-read recovers them, and read a device DMA-write back
+ * placed again to recover the canonical bytes it wrote. Descriptors and, with
+ * the frame-path swap-enable bits clear, payload both use these helpers.
  */
 static void dma_write_canonical(QTestState *qts, uint64_t phys,
                                 const uint8_t *buf, size_t len)
@@ -329,12 +344,12 @@ static void dma_read_canonical(QTestState *qts, uint64_t phys, uint8_t *buf,
  */
 static void win_writeq(QTestState *qts, uint64_t off, uint64_t val)
 {
-    qtest_writeq(qts, WINDOW_SLOT3 + off, val);
+    qtest_writeq(qts, WINDOW_XFRAME + off, val);
 }
 
 static uint64_t win_readq(QTestState *qts, uint64_t off)
 {
-    return qtest_readq(qts, WINDOW_SLOT3 + off);
+    return qtest_readq(qts, WINDOW_XFRAME + off);
 }
 
 /*
@@ -345,7 +360,7 @@ static uint64_t win_readq(QTestState *qts, uint64_t off)
  */
 static uint32_t win_readl(QTestState *qts, uint64_t off)
 {
-    return qtest_readl(qts, WINDOW_SLOT3 + off);
+    return qtest_readl(qts, WINDOW_XFRAME + off);
 }
 
 static void irq_win_writel(QTestState *qts, uint64_t off, uint32_t val)
@@ -364,7 +379,8 @@ static uint32_t irq_win_readl(QTestState *qts, uint64_t off)
 static void aim_window(QTestState *qts, uint32_t pci_base)
 {
     qtest_writel(qts, BRIDGE_DEVICE(XFRAME_SLOT),
-                 DEV_64BIT_DEVICE | DEV_MEMORY_SPACE | (pci_base >> 20));
+                 DEV_64BIT_DEVICE | DEV_MEMORY_SPACE | (pci_base >> 20) |
+                 slot_swap_bits);
 }
 
 /*
@@ -507,14 +523,16 @@ static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 }
 
 /*
- * Payload bytes use plain Bridge DMA; descriptors retain byte-lane correction
- * with DEV_SWAP clear. The word placement takes one callback per doubleword,
- * so the 32-byte descriptor read costs four and any payload read through it
- * would add more. Count callbacks and compare raw bytes. Logs use the build
- * directory: shared /tmp is a small tmpfs where short writes cause unrelated
- * failures; Tigon and BCM570x use g_file_open_tmp.
+ * Payload goes through the card's own bus-master DMA like the descriptors, so
+ * the slot's word placement applies to both: with the frame-path swap-enable
+ * bits clear the card puts the frame on the bus in order and memory holds it
+ * word-reversed. The placement takes one callback per doubleword, the 32-byte
+ * descriptor read costing four and the 64-byte frame eight; no transfer takes
+ * a route that skips the Bridge. Logs use the build directory: shared /tmp is
+ * a small tmpfs where short writes cause unrelated failures; Tigon and BCM570x
+ * use g_file_open_tmp.
  */
-static void test_transmit_payload_skips_lane_swap(const void *data)
+static void test_transmit_payload_follows_placement(const void *data)
 {
     int host_fd;
     QTestState *qts;
@@ -546,7 +564,7 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
         frame[i] = (uint8_t)(0x80 + i);
     }
 
-    qtest_memwrite(qts, TX_BUF_PHYS, frame, sizeof(frame));
+    dma_write_canonical(qts, TX_BUF_PHYS, frame, sizeof(frame));
 
     /* One card-owned first-and-last segment; length in control1 bits 15:0. */
     memset(desc, 0, sizeof(desc));
@@ -576,8 +594,8 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
     lane_reads = count_log_matches(log, "sgi-bridge.placement.word read");
     g_test_message("word placement reads: %u total, %u descriptor",
                    lane_reads, (unsigned)sizeof(desc) / 8);
-    g_assert_cmpuint(lane_reads, ==, sizeof(desc) / 8);
-    g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), >, 0);
+    g_assert_cmpuint(lane_reads, ==, (sizeof(desc) + sizeof(frame)) / 8);
+    g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), ==, 0);
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     g_assert_cmphex(control1 & TXD_OWN, ==, 0);
@@ -597,11 +615,10 @@ static void wait_rx_traffic(QTestState *qts)
 }
 
 /*
- * Receive payload is also a byte stream, but the descriptor and its
- * completion remain word values. Verify the payload without normalization and
- * decode the completion through the lane-corrected descriptor helper.
+ * Receive payload is placed by the slot like the descriptor and its
+ * completion: read it back through the same helper.
  */
-static void test_receive_payload_skips_lane_swap(const void *data)
+static void test_receive_payload_follows_placement(const void *data)
 {
     int host_fd;
     QTestState *qts = boot_with_socket(&host_fd);
@@ -635,7 +652,7 @@ static void test_receive_payload_skips_lane_swap(const void *data)
     net_socket_send_frame(host_fd, frame, sizeof(frame));
     wait_rx_traffic(qts);
 
-    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    dma_read_canonical(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
 
     /* control1: ownership handed back, status code OK. */
@@ -671,14 +688,19 @@ static uint16_t inet_checksum(const uint8_t *p, size_t len)
     return ~sum;
 }
 
-/* Compare a device-written payload buffer, which lands byte-for-byte. */
+/*
+ * Compare a device-written payload buffer once placed back. A buffer that is
+ * not a whole number of units reads back through the covering units; the
+ * bytes the card did not write are zero.
+ */
 static void assert_dma_landed(QTestState *qts, uint64_t phys,
                               const uint8_t *want, size_t len)
 {
     uint8_t got[128];
+    size_t span = (len + placement_unit - 1) & ~(placement_unit - 1);
 
-    g_assert_cmpuint(len, <=, sizeof(got));
-    qtest_memread(qts, phys, got, len);
+    g_assert_cmpuint(span, <=, sizeof(got));
+    dma_read_canonical(qts, phys, got, span);
     g_assert_cmpmem(got, len, want, len);
 }
 
@@ -811,11 +833,11 @@ static size_t build_tso_frame(uint8_t *frame, size_t payload_len)
 
 /*
  * TSO reads the same packet buffer as ordinary transmit before splitting it.
- * Make that common route observable with a two-segment payload: raw guest
- * bytes must survive into both emitted segment payloads while descriptor
- * ownership still returns through the corrected route.
+ * Make that common route observable with a two-segment payload: the guest's
+ * placed bytes must survive into both emitted segment payloads while
+ * descriptor ownership still returns through the same placement.
  */
-static void test_transmit_tso_payload_skips_lane_swap(const void *data)
+static void test_transmit_tso_payload_follows_placement(const void *data)
 {
     const size_t mss = 32;
     const size_t payload_len = 50;
@@ -834,7 +856,7 @@ static void test_transmit_tso_payload_skips_lane_swap(const void *data)
     bring_up(qts, TXP_BAR_PCI, true);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
     frame_len = build_tso_frame(frame, payload_len);
-    qtest_memwrite(qts, TX_BUF_PHYS, frame, frame_len);
+    dma_write_canonical(qts, TX_BUF_PHYS, frame, frame_len);
 
     memset(desc, 0, sizeof(desc));
     stq_be_buf(desc, (uint64_t)frame_len | TXD_OWN | TXD_GCF | TXD_GCL |
@@ -984,6 +1006,156 @@ static void test_combined_interrupts(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The card's own frame-path swap controls against every Bridge placement.
+ *
+ * The frame paths' swap-enable bits (SWAPPER_CTRL TXF_R_SE and RXF_W_SE, from
+ * the public s2io register names) reverse the bytes of each aligned 64-bit
+ * word as they cross the bus when set, and leave a byte stream when clear:
+ * the model's reading, an approximation since no card reference is held. The
+ * Bridge then places each bus byte: identity in a swap-set slot, p ^ 3 in a
+ * swap-clear 32-bit slot, p ^ 7 in a swap-clear 64-bit slot. A frame byte at
+ * address a therefore sits in memory at (a & ~7) + ((a & 7) ^ t ^ u), where
+ * t is 7 with the swap-enable bit set and 0 clear and u is the Bridge's
+ * unit. The expected bytes are built from that rule, and the frame goes at an
+ * unaligned address with an odd length against a sentinel, so a byte the card
+ * lost or put at a neighbour's place both show. Descriptors keep their
+ * default byte-stream order and are placed by the slot's unit.
+ */
+#define SWAPPER_CTRL            0x0908
+#define SWAPPER_TXF_R_SE        (1ULL << 40)
+#define SWAPPER_RXF_W_SE        (1ULL << 26)
+#define PLACE_FRAME_LEN         61
+#define PLACE_FRAME_OFFSET      3
+#define PLACE_SENTINEL          0xee
+
+static QTestState *boot_placement(int *host_fd, bool swap_set, bool wide)
+{
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 5);
+    *host_fd = sv[0];
+    placement_unit = swap_set ? 1 : wide ? 8 : 4;
+    slot_swap_bits = swap_set ? DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED : 0;
+
+    xframe_slot = wide ? XFRAME_WIDE_SLOT : XFRAME_NARROW_SLOT;
+    qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
+                      "-device xframe,addr=%d,netdev=n0,mac=%s",
+                      MACHINE_WITH_BRIDGE, sv[1], XFRAME_SLOT, TEST_MAC);
+    return qts;
+}
+
+static void place_frame_expected(uint8_t *want, size_t want_len,
+                                 const uint8_t *frame, uint64_t base,
+                                 uint64_t addr, unsigned int t)
+{
+    unsigned int u = placement_unit == 1 ? 0 : placement_unit == 4 ? 3 : 7;
+    unsigned int i;
+
+    memset(want, PLACE_SENTINEL, want_len);
+    for (i = 0; i < PLACE_FRAME_LEN; i++) {
+        uint64_t a = addr + i;
+
+        want[(a & ~7ULL) + ((a & 7) ^ t ^ u) - base] = frame[i];
+    }
+}
+
+static void run_placement_tx(bool swap_set, bool wide, bool se)
+{
+    uint64_t addr = TX_BUF_PHYS + PLACE_FRAME_OFFSET;
+    uint64_t base = TX_BUF_PHYS - 8;
+    uint8_t frame[PLACE_FRAME_LEN], want[128], desc[32], got[128];
+    unsigned int i;
+    int host_fd;
+    QTestState *qts = boot_placement(&host_fd, swap_set, wide);
+    size_t len;
+
+    bring_up(qts, PIF_BAR_PCI, true);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+    win_writeq(qts, SWAPPER_CTRL, se ? SWAPPER_TXF_R_SE : 0);
+    aim_window(qts, TXP_BAR_PCI);
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    place_frame_expected(want, sizeof(want), frame, base, addr, se ? 7 : 0);
+    qtest_memwrite(qts, base, want, sizeof(want));
+
+    memset(desc, 0, sizeof(desc));
+    stq_be_buf(desc + 0, (uint64_t)PLACE_FRAME_LEN | TXD_OWN | TXD_GCF |
+                         TXD_GCL);
+    stq_be_buf(desc + 16, TX_BUF_IOVA + PLACE_FRAME_OFFSET);
+    dma_write_canonical(qts, DESC_PHYS, desc, sizeof(desc));
+    win_writeq(qts, TXP_TXDL_PAR, DESC_IOVA);
+    win_writeq(qts, TXP_TXDL_LCR,
+               TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+
+    len = net_socket_recv_frame(host_fd, got, sizeof(got));
+    g_test_message("tx swap=%u wide=%u se=%u", swap_set, wide, se);
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
+static void run_placement_rx(bool swap_set, bool wide, bool se)
+{
+    uint64_t addr = RX_BUF_PHYS + PLACE_FRAME_OFFSET;
+    uint64_t base = RX_BUF_PHYS - 8;
+    uint8_t frame[PLACE_FRAME_LEN], want[128], got[128], rxd[32];
+    int host_fd;
+    QTestState *qts = boot_placement(&host_fd, swap_set, wide);
+    unsigned int i;
+
+    bring_up(qts, PIF_BAR_PCI, true);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+    win_writeq(qts, SWAPPER_CTRL, se ? SWAPPER_RXF_W_SE : 0);
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame, station_mac, sizeof(station_mac));
+    place_frame_expected(want, sizeof(want), frame, base, addr, se ? 7 : 0);
+    memset(got, PLACE_SENTINEL, sizeof(got));
+    qtest_memwrite(qts, base, got, sizeof(got));
+
+    memset(rxd, 0, sizeof(rxd));
+    stq_be_buf(rxd + 8, RXD_OWN);
+    stq_be_buf(rxd + 16, (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
+    stq_be_buf(rxd + 24, RX_BUF_IOVA + PLACE_FRAME_OFFSET);
+    dma_write_canonical(qts, DESC_PHYS, rxd, sizeof(rxd));
+    win_writeq(qts, PRC_RXD0_0, DESC_IOVA);
+    win_writeq(qts, PRC_CTRL_0, RC_IN_SVC);
+
+    net_socket_send_frame(host_fd, frame, sizeof(frame));
+    wait_rx_traffic(qts);
+
+    g_test_message("rx swap=%u wide=%u se=%u", swap_set, wide, se);
+    qtest_memread(qts, base, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
+static void test_dma_placement_matrix(const void *data)
+{
+    unsigned int c;
+
+    for (c = 0; c < 8; c++) {
+        bool swap_set = c & 1, wide = c & 2, se = c & 4;
+
+        run_placement_tx(swap_set, wide, se);
+        run_placement_rx(swap_set, wide, se);
+    }
+    placement_unit = 4;
+    slot_swap_bits = 0;
+    xframe_slot = XFRAME_NARROW_SLOT;
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -996,14 +1168,16 @@ int main(int argc, char **argv)
                         NULL, test_swapper_magic_composes_through_the_bridge);
     qtest_add_data_func("sn0/xframe/swapper-magic-composes-via-32bit-cycles",
                         NULL, test_swapper_magic_composes_via_32bit_cycles);
-    qtest_add_data_func("sn0/xframe/transmit-payload-skips-lane-swap",
-                        NULL, test_transmit_payload_skips_lane_swap);
-    qtest_add_data_func("sn0/xframe/receive-payload-skips-lane-swap",
-                        NULL, test_receive_payload_skips_lane_swap);
+    qtest_add_data_func("sn0/xframe/dma-placement-matrix", NULL,
+                        test_dma_placement_matrix);
+    qtest_add_data_func("sn0/xframe/transmit-payload-follows-placement",
+                        NULL, test_transmit_payload_follows_placement);
+    qtest_add_data_func("sn0/xframe/receive-payload-follows-placement",
+                        NULL, test_receive_payload_follows_placement);
     qtest_add_data_func("sn0/xframe/five-buffer-receive-splits-icmp-ip-header",
                         NULL, test_five_buffer_receive_splits_icmp_ip_header);
-    qtest_add_data_func("sn0/xframe/transmit-tso-payload-skips-lane-swap",
-                        NULL, test_transmit_tso_payload_skips_lane_swap);
+    qtest_add_data_func("sn0/xframe/transmit-tso-payload-follows-placement",
+                        NULL, test_transmit_tso_payload_follows_placement);
     qtest_add_data_func("sn0/xframe/combined-interrupts-"
                         "compose-through-the-bridge",
                         NULL, test_combined_interrupts);
