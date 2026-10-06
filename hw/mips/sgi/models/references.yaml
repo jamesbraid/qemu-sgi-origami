@@ -638,6 +638,60 @@ web:
     obtain:
       url: null
       message_id: "<3EDC9A71.CE2535AA@delm.tas.gov.au>"
+  nekonomicon-17194:
+    title: "Nekochan forum archive thread 17194, a BaseIO-G Origin 2000 hinv"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/3/17194/1.html
+      sha256: db42979ebd26ff8308dbf54cdec6039eb44c8f847d520e3cb907c119c2455ec2
+  usenet-9uhh6o:
+    title: "comp.sys.sgi.hardware, 2001-12-04, Message-ID <9uhh6o$j75@dispatch.concentric.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<9uhh6o$j75@dispatch.concentric.net>"
+  usenet-7psh8j:
+    title: "comp.sys.sgi.admin, 1999-08-23, firmware level on fiber channel cards, Message-ID <7psh8j$pos$1@nnrp1.deja.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<7psh8j$pos$1@nnrp1.deja.com>"
+  usenet-40c20497:
+    title: "comp.sys.sgi.hardware, 2004-06-05, Message-ID <40C20497.1D26A44A@machtnix.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<40C20497.1D26A44A@machtnix.net>"
+  usenet-9gjuq1:
+    title: "comp.sys.sgi.admin, 2001-06-18, Message-ID <9gjuq1$hek0u$1@fido.engr.sgi.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<9gjuq1$hek0u$1@fido.engr.sgi.com>"
+  usenet-a47377f9:
+    title: "comp.sys.sgi.marketplace, 2004-01-26, SGI In Stock, Message-ID <a47377f9.0401261309.38ca70ab@posting.google.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<a47377f9.0401261309.38ca70ab@posting.google.com>"
   galles-spider-1997:
     title: "Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)"
     publisher: "IEEE Computer Society"

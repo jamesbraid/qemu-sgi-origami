@@ -2,9 +2,9 @@
 
 .. _sgi-router:
 
-=================================
+===================================
 SGI Router (Spider) CrayLink switch
-=================================
+===================================
 
 The Router is the six-port switch of the Origin 2000 and Onyx2 module
 midplane and cable fabric. QEMU models its register target, route

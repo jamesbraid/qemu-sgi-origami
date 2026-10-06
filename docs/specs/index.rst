@@ -44,15 +44,19 @@ guest hardware that is specific to QEMU.
    iommu-testdev
    s390x-secure-ipl
    r10000-coherence
+   sgi-baseio
    sgi-bridge
    sgi-elsc
    sgi-gigachannel
    sgi-graphics
    sgi-hub
    sgi-ioc3
+   sgi-ioc3-boards
    sgi-ip30
    sgi-onyx2
+   sgi-mscsi
    sgi-origin2000-module
+   sgi-pci-expansion
    sgi-prom-image
    sgi-qlogic-isp
    sgi-router
