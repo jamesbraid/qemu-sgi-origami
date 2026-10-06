@@ -13,6 +13,7 @@
 #include "migration/vmstate.h"
 #include "net/checksum.h"
 #include "system/dma.h"
+#include "system/replay.h"
 #include "trace.h"
 
 static uint32_t sgi_ioc3_enet_get(SGIIOC3EthState *s, hwaddr off)
@@ -584,6 +585,8 @@ static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
  * synchronous qemu_flush_queued_packets() there would re-enter receive
  * delivery before the guest's store instruction that posted a buffer, or
  * flipped MAC_CONTROL, or left loopback, has even returned (issue #554).
+ * Scheduled through record/replay, so a replay delivers what queued at the
+ * same instruction its recording did.
  */
 static void sgi_ioc3_eth_rx_flush(void *opaque)
 {
@@ -709,7 +712,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     s->defer_backend_rx = false;
     if (s->backend_rx_deferred) {
         s->backend_rx_deferred = false;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
@@ -808,12 +811,12 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                 dp83840_write(&s->phy, reg, s->mii_data_w);
             }
             if (!phy_was_enabled && ics1890_data_enabled(&s->ics_phy)) {
-                qemu_bh_schedule(s->rx_flush_bh);
+                replay_bh_schedule_event(s->rx_flush_bh);
             }
 
             /* Leaving loopback re-opens receive; defer what queued. */
             if (was_looping && !sgi_ioc3_eth_looping_back(s)) {
-                qemu_bh_schedule(s->rx_flush_bh);
+                replay_bh_schedule_event(s->rx_flush_bh);
             }
         }
 
@@ -842,7 +845,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         }
         was_enabled = sgi_ioc3_eth_tx_enabled(s);
         s->enet_reg[index] = val;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
 
         /*
          * Enabling starts the engine (the diagnostic queues first); only on
@@ -866,7 +869,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
          * write, rather than leaving either to wait.
          */
         sgi_net_rx_latency_ready(&s->rx_latency);
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
         return;
 
     case SGI_IOC3_ENET_RX_CONSUME:
