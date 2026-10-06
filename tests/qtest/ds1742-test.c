@@ -83,6 +83,13 @@ static void test_fresh_seed(void)
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
     g_assert_cmphex(rd(qts, 0x7f9), ==, 0x01);
     g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    /* 2024 is presented to the guest as year 56 with base 1968. The mapped
+     * Gregorian year is 2056, but weekday follows the guest-visible date. */
+    qtest_clock_step(qts, 24 * 60 * 60 * NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x03);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 6);
     qtest_quit(qts);
 }
 

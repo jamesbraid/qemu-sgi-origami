@@ -360,6 +360,9 @@ static bool ds1742_shift_fresh_seed(DS1742State *s, struct tm *tm,
                    s->fresh_year_base, year);
         return false;
     }
+    /* The guest sees the year relative to fresh_year_base. Keep the weekday
+     * from the unshifted seed; it follows that guest-visible calendar even
+     * when the mapped Gregorian year has a different weekday. */
     tm->tm_year = 2000 + (year - (int)s->fresh_year_base) % 100 - 1900;
     s->epoch = mktimegm(tm);
     s->control = to_bcd((tm->tm_year + 1900) / 100);
