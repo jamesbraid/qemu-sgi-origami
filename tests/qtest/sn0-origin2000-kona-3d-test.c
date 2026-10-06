@@ -20,6 +20,7 @@
 #include <math.h>
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "prereq.h"
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
 #define KONA_WIDGET 11
@@ -6327,7 +6328,8 @@ static void test_renderer_fixture(gconstpointer opaque)
     g_autofree char *tag_digest = NULL, *after = NULL;
 
     if (gpu && !node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
     if (gpu) {
@@ -6396,7 +6398,8 @@ static void test_renderer_excluded_state(void)
     uint64_t fallbacks = 0;
 
     if (!node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
     s = qtest_initf(MACHINE_ARGS " -global sgi-kona.host-gpu=on"
@@ -6442,7 +6445,8 @@ static void test_renderer_migration(gconstpointer opaque)
     QTestState *from, *to;
 
     if (!node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
     tmpfs = g_dir_make_tmp("sn0-kona-renderer-migration-XXXXXX", &err);
@@ -7009,16 +7013,29 @@ int main(int argc, char **argv)
                    test_texture_8x8_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/refused",
                    test_texture_8x8_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
-                        GUINT_TO_POINTER(1), test_renderer_fixture);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/missing-provider",
                         GUINT_TO_POINTER(0), test_renderer_fixture);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/gpu-to-cpu-migration",
-                        GUINT_TO_POINTER(1), test_renderer_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/cpu-to-gpu-migration",
-                        GUINT_TO_POINTER(0), test_renderer_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
-                   test_renderer_excluded_state);
+    /*
+     * CI has no render node, and its skip check rejects a skipped case.
+     * Register the host-GPU cases only where a node is supplied or the
+     * environment requires one, in which case a missing node fails them.
+     */
+    if (g_getenv("QEMU_TEST_SGI_RENDER_NODE") ||
+        qtest_prereq_required("SGI_RENDER_NODE")) {
+        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
+                            GUINT_TO_POINTER(1), test_renderer_fixture);
+        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                            "gpu-to-cpu-migration",
+                            GUINT_TO_POINTER(1), test_renderer_migration);
+        qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                            "cpu-to-gpu-migration",
+                            GUINT_TO_POINTER(0), test_renderer_migration);
+        qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
+                       test_renderer_excluded_state);
+    } else {
+        g_test_message("host-GPU renderer cases not registered: "
+                       "QEMU_TEST_SGI_RENDER_NODE is not set");
+    }
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/native",
                         GINT_TO_POINTER(0), test_native_colour_matrix);
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",

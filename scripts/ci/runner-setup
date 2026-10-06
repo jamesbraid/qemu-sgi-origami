@@ -190,10 +190,15 @@ case "${1-}" in
   run|run-tests)
     # run-tests also gives the container the TAP device and the capability
     # to create one, which the BCM570x and Xframe vnet cases need. The
-    # container's own network namespace confines what it can change.
+    # container's own network namespace confines what it can change. It
+    # also declares the host prerequisites this setup provides, so a qtest
+    # that finds one missing fails instead of skipping (tests/qtest/prereq.h).
+    # QEMU_TEST_REQUIRE_SGI_RENDER_NODE stays unset: no runner exposes a
+    # DRM render node, so those cases are not registered here.
     tap_options=()
     if [ "$1" = run-tests ]; then
-      tap_options=(--device /dev/net/tun --cap-add NET_ADMIN)
+      tap_options=(--device /dev/net/tun --cap-add NET_ADMIN
+                   -e QEMU_TEST_REQUIRE_TAP=1)
     fi
     shift
     : "${IMAGE_ID:?IMAGE_ID is required}"
