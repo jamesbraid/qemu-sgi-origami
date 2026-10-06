@@ -2139,6 +2139,21 @@ static uint32_t rad4_dma_local_byte(uint32_t local_addr)
     return local_addr ^ 3;
 }
 
+/* Merge one DMA byte under its lane of the plane mask; true if it changed. */
+static bool rad4_dma_merge_byte(PsitechRad4State *s, uint32_t local_addr,
+                                uint8_t val)
+{
+    uint8_t mask = s->mask >> (8 * (local_addr % 4));
+    uint8_t *dst = s->framebuffer + rad4_dma_local_byte(local_addr);
+    uint8_t byte = (*dst & ~mask) | (val & mask);
+
+    if (byte == *dst) {
+        return false;
+    }
+    *dst = byte;
+    return true;
+}
+
 /*
  * Merge @len bytes from PCI into the framebuffer at local byte address
  * @local_addr, each under its own byte lane of the plane mask
@@ -2166,40 +2181,56 @@ static uint32_t rad4_dma_local_byte(uint32_t local_addr)
 static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
                            const uint8_t *buf, uint32_t len)
 {
-    uint32_t i = 0, first = len, last = 0;
+    uint32_t merged[RAD4_DMA_SLICE / 4];
+    uint32_t mask = cpu_to_be32(s->mask);
+    uint32_t i = 0, first = len, last = 0, words, k, lo, hi;
+    uint8_t *fb;
+
+    assert(len <= RAD4_DMA_SLICE);
+    while (i < len && ((local_addr + i) % 4 || len - i < 4)) {
+        if (rad4_dma_merge_byte(s, local_addr + i, buf[i])) {
+            first = MIN(first, i);
+            last = i;
+        }
+        i++;
+    }
 
     /*
      * Whole local dwords go as one word: PCI byte lane n is bit 8n of a
      * little-endian dword, which is where the big-endian framebuffer word
      * keeps local byte n, so this is the byte rule four lanes at a time.
-     * Only a span's unaligned head and tail go byte by byte.
+     * The words are merged into a scratch copy in the framebuffer's own
+     * byte order, compared with it, and only the changed run is stored:
+     * three passes with no branch per word, since a buffered X server's
+     * uploads are nearly all unchanged.
      */
-    while (i < len) {
-        uint32_t addr = local_addr + i;
-        uint8_t mask, *dst, byte;
+    words = (len - i) / 4;
+    fb = s->framebuffer + local_addr + i;
+    for (k = 0; k < words; k++) {
+        uint32_t old = ldl_he_p(fb + k * 4);
+        uint32_t in = cpu_to_be32(ldl_le_p(buf + i + k * 4));
 
-        if (addr % 4 == 0 && len - i >= 4) {
-            uint8_t *word = s->framebuffer + addr;
-            uint32_t old = ldl_be_p(word);
-            uint32_t val = (old & ~s->mask) | (ldl_le_p(buf + i) & s->mask);
-
-            if (val != old) {
-                stl_be_p(word, val);
-                first = MIN(first, i);
-                last = i + 3;
-            }
-            i += 4;
+        merged[k] = (old & ~mask) | (in & mask);
+    }
+    if (words && memcmp(merged, fb, words * 4)) {
+        for (lo = 0; merged[lo] == ldl_he_p(fb + lo * 4); lo++) {
             continue;
         }
-        mask = s->mask >> (8 * (addr % 4));
-        dst = s->framebuffer + rad4_dma_local_byte(addr);
-        byte = (*dst & ~mask) | (buf[i] & mask);
-        if (byte != *dst) {
-            *dst = byte;
+        for (hi = words; merged[hi - 1] == ldl_he_p(fb + (hi - 1) * 4);
+             hi--) {
+            continue;
+        }
+        memcpy(fb + lo * 4, merged + lo, (hi - lo) * 4);
+        first = MIN(first, i + lo * 4);
+        last = i + hi * 4 - 1;
+    }
+    i += words * 4;
+
+    for (; i < len; i++) {
+        if (rad4_dma_merge_byte(s, local_addr + i, buf[i])) {
             first = MIN(first, i);
             last = i;
         }
-        i++;
     }
     if (first < len) {
         rad4_mark_dirty_range(s, local_addr + first, last - first + 1);
