@@ -91,7 +91,10 @@ static const uint64_t window_offset[8] = {
 };
 #define WINDOW(node, slot)  (BRIDGE_AT(node) + window_offset[slot])
 
-/* The bus-mastering test card's registers (hw/misc/sgi-bridge-dma-test.c). */
+/*
+ * The bus-mastering test card's registers
+ * (tests/qtest/fixtures/sgi-bridge-dma-test.c).
+ */
 #define DMA_REG_ADDRESS     0x00
 #define DMA_REG_LENGTH      0x04
 #define DMA_REG_SEED        0x08

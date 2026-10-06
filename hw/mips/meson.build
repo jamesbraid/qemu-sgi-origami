@@ -15,7 +15,7 @@ mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn0.c'))
 # These qtest-only fixtures live under tests/qtest, beside the qtest
 # programs that are their only consumer, and are pulled in here because
 # meson builds hw/ before tests/ so the target binary must gain them here.
-mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
+mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_SGI_TEST_FIXTURES'],
             if_true: files('../../tests/qtest/sn0-origin2000-flash-fixture.c',
                            '../../tests/qtest/sn-builder-fault-test.c'))
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
@@ -56,7 +56,7 @@ mips_ss.add(when: 'CONFIG_SGI_NET_CABLE', if_true: files('sgi/net-cable.c'))
 # than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD', if_true: files('sgi/xio-board.c'))
 # Likewise for the XIO board fixture: see the comment above.
-mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD_TEST',
+mips_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
             if_true: files('../../tests/qtest/xio-test-board.c'))
 # sgi-baseio: the base I/O functional unit as one device with a preset per
 # shipped board design. Every product that carries base I/O selects this, whether or
@@ -83,7 +83,7 @@ mips_ss.add(when: 'CONFIG_SGI_GIGACHANNEL',
 mips_ss.add(when: 'CONFIG_SGI_PCI_SHOEHORN',
             if_true: files('sgi/board-pci-shoehorn.c'))
 # Likewise for the board fixture: see the comment above.
-mips_ss.add(when: 'CONFIG_SGI_BOARD_TEST',
+mips_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
             if_true: files('../../tests/qtest/board-test-fixture.c',
                            '../../tests/qtest/ioc3-release-fixture.c'))
 subdir('sgi')
@@ -93,5 +93,5 @@ endif
 
 hw_arch += {'mips': mips_ss}
 
-mips_ss.add(when: ['CONFIG_SGI_SN1', 'CONFIG_TEST_DEVICES'],
+mips_ss.add(when: ['CONFIG_SGI_SN1', 'CONFIG_SGI_TEST_FIXTURES'],
             if_true: files('../../tests/qtest/xbridge-assembly-fixture.c'))

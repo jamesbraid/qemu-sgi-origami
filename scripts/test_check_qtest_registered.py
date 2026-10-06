@@ -79,9 +79,9 @@ sgi_suites = ['sgi', 'sgi-qtest']
         meson = """sn1_xbridge_qtests = \\
   (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
     ['sn1-xbridge-chip-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sn1_xbridge_qtests = []
-elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
+elif not config_all_devices.has_key('CONFIG_PCI')
   sn1_xbridge_qtests = ['sn1-xbridge-chip-test']
 endif
 qtests_mips64 = sn1_xbridge_qtests

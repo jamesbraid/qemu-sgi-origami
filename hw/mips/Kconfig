@@ -142,13 +142,28 @@ config SGI_XIO_BOARD
     select SGI_XBOW
     select SGI_XIO_LINK
 
-config SGI_XIO_BOARD_TEST
+# Every qtest-only SGI device and board fixture, built into the emulator
+# only for test builds. Each is compiled from tests/qtest/ or
+# tests/qtest/fixtures/ by the meson file of the subsystem it plugs into,
+# which adds the model it needs through the selects below.
+config SGI_TEST_FIXTURES
     bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES
-    select SGI_XIO_BOARD
-    select SGI_XIO_TEST_TARGET
+    default y
+    depends on TEST_DEVICES && SGI_DEVICES
+    select SGI_BASEIO
+    select SGI_BEDROCK_IO
+    select SGI_BRIDGE
+    select SGI_COMMAND_PORT
+    select SGI_DMA_BUFFER if PCI
+    select SGI_HUB if SGI_SN0
+    select SGI_PCI_EXPANSION
     select SGI_PI_GFX
+    select SGI_ROUTER if SGI_SN0
+    select SGI_XBOW
+    select SGI_XBRIDGE
+    select SGI_XIO_BASEIO
+    select SGI_XIO_BOARD
+    select SGI_XIO_PORT
 
 # sgi-baseio (the base I/O functional unit, presets ip29/baseio/io8) is
 # selected directly by whichever family builds base I/O at all: Origin
@@ -193,16 +208,6 @@ config SGI_PCI_SHOEHORN
     select SGI_BRIDGE
     select SGI_IOC3
     select SGI_IOC3_ETH
-
-config SGI_BOARD_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES
-    select SGI_BASEIO
-    select SGI_XIO_BASEIO
-    select SGI_PCI_EXPANSION
-    select SGI_BRIDGE
-    select SGI_XBRIDGE
 
 config FULOONG
     bool
