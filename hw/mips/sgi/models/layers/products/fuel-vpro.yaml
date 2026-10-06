@@ -52,7 +52,7 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
             provenance: derived
-            sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
             notes: >-
               The board-identification word is the established Fuel
               product code with the PIMM speed code of the fitted 500 MHz,

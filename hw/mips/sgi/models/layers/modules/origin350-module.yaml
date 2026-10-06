@@ -62,7 +62,7 @@ layer:
         pci_host_bridge: {heads: 2}
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
         provenance: public-header
-        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
+        sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
         notes: Two heads share this one widget number (0xF); the second head's registers sit at offset +0x800000 within it. No public PIC programming specification exists.
       - id: ioc4
         name: IOC4
@@ -70,21 +70,21 @@ layer:
         hardware_kind: ioc4
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a"}
         provenance: observed-hardware
-        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
       - id: scsi
         name: QLogic ISP12160
         kind: storage-hba
         hardware_kind: isp12160
         identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
         provenance: observed-hardware
-        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
       - id: ethernet
         name: BCM5701
         kind: io-controller
         hardware_kind: bcm5701
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 21}
         provenance: observed-hardware
-        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
       - id: l1
         name: L1 system controller
         kind: system-controller
@@ -101,17 +101,17 @@ layer:
         sources: [sn-family-closure-origin350]
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [sn-family-closure-origin350]}
-      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
       - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-origin350], notes: Cabled to nothing on a single compute module.}
       - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [sn-family-closure-origin350]}
     connections:
       - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
-      - {component: pic, bus: xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"], notes: Widget 0xF.}
+      - {component: pic, bus: xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"], notes: Widget 0xF.}
       - {component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: pic, bus: io9-bus, role: bridge-downstream, provenance: vendor-document, sources: [sn-family-closure-origin350]}
-      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
-      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
-      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
+      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
+      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
+      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}

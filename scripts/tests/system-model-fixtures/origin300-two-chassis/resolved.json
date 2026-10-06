@@ -391,7 +391,7 @@
       "regions": [],
       "sources": [
         "007-4365-002 printed pages 10 to 12, Figure 1-5",
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/sginode.c lines 549 to 590",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/sginode.c lines 549 to 590",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 47 and 53 to 54: eight slots per node, 1 GB slot shift"
       ]
     },
@@ -519,7 +519,7 @@
         }
       ],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/ unit headers, first register of each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"
       ]
@@ -533,7 +533,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/ip27_machdep.c lines 680 to 704 and 1083 to 1085",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27_machdep.c lines 680 to 704 and 1083 to 1085",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/hublb.h line 155"
       ]
     },
@@ -599,7 +599,7 @@
       ],
       "sources": [
         "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs line 33",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs line 33",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
       ]
@@ -680,8 +680,8 @@
         "108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers",
         "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet",
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and both interrupt sources",
-        "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype",
-        "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"
       ]
     },
     {
@@ -851,8 +851,8 @@
         }
       ],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 68 to 73",
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/l1.c",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 68 to 73",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/l1.c",
         "007-4365-002 printed pages 6, 10, 12 and 35 to 41"
       ],
       "system_controller": {
@@ -1048,7 +1048,7 @@
       "regions": [],
       "sources": [
         "007-4365-002 printed pages 10 to 12, Figure 1-5",
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/sginode.c lines 549 to 590",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/sginode.c lines 549 to 590",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 47 and 53 to 54: eight slots per node, 1 GB slot shift"
       ]
     },
@@ -1176,7 +1176,7 @@
         }
       ],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/ unit headers, first register of each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"
       ]
@@ -1190,7 +1190,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/ip27_machdep.c lines 680 to 704 and 1083 to 1085",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27_machdep.c lines 680 to 704 and 1083 to 1085",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/hublb.h line 155"
       ]
     },
@@ -1256,7 +1256,7 @@
       ],
       "sources": [
         "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs line 33",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbowdevs line 33",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
       ]
@@ -1337,8 +1337,8 @@
         "108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers",
         "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet",
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and both interrupt sources",
-        "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype",
-        "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"
       ]
     },
     {
@@ -1508,8 +1508,8 @@
         }
       ],
       "sources": [
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 68 to 73",
-        "openbsd:2df91d80c1 sys/arch/sgi/sgi/l1.c",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 68 to 73",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/l1.c",
         "007-4365-002 printed pages 6, 10, 12 and 35 to 41"
       ],
       "system_controller": {
@@ -2290,7 +2290,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
@@ -2332,7 +2332,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
@@ -2374,7 +2374,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
@@ -2416,7 +2416,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
@@ -2458,7 +2458,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
@@ -2500,7 +2500,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
@@ -2542,7 +2542,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
@@ -2584,7 +2584,7 @@
       "sources": [
         "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183",
-        "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
+        "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
         "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c",
         "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
@@ -2812,7 +2812,7 @@
           "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
           "provenance": "derived",
           "sources": [
-            "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
             "docs/reviews/fuel-rtc-refinement-review-20261001.md"
           ],
           "year_base": 1968
@@ -2823,7 +2823,7 @@
           "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
           "provenance": "derived",
           "sources": [
-            "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
             "docs/reviews/fuel-rtc-refinement-review-20261001.md"
           ],
           "year_base": 1968
@@ -3151,7 +3151,7 @@
     "notes": "Unchanged from the Origin 200: two uncached-attribute bits the R10000-family processor drives beside the 40-bit physical address. The seven-space, address-field encoding this file once carried matches no public source, MIPS or Itanium; the Origin 200's two-bit emulation carrier therefore fits this generation as it stands.",
     "provenance": "public-header",
     "sources": [
-      "openbsd:2df91d80c1 sys/arch/mips64/include/cpu.h lines 92 to 113",
+      "openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113",
       "linux-ip35:9f613a321ea0 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22",
       "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"
     ]

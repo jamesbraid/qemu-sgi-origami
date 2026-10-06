@@ -74,7 +74,7 @@ layer:
             year_base: 1968
             initial_ip27_fixture: false
             provenance: derived
-            sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
         # The IP35 flash configuration block's product values. PROM 6.210
         # compares the block with the CPU-configuration table row its PIMM
