@@ -99,27 +99,44 @@ Command vocabulary
 ``pwr d <sec>`` / ``pwr c`` / ``pwr r``
     The remaining power control, none boot-driven. ``pwr d <sec>``
     schedules a delayed power-down and ``pwr c`` power-cycles, both
-    answered a bare ``ok``; both are destructive and, like ``rst``,
-    need no supervisor mode over I2C. The power-down
-    delay is hex seconds: 0 is immediate, otherwise the guide's range
-    0x5 to 0x258 (5 to 600 seconds); an out-of-range or non-hex delay is
-    ``err arg``. ``pwr r`` queries the redundant supplies, is read-only
-    and ungated, and answers a per-module record for each supply tagged
-    ``tag:present:health`` -- ``m:y:ok`` / ``m:y:fl`` / ``m:n`` for the
-    master and ``s:y:ok`` / ``s:y:fl`` / ``s:n`` for the slave. The present
-    flag (``y``/``n``) separates an absent supply (``m:n``) from a failed one
-    (``m:y:fl``), and health is ``ok`` or ``fl``. Both supplies are modelled
-    present and healthy, so ``ok m:y:ok s:y:ok``. The response payload is
-    identical on the operator and wire interfaces -- only the command framing
-    differs -- so this is the format the Origin 200 diagnostics guide
-    documents (datasheet PR #602); it supersedes an earlier one-colon
-    ``ok m:ok s:ok`` that came from the driver's test-fixture mock rather than
-    the firmware wire format. ``pwr d`` and ``pwr c`` then act, like
-    ``rst`` deferred until the caller has read the ``ok``: ``pwr d`` shuts
-    the machine down, ``pwr c`` resets it (a power-cycle). The scheduled
-    delay is not modelled -- the shutdown follows the ack. Both supplies
-    are modelled healthy. An unknown subcommand letter is ``err cmd``, but
-    a known letter with a bad or extra argument is ``err arg``.
+    answered a bare ``ok``; both are destructive and, like ``rst``, need
+    no supervisor mode over I2C. The power-down delay is up to four hex
+    digits after one separator character, read until the first non-hex
+    character. 1 to 0x258 (re)loads a countdown measured from that
+    request, so a repeated request moves the deadline either way; IRIX
+    sends ``pwr d 1`` at halt and repeats ``pwr d 8`` while extending a
+    shutdown. 0 powers down at once, as does a request with no delay
+    while a countdown is pending; a request with no delay otherwise
+    starts a three-second countdown. A delay above 0x258 is ``err arg``
+    and changes nothing. ``pwr r`` queries the redundant supplies, is
+    read-only and ungated, and answers a per-module record for each
+    supply tagged ``tag:present:health`` -- ``m:y:ok`` / ``m:y:fl`` /
+    ``m:n`` for the master and ``s:y:ok`` / ``s:y:fl`` / ``s:n`` for the
+    slave. The present flag (``y``/``n``) separates an absent supply
+    (``m:n``) from a failed one (``m:y:fl``), and health is ``ok`` or
+    ``fl``. Both supplies are modelled present and healthy, so ``ok
+    m:y:ok s:y:ok``. The response payload is identical on the operator
+    and wire interfaces -- only the command framing differs -- so this
+    is the format the Origin 200 diagnostics guide documents (datasheet
+    PR #602); it supersedes an earlier one-colon ``ok m:ok s:ok`` that
+    came from the driver's test-fixture mock rather than the firmware
+    wire format. An immediate ``pwr d`` and ``pwr c`` act, like ``rst``,
+    once the caller has read the ``ok``: ``pwr d`` shuts the machine
+    down, ``pwr c`` resets it (a power-cycle). A countdown shuts the
+    machine down when it expires, on the virtual clock. Five
+    approximations remain. A system reset cancels a pending countdown,
+    although the controller keeps running through a reset on hardware,
+    so a countdown followed by ``rst`` never powers down. The countdown
+    is the nominal number of seconds, although the datasheet infers that
+    the firmware's 16-bit millisecond count wraps above 0x41; the ``pd
+    remote`` message the controller queues for the Hub on each timed
+    request is not sent; and expiry shuts down the whole machine, where
+    a two-module Origin 200's slave controller would power off only its
+    own module. The controller does not track module power, so it never
+    gives the firmware's bare ``ok`` to a ``pwr d`` sent while its
+    module is off. Both supplies are modelled healthy. An unknown
+    subcommand letter is ``err cmd``, but a known letter with a bad or
+    extra argument is ``err arg``.
 
 ``hbt [<interval> <delay>]``
     Heartbeat / NMI-watchdog control, which the kernel enables during

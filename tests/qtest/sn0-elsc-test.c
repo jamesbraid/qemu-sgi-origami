@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/timer.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
@@ -2371,13 +2372,13 @@ static void test_pwr_control_subcommands(const void *data)
     assert_response_begins(resp, "ok m:y:ok s:y:ok");
 
     /*
-     * Out-of-range (below 5, above 0x258) and non-hex delays are err arg, as
-     * are extra arguments to a known subcommand letter (a bad argument, not
-     * an unknown command). None of these arm an action.
+     * A delay above 0x258 is err arg, as are extra arguments to a known
+     * subcommand letter (a bad argument, not an unknown command). None of
+     * these arm an action.
      */
     {
-        const char *bad_forms[] = { "pwr d 1", "pwr d 4", "pwr d 259",
-                                    "pwr d zz", "pwr c extra", "pwr r x" };
+        const char *bad_forms[] = { "pwr d 259", "pwr d ffff",
+                                    "pwr c extra", "pwr r x" };
         unsigned i;
 
         for (i = 0; i < ARRAY_SIZE(bad_forms); i++) {
@@ -2433,24 +2434,161 @@ static void test_pwr_cycle_resets(const void *data)
     qtest_qmp_eventwait(qts, "RESET");
 }
 
+/* Whether QEMU has taken the guest's power-down, under -no-shutdown. */
+static bool powered_down(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+    bool down = g_str_equal(qdict_get_str(qdict_get_qdict(rsp, "return"),
+                                          "status"), "shutdown");
+
+    qobject_unref(rsp);
+    return down;
+}
+
+static void pwr_down_request(QTestState *qts, const char *text)
+{
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    req_len = build_request(req, text);
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 2);
+    assert_response_begins(resp, "ok");
+}
+
 /*
- * Nonzero "pwr d" delays outside 5..0x258 return "err arg" and arm nothing.
+ * A "pwr d" delay from 1 through 0x258 seconds is accepted: IRIX sends
+ * "pwr d 1" at halt and "pwr d 8" while extending a shutdown. Above 0x258
+ * is "err arg". The accepted requests only arm a countdown, which the
+ * reset that opens the next case clears.
  */
 static void test_pwr_down_range_checked(const void *data)
 {
+    const char *accepted[] = { "pwr d 1", "pwr d 4", "pwr d 258" };
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len, i;
-    const char *out_of_range[] = { "pwr d 1", "pwr d 4", "pwr d 259" };
 
     elsc_reset();
 
-    for (i = 0; i < ARRAY_SIZE(out_of_range); i++) {
-        req_len = build_request(req, out_of_range[i]);
+    for (i = 0; i < ARRAY_SIZE(accepted); i++) {
+        pwr_down_request(qts, accepted[i]);
+    }
+    req_len = build_request(req, "pwr d 259");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpuint(resp[0], ==, 7);
+    assert_response_begins(resp, "err arg");
+    elsc_reset();
+}
+
+/*
+ * IRIX's halt: "pwr d 1", then power goes about a second later, with no
+ * further request.
+ */
+static void test_pwr_down_countdown_expires(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+
+    pwr_down_request(qts, "pwr d 1");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+
+    qtest_quit(qts);
+}
+
+/*
+ * Each timed "pwr d" reloads the countdown from that request: repeating
+ * "pwr d 8" keeps power on, and a shorter delay pulls the deadline in.
+ */
+static void test_pwr_down_countdown_reloads(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+
+    pwr_down_request(qts, "pwr d 8");
+    qtest_clock_step(qts, 7 * NANOSECONDS_PER_SECOND);
+    pwr_down_request(qts, "pwr d 8");
+    /* The deadline is now 15 s, not the first request's 8 s. */
+    qtest_clock_step(qts, 7999 * (int64_t)SCALE_MS);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -no-shutdown");
+    pwr_down_request(qts, "pwr d 8");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    pwr_down_request(qts, "pwr d 2");
+    /* Pulled in to 3 s from 8 s. */
+    qtest_clock_step(qts, 1999 * (int64_t)SCALE_MS);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/*
+ * Argument parsing: one separator of any kind, then at most four hex
+ * digits up to the first non-hex character. "pwr d-1x" is a one-second
+ * countdown. "pwr d 12345" reads 0x1234, above the limit, so it is
+ * "err arg" and, like any refused delay, arms nothing. "pwr d 00001" reads
+ * 0000 and powers down at once.
+ */
+static void test_pwr_down_parsing(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+    const char *refused[] = { "pwr d 12345", "pwr d 259" };
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len, i;
+
+    for (i = 0; i < ARRAY_SIZE(refused); i++) {
+        req_len = build_request(req, refused[i]);
         resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
         g_assert_cmpuint(resp[0], ==, 7);
         assert_response_begins(resp, "err arg");
     }
+    qtest_clock_step(qts, 700 * NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+
+    pwr_down_request(qts, "pwr d-1x");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -no-shutdown");
+    /* No clock step: a one-second countdown would never fire here. */
+    pwr_down_request(qts, "pwr d 00001");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/*
+ * "pwr d" with no delay: a three-second countdown when none is pending,
+ * and immediate power-down when one is. Text that is not hex counts as no
+ * delay.
+ */
+static void test_pwr_down_without_delay(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+
+    pwr_down_request(qts, "pwr d");
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 -no-shutdown");
+    pwr_down_request(qts, "pwr d 3c");
+    g_assert_false(powered_down(qts));
+    pwr_down_request(qts, "pwr d zz");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
 }
 
 /*
@@ -2629,6 +2767,14 @@ int main(int argc, char **argv)
                         test_pwr_cycle_resets);
     qtest_add_data_func("sn0/elsc/pwr-down-range-checked", NULL,
                         test_pwr_down_range_checked);
+    qtest_add_data_func("sn0/elsc/pwr-down-countdown-expires", NULL,
+                        test_pwr_down_countdown_expires);
+    qtest_add_data_func("sn0/elsc/pwr-down-countdown-reloads", NULL,
+                        test_pwr_down_countdown_reloads);
+    qtest_add_data_func("sn0/elsc/pwr-down-without-delay", NULL,
+                        test_pwr_down_without_delay);
+    qtest_add_data_func("sn0/elsc/pwr-down-parsing", NULL,
+                        test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
     qtest_add_data_func("sn0/elsc/nic-onewire-identity", NULL,
