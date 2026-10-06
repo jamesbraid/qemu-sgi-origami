@@ -768,7 +768,7 @@
       "hardware_kind": "lucent-ohci",
       "id": "master-usb",
       "identity": {
-        "notes": "The hardware subsystem vendor and device fields are unobserved. The initial emulator exposes 0xffff:0xffff as explicit compatibility placeholders so current QEMU does not inject unrelated 0x1af4:0x1100 defaults. An Origin 300 configuration-space capture replaces them.",
+        "notes": "The USS-312 data sheet gives the chip's reset subsystem values as 11c1:5802, but firmware may rewrite them and no Origin 300 dump shows the board value. The initial emulator exposes 0xffff:0xffff as explicit compatibility placeholders so current QEMU does not inject unrelated 0x1af4:0x1100 defaults. An Origin 300 configuration-space capture replaces them.",
         "pci_device": "0x5802",
         "pci_revision": 16,
         "pci_subsystem_id": "0xffff_ffff",
@@ -1424,7 +1424,7 @@
       "hardware_kind": "lucent-ohci",
       "id": "slave-usb",
       "identity": {
-        "notes": "The hardware subsystem vendor and device fields are unobserved. The initial emulator exposes 0xffff:0xffff as explicit compatibility placeholders so current QEMU does not inject unrelated 0x1af4:0x1100 defaults. An Origin 300 configuration-space capture replaces them.",
+        "notes": "The USS-312 data sheet gives the chip's reset subsystem values as 11c1:5802, but firmware may rewrite them and no Origin 300 dump shows the board value. The initial emulator exposes 0xffff:0xffff as explicit compatibility placeholders so current QEMU does not inject unrelated 0x1af4:0x1100 defaults. An Origin 300 configuration-space capture replaces them.",
         "pci_device": "0x5802",
         "pci_revision": 16,
         "pci_subsystem_id": "0xffff_ffff",

@@ -66,20 +66,27 @@ PCI identity
      - 1.0 with legacy-support indication, observed in both captures;
        distinct from the PCI revision.
    * - subsystem vendor and device
-     - unknown
-     - No configuration-space dump or published source reports either
-       field. The model presents ``0xffff:0xffff`` (emulator choice)
-       because leaving them zero would make QEMU inject its unrelated
-       ``0x1af4:0x1100`` defaults. A raw configuration capture from an IO-8
-       or Fuel would settle it. The marketing part name beyond the PCI
-       product name is unknown.
+     - established for the part; unknown on SGI's board
+     - The USS-312 data sheet gives the chip's reset values as ``0x11c1``
+       and ``0x5802``, read-only after reset but writable by BIOS or
+       firmware (Table 3, PDF page 10; Tables 17 and 18, PDF page 14).
+       Firmware on SGI's board may have rewritten them, and no published
+       configuration dump shows the values there. The model presents
+       ``0xffff:0xffff`` (emulator choice) because leaving them zero would
+       make QEMU inject its unrelated ``0x1af4:0x1100`` defaults. A raw
+       configuration capture from an IO-8 or Fuel would settle the board
+       value. The marketing part name beyond the PCI product name is
+       unknown.
    * - PCI Status after reset
-     - approximation
-     - The model uses ``0x0200``, DEVSEL medium only, no capability list.
-       The public comparison capture of a ``11c1:5802`` revision ``0x10``
-       reports medium DEVSEL and no capability line; the capture has no raw
-       bytes and was taken after initialisation on another system, so the
-       exact reset word is unknown. DEVSEL timing encoding: PCI Local Bus
+     - established for the part; model value is an emulator choice
+     - The data sheet gives the chip reset word as ``0x0200`` (DEVSEL
+       medium) with PMIENABLE low and ``0x0210`` (capability list present)
+       with PMIENABLE high (Table 3, PDF page 10). Whether SGI's board
+       ties PMIENABLE high is unknown; the public comparison capture of a
+       ``11c1:5802`` revision ``0x10`` reports medium DEVSEL and no
+       capability line, which fits low, but it has no raw bytes and was
+       taken after initialisation on another system. The model uses
+       ``0x0200`` (emulator choice). DEVSEL timing encoding: PCI Local Bus
        Specification 2.2.
 
 .. _sgi-lucent-ohci-placement:

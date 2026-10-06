@@ -130,9 +130,10 @@ layer:
           pci_revision: 16
           notes: >-
             The controller model reuses the Origin 300 Lucent OHCI part.
-            Its revision and unavailable subsystem fields are emulator
-            compatibility choices; no Fuel PCI configuration dump confirms
-            those bytes.
+            Its revision and subsystem fields are emulator
+            compatibility choices; the USS-312 data sheet gives the chip's
+            reset subsystem values as 11c1:5802, but no Fuel PCI configuration
+            dump shows what the board's firmware leaves there.
         datasheet_contracts: [qemu:docs/specs/sgi-lucent-ohci.rst]
         sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312"]
       - id: graphics-connector
