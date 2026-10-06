@@ -14,8 +14,8 @@ layer:
     - [2, 2, 2, 2]
     # One row per fitted node count, in SGI's fill order. Every row keeps
     # the module's two Standard Routers but the one-node row, which needs
-    # none; docs/datasheets/origin2000-module.md, Node-board populations,
-    # grades each fact.
+    # none; docs/specs/sgi-origin2000-module.rst, Router fit, grades each
+    # fact.
     node_populations:
     - node_slots: [1]
       routers: []
@@ -199,5 +199,5 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image]
         provenance: derived
-        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", "tools/origami_lib/launch.py: LaunchProfile.requires_node_proms", qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
+        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", qemu:docs/specs/sgi-sn.rst#sgi-sn-firmware-supply, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict

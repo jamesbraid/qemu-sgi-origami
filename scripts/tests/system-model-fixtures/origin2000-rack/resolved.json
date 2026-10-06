@@ -3764,7 +3764,7 @@
       "provenance": "derived",
       "sources": [
         "query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds",
-        "tools/origami_lib/launch.py: LaunchProfile.requires_node_proms",
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-firmware-supply",
         "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata"
       ],
       "supported_guests": [

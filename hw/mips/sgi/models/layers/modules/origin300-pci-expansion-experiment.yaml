@@ -69,7 +69,7 @@ layer:
         name: PCI expansion L1 controller
         kind: system-controller
         hardware_kind: l1
-        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
         system_controller: {kind: l1}
         parent: enclosure
         provenance: vendor-document

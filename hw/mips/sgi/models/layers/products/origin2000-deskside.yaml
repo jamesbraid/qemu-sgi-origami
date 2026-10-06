@@ -8,8 +8,8 @@
 # fewer boards in the Router slots: none for one, a Null Router for two. SGI's
 # cheaper fit for three or four, a Router and a Star Router joined by a
 # jumper (007-3453-002 Figure 2-9), is not modelled:
-# docs/datasheets/origin2000-module.md, Node-board populations, says why and
-# grades each row below.
+# docs/specs/sgi-origin2000-module.rst, Router fit, says why and grades each
+# row below.
 layer_version: 1
 layer:
   kind: product
