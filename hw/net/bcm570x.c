@@ -84,6 +84,7 @@
 #include "net/net.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "system/replay.h"
 #include "trace.h"
 
 #define TYPE_BCM570X "bcm570x"
@@ -1168,7 +1169,8 @@ static void bcm570x_retry_rx_flush(Bcm570xState *s);
  * Take the frames the peer still holds. The drain runs from a bottom half so
  * nothing is delivered underneath the register write that made room: the
  * guest resumes first, and the completion and its status update land the way
- * an unsolicited frame would.
+ * an unsolicited frame would. It is scheduled through record/replay, so a
+ * replay delivers at the same instruction its recording did.
  */
 static void bcm570x_rx_flush(void *opaque)
 {
@@ -1230,7 +1232,7 @@ static void bcm570x_retry_rx_flush(Bcm570xState *s)
     sgi_net_rx_latency_ready(&s->rx_latency);
 
     if (s->rx_flush_pending && bcm570x_rx_ready(s)) {
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
@@ -1481,7 +1483,7 @@ static void bcm570x_tx_rollback_to_frame(Bcm570xState *s,
     }
     if (s->backend_rx_deferred) {
         s->backend_rx_deferred = false;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
@@ -1604,7 +1606,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
     /* Publish transmit completion before releasing a synchronous reply. */
     if (s->backend_rx_deferred) {
         s->backend_rx_deferred = false;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
