@@ -503,6 +503,7 @@ tests/functional/mips64/lib_prom_sash.py
 tests/functional/mips64/lib_prom_smdk.py
 tests/functional/mips64/lib_screen.py
 tests/functional/mips64/lib_sgi_roms.py
+tests/functional/mips64/lib_sn0_hub.py
 tests/functional/mips64/lib_sn_reset.py
 tests/functional/mips64/lib_translation_health.py
 tests/functional/mips64/mgras-reference/README
@@ -659,7 +660,12 @@ tests/functional/mips64/test_prom_smdk_origin300_pair.py
 tests/functional/mips64/test_sgi_roms.py
 tests/functional/mips64/test_sn0_reset.py
 tests/functional/mips64/test_sn0_smp.py
+tests/functional/mips64/test_sn0_smp_rendezvous.py
+tests/functional/mips64/test_sn0_warm_reset.py
 tests/functional/mips64/test_sn1_l1_reset.py
+tests/functional/mips64/test_sn1_presence.py
+tests/functional/mips64/test_sn1_system_request.py
+tests/functional/mips64/test_sn1_warm_reset.py
 tests/functional/mips64/test_timer_stall.py
 tests/functional/mips64/test_xframe_pci.py
 tests/qtest/bcm570x-test.c
@@ -772,11 +778,9 @@ tests/qtest/sn0-qtest-cpu-test.c
 tests/qtest/sn0-r10k-perf-migration-test.c
 tests/qtest/sn0-r10k-test.c
 tests/qtest/sn0-router-test.c
-tests/qtest/sn0-smp-rendezvous-test.c
 tests/qtest/sn0-snapshot-test.c
 tests/qtest/sn0-tigon-test.c
 tests/qtest/sn0-user-image.h
-tests/qtest/sn0-warm-reset-test.c
 tests/qtest/sn0-widget-decode-test.c
 tests/qtest/sn0-xbow-test.c
 tests/qtest/sn0-xbow-transport-test.c
@@ -800,9 +804,6 @@ tests/qtest/sn1-odyssey-query-test.c
 tests/qtest/sn1-odyssey-test.c
 tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c
-tests/qtest/sn1-presence-test.c
-tests/qtest/sn1-system-request-test.c
-tests/qtest/sn1-warm-reset-test.c
 tests/qtest/sn1-xbridge-chip-test.c
 tests/qtest/sn1-xbridge-test.c
 tests/qtest/sn1-xbridge-xbow-test.c

@@ -268,11 +268,30 @@ def select_qtests(build, base):
     return sorted(selected), full
 
 
+# Functional tests that boot a generated ROM on a whole machine under real
+# TCG scheduling and need no guest assets: the Meson test, its log base, the
+# module and the test class. Every pull request runs them.
+GENERATED_ROM_FUNCTIONAL = [
+    ('func-mips64-sn0_smp_rendezvous', 'sn0-smp-rendezvous',
+     'test_sn0_smp_rendezvous', 'SN0SMPRendezvous'),
+    ('func-mips64-sn0_warm_reset', 'sn0-warm-reset',
+     'test_sn0_warm_reset', 'SN0WarmReset'),
+    ('func-mips64-sn1_presence', 'sn1-presence',
+     'test_sn1_presence', 'SN1Presence'),
+    ('func-mips64-sn1_system_request', 'sn1-system-request',
+     'test_sn1_system_request', 'SN1SystemRequest'),
+    ('func-mips64-sn1_warm_reset', 'sn1-warm-reset',
+     'test_sn1_warm_reset', 'SN1WarmReset'),
+]
+
+
 def smoke(args):
     build = Build(args.build)
     script_suites(BUILD_SCRIPT_SUITES, build.python)
     build.ninja('tests/functional/mips64-linux_kernel.tstamp',
-                'tests/functional/mips64-sn0_smp.tstamp')
+                'tests/functional/mips64-sn0_smp.tstamp',
+                *(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
+                  '.tstamp' for target, *_ in GENERATED_ROM_FUNCTIONAL))
 
     # Pull requests run the quick setup, which leaves out the slow suite
     # and the cases a qtest registers only under g_test_slow(). The
@@ -305,6 +324,13 @@ def smoke(args):
                                     expected) + ['func-mips64-sn0_smp'],
                      expected)
 
+    for target, logbase, module, test_class in GENERATED_ROM_FUNCTIONAL:
+        expected = build.path / f'expected-{logbase}.txt'
+        build.meson_test(f'smoke-{logbase}',
+                         required_cases(build, module, test_class,
+                                        expected) + [target],
+                         expected)
+
     # sgi-unit includes the unit tests of the functional tests' lib_*.py
     # helpers.
     expected = build.path / 'expected-unit.txt'
@@ -328,6 +354,8 @@ FULL_FUNCTIONAL = [
      'test_irix_miniroot', 'IrixMiniroot', None),
     ('func-mips64-sn0_smp', 'full-smp',
      'test_sn0_smp', 'SN0SMPMachine', None),
+    *((target, f'full-{logbase}', module, test_class, None)
+      for target, logbase, module, test_class in GENERATED_ROM_FUNCTIONAL),
 ]
 
 

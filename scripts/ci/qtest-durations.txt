@@ -102,10 +102,8 @@ qtest-mips64/sn0-qtest-cpu-test 44
 qtest-mips64/sn0-r10k-perf-migration-test 11
 qtest-mips64/sn0-r10k-test 5
 qtest-mips64/sn0-router-test 76
-qtest-mips64/sn0-smp-rendezvous-test 12
 qtest-mips64/sn0-snapshot-test 3
 qtest-mips64/sn0-tigon-test 32
-qtest-mips64/sn0-warm-reset-test 264
 qtest-mips64/sn0-widget-decode-test 3
 qtest-mips64/sn0-xbow-test 10
 qtest-mips64/sn0-xbow-transport-test 3
@@ -131,9 +129,6 @@ qtest-mips64/sn1-odyssey-query-test 25
 qtest-mips64/sn1-odyssey-test 189
 qtest-mips64/sn1-pci-expansion-module-test 8
 qtest-mips64/sn1-pi-gfx-test 7
-qtest-mips64/sn1-presence-test 37
-qtest-mips64/sn1-system-request-test 2
-qtest-mips64/sn1-warm-reset-test 1
 qtest-mips64/sn1-xbridge-chip-test 35
 qtest-mips64/sn1-xbridge-test 13
 qtest-mips64/sn1-xbridge-xbow-test 3

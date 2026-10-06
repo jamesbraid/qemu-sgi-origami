@@ -73,9 +73,7 @@ slow_qtests = {
   'sn0-qtest-cpu-test': 240,
   'sn0-r10k-perf-migration-test': 110,
   'sn0-router-test': 350,
-  'sn0-smp-rendezvous-test': 90,
   'sn0-tigon-test': 320,
-  'sn0-warm-reset-test': 1100,
   'sn1-address-map-test': 340,
   'sn1-bedrock-flash-test': 110,
   'sn1-bedrock-md-test': 160,
@@ -86,7 +84,6 @@ slow_qtests = {
   'sn1-l1-test': 110,
   'sn1-odyssey-query-test': 100,
   'sn1-odyssey-test': 3400,
-  'sn1-presence-test': 140,
   'sn1-xbridge-chip-test': 190,
   'xframe-test': 70,
   # Not yet re-measured: both run several times slower under meson's
@@ -394,8 +391,7 @@ sn1_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-address-map-test', 'sn1-cross-node-test',
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
-     'sn1-presence-test', 'sn1-system-request-test',
-     'sn1-io8-scsi-test', 'sn1-warm-reset-test',
+     'sn1-io8-scsi-test',
      'sn1-pi-gfx-test', 'sn1-fuel-test', 'sn1-fuel-usb-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
@@ -436,8 +432,6 @@ sn0_machine_qtests = \
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
-                                                   'sn0-smp-rendezvous-test',
-                                                   'sn0-warm-reset-test',
                                                    'sn0-migration-test',
                                                    'sgi-migration-roundtrip-test',
                                                    'sn0-snapshot-test',

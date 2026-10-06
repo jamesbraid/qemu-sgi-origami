@@ -17,6 +17,27 @@ test_mips64_timeouts = {
   # L1 reset or console power cycles. Keep the former combined budget until
   # separate CI timings establish a smaller one.
   'sn1_l1_reset' : 900,
+  # Two launches of a generated PROM on an Origin 300, each waiting for one
+  # reset round trip: 0.9s together on 2026-10-05. The budget bounds a hang.
+  'sn1_warm_reset' : 120,
+  # Four launches of a two-processor Origin 300 PROM, two of them running a
+  # million-iteration loop on each processor under multi-threaded TCG: 2.0s
+  # on 2026-10-05.
+  'sn1_system_request' : 300,
+  # Fifteen launches of a four-processor Origin 300 PROM (five programs under
+  # each of multi-threaded, round-robin and instruction-counting scheduling),
+  # several waiting out half a second of real-time counter or a two second
+  # park bound: 27s on 2026-10-05, 45s the first time.
+  'sn1_presence' : 600,
+  # Three launches of a generated four-processor Origin 200 ROM: one running
+  # thirty-two guest-requested resets, two publishing through Hub scratch
+  # registers either side of a reset. 9-11s on 2026-10-05; the qtest it
+  # replaces took 264s in a loaded CI run.
+  'sn0_warm_reset' : 600,
+  # Seven launches of a generated four-processor Origin 200 ROM, each waiting
+  # on a guest rendezvous; the pending-read cases also wait for the node one
+  # pair to be scheduled, bounded at 30s. 3.6s on 2026-10-05.
+  'sn0_smp_rendezvous' : 600,
   # Three methods in this script: the original two first-line-only
   # smoke boots (about a second each) plus a four-CPU boot through a
   # writable boot flash (lib_origin300.py) and the machine's synthetic
@@ -277,6 +298,11 @@ tests_mips64_system_quick = [
   'sn0_smp',
   'sn0_reset',
   'sn1_l1_reset',
+  'sn1_warm_reset',
+  'sn1_system_request',
+  'sn1_presence',
+  'sn0_warm_reset',
+  'sn0_smp_rendezvous',
   'origin2000_cache_reset',
 ]
 
