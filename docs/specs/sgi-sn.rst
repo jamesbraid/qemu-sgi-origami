@@ -49,6 +49,246 @@ contract and compiled descriptor this page describes; only its node
 device (``sgi-sn1-node``, ``hw/mips/sgi/sn1-node.c``) is
 product-specific, the way each SN0 node's own device is.
 
+.. _sgi-sn-product-family:
+
+Product family
+==============
+
+This section is the hardware contract the SN model layers cite for
+the products, bricks and cabling they describe. Each fact is rated
+*established* (a cited specification or manual, or an identified real
+machine), *inferred* (follows from established facts by the stated
+step), *approximation* (an emulator value standing in for unknown
+hardware) or *unknown*. SGI manuals are cited by document number and
+printed page; forum captures by site and thread number. The Origin
+3000 bricks, the NUMAlink module and the Origin 350 are reference
+models in the catalogue's sources: the emulator does not build those
+machines.
+
+.. _sgi-sn-family-table:
+
+Family summary
+--------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - Node board and ASIC
+     - CPUs and memory per node
+     - Fabric
+     - I/O attachment
+   * - Origin 2000, Onyx2
+     - IP27 (or IP31), Hub
+     - 2 processors; 16 main and 8 directory DIMM slots, 8 banks of 64
+       to 512 MB, 64 MB to 4 GB, bank 0 required
+     - CrayLink: two Routers per module, two modules per rack
+     - two Crossbows per midplane; BaseIO in slot IO1
+   * - Origin 3000
+     - IP35 C-brick, Bedrock
+     - 2 or 4 on one or two PIMMs, R12000 360 MHz or R12000A
+       400 MHz; 8 DIMM slots, banks 0 to 7, 512 MB to 8 GB
+     - NUMAlink 3 through 8-port R-bricks
+     - no crossbar in the C-brick; XBridge crossbar in the I-, P- and
+       X-bricks
+   * - Origin 350
+     - IP53, Bedrock
+     - 2 or 4 R16000; 8 DIMM slots as four pairs, 512 MB or 1 GB DIMMs,
+       1 to 8 GB
+     - NUMAlink 3, one external port; a NUMAlink module for 4 to 32
+       processors
+     - PIC, two PCI-X heads on one widget; factory IO9 card
+
+Sources and ratings, by row:
+
+- Origin 2000 (established): *Origin and Onyx2 Theory of Operations
+  Manual*, 007-3439-002, printed pages 35-36 (memory) and 59 (Xpress
+  links); *Origin200/2000 IP27 PROM* technical reference, 108-0170-001,
+  printed pages 1-1 to 1-4 and 6-3 to 6-6 (Router ports and module
+  slots).
+- Origin 3000 (established): *Origin 3000 System Architecture*,
+  108-0240-002, printed pages 2-4 (processors and PIMMs) and 2-26 to
+  2-29 (XBridge ports and the I-brick).
+- Origin 350 (established): *SGI Origin 350 Server System User's
+  Guide*, 007-4566-001, printed pages 69 (configurations), 114 and 116
+  (node board and DIMM pairs).
+
+.. _sgi-sn-family-origin2000-xpress:
+
+Origin 2000 two-module racks and Xpress links
+---------------------------------------------
+
+A rack holds two modules (established, 007-3439-002). Within and
+between modules, Link 1 runs vertically between the upper and lower
+Routers of the same letter, and Link 2 is the Xpress link, which must
+cross. Xpress links are only used in systems of 16 or 32 processors
+(established, 007-3439-002 printed page 59; the cabling is drawn in
+SGI field-service manual 108-0174-001, printed pages 6-35 to 6-48). The ``origin2000-two-module-xpress``
+layer records that wiring as a reference configuration the emulator
+does not build; its fitted memory is a model choice.
+
+.. _sgi-sn-family-origin3000-cbrick:
+
+Origin 3000 C-brick
+-------------------
+
+Each compute node holds one or two PIMMs of two processors each,
+R12000 at 360 MHz or R12000A at 400 MHz, with 4 or 8 MB of secondary
+cache (established, 108-0240-002 printed page 2-4). The C-brick has no
+crossbar of its own: its Bedrock reaches I/O through a Crosstown2 port
+into an I-, P- or X-brick's XBridge, whose crossbar section does the
+switching (established, 108-0240-002 printed page 2-26). The layer's
+C-brick buses -- one SysAD per processor interface and one XIO port
+reaching I-brick host ports A and B -- follow from this.
+
+.. _sgi-sn-family-ibrick:
+
+I-brick host ports and base I/O
+-------------------------------
+
+The XBridge has eight ports: Crosstown2 ports A and B, Crosstalk ports
+8, 9, C and D, and PCI ports E and F (established, 108-0240-002 printed
+page 2-26). In the I-brick, compute nodes attach at port A (widget 10)
+and port B (widget 11). Port E drives bus 2, two 33 or 66 MHz slots;
+port F drives bus 1, three 33 MHz slots, and the IO7 devices
+(established, printed pages 2-28 and 2-29, Figure 2-23).
+
+Three owners' IRIX inventories of an Onyx 3000, an Origin 3200 and an
+Origin 3400 (Nekonomicon forum 14, threads 16719632, 16723604 and
+16720581) print the same base I/O bus at
+``/hw/module/<c>/Ibrick/xtalk/15`` (established, three identified
+machines):
+
+.. list-table::
+   :header-rows: 1
+
+   * - PCI slot
+     - Device
+     - PCI identity
+   * - 1
+     - QLogic 2200 Fibre Channel
+     - ``1077:2200``
+   * - 4
+     - IOC3
+     - ``10a9:0003``
+   * - 5
+     - Lucent USB OHCI
+     - ``11c1:5802``
+   * - 6
+     - TI TSB12LV22 IEEE 1394 OHCI
+     - ``104c:8009``
+
+They report I-brick board ``030-1557-007`` at revisions A, D and F,
+and a second Fibre Channel function at ``xtalk/14/pci/1``. Widget 15
+is port F and widget 14 port E, matching the block diagram (inferred).
+Unknown: the I-brick XBridge revision, and which host port a booting
+I-brick uses; a verbose Origin 3000 PROM boot would settle both, and
+none is published.
+
+.. _sgi-sn-family-rbrick:
+
+R-brick and NUMAlink module ports
+---------------------------------
+
+The R-brick router has eight ports, 1 to 8. C-bricks must use ports
+2 to 5; router-to-router links normally use 1, 6, 7 and 8; Origin 3400
+R-bricks disable ports 7 and 8 (established, *SGI Origin 3000 Series
+Technical Configuration Owner's Guide*, 007-4311-002, printed pages
+36-37; 108-0266-001 printed pages 40-41). The router ASIC itself is not
+named in any SGI document found (unknown).
+
+The Origin 300 NUMAlink module uses the same board. Ports 1, 6, 7 and 8
+take base modules only; ports 2 to 5 take base or PCI expansion
+modules and carry USB to the L2 controller (established, *SGI Origin
+300 System with NUMAlink Module User's Guide*, 007-4498-002, printed
+pages 4, 10-11, 16 and 93-98). In the tall rack (Figure 4-2) the
+cabling runs:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Base module position
+     - U28
+     - U26
+     - U24
+     - U22
+     - U18
+     - U16
+     - U14
+     - U12
+   * - NUMAlink module port
+     - 3
+     - 2
+     - 1
+     - 8
+     - 7
+     - 6
+     - 5
+     - 4
+
+This mapping is established from the manual's figure, and a live
+six-chassis rack whose modules at U12, U14, U18, U22 and U24 reported
+active ports 1, 4, 5, 7 and 8 (Nekonomicon thread 16727514) agrees
+with it. The layer's eight router-port buses carry these port numbers.
+
+.. _sgi-sn-family-origin350:
+
+Origin 350 compute module
+-------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Fact
+     - Rating and basis
+   * - Two or four R16000, 4 MB secondary cache each
+     - established: 007-4566-001 printed pages 69 and 116
+   * - Eight DIMM slots in four pairs, each pair feeding a pair of banks;
+       the two DIMMs of a pair match; 1 to 8 GB
+     - established: printed pages 114 and 116
+   * - One Bedrock, revision 2 at 200 MHz
+     - Bedrock established (printed page 69); revision 2 observed in one
+       Origin 350 inventory (Nekonomicon thread 16729141)
+   * - NUMAlink 3, one external LINK connector, empty in a one-module
+       system
+     - established: printed page 69 (with or without a NUMAlink module)
+   * - PIC: one widget with two PCI-X heads, the second head's registers
+       0x800000 above the first; PIC at widget 15
+     - two heads and the offset established (OpenBSD/sgi
+       ``sys/arch/sgi/xbow/xbridgereg.h`` lines 24-28 and ``xbowdevs``,
+       part ``0xd102``, second head ``0xd112``, manufacturer ``0x024``,
+       at ``2df91d80c104636deeef8124252ddd5951b55fbf``); widget 15
+       observed in one Origin 350 inventory
+   * - IO9 in the lowermost slot, on bus 1: IOC4 ``10a9:100a`` at
+       configuration device 1, ISP12160 ``1077:1216`` revision 6 at 3,
+       BCM5701 ``14e4:1645`` revision ``0x15`` at 4
+     - IO9 placement established (printed page 69); device numbers
+       observed in every captured IP53 inventory. PIC's configuration
+       devices are its internal slots plus one (OpenBSD ``xbridge.c``),
+       so IRIX's PCI ids are OpenBSD's devices plus one (inferred).
+   * - L1 controller with a display; L2 only with a NUMAlink module
+     - established: 007-4566-001, printed pages 68-75
+
+Unknown: the Origin 350's widget identity words for Bedrock and PIC,
+and the widget at which Bedrock enters the crossbar on an Origin 350
+compute module. One IP53 graphics-blade PROM trace places Bedrock at
+widget ``0xb`` (graphica, "SGI O350 Chimera notes",
+https://just.graphica.com.au/tips/sgi-o350-chimera-notes/, retained
+copy SHA-256
+``a839d88fdd9703e8d5ed03c290282d144c9339302cddbfc7d1912a0e04e77f44``,
+lines 949-952), which may not transfer to a compute module.
+
+.. _sgi-sn-family-bedrock:
+
+Bedrock revisions
+-----------------
+
+Every published IRIX inventory of an Origin 300, Origin 3000, Origin
+350, Fuel or Onyx 4 reports the Bedrock (printed as ``HUB``) at
+revision 2, 200 MHz (observed, many machines). No capture shows another
+revision. The raw register value behind IRIX's revision field is
+unknown.
+
 Products and topology
 =====================
 
