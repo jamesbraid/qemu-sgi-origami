@@ -738,4 +738,3 @@ sgi_l1_bic_startup_operation(unsigned int position, uint8_t bus, uint8_t address
 
 # DMA-only Hub buffers and the scalar packet fallback
 sgi_hub_ii_packet_access(uint64_t addr, unsigned size, bool write) "addr=0x%" PRIx64 " size=%u write=%d"
-sgi_hub_ii_dma_buffer(uint64_t addr, uint64_t len, bool write, bool swap32) "addr=0x%" PRIx64 " len=%" PRIu64 " write=%d swap32=%d"

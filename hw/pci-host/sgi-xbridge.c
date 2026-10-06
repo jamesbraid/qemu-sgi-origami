@@ -191,15 +191,9 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
     return result;
 }
 
-/*
- * The decode the IOMMU region and the batched provider share. On success
- * the entry's target is the placement the request selects; *placement and
- * *onward say which, and the space beyond it.
- */
+/* On success the entry's target is the placement the request selects. */
 static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
-                                           IOMMUAccessFlags flag,
-                                           SGIDMAPlacement *placement,
-                                           AddressSpace **onward)
+                                           IOMMUAccessFlags flag)
 {
     SGIXBridgeHeadState *s = dma->head;
     IOMMUTLBEntry entry = {
@@ -211,9 +205,8 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     uint64_t destination;
     bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
+    SGIDMAPlacement placement;
 
-    *placement = SGI_DMA_PLACEMENT_IDENTITY;
-    *onward = NULL;
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
         entry.target_as = &s->flush_as;
         entry.translated_addr = addr & 0xf000;
@@ -268,17 +261,15 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
-    *placement = sgi_dma_placement_select(
+    placement = sgi_dma_placement_select(
         swap, s->dma_64bit & (1U << dma->slot));
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
-        *onward = NULL;
-        entry.target_as = sgi_dma_placement_as(&dma->source, *placement);
+        entry.target_as = sgi_dma_placement_as(&dma->source, placement);
         entry.translated_addr |= (hwaddr)widget << 48;
     } else {
-        *onward = &s->endpoint[widget].as;
         entry.target_as = sgi_dma_placement_as(&s->endpoint[widget].placement,
-                                               *placement);
+                                               placement);
     }
     entry.perm = IOMMU_RW;
 
@@ -294,10 +285,8 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                                       IOMMUAccessFlags flag, int iommu_idx)
 {
     struct XBridgeDMA *dma = container_of(iommu, struct XBridgeDMA, iommu);
-    SGIDMAPlacement placement;
-    AddressSpace *onward;
 
-    return xbridge_dma_translate(dma, addr, flag, &placement, &onward);
+    return xbridge_dma_translate(dma, addr, flag);
 }
 
 static AddressSpace *xbridge_dma_as(PCIBus *bus, void *opaque, int devfn)
@@ -310,79 +299,6 @@ static AddressSpace *xbridge_dma_as(PCIBus *bus, void *opaque, int devfn)
         return &s->denied_as;
     }
     return &s->dma[PCI_SLOT(devfn)].as;
-}
-
-static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
-                                        void *buf, dma_addr_t *len,
-                                        DMADirection dir, MemTxAttrs attrs,
-                                        const SGIDMABufferRequest *request,
-                                        MemTxResult *result)
-{
-    struct XBridgeDMA *dma = opaque;
-    SGIXBridgeHeadState *s = dma->head;
-    bool write = dir == DMA_DIRECTION_FROM_DEVICE;
-    IOMMUTLBEntry entry;
-    hwaddr translated, length, span;
-    AddressSpace *target, *onward;
-    SGIDMAPlacement placement;
-    bool correct;
-    SGIDMABufferRequest composed = *request;
-
-    if (attrs.memory || s->packet_sender ||
-        (request->swap32 && ((addr & 3) || *len < 4 ||
-                            (request->max_access_size &&
-                             request->max_access_size < 4)))) {
-        return false;
-    }
-    entry = xbridge_dma_translate(dma, addr, write ? IOMMU_WO : IOMMU_RO,
-                                  &placement, &onward);
-    span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
-    length = span;
-    if (!(entry.perm & (1 << write))) {
-        length = memory_access_size(&s->denied, length, addr);
-        if (request->swap32 || request->max_access_size) {
-            length = MIN(span, request->swap32 ? 4 :
-                               request->max_access_size);
-        }
-        *result = sgi_dma_buffer_native_rw(&s->denied_as, addr, buf,
-                                            length, dir, attrs, request);
-    } else {
-        translated = (entry.translated_addr & ~entry.addr_mask) |
-                     (addr & entry.addr_mask);
-        /* Only the word placement composes with a converted request. */
-        correct = placement == SGI_DMA_PLACEMENT_WORD;
-        composed.swap32 ^= correct;
-        target = correct ? onward : entry.target_as;
-        if (!sgi_dma_buffer_try_rw(target, translated, buf, &length, dir,
-                                   attrs, &composed, result)) {
-            if (correct) {
-                length = memory_access_size(entry.target_as->root,
-                    MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
-            }
-            /* The outer facade splits the operation before leaf dispatch. */
-            if (request->swap32 || request->max_access_size) {
-                length = MIN(span, request->swap32 ? 4 :
-                                   request->max_access_size);
-            }
-            *result = sgi_dma_buffer_native_rw(entry.target_as, translated, buf,
-                                               length, dir, attrs, request);
-        }
-    }
-    *len = length;
-    return true;
-}
-
-static const SGIDMABufferProvider *
-xbridge_dma_buffer_provider(Object *owner, MemoryRegion *mr)
-{
-    SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(owner);
-
-    for (unsigned slot = 0; slot < G_N_ELEMENTS(s->dma); slot++) {
-        if (mr == &s->dma[slot].iommu.parent_obj) {
-            return &s->dma[slot].provider;
-        }
-    }
-    return NULL;
 }
 
 static const PCIIOMMUOps xbridge_iommu_ops = {
@@ -1053,8 +969,6 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
 
         s->dma[i].head = s;
         s->dma[i].slot = i;
-        s->dma[i].provider.transfer = xbridge_dma_buffer_transfer;
-        s->dma[i].provider.opaque = &s->dma[i];
         if (s->packet_sender) {
             g_autofree char *source_name = g_strdup_printf(
                 "xbridge.source-%u", i);
@@ -1190,7 +1104,6 @@ static void xbridge_class_init(ObjectClass *oc, const void *data)
     rc->phases.hold = xbridge_reset_hold;
     rc->phases.exit = xbridge_reset_exit;
     device_class_set_props(dc, xbridge_properties);
-    SGI_DMA_BUFFER_CLASS(oc)->get_provider = xbridge_dma_buffer_provider;
 }
 
 static void xbridge_init(Object *obj)
@@ -1215,7 +1128,6 @@ static const TypeInfo xbridge_type = {
     .instance_init = xbridge_init,
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_HOTPLUG_HANDLER },
-        { TYPE_SGI_DMA_BUFFER },
         { },
     },
 };
