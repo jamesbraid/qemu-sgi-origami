@@ -225,6 +225,15 @@ typedef struct R10KState {
      * index bound uses it, never a re-decoded Config0 SS field.
      */
     uint32_t scache_size;
+    /*
+     * The geometry that capacity and the line size give, worked out once
+     * at realize: the CACHE instruction needs it for every line an
+     * operating system writes back, and neither input ever changes.
+     */
+    uint32_t scache_line_size;
+    uint32_t scache_sets;
+    uint32_t scache_quad_sets;
+    bool scache_geometry_valid;
     uint32_t *scache_taglo;
     uint8_t *scache_taghi;
     uint8_t *scache_mru;

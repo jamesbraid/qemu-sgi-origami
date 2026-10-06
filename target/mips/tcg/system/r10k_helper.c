@@ -32,33 +32,25 @@ static unsigned int r10k_scache_size(const CPUMIPSState *env)
     return env->r10k->scache_size;
 }
 
+/* Realize works the geometry out once; see r10k_scache_geometry_init(). */
 static unsigned int r10k_scache_line_size(const CPUMIPSState *env)
 {
-    return env->cfg.scache_line_size ? env->cfg.scache_line_size :
-           R10K_SCACHE_LINE_SIZE;
+    return env->r10k->scache_line_size;
 }
 
 static unsigned int r10k_scache_sets(const CPUMIPSState *env)
 {
-    return r10k_scache_size(env) / r10k_scache_line_size(env) /
-           R10K_SCACHE_WAYS;
+    return env->r10k->scache_sets;
 }
 
 static unsigned int r10k_scache_quad_sets(const CPUMIPSState *env)
 {
-    return r10k_scache_size(env) / 16 / R10K_SCACHE_WAYS;
+    return env->r10k->scache_quad_sets;
 }
 
 static bool r10k_scache_geometry_valid(const CPUMIPSState *env)
 {
-    unsigned int size = r10k_scache_size(env);
-    unsigned int line_size = r10k_scache_line_size(env);
-
-    return size && (line_size == 64 || line_size == R10K_SCACHE_LINE_SIZE) &&
-           size / line_size <= R10K_SCACHE_MAX_TAGS &&
-           size / line_size / R10K_SCACHE_WAYS <= R10K_SCACHE_MAX_SETS &&
-           size / 8 <= R10K_SCACHE_MAX_DWORDS &&
-           size / 16 <= R10K_SCACHE_MAX_QUADWORDS;
+    return env->r10k->scache_geometry_valid;
 }
 
 /*

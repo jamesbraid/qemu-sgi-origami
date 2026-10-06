@@ -1922,6 +1922,106 @@ static void test_r10k_scache_reset_mode_capacity(void)
     qtest_quit(qts);
 }
 
+/*
+ * The line size picks the secondary-cache set an index operation names.
+ * With 128-byte lines an address and the one 64 bytes above it share a
+ * set, so the second Index Store Tag replaces the first; with 64-byte
+ * lines they are neighbouring sets and each keeps its own tag. The model
+ * works this geometry out once per processor, so both widths are pinned.
+ */
+#define SCACHE_LINE_A_ADDR      0xffffffff80001000ULL /* way 0 */
+#define SCACHE_LINE_TAG_A       0x5a5a4c00u
+#define SCACHE_LINE_TAG_B       0x2a5a0c00u
+#define SCACHE_LINE_A_OFF       0x30
+#define SCACHE_LINE_B_OFF       0x38
+
+typedef struct ScacheLineCase {
+    const char *path;
+    const char *cpu;
+    uint32_t expect_a;
+} ScacheLineCase;
+
+static void scache_line_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+    img.pos = VEC_TLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_XTLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_CACHE_ERROR;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_GENERAL;
+    llsc_emit_fault_stub(&img);
+
+    img.pos = CODE_START;
+    emit_lui(&img, R_S0, STATE_KSEG1_HI);
+    emit_mtc0(&img, R_ZERO, CP0_TAGHI);
+    emit_li64(&img, R_S1, SCACHE_LINE_A_ADDR);
+    emit_li32(&img, R_T0, SCACHE_LINE_TAG_A);
+    emit_mtc0(&img, R_T0, CP0_TAGLO);
+    emit_cache(&img, CACHE_S_INDEX_STORE_TAG, R_S1);
+    emit_li64(&img, R_S2, SCACHE_LINE_A_ADDR + 64);
+    emit_li32(&img, R_T0, SCACHE_LINE_TAG_B);
+    emit_mtc0(&img, R_T0, CP0_TAGLO);
+    emit_cache(&img, CACHE_S_INDEX_STORE_TAG, R_S2);
+
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO);
+    emit_cache(&img, CACHE_S_INDEX_LOAD_TAG, R_S1);
+    emit_mfc0(&img, R_T0, CP0_TAGLO);
+    emit_sd(&img, R_T0, R_S0, SCACHE_LINE_A_OFF);
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO);
+    emit_cache(&img, CACHE_S_INDEX_LOAD_TAG, R_S2);
+    emit_mfc0(&img, R_T0, CP0_TAGLO);
+    emit_sd(&img, R_T0, R_S0, SCACHE_LINE_B_OFF);
+
+    emit_report_and_spin(&img, LLSC_DONE_MAGIC, LLSC_DONE_OFF);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void test_r10k_scache_line_size(gconstpointer opaque)
+{
+    const ScacheLineCase *c = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-scache-line-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    scache_line_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", c->cpu, image);
+    unlink(image);
+    wait_for_done(qts);
+
+    g_assert_cmphex((uint32_t)qtest_readq(qts,
+                                          STATE_PHYS + SCACHE_LINE_A_OFF),
+                    ==, c->expect_a);
+    g_assert_cmphex((uint32_t)qtest_readq(qts,
+                                          STATE_PHYS + SCACHE_LINE_B_OFF),
+                    ==, SCACHE_LINE_TAG_B);
+    qtest_quit(qts);
+}
+
+static const ScacheLineCase scache_line_cases[] = {
+    { "/r10k/scache/line-size/128", "R10000", SCACHE_LINE_TAG_B },
+    {
+        "/r10k/scache/line-size/64",
+        "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+        "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
+        "r12000-scache-block-words=16",
+        SCACHE_LINE_TAG_A,
+    },
+};
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1954,6 +2054,11 @@ int main(int argc, char **argv)
                    test_r10k_fpu_fast_path);
     qtest_add_func("/r10k/scache/reset-mode-capacity",
                    test_r10k_scache_reset_mode_capacity);
+    for (unsigned int i = 0; i < ARRAY_SIZE(scache_line_cases); i++) {
+        g_test_add_data_func(scache_line_cases[i].path,
+                             &scache_line_cases[i],
+                             test_r10k_scache_line_size);
+    }
 
     return g_test_run();
 }
