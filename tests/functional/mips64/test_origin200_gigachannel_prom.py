@@ -15,7 +15,7 @@ load line and passing diagnostics.
 
 import os
 
-from lib_prom import FIRMWARE_REL
+from lib_prom import FIRMWARE_REL, launch_paused
 
 from qemu_test import QemuSystemTest
 from qemu_test import skipIfMissingEnv
@@ -43,7 +43,7 @@ class _Origin200GigachannelProm:
         self.vm.set_machine(f'origin200,topology={topology},debug-leds=off')
         self.vm.add_args('-accel', 'tcg,thread=multi', '-smp', str(smp),
                          '-m', mem, '-bios', str(prom), *extra)
-        self.vm.launch()
+        launch_paused(self.vm)
 
 
 class Origin200GigachannelPromFlash(_Origin200GigachannelProm,

@@ -59,7 +59,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
 from qemu_test.utils import get_usernet_hostfwd_port
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console, launch_paused,
                       prom_netboot_steps, verdict)
 from lib_prom_sash import RELEASES
 
@@ -174,7 +174,7 @@ class LinuxMultiuser(QemuSystemTest):
                     'hostfwd=tcp:127.0.0.1:0-:22,'
                     f'tftp={os.path.dirname(kernel)},'
                     f'bootfile={NETBOOT_BOOTFILE}'))
-        vm.launch()
+        launch_paused(vm)
         ssh_host_port = get_usernet_hostfwd_port(vm)
         self.assertIsNotNone(
             ssh_host_port,

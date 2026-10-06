@@ -37,7 +37,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
-                      run_record, utc_now)
+                      launch_paused, run_record, utc_now)
 from lib_prom_mdk import (PROM_SHA256, mdk_extra_args,
                           payload_identity_problems)
 from lib_prom_mdk_router import NETBOOT_PATH, verdict
@@ -103,7 +103,7 @@ class PromMdkRouter(QemuSystemTest):
         vm.add_args('-accel', 'tcg,thread=multi', *extra)
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('mdk.log')
         try:
             transcript, reached = drive_console(

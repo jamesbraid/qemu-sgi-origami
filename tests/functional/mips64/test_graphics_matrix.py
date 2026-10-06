@@ -26,7 +26,7 @@ import re
 from lib_matrix import (AttemptResult, MatrixError, matrix_rows, qemu_args,
                         verdict)
 from lib_graphics_matrix import SCENARIOS, peek_row, parse_row, run_steps
-from lib_prom import drive_console
+from lib_prom import drive_console, launch_paused
 from lib_screen import (ScreenCheckError,
                         poll_screendump_until_checks_pass)
 
@@ -92,7 +92,7 @@ def _boot_one_attempt(test, cell, attempt_index):
                '-nic', 'user,id=net0')
 
     try:
-        vm.launch()
+        launch_paused(vm)
     except Exception as exc:  # pylint: disable=broad-except
         # Matches test_origin200_matrix.py's own reasoning: a launch
         # failure is infrastructure, never a quiet reached_pass=False.

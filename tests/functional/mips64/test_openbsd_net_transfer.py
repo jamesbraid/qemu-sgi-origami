@@ -42,7 +42,7 @@ from lib_net import (LEASE_HANDSHAKE, OPENBSD_LOGIN_STAGES,
                      HarnessError, lease_established, login_steps,
                      ordered_stages, summarise_pcap,
                      transfer_result_pattern)
-from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps)
+from lib_prom import FIRMWARE_REL, MACHINES, launch_paused, prom_netboot_steps
 from lib_prom_sash import RELEASES
 
 
@@ -523,7 +523,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                      'hostfwd=tcp:127.0.0.1:0-'
                      f'{GUEST_ADDR}:{GUEST_LISTEN_PORT}'),
             '-object', f'filter-dump,id=fd0,netdev=n1,file={pcap_path}')
-        vm.launch()
+        launch_paused(vm)
 
         fwd_port = get_usernet_hostfwd_port(vm)
         self.assertIsNotNone(

@@ -41,7 +41,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
-                      run_record, utc_now)
+                      launch_paused, run_record, utc_now)
 from lib_prom_mdk import (CPU_MDK_SHA256, NETBOOT_PATH, PROM_SHA256,
                           artifact_identity_problems,
                           mdk_extra_args, verdict)
@@ -107,7 +107,7 @@ class PromMdk(QemuSystemTest):
                                     capture))
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('mdk.log')
         try:
             transcript, reached = drive_console(

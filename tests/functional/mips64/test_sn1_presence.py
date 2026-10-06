@@ -61,7 +61,7 @@ import time
 from lib_mips import (R_A0, R_A1, R_A2, R_S0, R_S1, R_S2, R_S3, R_S4, R_S5,
                       R_S6, R_S7, R_T0, R_T1, R_T2, R_T3, R_T4, R_T5, R_ZERO,
                       PromImage, mips_i, mips_r)
-from lib_prom import MACHINES
+from lib_prom import MACHINES, launch_paused
 from qemu_test import QemuSystemTest
 
 R_FP = 30
@@ -485,7 +485,7 @@ class SN1Presence(QemuSystemTest):
         self.vm.set_machine(MACHINES['origin300'])
         self.vm.add_args('-cpu', 'R14000', '-smp', '4', *accel,
                          '-bios', prom, '-no-shutdown')
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # Completion is a guest observation, independent of host speed;
         # the test's own timeout bounds a hang.

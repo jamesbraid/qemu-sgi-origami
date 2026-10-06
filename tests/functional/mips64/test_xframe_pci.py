@@ -85,7 +85,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
 from qemu_test.asset import LocalAsset
 
 from lib_net import OPENBSD_TRIPWIRES, ordered_stages
-from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console, launch_paused,
                       prom_netboot_steps)
 from lib_prom_sash import RELEASES
 
@@ -211,7 +211,7 @@ class XframePci(QemuSystemTest):
             '-drive', f'if=none,id=hd0,file={disk},format=raw',
             '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
             *XFRAME_ARGS)
-        vm.launch()
+        launch_paused(vm)
 
         log_path = self.log_file('xframe-pci.log')
         try:

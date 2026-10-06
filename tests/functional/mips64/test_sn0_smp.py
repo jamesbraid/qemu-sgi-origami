@@ -11,7 +11,7 @@ from qemu_test import QemuSystemTest
 
 from lib_mips import (R_A0, R_A2, R_AT, R_S0, R_S1, R_S2, R_S3, R_T0, R_T1,
                       R_T2, R_T3, R_T4, R_ZERO, MipsProgram, mips_i, mips_r)
-from lib_prom import MACHINES
+from lib_prom import MACHINES, launch_paused
 from lib_sn0_hub import (emit_assign_peer_nasid_if_master,
                          emit_local_hub_address, emit_read_is_slave,
                          emit_wait_for_own_nasid_if_slave, load_u32,
@@ -1223,7 +1223,7 @@ class SN0SMPMachine(QemuSystemTest):
                          f'{RTC_POLL_RR_KICK_PERIOD_NS}',
                          '-icount', 'shift=2,align=off,sleep=on',
                          '-smp', '2', '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # A monitor request interrupts TCG, so let the race settle
         # first: an xp read is itself a scheduling kick that can run the
@@ -1253,7 +1253,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-smp', '2', '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # DONE, CPU B's last store, orders after every asserted word
         # except CPU A's own CACHED_A read-back, which only program
@@ -1279,7 +1279,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-accel', 'tcg,thread=single,rr-kick-period-ns=1000',
             '-icount', 'shift=2,align=off,sleep=on',
             '-smp', '2', '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # DONE and TIMEOUT are CPU A's two terminal spins; wait for
         # either and let the assertions name which one the guest took.
@@ -1318,7 +1318,7 @@ class SN0SMPMachine(QemuSystemTest):
             f'tcg,thread=single,rr-kick-period-ns='
             f'{RT_TICK_RR_KICK_PERIOD_NS}',
             '-smp', '2', '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         state = self.wait_for_rt_tick_state()
         self.assertEqual(state[RT_TICK_DONE // 8], 1, state)
@@ -1344,7 +1344,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-m', '64M', '-smp', '2', '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # The ver response prefix is the last state word slice B stores;
         # wait for it, then stop for one consistent snapshot.
@@ -1388,7 +1388,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-m', '128M',
             '-smp', '4',
             '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
         state = self.wait_for_four_cpu_state()
         entry_node0 = self.read_state(FOUR_CPU_ENTRY_NODE0, 2)
         entry_node1 = self.read_state(FOUR_CPU_ENTRY_NODE1, 2)
@@ -1440,7 +1440,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-m', '128M',
             '-smp', '4',
             '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
         state = self.wait_for_four_cpu_state(timeout=30)
         entry_node0 = self.read_state(FOUR_CPU_ENTRY_NODE0, 2)
         entry_node1 = self.read_state(FOUR_CPU_ENTRY_NODE1, 2)
@@ -1490,7 +1490,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-m', '128M',
             '-smp', '4',
             '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
         state = self.wait_for_dual_node_state(timeout=30)
 
         counter_a = state[DUAL_COUNTER_A // 8]
@@ -1528,7 +1528,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-m', '128M',
             '-smp', '4',
             '-bios', firmware)
-        self.vm.launch()
+        launch_paused(self.vm)
         state = self.wait_for_dual_node_state(timeout=30)
 
         counter_a = state[DUAL_COUNTER_A // 8]

@@ -29,7 +29,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, file_sha256,
-                      run_record, utc_now)
+                      launch_paused, run_record, utc_now)
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
 from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
@@ -138,7 +138,7 @@ class PromPod(QemuSystemTest):
                     '-audio', 'none')
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('pod.log')
         try:
             transcript, reached = _drive_pod(
