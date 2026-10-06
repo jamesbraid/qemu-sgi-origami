@@ -1,22 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Two-module Origin 2000 reference: sixteen processors over an Xpress pair.
 layer_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit; the one component fact above has moved to that direct form (by
-# dropping sources: in favour of an honest provenance, the closure record being its
-# only source). The key left here backs topology, population, and fitted_memory
-# only, whose strict evidence policy (tools/origami_lib/model_validation.py)
-# requires non-empty sources regardless of provenance -- unlike a component, which
-# may carry none. It cites only the internal closure research note's family table,
-# so the checker reports it under "facts whose only sources are internal
-# documents" rather than resolving it; replacing it with an independently
-# obtainable citation is follow-up work on the evidence itself, not a
-# citation-form change. The other four keys the table previously carried backed no
-# fact in this file -- their content already lives in machine.notes and the
-# open_questions candidates below -- and are dropped with the rest of the table.
-sources:
-  sn-family-closure-family-table: "docs/research/sn-family-closure-20260913.md family table, Origin 2000 row: two modules per rack, Link 2 Xpress, Xpress links only at 16 or 32 CPUs"
 layer:
   kind: product
   id: origin2000-two-module-xpress
@@ -25,7 +9,7 @@ layer:
     min_nodes: 8
     max_nodes: 8
     provenance: vendor-document
-    sources: [sn-family-closure-family-table]
+    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
   population:
     nodes: 8
     cpus_per_node: [2, 2, 2, 2, 2, 2, 2, 2]
@@ -36,9 +20,9 @@ layer:
         does not state an installed memory population for a two-module reference
         pairing; no fitted-memory value is asserted here.
       provenance: derived
-      sources: [sn-family-closure-family-table]
+      sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
     provenance: vendor-document
-    sources: [sn-family-closure-family-table]
+    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,

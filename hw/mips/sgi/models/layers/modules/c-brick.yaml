@@ -1,20 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Origin 3000 C-brick: one Bedrock node, no onboard crossbar.
 layer_version: 1
-# The catalogue citation checker (tools/check-citations) resolves a sources: entry
-# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
-# public commit; every component fact above has moved to that direct form (or, where
-# the closure record was its only source, dropped sources: in favour of an honest
-# provenance). The two keys left here back the two buses and the five connections
-# only, whose strict evidence policy (tools/origami_lib/model_validation.py) requires
-# non-empty sources for every one regardless of provenance -- unlike a component,
-# which may carry none. Both cite only the internal closure research note, so the
-# checker reports them under "facts whose only sources are internal documents"
-# rather than resolving them; replacing them with an independently obtainable
-# citation is follow-up work on the evidence itself, not a citation-form change.
-sources:
-  sn-family-closure-c-brick: "docs/research/sn-family-closure-20260913.md family table, Origin 3000 row: 2 or 4 on 1-2 PIMMs; R12000 360, R12000A 400; 8 DIMM slots, banks 0-7, 512 MB-8 GB; NUMAlink 3; none [crossbar] in the C-brick, XBridge crossbar in I/P/X-bricks"
-  sn-family-closure-i-brick-ports: "docs/research/sn-family-closure-20260913.md, same section, I-brick paragraph: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E"
 layer:
   kind: module
   id: c-brick
@@ -67,11 +53,11 @@ layer:
         parent: chassis
         connector: {interface: xio, location: "0xB", occupancy: opaque, notes: One of two host ports an I-brick or other expansion brick attaches to.}
     buses:
-      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [sn-family-closure-c-brick]}
-      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-i-brick-ports]}
+      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-c-brick]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-c-brick]}
-      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-c-brick]}
-      - {component: host-port-a, bus: xio, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-i-brick-ports], notes: Widget 0xA; opaque unless module_instances wires an attached brick.}
-      - {component: host-port-b, bus: xio, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-i-brick-ports], notes: Widget 0xB; opaque unless module_instances wires an attached brick.}
+      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: host-port-a, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick], notes: Widget 0xA; opaque unless module_instances wires an attached brick.}
+      - {component: host-port-b, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick], notes: Widget 0xB; opaque unless module_instances wires an attached brick.}
