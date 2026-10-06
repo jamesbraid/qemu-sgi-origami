@@ -1089,6 +1089,75 @@ static void place_copy(QTestState *qts, unsigned route, bool swap,
     card_write(qts, 0xc, 2);
 }
 
+/*
+ * Behind a swap-clear slot the onward range is not RAM on an Origin 300 but
+ * the Bedrock's shared inbound window, which takes buffers of its own. A
+ * word placement must pass a long transfer on to it as one buffer, both
+ * ways, and leave the bytes the per-access rule leaves: written through the
+ * placement and copied back through it, the two word reversals cancel.
+ */
+static void test_placement_into_inbound_buffer(void)
+{
+    enum { LEN = 1000 };
+    const uint64_t inbound = 0xa000000000100000ULL;  /* bit 55 clear: words */
+    const uint64_t copy = 0xb080000000002000ULL;     /* bit 55 set: bytes */
+    GError *error = NULL;
+    g_autofree char *trace = NULL;
+    g_autofree char *contents = NULL;
+    uint8_t seen[LEN + 8], expected[LEN + 8];
+    QTestState *qts;
+    int fd = g_file_open_tmp("sn1-xbridge-inbound-XXXXXX", &trace, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    qts = qtest_initf("-M none -cpu R10000 -S "
+        "-object memory-backend-ram,id=dma,size=32M "
+        "-device sgi-bedrock-io,id=io,dma-memory=/objects/dma/dma[0] "
+        "-device sgi-xio-test-target,id=targetb "
+        "-device sgi-xbridge-head,id=head,"
+        "target-a=/machine/peripheral/io/sgi-bedrock-io-inbound[0],"
+        "target-b=/machine/peripheral/targetb/targetb.ram[0] "
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0 "
+        "-trace enable=sgi_dma_placement_buffer "
+        "-trace enable=sgi_bedrock_io_inbound_buffer,file=%s", trace);
+    qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/targetb", 0, TARGET_B);
+    qtest_writel(qts, BASE + 0x20010, 0x01000000);
+    qtest_writel(qts, BASE + 0x20004, 6);
+    reg_write(qts, 0x200, 0x3010);
+
+    card_write(qts, 0, (uint32_t)inbound);
+    card_write(qts, 0x18, inbound >> 32);
+    card_write(qts, 4, LEN);
+    card_write(qts, 8, PLACE_SEED);
+    card_write(qts, 0xc, 1);
+
+    qtest_memset(qts, TARGET_B + 0x2000, PLACE_SENTINEL, sizeof(seen));
+    card_write(qts, 0x14, (uint32_t)inbound);
+    card_write(qts, 0x1c, inbound >> 32);
+    card_write(qts, 0, (uint32_t)copy);
+    card_write(qts, 0x18, copy >> 32);
+    card_write(qts, 4, LEN);
+    card_write(qts, 0xc, 2);
+
+    memset(expected, PLACE_SENTINEL, sizeof(expected));
+    for (unsigned i = 0; i < LEN; i++) {
+        expected[i] = PLACE_SEED + i;
+    }
+    qtest_memread(qts, TARGET_B + 0x2000, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace, &contents, NULL, NULL));
+    g_assert_cmpint(g_unlink(trace), ==, 0);
+    g_assert_nonnull(strstr(contents, "write addr 0x100000 len 1000"));
+    g_assert_nonnull(strstr(contents, "read addr 0x100000 len 1000"));
+    g_assert_nonnull(strstr(contents,
+                            "addr 0x100000 len 1000 write 1 moved 1000"));
+    g_assert_nonnull(strstr(contents,
+                            "addr 0x100000 len 1000 write 0 moved 1000"));
+}
+
 typedef struct PlaceWidth {
     uint8_t req64;      /* the head's req64-slots: the board's wiring */
     bool card64;        /* the card type is a 64-bit PCI agent */
@@ -1937,6 +2006,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);
     add_placement_tests();
     qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
+    qtest_add_func("/sn1/xbridge/placement-into-inbound-buffer",
+                   test_placement_into_inbound_buffer);
     qtest_add_func("/sn1/xbridge/page-dma-bit29-compat",
                    test_page_dma_bit29_compat);
     qtest_add_func("/sn1/xbridge/page-dma-bit29-compat-faults",
