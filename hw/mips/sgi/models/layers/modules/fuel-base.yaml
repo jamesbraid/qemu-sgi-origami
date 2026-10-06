@@ -49,7 +49,7 @@ layer:
         description: The Fuel power-on test names Bedrock; its reported revision is inferred and its silicon revision is unknown.
         identity:
           # Inferred, as for Origin 300: two public Fuel inventories report
-          # revision 2 (docs/datasheets/ip34-fuel.md, node ASIC).
+          # revision 2.
           hardware_revision: 2
           notes: >-
             A real PROM 6.201 inventory reports Bedrock revision 2 on a

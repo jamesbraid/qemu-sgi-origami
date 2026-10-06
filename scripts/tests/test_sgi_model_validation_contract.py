@@ -539,7 +539,7 @@ class CheckSystemModelTests(unittest.TestCase):
             if component["id"] == "bedrock"
         )
         bedrock["datasheet_contracts"] = [
-            "docs/datasheets/not-present-in-this-checkout.md"
+            "qemu:docs/specs/not-present-in-this-checkout.rst"
         ]
         self.assertDocumentPasses(model)
 
@@ -553,7 +553,8 @@ class CheckSystemModelTests(unittest.TestCase):
                      if component["id"] == "hub")["datasheet_contracts"] = [contract]
                 self.assertDocumentPasses(changed)
         for contract in ("qemu:docs/specs/Sgi-Hub.rst", "qemu:docs/specs/sgi-hub.md",
-                         "qemu:docs/system/sgi-hub.rst", "docs/specs/sgi-hub.rst"):
+                         "qemu:docs/system/sgi-hub.rst", "docs/specs/sgi-hub.rst",
+                         "docs/datasheets/ioc3.md"):
             with self.subTest(contract=contract):
                 changed = copy.deepcopy(model)
                 next(component for component in changed["components"]

@@ -171,7 +171,7 @@ class ExportTests(unittest.TestCase):
     def test_origin2000_graphics_module_hubs_report_ni_revision_5(self):
         """`mgras_attach` (IRIX 6.5.30's SI Viz attach callback) reads
         NI_STATUS_REV_ID on the master node's Hub and refuses to attach
-        below code 4; see docs/datasheets/hub-network-interface.md and
+        below code 4; see docs/specs/sgi-hub.rst and
         docs/machines/layers/products/origin2000-rack.yaml's
         hub_ni_revision_overrides. Every Hub on Origin 2000's
         graphics-capable four-node module must compile to code 5, while

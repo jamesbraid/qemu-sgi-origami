@@ -37,8 +37,6 @@
  * The IP35 boot flash's two 8 MiB PROM positions back the lower and upper
  * halves of its 16 MiB storage. The PROM's blank-media formatter writes a
  * 28-byte outer label into position one, at this position-relative offset.
- * The record and its evidence are in the Origami project's IP35 boot-flash
- * datasheet, docs/datasheets/ip35-boot-flash.md in that repository.
  */
 #define SGI_IP35_FLASH_POSITIONS        2
 #define SGI_IP35_LABEL_OFFSET           0x1e0000

@@ -694,7 +694,7 @@ def validate_hub_ni_revision_overrides(model: dict[str, Any]) -> None:
     by design (unlike `synthetic_identities`'s exhaustive coverage): a
     product names only the Hubs whose `NI_STATUS_REV_ID` it needs to state
     explicitly, and every other Hub keeps the reusable node-board module's
-    own authored value. See docs/datasheets/hub-network-interface.md.
+    own authored value. See docs/specs/sgi-hub.rst.
     """
     emulation = model.get("machine", {}).get("emulation", {})
     overrides = emulation.get("hub_ni_revision_overrides")

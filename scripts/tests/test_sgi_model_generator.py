@@ -164,7 +164,6 @@ class GeneratorTests(unittest.TestCase):
                      if path.is_file()}
             self.assertEqual(files, {
                 "hw/mips/sgi/sgi-machines.json", "hw/mips/sgi/sn-model.json"})
-            self.assertFalse((tree / "docs/datasheets").exists())
             self.assertFalse((tree / "assets").exists())
 
 

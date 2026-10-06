@@ -45,7 +45,6 @@ FAILING = ("malformed", "unregistered")
 # What each reported class means, in the order the summary prints them.
 REPORTED = {
     "origami-path": "names a document outside this tree",
-    "copied-datasheet": "names a docs/datasheets copy this tree carries",
     "decision-id": "names a decision record",
     "tool-path": "names a tools/ program",
     "library-path": "names a file in a document cache, not a registry key",
@@ -224,10 +223,6 @@ def classify(text: str, registry: dict, tree: pathlib.Path) -> tuple[str, list[t
         if HEXISH.match(ref):
             return "tree", [("unregistered", f"tree {name}")]
 
-    if text.startswith("docs/datasheets/"):
-        path = re.split(r"[\s,:;]", text, maxsplit=1)[0]
-        if (tree / path).is_file():
-            problems.append(("copied-datasheet", path))
     for cls in internal_pointers(text):
         if not (cls == "origami-path" and problems):
             problems.append((cls, text))

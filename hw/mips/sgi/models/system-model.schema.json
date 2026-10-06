@@ -1757,9 +1757,9 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^(docs/datasheets/[a-z0-9][a-z0-9-]*\\.md|qemu:docs/specs/[a-z0-9][a-z0-9-]*\\.rst(#[a-z0-9][a-z0-9-]*)?)$"
+            "pattern": "^qemu:docs/specs/[a-z0-9][a-z0-9-]*\\.rst(#[a-z0-9][a-z0-9-]*)?$"
           },
-          "description": "Behavior contracts for this hardware component: a page under docs/specs, written qemu:docs/specs/<page>.rst with an optional #label, or a reviewed docs/datasheets page still carried during the move to docs/specs."
+          "description": "Behavior contracts for this hardware component: a page under docs/specs, written qemu:docs/specs/<page>.rst with an optional #label."
         },
 
         "identity": {

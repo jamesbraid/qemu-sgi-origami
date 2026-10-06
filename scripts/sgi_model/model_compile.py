@@ -282,7 +282,7 @@ _OCCUPANT_PLACEMENT_FIELDS = ("widget", "controlled_by", "xio")
 # XIO widgets that attach to a connector's bus directly, with no
 # separate `pci-host-bridge` chip standing in for the board: XG, the
 # InfiniteReality pipe's XIO-to-graphics ASIC on its geometry board
-# (docs/datasheets/onyx2.md, Pipe identity), and HQ4, the SI graphics
+# (docs/specs/sgi-onyx2.rst), and HQ4, the SI graphics
 # board's (MGRAS) host interface.
 # A board's `hardware_kind` here is what `_XIO_BOARD_KINDS` (this module,
 # `_compile_io_board`) later maps to a catalogue preset; the two dicts
