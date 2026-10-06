@@ -28,6 +28,7 @@
 #define XBRIDGE_HOST_NASID_SHIFT 9
 #define ADAPTER_MMIO 0x10000000
 #define DMA_PREFIX UINT64_C(0xa080000000000000)
+#define DMA_SWAP_CLEAR_PREFIX UINT64_C(0xa100000000000000)
 
 #define TI_MISC_HOST_CTL 0x040
 #define TI_CPU_STATE 0x140
@@ -41,6 +42,7 @@
 #define TI_MHC_INTSTATE 1
 #define TI_MHC_CLEARINT 2
 #define TI_OPMODE_BE 0x16
+#define TI_OPMODE_SWAP_CLEAR 0x4000020c
 #define TI_RCB_FLAG_HOST_RING 0x0040
 #define TI_BDFLAG_END 0x0004
 #define TI_BDTYPE_RECV_BD 0x0002
@@ -67,6 +69,8 @@ typedef struct {
     unsigned head;
     unsigned device;
     unsigned destination;
+    bool swap_clear;
+    unsigned payload_offset;
 } Placement;
 
 typedef struct {
@@ -130,7 +134,10 @@ static uint64_t memory_address(unsigned node, uint32_t offset)
 
 static uint64_t dma_address(Tigon *t, uint32_t offset)
 {
-    return DMA_PREFIX | memory_address(t->placement->destination, offset);
+    uint64_t prefix = t->placement->swap_clear ?
+                      DMA_SWAP_CLEAR_PREFIX : DMA_PREFIX;
+
+    return prefix | memory_address(t->placement->destination, offset);
 }
 
 static void memory_write(Tigon *t, unsigned node, uint32_t offset,
@@ -268,7 +275,8 @@ static void setup_rings(Tigon *t)
     host_address(t, GIB + 0x470, EVENT_PROD);
     host_address(t, GIB + 0x478, RETURN_PROD);
     host_address(t, GIB + 0x480, TX_CONS);
-    reg_write(t, TI_GCR_OPMODE, TI_OPMODE_BE);
+    reg_write(t, TI_GCR_OPMODE,
+              t->placement->swap_clear ? TI_OPMODE_SWAP_CLEAR : TI_OPMODE_BE);
 }
 
 static void expect_interrupt(Tigon *t, bool asserted)
@@ -323,10 +331,15 @@ static void test_traffic(const void *opaque)
     g_autoptr(GError) error = NULL;
     Tigon t = { .placement = p };
     uint8_t tx[60], rx[64], received[64], sentinel[64], seen[64];
+    uint8_t guarded[80];
     const uint8_t mac[] = { 0x52, 0x54, 0, 0x12, 0x34, 0x56 };
     const uint32_t checked[] = {
         EVENT_RING, EVENT_PROD, TX_CONS, RETURN_RING, RETURN_PROD, RX_BUF,
     };
+    unsigned tx_len = p->swap_clear ? 42 : sizeof(tx);
+    unsigned rx_len = p->swap_clear ? 42 : sizeof(rx);
+    unsigned tx_buf = TX_BUF + p->payload_offset;
+    unsigned rx_buf = RX_BUF + p->payload_offset;
     uint32_t length;
     uint64_t address;
     int fd, sv[2];
@@ -374,15 +387,14 @@ static void test_traffic(const void *opaque)
     memcpy(tx + 6, mac, sizeof(mac));
     tx[12] = 8;
     tx[13] = 6;
-    memory_write(&t, p->destination, TX_BUF, tx, sizeof(tx));
-    host_address(&t, TX_RING, TX_BUF);
-    memory_word(&t, TX_RING + 8, (sizeof(tx) << 16) | TI_BDFLAG_END);
+    memory_write(&t, p->destination, tx_buf, tx, tx_len);
+    host_address(&t, TX_RING, tx_buf);
+    memory_word(&t, TX_RING + 8, (tx_len << 16) | TI_BDFLAG_END);
     reg_write(&t, TI_MB_SENDPROD_IDX, 1);
     g_assert_cmpint(recv(sv[0], &length, sizeof(length), MSG_WAITALL), ==, 4);
-    g_assert_cmpuint(ntohl(length), ==, sizeof(tx));
-    g_assert_cmpint(recv(sv[0], received, sizeof(tx), MSG_WAITALL),
-                    ==, sizeof(tx));
-    g_assert_cmpmem(received, sizeof(tx), tx, sizeof(tx));
+    g_assert_cmpuint(ntohl(length), ==, tx_len);
+    g_assert_cmpint(recv(sv[0], received, tx_len, MSG_WAITALL), ==, tx_len);
+    g_assert_cmpmem(received, tx_len, tx, tx_len);
     g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 1);
     expect_interrupt(&t, true);
     acknowledge(&t);
@@ -393,13 +405,15 @@ static void test_traffic(const void *opaque)
     memcpy(rx, mac, sizeof(mac));
     rx[12] = 8;
     rx[13] = 6;
-    host_address(&t, STD_RX_RING, RX_BUF);
+    memset(guarded, 0x96, sizeof(guarded));
+    memory_write(&t, p->destination, RX_BUF - 4, guarded, sizeof(guarded));
+    host_address(&t, STD_RX_RING, rx_buf);
     memory_word(&t, STD_RX_RING + 8, 2048);
     memory_word(&t, STD_RX_RING + 12, TI_BDTYPE_RECV_BD << 16);
     reg_write(&t, TI_MB_STDRXPROD_IDX, 1);
-    length = htonl(sizeof(rx));
+    length = htonl(rx_len);
     g_assert_cmpint(send(sv[0], &length, sizeof(length), 0), ==, 4);
-    g_assert_cmpint(send(sv[0], rx, sizeof(rx), 0), ==, sizeof(rx));
+    g_assert_cmpint(send(sv[0], rx, rx_len, 0), ==, rx_len);
     for (unsigned attempt = 0; attempt < 200; attempt++) {
         if (read_memory_word(&t, RETURN_PROD) != 0) {
             break;
@@ -408,9 +422,15 @@ static void test_traffic(const void *opaque)
         qtest_clock_step(t.qts, 50000);
     }
     g_assert_cmphex(read_memory_word(&t, RETURN_PROD), ==, 1);
-    g_assert_cmphex(read_memory_word(&t, RETURN_RING + 8), ==, sizeof(rx));
-    memory_read(&t, p->destination, RX_BUF, received, sizeof(rx));
-    g_assert_cmpmem(received, sizeof(rx), rx, sizeof(rx));
+    g_assert_cmphex(read_memory_word(&t, RETURN_RING + 8), ==, rx_len);
+    memory_read(&t, p->destination, rx_buf, received, rx_len);
+    g_assert_cmpmem(received, rx_len, rx, rx_len);
+    memory_read(&t, p->destination, RX_BUF - 4, seen,
+                4 + p->payload_offset);
+    g_assert_cmpmem(seen, 4 + p->payload_offset, guarded,
+                    4 + p->payload_offset);
+    memory_read(&t, p->destination, rx_buf + rx_len, seen, 2);
+    g_assert_cmpmem(seen, 2, guarded, 2);
     expect_interrupt(&t, true);
     acknowledge(&t);
     for (unsigned i = 0; i < G_N_ELEMENTS(checked); i++) {
@@ -428,11 +448,16 @@ static void test_traffic(const void *opaque)
 int main(int argc, char **argv)
 {
     static Placement placements[] = {
-        { 0, 1, 0 }, { 1, 2, 1 },
-        { 2, 1, 1 }, { 3, 2, 0 },
-        { 4, 1, 0 }, { 5, 2, 1 },
-        { 6, 1, 1 }, { 7, 2, 0 },
+        { .head = 0, .device = 1, .destination = 0 },
+        { .head = 1, .device = 2, .destination = 1 },
+        { .head = 2, .device = 1, .destination = 1 },
+        { .head = 3, .device = 2, .destination = 0 },
+        { .head = 4, .device = 1, .destination = 0 },
+        { .head = 5, .device = 2, .destination = 1 },
+        { .head = 6, .device = 1, .destination = 1 },
+        { .head = 7, .device = 2, .destination = 0 },
     };
+    static Placement swap_clear[2][2];
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
     int fd, result;
@@ -453,6 +478,23 @@ int main(int argc, char **argv)
             p->head, p->device, p->destination);
 
         qtest_add_data_func(name, p, test_traffic);
+    }
+    for (unsigned destination = 0; destination < 2; destination++) {
+        for (unsigned offset = 0; offset <= 2; offset += 2) {
+            Placement *p = &swap_clear[destination][offset / 2];
+            g_autofree char *name = g_strdup_printf(
+                "/sn1/option-tigon/swap-clear/%s/offset%u",
+                destination ? "remote" : "local", offset);
+
+            *p = (Placement) {
+                .head = 0,
+                .device = 1,
+                .destination = destination,
+                .swap_clear = true,
+                .payload_offset = offset,
+            };
+            qtest_add_data_func(name, p, test_traffic);
+        }
     }
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
