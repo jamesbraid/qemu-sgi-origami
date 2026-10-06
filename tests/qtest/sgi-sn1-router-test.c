@@ -644,6 +644,30 @@ static void test_uart(void)
     qtest_quit(s);
 }
 
+static void test_uart_adjacent_registers(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 "
+        "-device sgi-l1,id=l1,brick-type=router "
+        "-device sgi-l1-uart,id=uart,controller=l1 "
+        "-device sgi-sn1-router,id=r,l1-uart=uart "
+        "-device sgi-sn1-router-test,id=test,router=r");
+
+    qtest_writeq(s, BASE + 0x258, 0x80);
+    qtest_writeq(s, BASE + 0x240, 0x12ab);
+    qtest_writeq(s, BASE + 0x248, 0x34cd);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x240), ==, 0xab);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x248), ==, 0xcd);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x80);
+
+    qtest_writeq(s, BASE + 0x240, 0x56ef);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x240), ==, 0xef);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x248), ==, 0xcd);
+    qtest_writeq(s, BASE + 0x248, 0x789a);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x240), ==, 0xef);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x248), ==, 0x9a);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -665,5 +689,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/reset", test_reset);
     qtest_add_func("/sgi/sn1-router/migration", test_migration);
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
+    qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
+                   test_uart_adjacent_registers);
     return g_test_run();
 }
