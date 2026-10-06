@@ -23,7 +23,7 @@ from pathlib import Path
 
 from lib_mips import (R_T0, R_T1, R_T2, R_T3, R_T4, R_ZERO, PromImage,
                       mips_i, mips_r)
-from lib_prom import MACHINES
+from lib_prom import MACHINES, launch_paused
 from qemu_test import QemuSystemTest
 
 # The Bedrock memory-configuration register at 0x780008, reached through
@@ -298,7 +298,7 @@ class SN1SystemRequest(QemuSystemTest):
             f'data={SN1_MD_INSTALLED_SELECT2:#x},data-len=8,data-be=on,'
             'cpu-num=0',
             *extra)
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # Completion is a guest observation, independent of host speed;
         # the test's own timeout bounds a hang.

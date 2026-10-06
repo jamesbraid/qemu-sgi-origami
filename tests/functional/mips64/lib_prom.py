@@ -273,12 +273,13 @@ def drive_console(sock, log_path, timeout, steps, until=None,
 def launch_paused(vm):
     """Launch vm stopped, connect QMP, then let the processors run.
 
-    The PROM resets the machine through its hub within a few tens of
-    milliseconds of the QMP handshake, on either side of it. QEMU starts
-    delivering events once it has run qmp_capabilities but writes that
-    command's reply one main-loop pass later, so a RESET in between reaches
-    the client first, the client fails negotiation, and cleanup then waits
-    out a shutdown timeout. Nothing in the guest can run before 'cont'.
+    The Origin 200 PROM resets the machine through its hub within a few
+    tens of milliseconds of the QMP handshake, on either side of it, and
+    the reset fixtures here reset it sooner. QEMU starts delivering events
+    once it has run qmp_capabilities but writes that command's reply one
+    main-loop pass later, so a RESET in between reaches the client first,
+    the client fails negotiation, and cleanup then waits out a shutdown
+    timeout. Nothing in the guest can run before 'cont'.
     """
     vm.add_args("-S")
     vm.launch()

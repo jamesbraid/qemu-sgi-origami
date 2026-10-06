@@ -33,7 +33,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
-                      fork_git_identity, utc_now)
+                      fork_git_identity, launch_paused, utc_now)
 from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
                                   diag_extra_args, evaluate_run,
                                   extract_identities)
@@ -123,7 +123,7 @@ class PromDiagnostics(QemuSystemTest):
                    *diag_extra_args(prom, tftp, elsc_log, capture))
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('diag.log')
         try:
             transcript, reached = drive_console(

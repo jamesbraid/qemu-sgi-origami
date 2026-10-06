@@ -8,6 +8,7 @@ from pathlib import Path
 from lib_mips import (R_S0, R_S1, R_S2, R_S3, R_S4, R_T0, R_T1, R_T2, R_T3,
                       R_T4, R_T5, R_ZERO, RESET_RE, TRACE_RE, WRITE_RE,
                       MipsProgram, mips_i, mips_r, reset_windows)
+from lib_prom import launch_paused
 from lib_sn_reset import (B_COUNT_TARGET, CYCLES, STATE, STATE_B_COUNT,
                           STATE_B_MARK, STATE_DONE, STATE_PHASE,
                           STATUS_KX_KERNEL, _ResetCycleMixin)
@@ -148,7 +149,7 @@ class SN0PortReset(_ResetCycleMixin, QemuSystemTest):
             *accelerator, '-smp', '2', '-bios', firmware,
             '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',
             '-D', log)
-        self.vm.launch()
+        launch_paused(self.vm)
         self.wait_for_both_slices()
         # The log is flushed when the emulator exits, so read it after.
         self.vm.shutdown()
@@ -363,7 +364,7 @@ class SN0ElscReset(_ResetCycleMixin, QemuSystemTest):
             *accelerator, '-smp', '2', '-bios', firmware,
             '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',
             '-D', log)
-        self.vm.launch()
+        launch_paused(self.vm)
         self.wait_for_both_slices()
         # The log is flushed when the emulator exits, so read it after.
         self.vm.shutdown()

@@ -46,7 +46,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 from lib_prom import (BOOT_TIMEOUT_SECONDS, FIRMWARE_REL, FORK_ROOT, MACHINES,
-                      drive_console, run_record, utc_now)
+                      drive_console, launch_paused, run_record, utc_now)
 from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
 from lib_prom_mdk import PROM_SHA256, payload_identity_problems
 
@@ -161,7 +161,7 @@ class PromFx(QemuSystemTest):
                                    capture, disk))
 
         started = utc_now()
-        vm.launch()
+        launch_paused(vm)
         log_path = self.log_file('fx.log')
         try:
             transcript, reached = drive_console(

@@ -24,7 +24,7 @@ import time
 from lib_mips import (R_AT, R_S0, R_S1, R_S2, R_S3, R_S4, R_S5, R_T0,
                       R_T1, R_T2, R_T3, R_T4, R_T5, R_ZERO, PromImage,
                       mips_i, mips_r)
-from lib_prom import MACHINES
+from lib_prom import MACHINES, launch_paused
 from lib_sn0_hub import (emit_assign_peer_nasid_if_master,
                          emit_read_is_slave,
                          emit_wait_for_own_nasid_if_slave)
@@ -265,7 +265,7 @@ class SN0WarmReset(QemuSystemTest):
         self.vm.set_machine(MACHINES['origin200_dual'])
         self.vm.add_args('-m', '128M', '-cpu', 'R10000', '-smp', '4',
                          *accel, '-bios', image, '-no-shutdown')
-        self.vm.launch()
+        launch_paused(self.vm)
 
     def wait_for(self, read, done, what, timeout=120):
         # Completion is a guest observation, independent of host speed;

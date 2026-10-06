@@ -46,6 +46,7 @@ in DONE.
 """
 
 import lib_origin300
+from lib_prom import launch_paused
 
 from qemu_test import QemuSystemTest
 from qemu_test.asset import LocalAsset
@@ -64,7 +65,7 @@ class Origin300Prom(QemuSystemTest):
         self.set_machine('origin300')
         self.vm.set_console()
         self.vm.add_args('-smp', str(smp), '-m', '512M', '-bios', str(prom))
-        self.vm.launch()
+        launch_paused(self.vm)
         wait_for_console_pattern(self, 'Starting PROM Boot process')
         self.vm.shutdown()
 
@@ -91,7 +92,7 @@ class Origin300PromMenu(QemuSystemTest):
         self.vm.set_console()
         self.vm.set_machine(machine)
         self.vm.add_args(*argv)
-        self.vm.launch()
+        launch_paused(self.vm)
         wait_for_console_pattern(self, 'ALL DIAGS PASSED')
         wait_for_console_pattern(self, 'System Maintenance Menu')
         self.vm.shutdown()
@@ -109,7 +110,7 @@ class Origin300PromMenu(QemuSystemTest):
         self.vm.set_console()
         self.vm.set_machine(machine)
         self.vm.add_args(*argv)
-        self.vm.launch()
+        launch_paused(self.vm)
         wait_for_console_pattern(self, 'System Maintenance Menu')
         self.vm.cmd('system_reset')
         wait_for_console_pattern(

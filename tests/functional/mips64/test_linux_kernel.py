@@ -52,7 +52,7 @@ import os
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console, launch_paused,
                       prom_netboot_steps, verdict)
 from lib_prom_sash import RELEASES
 
@@ -210,7 +210,7 @@ class LinuxKernel(QemuSystemTest):
                             f'tftp={os.path.dirname(kernel)},'
                             f'bootfile={NETBOOT_BOOTFILE}'),
                    *cpu_qemu_args(cpus))
-        vm.launch()
+        launch_paused(vm)
 
         log_path = self.log_file(f'{name}.log')
         timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4 else

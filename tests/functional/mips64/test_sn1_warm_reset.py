@@ -27,7 +27,7 @@ import re
 import time
 
 from lib_mips import R_S0, R_S1, R_T0, R_T1, R_T2, R_ZERO, PromImage, mips_i
-from lib_prom import MACHINES
+from lib_prom import MACHINES, launch_paused
 from qemu_test import QemuSystemTest
 
 HUB_WINDOW = 0x9200000001000000
@@ -105,7 +105,7 @@ class SN1WarmReset(QemuSystemTest):
         self.vm.set_machine(MACHINES['origin300'])
         self.vm.add_args('-cpu', 'R14000', '-smp', '2', *accel,
                          '-bios', prom, '-no-shutdown')
-        self.vm.launch()
+        launch_paused(self.vm)
 
         # Completion is a guest observation, independent of host speed:
         # the test's own timeout bounds a hang, and a timeout alone does
