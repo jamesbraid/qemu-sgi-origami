@@ -39,6 +39,7 @@
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
+#include "prereq.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
 #include "net/eth.h"
@@ -715,7 +716,7 @@ static bool xframe_tap_start(XframeTx *t, int *tap_fd, int *inject_fd,
 
     *tap_fd = open("/dev/net/tun", O_RDWR);
     if (*tap_fd < 0) {
-        g_test_skip("/dev/net/tun is unavailable");
+        qtest_prereq_missing("TAP", "/dev/net/tun is unavailable");
         return false;
     }
 

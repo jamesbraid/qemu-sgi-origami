@@ -42,6 +42,7 @@
 #include "standard-headers/linux/virtio_net.h"
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
+#include "prereq.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #ifdef CONFIG_LINUX
@@ -586,7 +587,7 @@ static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd,
 
     *tap_fd = open("/dev/net/tun", O_RDWR);
     if (*tap_fd < 0) {
-        g_test_skip("/dev/net/tun is unavailable");
+        qtest_prereq_missing("TAP", "/dev/net/tun is unavailable");
         return false;
     }
 

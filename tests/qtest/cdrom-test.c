@@ -15,6 +15,7 @@
 #include "boot-sector.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "prereq.h"
 
 static char isoimage[] = "cdrom-boot-iso-XXXXXX";
 
@@ -274,6 +275,11 @@ static void add_s390x_tests(void)
     }
 }
 
+static void test_xorrisofs_missing(void)
+{
+    qtest_prereq_missing("XORRISOFS", "xorrisofs is not installed");
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -283,7 +289,12 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     if (exec_xorrisofs(xorrisocheck)) {
-        /* xorrisofs not available - so can't run tests */
+        /*
+         * xorrisofs not available, so none of the boot tests can run. Keep
+         * one case so the missing prerequisite is reported, not an empty
+         * binary.
+         */
+        qtest_add_func("cdrom/prerequisite", test_xorrisofs_missing);
         return g_test_run();
     }
 
