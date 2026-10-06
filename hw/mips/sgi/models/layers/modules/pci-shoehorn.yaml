@@ -9,7 +9,7 @@
 # occupied connector"). The Bridge's upstream attachment names the
 # placeholder bus `upstream`, which the instance binds to its connector's
 # XIO bus, so the layer fits any XIO slot.
-# docs/datasheets/sgi-pci-shoehorn.md owns the product identity and its
+# qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-shoehorn owns the product identity and its
 # open questions.
 layer_version: 1
 layer:
@@ -31,7 +31,7 @@ layer:
             an I/O board with this nic. Which platform a given unit came from
             is open (see the datasheet).
         provenance: derived
-        datasheet_contracts: [docs/datasheets/sgi-pci-shoehorn.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-shoehorn]
         sources: ["web:ebay-277925514107-image-3 board label 030-1275-002 REV B, PCI-XTALK ADAPTER"]
       - id: bridge
         name: Bridge
@@ -58,7 +58,7 @@ layer:
           notes: >-
             SGI option board 030-1155-002 carrying one IOC3 with Ethernet and
             a PS/2 keyboard and mouse. Its PCI subsystem id is not captured.
-        datasheet_contracts: [docs/datasheets/sgi-cad-duo-pci-card.md, qemu:docs/specs/sgi-ioc3.rst]
+        datasheet_contracts: [qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-cad-duo, qemu:docs/specs/sgi-ioc3.rst]
         provenance: datasheet
         parent: pci-shoehorn
       - {id: cad-duo-ethernet, name: Cad Duo Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: cad-duo, provenance: datasheet}

@@ -6,7 +6,7 @@
 # connector and selects the connector occupied; the connector supplies the
 # XIO widget and controlling node. The Bridge's upstream attachment
 # names the placeholder bus `upstream`, which the instance binds to its
-# connector's XIO bus. docs/datasheets/sgi-mscsi.md owns the board's
+# connector's XIO bus. qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition owns the board's
 # evidence, its model selections and its open questions.
 layer_version: 1
 layer:
@@ -28,7 +28,7 @@ layer:
             GIGAchannel inventory lists at io4, with the Bridge revision
             that inventory reports.
         provenance: derived
-        datasheet_contracts: [docs/datasheets/sgi-mscsi.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition]
         sources: ["web:hmm-408-b printed page 33, XIO Options: 030-1243-001 PCA MSCSI B", "web:preterhuman-origin-200 one-module hinv -vm: Location /hw/module/1/slot/io4/mscsi, MSCSI Board part 030-1243-001 rev F; Origin MSCSI board, module 1 slot 4: Revision 3"]
       - id: bridge
         name: Bridge
@@ -48,10 +48,10 @@ layer:
         provenance: derived
         parent: mscsi
         sources: ["web:preterhuman-origin-200 Origin MSCSI board, module 1 slot 2: Revision 3 and slot 4: Revision 3", "web:nekonomicon-16727716 PROM hinv -v: MSCSI IO Board, Module 1, Slot io7, ASIC BRIDGE Rev 3, (widget 14)"]
-      - {id: scsi-0, name: SCSI controller 0, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
-      - {id: scsi-1, name: SCSI controller 1, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
-      - {id: scsi-2, name: SCSI controller 2, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
-      - {id: scsi-3, name: SCSI controller 3, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-0, name: SCSI controller 0, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-1, name: SCSI controller 1, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-2, name: SCSI controller 2, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-3, name: SCSI controller 3, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [qemu:docs/specs/sgi-mscsi.rst#sgi-mscsi-composition, qemu:docs/specs/sgi-qlogic-isp.rst], provenance: derived, parent: mscsi, sources: ["web:nekonomicon-16727716 PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
       - {id: bridge-nic, name: Bridge identity path, kind: subfunction, parent: bridge, provenance: derived}
     buses:
       - {id: pci, name: MSCSI PCI, kind: pci, master: bridge, provenance: derived, sources: ["web:nekonomicon-16727716 PROM hinv -v: four PCI-SCSI adapters behind the MSCSI board's Bridge"]}

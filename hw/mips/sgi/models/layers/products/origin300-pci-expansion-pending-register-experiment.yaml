@@ -216,10 +216,10 @@ layer:
         master: compute-bedrock
         link: {kind: cable}
         provenance: derived
-        sources: ["docs/datasheets/origin300-pci-expansion-module.md"]
+        sources: ["qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300"]
     connections:
       - component: compute-bedrock
         bus: expansion-cable
         role: master
         provenance: derived
-        sources: ["docs/datasheets/origin300-pci-expansion-module.md"]
+        sources: ["qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300"]

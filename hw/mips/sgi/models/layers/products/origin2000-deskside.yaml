@@ -252,7 +252,7 @@ layer:
       - {id: baseio-timekeeper, name: 32 KiB Timekeeper, kind: rtc, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-timekeeper, description: 'Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.', datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]}
       - {id: baseio-ioc3-nic, name: IOC3 identity path, kind: subfunction, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-onewire-identity}
       - {id: baseio-ioc3-ssram, name: 64K by 18 SSRAM, kind: memory, parent: baseio-ioc3, provenance: derived, description: Published board-local support memory; separate from system RAM.}
-      - {id: baseio-bridge-flash, datasheet_contracts: [docs/datasheets/baseio.md], name: 1 MiB Bridge flash EPROM, kind: flash, parent: baseio-bridge, provenance: derived, description: Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.}
+      - {id: baseio-bridge-flash, datasheet_contracts: [qemu:docs/specs/sgi-baseio.rst#sgi-baseio-flash], name: 1 MiB Bridge flash EPROM, kind: flash, parent: baseio-bridge, provenance: derived, description: Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.}
       - {id: baseio-bridge-nic, name: Bridge identity path, kind: subfunction, parent: baseio-bridge, provenance: derived}
       - id: module-msc
         name: Module system controller
