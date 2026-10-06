@@ -17,12 +17,15 @@ encoding here shows up as a diff against a real program rather than as a
 green run and a guest that no longer does what it did.
 """
 
+import struct
+import tempfile
 import unittest
+from pathlib import Path
 
 import lib_mips
-from lib_mips import (R_AT, R_S0, R_S1, R_S2, R_T0, R_T1, R_T2, R_T3, R_T4,
-                      R_T5, R_ZERO, MipsProgram, mips_i, mips_r,
-                      reset_windows)
+from lib_mips import (CODE_START, PROM_SIZE, R_AT, R_S0, R_S1, R_S2, R_T0,
+                      R_T1, R_T2, R_T3, R_T4, R_T5, R_ZERO, MipsProgram,
+                      PromImage, mips_i, mips_r, reset_windows)
 
 
 # The port-reset exercise's own constants, as its firmware encodes them.
@@ -211,6 +214,67 @@ def _committing_write(line):
     if not match or match.group(4) != 'pcf8584':
         return None
     return int(match.group(1))
+
+
+class Li64Tests(unittest.TestCase):
+
+    def test_a_constant_is_four_halfwords_shifted_in(self):
+        program = MipsProgram()
+        program.li64(R_T0, 0x1234567890abcdef)
+
+        self.assertEqual(program.instructions, [
+            mips_i(0x0d, R_ZERO, R_T0, 0x1234),
+            mips_r(R_ZERO, R_T0, R_T0, 16, 0x38),
+            mips_i(0x0d, R_T0, R_T0, 0x5678),
+            mips_r(R_ZERO, R_T0, R_T0, 16, 0x38),
+            mips_i(0x0d, R_T0, R_T0, 0x90ab),
+            mips_r(R_ZERO, R_T0, R_T0, 16, 0x38),
+            mips_i(0x0d, R_T0, R_T0, 0xcdef),
+        ])
+
+
+class PromImageTests(unittest.TestCase):
+
+    def test_code_starts_after_the_vectors(self):
+        program = PromImage()
+
+        self.assertEqual(program.here() * 4, CODE_START)
+
+    def test_the_reset_vector_branches_to_the_code(self):
+        program = PromImage()
+        branch = program.instructions[0]
+
+        # beq zero, zero over the vectors: the target is the delay slot
+        # plus the offset, in words.
+        self.assertEqual(branch >> 16, 0x1000)
+        self.assertEqual(4 + (branch & 0xffff) * 4, CODE_START)
+
+    def test_an_unhandled_exception_vector_branches_to_itself(self):
+        program = PromImage()
+
+        for vector in (0x200, 0x280, 0x300, 0x380):
+            self.assertEqual(program.instructions[vector // 4], 0x1000ffff)
+
+    def test_a_handled_vector_is_replaced(self):
+        program = PromImage()
+        program.set_vector(0x380, [1, 2])
+
+        self.assertEqual(program.instructions[0x380 // 4:0x388 // 4], [1, 2])
+
+    def test_the_image_is_padded_to_the_requested_size(self):
+        program = PromImage()
+        program.emit(0x12345678)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rom.bin'
+            program.write(path)
+            default = path.read_bytes()
+            program.write(path, 0x1000)
+            small = path.read_bytes()
+
+        self.assertEqual(len(default), PROM_SIZE)
+        self.assertEqual(len(small), 0x1000)
+        self.assertEqual(struct.unpack('>I', small[CODE_START:CODE_START + 4]),
+                         (0x12345678,))
 
 
 class ResetWindowTests(unittest.TestCase):
