@@ -58,7 +58,7 @@ layer:
         provenance: datasheet
         identity:
           part: "030-1067-001"
-        sources: ["docs/datasheets/onyx2.md One-wire records: the true-wombat rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"]
+        sources: ["docs/datasheets/onyx2.md One-wire records: the web:nekonomicon-16285 rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"]
 
     connections:
       - component: xtown

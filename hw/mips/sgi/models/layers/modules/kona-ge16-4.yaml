@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The GE16-4 geometry board of an InfiniteReality pipe, with its one-wire
-# record, part 030-1398-001 in the real rack (true-wombat) capture
+# record, part 030-1398-001 in the real rack capture web:nekonomicon-16285
 # (docs/datasheets/onyx2.md, One-wire records). A composition fits it beside
 # or under a layers/modules/kona-pipe.yaml instance and binds the
 # placeholder `pipe-one-wire` bus to that pipe's one-wire bus, before any
@@ -29,7 +29,7 @@ layer:
         provenance: datasheet
         identity:
           part: "030-1398-001"
-        sources: ["docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack (true-wombat) capture"]
+        sources: ["docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack capture web:nekonomicon-16285"]
 
     connections:
       - component: geometry-identity

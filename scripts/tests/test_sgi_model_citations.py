@@ -119,6 +119,7 @@ class ClassifyTests(unittest.TestCase):
                          ["origami-path", "tool-path"])
         self.assertEqual(classes("docs/datasheets/ioc3.md the joint-buck capture", registry),
                          ["copied-datasheet", "nickname"])
+        self.assertEqual(classes("the two-node capture model-toad", registry), ["nickname"])
         self.assertEqual(classes("sgi-hw/booklet.pdf Table 41", registry), ["library-path"])
         self.assertEqual(classes("inventory: https://example.org/t/1.html", registry),
                          ["bare-url"])

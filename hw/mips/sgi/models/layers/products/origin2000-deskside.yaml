@@ -49,7 +49,7 @@ layer:
       xio_slots: {xio-slot-2: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2, 2], [1, 1, 1], [2, 1, 1], [2, 2, 1]]
       grade: inferred
-      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"]
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture boots PROM 6.156 on node slots 1-3 with both Routers", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"]
       notes: >-
         Which node controls IO8, IO10 and IO12 with node board 4 absent is
         inferred: node 2 is the only Hub on Crossbow 1. Two Standard Routers
@@ -71,7 +71,7 @@ layer:
         page 57 lets Standard Routers join node boards in one enclosure.
         The Star is not modelled because the stock PROM's partner probe
         does not finish on it in the model.
-      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants", "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"]
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants", "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"]
   population:
     nodes: 4
     cpus_per_node: [2, 2, 2, 2]
@@ -162,7 +162,7 @@ layer:
           ni_revision: 5
           reason: >-
             Stock Origin 2000 inventories report Hub revision code 5: the
-            two-node Origin 2200 capture model-toad (an 8P12_MPLN module
+            two-node Origin 2200 capture web:nekonomicon-16729560 (an 8P12_MPLN module
             with no graphics) prints HUB Revision 5 on both node slots, and
             no stock capture shows code 3. The reusable node-board module's
             code 3 (Hub 2.1, the earliest IRIX 6.5.30 accepts) stays the
