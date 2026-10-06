@@ -520,7 +520,7 @@ layer:
               the local half at 0x0100_0090. Both halves decode and only one is what
               the Bridge writes; Linux and OpenBSD compute this address from
               opposite directions and agree on it.
-        sources: ["linux:arch/mips/include/asm/sn/sn0/hubpi.h"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubpi.h"]
 
       - id: junk-uart
         name: Hub junk-bus UART
@@ -544,7 +544,7 @@ layer:
             space: io
             offset: "0x0120_0000"
             size: "0x20_0000"
-        sources: ["linux:arch/mips/include/asm/sn/sn0/hubmd.h", "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubmd.h", "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"]
         notes: >-
           Hardware services node memory and the boot flash through this interface.
           The exact flash-versus-RAM decode at their overlapping node offset
@@ -567,7 +567,7 @@ layer:
             space: io
             offset: "0x0140_0000"
             size: "0x8"
-        sources: ["linux:arch/mips/include/asm/sn/sn0/hubio.h"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubio.h"]
 
       - id: hub-ni
         name: Hub network interface
@@ -581,7 +581,7 @@ layer:
             space: io
             offset: "0x0160_0000"
             size: "0x20_0000"
-        sources: ["linux:arch/mips/include/asm/sn/sn0/hubni.h"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubni.h"]
         notes: >-
           Reports no remote link, which is correct for one node, and reports M mode
           addressing. This is the interface a second node opens.
@@ -679,7 +679,7 @@ layer:
               controller generation this is; at or above 0x380 it would read a
               configuration register that does not exist here. Two facts, two
               masks, one number.
-        sources: ["linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
 
       - id: ioc3-uart-b
         name: IOC3 serial port B
@@ -687,7 +687,7 @@ layer:
         provenance: vendor-document
         parent: ioc3
         description: The second rear-panel serial port connected through IOC3's serial block.
-        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
+        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
 
       - id: ioc3-ps2
         name: IOC3 PS/2 controller
@@ -695,7 +695,7 @@ layer:
         provenance: vendor-document
         parent: ioc3
         description: The keyboard and mouse controller connected to the rear-panel PS/2 ports.
-        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
+        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
 
       - id: ioc3-parallel
         name: IOC3 parallel port
@@ -703,7 +703,7 @@ layer:
         provenance: vendor-document
         parent: ioc3
         description: The rear-panel parallel port present on the IP29 System Board.
-        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
+        sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection", "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"]
 
       - id: ioc3-eth
         name: IOC3 ethernet
@@ -720,7 +720,7 @@ layer:
         aliases: ["DP83840AVCE (package marking)"]
         description: The ethernet physical-layer transceiver, reached through the chip's management interface.
         datasheet_contracts: [docs/datasheets/dp83840.md]
-        sources: ["linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface", "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface", "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"]
 
       - id: isp1040
         name: QLogic ISP1040
@@ -818,7 +818,7 @@ layer:
             size: "0x1000_0000"
             notes: Node-explicit maintenance view of the same flash storage.
         datasheet_contracts: [docs/datasheets/boot-flash.md]
-        sources: ["linux:arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"]
+        sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"]
 
       - id: rtc
         name: MK48T35-class Timekeeper

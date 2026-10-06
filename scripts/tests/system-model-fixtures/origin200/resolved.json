@@ -8,7 +8,7 @@
       "provenance": "public-header",
       "selector": 3,
       "sources": [
-        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "linux:db2ddb871435 arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
         "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
         "108-0170-001 address-entry shortcuts for the SN0 spaces"
       ],
@@ -22,7 +22,7 @@
       "provenance": "public-header",
       "selector": 0,
       "sources": [
-        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "linux:db2ddb871435 arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
         "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
         "108-0170-001 address-entry shortcuts for the SN0 spaces"
       ],
@@ -36,7 +36,7 @@
       "provenance": "public-header",
       "selector": 1,
       "sources": [
-        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "linux:db2ddb871435 arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
         "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
         "108-0170-001 address-entry shortcuts for the SN0 spaces"
       ],
@@ -50,7 +50,7 @@
       "provenance": "public-header",
       "selector": 2,
       "sources": [
-        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "linux:db2ddb871435 arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
         "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
         "108-0170-001 address-entry shortcuts for the SN0 spaces"
       ],
@@ -416,7 +416,7 @@
         }
       ],
       "sources": [
-        "linux:arch/mips/include/asm/sn/sn0/hubpi.h"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubpi.h"
       ]
     },
     {
@@ -449,7 +449,7 @@
         }
       ],
       "sources": [
-        "linux:arch/mips/include/asm/sn/sn0/hubmd.h",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubmd.h",
         "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
       ]
     },
@@ -477,7 +477,7 @@
         }
       ],
       "sources": [
-        "linux:arch/mips/include/asm/sn/sn0/hubio.h"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubio.h"
       ]
     },
     {
@@ -498,7 +498,7 @@
         }
       ],
       "sources": [
-        "linux:arch/mips/include/asm/sn/sn0/hubni.h"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/sn0/hubni.h"
       ]
     },
     {
@@ -618,7 +618,7 @@
         }
       ],
       "sources": [
-        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
       ]
     },
     {
@@ -630,7 +630,7 @@
       "provenance": "vendor-document",
       "sources": [
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
-        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
       ]
     },
     {
@@ -642,7 +642,7 @@
       "provenance": "vendor-document",
       "sources": [
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
-        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
       ]
     },
     {
@@ -654,7 +654,7 @@
       "provenance": "vendor-document",
       "sources": [
         "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
-        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
       ]
     },
     {
@@ -679,7 +679,7 @@
       "parent": "ioc3",
       "provenance": "public-header",
       "sources": [
-        "linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface",
+        "linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface",
         "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"
       ]
     },
@@ -750,7 +750,7 @@
       "parent": "ip29-system-board",
       "provenance": "public-header",
       "sources": [
-        "linux:arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"
+        "linux:db2ddb871435 arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"
       ],
       "views": [
         {
@@ -1717,7 +1717,7 @@
     "notes": "Two bits the processor drives beside the address, not part of it. All four spaces decode to the same 40-bit physical address and the attribute is what tells them apart. Emulator carrier addresses are target implementation metadata and do not belong in this shared hardware layer.",
     "provenance": "public-header",
     "sources": [
-      "linux:arch/mips/include/asm/mach-ip27/spaces.h, public GPL header, names the SN0 uncached-attribute mechanism and uncached memory selector"
+      "linux:db2ddb871435 arch/mips/include/asm/mach-ip27/spaces.h, public GPL header, names the SN0 uncached-attribute mechanism and uncached memory selector"
     ]
   }
 }
