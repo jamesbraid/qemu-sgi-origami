@@ -17,7 +17,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lib_screen import (ColorVarietyCheck, DarkPixelFractionCheck,
-                        DominantColorCheck, LitPixelFractionCheck,
+                        DominantColorCheck, ImageSizeCheck,
+                        LitPixelFractionCheck,
                         NotAllBlackCheck, RegionColorCheck, ScreenCheckError,
                         evaluate_screendump, gamma_decode, gamma_encode,
                         poll_screendump_until_checks_pass, read_ppm)
@@ -104,6 +105,36 @@ class NotAllBlackCheckTest(unittest.TestCase):
 
         self.assertFalse(check.evaluate(width, height, at_threshold)[0])
         self.assertTrue(check.evaluate(width, height, above_threshold)[0])
+
+
+class ImageSizeCheckTest(unittest.TestCase):
+
+    def test_passes_on_the_exact_size(self):
+        data = solid_frame(8, 6, (1, 2, 3))
+
+        ok, message = ImageSizeCheck(8, 6).evaluate(8, 6, data)
+
+        self.assertTrue(ok)
+        self.assertIn('8x6', message)
+
+    def test_fails_when_the_frame_is_wider(self):
+        data = solid_frame(10, 6, (1, 2, 3))
+
+        ok, message = ImageSizeCheck(8, 6).evaluate(10, 6, data)
+
+        self.assertFalse(ok)
+        self.assertIn('10x6', message)
+        self.assertIn('8x6', message)
+
+    def test_fails_when_only_the_height_differs(self):
+        data = solid_frame(8, 7, (1, 2, 3))
+
+        self.assertFalse(ImageSizeCheck(8, 6).evaluate(8, 7, data)[0])
+
+    def test_does_not_accept_a_transposed_size(self):
+        data = solid_frame(6, 8, (1, 2, 3))
+
+        self.assertFalse(ImageSizeCheck(8, 6).evaluate(6, 8, data)[0])
 
 
 class RegionColorCheckTest(unittest.TestCase):
