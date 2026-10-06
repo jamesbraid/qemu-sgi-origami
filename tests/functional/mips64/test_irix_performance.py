@@ -26,6 +26,11 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
 
+WORKLOADS = ('compress', 'tcp-receive', 'tcp-transmit', 'idle',
+             'tcp-receive-sink', 'tcp-transmit-source')
+DEFAULT_WORKLOADS = 'compress,tcp-receive,tcp-transmit,idle'
+
+
 class IrixPerformance(QemuSystemTest):
     """Boot once, warm each workload once, retain checked measured samples."""
 
@@ -40,12 +45,17 @@ class IrixPerformance(QemuSystemTest):
         iterations = int(os.getenv('QEMU_TEST_PERF_ITERATIONS', '8'))
         idle_seconds = float(os.getenv('QEMU_TEST_PERF_IDLE_SECONDS', '5'))
         cpus = int(os.getenv('QEMU_TEST_PERF_CPUS', '1'))
+        selected = os.getenv('QEMU_TEST_PERF_WORKLOADS',
+                             DEFAULT_WORKLOADS).split(',')
         self.assertTrue(2 <= repeats <= 20, 'repeats must be 2..20')
         self.assertTrue(8192 <= size <= 32 * 1024 * 1024 and size % 8192 == 0,
                         'bytes must be 8192..33554432 and divisible by 8192')
         self.assertTrue(1 <= iterations <= 100, 'iterations must be 1..100')
         self.assertTrue(1 <= idle_seconds <= 60, 'idle seconds must be 1..60')
         self.assertIn(cpus, (1, 2))
+        self.assertTrue(selected and set(selected) <= set(WORKLOADS)
+                        and len(set(selected)) == len(selected),
+                        f'workloads must be distinct names from {WORKLOADS}')
         prom, disk = self.ASSET_FIRMWARE.fetch(), self.ASSET_DISK.fetch()
         self.require_netdev('user')
         vm = self.get_vm(name='irix_performance')
@@ -158,6 +168,8 @@ class IrixPerformance(QemuSystemTest):
                                              prom=prom, disk=disk)
 
             def record(name, prepare, operation, units, unit, config):
+                if name not in selected:
+                    return
                 result = {'workload': name, 'config': {**common, **config},
                           'status': 'running', 'samples': []}
                 report['workloads'].append(result)
@@ -208,11 +220,34 @@ class IrixPerformance(QemuSystemTest):
                                       payload).hexdigest(),
                     'interval': 'send through guest completion and checksum'})
 
+            # ttcp -s discards what it receives, so the interval holds the
+            # network path and not the guest's file system or checksum.
+            def receive_sink_prepare():
+                name = tag('rx_sink')
+                pos = _start_guest(
+                    con, f'ttcp -r -s -p {TCP_RX_PORT} -l 65536 2>&1', name)
+                time.sleep(3)
+                return pos, name
+
+            def receive_sink(prepared):
+                _send_tcp(port, payload)
+                rc, output = _finish_guest(con, *prepared, 300)
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(_ttcp_bytes(output), size, output)
+                return True
+
+            record('tcp-receive-sink', receive_sink_prepare, receive_sink,
+                   size, 'byte',
+                   {'bytes': size, 'payload_sha256': hashlib.sha256(
+                                      payload).hexdigest(),
+                    'interval': 'send through guest completion and '
+                    'received count'})
+
             self.assertEqual(con.run(
                 f'dd if=/dev/zero of=/tmp/perf-zeros bs=8192 '
                 f'count={size // 8192} 2>/dev/null', tag('zeros'), 60), 0)
 
-            def transmit(_):
+            def transmit_checked(command, check):
                 # Bind an ephemeral listener before the guest starts. Reuse
                 # the IOC3 test's receiver and verify every received byte.
                 ready, stop = threading.Event(), threading.Event()
@@ -227,24 +262,46 @@ class IrixPerformance(QemuSystemTest):
                 try:
                     self.assertTrue(ready.wait(10),
                                     'TCP sink startup timed out')
-                    rc, output = _run_guest(
-                        con, f'ttcp -t -l 8192 -n {size // 8192} '
-                        f'-p {host_port} {GATEWAY} </tmp/perf-zeros',
-                        tag('tx'), 300)
+                    rc, output = _run_guest(con, command(host_port),
+                                            tag('tx'), 300)
                     self.assertEqual(rc, 0, output)
                     thread.join(30)
                     self.assertFalse(thread.is_alive(),
                                      'TCP receive timed out')
                     self.assertEqual(errors, [])
-                    self.assertEqual(b''.join(chunks), bytes(size))
+                    check(b''.join(chunks))
                     return True
                 finally:
                     stop.set()
                     thread.join(2)
 
+            def transmit(_):
+                return transmit_checked(
+                    lambda host_port: f'ttcp -t -l 8192 -n {size // 8192} '
+                    f'-p {host_port} {GATEWAY} </tmp/perf-zeros',
+                    lambda data: self.assertEqual(data, bytes(size)))
+
+            def check_source(data):
+                # ttcp -s sends one printable pattern buffer repeatedly.
+                block = data[:8192]
+                self.assertEqual(len(data), size)
+                self.assertTrue(all(0x20 <= b <= 0x7e for b in block))
+                self.assertEqual(data, block * (size // 8192))
+
+            def transmit_source(_):
+                # Without a file to read, the interval holds the network path.
+                return transmit_checked(
+                    lambda host_port: f'ttcp -t -s -l 8192 '
+                    f'-n {size // 8192} -p {host_port} {GATEWAY}',
+                    check_source)
+
             record('tcp-transmit', lambda: None, transmit, size, 'byte',
                    {'bytes': size, 'payload': 'zero',
                     'interval': 'listener startup through checked host EOF'})
+            record('tcp-transmit-source', lambda: None, transmit_source, size,
+                   'byte', {'bytes': size, 'payload': 'ttcp-pattern',
+                            'interval': 'listener startup through checked '
+                            'host EOF'})
 
             def idle(_):
                 end = time.monotonic() + idle_seconds

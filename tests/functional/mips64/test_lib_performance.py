@@ -91,6 +91,7 @@ class MeasurementTests(unittest.TestCase):
         sample = self.measured(result)
         self.assertEqual(sample, {
             'status': 'passed', 'result': result, 'units': 8, 'unit': 'bytes',
+            'started_monotonic': 20.0, 'ended_monotonic': 24.0,
             'wall_seconds': 4.0, 'cpu_seconds': 2.0,
             'units_per_second': 2.0, 'cpu_seconds_per_unit': 0.25})
 

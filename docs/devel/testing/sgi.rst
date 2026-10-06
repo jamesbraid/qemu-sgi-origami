@@ -458,19 +458,27 @@ These environment variables resize the work without changing the launcher:
      - 1 (single-thread TCG) or 2 (MTTCG)
    * - ``QEMU_TEST_PERF_HOST``
      - Hostname. Set the physical host name inside containers
+   * - ``QEMU_TEST_PERF_WORKLOADS``
+     - ``compress,tcp-receive,tcp-transmit,idle``. Any distinct
+       comma-separated subset of those and ``tcp-receive-sink``,
+       ``tcp-transmit-source``
 
 Each timed operation includes its correctness check. Compression compares
 every decompressed output with the provisioned input. Force mode retains
 output for the deterministic high-entropy payload even when it expands. Receive waits for guest
 completion and verifies the received count and checksum. Transmit waits for
-host EOF and checks every byte. Idle checks the shell and running VM after
+host EOF and checks every byte. The sink and source variants keep the
+guest's file system and checksum out of the interval: the guest's ``ttcp -s``
+discards what it receives, and the receive check is its byte count, while the
+transmitted ``ttcp`` pattern is checked byte for byte on the host. Idle checks the shell and running VM after
 the requested idle window. Boot, initial data provisioning and receive-listener
 startup are outside these intervals. The report records each interval, so
 results describe these complete operations rather than isolated codec or
 network speed.
 
 ``performance.json`` is retained in the functional case's log directory.
-It contains raw host monotonic wall time, QEMU process user plus system CPU
+It contains raw host monotonic wall time and each interval's monotonic
+start and end, QEMU process user plus system CPU
 time, normalized throughput and CPU cost, and repeated-sample statistics.
 CPU accounting covers all QEMU threads and excludes the Python driver and
 other host processes. Unsupported host accounting is JSON null. Linux uses
