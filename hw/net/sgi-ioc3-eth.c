@@ -628,22 +628,23 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 
     while (consume != produce) {
         uint64_t desc = tx_base + consume;
+        uint8_t fetched[SGI_IOC3_ENET_TX_DESC_SIZE];
         uint32_t cmd, bufcnt;
         uint64_t buf1, buf2;
-        uint8_t inline_data[SGI_IOC3_ENET_TXD_DATA_SIZE];
         MemTxResult res;
         size_t len;
 
-        res = ldl_be_dma(&s->dma_as, desc + 0, &cmd, MEMTXATTRS_UNSPECIFIED);
-        res |= ldl_be_dma(&s->dma_as, desc + 4, &bufcnt,
-                          MEMTXATTRS_UNSPECIFIED);
-        res |= ldq_be_dma(&s->dma_as, desc + 8, &buf1, MEMTXATTRS_UNSPECIFIED);
-        res |= ldq_be_dma(&s->dma_as, desc + 16, &buf2,
-                          MEMTXATTRS_UNSPECIFIED);
-        res |= dma_memory_read(&s->dma_as,
-                               desc + SGI_IOC3_ENET_TXD_DATA_OFFSET,
-                               inline_data, sizeof(inline_data),
-                               MEMTXATTRS_UNSPECIFIED);
+        /*
+         * The whole descriptor in one transfer, header and inline area
+         * alike: one walk through the conversion and the Bridge rather
+         * than one per field.
+         */
+        res = dma_memory_read(&s->dma_as, desc, fetched, sizeof(fetched),
+                              MEMTXATTRS_UNSPECIFIED);
+        cmd = ldl_be_p(fetched);
+        bufcnt = ldl_be_p(fetched + 4);
+        buf1 = ldq_be_p(fetched + 8);
+        buf2 = ldq_be_p(fetched + 16);
 
         /* A refused fetch stops the walk with the index on the entry. */
         if (res != MEMTX_OK) {
@@ -655,7 +656,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 
         trace_sgi_ioc3_eth_tx_desc(consume, cmd, bufcnt, buf1, buf2);
 
-        res = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2, inline_data,
+        res = sgi_ioc3_eth_tx_gather(s, cmd, bufcnt, buf1, buf2,
+                                     fetched + SGI_IOC3_ENET_TXD_DATA_OFFSET,
                                      &len);
         if (res != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
