@@ -904,6 +904,110 @@ static MemTxResult ii_inbound_write(void *opaque, hwaddr offset, uint64_t value,
                                      buffer, size, true);
 }
 
+/*
+ * The buffer form of sgi_bedrock_io_inbound_rw(): how much of a range from
+ * this source can move as one buffer. It is the memory class only, and only
+ * while the unit is powered and the source permitted. Everything else is
+ * zero, with nothing changed and nothing logged, and the per-access path
+ * then refuses, logs or decodes it exactly as before.
+ *
+ * One check for the whole buffer gives the answer one check per access
+ * would. A buffer transfer runs under the BQL from start to finish, and so
+ * does everything that changes this check's inputs: register writes, reset,
+ * power and migration load.
+ */
+static hwaddr ii_inbound_buffer_span(SGIBedrockIOState *s, unsigned widget,
+                                     unsigned device, hwaddr address,
+                                     hwaddr size)
+{
+    if (!sgi_bedrock_available(s->bedrock) ||
+        !ii_inbound_permitted(s, widget, device) ||
+        address >= II_XIO_REGISTER) {
+        return 0;
+    }
+    return MIN(size, II_XIO_REGISTER - address);
+}
+
+/*
+ * The memory class moves on with the buffer-only transfers, so a part of the
+ * DMA space that needs an ordinary access stops the buffer there and is left
+ * to the per-access path, at its own widths.
+ */
+static hwaddr ii_inbound_read_buffer_from(SGIBedrockIOState *s,
+                                          unsigned widget, unsigned device,
+                                          hwaddr address, void *buffer,
+                                          hwaddr size, MemTxResult *result)
+{
+    hwaddr span = ii_inbound_buffer_span(s, widget, device, address, size);
+    MemTxResult part = MEMTX_OK;
+    hwaddr moved;
+
+    if (!span) {
+        return 0;
+    }
+    moved = address_space_read_buffer_only(s->dma_as, address,
+                                           MEMTXATTRS_UNSPECIFIED, buffer,
+                                           span, &part);
+    trace_sgi_bedrock_io_inbound_buffer(widget, device, address, span, false,
+                                        moved);
+    if (moved) {
+        *result = part;
+    }
+    return moved;
+}
+
+static hwaddr ii_inbound_write_buffer_from(SGIBedrockIOState *s,
+                                           unsigned widget, unsigned device,
+                                           hwaddr address, const void *buffer,
+                                           hwaddr size, MemTxResult *result)
+{
+    hwaddr span = ii_inbound_buffer_span(s, widget, device, address, size);
+    MemTxResult part = MEMTX_OK;
+    hwaddr moved;
+
+    if (!span) {
+        return 0;
+    }
+    moved = address_space_write_buffer_only(s->dma_as, address,
+                                            MEMTXATTRS_UNSPECIFIED, buffer,
+                                            span, &part);
+    trace_sgi_bedrock_io_inbound_buffer(widget, device, address, span, true,
+                                        moved);
+    if (moved) {
+        *result = part;
+    }
+    return moved;
+}
+
+/* The shared window's buffers take the same candidate rule as its accesses. */
+static hwaddr ii_inbound_read_buffer(void *opaque, hwaddr offset, void *buffer,
+                                     hwaddr len, MemTxAttrs attrs,
+                                     MemTxResult *result)
+{
+    SGIBedrockIOState *s = opaque;
+    unsigned widget;
+
+    if (!ii_inbound_pick_widget(s, &widget)) {
+        return 0;
+    }
+    return ii_inbound_read_buffer_from(s, widget, s->inbound_device, offset,
+                                       buffer, len, result);
+}
+
+static hwaddr ii_inbound_write_buffer(void *opaque, hwaddr offset,
+                                      const void *buffer, hwaddr len,
+                                      MemTxAttrs attrs, MemTxResult *result)
+{
+    SGIBedrockIOState *s = opaque;
+    unsigned widget;
+
+    if (!ii_inbound_pick_widget(s, &widget)) {
+        return 0;
+    }
+    return ii_inbound_write_buffer_from(s, widget, s->inbound_device, offset,
+                                        buffer, len, result);
+}
+
 static MemTxResult ii_pio_read(void *opaque, hwaddr offset, uint64_t *value,
                                unsigned size, MemTxAttrs attrs)
 {
@@ -962,6 +1066,8 @@ static const MemoryRegionOps ii_pio_ops = {
 static const MemoryRegionOps ii_inbound_ops = {
     .read_with_attrs = ii_inbound_read,
     .write_with_attrs = ii_inbound_write,
+    .read_buffer = ii_inbound_read_buffer,
+    .write_buffer = ii_inbound_write_buffer,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     .impl = { .min_access_size = 1, .max_access_size = 8 },

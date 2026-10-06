@@ -4,6 +4,7 @@
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
+#include "qemu/bswap.h"
 
 #define IO_PATH "/machine/peripheral/io"
 #define REG_BASE UINT64_C(0x40000000)
@@ -684,6 +685,135 @@ static void fill_pattern(uint8_t *buf, size_t size, uint8_t salt)
     }
 }
 
+static unsigned count_lines(const char *contents, const char *needle)
+{
+    unsigned n = 0;
+
+    for (const char *p = strstr(contents, needle); p;
+         p = strstr(p + 1, needle)) {
+        n++;
+    }
+    return n;
+}
+
+static char *inbound_buffer_trace_args(const char *trace)
+{
+    return g_strdup_printf("-trace enable=sgi_bedrock_io_inbound_buffer,"
+                           "file=%s", trace);
+}
+
+/*
+ * A long transfer through the shared window is offered to it whole. It
+ * must move as one buffer, checked once, and leave exactly the bytes a
+ * sequence of accesses of at most eight bytes leaves, in both directions.
+ */
+static void test_inbound_buffer_matches_accesses(void)
+{
+    enum { LEN = 3001 };
+    const uint64_t a = 0x1a0003, b = 0x1b0003;
+    g_autofree char *trace = log_file_new();
+    g_autofree char *extra = inbound_buffer_trace_args(trace);
+    g_autofree char *contents = NULL;
+    uint8_t pattern[LEN], whole[LEN + 16], stepped[LEN + 16];
+    QTestState *s = io_start(extra);
+
+    fill_pattern(pattern, LEN, 0x3c);
+    for (uint64_t off = 0; off < LEN + 16; off += 8) {
+        dma_writeq(s, a - 8 + off, UINT64_C(0xa5a5a5a5a5a5a5a5));
+        dma_writeq(s, b - 8 + off, UINT64_C(0xa5a5a5a5a5a5a5a5));
+    }
+
+    dma_write(s, a, pattern, LEN);
+    for (size_t off = 0; off < LEN; off += 8) {
+        dma_write(s, b + off, pattern + off, MIN(8, LEN - off));
+    }
+
+    dma_read(s, a - 8, whole, sizeof(whole));
+    for (size_t off = 0; off < sizeof(stepped); off += 8) {
+        dma_read(s, b - 8 + off, stepped + off, 8);
+    }
+    g_assert_cmpmem(whole, sizeof(whole), stepped, sizeof(stepped));
+    g_assert_cmpmem(whole + 8, LEN, pattern, LEN);
+    for (size_t i = 0; i < 8; i++) {
+        g_assert_cmphex(whole[i], ==, 0xa5);
+        g_assert_cmphex(whole[8 + LEN + i], ==, 0xa5);
+    }
+    for (size_t off = 0; off < sizeof(stepped); off += 8) {
+        dma_read(s, a - 8 + off, stepped + off, 8);
+    }
+    g_assert_cmpmem(whole, sizeof(whole), stepped, sizeof(stepped));
+    qtest_quit(s);
+
+    contents = log_file_take(trace);
+    g_assert_cmpuint(count_lines(contents,
+                     "addr 0x1a0003 len 3001 write 1 moved 3001"), ==, 1);
+    g_assert_cmpuint(count_lines(contents,
+                     "addr 0x19fffb len 3017 write 0 moved 3017"), ==, 1);
+    /* Steps of eight bytes or less are never offered as buffers. */
+    g_assert_cmpuint(count_lines(contents, "addr 0x1b"), ==, 0);
+}
+
+/*
+ * A buffer the per-access path would refuse is declined untouched, so the
+ * refusal and its log line come once per access, as before; the register
+ * class is never taken as a buffer; and a buffer stops where the unit's
+ * memory ends, leaving the rest to the per-access path.
+ */
+static void test_inbound_buffer_refusals(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    const uint64_t end = 32 * 1024 * 1024;
+    uint8_t pattern[64], seen[64], sentinel[64];
+    QTestState *s = io_start_logged(log,
+        "-trace enable=sgi_bedrock_io_inbound_buffer "
+        "-global sgi-bedrock-io.device-mask-reset=0xfefeffffffffffff");
+
+    fill_pattern(pattern, sizeof(pattern), 0x5e);
+    memset(sentinel, 0, sizeof(sentinel));
+
+    /* Device 0 of head 0xf is denied, so the shared window refuses. */
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 48);
+    dma_write(s, 0x1c0000, pattern, sizeof(pattern));
+
+    /* A denied head refuses although the other head is permitted. */
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 56);
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_E);
+    dma_write(s, 0x1c1000, pattern, sizeof(pattern));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+
+    dma_read(s, 0x1c0000, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+    dma_read(s, 0x1c1000, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+
+    /* Sixteen bytes in the register class are two register accesses. */
+    qtest_memwrite(s, IN_BASE + XIO_REGISTER + HUB_REMOTE + 0x90, pattern,
+                   16);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, ldq_be_p(pattern));
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x98), ==,
+                    ldq_be_p(pattern + 8));
+
+    /* The last 24 bytes of DMA memory move; the rest is refused. */
+    dma_write(s, end - 24, pattern, sizeof(pattern));
+    dma_read(s, end - 24, seen, 24);
+    g_assert_cmpmem(seen, 24, pattern, 24);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_cmpuint(count_lines(contents, "addr 0x1c0000 len 64 write 1"),
+                     ==, 0);
+    g_assert_cmpuint(count_lines(contents, "addr 0x1c1000 len 64 write 1"),
+                     ==, 0);
+    g_assert_cmpuint(count_lines(contents, "addr 0x8000"), ==, 0);
+    g_assert_cmpuint(count_lines(contents,
+                     "addr 0x1ffffe8 len 64 write 1 moved 24"), ==, 1);
+    g_assert_cmpuint(count_lines(contents, "inbound write at 0x1c00"), ==,
+                     sizeof(pattern) / 8);
+    g_assert_cmpuint(count_lines(contents, "inbound write at 0x1c10"), ==,
+                     sizeof(pattern) / 8);
+}
+
 static void test_bte_copy_and_zero(void)
 {
     QTestState *s = io_start("");
@@ -1320,6 +1450,10 @@ int main(int argc, char **argv)
                    test_inbound_refusal_is_logged);
     qtest_add_func("sn1/bedrock-io/inbound-register-access",
                    test_inbound_register_access);
+    qtest_add_func("sn1/bedrock-io/inbound-buffer-matches-accesses",
+                   test_inbound_buffer_matches_accesses);
+    qtest_add_func("sn1/bedrock-io/inbound-buffer-refusals",
+                   test_inbound_buffer_refusals);
     qtest_add_func("sn1/bedrock-io/pio-target-answers-through-inbound",
                    test_pio_target_answers_through_inbound);
     qtest_add_func("sn1/bedrock-io/inbound-keeps-its-guard",

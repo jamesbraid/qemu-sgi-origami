@@ -2527,6 +2527,45 @@ static void test_power_commands(void)
     qtest_quit(qts);
 }
 
+/*
+ * The expansion module's Bedrock is the one whose main power can be off. A
+ * long transfer offered to its shared inbound window while it is off must be
+ * declined before anything is checked or moved, and left to the per-access
+ * path, which refuses it. Its DMA space is a refusing region, so with power
+ * on the window takes the offer and moves nothing; the trace line shows the
+ * offer reached the buffer path at all.
+ */
+static void test_power_inbound_buffer(void)
+{
+    const uint64_t window = UINT64_C(0x600000000000);
+    GError *error = NULL;
+    g_autofree char *trace = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *contents = NULL;
+    uint8_t pattern[64];
+    QTestState *qts;
+    int fd = g_file_open_tmp("sgi-expansion-buffer-XXXXXX", &trace, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    extra = g_strdup_printf("%s -trace enable=sgi_bedrock_io_inbound_buffer,"
+                            "file=%s", POWER_OPTIONS, trace);
+    qts = management_start(extra);
+    qtest_sysbus_mmio_map(qts, PATH "/chassis/bic/io", 2, window);
+    memset(pattern, 0x5a, sizeof(pattern));
+
+    power_set(qts, false);
+    qtest_memwrite(qts, window + 0x1000, pattern, sizeof(pattern));
+    power_set(qts, true);
+    qtest_memwrite(qts, window + 0x2000, pattern, sizeof(pattern));
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace, &contents, NULL, NULL));
+    g_assert_cmpint(g_unlink(trace), ==, 0);
+    g_assert_null(strstr(contents, "addr 0x1000 "));
+    g_assert_nonnull(strstr(contents, "addr 0x2000 len 64 write 1 moved 0"));
+}
+
 static void test_power_views(void)
 {
     QTestState *qts = management_start(POWER_OPTIONS);
@@ -3241,6 +3280,8 @@ int main(int argc, char **argv)
                    test_power_error_permissions);
     qtest_add_func("/sgi/pci-expansion-ni/power-commands", test_power_commands);
     qtest_add_func("/sgi/pci-expansion-ni/power-views", test_power_views);
+    qtest_add_func("/sgi/pci-expansion-ni/power-inbound-buffer",
+                   test_power_inbound_buffer);
     qtest_add_func("/sgi/pci-expansion-ni/power-initial-off",
                    test_power_initial_off);
     qtest_add_func("/sgi/pci-expansion-ni/power-migration",
