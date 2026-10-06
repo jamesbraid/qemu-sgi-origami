@@ -6,6 +6,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -178,6 +179,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],

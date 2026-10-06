@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "1bc4f0cad7a828acb8e86c40e56d3aa1339bf45b7212833ae9864b4eb442a938"
+    "618fe11418567409d00a9254026e98c34025e45e32f073359d5b266a5872c99c"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -328,17 +329,49 @@ class FuelTests(unittest.TestCase):
         self.assertEqual({row["topology"] for row in offerings},
                          {"fuel", "fuel-vpro"})
         expected = [
-            {"kind": "console", "node": 0,
+            {"kind": "console", "node": 0, "line": 0,
              "argument": "-serial chardev:l1"},
-            {"kind": "second-port", "node": 0,
+            {"kind": "second-port", "node": 0, "line": 1,
              "argument": "-serial chardev:ioc3_a"},
-            {"kind": "second-port", "node": 0,
+            {"kind": "second-port", "node": 0, "line": 2,
              "argument": "-serial chardev:ioc3_b"},
         ]
         for row in offerings:
             with self.subTest(topology=row["topology"]):
                 self.assertEqual(row["console"], "l1-uart")
                 self.assertEqual(row["consoles"], expected)
+
+    def test_bedrock_console_lines_follow_the_machines_line_map(self):
+        """Every Origin 300 and Fuel console line is the one the machine
+        reads: the L1 first in each node's block of five, then that
+        node's IOC3 ports A and B (sgi_sn1_serial_line())."""
+        header = (ROOT / "include/hw/mips/sgi/sn-machine.h").read_text()
+        per_node = int(re.search(
+            r"#define SGI_SN1_SERIAL_LINES_PER_NODE\s+(\d+)", header)[1])
+        self.assertIn("node_index * SGI_SN1_SERIAL_LINES_PER_NODE + line",
+                      header)
+        offsets = {"l1": 0, "ioc3_a": 1, "ioc3_b": 2}
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        seen = 0
+        for row in catalogue["offerings"]:
+            if row["product"] not in ("origin300", "fuel"):
+                continue
+            for console in row["consoles"]:
+                chardev = console["argument"].split("chardev:")[1]
+                node = int(chardev[len("l1_node"):]) \
+                    if chardev.startswith("l1_node") else console["node"]
+                offset = 0 if chardev.startswith("l1") else offsets[chardev]
+                with self.subTest(topology=row["topology"], chardev=chardev):
+                    self.assertEqual(console["node"], node)
+                    self.assertEqual(console["line"],
+                                     node * per_node + offset)
+                seen += 1
+        self.assertGreater(seen, 0)
+        self.assertTrue(any(c["line"] == per_node for row in
+                            catalogue["offerings"]
+                            for c in row["consoles"]
+                            if c["argument"].endswith("l1_node1")))
 
     def test_ip35_firmware_names_each_product_machine_type(self):
         """Origin 300's IP35 configuration block says SN10 (1) and Fuel's

@@ -6,16 +6,19 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_a",
           "kind": "second-port",
+          "line": 1,
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_b",
           "kind": "second-port",
+          "line": 2,
           "node": 0
         }
       ],
@@ -180,16 +183,19 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_a",
           "kind": "second-port",
+          "line": 1,
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_b",
           "kind": "second-port",
+          "line": 2,
           "node": 0
         }
       ],
@@ -8987,6 +8993,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -9159,6 +9166,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -9331,6 +9339,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -9503,6 +9512,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -9675,6 +9685,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -9847,6 +9858,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -10019,6 +10031,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -10191,6 +10204,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -10363,11 +10377,13 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:l1_node1",
           "kind": "system-controller",
+          "line": 5,
           "node": 1
         }
       ],
@@ -10585,11 +10601,13 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:l1_node1",
           "kind": "system-controller",
+          "line": 5,
           "node": 1
         }
       ],
@@ -10807,11 +10825,13 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:l1_node1",
           "kind": "system-controller",
+          "line": 5,
           "node": 1
         }
       ],
@@ -11029,11 +11049,13 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         },
         {
           "argument": "-serial chardev:l1_node1",
           "kind": "system-controller",
+          "line": 5,
           "node": 1
         }
       ],
@@ -11251,6 +11273,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -11423,6 +11446,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -11595,6 +11619,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -11767,6 +11792,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -11939,6 +11965,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],
@@ -12111,6 +12138,7 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
           "node": 0
         }
       ],

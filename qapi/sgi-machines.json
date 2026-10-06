@@ -1332,12 +1332,18 @@
 #
 # @argument: the QEMU argument form this line becomes
 #
+# @line: the zero-based -serial position the machine reads this line
+#     from, given for Origin 300 and Fuel offerings, where a further
+#     chassis's L1 leads its own block of five lines and so is not at
+#     its index in @consoles
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelConsole',
   'data': { 'kind': 'str',
             'node': 'uint32',
-            'argument': 'str' } }
+            'argument': 'str',
+            '*line': 'uint32' } }
 
 ##
 # @SGIModelInitInputKind:

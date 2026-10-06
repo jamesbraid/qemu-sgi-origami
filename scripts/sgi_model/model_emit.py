@@ -441,6 +441,15 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     return adapters
 
 
+# include/hw/mips/sgi/sn-machine.h's SGI_SN1_SERIAL_LINES_PER_NODE.
+_SN1_SERIAL_LINES_PER_NODE = 5
+
+
+def _sn1_serial_line(node_index: int, line: int) -> int:
+    """sgi_sn1_serial_line(): the -serial position a node's line occupies."""
+    return node_index * _SN1_SERIAL_LINES_PER_NODE + line
+
+
 def _consoles_for(topology: dict, harness: dict) -> list[dict]:
     """Named serial endpoints exposed by the product's launch policy."""
     if topology["generation"] == "IP30":
@@ -453,7 +462,8 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
         # B follow its L1 (sn-machine.h's sgi_sn1_serial_line()).
         consoles = [{"kind": "console" if harness["console"] == "l1-uart"
                      else "system-controller", "node": 0,
-                     "argument": "-serial chardev:l1"}]
+                     "argument": "-serial chardev:l1",
+                     "line": _sn1_serial_line(0, 0)}]
         ports = harness.get("ioc3_serial_ports",
                             ["ioc3-serial-a"]
                             if harness["console"] == "ioc3-serial-a" else [])
@@ -463,6 +473,7 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
                          else "second-port"),
                 "node": 0,
                 "argument": f"-serial chardev:ioc3_{port[-1]}",
+                "line": _sn1_serial_line(0, 1 + (port[-1] == "b")),
             })
         for controller in topology["controllers"]:
             nodes = topology["modules"][controller["module_index"]]["nodes"]
@@ -473,6 +484,7 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
                 consoles.append({
                     "kind": "system-controller", "node": node,
                     "argument": f"-serial chardev:l1_node{node}",
+                    "line": _sn1_serial_line(node, 0),
                 })
         return consoles
     consoles = [
