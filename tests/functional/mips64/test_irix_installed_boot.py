@@ -44,7 +44,8 @@ MEMORY_MIB = 64
 # host, the same figure test_irix_diag.py's own BOOT_TIMEOUT_SECONDS
 # comment records for the golden-with-diagnostics disk built from the
 # same base image. 900 leaves comfortable headroom under a loaded host
-# and a 60s margin under the 960s meson timeout registered for this test.
+# and a 60s margin under the 960s meson timeout registered for this test,
+# which is why it differs from the shared 840s in lib_prom.py.
 BOOT_TIMEOUT_SECONDS = 900
 
 # Drive the PROM menu to Start System, answer the login's TERM prompt,

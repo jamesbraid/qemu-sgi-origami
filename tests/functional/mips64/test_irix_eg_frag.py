@@ -42,6 +42,9 @@ GUEST_RX_DATA = "/var/tmp/qemu-eg-frag-rx.bin"
 GUEST_RX_READY = "QEMU_EG_FRAG_RX_READY_7b39"
 GUEST_RX_DONE = "QEMU_EG_FRAG_RX_DONE_7b39"
 GUEST_TX_DONE = "QEMU_EG_FRAG_TX_DONE_7b39"
+# Own value: the boot-to-shell wait for this test, above the shared 840s in
+# lib_prom.py; the meson timeout registered for it (1800s) also covers the
+# fragment transfers after the boot.
 BOOT_TIMEOUT_SECONDS = 1200
 STEP_TIMEOUT_SECONDS = 90
 FRAGMENT_TIMEOUT_SECONDS = 30
