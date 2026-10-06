@@ -38,13 +38,14 @@ layer:
       kind: node-asic
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-heart-status
       parent: ip30-board
       hardware_kind: heart
       identity:
         widget_revision: 6
         widget_id_64: '0x6c00106d'
         widget_status_f_measured: true
+        # Emulator choice: see sgi-ip30.rst, HEART widget status word.
     - id: memory
       name: memory
       kind: memory
@@ -106,9 +107,9 @@ layer:
     - id: ethernet
       name: ethernet
       kind: subfunction
-      provenance: derived
+      provenance: public-header
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - linux:db2ddb87143519e20a95aa36c60b36107b736a58 drivers/mfd/ioc3.c lines 449 to 459 (ip30_sysboard_setup creates the IOC3 Ethernet function on the IP30 board)
       parent: ioc3
       hardware_kind: ioc3-ethernet
     - id: rtc

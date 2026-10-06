@@ -66,18 +66,13 @@ Public software:
 
 Public captures and accounts:
 
-- Miod Vallat, OpenBSD/sgi story part 4,
-  http://miod.online.fr/software/openbsd/stories/sgi4.html, retained copy
-  SHA-256 ``307c9d4678f52b8fb0c43d1690f552fd774ac1620bdf9aa1299c6f85ff40b91e``,
-  lines 1308-1352: an OpenBSD 4.3-beta boot on a 128 MiB Octane with a
+- Miod Vallat, OpenBSD/sgi story part 4
+  (``web:miod-openbsd-sgi-story-4``), lines 1308-1352: an OpenBSD 4.3-beta boot on a 128 MiB Octane with a
   175 MHz processor module.
-- Niclas Steinel-Hansson, comp.sys.sgi.hardware, 2001-11-03,
-  Message-ID ``<3BE33F04.848B3CEE@odense.kollegienet.dk>``: ``hinv -m -v``
-  of a 195 MHz R10000 Octane.
-- SGIStuff Octane system page,
-  https://archive.irixnet.org/sgistuff/hardware/systems/octane.html,
-  retained copy SHA-256
-  ``3b785cc77b38ad3ac1ae58c9c6094c28810625d943547c17d0f4700d888dd0ea``.
+- Niclas Steinel-Hansson, comp.sys.sgi.hardware, 2001-11-03
+  (``web:usenet-3be33f04``): ``hinv -m -v`` of a 195 MHz R10000 Octane.
+- SGIStuff Octane system page (``web:sgistuff-octane``): lists the 195 MHz
+  R10000 with 1 MB of onboard secondary cache.
 - NEC, *VR10000, VR12000 64-bit Microprocessor User's Manual*, third
   edition, U10278EJ3V0UM00, May 1998, printed pages 184-185 (reset mode
   bits) and 366 (R12000 clock divider encodings).
@@ -104,8 +99,8 @@ Products
      - one R10000, 195 MHz, 1 MiB secondary cache
      - 128 MiB
      - ``030-0887-003`` revision F
-     - published 195 MHz inventory and the Technical Report's standard
-       configurations
+     - published 195 MHz inventory, the Technical Report's standard
+       configurations, and the SGIStuff page for the 1 MiB cache
    * - ``octane2``
      - one R12000, 360 MHz, 2 MiB secondary cache
      - 256 MiB
@@ -114,8 +109,10 @@ Products
 
 ``octane`` (established, with one model choice): the Technical Report's
 standard configurations (page 7-1) include 128 MiB single-processor
-Octanes at 195 MHz, and the published inventory reports a 195 MHz R10000
-revision 2.7 on board ``030-0887-003`` revision F. That inventory
+Octanes at 195 MHz, the published inventory reports a 195 MHz R10000
+revision 2.7 on board ``030-0887-003`` revision F, and the SGIStuff page
+gives the 195 MHz part 1 MB of secondary cache (neither the inventory nor
+the Technical Report states the cache size). That inventory
 reports 256 MiB; pairing its board and processor with 128 MiB is a
 model choice. A 175 MHz, 128 MiB Octane also exists (the OpenBSD
 capture), so memory size does not fix processor speed.
@@ -193,6 +190,14 @@ layers):
   unpublished). Bridge revision 3 is an approximation: the inventory
   does not report the Octane2 Bridge revision, and the value is carried
   over from the earlier Octane.
+
+.. _sgi-ip30-heart-status:
+
+The model answers the HEART widget status word (widget register offset
+``0x8``) with ``0x60`` on the ``octane2`` only, where the HEART revision
+is 6; the ``octane`` returns no such word. No public source documents the
+value, and its origin is not recorded here, so the word is an approximation: an emulator choice that a PROM-monitor read of the
+HEART widget status register on a revision F HEART would settle.
 
 IOC3 general-purpose input 2 tells the two products apart in software:
 OpenBSD reads it as 1 for Octane and 0 for Octane2 (``ip30.h``,

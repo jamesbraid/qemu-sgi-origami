@@ -367,6 +367,33 @@ web:
     obtain:
       url: http://miod.online.fr/software/openbsd/stories/sgiall.html
       sha256: 48e6ce0c6dd3eb7eeb9546ea77813180100271e8cd060f0742fdddff94f96036
+  miod-openbsd-sgi-story-4:
+    title: "The OpenBSD/sgi story, part 4"
+    publisher: "Miod Vallat"
+    kind: web-post
+    locator: line
+    rights: public-web
+    obtain:
+      url: http://miod.online.fr/software/openbsd/stories/sgi4.html
+      sha256: 307c9d4678f52b8fb0c43d1690f552fd774ac1620bdf9aa1299c6f85ff40b91e
+  usenet-3be33f04:
+    title: "comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3BE33F04.848B3CEE@odense.kollegienet.dk>"
+  sgistuff-octane:
+    title: "SGIStuff: Octane system page"
+    publisher: "SGIStuff"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://archive.irixnet.org/sgistuff/hardware/systems/octane.html
+      sha256: 3b785cc77b38ad3ac1ae58c9c6094c28810625d943547c17d0f4700d888dd0ea
   tingo-fuel-irix-console:
     title: "SGI Fuel IRIX console, hinv, gfxinfo and l1cmd output"
     publisher: "Torfinn Ingolfsen"
@@ -456,6 +483,7 @@ web:
     rights: obtain-only
     obtain:
       url: https://nekonomicon.irixnet.org/forum/14/16285/1.html
+      sha256: d830c5c3bf9570d8ae365cedfa0e2d8f4aa1fe299a3c45506ea6fa4e933f41f8
   nekonomicon-16729560:
     title: "Nekochan forum archive thread 16729560, two-node Origin 2200 board list"
     publisher: "Nekochan forum archive"
@@ -620,6 +648,7 @@ web:
     rights: obtain-only
     obtain:
       url: https://nekonomicon.irixnet.org/forum/3/16726704/1.html
+      sha256: 2bb21cea6c6b6f4838d021ae874aed1657eb63260c71ff0126b0ef210ee3119f
   nekonomicon-16731033:
     title: "Nekochan forum archive thread 16731033, two-module Origin 200 with a GIGAchannel cabinet on each module"
     publisher: "Nekochan forum archive"
