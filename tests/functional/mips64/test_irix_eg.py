@@ -86,7 +86,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import (HarnessError, IrixConsole,  # noqa: E402
                      drive_irix_to_shell, irix_interface_at_pci_slot)
-from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
+from lib_prom import (IRIX_ACCEL, IRIX_SMP, MACHINES,  # noqa: E402
+                      file_sha256, launch_paused)
 
 def mtu_probe_result(rc, output):
     """Classify one IRIX ifconfig MTU request from status and diagnostics."""
@@ -395,13 +396,13 @@ VERIFY_BYTES = 1024 * 1024                # byte-checked TCP payload
 TX_PORT = 5003                            # host listener the guest sends to
 TX_BUFS = 64                              # 64 x 64 KiB = 4 MiB out of the guest
 
-# Machine shape. The defaults are what the test asserts against in CI: one CPU
-# on the round-robin scheduler, which is the cheapest thing that boots. Both
-# are overridable so the same test can be pointed at a faster configuration
-# when the question is how quickly the adapter can be driven rather than
-# whether it is correct.
-SMP = os.environ.get('EG_PERF_SMP', '1')
-ACCEL = os.environ.get('EG_PERF_ACCEL', 'tcg,thread=single')
+# Machine shape. The defaults are the IRIX tests' shared accelerator and CPU
+# count from lib_prom.py, which is what the test asserts against in CI. Both
+# are overridable for this test alone so it can be pointed at a faster
+# configuration when the question is how quickly the adapter can be driven
+# rather than whether it is correct.
+SMP = os.environ.get('EG_PERF_SMP', IRIX_SMP)
+ACCEL = os.environ.get('EG_PERF_ACCEL', IRIX_ACCEL)
 
 # Soak: repeat the checked transfer this many times after the measured legs.
 # Off by default, because the point of the ordinary run is to be short enough

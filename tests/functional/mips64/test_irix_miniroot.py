@@ -76,8 +76,8 @@ import re
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, MACHINES,
-                      drive_console, file_record, file_sha256,
+from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, IRIX_ACCEL, IRIX_SMP,
+                      MACHINES, drive_console, file_record, file_sha256,
                       fork_git_identity, launch_paused, utc_now)
 
 
@@ -226,7 +226,7 @@ def artifact_identity_problems(prom_path, kernel_path):
 
 def miniroot_extra_args(prom, tftp, elsc_log, capture):
     """The QEMU args beyond what set_machine()/set_console() already
-    provide, for the fixed 1-CPU miniroot direct boot: the real PROM,
+    provide, for the miniroot direct boot: the real PROM,
     normal power-on diagnostics, and SLIRP usermode networking serving the
     miniroot kernel with no external TFTP server. This mirrors
     test_prom_sash.py's sash_extra_args, with the netdev's bootfile pointed
@@ -241,7 +241,7 @@ def miniroot_extra_args(prom, tftp, elsc_log, capture):
     """
     return [
         '-cpu', 'R10000',
-        '-smp', '1',
+        '-smp', IRIX_SMP,
         '-m', '64',
         '-bios', str(prom),
         '-audio', 'none',
@@ -287,7 +287,7 @@ class IrixMiniroot(QemuSystemTest):
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
-        vm.add_args('-accel', 'tcg,thread=single',
+        vm.add_args('-accel', IRIX_ACCEL,
                    *miniroot_extra_args(prom, tftp, elsc_log, capture))
 
         started = utc_now()

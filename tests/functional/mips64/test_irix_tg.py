@@ -75,7 +75,8 @@ from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      irix_interface_at_pci_slot,
                      icmp_echo_exchange, icmp_ipv4_exchange,  # noqa: E402
                      summarise_pcap)
-from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
+from lib_prom import (IRIX_ACCEL, IRIX_SMP, MACHINES,  # noqa: E402
+                      file_sha256, launch_paused)
 
 def _labelled_values(output):
     """Read the label/value forms printed by tgconfig and its options file."""
@@ -453,8 +454,8 @@ if QemuSystemTest is not None:
             vm.set_console()
             elsc_log = self.log_file('elsc-aux.log')
             vm.add_args(
-                '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-smp', '1', '-m', str(MEMORY_MIB),
+                '-accel', IRIX_ACCEL,
+                '-cpu', 'R10000', '-smp', IRIX_SMP, '-m', str(MEMORY_MIB),
                 '-bios', prom,
                 '-audio', 'none',
                 '-chardev', f'file,id=elsc,path={elsc_log}',

@@ -22,8 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import (FORK_ROOT, MACHINES, drive_console, launch_paused,
-                      run_record, utc_now)
+from lib_prom import (FORK_ROOT, IRIX_ACCEL, IRIX_SMP, MACHINES,
+                      drive_console, launch_paused, run_record, utc_now)
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.asset import LocalAsset
@@ -105,8 +105,8 @@ class IrixInstalledBoot(QemuSystemTest):
         vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
-            '-accel', 'tcg,thread=single',
-            '-cpu', 'R10000', '-smp', '1', '-m', str(MEMORY_MIB),
+            '-accel', IRIX_ACCEL,
+            '-cpu', 'R10000', '-smp', IRIX_SMP, '-m', str(MEMORY_MIB),
             '-bios', str(prom),
             '-audio', 'none',
             '-drive',

@@ -26,7 +26,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import HarnessError, IrixConsole, drive_irix_to_shell  # noqa: E402
-from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
+from lib_prom import (IRIX_ACCEL, IRIX_SMP, MACHINES,  # noqa: E402
+                      file_sha256, launch_paused)
 
 try:
     from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv
@@ -209,8 +210,8 @@ if QemuSystemTest is not None:
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
             vm.add_args(
-                '-accel', 'tcg,thread=single', '-cpu', 'R10000',
-                '-smp', '1', '-m', str(MEMORY_MIB), '-bios', prom,
+                '-accel', IRIX_ACCEL, '-cpu', 'R10000',
+                '-smp', IRIX_SMP, '-m', str(MEMORY_MIB), '-bios', prom,
                 '-audio', 'none', '-chardev', f'file,id=elsc,path={elsc}',
                 '-serial', 'none', '-serial', 'chardev:elsc',
                 '-drive', f'if=none,id=disk0,file={disk},format=qcow2',
