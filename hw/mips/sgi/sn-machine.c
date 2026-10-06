@@ -1086,8 +1086,21 @@ static bool sgi_machine_ip53_experiment_policy(
     bool *allow_ip53_experiment, Error **errp)
 {
     bool origin350 = g_strcmp0(smc->product, "origin350") == 0;
-    bool origin350_topology =
-        g_strcmp0(t->name, "origin350") == 0;
+    bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0;
+    bool tezro = g_strcmp0(smc->product, "tezro") == 0;
+    bool origin350_topology = g_strcmp0(t->name, "origin350") == 0;
+    bool onyx350_topology = g_strcmp0(t->name, "onyx350-compat") == 0;
+    bool tezro_trial_topology = g_strcmp0(
+        t->name, "tezro-deskside-700mhz-4mib-serial-trial") == 0;
+    bool registered_ip53_product =
+        (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
+        (tezro && tezro_trial_topology);
+
+    if (tezro && !s->topology_name) {
+        error_setg(errp, "Tezro runtime trial requires explicit topology="
+                   "tezro-deskside-700mhz-4mib-serial-trial selection");
+        return false;
+    }
 
     if (smc->test_topology && qtest_enabled()) {
         if (s->ip53_experimental) {
@@ -1099,14 +1112,13 @@ static bool sgi_machine_ip53_experiment_policy(
         return true;
     }
     if (s->ip53_experimental &&
-        (!origin350 || smc->test_topology || !origin350_topology)) {
-        error_setg(errp, "ip53-experimental=on requires the origin350 "
-                   "machine and origin350 topology");
+        (!registered_ip53_product || smc->test_topology)) {
+        error_setg(errp, "ip53-experimental=on requires a registered IP53 "
+                   "runtime profile");
         return false;
     }
-    if (origin350 && origin350_topology && !s->ip53_experimental) {
-        error_setg(errp, "origin350 requires "
-                   "ip53-experimental=on");
+    if (registered_ip53_product && !s->ip53_experimental) {
+        error_setg(errp, "%s requires ip53-experimental=on", smc->product);
         return false;
     }
     *allow_ip53_experiment = s->ip53_experimental;
@@ -2939,11 +2951,30 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
     g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t host_count, attachment_count, i;
+    size_t widget_zero_host = G_MAXSIZE;
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
 
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
+    if (s->ip53_experiment_authorized) {
+        const SGIModelIoBoardList *board_entry;
+
+        for (board_entry = t->io_boards; board_entry;
+             board_entry = board_entry->next) {
+            const SGIModelIoBoard *board = board_entry->value;
+
+            if (board->preset == SGI_MODEL_IO_BOARD_PRESET_IO9 &&
+                board->has_pci_host_index) {
+                widget_zero_host = board->pci_host_index;
+                break;
+            }
+        }
+        if (widget_zero_host >= host_count) {
+            error_setg(errp, "IP53 widget-zero view has no IO9 host");
+            return false;
+        }
+    }
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
         const SGIModelXioAttachment *attachment =
@@ -2959,7 +2990,8 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
             MemoryRegion *routed =
                 sgi_pic_routed_widget(SGI_PIC(s->pic_hosts[i]));
 
-            if (!sn1_node_set_ip53_pic_widget(node, 0, widget_zero, errp) ||
+            if ((i == widget_zero_host &&
+                 !sn1_node_set_ip53_pic_widget(node, 0, widget_zero, errp)) ||
                 !sn1_node_set_ip53_pic_widget(node, attachment->widget,
                                                routed, errp)) {
                 return false;
@@ -4427,12 +4459,15 @@ static bool sgi_machine_ip53_fingerprint(
           sgi_machine_compare_board_ids);
 
     sgi_machine_fingerprint_update(checksum, domain, sizeof(domain));
-    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 4);
+    /* Version 5/11 adds profile, CPU inputs, and memory banks. */
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 11 : 5);
     sgi_machine_fingerprint_u8(checksum, runtime_permission);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 1 : 0);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 0);
     sgi_machine_fingerprint_u32(checksum,
                                 runtime_permission ? pxbow_revision : 0);
+    sgi_machine_fingerprint_string(checksum, t->product ? t->product : "");
+    sgi_machine_fingerprint_string(checksum, t->name);
     if (runtime_permission) {
         /* Reset PROM reads use the shared bounded IP35 carrier. */
         sgi_machine_fingerprint_u8(checksum, 1);
@@ -4481,20 +4516,47 @@ static bool sgi_machine_ip53_fingerprint(
                                     node->identity->ni_revision);
         sgi_machine_fingerprint_u32(checksum,
                                     node->identity->widget_revision);
-        if (runtime_permission) {
+        {
             const SGIModelCpuSlotList *slot;
-            size_t cpu_count = 0, cpu;
+            const uint64List *bank;
+            size_t cpu_count = 0, bank_count = 0;
 
             for (slot = node->cpu_slots; slot; slot = slot->next) {
                 cpu_count++;
             }
             sgi_machine_fingerprint_u32(checksum, cpu_count);
-            for (cpu = 0; cpu < cpu_count; cpu++) {
-                sgi_machine_fingerprint_u32(checksum, cpu);
-                sgi_machine_fingerprint_u8(checksum, 1);
+            for (slot = node->cpu_slots; slot; slot = slot->next) {
+                const SGIModelCpuSlot *cpu_slot = slot->value;
+                const SGIModelProcessor *processor = cpu_slot->assembly;
+
+                sgi_machine_fingerprint_u32(checksum,
+                                            cpu_slot->interface);
+                sgi_machine_fingerprint_u32(checksum, cpu_slot->slot);
+                sgi_machine_fingerprint_u8(checksum, processor != NULL);
+                if (!processor) {
+                    continue;
+                }
+                sgi_machine_fingerprint_string(checksum, processor->kind);
+                sgi_machine_fingerprint_u8(checksum,
+                                           processor->has_mode_bits);
+                sgi_machine_fingerprint_u32(checksum,
+                                            processor->mode_bits);
+                sgi_machine_fingerprint_u64(checksum, processor->clock_hz);
+                sgi_machine_fingerprint_u8(checksum,
+                                           processor->has_cache_clock_hz);
+                sgi_machine_fingerprint_u64(checksum,
+                                            processor->cache_clock_hz);
+                sgi_machine_fingerprint_u32(checksum, processor->cache_mib);
                 sgi_machine_fingerprint_u64(checksum, SN1_PROM_RESET);
                 sgi_machine_fingerprint_u64(checksum,
                                             SN1_IP53_PROM_PAYLOAD_SIZE);
+            }
+            for (bank = node->bank_mib; bank; bank = bank->next) {
+                bank_count++;
+            }
+            sgi_machine_fingerprint_u32(checksum, bank_count);
+            for (bank = node->bank_mib; bank; bank = bank->next) {
+                sgi_machine_fingerprint_u64(checksum, bank->value);
             }
         }
     }
@@ -5391,7 +5453,7 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
                 return false;
             }
             if (runtime_experiment && node->identity->clock_hz != 200000000) {
-                error_setg(errp, "origin350 IP53 experiment requires a "
+                error_setg(errp, "IP53 runtime profile requires a "
                            "200000000 Hz Bedrock clock");
                 return false;
             }
@@ -5420,6 +5482,9 @@ static bool sgi_machine_preflight_io_descriptors(
     bool has_io9 = false;
     bool has_ip53 = false;
     bool all_ip53 = true;
+    bool tezro_serial_trial = allow_ip53_experiment &&
+        g_str_equal(t->name, "tezro-deskside-700mhz-4mib-serial-trial");
+    size_t expected_host_count = tezro_serial_trial ? 2 : 1;
     const SGIModelNodeList *node_entry;
 
     for (node_entry = t->nodes; node_entry; node_entry = node_entry->next) {
@@ -5701,10 +5766,12 @@ static bool sgi_machine_preflight_io_descriptors(
         return false;
     }
     if (allow_ip53_experiment &&
-        (!has_ip53 || !all_ip53 || node_count != 1 || host_count != 1 ||
+        (!has_ip53 || !all_ip53 || node_count != 1 ||
+         host_count != expected_host_count ||
          io9_count != 1)) {
-        error_setg(errp, "origin350 IP53 experiment requires one IP53 node, "
-                   "one PIC host and one IO9 board");
+        error_setg(errp, "IP53 runtime profile requires one IP53 node, "
+                   "%zu PIC host%s and one IO9 board", expected_host_count,
+                   expected_host_count == 1 ? "" : "s");
         return false;
     }
     if (host_count || has_io9) {
@@ -5724,9 +5791,11 @@ static bool sgi_machine_preflight_io_descriptors(
                 return false;
             }
         }
-        if (allow_ip53_experiment && (node_count != 1 || host_count != 1)) {
-            error_setg(errp, "origin350 IP53 experiment requires one node "
-                       "and one PIC host");
+        if (allow_ip53_experiment &&
+            (node_count != 1 || host_count != expected_host_count)) {
+            error_setg(errp, "IP53 runtime profile requires one node and "
+                       "%zu PIC host%s", expected_host_count,
+                       expected_host_count == 1 ? "" : "s");
             return false;
         }
     }

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Proposed non-graphics compatibility projection for captured module 001c01.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/ip53-onyx350-compat-module.yaml
+  - layers/products/onyx350-compat.yaml

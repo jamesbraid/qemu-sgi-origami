@@ -36,6 +36,12 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -221,6 +227,7 @@
       "topology": "origin200-dual"
     }
   ],
+  "references": [],
   "schema": "sgi-machines",
   "topologies": [
     {

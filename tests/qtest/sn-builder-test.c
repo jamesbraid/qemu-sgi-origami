@@ -1059,6 +1059,7 @@ static void test_pic_io9_descriptor_refusals(const void *data)
         { "pic-host-only", "has unsupported PIC/IO9 descriptors" },
         { "io9-with-xio-reference", "has inconsistent XIO and PCI references" },
         { "io9-missing-pci-head", "has inconsistent XIO and PCI references" },
+        { "io9-no-pci-host", "has inconsistent XIO and PCI references" },
         { "io9-bad-pci-host",
           "gives I/O board 'fixture-io9' a PCI host index out of range" },
         { "io9-bad-pci-head", "has out-of-range PCI head 2" },
@@ -2004,6 +2005,7 @@ static void test_ip53_two_pic_hosts_keep_widget_state_and_reset(void)
     QTestState *qts;
     g_autofree char *pic_b = NULL;
     g_autofree char *pic_f = NULL;
+    g_autofree char *io9_ioc4 = NULL;
     uint64_t value;
     int fd;
 
@@ -2017,10 +2019,15 @@ static void test_ip53_two_pic_hosts_keep_widget_state_and_reset(void)
         bios);
     pic_b = qom_child_type(qts, "/machine", "pic-pic-xio-b");
     pic_f = qom_child_type(qts, "/machine", "pic-pic-xio-f");
+    io9_ioc4 = qom_child_type(qts, "/machine", "io9-fixture-io9-d1-f0");
 
     g_assert_cmpstr(pic_b, ==, "sgi-pic");
     g_assert_cmpstr(pic_f, ==, "sgi-pic");
-    g_assert_null(qom_child_type(qts, "/machine", "io9-fixture-io9-d1-f0"));
+    g_assert_cmpstr(io9_ioc4, ==, "sgi-ioc4");
+    g_assert_cmphex(qtest_readl(qts, widget_f + 0x21000), ==,
+                    UINT32_C(0x100a10a9));
+    g_assert_cmphex(qtest_readl(qts, widget_b + 0x21000), ==,
+                    UINT32_MAX);
     g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b, &value));
     g_assert_cmphex((value >> 12) & 0xffff, ==, 0xd102);
     g_assert_true(nasid_test_cpu_readq(qts, 0, head_f1, &value));
@@ -2358,8 +2365,8 @@ static void test_ip53_fingerprint_migration(const void *opaque)
     g_autofree char *from_clock = g_build_filename(dir, "from-clock.bin", NULL);
     g_autofree char *to_data = g_build_filename(dir, "to-data.bin", NULL);
     g_autofree char *to_clock = g_build_filename(dir, "to-clock.bin", NULL);
-    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
-    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *stream = g_build_filename(dir, "migration", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s", stream);
     g_autofree char *blank_prom = g_malloc0(0x100000);
     g_autofree char *blank_data = g_malloc0(0x800);
     g_autofree char *blank_clock = g_malloc0(16);
@@ -2396,20 +2403,11 @@ static void test_ip53_fingerprint_migration(const void *opaque)
         "-m 64M -smp 1 -cpu R14000 -bios %s "
         "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
-        "-nodefaults -display none -S", prom, from_data, from_clock);
-    to = qtest_initf(
-        "-M sn-builder-bedrock-test,construction-fault=%s "
-        "-m 64M -smp 1 -cpu R14000 -bios %s "
-        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
-        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
-        "-nodefaults -display none -S -incoming defer", destination_fault,
-        prom, to_data, to_clock);
+        "-nodefaults -display none -S",
+        prom, from_data, from_clock);
     if (g_str_equal(destination_fault, "ip53-alt-clock")) {
         g_printerr("IP53 fingerprint descriptor clocks: source="
                    "200000000 Hz destination=150000000 Hz\n");
-    }
-    if (mismatch) {
-        qtest_set_expected_status(to, EXIT_FAILURE);
     }
     if (!mismatch) {
         qtest_writeq(from, io_registers + 0x160, itte);
@@ -2443,19 +2441,25 @@ static void test_ip53_fingerprint_migration(const void *opaque)
                         bswap32(0x80000000));
         g_assert_cmphex(qtest_readb(from, ioc4_memory + 0x380 + 3), ==, 3);
     }
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    to = qtest_initf(
+        "-M sn-builder-bedrock-test,construction-fault=%s "
+        "-m 64M -smp 1 -cpu R14000 -bios %s "
+        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+        "-nodefaults -display none -S "
+        "-incoming defer", destination_fault, prom, to_data, to_clock);
     if (mismatch) {
-        int64_t deadline = g_get_monotonic_time() +
-                           10 * G_TIME_SPAN_SECOND;
-
-        while (qtest_probe_child(to)) {
-            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-            g_usleep(1000);
-        }
-        g_assert_false(qtest_probe_child(to));
+        qtest_set_expected_status(to, EXIT_FAILURE);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    if (mismatch) {
+        qtest_wait_qemu(to);
+        qtest_qmp_assert_success(from, "{'execute':'quit'}");
+        qtest_wait_qemu(from);
     } else {
         sgi_wait_migration_status(to, "completed", 30);
         g_assert_cmphex(qtest_readq(to, IP53_PI_PENDING) &
@@ -2476,16 +2480,6 @@ static void test_ip53_fingerprint_migration(const void *opaque)
                         0x40, ==, 0);
         g_assert_cmphex(qtest_readq(to, IP53_PI_PENDING) &
                         IP53_PI_PENDING_BIT, ==, 0);
-    }
-    if (mismatch && qtest_probe_child(from)) {
-        int64_t deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
-
-        qtest_qmp_assert_success(from, "{'execute':'quit'}");
-        while (qtest_probe_child(from)) {
-            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-            g_usleep(1000);
-        }
-    } else if (!mismatch) {
         {
             g_autoptr(QDict) status = qtest_qmp_assert_success_ref(to,
                 "{'execute':'query-status'}");
@@ -2506,10 +2500,6 @@ static void test_ip53_fingerprint_migration(const void *opaque)
         qtest_wait_qemu(to);
         qtest_qmp_assert_success(from, "{'execute':'quit'}");
         qtest_wait_qemu(from);
-    }
-    qtest_quit(to);
-    qtest_quit(from);
-    if (!mismatch) {
         g_assert_true(g_file_get_contents(from_data, &from_data_image,
                                           &from_data_size, &error));
         g_assert_no_error(error);
@@ -2523,7 +2513,9 @@ static void test_ip53_fingerprint_migration(const void *opaque)
         g_assert_cmphex((uint8_t)to_data_image[0x7f9], ==, 0x92);
         g_assert_cmphex((uint8_t)to_data_image[0x7fa], ==, 0x23);
     }
-    g_unlink(socket);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(stream);
     g_unlink(to_clock);
     g_unlink(to_data);
     g_unlink(from_clock);
@@ -2551,9 +2543,15 @@ static void test_ip53_runtime_permission_refusals(void)
         { "origin350,topology=origin350",
           "2G", "4", "R16000",
           "origin350 requires ip53-experimental=on", false },
+        { "onyx350,topology=onyx350-compat",
+          "8G", "4", "R16000",
+          "onyx350 requires ip53-experimental=on", false },
+        { "tezro,ip53-experimental=on", "4G", "4", "R16000",
+          "Tezro runtime trial requires explicit topology="
+          "tezro-deskside-700mhz-4mib-serial-trial selection", false },
         { "origin300,ip53-experimental=on", "512M", "2", "R14000",
-          "ip53-experimental=on requires the origin350 machine and "
-          "origin350 topology", false },
+          "ip53-experimental=on requires a registered IP53 runtime "
+          "profile", false },
         { "origin350,topology=origin300-pci-expansion-experiment,"
           "ip53-experimental=on", "2G", "4", "R16000",
           "unknown topology", false },
@@ -2832,12 +2830,27 @@ typedef struct IP53RuntimeTestFixture {
     char *clock_path;
 } IP53RuntimeTestFixture;
 
+static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
+    const char *binary_var, const char *machine, const char *extra,
+    const char *memory, const char *reset_mode);
+
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary(
     const char *binary_var, const char *machine, const char *extra)
+{
+    return ip53_runtime_test_start_with_binary_profile(
+        binary_var, machine, extra, "2G", "0x009cad85");
+}
+
+static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
+    const char *binary_var, const char *machine, const char *extra,
+    const char *memory, const char *reset_mode)
 {
     g_autoptr(GError) err = NULL;
     g_autofree uint8_t *blank = g_malloc0(IP53_TEST_PROM_SIZE);
     g_autofree char *arguments = NULL;
+    const char *scache_bytes = g_str_has_prefix(
+        machine, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial")
+        ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int fd, flash_fd, data_fd, clock_fd;
 
@@ -2863,15 +2876,17 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary(
     g_assert_cmpint(ftruncate(clock_fd, 16), ==, 0);
     g_assert_cmpint(close(clock_fd), ==, 0);
     arguments = g_strdup_printf(
-        "-M %s -m 2G -smp 4 "
+        "-M %s -m %s -smp 4 "
         "-cpu R16000,r16000-experimental=on,"
-        "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000 "
+        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
         "-bios %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-display none -S %s", machine, fixture->bios, fixture->flash_path,
-        fixture->data_path, fixture->clock_path, extra ? extra : "");
+        "-display none -S %s", machine, memory, reset_mode, scache_bytes,
+        fixture->bios, fixture->flash_path, fixture->data_path,
+        fixture->clock_path,
+        extra ? extra : "");
     fixture->qts = qtest_init_ext(binary_var, arguments, NULL, true);
 
     return fixture;
@@ -2881,6 +2896,39 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start(const char *machine,
                                                        const char *extra)
 {
     return ip53_runtime_test_start_with_binary(NULL, machine, extra);
+}
+
+static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture);
+
+static void test_tezro_trial_builds_two_pic_hosts(void)
+{
+    IP53RuntimeTestFixture *fixture =
+        ip53_runtime_test_start_with_binary_profile(
+        NULL, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial,"
+        "ip53-experimental=on", NULL, "4G", "0x009bad85");
+    g_autofree char *pic_b = qom_child_type(fixture->qts, "/machine",
+                                           "pic-pic-xio-b");
+    g_autofree char *pic_f = qom_child_type(fixture->qts, "/machine",
+                                           "pic-pic-xio-f");
+    uint32_t aux;
+
+    g_assert_cmpstr(pic_b, ==, "sgi-pic");
+    g_assert_cmpstr(pic_f, ==, "sgi-pic");
+    /* Widget zero follows the PIC host that owns the model's IO9 board. */
+    g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
+                                       IP53_IO_SPACE + 0x2fc, &aux));
+    g_assert_cmphex(aux & (1U << 5), ==, 1U << 5);
+    g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
+                                       IP53_IO_SPACE + 0x1fc, &aux));
+    g_assert_cmphex(aux & (1U << 5), ==, 0);
+    ip53_runtime_test_stop(fixture);
+}
+
+static IP53RuntimeTestFixture *ip53_onyx350_runtime_test_start(
+    const char *extra)
+{
+    return ip53_runtime_test_start_with_binary_profile(
+        NULL, "onyx350,ip53-experimental=on", extra, "8G", "0x009caf85");
 }
 
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
@@ -2895,6 +2943,98 @@ static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
     g_free(fixture->data_path);
     g_free(fixture->clock_path);
     g_free(fixture);
+}
+
+static void test_ip53_origin_to_onyx_migration_refused(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp(
+        "sn-builder-ip53-product-migrate-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    IP53RuntimeTestFixture *from, *to;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr("*Machine type received is 'origin350' "
+                                  "and local is 'onyx350'*");
+        return;
+    }
+
+    g_assert_no_error(error);
+    from = ip53_runtime_test_start(
+        "origin350,ip53-experimental=on", NULL);
+    to = ip53_onyx350_runtime_test_start("-incoming defer");
+    qtest_set_expected_status(to->qts, EXIT_FAILURE);
+    qtest_qmp_assert_success(to->qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from->qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    {
+        int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+        while (qtest_probe_child(to->qts)) {
+            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+            g_usleep(1000);
+        }
+        g_assert_false(qtest_probe_child(to->qts));
+    }
+    if (qtest_probe_child(from->qts)) {
+        qtest_qmp_assert_success(from->qts, "{'execute':'quit'}");
+        qtest_wait_qemu(from->qts);
+    }
+    ip53_runtime_test_stop(to);
+    ip53_runtime_test_stop(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_ip53_onyx350_compat_composition(void)
+{
+    IP53RuntimeTestFixture *fixture = ip53_onyx350_runtime_test_start(NULL);
+    QTestState *qts = fixture->qts;
+    g_autofree char *bedrock = NULL;
+    g_autofree char *l1 = NULL;
+    g_autofree char *pic = NULL;
+    g_autofree char *ioc4 = NULL;
+    g_autofree char *rtc = NULL;
+    g_autofree char *tree = NULL;
+    g_autoptr(QDict) response = NULL;
+    QList *cpus;
+    const QListEntry *entry;
+    uint64_t board_id;
+    uint32_t device_id;
+    unsigned int cpu_count = 0;
+    uint64_t pic_widget = IP53_IO_SPACE + UINT64_C(15) * UINT64_C(0x1000000);
+
+    g_assert_true(nasid_test_cpu_readq(qts, 0, IP53_BOARD_ID_LOCAL,
+                                       &board_id));
+    g_assert_cmphex(board_id, ==, 0x2001);
+    bedrock = qom_child_type(qts, "/machine/node0", "bedrock");
+    l1 = qom_child_type(qts, "/machine/node0", "l1");
+    pic = qom_child_type(qts, "/machine", "pic-pic");
+    ioc4 = qom_child_type(qts, "/machine", "io9-io9-d1-f0");
+    rtc = qom_child_type(qts, "/machine", "ds1742-io9");
+    g_assert_cmpstr(bedrock, ==, "sgi-bedrock");
+    g_assert_cmpstr(l1, ==, "sgi-l1");
+    g_assert_cmpstr(pic, ==, "sgi-pic");
+    g_assert_cmpstr(ioc4, ==, "sgi-ioc4");
+    g_assert_cmpstr(rtc, ==, "ds1742");
+    device_id = qtest_readl(qts, pic_widget + UINT64_C(0x21000));
+    g_assert_cmphex(device_id, ==, UINT32_C(0x100a10a9));
+
+    response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    cpus = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(cpus); entry; entry = qlist_next(entry)) {
+        cpu_count++;
+    }
+    g_assert_cmpuint(cpu_count, ==, 4);
+
+    tree = qtest_hmp(qts, "info qtree");
+    g_assert_null(strstr(tree, "sgi-mgras"));
+    g_assert_null(strstr(tree, "sgi-vpro"));
+    ip53_runtime_test_stop(fixture);
 }
 
 static void test_ip53_integrated_bte_reset_overlap(void)
@@ -7260,6 +7400,12 @@ int main(int argc, char **argv)
                         test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-fingerprint-clock-mismatch",
                         "ip53-alt-clock", test_ip53_fingerprint_migration);
+    qtest_add_data_func("sn/builder/ip53-fingerprint-cpu-reset-mismatch",
+                        "ip53-alt-cpu-reset", test_ip53_fingerprint_migration);
+    qtest_add_data_func("sn/builder/ip53-fingerprint-cpu-cache-mismatch",
+                        "ip53-alt-cpu-cache", test_ip53_fingerprint_migration);
+    qtest_add_data_func("sn/builder/ip53-fingerprint-bank-mismatch",
+                        "ip53-alt-bank", test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-fingerprint-board-id-mismatch",
                         "ip53-alt-board-id", test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-fingerprint-l1-type-mismatch",
@@ -7301,6 +7447,12 @@ int main(int argc, char **argv)
         test_ip53_runtime_permission_defaults_false_and_immutable);
     qtest_add_func("sn/builder/ip53-runtime-construction",
                    test_ip53_runtime_construction);
+    qtest_add_func("sn/builder/tezro-trial-builds-two-pic-hosts",
+                   test_tezro_trial_builds_two_pic_hosts);
+    qtest_add_func("sn/builder/ip53-origin-to-onyx-migration-refused",
+                   test_ip53_origin_to_onyx_migration_refused);
+    qtest_add_func("sn/builder/onyx350-compat-composition",
+                   test_ip53_onyx350_compat_composition);
     qtest_add_func("sn/builder/ip53-integrated-bte-reset-overlap",
                    test_ip53_integrated_bte_reset_overlap);
     qtest_add_func("sn/builder/ip53-static-bcm5701-network-backend",

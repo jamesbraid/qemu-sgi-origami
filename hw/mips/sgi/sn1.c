@@ -28,8 +28,13 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
-    bool ip53 = g_str_equal(product, "origin350");
-    const char *topology = product;
+    bool ip53 = g_str_equal(product, "origin350") ||
+                g_str_equal(product, "onyx350") ||
+                g_str_equal(product, "tezro");
+    const char *topology = g_str_equal(product, "onyx350") ?
+        "onyx350-compat" :
+        g_str_equal(product, "tezro") ?
+        "tezro-deskside-700mhz-4mib-serial-trial" : product;
     const SGIModelTopology *t = sgi_model_find_topology(topology);
 
     g_assert(t);
@@ -65,6 +70,39 @@ static const TypeInfo sn1_machine_types[] = {
         .parent        = TYPE_SGI_SN_MACHINE,
         .class_init    = sn1_machine_class_init,
         .class_data    = "fuel",
+    },
+};
+
+static const TypeInfo sn1_machine_types[] = {
+    {
+        .name = MACHINE_TYPE_NAME("origin300"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "origin300",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("origin350"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "origin350",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("onyx350"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "onyx350",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("tezro"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "tezro",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("fuel"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "fuel",
     },
 };
 

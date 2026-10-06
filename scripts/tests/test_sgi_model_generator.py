@@ -26,6 +26,7 @@ from sgi_model import model_composition
 from sgi_model.exceptions import ResolutionError
 from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.model_qemu import generate_qemu_inputs, render_qemu_inputs
+from sgi_model.model_compile import compile_reference_construction
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
 from sgi_model.system_model import _layer
 from sgi_model.registry import (
@@ -34,6 +35,39 @@ from sgi_model.registry import (
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_tezro_deskside_compatibility_composition_is_explicit(self):
+        model = load_checked_system_model(
+            INPUTS / "tezro-deskside-compat.yaml", model_schema=schema(INPUTS))
+        topology = compile_reference_construction(model)
+        catalogue = json.loads(
+            render_qemu_inputs(INPUTS)["hw/mips/sgi/sn-catalogue.json"])
+        self.assertFalse(any(
+            item["name"] == "tezro-deskside-compat"
+            for item in catalogue["topologies"]))
+        self.assertFalse(any(
+            item["topology"] == "tezro-deskside-compat"
+            for item in catalogue["offerings"]))
+        self.assertEqual(
+            [item["compatibility_profile"]
+             for item in topology["pci_host_bridges"]],
+            ["pic-rev3-bedrock-tezro-experimental"] * 2)
+        self.assertEqual(
+            [item["widget"] for item in topology["xio_attachments"]],
+            [11, 15])
+        io9 = next(item for item in topology["io_boards"]
+                   if item["id"] == "io9")
+        self.assertEqual(io9["pci_host_index"], 1)
+        self.assertEqual(io9["pci_head"], 0)
+        self.assertEqual(io9["pci_functions"], [])
+        node = topology["nodes"][0]
+        self.assertEqual(node["bank_mib"], [1024, 1024, 512, 512,
+                                              512, 512, 0, 0])
+        processor = node["cpu_slots"][0]["assembly"]
+        self.assertEqual(processor["clock_hz"], 700000000)
+        self.assertEqual(processor["cache_mib"], 4)
+        self.assertEqual(processor["cache_clock_hz"], 350000000)
+        self.assertNotIn("mode_bits", processor)
+
     def test_reference_models_are_public_without_runtime_offerings(self):
         catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
@@ -154,9 +188,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 110)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 35)
-        self.assertEqual(len(layers), 75)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 119)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 39)
+        self.assertEqual(len(layers), 80)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {

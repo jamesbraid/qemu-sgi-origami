@@ -23,6 +23,17 @@ layer:
       positions and size mapping are compiler vocabulary, not established
       physical wiring.
   memory_kits:
+    - id: kit-8192-at-banks-0-7-onyx350-observed
+      dimms: 8
+      dimm_mib: 1024
+      banks: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
+      bank_positions: [0, 1, 2, 3, 4, 5, 6, 7]
+      provenance: observed-hardware
+      sources: [onyx350-observed-module]
+      notes: >-
+        Logical enabled banks reported for captured module 001c01. Physical
+        DIMM slot positions are not established; this is an explicit software
+        bank map, not a physical slot claim.
     - id: kit-2048-at-banks-0-1-origin350-profile
       dimms: 2
       dimm_mib: 1024

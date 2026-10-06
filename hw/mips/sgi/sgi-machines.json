@@ -3800,6 +3800,169 @@
       "topology": "onyx2-rack"
     },
     {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "onyx350-compat",
+      "dimms-per-node": [
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx 350 IP53 software profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "onyx350,topology=onyx350-compat,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          8192
+        ],
+        "default": 8192
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 800000000,
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "onyx350",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
+          "board-ids": [
+            "io9"
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "kind": "ds1742",
+          "part": "ds1742",
+          "scope": "board",
+          "size": 2048
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx350-compat"
+    },
+    {
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -13405,6 +13568,169 @@
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
       "topology": "origin350"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "tezro-deskside-700mhz-4mib-serial-trial",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro deskside serial compatibility trial",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 4,
+        "clock-hz": 700000000,
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
+          "board-ids": [
+            "io9"
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "kind": "ds1742",
+          "part": "ds1742",
+          "scope": "board",
+          "size": 2048
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-deskside-700mhz-4mib-serial-trial"
     }
   ],
   "references": [
@@ -13412,6 +13738,12 @@
       "description": "The boot module has an IP53 node board, Bedrock, an IO9 in bus 1, slot 1, and an L1 controller. Figure 3-2 (printed page 53) labels a PIC ASIC and a PCI riser card. PIC placement, count, widget, revision, PCI device numbers and interrupt route, fitted DIMMs, board revisions, L1 identity, PROM flash fitment and guest serial routing remain unknown. The guide also lists a factory SCSI disk, which this reference layer does not model. Origin 350 placements and software inputs do not establish those values for Onyx 350. The graphics attachment is outside this non-graphics reference.",
       "display-name": "Onyx 350 base compute module",
       "name": "onyx350-base",
+      "product": "onyx350"
+    },
+    {
+      "description": "Captured in a customized six-module system. This model records the observed component subset and does not claim that module 001c01 operated alone or represents a factory population. The eight enabled logical banks do not identify physical DIMM positions. The Onyx 350 guide's 4 MiB cache statement and this capture's 8 MiB reading have distinct scopes; neither is generalized to other modules. The capture also reports IP35prom revision 6.211; it does not identify the image or a compatible flash seed.",
+      "display-name": "Onyx 350 captured module 001c01",
+      "name": "onyx350-observed-module",
       "product": "onyx350"
     },
     {
@@ -13431,6 +13763,12 @@
       "display-name": "Origin 350",
       "name": "origin350-reference",
       "product": "origin350"
+    },
+    {
+      "description": "A software compatibility composition for one deskside Tezro. CPU identity and reset Config0 remain unknown. The R16000 tuple, logical memory banks, two PIC placements and empty IO9 endpoint list are explicit model choices. PIC silicon revision and reset behavior, physical DIMM positions, endpoint population and interrupt bindings remain unresolved. This model has no graphics devices.",
+      "display-name": "Tezro deskside compatibility profile",
+      "name": "tezro-deskside-compat",
+      "product": "tezro"
     },
     {
       "description": "One enclosure carries the processor board, memory, IO9 in the first PCI slot, and four PCI/PCI-X slots on two buses. The guide depicts Bedrock and PIC in its system architecture figure. The NUMAlink connector is unoccupied in this selected configuration. ASIC revisions, widget placement, PCI device numbers and fitted DIMMs are unknown. Graphics hardware is outside this reference.",
@@ -15394,6 +15732,231 @@
           "widget": 13
         }
       ]
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "reported-type": 55,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Onyx 350 (IP53), approximate software profile",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "ds1742": true,
+          "ds1742-fresh-year-base": 1968,
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-006",
+          "pci-functions": [
+            {
+              "clock-hz": 33333333,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9"
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 10268549,
+        "machine-type": 1
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "onyx350-compat",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            8192
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 8,
+                "clock-hz": 800000000,
+                "id": "r16000-800mhz",
+                "kind": "R16000",
+                "mode-bits": 10268549,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 8,
+                "clock-hz": 800000000,
+                "id": "r16000-800mhz",
+                "kind": "R16000",
+                "mode-bits": 10268549,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 8,
+                "clock-hz": 800000000,
+                "id": "r16000-800mhz",
+                "kind": "R16000",
+                "mode-bits": 10268549,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 8,
+                "clock-hz": 800000000,
+                "id": "r16000-800mhz",
+                "kind": "R16000",
+                "mode-bits": 10268549,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "onyx350",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
     },
     {
       "cables": [
@@ -20842,6 +21405,237 @@
       "product": "origin350",
       "routers": [],
       "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "reported-type": 55
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Tezro deskside, serial compatibility trial",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "ds1742": true,
+          "ds1742-fresh-year-base": 1968,
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-005-A",
+          "pci-functions": [
+            {
+              "clock-hz": 66666667,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 1,
+          "populated": true,
+          "preset": "io9"
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 10202501,
+        "machine-type": 1
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "tezro-deskside-700mhz-4mib-serial-trial",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            512,
+            512,
+            512,
+            512,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 63,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 4,
+                "clock-hz": 700000000,
+                "id": "r16000-700mhz",
+                "kind": "R16000",
+                "mode-bits": 10202501,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 4,
+                "clock-hz": 700000000,
+                "id": "r16000-700mhz",
+                "kind": "R16000",
+                "mode-bits": 10202501,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 4,
+                "clock-hz": 700000000,
+                "id": "r16000-700mhz",
+                "kind": "R16000",
+                "mode-bits": 10202501,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 4,
+                "clock-hz": 700000000,
+                "id": "r16000-700mhz",
+                "kind": "R16000",
+                "mode-bits": 10202501,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic-xio-b",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        },
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic-xio-f",
+          "kind": "pic",
+          "xio-attachment-index": 1
+        }
+      ],
+      "product": "tezro",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 11
+        },
         {
           "crossbar-index": -1,
           "node-index": 0,

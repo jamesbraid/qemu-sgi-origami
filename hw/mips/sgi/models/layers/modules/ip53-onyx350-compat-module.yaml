@@ -1,0 +1,233 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 350 captured-module compatibility projection; selected runtime choices remain pending independent review.
+layer_version: 1
+sources:
+  onyx350-compatibility-proposal: "docs/datasheets/onyx350-observed-host-compatibility.md: proposed Onyx 350 inputs and explicit unknowns; choices are pending independent evidence review"
+  onyx350-hinv: "docs/library/hinv/living-raptor/01.hinv, SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad: public inventory for module 001c01"
+layer:
+  kind: module
+  id: ip53-onyx350-compat-module
+  requires: {architecture: sn1, assembly: ip53}
+  data:
+    components:
+      - id: bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        datasheet_contracts:
+          - docs/datasheets/ip35-address-map.md
+          - docs/datasheets/bedrock-processor-interface.md
+          - docs/datasheets/bedrock-local-block.md
+          - docs/datasheets/bedrock-network-interface.md
+          - docs/datasheets/bedrock-io-interface.md
+          - docs/datasheets/bedrock-memory-directory.md
+          - docs/datasheets/bedrock-crossbar.md
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        parent: ip53-board
+        identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
+        provenance: derived
+        sources: [onyx350-hinv]
+        notes: >-
+          hardware_revision 2 is the Bedrock ASIC revision printed by the
+          Onyx 350 inventory. ni_revision 2 and widget_revision 2 are
+          separate software experiment inputs; the inventory does not establish
+          either register identity. They do not describe the printed ASIC
+          revision.
+      - id: ip53-board
+        name: IP53 compute board
+        kind: board
+        hardware_kind: ip53
+        identity: {part: "030-2013-001", notes: "Captured Onyx 350 IP53_4CPU board, revision D; revision is retained in the cited inventory record."}
+        provenance: observed-hardware
+        sources: [onyx350-hinv]
+        notes: >-
+          The proposed profile uses the IP53_4CPU board part reported in the
+          multi-node Onyx 350 capture. Single-module behavior is an experiment
+          projection, not a claim that this exact board was captured alone.
+      - id: cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        parent: bedrock
+        identity: {r16000_reset_mode: 0x009caf85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        sources: [onyx350-hinv, onyx350-compatibility-proposal]
+        notes: >-
+          The clock, secondary-cache capacity, reset mode and required QOM
+          properties are software experiment inputs from the reviewed runtime
+          contract. The reset word is not a measured electrical input.
+      - id: cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        parent: bedrock
+        identity: {r16000_reset_mode: 0x009caf85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        sources: [onyx350-hinv, onyx350-compatibility-proposal]
+      - id: cpu2
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        parent: bedrock
+        identity: {r16000_reset_mode: 0x009caf85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        sources: [onyx350-hinv, onyx350-compatibility-proposal]
+      - id: cpu3
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        parent: bedrock
+        identity: {r16000_reset_mode: 0x009caf85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        sources: [onyx350-compatibility-proposal]
+      - id: node-memory
+        name: node memory
+        kind: memory
+        parent: bedrock
+        provenance: vendor-document
+        description: Eight DIMM slots as four pairs, first pair required, 512 MB or 1 GB DIMMs, 1-8 GB.
+        sources: [onyx350-compatibility-proposal]
+      - id: pic-board
+        name: 2U_INT_53 XIO board
+        kind: board
+        hardware_kind: two-u-int53
+        parent: ip53-board
+        identity: {part: "030-1809-006", notes: "Captured revision D; PIC silicon revision and runtime behavior are not established."}
+        provenance: observed-hardware
+        sources: [onyx350-compatibility-proposal]
+        notes: >-
+          Captured module 001c01 places the 2U_INT_53/IO9 path beneath Xtalk widget 15. This profile selects widget 15 for its software construction.
+      - id: io9
+        name: IO9
+        kind: board
+        hardware_kind: io9
+        parent: ip53-board
+        identity: {part: "030-1771-006", notes: "Onyx 350 module 001c01 capture reports revision A; no PCI device-2 population is inferred."}
+        provenance: observed-hardware
+        sources: [onyx350-compatibility-proposal]
+        notes: >-
+          Selected IO9 board identity from the Onyx 350 module 001c01 capture.
+          Device 2 remains unspecified. IOC4, storage and Ethernet model
+          selection and routes are explicit experiment inputs below.
+      - id: pic
+        name: PIC
+        kind: pci-host-bridge
+        hardware_kind: pic
+        datasheet_contracts:
+          - docs/datasheets/pic.md
+          - docs/datasheets/pic-direct64-dma.md
+        pci_host_bridge: {heads: 2}
+        parent: pic-board
+        identity: {widget_part: "0xd102", widget_mfg: "0x024"}
+        provenance: public-header
+        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
+        notes: Two heads share this one widget number (0xF); the second head's registers sit at offset +0x800000 within it. The cited sources do not establish a complete PIC programming contract.
+      - id: ioc4
+        name: IOC4
+        kind: io-controller
+        hardware_kind: ioc4
+        datasheet_contracts:
+          - docs/datasheets/ioc4.md
+          - docs/datasheets/ioc4-serial-dma.md
+        parent: io9
+        identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
+        ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        notes: >-
+          PCI revision 0x53 is the existing QEMU IOC4 interface value, not a
+          measured Onyx 350 PCI revision. The 33,333,333 Hz clock and enabled
+          serial DMA are selected software inputs; serial DMA follows the
+          reviewed experimental IOC4 policy.
+      - id: scsi
+        name: QLogic ISP12160
+        kind: storage-hba
+        hardware_kind: isp12160
+        datasheet_contracts: [docs/datasheets/isp12160.md]
+        parent: io9
+        identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        notes: >-
+          PCI revision 6 is selected because the existing QEMU ISP12160 class
+          reports revision 0x06. This is not a measured IO9 PCI revision.
+      - id: ethernet
+        name: BCM5701
+        kind: io-controller
+        hardware_kind: bcm5701
+        datasheet_contracts: [docs/datasheets/bcm570x.md]
+        parent: io9
+        identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        notes: >-
+          PCI revision 0 is the selected existing BCM570x model value when
+          configured as BCM5701. It is not an observed Onyx 350 card revision.
+          No launcher network-adapter mapping is asserted for this port.
+      - id: ds1742
+        name: DS1742 RTC
+        kind: rtc
+        hardware_kind: ds1742
+        datasheet_contracts:
+          - docs/datasheets/ds1742.md
+          - docs/datasheets/ds1742-ioc4.md
+        parent: io9
+        provenance: derived
+        ds1742_fresh_year_base: 1968
+        sources: [onyx350-compatibility-proposal, ip53-clock-year-review]
+        notes: >-
+          Synthetic linked IOC4 clock resource selected by the reviewed software
+          construction contract. The link does not assert physical address lines
+          or a board-specific guest-visible mapping.
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        sources: [onyx350-compatibility-proposal]
+        notes: The Onyx 350 guide distinguishes the L1 console connector from IOC4 serial-device ports; this model exposes separate endpoints without establishing primary console wiring.
+      - id: link-connector
+        name: LINK connector
+        kind: connector
+        provenance: vendor-document
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: empty, notes: One port; cabled to nothing on a single compute module. A NUMAlink module scales 4 to 32 processors.}
+        sources: [onyx350-compatibility-proposal]
+    links:
+      - {kind: ioc4-clock, source: ds1742, target: ioc4}
+    buses:
+      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
+      - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [onyx350-compatibility-proposal], notes: Cabled to nothing on a single compute module.}
+      - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
+    connections:
+      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: [onyx350-compatibility-proposal]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: [onyx350-compatibility-proposal]}
+      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: [onyx350-compatibility-proposal]}
+      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: [onyx350-compatibility-proposal]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
+      - {component: bedrock, bus: xio, role: master, widget: 10, provenance: derived, sources: [onyx350-compatibility-proposal], notes: "Widget 10 is an explicit Bedrock XIO master choice; the physical Bedrock-to-PIC route remains unknown."}
+      - component: pic
+        bus: xio
+        role: bridge-upstream
+        widget: 15
+        controlled_by: bedrock
+        provenance: derived
+        sources: [onyx350-compatibility-proposal]
+        xio:
+          physical_attachment: direct-link
+          enumerated_widget: 15
+          discovery_widget: 15
+          decoded_widgets: [15]
+          identity_aliases:
+            - {widget: 15, roles: [enumerated, discovery, decoded, legacy]}
+        notes: >-
+          Direct attachment at widget 15 is selected for this software
+          experiment. It does not establish the physical upstream route.
+      - {component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
+      - {component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
+      - {component: pic, bus: io9-bus, role: bridge-downstream, pci_head: 0, provenance: derived, sources: [onyx350-compatibility-proposal]}
+      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, pci_function: 0, intx_pin: inta, pic_input: 0, provenance: derived, sources: ["onyx350-compatibility-proposal", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
+      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, pci_function: 0, intx_pin: inta, pic_input: 2, provenance: derived, sources: ["onyx350-compatibility-proposal", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
+      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, pci_function: 0, intx_pin: inta, pic_input: 3, provenance: derived, sources: ["onyx350-compatibility-proposal", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}

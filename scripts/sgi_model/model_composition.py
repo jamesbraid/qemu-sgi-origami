@@ -869,6 +869,7 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
 def validate_initialization_policy(model: dict[str, Any]) -> None:
     """Validate configuration fields and their existing public input aliases."""
     emulation = model.get("machine", {}).get("emulation", {})
+    product = model.get("composition", {}).get("product")
     recipe = model.get("machine", {}).get("harness", {}).get("smdk")
     if recipe is not None:
         fields = {"package_path", "tftp_mode", "diagnostic_mac_bootarg",
@@ -906,18 +907,33 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         if (component.get("kind") != "pci-host-bridge"
                 or component.get("hardware_kind") != "pic"):
             raise ResolutionError(f"component '{cid}' is not a PIC host")
+        expected = {
+            "origin350": ("origin350", "ip53-origin350"),
+            "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
+            "tezro-deskside-700mhz-4mib-serial-trial": (
+                "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
+            "tezro-deskside-compat": (
+                "tezro", "ip53-tezro-deskside-compat"),
+        }.get(product)
         experiment = (
-            model.get("composition", {}).get("product") ==
-            "origin350"
-            and model.get("machine", {}).get("emulation", {}).get(
-                "machine_name") == "origin350"
+            expected is not None
+            and emulation.get("machine_name") == expected[0]
+            and emulation.get("profile") == expected[1]
             and model.get("machine", {}).get("harness", {}).get(
                 "launch_recipe") == "ip53-discovery"
         )
+        tezro_experiment = (
+            product == "tezro-deskside-compat"
+            and emulation.get("machine_name") == "tezro"
+            and emulation.get("profile") == "ip53-tezro-deskside-compat"
+        )
         if profile != "pic-rev3-bedrock" and not (
                 profile == "pic-rev3-bedrock-experimental" and experiment):
-            raise ResolutionError(
-                f"pic_profiles has unsupported profile '{profile}' for '{cid}'")
+            if not (profile == "pic-rev3-bedrock-tezro-experimental"
+                    and tezro_experiment):
+                raise ResolutionError(
+                    "pic_profiles has unsupported profile "
+                    f"'{profile}' for '{cid}'")
     allowed = {
         "bedrock_nodes": {"board_id_word", "board_id_mask",
                           "board_id_required_bits", "local_region",
@@ -1009,9 +1025,12 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
-                required(identity, "hardware_revision", f"Bedrock '{cid}'")
-                integer(identity["hardware_revision"], 15,
-                        f"'{cid}' hardware_revision")
+                if "hardware_revision" in identity:
+                    integer(identity["hardware_revision"], 15,
+                            f"'{cid}' hardware_revision")
+                elif product != "tezro-deskside-700mhz-4mib-serial-trial":
+                    raise ResolutionError(
+                        f"'{cid}' requires a Bedrock hardware revision")
                 integer(entry.get("local_region"), 63, f"'{cid}' local_region")
                 integer(entry.get("initiator_region"), 63,
                         f"'{cid}' initiator_region")

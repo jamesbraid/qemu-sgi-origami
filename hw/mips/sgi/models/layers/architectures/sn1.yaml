@@ -40,8 +40,20 @@ layer:
               Selected software profile for the Origin 350 IP53 runtime model.
               This tuple does not identify a processor stepping or prove a
               physical Origin 350 configuration.
+          - clock_mhz: 800
+            cache_mib: 8
+            notes: >-
+              Captured on module 001c01 in the customized Onyx 350 system.
+              This observed tuple does not prove standalone operation or
+              establish reset behavior.
+          - clock_mhz: 700
+            cache_mib: 4
+            notes: >-
+              Tezro deskside compatibility tuple. Cache clock is supplied by
+              the product component; processor identification and reset Config0
+              remain unknown.
         provenance: derived
-        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected software profile and explicit unknowns"]
+        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected Origin 350 software profile and explicit unknowns", "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: captured 800 MHz/8 MiB CPU tuple and standalone-operation limit"]
 
     address_spaces:
       - id: cached
