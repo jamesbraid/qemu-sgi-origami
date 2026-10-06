@@ -46,9 +46,14 @@
 /* The board fits its two ISP1040s at devices 0 and 1 and the IOC3 at 2, so
  * the plugged adapter takes slot 3 and the 1 MB window that goes with it. */
 #define MACHINE  "-M origin200 -m 64 -device qlogic-isp12160,bus=pci,addr=3"
-#define SLOT     3
+#define NARROW_SLOT     3
+/* An option slot, wired to the 64-bit data path, and its window. */
+#define WIDE_SLOT       5
+static unsigned int isp_slot = NARROW_SLOT;
+#define SLOT     isp_slot
 
-#define WINDOW            (BRIDGE_BASE + 0x700000)
+#define WINDOW            (BRIDGE_BASE + \
+                           (isp_slot == WIDE_SLOT ? 0x900000 : 0x700000))
 #define CFG               (BRIDGE_BASE + BRIDGE_CFG0 + \
                            SLOT * CFG0_DEVICE_STRIDE)
 #define REG_BRIDGE_DEVICE (BRIDGE_BASE + 0x200 + 8 * SLOT + REG_DATA)
@@ -707,6 +712,46 @@ static void test_a64_ram_load_through_translated_dma(const void *data)
     g_assert_cmphex(isp_read_ram_word(qts,
                                       A64_LOAD_BASE + ARRAY_SIZE(a64_image)),
                     ==, A64_SENTINEL);
+}
+
+/*
+ * The ISP12160A is a 64-bit PCI agent (its data sheet's PCI interface list),
+ * so behind a swap-clear Bridge slot its load is placed per doubleword in a
+ * wired option slot and per word in device 3, which is not wired. The
+ * adapter reads little-endian words from the PCI bytes it is given.
+ */
+static void test_dma_width_follows_the_slot(const void *data)
+{
+    static const unsigned int slots[] = { NARROW_SLOT, WIDE_SLOT };
+    uint8_t page[16];
+
+    for (unsigned int i = 0; i < sizeof(page); i++) {
+        page[i] = (uint8_t)(i * 7 + 3);
+    }
+    for (unsigned int n = 0; n < ARRAY_SIZE(slots); n++) {
+        unsigned int lane = slots[n] == WIDE_SLOT ? 7 : 3;
+        QTestState *s;
+
+        isp_slot = slots[n];
+        s = qtest_initf("-M origin200 -m 64 "
+                        "-device qlogic-isp12160,bus=pci,addr=%u", isp_slot);
+        aim_window_at_memory_bar(s);
+        qtest_writeq(s, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+        qtest_memwrite(s, TARGET_PAGE, page, sizeof(page));
+        g_assert_cmphex(isp_ram_load_a64(s, A64_LOAD_BASE, PCI_TRANSLATED,
+                                         sizeof(page) / 2), ==,
+                        ISP_MBOX_COMPLETE);
+        isp_mbox_ack(s);
+        for (unsigned int w = 0; w < sizeof(page) / 2; w++) {
+            uint16_t want = page[(2 * w) ^ lane] |
+                            page[(2 * w + 1) ^ lane] << 8;
+
+            g_assert_cmphex(isp_read_ram_word(s, A64_LOAD_BASE + w), ==,
+                            want);
+        }
+        qtest_quit(s);
+    }
+    isp_slot = NARROW_SLOT;
 }
 
 /*
@@ -3510,6 +3555,8 @@ int main(int argc, char **argv)
                         NULL, test_ram_word_round_trip_two_addresses);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-through-translated-dma",
                         NULL, test_a64_ram_load_through_translated_dma);
+    qtest_add_data_func("sn0/isp12160/dma-width-follows-the-slot", NULL,
+                        test_dma_width_follows_the_slot);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-rejects-end-crossing",
                         NULL, test_a64_ram_load_rejects_end_crossing);
     qtest_add_data_func("sn0/isp12160/a64-ram-load-reaches-the-last-word",

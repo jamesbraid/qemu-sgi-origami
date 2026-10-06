@@ -18,8 +18,8 @@
 #include "qemu/timer.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/pci-64bit.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/qlogic-isp.h"
 #include "scsi/constants.h"
@@ -341,6 +341,7 @@ typedef struct QLogicISPInfo {
     bool flat_ram_transfers;        /* 0x0001/0x0003 RAM pair is in the set */
     bool missing_target_timeout;    /* absent target's status has 0x0040 */
     bool pm_cap_v1;                 /* PCI Power Management version 1 */
+    bool pci_64bit;                 /* a 64-bit PCI agent */
     uint16_t command_wmask;         /* Command bits past the PCI core's own */
     uint8_t latency_wmask;          /* writable Latency Timer bits */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
@@ -370,8 +371,6 @@ struct QLogicISPState {
 
     MemoryRegion io;    /* Base address register 0, the I/O window. */
     MemoryRegion mmio;  /* Base address register 1: an alias of io. */
-    SGIDMABufferContext dma_context;
-    bool dma_buffer;
 
     uint16_t bus_cfg1;
     uint16_t bus_ctrl;
@@ -1559,11 +1558,11 @@ static void qlogic_isp_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
         MemTxResult result;
 
         if (sreq->cmd.mode == SCSI_XFER_FROM_DEV) {
-            result = sgi_dma_buffer_write(&req->dev->dma_context, addr,
-                                           buf + offset, count);
+            result = pci_dma_write(PCI_DEVICE(req->dev), addr,
+                                   buf + offset, count);
         } else {
-            result = sgi_dma_buffer_read(&req->dev->dma_context, addr,
-                                          buf + offset, count);
+            result = pci_dma_read(PCI_DEVICE(req->dev), addr,
+                                  buf + offset, count);
         }
         if (result != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -2420,11 +2419,6 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     unsigned int i;
     int pm_cap;
 
-    sgi_dma_buffer_init_pci(&s->dma_context, dev);
-    if (!s->dma_buffer) {
-        s->dma_context.provider = NULL;
-    }
-
     /* The adapter presents one interrupt line, and it is a level. */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
@@ -2667,10 +2661,6 @@ static const VMStateDescription vmstate_qlogic_isp = {
     }
 };
 
-static const Property qlogic_isp_properties[] = {
-    DEFINE_PROP_BOOL("dma-buffer", QLogicISPState, dma_buffer, true),
-};
-
 static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2687,7 +2677,6 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     hc->pre_plug = qlogic_isp_channel_pre_plug;
     hc->unplug = qlogic_isp_channel_unplug;
     dc->vmsd = &vmstate_qlogic_isp;
-    device_class_set_props(dc, qlogic_isp_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
@@ -2723,6 +2712,8 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .flat_ram_transfers = true,
       .missing_target_timeout = true,
       .pm_cap_v1 = true,
+      /* "66-MHz, 64-bit PCI host bus interface", ISP12160A data sheet. */
+      .pci_64bit = true,
       .command_wmask = PCI_COMMAND_PARITY | PCI_COMMAND_INVALIDATE,
       .latency_wmask = 0xff,
       .fw_version = { 10, 4, 0 } },
@@ -2753,11 +2744,16 @@ static void qlogic_isp_register_types(void)
     type_register_static(&qlogic_isp_base_info);
     for (i = 0; i < ARRAY_SIZE(qlogic_isp_infos); i++) {
         const QLogicISPInfo *info = &qlogic_isp_infos[i];
+        static const InterfaceInfo pci_64bit[] = {
+            { INTERFACE_PCI_64BIT_DEVICE },
+            { },
+        };
         const TypeInfo type_info = {
             .name = info->name,
             .parent = TYPE_QLOGIC_ISP,
             .class_init = qlogic_isp_part_class_init,
             .class_data = info,
+            .interfaces = info->pci_64bit ? pci_64bit : NULL,
         };
 
         type_register_static(&type_info);

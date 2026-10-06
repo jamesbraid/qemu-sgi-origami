@@ -29,7 +29,6 @@ config QLOGIC_ISP_SCSI_PCI
     default y if SGI_DEVICES
     depends on PCI
     select SCSI
-    select SGI_DMA_BUFFER
 
 config VMW_PVSCSI_SCSI_PCI
     bool
