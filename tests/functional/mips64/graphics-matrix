@@ -1,3 +1,7 @@
 # id | guest | device | disk | scenario | cpus | mem | accel | speed | timeout | attempts | min_passes | expect | xfail_mark | xfail_signature
 rad4_login_screen | irix | psitech-rad4,addr=5 | root-rad4 | rad4_login_screen | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
 rad4_login_screen_smp2 | irix | psitech-rad4,addr=5 | root-rad4 | rad4_login_screen | 2 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
+rad4_window_menu | irix | psitech-rad4,addr=5 | root-rad4 | rad4_window_menu | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
+rad4_desktop_menu | irix | psitech-rad4,addr=5 | root-rad4 | rad4_desktop_menu | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
+rad4_mode_switch | irix | psitech-rad4,addr=5 | root-rad4 | rad4_mode_switch | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
+rad4_buffered_mode | irix | psitech-rad4,addr=5 | root-rad4 | rad4_buffered_mode | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |

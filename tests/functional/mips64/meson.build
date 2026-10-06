@@ -92,7 +92,12 @@ test_mips64_timeouts = {
   # settle/input-script/screendump steps the measurements above show is not
   # usually needed, matching origin200_matrix_thorough's own reasoning for
   # its two real-boot cells below.
-  'graphics_matrix_thorough' : 1400,
+  # Four more rows (window menu, desktop menu, mode switch, buffered mode)
+  # each log in over the serial console, and all but the first two also
+  # reboot the guest. Measured on one host: a few minutes each, six to
+  # seven for buffered mode. The budget is the six rows' sequential
+  # worst cases, so it still covers a slow host.
+  'graphics_matrix_thorough' : 5400,
   'prom_diagnostics' : 1800,
   # The 6.5.30 miniroot kernel is a 12 MiB image the PROM fetches over
   # SLIRP TFTP before it even enters, then boots to its release banner;
