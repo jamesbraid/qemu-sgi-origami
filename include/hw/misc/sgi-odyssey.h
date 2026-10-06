@@ -45,11 +45,11 @@ OBJECT_DECLARE_TYPE(SGIOdysseyState, SGIOdysseyClass, SGI_ODYSSEY)
 #define SGI_ODYSSEY_CLIP_RECTS 4
 
 /*
- * The geometry engine's program state (docs/analysis/odyssey-gl-geometry-
- * program.md): constant-memory entries an 11-bit index reaches, the four
- * entry words (0x29, 0x2a, 0x2c, 0x33), eight lights, the class 0x32 colours
- * (three per light and the light-model ambient at 24), and how many distinct
- * unrecognised programs are reported before the model falls silent.
+ * The geometry engine's program state: constant-memory entries an 11-bit
+ * index reaches, the four entry words (0x29, 0x2a, 0x2c, 0x33), eight lights,
+ * the class 0x32 colours (three per light and the light-model ambient at 24),
+ * and how many distinct unrecognised programs are reported before the model
+ * falls silent.
  */
 #define SGI_ODYSSEY_GL_CONSTANTS 2048
 /* Off-screen board-memory objects the model keeps (texture levels). */
@@ -164,12 +164,12 @@ struct SGIOdysseyState {
 
     /*
      * The swap-control register bank (ODSY_SWAP_ARM and companions in
-     * hw/misc/sgi-odyssey.c, docs/analysis/odyssey-swap-wake-mechanism.md),
-     * one bit per window in each. swap_arm accumulates the windows whose
-     * displayed buffer flips at the next retrace; odyssey_retrace() XORs it
-     * into displayed_buffer, which the driver's retrace ISR reads back.
-     * swap_control and swap_control_companion set and clear displayed_buffer
-     * bits at once (the immediate path); swap_pending is stored but inert.
+     * hw/misc/sgi-odyssey.c), one bit per window in each. swap_arm
+     * accumulates the windows whose displayed buffer flips at the next
+     * retrace; odyssey_retrace() XORs it into displayed_buffer, which the
+     * driver's retrace ISR reads back. swap_control and
+     * swap_control_companion set and clear displayed_buffer bits at once (the
+     * immediate path); swap_pending is stored but inert.
      */
     uint32_t swap_arm;
     uint32_t swap_pending;
@@ -180,11 +180,11 @@ struct SGIOdysseyState {
     /*
      * The display back end's colour lookup RAM and per-drawable display-mode
      * registers, both programmed through the ODSY_BACKEND_SELECT word stream
-     * (hw/misc/sgi-odyssey.c, docs/analysis/odyssey-colormap-format.md). lut
-     * holds one 30-bit colour per entry (ten bits per channel); dispmode[d]
-     * bits 8:4 name the colormap group a drawable's indexed pixels resolve
-     * through. backend_index and backend_count carry the counted-record
-     * parser's position across successive stores to the port.
+     * (hw/misc/sgi-odyssey.c). lut holds one 30-bit colour per entry (ten
+     * bits per channel); dispmode[d] bits 8:4 name the colormap group a
+     * drawable's indexed pixels resolve through. backend_index and
+     * backend_count carry the counted-record parser's position across
+     * successive stores to the port.
      */
     uint32_t lut[0x2000];
     uint32_t dispmode[32];
@@ -213,12 +213,11 @@ struct SGIOdysseyState {
      * Device-backed -- a model-owned byte array the size of one surface,
      * byte-for-byte the surface this model always drew. It is deliberately
      * not page-backed onto guest RAM: the real board's framebuffer base,
-     * stride and per-depth channel packing are unlocated
-     * (docs/research/graphics/odyssey-display-backend-survey-20260922.md),
-     * so page-backing would invent the framebuffer's guest placement. The
-     * plane is declared with the red-high packing this model approximates.
-     * Unlike the old array, the rendered contents now migrate, through the
-     * foundation's vmstate subsection.
+     * stride and per-depth channel packing are unlocated, so page-backing
+     * would invent the framebuffer's guest placement. The plane is declared
+     * with the red-high packing this model approximates. Unlike the old
+     * array, the rendered contents now migrate, through the foundation's
+     * vmstate subsection.
      */
     SGIBoardMemory mem;
     uint32_t colour_plane;      /* the id sgi_board_memory_add_plane returned */
@@ -314,9 +313,8 @@ struct SGIOdysseyState {
      * server's drawable-id plane write moves a window's screen area to its
      * drawable when the window is mapped; the model routes those writes here
      * instead of painting the colour framebuffer, and scanout resolves each
-     * pixel through the drawable it belongs to when the frame is shown
-     * (docs/analysis/odyssey-colormap-scanout.md). Allocated at realize
-     * beside framebuffer, cleared at reset.
+     * pixel through the drawable it belongs to when the frame is shown.
+     * Allocated at realize beside framebuffer, cleared at reset.
      */
     uint8_t *did;
 
@@ -350,14 +348,14 @@ struct SGIOdysseyState {
 
     /*
      * Where the current context's window is, as the kernel pushes it after
-     * every context switch and clip change (hw/misc/sgi-odyssey.c,
-     * docs/analysis/odyssey-gl-window-placement.md): win_origin the screen
-     * pixel of the window's top-left corner (register 0x841, sign-extended
-     * 13-bit fields), clip_words the eight raw operands of the four inclusive
-     * clip rectangles (0x204b) and did_compare the drawable-id compare word
-     * (0x840's second operand). clip_kept and clip_rect are derived from
-     * clip_words -- the non-empty rectangles -- rebuilt on every 0x204b and
-     * after migration, so they are not migrated themselves.
+     * every context switch and clip change (hw/misc/sgi-odyssey.c):
+     * win_origin the screen pixel of the window's top-left corner (register
+     * 0x841, sign-extended 13-bit fields), clip_words the eight raw operands
+     * of the four inclusive clip rectangles (0x204b) and did_compare the
+     * drawable-id compare word (0x840's second operand). clip_kept and
+     * clip_rect are derived from clip_words -- the non-empty rectangles --
+     * rebuilt on every 0x204b and after migration, so they are not migrated
+     * themselves.
      */
     int32_t win_origin[2];
     /* The bound reading drawable's 0x60b origin survives scratch selects. */
@@ -418,16 +416,13 @@ struct SGIOdysseyState {
      * reconstructed from the command stream and not migrated. gl_in_prim
      * records that a GL BEGIN opened a primitive routed here; gl_matrix_slot
      * the shared matrix slot a board-side matrix-select word chose; gl_matrix
-     * the 16 float-bit words of a matrix load being gathered
-     * (docs/designs/odyssey-gl-family-side.md); gl_texture_matrix the last
-     * texture-matrix load as sent, separately migrated and applied to ST;
-     * gl_rect
-     * the ten float-bit
-     * words of a screen-aligned rectangle being gathered
-     * (docs/analysis/odyssey-gl-clear-stream.md). The drawable is rebound
-     * from win_origin and the clip rectangles above before every command, and
-     * the projection and viewport come from the combined matrix (matrix
-     * slot 0x00).
+     * the 16 float-bit words of a matrix load being gathered;
+     * gl_texture_matrix the last texture-matrix load as sent, separately
+     * migrated and applied to ST; gl_rect the ten float-bit words of a
+     * screen-aligned rectangle being gathered. The drawable is rebound from
+     * win_origin and the clip rectangles above before every command, and the
+     * projection and viewport come from the combined matrix (matrix slot
+     * 0x00).
      */
     SGIGLContext gl_ctx;
     bool gl_in_prim;
@@ -454,15 +449,15 @@ struct SGIOdysseyState {
     uint32_t gl_rect[10];
 
     /*
-     * Depth (docs/analysis/odyssey-gl-shading-depth-lighting.md). The GL
-     * state registers as last written: gl_depth_func 0x420 (bits 2:0 the
-     * comparison) and gl_write_mask 0x452 (bit 24 the depth write enable,
-     * bits 23:20 the colour write mask). gl_combined is the last slot-0x00
-     * load as sent and gl_block16 the four floats behind matrix index 16,
-     * whose fourth float's sign orients the depth row, so a later block-16
-     * load can rebuild the projection. These migrate, and post_load gives
-     * the shared context its projection and depth state back from them.
-     * Rectangle report flags are reset diagnostics, not migrated guest state.
+     * Depth. The GL state registers as last written: gl_depth_func 0x420
+     * (bits 2:0 the comparison) and gl_write_mask 0x452 (bit 24 the depth
+     * write enable, bits 23:20 the colour write mask). gl_combined is the
+     * last slot-0x00 load as sent and gl_block16 the four floats behind
+     * matrix index 16, whose fourth float's sign orients the depth row, so a
+     * later block-16 load can rebuild the projection. These migrate, and
+     * post_load gives the shared context its projection and depth state back
+     * from them. Rectangle report flags are reset diagnostics, not migrated
+     * guest state.
      *
      * depth_mem holds the 24-bit depth plane, one word per pixel of the
      * frame. Where the board keeps its depth buffer is not known, so this is
@@ -502,8 +497,7 @@ struct SGIOdysseyState {
     uint32_t gl_fog[6];
 
     /*
-     * Lighting (docs/analysis/odyssey-gl-shading-depth-lighting.md and
-     * odyssey-gl-geometry-program.md). The geometry engine's program state as
+     * Lighting. The geometry engine's program state as
      * the library writes it: gl_const the constant-memory list of microcode
      * routine addresses and gl_const_index the next store's index; gl_entry
      * the 0x29, 0x2a, 0x2c and 0x33 entry words, decoded. The lighting data,
@@ -551,11 +545,10 @@ struct SGIOdysseyState {
      * halfwords an entry in the image's order, one copy for every context:
      * the kernel re-establishes a context's program window (0x738..0x7fe)
      * itself, re-uploading it from its copy of the image on a switch-in
-     * whenever the context's software shadow says it is not loaded, which
-     * the switch clears in the previous context's shadow
-     * (docs/analysis/odyssey-context-state.md). gl_program_addr is the entry
-     * the next halfword goes to and gl_program_half how many of its six have
-     * arrived. Both migrate.
+     * whenever the context's software shadow says it is not loaded, which the
+     * switch clears in the previous context's shadow. gl_program_addr is the
+     * entry the next halfword goes to and gl_program_half how many of its six
+     * have arrived. Both migrate.
      */
     uint16_t gl_program_mem[SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6];
     uint32_t gl_program_addr;
@@ -611,7 +604,7 @@ struct SGIOdysseyState {
      * fill that follows. When the destination word is ODSY_DEST_ID_PLANES the
      * fill is the X server's drawable-id plane write, not a colour fill: it
      * updates the did plane under the rectangle and leaves the framebuffer
-     * alone (docs/analysis/odyssey-account-panel-black-band.md).
+     * alone.
      */
     uint32_t dest_buffer_word;
     uint32_t plane_write_mask;
@@ -619,8 +612,7 @@ struct SGIOdysseyState {
     /*
      * The colour buffer's base: the first operand of the last colour 0x1017
      * block (0x2000 for the screen). A DMA whose table header names it paints
-     * the colour plane; any other destination lands in the scratch pool
-     * (docs/analysis/odyssey-dma-image-header.md).
+     * the colour plane; any other destination lands in the scratch pool.
      */
     uint32_t dma_colour_base;
 
@@ -630,15 +622,14 @@ struct SGIOdysseyState {
     uint32_t copy_dst;
 
     /*
-     * The one-bit pattern the greeter draws its text with: a 32x32-bit
-     * bitmap loaded through the 0x3c4e (words 0-15) and 0x3c4f (words 16-31)
-     * register bursts, a shape code from the 0x043f operand (0x4 = 32x32,
-     * 0x5 = 64x16, 0x6 = 16x64; 0x0 = off), and the 0x0404 mode operand
-     * whose bits 3 and 4 enable pattern mode. With pattern mode on, a QUADS
-     * fill paints gl_color only where a pattern bit is set instead of a
-     * solid rectangle (hw/misc/sgi-odyssey.c,
-     * docs/analysis/odyssey-glyph-raster-format.md). pattern_load_offset is
-     * the counted-burst parser's write position within the buffer.
+     * The one-bit pattern the greeter draws its text with: a 32x32-bit bitmap
+     * loaded through the 0x3c4e (words 0-15) and 0x3c4f (words 16-31)
+     * register bursts, a shape code from the 0x043f operand (0x4 = 32x32, 0x5
+     * = 64x16, 0x6 = 16x64; 0x0 = off), and the 0x0404 mode operand whose
+     * bits 3 and 4 enable pattern mode. With pattern mode on, a QUADS fill
+     * paints gl_color only where a pattern bit is set instead of a solid
+     * rectangle (hw/misc/sgi-odyssey.c). pattern_load_offset is the
+     * counted-burst parser's write position within the buffer.
      */
     uint32_t pattern_buffer[32];
     uint32_t pattern_shape;
@@ -647,19 +638,19 @@ struct SGIOdysseyState {
 
     /*
      * The BEGIN-0xa image raster path (the account icons and the text-field
-     * caret; hw/misc/sgi-odyssey.c, docs/analysis/odyssey-glyph-raster-
-     * format.md). BEGIN with primitive 0xa opens an image whose destination
-     * box comes from the 0xcf80a92f floats: image_x1/image_y1 the top-left
-     * pixel, image_x2/image_y2 the exclusive bottom-right. Pixel bursts fill
-     * the box in raster order from a cursor (image_cur_x/image_cur_y) that
-     * wraps at image_x2 back to image_x1 on the next row. image_fmt is the
-     * running burst's pixel format (0x11 direct RGB, 0x10 four colour indices
-     * per word, 0x12 two RGBA16 words per pixel for code 0x6b). A per-group
-     * transfer header sets image_group_len, the count of valid pixels for
-     * byte formats or words for SHORT (0 runs unbounded to the box edge);
-     * image_group_painted counts those units. image_code is the header's
-     * source format code. image_bytes and image_nbytes carry a partial pixel
-     * across burst words. image_code_reported records unknown-code reporting.
+     * caret; hw/misc/sgi-odyssey.c). BEGIN with primitive 0xa opens an image
+     * whose destination box comes from the 0xcf80a92f floats:
+     * image_x1/image_y1 the top-left pixel, image_x2/image_y2 the exclusive
+     * bottom-right. Pixel bursts fill the box in raster order from a cursor
+     * (image_cur_x/image_cur_y) that wraps at image_x2 back to image_x1 on
+     * the next row. image_fmt is the running burst's pixel format (0x11
+     * direct RGB, 0x10 four colour indices per word, 0x12 two RGBA16 words
+     * per pixel for code 0x6b). A per-group transfer header sets
+     * image_group_len, the count of valid pixels for byte formats or words
+     * for SHORT (0 runs unbounded to the box edge); image_group_painted
+     * counts those units. image_code is the header's source format code.
+     * image_bytes and image_nbytes carry a partial pixel across burst words.
+     * image_code_reported records unknown-code reporting.
      */
     bool image_active;
     uint32_t image_x1;
