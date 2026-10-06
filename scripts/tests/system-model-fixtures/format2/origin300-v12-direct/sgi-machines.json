@@ -20,14 +20,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a direct V12 widget",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -201,14 +193,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a direct V12 widget",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",

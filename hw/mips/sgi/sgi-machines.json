@@ -32,14 +32,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Fuel with VPro",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [
         {
           "option": "fuel-mac-eeprom",
@@ -217,14 +209,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Fuel",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [
         {
           "option": "fuel-mac-eeprom",
@@ -394,12 +378,6 @@
       ],
       "disk-bus": "scsi",
       "display-name": "Octane serial profile",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip30-prom",
-        "per-node-flash": false,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -531,12 +509,6 @@
       ],
       "disk-bus": "scsi",
       "display-name": "Octane2 serial profile",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip30-prom",
-        "per-node-flash": false,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -691,12 +663,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -852,12 +818,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1013,12 +973,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1172,12 +1126,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1325,12 +1273,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1484,12 +1426,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1661,12 +1597,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1838,12 +1768,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2015,12 +1939,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2192,12 +2110,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2367,12 +2279,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2536,12 +2442,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2705,12 +2605,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2874,12 +2768,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3041,12 +2929,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3202,12 +3084,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3363,12 +3239,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3522,12 +3392,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3675,12 +3539,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -3837,7 +3695,6 @@
         4
       ],
       "default-cpu-model": "R16000",
-      "default-topology": "onyx350-compat",
       "dimms-per-node": [
         8
       ],
@@ -3998,12 +3855,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -4222,12 +4073,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -4392,12 +4237,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -4562,12 +4401,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -4743,12 +4576,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -4924,12 +4751,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 (one-module form)",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5094,12 +4915,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 (one-module form)",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5265,12 +5080,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5443,12 +5252,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5621,12 +5424,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5799,12 +5596,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -5977,12 +5768,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6153,12 +5938,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6323,12 +6102,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6493,12 +6266,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6663,12 +6430,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6831,12 +6592,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -6993,12 +6748,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7155,12 +6904,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7315,12 +7058,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7469,12 +7206,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 deskside",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7629,12 +7360,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7806,12 +7531,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -7983,12 +7702,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -8160,12 +7873,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -8337,12 +8044,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -8512,12 +8213,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -8681,12 +8376,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -8850,12 +8539,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9019,12 +8702,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9186,12 +8863,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9347,12 +9018,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9508,12 +9173,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9667,12 +9326,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9820,12 +9473,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -9964,14 +9611,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -10145,14 +9784,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -10326,14 +9957,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -10507,14 +10130,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -10688,14 +10303,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -10869,14 +10476,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -11050,14 +10649,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -11231,14 +10822,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -11420,14 +11003,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -11652,14 +11227,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -11884,14 +11451,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -12116,14 +11675,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -12340,14 +11891,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a direct V12 widget",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -12521,14 +12064,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a direct V12 widget",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -12702,14 +12237,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a V-brick",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -12883,14 +12410,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300 with a V-brick",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -13064,14 +12583,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -13245,14 +12756,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": true,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",

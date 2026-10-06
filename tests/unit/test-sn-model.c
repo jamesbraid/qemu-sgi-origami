@@ -1273,6 +1273,7 @@ static void test_tezro_requires_explicit_topology(void)
 
     g_assert_nonnull(trial);
     g_assert_null(sgi_model_default_topology("tezro"));
+    g_assert_null(sgi_model_default_topology("onyx350"));
     for (offering = sgi_model_catalogue()->offerings; offering;
          offering = offering->next) {
         if (strcmp(offering->value->product, "tezro")) {

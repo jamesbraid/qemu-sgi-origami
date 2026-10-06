@@ -21,7 +21,7 @@ static const char * const sgi_sn1_r16000_cpu_types[] = {
 
 /*
  * The Bedrock products differ only in catalogue data, so one class init
- * serves each, keyed by its product and selected default topology.
+ * serves each, keyed by its product and selected descriptor topology.
  */
 static void sn1_machine_class_init(ObjectClass *oc, const void *data)
 {
