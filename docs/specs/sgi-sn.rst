@@ -271,12 +271,11 @@ Origin 350 compute module
 
 Unknown: the Origin 350's widget identity words for Bedrock and PIC,
 and the widget at which Bedrock enters the crossbar on an Origin 350
-compute module. One IP53 graphics-blade PROM trace places Bedrock at
-widget ``0xb`` (graphica, "SGI O350 Chimera notes",
-https://just.graphica.com.au/tips/sgi-o350-chimera-notes/, retained
-copy SHA-256
-``a839d88fdd9703e8d5ed03c290282d144c9339302cddbfc7d1912a0e04e77f44``,
-lines 949-952), which may not transfer to a compute module.
+compute module. No public trace is attributed to an Origin 350: the
+graphica page's PROM trace that attaches a Bedrock at widget ``0xb``
+(lines 949-952) lists an ODYSSEY graphics assembly and the same module id
+as the page's Fuel, so it reads as a Fuel and is not Origin 350 evidence.
+The widget stays unknown.
 
 .. _sgi-sn-family-bedrock:
 
@@ -949,8 +948,7 @@ Evidence
 
 Together these are a public software mapping and one machine's
 handler report. They are not a measured Fuel trace or proof of
-interrupt delivery. The selection of this routing passed an
-independent evidence review before it was implemented.
+interrupt delivery. The routing is an inference from those two sources.
 
 .. _sgi-sn-fuel-interrupts-test:
 

@@ -314,7 +314,9 @@ count of 1, then recomputes the checksum adjustment.
 - Machine type codes: a real Fuel's ``flash -f`` prompts ``Enter machine
   type (0)SN1 (1)SN10 (2)SN11 (3)SN12`` and its owner enters 2
   (established, graphica, "SGI O350 Chimera notes", retained copy lines
-  721-731). Fuel's 2 is therefore established. Origin 300's 1 is
+  721-731). The page attributes the machine to a Fuel by a SYSLOG line
+  that reads ``Selecting SN11  <<== My Fuel`` (line 746), so Fuel's 2 is
+  therefore established. Origin 300's 1 is
   inferred: it is the value every Origin 300 run has used, and the
   stock PROM's CPU-configuration table supplies it with the Origin 300
   processor rows (measured from the stock image); no public Origin 300

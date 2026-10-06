@@ -418,8 +418,9 @@ one-node, one-pipe system with node 1 controlling the IO6G and the Xtown in
 ``io2`` to ``io6`` (HMQ-380-C Table 42). Established. The rack guide names the
 Null Router for one or two node boards and the Star Router for a
 single-rack Onyx2 with three or four (007-3457-005 printed pages 45-47). A
-real rack capture's module 1 carries Standard Routers, with two node boards
-and later with four (``web:nekonomicon-16285``): established. With one node
+real rack capture's module 1 carries ``ROUTER_IR1`` board records, with two
+node boards and later with four (``web:nekonomicon-16285``): established.
+The capture does not name the Router type the guide calls Standard. With one node
 board the model fits no Router; the guide says none is required and no
 capture shows one, so that row is inferred. The pipe's Xtown in ``io3`` is
 Crossbow 0 widget F, which ``n1`` controls at every count, and one pipe needs
