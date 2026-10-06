@@ -71,7 +71,7 @@
       "name": "Shared module management I2C bus",
       "provenance": "derived",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -680,7 +680,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/router.md"
+        "qemu:docs/specs/sgi-router.rst"
       ],
       "hardware_kind": "router",
       "id": "router-1",
@@ -767,7 +767,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/router.md"
+        "qemu:docs/specs/sgi-router.rst"
       ],
       "hardware_kind": "router",
       "id": "router-2",
@@ -839,7 +839,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "docs/datasheets/xbow.md"
+        "qemu:docs/specs/sgi-xbow.rst"
       ],
       "hardware_kind": "xbow",
       "id": "crossbow-0",
@@ -862,7 +862,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "docs/datasheets/xbow.md"
+        "qemu:docs/specs/sgi-xbow.rst"
       ],
       "hardware_kind": "xbow",
       "id": "crossbow-1",
@@ -2607,7 +2607,7 @@
           ],
           "sources": [
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12",
-            "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16285 rack capture's two-node module keeps both Routers"
+            "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers"
           ],
           "supported_cpu_populations": [
             [
@@ -2656,7 +2656,7 @@
             "router-2"
           ],
           "sources": [
-            "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture boots PROM 6.156 on node slots 1-3 with both Routers",
+            "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
           ],
           "supported_cpu_populations": [
@@ -2717,7 +2717,7 @@
           "sources": [
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants",
-            "docs/datasheets/origin2000-module.md Node-board populations: the web:nekonomicon-16727716 capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"
+            "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers"
           ],
           "supported_cpu_populations": [
             [
@@ -2788,7 +2788,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2797,7 +2797,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2806,7 +2806,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2815,7 +2815,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2825,7 +2825,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2836,7 +2836,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
       ]
     },
     {
@@ -3746,7 +3746,7 @@
       },
       "provenance": "derived",
       "sources": [
-        "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode",
         "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface"
       ]
     },

@@ -86,7 +86,7 @@ layer:
         flash_read_cycles: 8
         flash_write_cycles: 1
         provenance: derived
-        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface, qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes]
+        sources: ["qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface, qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes]
       emulation:
         machine_name: onyx2
         display_description: SGI Onyx2 deskside, one InfiniteReality pipe on XIO4

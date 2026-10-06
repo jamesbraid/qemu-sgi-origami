@@ -118,7 +118,7 @@ layer:
             as the Origin 2000 module does; no GIGAchannel capture prints the
             cabinet Crossbow's revision. The part 0x0000 is the whole of the
             IP27 PROM's cabinet detection.
-        datasheet_contracts: [docs/datasheets/xbow.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbow.rst]
         provenance: vendor-document
         parent: gigachannel-chassis
         description: >-
