@@ -22,9 +22,9 @@
 #define PORT_HISTOGRAM_VC(vc)      ((uint64_t)(vc) << 16)
 #define PORT_PARMS_RESET           UINT64_C(0x1bf0)
 #define DIAG_ABSOLUTE_HISTOGRAM    (UINT64_C(1) << 19)
-#define BIST_TARGET_LOGIC          1
-#define BIST_TARGET_ARRAY          2
-#define BIST_TARGET_CLOCK          3
+#define BIST_CHAIN_LOGIC           1
+#define BIST_CHAIN_ARRAY           2
+#define BIST_CHAIN_CLOCK_CONTROL   3
 #define BIST_COMPLETE_RAW          (UINT64_C(1) << 62)
 #define PORT_RESET_ADMIN           (UINT64_C(1) << 0)
 #define PORT_RESET_PORT(port)      (UINT64_C(1) << (port))
@@ -91,8 +91,8 @@ static void bist_shift_unload(QTestState *qts, unsigned int target,
 
 static void bist_run(QTestState *qts, unsigned int target)
 {
-    bist_shift_load(qts, BIST_TARGET_CLOCK, 1, 1);
-    if (target == BIST_TARGET_LOGIC) {
+    bist_shift_load(qts, BIST_CHAIN_CLOCK_CONTROL, 1, 1);
+    if (target == BIST_CHAIN_LOGIC) {
         bist_shift_load(qts, target, 64, UINT64_MAX);
         bist_shift_load(qts, target, 64, UINT64_MAX);
         bist_shift_load(qts, target, 63, UINT64_MAX >> 1);
@@ -111,31 +111,31 @@ static void test_bist_and_programmed_resets(void)
 
     g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
 
-    bist_run(qts, BIST_TARGET_LOGIC);
+    bist_run(qts, BIST_CHAIN_LOGIC);
     g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
-    bist_shift_unload(qts, BIST_TARGET_LOGIC, 64);
+    bist_shift_unload(qts, BIST_CHAIN_LOGIC, 64);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, BIST_COMPLETE_RAW);
 
-    bist_run(qts, BIST_TARGET_ARRAY);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 64);
+    bist_run(qts, BIST_CHAIN_ARRAY);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 64);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, BIST_COMPLETE_RAW);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 46);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 46);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
 
     /* The status bit keeps its stream position across partial unloads. */
-    bist_run(qts, BIST_TARGET_ARRAY);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 31);
+    bist_run(qts, BIST_CHAIN_ARRAY);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 31);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 32);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 32);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, UINT64_C(1) << 31);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 47);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 47);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
 
     /* An incomplete selected chain does not acquire a completion status. */
-    bist_shift_load(qts, BIST_TARGET_CLOCK, 1, 1);
-    bist_shift_load(qts, BIST_TARGET_ARRAY, 64, UINT64_MAX);
+    bist_shift_load(qts, BIST_CHAIN_CLOCK_CONTROL, 1, 1);
+    bist_shift_load(qts, BIST_CHAIN_ARRAY, 64, UINT64_MAX);
     write_reg(qts, RR_BIST_ENTER_RUN, 0);
-    bist_shift_unload(qts, BIST_TARGET_ARRAY, 64);
+    bist_shift_unload(qts, BIST_CHAIN_ARRAY, 64);
     g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
 
     set(qts, "port", 3);
