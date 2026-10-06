@@ -1248,8 +1248,9 @@
           "notes": "Preserves existing emulator initialization. This policy adds no physical hardware claim.",
           "provenance": "derived",
           "sources": [
-            "hw/mips/sgi/sn1-node.c",
-            "hw/mips/sgi/sn-machine.c"
+            "qemu:hw/mips/sgi/sn1-node.c",
+            "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
+            "qemu:hw/mips/sgi/sn-machine.c"
           ]
         }
       },
@@ -1346,8 +1347,9 @@
             "patch": 5
           },
           "sources": [
-            "hw/mips/sgi/sn1-node.c",
-            "hw/mips/sgi/sn-machine.c"
+            "qemu:hw/mips/sgi/sn1-node.c",
+            "qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order",
+            "qemu:hw/mips/sgi/sn-machine.c"
           ]
         }
       },

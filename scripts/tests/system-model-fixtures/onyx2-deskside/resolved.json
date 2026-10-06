@@ -1321,7 +1321,7 @@
         "provenance": "derived",
         "reason": "Select a deskside without optional XIO boards.",
         "sources": [
-          "The selected Onyx2 deskside fits no optional XIO board."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -1330,7 +1330,7 @@
         "provenance": "derived",
         "reason": "Select a deskside without optional XIO boards.",
         "sources": [
-          "The selected Onyx2 deskside fits no optional XIO board."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -1339,7 +1339,7 @@
         "provenance": "derived",
         "reason": "Select a deskside without optional XIO boards.",
         "sources": [
-          "The selected Onyx2 deskside fits no optional XIO board."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       },
       {
@@ -1348,7 +1348,7 @@
         "provenance": "derived",
         "reason": "Select a deskside without optional XIO boards.",
         "sources": [
-          "The selected Onyx2 deskside fits no optional XIO board."
+          "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
         ]
       }
     ],

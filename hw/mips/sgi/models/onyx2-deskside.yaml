@@ -11,7 +11,6 @@
 # codes).
 configuration_version: 1
 sources:
-  deskside-empty-xio: "The selected Onyx2 deskside fits no optional XIO board."
   deskside-graphics: "docs/datasheets/onyx2.md Deskside: the graphics board set takes XIO slot 4 directly."
 layers:
   - layers/architectures/sn0.yaml
@@ -47,7 +46,7 @@ connector_population:
     reason: Fit the one InfiniteReality pipe the deskside carries.
     provenance: derived
     sources: [deskside-graphics]
-  - {component: xio-slot-2, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
-  - {component: xio-slot-3, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
-  - {component: xio-slot-5, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
-  - {component: xio-slot-6, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
+  - {component: xio-slot-2, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-3, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-5, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-6, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
