@@ -30,8 +30,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 /* The front-panel eight-character alphanumeric display. */
 #define SGI_ELSC_DISPLAY_CHARS 8
 
-/* The longest "pwr d" delay, in seconds: 600. */
-#define SGI_ELSC_PWR_DOWN_MAX 0x258
+/* The longest "pwr d" delay or "hbt" interval, in seconds: 600. */
+#define SGI_ELSC_DELAY_MAX 0x258
 
 /*
  * A destructive command whose effect is deferred until the guest reads its

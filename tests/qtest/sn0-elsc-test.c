@@ -1682,18 +1682,22 @@ static void test_pwr_query_reports_cold_power_on(const void *data)
 }
 
 /*
- * "hbt" is the heartbeat / NMI-watchdog control the kernel enables during
- * system-controller init (firmware command contract).
- * "hbt <interval> <delay>" enables it, "hbt 0" disables it, and "hbt" alone
- * sends one heartbeat; all answer a plain "ok". The two arguments are
- * decimal, unlike the hex arguments elsewhere, so a malformed argument is
- * "err arg".
+ * "hbt" is the heartbeat / NMI-watchdog control. "hbt" alone sends one
+ * heartbeat and "hbt 0" disables monitoring. The firmware reads both
+ * arguments as hex: the interval is 5 to 0x258 seconds and the optional
+ * second argument is the wait from the NMI to the power cycle. The kernel's
+ * own "hbt 30 20" is therefore a 0x30-second interval and is accepted, as
+ * a decimal reading would also accept it, while "hbt 1000 5" is refused,
+ * which only the hex reading does.
  */
 static void test_hbt_watchdog_control(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
-    const char *ok_forms[] = { "hbt", "hbt 0", "hbt 1000 5" };
+    const char *ok_forms[] = { "hbt", "hbt 0", "hbt 30 20", "hbt 5", "hbt 258",
+                               "hbt 1e 0" };
+    const char *bad_forms[] = { "hbt xy", "hbt 4", "hbt 259", "hbt 1000 5",
+                                "hbt 30 xy" };
     unsigned i;
 
     elsc_reset();
@@ -1706,29 +1710,13 @@ static void test_hbt_watchdog_control(const void *data)
         assert_response_begins(resp, "ok");
     }
 
-    /* A non-decimal argument is rejected. */
-    req_len = build_request(req, "hbt xy");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
-
-    /* A single non-zero argument is invalid; only "hbt 0" is valid. */
-    req_len = build_request(req, "hbt 5");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
-
-    /*
-     * A two-argument form with a non-decimal delay reaches the two-arg
-     * validator and is rejected.
-     */
-    req_len = build_request(req, "hbt 1000 xy");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
+    for (i = 0; i < ARRAY_SIZE(bad_forms); i++) {
+        req_len = build_request(req, bad_forms[i]);
+        resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+        g_assert_cmpuint(resp[0], ==, 7);
+        assert_response_begins(resp, "err arg");
+    }
 
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "hbtx");
