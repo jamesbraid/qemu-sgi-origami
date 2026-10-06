@@ -75,21 +75,23 @@ static void test_fresh_seed(void)
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x28);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 4);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 2);
     qtest_clock_step(qts, 2 * NS_PER_SEC);
     g_assert_cmphex(rd(qts, 0x7f8) & 0x3f, ==, 0x20);
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
     g_assert_cmphex(rd(qts, 0x7f9), ==, 0x01);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
-    /* 2024 is presented to the guest as year 56 with base 1968. The mapped
-     * Gregorian year is 2056, but weekday follows the guest-visible date. */
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 3);
+    /*
+     * The mapped Gregorian year is 2056, so its weekday follows that
+     * calendar rather than the 2024 source seed.
+     */
     qtest_clock_step(qts, 24 * 60 * 60 * NS_PER_SEC);
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x03);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 6);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 4);
     qtest_quit(qts);
 }
 
@@ -152,13 +154,25 @@ static void test_fresh_seed_year_boundary(void)
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x99);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x12);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x31);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 7);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
     qtest_clock_step(qts, NS_PER_SEC);
     g_assert_cmphex(rd(qts, 0x7f8), ==, 0x21);
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x00);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x01);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 6);
+    /* The seed maps 2067 to 2099. Gregorian 2100 is not a leap year. */
+    qtest_clock_step(qts,
+        (58 * 24 * 60 * 60 + 86399) * NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x21);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x00);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x28);
     g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 1);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x03);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 2);
     qtest_quit(qts);
 }
 
@@ -173,7 +187,7 @@ static void test_fresh_seed_reset(void)
     g_assert_cmphex(rd(qts, 0x100), ==, 0xa5);
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 3);
     qtest_quit(qts);
 }
 
@@ -274,7 +288,7 @@ static void test_fresh_seed_reopen(void)
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 3);
     {
         uint8_t second = from_bcd(rd(qts, 0x7f9));
 
@@ -296,7 +310,7 @@ static void test_fresh_seed_reopen(void)
     g_assert_cmphex(rd(qts, 0x7ff), ==, 0x56);
     g_assert_cmphex(rd(qts, 0x7fe), ==, 0x02);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x29);
-    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 5);
+    g_assert_cmphex(rd(qts, 0x7fc) & 7, ==, 3);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(image), ==, 0);
     g_assert_cmpint(g_unlink(reference), ==, 0);
