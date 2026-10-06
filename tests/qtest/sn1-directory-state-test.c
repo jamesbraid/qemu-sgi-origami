@@ -26,6 +26,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -75,31 +76,21 @@ static void emit(Program *p, uint32_t insn)
     p->pc += 4;
 }
 
-static uint32_t itype(unsigned op, int rs, int rt, uint16_t imm)
-{
-    return (op << 26) | (rs << 21) | (rt << 16) | imm;
-}
-
-static uint32_t rtype(int rs, int rt, int rd, int sa, unsigned funct)
-{
-    return (rs << 21) | (rt << 16) | (rd << 11) | (sa << 6) | funct;
-}
-
-#define LUI(_rt, _imm)          itype(0x0f, 0, _rt, _imm)
-#define ORI(_rt, _rs, _imm)     itype(0x0d, _rs, _rt, _imm)
-#define ANDI(_rt, _rs, _imm)    itype(0x0c, _rs, _rt, _imm)
-#define LD(_rt, _off, _base)    itype(0x37, _base, _rt, _off)
-#define SD(_rt, _off, _base)    itype(0x3f, _base, _rt, _off)
-#define CACHE(_op, _off, _base) itype(0x2f, _base, _op, _off)
-#define PREF(_hint, _off, _base) itype(0x33, _base, _hint, _off)
-#define DSLL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3c)
-#define DSRL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3e)
-#define DADDU(_rd, _rs, _rt)    rtype(_rs, _rt, _rd, 0, 0x2d)
-#define DADDIU(_rt, _rs, _imm)  itype(0x19, _rs, _rt, _imm)
-#define MFC0_STATUS(_rt)        (0x40000000 | ((_rt) << 16) | (12 << 11))
+#define LUI(_rt, _imm)          mips_lui(_rt, _imm)
+#define ORI(_rt, _rs, _imm)     mips_ori(_rt, _rs, _imm)
+#define ANDI(_rt, _rs, _imm)    mips_andi(_rt, _rs, _imm)
+#define LD(_rt, _off, _base)    mips_ld(_rt, _base, _off)
+#define SD(_rt, _off, _base)    mips_sd(_rt, _base, _off)
+#define CACHE(_op, _off, _base) mips_cache(_op, _base, _off)
+#define PREF(_hint, _off, _base) mips_itype(0x33, _base, _hint, _off)
+#define DSLL32(_rd, _rt)        mips_dsll32(_rd, _rt)
+#define DSRL32(_rd, _rt)        mips_dsrl32(_rd, _rt)
+#define DADDU(_rd, _rs, _rt)    mips_daddu(_rd, _rs, _rt)
+#define DADDIU(_rt, _rs, _imm)  mips_daddiu(_rt, _rs, _imm)
+#define MFC0_STATUS(_rt)        mips_mfc0(_rt, 12)
 #define STATUS_CH               (1u << 18)
-#define SYNC                    0x0000000f
-#define NOP                     0x00000000
+#define SYNC                    mips_sync()
+#define NOP                     mips_nop()
 
 /* A branch to @target from the instruction at the current position. */
 static void emit_branch(Program *p, unsigned op, int rs, int rt,
@@ -107,7 +98,7 @@ static void emit_branch(Program *p, unsigned op, int rs, int rt,
 {
     int32_t offset = ((int32_t)target - (int32_t)(p->pc + 4)) / 4;
 
-    emit(p, itype(op, rs, rt, (uint16_t)offset));
+    emit(p, mips_itype(op, rs, rt, (uint16_t)offset));
     emit(p, NOP);
 }
 
@@ -175,7 +166,7 @@ static char *create_prom(const Scenario *sc)
     char *path = NULL;
     int fd;
 
-    emit(&p, itype(0x04, 0, 0, (CODE_START - 4) / 4)); /* b CODE_START */
+    emit(&p, mips_itype(0x04, 0, 0, (CODE_START - 4) / 4)); /* b CODE_START */
     emit(&p, NOP);
     for (unsigned int offset = 0x200; offset < 0x380; offset += 0x80) {
         stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */

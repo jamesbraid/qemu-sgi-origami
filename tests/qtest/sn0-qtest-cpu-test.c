@@ -8,6 +8,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
 #include "sgi-wait.h"
 
 #define R12000_CPU_1 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
@@ -124,7 +125,7 @@ static void user_emit(UserCode *p, uint32_t word)
 static void user_i(UserCode *p, unsigned int op, unsigned int rs,
                    unsigned int rt, uint16_t imm)
 {
-    user_emit(p, (op << 26) | (rs << 21) | (rt << 16) | imm);
+    user_emit(p, mips_itype(op, rs, rt, imm));
 }
 
 static void user_li(UserCode *p, unsigned int rt, uint32_t value)
@@ -137,7 +138,7 @@ static void user_li64(UserCode *p, unsigned int rt, uint64_t value)
 {
     user_i(p, 13, 0, rt, value >> 48);
     for (unsigned int shift = 32; ; shift -= 16) {
-        user_emit(p, (rt << 16) | (rt << 11) | (16 << 6) | 0x38);
+        user_emit(p, mips_dsll(rt, rt, 16));
         user_i(p, 13, rt, rt, value >> shift);
         if (shift == 0) {
             break;
@@ -147,7 +148,7 @@ static void user_li64(UserCode *p, unsigned int rt, uint64_t value)
 
 static void user_mtc0(UserCode *p, unsigned int rt, unsigned int rd)
 {
-    user_emit(p, 0x40800000 | (rt << 16) | (rd << 11));
+    user_emit(p, mips_mtc0(rt, rd));
     /* Keep the synthetic sequence valid without a later ISA's EHB. */
     for (unsigned int i = 0; i < 4; i++) {
         user_emit(p, 0);
@@ -156,7 +157,7 @@ static void user_mtc0(UserCode *p, unsigned int rt, unsigned int rd)
 
 static void user_mfc0(UserCode *p, unsigned int rt, unsigned int rd)
 {
-    user_emit(p, 0x40000000 | (rt << 16) | (rd << 11));
+    user_emit(p, mips_mfc0(rt, rd));
 }
 
 static void user_cfc1(UserCode *p, unsigned int rt, unsigned int rd)
@@ -199,7 +200,7 @@ static void user_wait(UserCode *p, unsigned int base, unsigned int offset,
     user_i(p, 35, base, 8, offset);
     back = user_branch(p, 5, 8, 10);
     user_patch(p, back, loop);
-    user_emit(p, 0x0000000f);
+    user_emit(p, mips_sync());
 }
 
 static void user_sync_call(UserCode *p)
@@ -280,7 +281,7 @@ static void build_user_visibility(UserCode *p, bool remote)
     user_emit(p, (18u << 16) | (8u << 11) | (5u << 6)); /* sll t0,s2,5 */
     user_emit(p, (26u << 21) | (8u << 16) | (26u << 11) | 0x21);
     user_i(p, 43, 26, 18, 0);       /* executing CPU's fixture identity */
-    user_emit(p, 0x40000000 | (27u << 16) | (13u << 11)); /* Cause */
+    user_emit(p, mips_mfc0(27, 13)); /* Cause */
     user_i(p, 12, 27, 8, 0x7c);
     user_i(p, 9, 0, 9, 8 << 2);     /* architectural syscall */
     wrong_cause = user_branch(p, 5, 8, 9);
@@ -297,14 +298,14 @@ static void build_user_visibility(UserCode *p, bool remote)
     user_i(p, 35, 26, 8, 12);
     user_i(p, 9, 8, 8, 1);
     user_i(p, 43, 26, 8, 12);      /* synchronization count */
-    user_emit(p, 0x40000000 | (8u << 16) | (14u << 11));
+    user_emit(p, mips_mfc0(8, 14));
     user_i(p, 9, 8, 8, 4);
     user_mtc0(p, 8, 14);
     user_emit(p, 0x42000018);       /* eret */
     user_emit(p, 0);
 
     user_patch(p, completed, p->pos);
-    user_emit(p, 0x40000000 | (8u << 16) | (12u << 11));
+    user_emit(p, mips_mfc0(8, 12));
     user_i(p, 43, 26, 8, 32);      /* saved user KSU at syscall */
     user_i(p, 9, 0, 8, 0x55);
     user_i(p, 43, 26, 8, 28);
@@ -312,9 +313,9 @@ static void build_user_visibility(UserCode *p, bool remote)
     user_patch(p, wrong_cause, p->pos);
     user_patch(p, wrong_call, p->pos);
     user_i(p, 43, 26, 27, 16);
-    user_emit(p, 0x40000000 | (8u << 16) | (14u << 11));
+    user_emit(p, mips_mfc0(8, 14));
     user_i(p, 43, 26, 8, 20);      /* unexpected EPC */
-    user_emit(p, 0x40000000 | (8u << 16) | (8u << 11));
+    user_emit(p, mips_mfc0(8, 8));
     user_i(p, 43, 26, 8, 24);      /* unexpected BadVAddr */
     user_i(p, 9, 0, 8, 0xff);
     user_i(p, 43, 26, 8, 28);
@@ -563,7 +564,7 @@ static void build_word_load_test(UserCode *p)
     user_i(p, 63, 26, 8, 20 * 8);
     user_i(p, 9, 0, 27, 1);
     user_li64(p, 8, UINT64_C(0x55667788a1b2c3d4));
-    user_emit(p, 0x40000000 | (9u << 16) | (14u << 11)); /* EPC */
+    user_emit(p, mips_mfc0(9, 14)); /* EPC */
     user_i(p, 9, 9, 9, 4);
     user_mtc0(p, 9, 14);
     user_emit(p, 0x42000018); /* eret */
@@ -855,8 +856,8 @@ static void run_cpu_adjacent_recovery_test(const char *machine,
     user_li(image, 10, 0x100);
     user_li(image, 11, 0x101);
     /* Raw MTC0s: user_mtc0() pads each with nops, which would separate them. */
-    user_emit(image, 0x40800000 | (10 << 16) | (CP0_COUNT << 11));
-    user_emit(image, 0x40800000 | (11 << 16) | (CP0_COMPARE << 11));
+    user_emit(image, mips_mtc0(10, CP0_COUNT));
+    user_emit(image, mips_mtc0(11, CP0_COMPARE));
     for (unsigned int i = 0; i < 4; i++) {
         user_emit(image, 0);
     }
@@ -924,7 +925,7 @@ static void r12000_emit_reg(UserCode *p, unsigned int rt, unsigned int rd,
 static void r12000_mtc0_sel(UserCode *p, unsigned int rt, unsigned int rd,
                              unsigned int sel)
 {
-    user_emit(p, 0x40800000 | (rt << 16) | (rd << 11) | sel);
+    user_emit(p, mips_mtc0(rt, rd) | sel);
     for (unsigned int i = 0; i < 4; i++) {
         user_emit(p, 0);
     }
@@ -934,7 +935,7 @@ static void r12000_emit_reg_sel(UserCode *p, unsigned int rt,
                                 unsigned int rd, unsigned int sel,
                                 unsigned int offset)
 {
-    user_emit(p, 0x40000000 | (rt << 16) | (rd << 11) | sel);
+    user_emit(p, mips_mfc0(rt, rd) | sel);
     for (unsigned int i = 0; i < 4; i++) {
         user_emit(p, 0);
     }
@@ -959,7 +960,7 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_i(p, 43, 26, 8, 8);
     user_mfc0(p, 8, 12);
     user_li(p, 10, ~4u);
-    user_emit(p, (8 << 21) | (10 << 16) | (8 << 11) | 0x24);
+    user_emit(p, mips_and(8, 8, 10));
     user_mtc0(p, 8, 12);
 
     /* Use the upper half of the diagnostic table, beyond R10000's 512. */
@@ -1120,7 +1121,7 @@ static void test_r12000_performance_ip7(void)
     user_mtc0(image, 8, CP0_COMPARE);
     user_mfc0(image, 8, 12);
     user_li(image, 9, ~4u); /* leave error level to count kernel cycles */
-    user_emit(image, (8 << 21) | (9 << 16) | (8 << 11) | 0x24);
+    user_emit(image, mips_and(8, 8, 9));
     user_mtc0(image, 8, 12);
     user_li(image, 8, 0x7ff00000);
     r12000_mtc0_sel(image, 8, 25, 1);
