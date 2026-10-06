@@ -416,6 +416,30 @@ bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp)
     return mips_r10k_reset_mode_validate(cpu, errp);
 }
 
+/*
+ * The secondary cache's derived geometry for capacity r10k->scache_size and
+ * a line of @line_size bytes (0 for the R10000's 128). The bounds are the
+ * diagnostic arrays' largest supported shape; a geometry outside them
+ * makes every secondary-cache operation inert.
+ */
+static void r10k_scache_geometry_init(R10KState *r10k, uint32_t line_size)
+{
+    uint32_t size = r10k->scache_size;
+
+    if (!line_size) {
+        line_size = R10K_SCACHE_LINE_SIZE;
+    }
+    r10k->scache_line_size = line_size;
+    r10k->scache_sets = size / line_size / R10K_SCACHE_WAYS;
+    r10k->scache_quad_sets = size / 16 / R10K_SCACHE_WAYS;
+    r10k->scache_geometry_valid =
+        size && (line_size == 64 || line_size == R10K_SCACHE_LINE_SIZE) &&
+        size / line_size <= R10K_SCACHE_MAX_TAGS &&
+        r10k->scache_sets <= R10K_SCACHE_MAX_SETS &&
+        size / 8 <= R10K_SCACHE_MAX_DWORDS &&
+        size / 16 <= R10K_SCACHE_MAX_QUADWORDS;
+}
+
 void mips_r10k_cpu_realize(MIPSCPU *cpu)
 {
     if (cpu->env.cpu_model->insn_flags & INSN_R10K) {
@@ -433,6 +457,8 @@ void mips_r10k_cpu_realize(MIPSCPU *cpu)
         }
         alloc_size = MAX(capacity, R10K_SCACHE_SIZE);
         r10k->scache_size = capacity;
+        r10k_scache_geometry_init(r10k,
+                                  cpu->env.cpu_model->cfg.scache_line_size);
         r10k->scache_taglo = g_new0(uint32_t, alloc_size / 64);
         r10k->scache_taghi = g_new0(uint8_t, alloc_size / 64);
         r10k->scache_mru = g_new0(uint8_t, alloc_size / 128);
