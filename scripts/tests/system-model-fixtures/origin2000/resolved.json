@@ -663,7 +663,7 @@
     {
       "id": "router-board-1",
       "identity": {
-        "notes": "Selected catalog part (independently reviewed); suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
+        "notes": "Selected catalog part; suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
         "part": "030-0841-002"
       },
       "kind": "board",
@@ -750,7 +750,7 @@
     {
       "id": "router-board-2",
       "identity": {
-        "notes": "Selected catalog part (independently reviewed); suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
+        "notes": "Selected catalog part; suffix does not identify silicon revision. Every posted IRIX inventory from three independent Origin 2000 systems prints ROUTER Revision 2 (O, independent captures from 250 MHz, 300 MHz and 195 MHz configurations with Nekochan 16727716, comp.sys.sgi.hardware Tyson 2001-11-30 and Jennings 2004-09-28).",
         "part": "030-0841-002"
       },
       "kind": "board",
@@ -883,7 +883,7 @@
     {
       "id": "baseio",
       "identity": {
-        "notes": "Selected server IO6 catalog part (independently reviewed).",
+        "notes": "Selected server IO6 catalog part.",
         "part": "030-1124-002"
       },
       "kind": "board",
@@ -905,7 +905,7 @@
       "hardware_kind": "bridge",
       "id": "baseio-bridge",
       "identity": {
-        "notes": "Select Bridge D; the revision encodings were independently reviewed.",
+        "notes": "Select Bridge D; the revision encodings follow the Bridge specification.",
         "widget_mfg": "0x36",
         "widget_part": "0xc002",
         "widget_revision": 4
@@ -948,7 +948,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (per the ISP specification); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",
@@ -968,7 +968,7 @@
       "identity": {
         "clock_mhz": 60,
         "hardware_revision": 6,
-        "notes": "Select ISP1040C-compatible behavior (independently reviewed); not a historical package identification.",
+        "notes": "Select ISP1040C-compatible behavior (per the ISP specification); not a historical package identification.",
         "pci_revision": 5
       },
       "kind": "storage-hba",

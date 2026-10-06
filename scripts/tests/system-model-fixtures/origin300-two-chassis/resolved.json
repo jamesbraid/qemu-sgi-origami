@@ -3131,7 +3131,7 @@
         {
           "cache_mib": 2,
           "clock_mhz": 500,
-          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985), which was independently reviewed. No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
+          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985). No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
           "reset_mode_bits": "0x009aa985"
         },
         {

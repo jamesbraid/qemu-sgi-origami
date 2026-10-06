@@ -1017,8 +1017,8 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(entry["routers"][1]["id"], "router-2")
         self.assertEqual(entry["routers"][1]["serial"], 0x51454d555201)
         # A crossbar's manufacturer id, part number and initially-
-        # populated-links mask are fixed by which chip it is (decision
-        # D-0026) and are not carried here.
+        # populated-links mask are fixed by which chip it is
+        # and are not carried here.
         crossbar = entry["crossbars"][0]
         self.assertEqual(
             set(crossbar), {"id", "module_index", "kind", "widget_revision"})
@@ -1064,7 +1064,7 @@ class RecordShapeTests(unittest.TestCase):
     def test_routed_module_baseio_carries_its_fitted_ioc3s_serial(self):
         # The BaseIO's IOC3 population (Ethernet, both serial ports, the
         # Timekeeper, the identity NIC) is sgi-baseio's own preset fact
-        # now (decision D-0026) and is not carried here; the IOC3's own
+        # now and is not carried here; the IOC3's own
         # fitted-part one-wire serial has no other home and survives.
         entry = compile_model(_resolved("origin2000-rack"))
         board = entry["io_boards"][0]
@@ -1663,7 +1663,7 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
         self.assertEqual(board["serial"], 0x51454d554200)
         self.assertEqual(board["part"], "030-1244-001")
         # A PCI function's own device number, revision and interrupt
-        # input are sgi-baseio's own preset facts now (decision D-0026);
+        # input are sgi-baseio's own preset facts now;
         # only the kind order survives, for the catalogue's offerings.
         self.assertEqual(
             [item["kind"] for item in board["pci"]], ["ISP1040", "ISP1040", "IOC3"])
@@ -1683,9 +1683,9 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
     vendor id and the SuperIO interrupt pin all move to per-asic-kind
     node-device or device-property constants (sn-model.h's own top
     comment), so they have no format-2 counterpart to compare against.
-    ni_revision and the flash kind are sourced approximations flagged for
-    independent review, not values today's generated input carries at all
-    (it has neither field). Decision D-0026 later widened this list: a PCI
+    ni_revision and the flash kind are sourced approximations, not values
+    today's generated input carries at all (it has neither field). The list
+    was later widened: a PCI
     function's own device/function slot, revision, interrupt input and
     IOC3 population, and a crossbar's manufacturer id, part number and
     startup-health mask, are device facts now, and the XBridge's own
@@ -1740,8 +1740,8 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
 
     def test_no_crossbar_record_for_the_xbridge(self):
         # The XBridge's own crossbar section is part of the IP45 node
-        # board, as the L1 and the boot flash are (decision D-0026's own
-        # corner case): the node device creates it directly, so it never
+        # board, as the L1 and the boot flash are: the node device creates it
+        # directly, so it never
         # gets a catalogue record of its own.
         self.assertEqual(self.entry["crossbars"], [])
 
@@ -1765,8 +1765,8 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
         self.assertEqual(boards["xbridge-bridge-e"]["pci"], [])
         self.assertIsNone(boards["xbridge-bridge-e"]["ioc3_serial"])
         # A PCI function's own device number, revision, interrupt input
-        # and IOC3 population flags are sgi-baseio's own preset facts now
-        # (decision D-0026); only the kind order survives.
+        # and IOC3 population flags are sgi-baseio's own preset facts now;
+        # only the kind order survives.
         head_f = boards["xbridge-bridge-f"]
         self.assertEqual(
             [item["kind"] for item in head_f["pci"]], ["ISP12160", "IOC3", "LUCENT_OHCI"])
@@ -1969,7 +1969,7 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(topology["controllers"][0]["kind"], "l1")
 
     def test_ownership_rule_drops_device_facts(self):
-        # decision D-0026: a topology carries fitted-part identity and
+        # A topology carries fitted-part identity and
         # placement, never a fact a device model already fixes for its
         # chip. Each assertion here names one field the ownership rule
         # excludes and the packet report's own list of exclusions cites.
