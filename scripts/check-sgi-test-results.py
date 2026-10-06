@@ -5,6 +5,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -86,7 +87,23 @@ def _count_attribute(element, attribute, actual, context):
             f"{context} declares {declared} {attribute} but contains {actual}")
 
 
-def read_report(path):
+_UNAVAILABLE_REASON = re.compile(r'prerequisite unavailable: ([A-Z0-9_]+)')
+
+
+def _skip_is_declared(case, unavailable):
+    """Whether every skip names a prerequisite declared unavailable.
+
+    tests/qtest/prereq.h puts the reason in the skip's message or, as Meson
+    writes a TAP skip, in the testcase's output.
+    """
+    text = ' '.join([skip.get('message') or '' for skip in
+                     case.findall('skipped')] +
+                    [out.text or '' for out in case.findall('system-out')])
+    match = _UNAVAILABLE_REASON.search(text)
+    return bool(match) and match.group(1) in unavailable
+
+
+def read_report(path, unavailable=()):
     if not path.is_file():
         raise ResultError(f"JUnit report does not exist: {path}")
     try:
@@ -128,7 +145,8 @@ def read_report(path):
         for key in {name, _testcase_name(name), _suite_name(name),
                     identity}:
             found.setdefault(key, []).append(case)
-        if case.findall('skipped'):
+        if (case.findall('skipped') and
+                not _skip_is_declared(case, unavailable)):
             skips.append(identity)
         if case.findall('failure') or case.findall('error'):
             failures.append(identity)
@@ -280,7 +298,9 @@ def main(argv=None):
                 args.require_rom_target):
             parser.error('Meson selection options do not apply to --junit')
         expected = read_expected(args.expect)
-        report = read_report(args.junit)
+        unavailable = {name for name in os.environ.get(
+            'QEMU_TEST_UNAVAILABLE', '').split(',') if name}
+        report = read_report(args.junit, unavailable)
         validate(report, expected)
     except ResultError as exc:
         print(f'check-sgi-test-results: {exc}', file=sys.stderr)

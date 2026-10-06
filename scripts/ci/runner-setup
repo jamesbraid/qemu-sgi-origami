@@ -193,12 +193,15 @@ case "${1-}" in
     # container's own network namespace confines what it can change. It
     # also declares the host prerequisites this setup provides, so a qtest
     # that finds one missing fails instead of skipping (tests/qtest/prereq.h).
-    # QEMU_TEST_REQUIRE_SGI_RENDER_NODE stays unset: no runner exposes a
-    # DRM render node, so those cases are not registered here.
+    # No runner exposes a DRM render node, and the image has no xorrisofs
+    # (cdrom-test only covers upstream boards, none of them SGI), so
+    # QEMU_TEST_UNAVAILABLE names both: the result checker then accepts
+    # those skips and no other.
     tap_options=()
     if [ "$1" = run-tests ]; then
       tap_options=(--device /dev/net/tun --cap-add NET_ADMIN
-                   -e QEMU_TEST_REQUIRE_TAP=1)
+                   -e QEMU_TEST_REQUIRE_TAP=1
+                   -e QEMU_TEST_UNAVAILABLE=SGI_RENDER_NODE,XORRISOFS)
     fi
     shift
     : "${IMAGE_ID:?IMAGE_ID is required}"
