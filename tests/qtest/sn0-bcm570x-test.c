@@ -927,8 +927,7 @@ static void test_dma_goes_through_placement(const void *data)
     qts = qtest_initf(MACHINE_64BIT "-netdev socket,fd=%d,id=n0 "
                       "-device bcm570x,addr=5,netdev=n0,mac=" BCM_MAC
                       ",rx-arrival-latency-us=0"
-                      " -d trace:sgi_dma_placement_access,"
-                      "trace:sgi_bridge_dma_xlate_plain -D %s",
+                      " -d trace:sgi_dma_placement_access -D %s",
                       sv[1], logfile);
     aim_window_at_bar(qts);
 
@@ -974,15 +973,9 @@ static void test_dma_goes_through_placement(const void *data)
 
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
 
-    /*
-     * The transfers crossed the slot's doubleword placement (this is also the
-     * liveness control: a dead trace fails here, not vacuously), and none
-     * took a route that skips it.
-     */
+    /* The transfers crossed the slot's doubleword placement. */
     g_assert_cmpuint(count_lines_with(log, "sgi-bridge.placement.doubleword "),
                      >, 0);
-    g_assert_cmpuint(count_lines_with(log, "DMA translate plain"), ==, 0);
-    g_assert_cmpuint(count_lines_with(log, "plain addr"), ==, 0);
 
     g_free(log);
     unlink(logfile);

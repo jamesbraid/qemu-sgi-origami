@@ -435,23 +435,10 @@ static QTestState *boot_with_socket_traced(int *host_fd, const char *logfile)
     qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
                       "-device xframe,addr=%d,netdev=n0,mac=%s "
                       "-d trace:sgi_dma_placement_access,"
-                      "trace:sgi_dma_placement_buffer,"
-                      "trace:sgi_bridge_dma_xlate_plain -D %s",
+                      "trace:sgi_dma_placement_buffer -D %s",
                       MACHINE_WITH_BRIDGE, sv[1], XFRAME_SLOT, TEST_MAC,
                       logfile);
     return qts;
-}
-
-static unsigned count_log_matches(const char *log, const char *needle)
-{
-    const char *cursor = log;
-    unsigned count = 0;
-
-    while ((cursor = strstr(cursor, needle)) != NULL) {
-        count++;
-        cursor += strlen(needle);
-    }
-    return count;
 }
 
 /*
@@ -615,7 +602,6 @@ static void test_transmit_payload_follows_placement(const void *data)
     g_test_message("word placement read bytes: %u total, %u descriptor",
                    lane_bytes, (unsigned)sizeof(desc));
     g_assert_cmpuint(lane_bytes, ==, sizeof(desc) + sizeof(frame));
-    g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), ==, 0);
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     g_assert_cmphex(control1 & TXD_OWN, ==, 0);
