@@ -462,6 +462,9 @@ These environment variables resize the work without changing the launcher:
      - ``compress,tcp-receive,tcp-transmit,idle``. Any distinct
        comma-separated subset of those and ``tcp-receive-sink``,
        ``tcp-transmit-source``
+   * - ``QEMU_TEST_PERF_QEMU_ARGS``
+     - Empty. Extra QEMU arguments, split like a shell command line, for
+       comparing device settings on one binary; recorded in the report
 
 Each timed operation includes its correctness check. Compression compares
 every decompressed output with the provisioned input. Force mode retains

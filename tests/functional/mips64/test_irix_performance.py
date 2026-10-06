@@ -47,6 +47,7 @@ class IrixPerformance(QemuSystemTest):
         cpus = int(os.getenv('QEMU_TEST_PERF_CPUS', '1'))
         selected = os.getenv('QEMU_TEST_PERF_WORKLOADS',
                              DEFAULT_WORKLOADS).split(',')
+        extra_args = shlex.split(os.getenv('QEMU_TEST_PERF_QEMU_ARGS', ''))
         self.assertTrue(2 <= repeats <= 20, 'repeats must be 2..20')
         self.assertTrue(8192 <= size <= 32 * 1024 * 1024 and size % 8192 == 0,
                         'bytes must be 8192..33554432 and divisible by 8192')
@@ -71,6 +72,7 @@ class IrixPerformance(QemuSystemTest):
             '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
             '-snapshot', '-nic', 'user,id=efnet,'
             f'hostfwd=tcp:127.0.0.1:0-{GUEST_ADDR}:{TCP_RX_PORT}')
+        vm.add_args(*extra_args)
         report = {'schema': 1, 'status': 'running', 'started_utc': utc_now(),
                   'workloads': []}
         report_path = self.log_file('performance.json')
@@ -147,6 +149,7 @@ class IrixPerformance(QemuSystemTest):
                 'machine': MACHINES['origin200'], 'cpu': 'R10000',
                 'cpus': cpus, 'memory_mib': 128, 'accel': accel,
                 'network': 'slirp-ioc3', 'disk_mode': 'snapshot',
+                'qemu_extra_args': extra_args,
                 'harness_sha256': {
                     name: file_sha256(os.path.join(os.path.dirname(__file__),
                                                    name))
