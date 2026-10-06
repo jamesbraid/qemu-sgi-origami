@@ -43,6 +43,7 @@
 #define BRIDGE_DIRECT_MAP       0x080
 #define BRIDGE_ARBITRATION      0x0a0
 #define BRIDGE_BUS_TIMEOUT      0x0c0
+#define BRIDGE_INT_STATUS       0x100
 
 /*
  * The one-wire bus master to the board identity part, and the fields a driver
@@ -1472,6 +1473,80 @@ static void test_dma_buffer_master_disabled(const void *data)
                     MEMTX_DECODE_ERROR);
     qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+
+    /* Mastering again, the same transfer lands, so the refusal was the bit. */
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | 0x0004);
+    bridge_transfer(qts, PCI_TRANSLATED, sizeof(sentinel), SWAP_SEED);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    for (unsigned i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A card that moves no bytes puts no transaction on the bus: a zero-length
+ * write or copy, swap set or clear, through either window and even at a
+ * translated page with no valid entry, completes, touches no memory and
+ * records no Bridge error. A failed transfer first makes the completion
+ * status a change rather than the reset value.
+ */
+static void test_dma_zero_length(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    const uint32_t windows[] = {
+        PCI_TRANSLATED, PCI_TRANSLATED + PAGE_SIZE_4K,
+        0x80000000u | TARGET_PAGE_A,
+    };
+    uint8_t sentinel[64], seen[64];
+
+    memset(sentinel, SWAP_SENTINEL, sizeof(sentinel));
+    bridge_start_the_transfer_source(qts);
+    qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    qtest_writeq(qts, ATE(1), 0);
+    for (unsigned w = 0; w < G_N_ELEMENTS(windows); w++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            for (unsigned go = 1; go <= 2; go++) {
+                uint32_t status, upper, lower;
+
+                g_test_message("window=0x%x swap=%u go=%u",
+                               windows[w], swap, go);
+                bridge_source_with_swap(qts, swap ? DEV_SWAP_TRANSLATED |
+                                                    DEV_SWAP_DIRECT : 0);
+                qtest_memwrite(qts, TARGET_PAGE_A, sentinel, sizeof(sentinel));
+                qtest_memwrite(qts, 0x300000, sentinel, sizeof(sentinel));
+                bridge_transfer(qts, PCI_TRANSLATED + PAGE_SIZE_4K, 8,
+                                SWAP_SEED);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28),
+                                !=, MEMTX_OK);
+                status = qtest_readl(qts, REG(BRIDGE_INT_STATUS));
+                upper = qtest_readl(qts, REG(0x060));
+                lower = qtest_readl(qts, REG(0x068));
+
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                             windows[w]);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                             go == 1 ? windows[w] : 0x300000);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, 0);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, go);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28),
+                                ==, MEMTX_OK);
+                qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), sentinel,
+                                sizeof(sentinel));
+                qtest_memread(qts, 0x300000, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), sentinel,
+                                sizeof(sentinel));
+                g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)),
+                                ==, status);
+                g_assert_cmphex(qtest_readl(qts, REG(0x060)), ==, upper);
+                g_assert_cmphex(qtest_readl(qts, REG(0x068)), ==, lower);
+            }
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -2690,7 +2765,6 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
 }
 
 /* The interrupt registers, and the fields these tests drive. */
-#define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
 #define BRIDGE_INT_MODE         0x118
 #define BRIDGE_INT_DEVICE       0x120
@@ -4981,6 +5055,8 @@ int main(int argc, char **argv)
                         test_dma_buffer_hub_claims);
     qtest_add_data_func("sn0/bridge/dma-buffer-master-disabled", NULL,
                         test_dma_buffer_master_disabled);
+    qtest_add_data_func("sn0/bridge/dma-zero-length", NULL,
+                        test_dma_zero_length);
     qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,
                         test_dma_swap_bits_reset_clear);
     qtest_add_data_func("sn0/bridge/dma-exempt-slot-is-never-swapped", NULL,
