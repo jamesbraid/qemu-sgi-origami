@@ -10,16 +10,14 @@
  * sync register and the interrupt flag, flag-clear and enable registers.
  *
  * The second increment adds the display back end's indexed register file --
- * the 64-bit indirect write port at 0x400000 and its read window at
- * 0x220000 -- for the two entries the IP35 driver's I2C engine touches: the
- * main and opt port command/status pairs
- * (docs/research/graphics/odyssey-i2c-engine-20260923.md). Every other
- * index in that file stays unimplemented. The I2C engines model no
- * downstream device: a non-zero command word always transfers and always
- * acknowledges, so ACK always reads acknowledged and DATA and the 13:10
- * engine-state field always read zero. That clears the driver's
- * attach-time polling loop without asserting what a real PLL, DDC EEPROM
- * or EDID ROM would answer.
+ * the 64-bit indirect write port at 0x400000 and its read window at 0x220000
+ * -- for the two entries the IP35 driver's I2C engine touches: the main and
+ * opt port command/status pairs. Every other index in that file stays
+ * unimplemented. The I2C engines model no downstream device: a non-zero
+ * command word always transfers and always acknowledges, so ACK always reads
+ * acknowledged and DATA and the 13:10 engine-state field always read zero.
+ * That clears the driver's attach-time polling loop without asserting what a
+ * real PLL, DDC EEPROM or EDID ROM would answer.
  *
  * Not implemented: the rest of the read-back window at 0x200000 and the
  * rendering-pipeline stages (Buzz Graphics Engine, Buzz X-Form, Buzz
@@ -28,38 +26,35 @@
  * models one. Unmodeled offsets read zero, discard writes and report
  * themselves once through LOG_UNIMP; every access is traced.
  *
- * The third increment adds a modeled framebuffer and a display scanout,
- * the foundation the fourth increment's command interpreter renders into.
- * The colour framebuffer is two RGBA8 planes, colour buffers 0 and 1
+ * The third increment adds a modeled framebuffer and a display scanout, the
+ * foundation the fourth increment's command interpreter renders into. The
+ * colour framebuffer is two RGBA8 planes, colour buffers 0 and 1
  * (ODSY_REG_DRAW_MASK), over the shared graphics foundation's board memory,
  * presented through the shared SGIScanout (hw/display/sgi/scanout.h): the
  * scanout owns the console, the presented frame, the dirty-line set and the
  * vertical-retrace timer, and resolves each window's displayed buffer a line
- * at a time through the head's resolve_row hook. The
- * framebuffer's size, pixel format and byte packing are approximations
- * documented on SGIOdysseyState's colour-plane field: the real board's
- * SDRAM framebuffer base, stride and channel packing were not located
- * (docs/research/graphics/odyssey-display-backend-survey-20260922.md).
+ * at a time through the head's resolve_row hook. The framebuffer's size,
+ * pixel format and byte packing are approximations documented on
+ * SGIOdysseyState's colour-plane field: the real board's SDRAM framebuffer
+ * base, stride and channel packing were not located.
  *
  * The fourth increment adds a command-FIFO interpreter (0x110000) for the
  * three operations a console driver needs: solid rectangle fill,
  * screen-to-screen copy (console scrolling) and monochrome glyph blit
- * (console text). The grammar is recovered from OpenBSD's public
- * odyssey(4) driver -- odyssey_fillrect(), odyssey_copyrect() and
- * odyssey_putchar() -- and agrees with the command stream the IRIX X
- * server sends
- * (docs/research/graphics/odyssey-openbsd-public-contract-20260922.md,
- * odyssey-xsgi-2d-command-grammar-20260922.md). The FIFO is
- * hardware-sequenced, not address-counted: every 32-bit or
- * 64-bit store is the next word of a command stream that a small state
- * machine below parses one word at a time. Every recognized word, opcode
- * and register is cited at its handler; an unrecognized command word is
- * reported once through LOG_UNIMP and treated as taking no operands, the
- * same do-not-invent-an-arity stance odyssey_reg() already takes for
- * unestablished register widths. This increment's approximations -- the
- * glyph raster-position template's exact word grouping, the per-pixel
- * color word's bit layout, and which 32-bit half of an 8-byte FIFO store
- * is logically first -- are documented at their handlers below.
+ * (console text). The grammar is recovered from OpenBSD's public odyssey(4)
+ * driver -- odyssey_fillrect(), odyssey_copyrect() and odyssey_putchar() --
+ * and agrees with the command stream the IRIX X server sends
+ * (odyssey-xsgi-2d-command-grammar-20260922.md). The FIFO is
+ * hardware-sequenced, not address-counted: every 32-bit or 64-bit store is
+ * the next word of a command stream that a small state machine below parses
+ * one word at a time. Every recognized word, opcode and register is cited at
+ * its handler; an unrecognized command word is reported once through
+ * LOG_UNIMP and treated as taking no operands, the same
+ * do-not-invent-an-arity stance odyssey_reg() already takes for unestablished
+ * register widths. This increment's approximations -- the glyph
+ * raster-position template's exact word grouping, the per-pixel color word's
+ * bit layout, and which 32-bit half of an 8-byte FIFO store is logically
+ * first -- are documented at their handlers below.
  *
  * The fifth increment turns those interrupt registers into an actual
  * delivery. XIO interrupts on this platform are crosstalk packets,
@@ -71,63 +66,59 @@
  * widget-error delivery rather than re-deriving it independently.
  *
  * The sixth increment turns the 0x400000 write port into the counted
- * word-stream parser it really is (docs/analysis/odyssey-colormap-format.md)
- * and gives the back end its colour lookup RAM. The X server loads the
- * PseudoColor palette here as counted records, so an index-mode fill now
- * resolves its colour through the LUT instead of the earlier provisional
- * grey. The two I2C command indices are the count == 1 case of the same
- * record and keep their existing dispatch; the display-mode registers at
- * 0x2900 + DID are captured so a drawable's colormap group can be resolved.
+ * word-stream parser it really is and gives the back end its colour lookup
+ * RAM. The X server loads the PseudoColor palette here as counted records, so
+ * an index-mode fill now resolves its colour through the LUT instead of the
+ * earlier provisional grey. The two I2C command indices are the count == 1
+ * case of the same record and keep their existing dispatch; the display-mode
+ * registers at 0x2900 + DID are captured so a drawable's colormap group can
+ * be resolved.
  *
  * The seventh increment renders the greeter's text. The X server draws every
  * label as a one-bit pattern quad, not the per-row pixel runs the fourth
  * increment approximated: it loads a 32x32-bit stipple through the 0x3c4e and
  * 0x3c4f register bursts, selects a shape with 0x043f, turns pattern mode on
  * with 0x0404, then draws the string's bounding box as a QUADS fill that
- * paints the current colour only where a pattern bit is set
- * (docs/analysis/odyssey-glyph-raster-format.md). That replaces the earlier
- * glyph-setup/row-marker/pixel-run handling, which modeled the wrong path and
- * produced stray fragments.
+ * paints the current colour only where a pattern bit is set. That replaces
+ * the earlier glyph-setup/row-marker/pixel-run handling, which modeled the
+ * wrong path and produced stray fragments.
  *
  * The eighth increment paints the separate BEGIN-0xa image raster path: the
- * greeter's account icons (the pixmaps above root/EZsetup/demos/guest) and the
- * text-field caret. An image opens with BEGIN primitive 0xa, takes its
+ * greeter's account icons (the pixmaps above root/EZsetup/demos/guest) and
+ * the text-field caret. An image opens with BEGIN primitive 0xa, takes its
  * destination box from the 0xcf80a92f floats, and fills it in raster order
  * from the pixel bursts -- fmt 0x11 as direct 0x00RRGGBB colour (the icons),
- * fmt 0x10 as four colormap indices per word (docs/analysis/odyssey-glyph-
- * raster-format.md). One approximation stands: the caret's index-0 erase
- * (a 6x20 field of colour index 0) would stamp opaque black over the mauve
- * input field, since the write mode that makes the erase-then-redraw sequence
- * correct is not established. Index-0 pixels of a colour-index image are left
- * unpainted rather than drawn black, which preserves the field; it is flagged
- * at the painter below.
+ * fmt 0x10 as four colormap indices per word. One approximation stands: the
+ * caret's index-0 erase (a 6x20 field of colour index 0) would stamp opaque
+ * black over the mauve input field, since the write mode that makes the
+ * erase-then-redraw sequence correct is not established. Index-0 pixels of a
+ * colour-index image are left unpainted rather than drawn black, which
+ * preserves the field; it is flagged at the painter below.
  *
  * The ninth increment adds the page-table pixel/texture DMA engine on the
  * shared graphics foundation's SGIPixelDMA (hw/display/sgi/pixel-dma.h). The
- * kernel driver pins an arbitrary (including user) buffer, builds a 16 KiB-page
- * scatter-gather translation table over it, and starts the board fetching it by
- * pushing a single descriptor -- two 64-bit doublewords carrying an opcode plus
- * the table's physical base -- through the command FIFO at 0x110000
- * (docs/analysis/odyssey-dma-submit-swap-path.md). Only large pixel/image and
- * texture blits take this path; geometry is FIFO-pushed word by word and does
- * not, so the login greeter (which paints through the PIO command interpreter
- * above) never exercises this engine. The engine walks the table's 8-byte
- * entries and paints the header's rectangle into the buffer its word 0 names,
- * the screen or an off-screen board-memory object (ODSY_OBJ_POOL_BYTES), or
- * for a board-to-host header writes that rectangle into the entries
- * (ODSY_DMA_TO_HOST), then
- * raises the same completion fence the
- * standalone 0x0a5a host-write command already used -- the halfword to the guest
- * fence slot plus the softsync crosstalk interrupt -- from the head's publish()
+ * kernel driver pins an arbitrary (including user) buffer, builds a 16
+ * KiB-page scatter-gather translation table over it, and starts the board
+ * fetching it by pushing a single descriptor -- two 64-bit doublewords
+ * carrying an opcode plus the table's physical base -- through the command
+ * FIFO at 0x110000. Only large pixel/image and texture blits take this path;
+ * geometry is FIFO-pushed word by word and does not, so the login greeter
+ * (which paints through the PIO command interpreter above) never exercises
+ * this engine. The engine walks the table's 8-byte entries and paints the
+ * header's rectangle into the buffer its word 0 names, the screen or an
+ * off-screen board-memory object (ODSY_OBJ_POOL_BYTES), or for a
+ * board-to-host header writes that rectangle into the entries
+ * (ODSY_DMA_TO_HOST), then raises the same completion fence the standalone
+ * 0x0a5a host-write command already used -- the halfword to the guest fence
+ * slot plus the softsync crosstalk interrupt -- from the head's publish()
  * hook, so there is one fence implementation. The descriptor's exact field
  * layout, the translation-table entry's bit layout and the value the board
- * writes into the fence slot are all unestablished in any allowed source
- * (docs/analysis/odyssey-dma-submit-swap-path.md, "What a hardware capture would
- * still need to settle"); this increment models a documented approximation of
- * each, flagged at the constants and the engine below, and settles nothing about
- * where in guest memory the board's own pixel pool lives (the objects are a
- * model-owned store, the same device-backed choice and for the same reason
- * as the colour plane's).
+ * writes into the fence slot are all unestablished in any allowed source;
+ * this increment models a documented approximation of each, flagged at the
+ * constants and the engine below, and settles nothing about where in guest
+ * memory the board's own pixel pool lives (the objects are a model-owned
+ * store, the same device-backed choice and for the same reason as the colour
+ * plane's).
  */
 
 #include "qemu/osdep.h"
@@ -222,7 +213,7 @@
 
 /*
  * The flag interrupt's registers, as the shipped IRIX 6.5.30 kernel uses them
- * (docs/reviews/odyssey-datasheet-fold-8eaf559842.md, claim 9):
+ * (claim 9):
  *
  *   ODSY_INTR_FLAGS (0x1014): the pending flags. The kernel driver's
  *     flag-interrupt handler reads them, reads ODSY_INTR_ENABLE_SET, and
@@ -278,17 +269,15 @@
 #define ODSY_HOST_WRITE_ADDR_LOWER 0x403c
 
 /*
- * The context-shadow address: a 48-bit guest physical address split the
- * same way as the host-write pair above, bits 15:0 of the upper half plus
- * all of the lower half. The kernel driver's context switch clears the
- * outgoing context's completion word, stores the switch word naming the
- * incoming context to ODSY_CTX_SWITCH_PORT below, polls the outgoing
- * context's shadow plus ODSY_CTX_SWITCH_DONE_OFFSET, and only then writes
- * the incoming context's shadow address to this pair, each store followed
- * by a barrier (docs/reviews/odyssey-datasheet-fold-8eaf559842.md,
- * claim 13). So at a switch the pair already names the shadow of the
- * context being switched out, which is where the switch completes.
- * Write only.
+ * The context-shadow address: a 48-bit guest physical address split the same
+ * way as the host-write pair above, bits 15:0 of the upper half plus all of
+ * the lower half. The kernel driver's context switch clears the outgoing
+ * context's completion word, stores the switch word naming the incoming
+ * context to ODSY_CTX_SWITCH_PORT below, polls the outgoing context's shadow
+ * plus ODSY_CTX_SWITCH_DONE_OFFSET, and only then writes the incoming
+ * context's shadow address to this pair, each store followed by a barrier
+ * (claim 13). So at a switch the pair already names the shadow of the context
+ * being switched out, which is where the switch completes. Write only.
  */
 #define ODSY_CTX_SHADOW_ADDR_UPPER 0x4004
 #define ODSY_CTX_SHADOW_ADDR_LOWER 0x400c
@@ -311,13 +300,11 @@
 
 /*
  * The "Buzz registers" the stock IP35 BaseIO PROM's graphics diagnostic
- * tests, adjoining but distinct from the kernel driver's own register
- * scan (docs/research/graphics/odyssey-baseio-prom-graphics-20260925.md).
- * No name or reset value is established for any of the six; each is
- * plain read/write storage like the widget-control and software-sync
- * registers, which is enough for a walking-ones/walking-zero-complement
- * self-test to pass without inventing a bit layout that no available
- * source establishes.
+ * tests, adjoining but distinct from the kernel driver's own register scan.
+ * No name or reset value is established for any of the six; each is plain
+ * read/write storage like the widget-control and software-sync registers,
+ * which is enough for a walking-ones/walking-zero-complement self-test to
+ * pass without inventing a bit layout that no available source establishes.
  */
 #define ODSY_BUZZ_1 0x1078
 #define ODSY_BUZZ_2 0x1088
@@ -327,11 +314,9 @@
 #define ODSY_BUZZ_6 0x10c0
 
 /*
- * The swap-control register bank
- * (docs/analysis/odyssey-swap-wake-mechanism.md), as the guest driver's
- * buffer swap and vertical-retrace handler use it, interleaved with the
- * Buzz registers above but a distinct mechanism. Every mask has one bit
- * per window, 0..31.
+ * The swap-control register bank, as the guest driver's buffer swap and
+ * vertical-retrace handler use it, interleaved with the Buzz registers above
+ * but a distinct mechanism. Every mask has one bit per window, 0..31.
  *
  *   ODSY_SWAP_ARM (0x10b4): windows whose displayed buffer flips at the next
  *     retrace. Established: the kernel driver's buffer swap writes
@@ -467,16 +452,15 @@
 
 /*
  * The display back end's indexed register file is a 32-bit word FIFO, not a
- * selector-plus-data register (docs/analysis/odyssey-colormap-format.md).
- * Each 8-byte store to ODSY_BACKEND_SELECT is two words, upper half first; a
- * 4-byte store is one word. The stream is a run of counted records: a header
- * word carries tag 0b11 in bits 29:28, an entry index in bits 27:14 and a
- * count in bits 13:0, and the next `count` words are data for consecutive
- * entries starting at that index. count == 0 is a pad, a no-op. The I2C
- * engine's fixed 0x3xx00001 selector -- index in bits 27:14, count 1 -- is
- * just the count == 1 case of this, so routing its one data word to the I2C
- * command registers is preserved unchanged. Each register is separately
- * readable at ODSY_BACKEND_READ_BASE + (index << 3).
+ * selector-plus-data register. Each 8-byte store to ODSY_BACKEND_SELECT is
+ * two words, upper half first; a 4-byte store is one word. The stream is a
+ * run of counted records: a header word carries tag 0b11 in bits 29:28, an
+ * entry index in bits 27:14 and a count in bits 13:0, and the next `count`
+ * words are data for consecutive entries starting at that index. count == 0
+ * is a pad, a no-op. The I2C engine's fixed 0x3xx00001 selector -- index in
+ * bits 27:14, count 1 -- is just the count == 1 case of this, so routing its
+ * one data word to the I2C command registers is preserved unchanged. Each
+ * register is separately readable at ODSY_BACKEND_READ_BASE + (index << 3).
  */
 #define ODSY_BACKEND_SELECT 0x400000
 #define ODSY_BACKEND_READ_BASE 0x220000
@@ -496,11 +480,11 @@
 /*
  * The colour lookup RAM: entry indices below ODSY_LUT_SIZE hold one 30-bit
  * colour each, ten bits per channel, red in bits 29:20, green in 19:10, blue
- * in 9:0 (docs/analysis/odyssey-colormap-format.md). An 8-bit indexed pixel
- * resolves through entry 256*group + pixel; the top eight bits of each
- * channel are the colour to show (the X server has already applied its
- * software gamma to colormap entries). Entries 0x1a00 to 0x1fff are the
- * 1,536-entry gamma table RGB pixels pass through (odyssey_resolve_row()).
+ * in 9:0. An 8-bit indexed pixel resolves through entry 256*group + pixel;
+ * the top eight bits of each channel are the colour to show (the X server has
+ * already applied its software gamma to colormap entries). Entries 0x1a00 to
+ * 0x1fff are the 1,536-entry gamma table RGB pixels pass through
+ * (odyssey_resolve_row()).
  */
 #define ODSY_LUT_SIZE 0x2000
 #define ODSY_LUT_ENTRY_MASK 0x3fffffff
@@ -511,8 +495,7 @@
 /*
  * The per-drawable display-mode registers at ODSY_DISPMODE_BASE + DID
  * (drawable id 0..31). Bits 8:4 of the word name the colormap group the
- * drawable's indexed pixels resolve through
- * (docs/analysis/odyssey-colormap-format.md).
+ * drawable's indexed pixels resolve through.
  */
 #define ODSY_DISPMODE_BASE 0x2900
 #define ODSY_DISPMODE_COUNT 32
@@ -520,16 +503,15 @@
 #define ODSY_DISPMODE_GROUP_MASK 0x1f
 
 /*
- * Colour resolution at scanout (docs/analysis/odyssey-colormap-scanout.md).
- * The plane keeps what the guest drew; the display back end resolves each
- * pixel through its drawable id's display mode and the lookup RAM as they
- * stand when the frame is shown. ESTABLISHED: the X server changes a
- * window's colormap by rewriting its display-mode register, never by
- * repainting; its screen blank zeroes the gamma table and every colormap and
- * its unblank reloads them; the RGB visuals' display modes name group 26,
- * base 0x1a00, the gamma table. INFERRED: that the board reads the id plane,
- * display mode and lookup RAM per pixel at scanout, which is the only
- * reading under which the blank and the colormap install work.
+ * Colour resolution at scanout. The plane keeps what the guest drew; the
+ * display back end resolves each pixel through its drawable id's display mode
+ * and the lookup RAM as they stand when the frame is shown. ESTABLISHED: the
+ * X server changes a window's colormap by rewriting its display-mode
+ * register, never by repainting; its screen blank zeroes the gamma table and
+ * every colormap and its unblank reloads them; the RGB visuals' display modes
+ * name group 26, base 0x1a00, the gamma table. INFERRED: that the board reads
+ * the id plane, display mode and lookup RAM per pixel at scanout, which is
+ * the only reading under which the blank and the colormap install work.
  */
 #define ODSY_GAMMA_GROUP 26        /* base 0x1a00: groups >= 26 are RGB */
 #define ODSY_GAMMA_BASE (ODSY_GAMMA_GROUP * 256)
@@ -561,9 +543,8 @@
 
 /*
  * gfxinfo's displayed back-end version, bits 2:0: established as read, the
- * driver effect otherwise unknown. The model answers 0 for every profile;
- * a measured 128 MB second-generation board is believed to answer 1
- * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md). Pinned
+ * driver effect otherwise unknown. The model answers 0 for every profile; a
+ * measured 128 MB second-generation board is believed to answer 1. Pinned
  * explicitly as an approximation rather than left to the unimplemented
  * fallback.
  */
@@ -589,16 +570,16 @@
 #define ODSY_CMD_FIFO 0x110000
 
 /*
- * The per-context USER command FIFO. The X server DDX maps the board into each
- * client process and pushes its entire drawing-command stream here (board
- * aperture offset 0x100000), while the kernel driver uses ODSY_CMD_FIFO
- * (0x110000). It carries the same command grammar this interpreter already
- * decodes: a 4-byte store is one FIFO word, an 8-byte store is two. Until this
- * was routed, every user-side drawing word fell through to
- * odyssey_unimplemented() and was dropped, so Xsgi ran and enumerated the board
- * but nothing ever reached the framebuffer and the screen stayed black
- * (docs/analysis/odyssey-screeninit-stall.md). Unlike the kernel port, the user
- * port never carries the command-FIFO self-test preamble, so it does not feed
+ * The per-context USER command FIFO. The X server DDX maps the board into
+ * each client process and pushes its entire drawing-command stream here
+ * (board aperture offset 0x100000), while the kernel driver uses
+ * ODSY_CMD_FIFO (0x110000). It carries the same command grammar this
+ * interpreter already decodes: a 4-byte store is one FIFO word, an 8-byte
+ * store is two. Until this was routed, every user-side drawing word fell
+ * through to odyssey_unimplemented() and was dropped, so Xsgi ran and
+ * enumerated the board but nothing ever reached the framebuffer and the
+ * screen stayed black. Unlike the kernel port, the user port never carries
+ * the command-FIFO self-test preamble, so it does not feed
  * odyssey_selftest_track().
  */
 #define ODSY_USER_CMD_FIFO 0x100000
@@ -637,15 +618,14 @@
 #define ODSY_CFIFO_SELFTEST_OK 0x003d0046
 
 /*
- * A "register-select" word, 0x0001nnnn with the register in the low 16
- * bits. Every such word carries its own operand-word count in bits 13:10,
- * the field value 15 standing for a 16-word burst
- * (docs/analysis/odyssey-user-stream-arities.md, established from the X
- * server's command stream in a traced login: a burst word carries its
- * count in bits 13:10, a 16-word burst encoded as 15). Replaying the whole
- * traced stream with only that rule leaves no word at a command position
- * unaccounted for, so odyssey_cmd_arity() reads the field rather than a
- * hand-built table -- no register-select word has an unknown arity.
+ * A "register-select" word, 0x0001nnnn with the register in the low 16 bits.
+ * Every such word carries its own operand-word count in bits 13:10, the field
+ * value 15 standing for a 16-word burst (established from the X server's
+ * command stream in a traced login: a burst word carries its count in bits
+ * 13:10, a 16-word burst encoded as 15). Replaying the whole traced stream
+ * with only that rule leaves no word at a command position unaccounted for,
+ * so odyssey_cmd_arity() reads the field rather than a hand-built table -- no
+ * register-select word has an unknown arity.
  */
 #define ODSY_CMD_REGISTER_SHAPE 0xffff0000
 #define ODSY_CMD_REGISTER_TAG 0x00010000
@@ -661,11 +641,11 @@
 
 /*
  * Every command word carries its own operand count in bits 13:10, the field
- * value 15 encoding a 16-word burst (docs/analysis/odyssey-user-stream-
- * arities.md): the whole traced login stream obeys it, register-select words
- * and the bare structural words alike, so there is no "unknown arity" case
- * left to report. A register-select's low 16 bits carry the same field, so
- * this reads correctly whether passed the whole word or just the register.
+ * value 15 encoding a 16-word burst: the whole traced login stream obeys it,
+ * register-select words and the bare structural words alike, so there is no
+ * "unknown arity" case left to report. A register-select's low 16 bits carry
+ * the same field, so this reads correctly whether passed the whole word or
+ * just the register.
  */
 static unsigned odyssey_cmd_arity(uint32_t word)
 {
@@ -706,33 +686,31 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_HOST_WRITE_INTERRUPT (1u << 15)
 
 /*
- * The page-table pixel/texture DMA descriptor
- * (docs/analysis/odyssey-dma-submit-swap-path.md). The driver pushes two 64-bit
- * doublewords through the command FIFO carrying an opcode plus the physical base
- * of a translation table: 0xe01 for a transfer into board memory and 0xe03 (the
- * driver's mode bit 4, a direction/variant) for one out of it. The command FIFO
- * splits an 8-byte store into two 32-bit words upper half first, so the two
- * doublewords reach the interpreter as four words: the opcode word, then three
- * more this model reads as one register-select-style operand run.
+ * The page-table pixel/texture DMA descriptor. The driver pushes two 64-bit
+ * doublewords through the command FIFO carrying an opcode plus the physical
+ * base of a translation table: 0xe01 for a transfer into board memory and
+ * 0xe03 (the driver's mode bit 4, a direction/variant) for one out of it. The
+ * command FIFO splits an 8-byte store into two 32-bit words upper half first,
+ * so the two doublewords reach the interpreter as four words: the opcode
+ * word, then three more this model reads as one register-select-style operand
+ * run.
  *
- * ESTABLISHED: the opcode values, that a mode bit picks 0xe01 vs 0xe03, that the
- * descriptor is two sync-fenced doublewords, and how the driver packs the
+ * ESTABLISHED: the opcode values, that a mode bit picks 0xe01 vs 0xe03, that
+ * the descriptor is two sync-fenced doublewords, and how the driver packs the
  * table's physical address P into them (the kernel driver's DMA descriptor
- * builder, docs/analysis/odyssey-account-icons.md). Each 24-bit half of P
- * is stored as (h & 0x1ffff) | (h & 0xfe0000) << 6: the high half (P >> 24)
- * in the first doubleword's low word (operand 0 here), the low half in the
- * second doubleword's high word (operand 1). The second doubleword's low
- * word (operand 2) is always zero. INFERRED: the board reverses that packing,
- * P = w3[16:0] | w3[29:23] << 17 | w1[16:0] << 24 | w1[29:23] << 41. Every
- * traced descriptor then names a table whose entries point at guest pages.
- * The descriptor raises no fence of its own: the driver follows each one with
- * a 0x0a5a host-write fence. The opcode does not give an image transfer's
- * direction: the kernel's image path only ever emits 0xe01, for both
- * directions, and its 0xe03 branch is unreachable from the image ioctl
- * (docs/reviews/odyssey-read-header-encoding-evidence-20260930.md). Only the
- * diagnostic region path can emit 0xe03; the model keeps that opcode
- * reported and unperformed. An 0xe01 transfer's direction is the header's
- * word 7 bit 24 (ODSY_DMA_TO_HOST).
+ * builder). Each 24-bit half of P is stored as (h & 0x1ffff) | (h & 0xfe0000)
+ * << 6: the high half (P >> 24) in the first doubleword's low word (operand 0
+ * here), the low half in the second doubleword's high word (operand 1). The
+ * second doubleword's low word (operand 2) is always zero. INFERRED: the
+ * board reverses that packing, P = w3[16:0] | w3[29:23] << 17 | w1[16:0] <<
+ * 24 | w1[29:23] << 41. Every traced descriptor then names a table whose
+ * entries point at guest pages. The descriptor raises no fence of its own:
+ * the driver follows each one with a 0x0a5a host-write fence. The opcode does
+ * not give an image transfer's direction: the kernel's image path only ever
+ * emits 0xe01, for both directions, and its 0xe03 branch is unreachable from
+ * the image ioctl. Only the diagnostic region path can emit 0xe03; the model
+ * keeps that opcode reported and unperformed. An 0xe01 transfer's direction
+ * is the header's word 7 bit 24 (ODSY_DMA_TO_HOST).
  */
 #define ODSY_DMA_DESC_UPLOAD 0x00000e01   /* opcode 0xe01: either direction */
 #define ODSY_DMA_DESC_READBACK 0x00000e03 /* opcode 0xe03: region path only */
@@ -744,16 +722,15 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 /*
  * The two buffer-select doublewords the kernel driver's buffer-select push
  * sends ahead of a swap, 0x608 and 0x609 each with one operand word taken
- * from the drawable (docs/analysis/odyssey-swap-wake-mechanism.md;
- * 0x2000/0x2000 in the swap capture). The FIFO splits each 8-byte store
- * into two words upper half first, so each reaches the interpreter as an
- * opcode word followed by one operand word. They are register writes, not
- * a completion fence: the swap
- * completes on the retrace hook (odyssey_retrace()). 0x608 names the bound
- * drawing drawable and 0x609 the bound reading one (ODSY_REG_DRAW_MASK's
- * comment); what they do to rendering is unknown, so the model keeps each
- * word raw and draws by the 0x0424 mask alone. Distinct from the
- * DMA descriptor (0xe01/0xe03) and the host-write softsync (0x0a5a).
+ * from the drawable (0x2000/0x2000 in the swap capture). The FIFO splits each
+ * 8-byte store into two words upper half first, so each reaches the
+ * interpreter as an opcode word followed by one operand word. They are
+ * register writes, not a completion fence: the swap completes on the retrace
+ * hook (odyssey_retrace()). 0x608 names the bound drawing drawable and 0x609
+ * the bound reading one (ODSY_REG_DRAW_MASK's comment); what they do to
+ * rendering is unknown, so the model keeps each word raw and draws by the
+ * 0x0424 mask alone. Distinct from the DMA descriptor (0xe01/0xe03) and the
+ * host-write softsync (0x0a5a).
  */
 #define ODSY_SWAP_SYNC_A 0x00000608
 #define ODSY_SWAP_SYNC_B 0x00000609
@@ -780,33 +757,31 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_FENCE_WORD_MASK 0xffffffffu
 
 /*
- * The translation table (docs/analysis/odyssey-dma-submit-swap-path.md): a
- * 0x20-byte header, then 8-byte entries at 16 KiB (0x4000) page granularity,
- * terminated by an entry whose length field is zero -- the eight bytes the
- * driver's own allocation (pagecount * 8 + 0x28) leaves past a 0x20 header and
- * pagecount entries. ESTABLISHED: the header size, the 8-byte entry size and the
- * 16 KiB page size. OBSERVED in the three tables the login greeter's DMAs name
- * (read at the address the descriptor decode above gives): each entry is
- * (byte_address << 16) | length, the first may start part-way into its page
- * and run to the page's end, the following ones are whole pages, the last
- * may be short, and a zero entry ends the list. INFERRED: the board walks
- * them in that order. An over-long walk fails the transfer rather than being
- * guessed at.
+ * The translation table: a 0x20-byte header, then 8-byte entries at 16 KiB
+ * (0x4000) page granularity, terminated by an entry whose length field is
+ * zero -- the eight bytes the driver's own allocation (pagecount * 8 + 0x28)
+ * leaves past a 0x20 header and pagecount entries. ESTABLISHED: the header
+ * size, the 8-byte entry size and the 16 KiB page size. OBSERVED in the three
+ * tables the login greeter's DMAs name (read at the address the descriptor
+ * decode above gives): each entry is (byte_address << 16) | length, the first
+ * may start part-way into its page and run to the page's end, the following
+ * ones are whole pages, the last may be short, and a zero entry ends the
+ * list. INFERRED: the board walks them in that order. An over-long walk fails
+ * the transfer rather than being guessed at.
  *
- * The 0x20-byte header is eight big-endian words
- * (docs/analysis/odyssey-dma-image-header.md). ESTABLISHED from the kernel's
- * own reading and patching of them: word 1 is the board rectangle's top-left
- * (y << 16 | x), word 3 the size (height << 16 | width, a zero height meaning
- * 0x10000), word 5 the source bytes skipped after each row, word 6's low 20
- * bits the bytes per source row, word 7's bits 18:16 a bytes-per-pixel code
- * through the kernel's table below, and word 7's bit 31 the request for the
- * DMA-done interrupt. The entries count pixel bytes only: the driver steps
- * over a row gap inside an entry and never counts it, so an entry's address
- * span can be longer than its length. INFERRED from values: word 0 names the
- * board buffer read or written, the same value the X server sends as the
- * first operand of its colour 0x1017 destination-select (0x2000 for the
- * screen), and word 2 is that buffer's width in 16-pixel units. Word 4 is the
- * drawable's pixel-format word; only a board-to-host read decodes it
+ * The 0x20-byte header is eight big-endian words. ESTABLISHED from the
+ * kernel's own reading and patching of them: word 1 is the board rectangle's
+ * top-left (y << 16 | x), word 3 the size (height << 16 | width, a zero
+ * height meaning 0x10000), word 5 the source bytes skipped after each row,
+ * word 6's low 20 bits the bytes per source row, word 7's bits 18:16 a
+ * bytes-per-pixel code through the kernel's table below, and word 7's bit 31
+ * the request for the DMA-done interrupt. The entries count pixel bytes only:
+ * the driver steps over a row gap inside an entry and never counts it, so an
+ * entry's address span can be longer than its length. INFERRED from values:
+ * word 0 names the board buffer read or written, the same value the X server
+ * sends as the first operand of its colour 0x1017 destination-select (0x2000
+ * for the screen), and word 2 is that buffer's width in 16-pixel units. Word
+ * 4 is the drawable's pixel-format word; only a board-to-host read decodes it
  * (ODSY_DMA_TO_HOST).
  */
 #define ODSY_DMA_PAGE_SIZE 0x4000
@@ -829,11 +804,9 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_MAX_PAGES 256
 
 /*
- * Board-to-host transfers (docs/reviews/odyssey-read-header-encoding-
- * evidence-20260930.md, "Sanitized readback implementation handoff"). Every
- * rule below is software behaviour read from the kernel, the X module and
- * the GL library; the board itself was never observed, so each is an
- * APPROXIMATION of an unknown decode.
+ * Board-to-host transfers. Every rule below is software behaviour read from
+ * the kernel, the X module and the GL library; the board itself was never
+ * observed, so each is an APPROXIMATION of an unknown decode.
  *
  * - Word 7 bit 24 is the direction: set for board to host. The kernel sets
  *   it exactly when the ioctl mode's bit 0 is clear, which every reading
@@ -900,13 +873,13 @@ enum {
 };
 
 /*
- * Off-screen board-memory objects (docs/analysis/odyssey-gl-texturing.md,
- * section 3). A 0x1017 destination select's first operand is a board-memory
- * address in 16-byte units and its second the buffer's row length in
- * 16-pixel units (ESTABLISHED from five adjacent texture allocations); the
- * colour buffer the screen shows is one such base, every other base an
- * off-screen object: a texture level, or the X server's own 0x16a000
- * buffer. An image transfer or DMA lands its pixels in the selected buffer.
+ * Off-screen board-memory objects. A 0x1017 destination select's first
+ * operand is a board-memory address in 16-byte units and its second the
+ * buffer's row length in 16-pixel units (ESTABLISHED from five adjacent
+ * texture allocations); the colour buffer the screen shows is one such base,
+ * every other base an off-screen object: a texture level, or the X server's
+ * own 0x16a000 buffer. An image transfer or DMA lands its pixels in the
+ * selected buffer.
  *
  * The model keeps each object as its own run of 0xRRGGBBAA words in a
  * device-backed store, keyed by base, rather than at its board address: the
@@ -931,12 +904,11 @@ enum {
 #define ODSY_DEST_FORMAT_SCREEN 0x2
 
 /*
- * The 2D stream's GL primitives (docs/analysis/odyssey-account-icons.md). The
- * X server draws rectangles with QUADS, one per four vertices, and the account
- * icons and the greeter's bevels with LINES spans, LINE_STRIP outlines and two
- * POLYGON trapezoids. LINE_LOOP is the strip plus its closing segment. POINTS
- * is what gr_osview and glfalls draw integer points with
- * (docs/analysis/odyssey-gl-demos.md, failure 4).
+ * The 2D stream's GL primitives. The X server draws rectangles with QUADS,
+ * one per four vertices, and the account icons and the greeter's bevels with
+ * LINES spans, LINE_STRIP outlines and two POLYGON trapezoids. LINE_LOOP is
+ * the strip plus its closing segment. POINTS is what gr_osview and glfalls
+ * draw integer points with.
  */
 #define ODSY_GL_POINTS 0x00000000
 #define ODSY_GL_LINES 0x00000001
@@ -960,10 +932,9 @@ enum {
  * The greeter draws in PseudoColor: its fills set colour by index, not RGB.
  * The index-mode sequence is a pair of colour-mode words (ODSY_PROG_COLOUR_
  * MODE below), then 0xce80cc08 with three zero words, then the colour-index
- * word with one index (docs/analysis/odyssey-user-stream-arities.md, "Reading
- * of the greeter's fill"). The zero word changes no state this model needs,
- * but it must parse so the index word stays at a command position. Operand
- * counts are the bits-13:10 field, spelled out for clarity.
+ * word with one index. The zero word changes no state this model needs, but
+ * it must parse so the index word stays at a command position. Operand counts
+ * are the bits-13:10 field, spelled out for clarity.
  *
  * A colour-index OpenGL client uses the same index word for glIndexi and
  * 0xc580c407 with one float for glIndexf; the kernel's context replay sends
@@ -971,7 +942,7 @@ enum {
  * as 0xce80c407. In a colour-index context the library sends its RGBA colour
  * as 0xce80cc0e (three floats) and 0xce80d015 (four), which GL ignores in
  * index mode (ESTABLISHED from the colour-index probe and gr_osview
- * captures, docs/analysis/odyssey-gl-demos.md).
+ * captures).
  */
 #define ODSY_GL_COLOR_INDEX 0xc580c406   /* 1 operand: PseudoColor index */
 #define ODSY_GL_COLOR_INDEX_F 0xc580c407 /* 1 operand: the index as a float */
@@ -982,16 +953,12 @@ enum {
 
 /*
  * The other current-colour and normal words of the IRIX 6.5.30 GL library
- * (docs/reviews/odyssey-query-formats-7-13-evidence-20260930.md, "Sanitized
- * contract handoff", and
- * docs/reviews/odyssey-query-open-items-evidence-20261001.md; software
- * expectations, not measured hardware). The
- * three-int colour word carries the caller's raw signed integers; the kernel's
- * shadow template also uses it as its default saved-colour word. Each colour
- * word has a 0xce80 twin for a context whose colour mode does not render with
- * it. The library sends 0xc180cc18 for glNormal3i and 0xc180cc17 for the
- * short form. The library sends 0xc180cc16 for glNormal3b, three
- * sign-extended bytes one per word.
+ * (software expectations, not measured hardware). The three-int colour word
+ * carries the caller's raw signed integers; the kernel's shadow template also
+ * uses it as its default saved-colour word. Each colour word has a 0xce80 twin
+ * for a context whose colour mode does not render with it. The library sends
+ * 0xc180cc18 for glNormal3i and 0xc180cc17 for the short form. The library
+ * sends 0xc180cc16 for glNormal3b, three sign-extended bytes one per word.
  */
 #define ODSY_GL_COLOR_3I 0xc580cc0d        /* 3 signed integers */
 #define ODSY_GL_INDEX_MODE_COLOR_3I 0xce80cc0d
@@ -1001,12 +968,12 @@ enum {
 #define ODSY_GL_NORMAL_3I 0xc180cc18       /* 3 signed integers */
 
 /*
- * The true-colour immediate-mode GL words a real OpenGL client draws with, the
- * float siblings of the integer 2D words above (docs/analysis/odyssey-gl-
- * triangle-stream.md). A true-colour triangle uses these, not the greeter's
- * colour-index/integer forms, so recognizing them is what tells the two
- * streams apart. glBegin/glEnd (ODSY_REG_GL_BEGIN/END above) are shared: a
- * float-GL BEGIN carries a geometry primitive other than the greeter's QUADS.
+ * The true-colour immediate-mode GL words a real OpenGL client draws with,
+ * the float siblings of the integer 2D words above. A true-colour triangle
+ * uses these, not the greeter's colour-index/integer forms, so recognizing
+ * them is what tells the two streams apart. glBegin/glEnd
+ * (ODSY_REG_GL_BEGIN/END above) are shared: a float-GL BEGIN carries a
+ * geometry primitive other than the greeter's QUADS.
  */
 #define ODSY_GL_COLOR_3F 0xc580cc0e   /* 3 operands: R, G, B as IEEE floats */
 #define ODSY_GL_VERTEX_2F 0x8080c801  /* 2 operands: X, Y as IEEE floats */
@@ -1014,8 +981,8 @@ enum {
 #define ODSY_GL_VERTEX_3F 0x8080cc03  /* 3 operands: X, Y, Z as IEEE floats */
 
 /*
- * Depth state (docs/analysis/odyssey-gl-shading-depth-lighting.md,
- * ESTABLISHED from the GL library's entry points and the captures):
+ * Depth state (ESTABLISHED from the GL library's entry points and the
+ * captures):
  *
  * - 0x0404 bit 16: the depth test. The GL library's glEnable sets it
  *   for GL_DEPTH_TEST only when the drawable has a depth buffer.
@@ -1024,8 +991,7 @@ enum {
  * - 0x0452 bit 24: the depth write enable (the GL library's
  *   glDepthMask); bits 23:20 the colour write mask, 0xf for every
  *   colour draw and 0 for a depth-only clear: bit 20 red, 21 green,
- *   22 blue, 23 alpha (the GL library's glColorMask,
- *   docs/reviews/odyssey-lighting-context-save-ea411c21ca.md).
+ *   22 blue, 23 alpha (the GL library's glColorMask).
  */
 #define ODSY_MODE_DEPTH_TEST (1u << 16)
 #define ODSY_REG_DEPTH_FUNC 0x0420      /* 1 operand */
@@ -1043,17 +1009,17 @@ enum {
 #define ODSY_WRITE_MASK_RESET 0x01f00000
 
 /*
- * Lighting data (docs/analysis/odyssey-gl-shading-depth-lighting.md, section
- * 1, ESTABLISHED from the entry points and two captures with distinct
- * values). glNormal3f is its own word before each vertex; glMaterialfv
- * pushes the front ambient, diffuse, specular and emission as four floats
- * each and the square root of the shininess as one; the back material is the
- * same shape at 0x35..0x39 and 0x908091ea carries four floats derived from
- * the shininess. Light colours are class 0x32 selects, index 3 i + 0, 1, 2
- * (ambient, diffuse, specular of light i) and 24 (the light-model ambient),
- * each followed by 0x8e809015 and four floats; light geometry is a class
- * 0x31 select of index 16 i followed by 0x9080bda2 and sixteen floats. The
- * normal matrix is matrix block 0x34, sixteen floats row-major.
+ * Lighting data (section 1, ESTABLISHED from the entry points and two
+ * captures with distinct values). glNormal3f is its own word before each
+ * vertex; glMaterialfv pushes the front ambient, diffuse, specular and
+ * emission as four floats each and the square root of the shininess as one;
+ * the back material is the same shape at 0x35..0x39 and 0x908091ea carries
+ * four floats derived from the shininess. Light colours are class 0x32
+ * selects, index 3 i + 0, 1, 2 (ambient, diffuse, specular of light i) and 24
+ * (the light-model ambient), each followed by 0x8e809015 and four floats;
+ * light geometry is a class 0x31 select of index 16 i followed by 0x9080bda2
+ * and sixteen floats. The normal matrix is matrix block 0x34, sixteen floats
+ * row-major.
  */
 #define ODSY_GL_NORMAL_3F 0xc180cc19         /* 3 operands */
 #define ODSY_GL_MATERIAL_AMBIENT 0xc680d02f  /* 4 operands, as the next 7 */
@@ -1094,18 +1060,16 @@ enum {
 #define ODSY_PROG_CLASS_SHIFT 24
 /*
  * The colour mode, in the same word shape. The GL library's context
- * default-state setup derives four words from its RGB-mode byte
- * alone and pushes them as classes 0x22, 0x23, 0x24 and 0x25: 0, 2, 0xa,
- * 0xe for an RGBA context and 1, 3, 0xb, 0xf for a colour-index one, so bit
- * 0 of each flips with the mode. The kernel replays them with the other
- * class 0x20 to 0x35 descriptors when it restores a context, and the X
- * server's index and RGB fill branches send the first two
- * (docs/analysis/odyssey-user-stream-arities.md; ESTABLISHED as the emitter
- * and words, docs/reviews/odyssey-gl-demo-fixes-4a9bfa0357.md). That bit 0
- * selects whether a fragment's colour is an index is INFERRED from that
- * split; which of the four the board reads, and the other bits, are
- * UNKNOWN. The model keeps 0x22 and 0x23, reads bit 0 of 0x22 -- one of
- * four words that always agree -- and reports a pair that disagrees.
+ * default-state setup derives four words from its RGB-mode byte alone and
+ * pushes them as classes 0x22, 0x23, 0x24 and 0x25: 0, 2, 0xa, 0xe for an
+ * RGBA context and 1, 3, 0xb, 0xf for a colour-index one, so bit 0 of each
+ * flips with the mode. The kernel replays them with the other class 0x20 to
+ * 0x35 descriptors when it restores a context, and the X server's index and
+ * RGB fill branches send the first two (ESTABLISHED as the emitter and
+ * words). That bit 0 selects whether a fragment's colour is an index is
+ * INFERRED from that split; which of the four the board reads, and the other
+ * bits, are UNKNOWN. The model keeps 0x22 and 0x23, reads bit 0 of 0x22 --
+ * one of four words that always agree -- and reports a pair that disagrees.
  */
 #define ODSY_PROG_COLOUR_MODE 0x22
 #define ODSY_PROG_COLOUR_MODE_B 0x23
@@ -1191,10 +1155,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_UCODE_CLIP_TEXGEN 0x028
 
 /*
- * Texture state (docs/analysis/odyssey-gl-texturing.md, sections 1 and 2;
- * ESTABLISHED as the words and the GL library's emitters). Nothing is pushed
- * for glTexParameter, glTexEnv or glEnable(GL_TEXTURE_2D) at once; the next
- * draw's validation pushes:
+ * Texture state (sections 1 and 2; ESTABLISHED as the words and the GL
+ * library's emitters). Nothing is pushed for glTexParameter, glTexEnv or
+ * glEnable(GL_TEXTURE_2D) at once; the next draw's validation pushes:
  *
  * - 0x0405 bit 3/4: the observed 1D/2D texture mode. Bits 2:0 are
  *   unrelated: the user clip-plane enable count (below).
@@ -1244,12 +1207,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_MODE_FOG (1u << 22)
 
 /*
- * The board-side geometry transform (docs/analysis/odyssey-gl-triangle-
- * stream.md, "the geometry transform is board-side"). A matrix target-select
- * word (0 operands, its own tag rather than the register-select shape) names
- * the start index of a block in its low bits, then the matrix-load word
- * carries 16 IEEE-754 floats as a ROW-major 4x4. The GL library's four
- * matrix validations each select one block and load it:
+ * The board-side geometry transform. A matrix target-select word (0 operands,
+ * its own tag rather than the register-select shape) names the start index of
+ * a block in its low bits, then the matrix-load word carries 16 IEEE-754
+ * floats as a ROW-major 4x4. The GL library's four matrix validations each
+ * select one block and load it:
  *
  *   0x00  the combined matrix: the projection composed with the window
  *         (viewport) map, the combined-matrix validation.
@@ -1259,11 +1221,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  *
  * So the board never receives the projection on its own: it arrives folded
  * into slot 0x00 (odyssey_gl_load_combined()). The texture matrix transforms
- * ST before clipping. The normal transform is
- * kept for the family's own lighting (odyssey_gl_light()). A load aimed at
- * any other block is directed at a GL matrix mode the shared context refuses
- * (ODSY_GL_SLOT_NORMAL), which keeps every access observable
- * (docs/designs/odyssey-gl-family-side.md, resolution of gap 1).
+ * ST before clipping. The normal transform is kept for the family's own
+ * lighting (odyssey_gl_light()). A load aimed at any other block is directed
+ * at a GL matrix mode the shared context refuses (ODSY_GL_SLOT_NORMAL), which
+ * keeps every access observable.
  *
  * The select is matched by shape rather than by the exact words the analysis
  * saw, because it is decode-neutral for the 2D greeter: a select carries no
@@ -1321,15 +1282,14 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_GL_WINDOW_REACH 8192
 
 /*
- * The screen-aligned rectangle (docs/analysis/odyssey-gl-clear-stream.md).
- * ESTABLISHED from the IRIX 6.5.30 GL library's glClear implementation
- * and its stippled-rectangle emitter: inside BEGIN 7 the client sends
- * this word and ten floats -- R, G, B, A, then two opposite corners
- * (x, y, z) in window pixels -- and closes with END. glClear of the colour
- * buffer is exactly this, the corners (0, 0) and (width, height). INFERRED:
- * the board fills the axis-aligned rectangle between the corners, the upper
- * edges exclusive (the client passes x and x + width). The stipple the
- * second emitter can enable, the depth the corners carry and every other
+ * The screen-aligned rectangle. ESTABLISHED from the IRIX 6.5.30 GL library's
+ * glClear implementation and its stippled-rectangle emitter: inside BEGIN 7
+ * the client sends this word and ten floats -- R, G, B, A, then two opposite
+ * corners (x, y, z) in window pixels -- and closes with END. glClear of the
+ * colour buffer is exactly this, the corners (0, 0) and (width, height).
+ * INFERRED: the board fills the axis-aligned rectangle between the corners,
+ * the upper edges exclusive (the client passes x and x + width). The stipple
+ * the second emitter can enable, the depth the corners carry and every other
  * fragment operation are not modeled; the fill is the plain colour.
  */
 #define ODSY_GL_RECT 0x8f80a944
@@ -1360,14 +1320,14 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_COPY_RECT_FORMAT_SOURCE_SHIFT 24
 
 /*
- * The one-bit pattern-quad text path (docs/analysis/odyssey-glyph-raster-
- * format.md). The greeter draws every text label as a stipple: it loads a
- * 32x32-bit pattern, selects a shape, turns pattern mode on, then draws the
- * string's bounding rectangle as a QUADS fill. Where a pattern bit is set the
- * quad's pixel is painted in the current colour; where it is clear nothing is
- * drawn. All four are ordinary register-select words whose operand count the
- * bit-field arity rule already gives: 0x3c4e/0x3c4f carry a 16-word burst
- * (buffer words 0-15 and 16-31), 0x043f and 0x0404 one operand each.
+ * The one-bit pattern-quad text path. The greeter draws every text label as a
+ * stipple: it loads a 32x32-bit pattern, selects a shape, turns pattern mode
+ * on, then draws the string's bounding rectangle as a QUADS fill. Where a
+ * pattern bit is set the quad's pixel is painted in the current colour; where
+ * it is clear nothing is drawn. All four are ordinary register-select words
+ * whose operand count the bit-field arity rule already gives: 0x3c4e/0x3c4f
+ * carry a 16-word burst (buffer words 0-15 and 16-31), 0x043f and 0x0404 one
+ * operand each.
  */
 #define ODSY_REG_PATTERN_LOW 0x3c4e   /* pattern buffer words 0-15 */
 #define ODSY_REG_PATTERN_HIGH 0x3c4f  /* pattern buffer words 16-31 */
@@ -1376,19 +1336,18 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_PATTERN_WORDS 16
 
 /*
- * The line stipple (docs/analysis/odyssey-account-icons.md). The X
- * server's stippled-span routine pushes 0x0c48 before each stippled span
- * with three operands: the stipple row's high 16 bits, the whole 32-bit
- * row rotated to the span, and
- * (1 << 9) | 0x100 | (stipple width - 17), 0x30f for the traced 32-pixel
- * stipples. With 0x0404 bits 3 and 4 set, a line paints its k-th covered
- * pixel from the first vertex (k = 1 next to it) only where bit (k & 31) of
- * the 32-bit operand is set: ESTABLISHED against all 798 traced stippled
- * spans, which then form one screen-aligned checkerboard. The 16-bit operand,
- * the third operand's fields and whether the board repeats at 16 or 32 bits
- * are unknown. Float GL lines use a separate reviewed software encoding:
- * bit 3 enables a 16-bit pattern from word 0, repeated word 2 low byte + 1
- * times per bit. The two paths keep their own pattern and phase rules.
+ * The line stipple. The X server's stippled-span routine pushes 0x0c48 before
+ * each stippled span with three operands: the stipple row's high 16 bits, the
+ * whole 32-bit row rotated to the span, and (1 << 9) | 0x100 | (stipple width
+ * - 17), 0x30f for the traced 32-pixel stipples. With 0x0404 bits 3 and 4
+ * set, a line paints its k-th covered pixel from the first vertex (k = 1 next
+ * to it) only where bit (k & 31) of the 32-bit operand is set: ESTABLISHED
+ * against all 798 traced stippled spans, which then form one screen-aligned
+ * checkerboard. The 16-bit operand, the third operand's fields and whether
+ * the board repeats at 16 or 32 bits are unknown. Float GL lines use a
+ * separate reviewed software encoding: bit 3 enables a 16-bit pattern from
+ * word 0, repeated word 2 low byte + 1 times per bit. The two paths keep
+ * their own pattern and phase rules.
  */
 #define ODSY_REG_LINE_STIPPLE 0x0c48    /* 3 operands */
 #define ODSY_MODE_GL_LINE_STIPPLE (1u << 3)
@@ -1399,19 +1358,18 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_LINE_STIPPLE_CONTROL_32 0x30f
 
 /*
- * The drawable-id plane write (docs/analysis/odyssey-account-panel-black-
- * band.md). The X server's drawable-id plane write assigns a window's
- * screen area to its drawable by writing the board's id planes rather
- * than the colour planes: it sends a 0x1017 destination-select block
- * whose third operand is the constant
- * ODSY_DEST_ID_PLANES, a 0x1023 block whose first operand is the plane write
- * mask (mask << 12), a COLOR_INDEX word carrying the raw id value (id << 3),
- * and a QUADS rectangle. A colour fill's 0x1017 third operand instead carries
- * a value derived from the drawable's pixel format (0x20086a00 colour-index,
- * 0x20006950 RGB), so the constant discriminates the two. Both the 0x1017
- * third operand and the 0x142000 first operand travel together for this
- * purpose in every observed case; which the hardware actually keys on is not
- * settled, so this keys on the third operand as the note recommends.
+ * The drawable-id plane write. The X server's drawable-id plane write assigns
+ * a window's screen area to its drawable by writing the board's id planes
+ * rather than the colour planes: it sends a 0x1017 destination-select block
+ * whose third operand is the constant ODSY_DEST_ID_PLANES, a 0x1023 block
+ * whose first operand is the plane write mask (mask << 12), a COLOR_INDEX
+ * word carrying the raw id value (id << 3), and a QUADS rectangle. A colour
+ * fill's 0x1017 third operand instead carries a value derived from the
+ * drawable's pixel format (0x20086a00 colour-index, 0x20006950 RGB), so the
+ * constant discriminates the two. Both the 0x1017 third operand and the
+ * 0x142000 first operand travel together for this purpose in every observed
+ * case; which the hardware actually keys on is not settled, so this keys on
+ * the third operand as the note recommends.
  */
 #define ODSY_REG_DEST_SELECT 0x1017 /* 4 operands: destination-buffer select */
 #define ODSY_REG_PLANE_MASK 0x1023  /* 4 operands: plane write mask << 12 */
@@ -1444,25 +1402,22 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_GL_RECT_PATTERN_ENABLE (1u << 4)
 
 /*
- * The GL library keeps the shade model in the same register
- * (docs/analysis/odyssey-gl-shading-depth-lighting.md): the GL library's
- * glShadeModel merges (mode == GL_FLAT) << 12 into its 0x0404 shadow,
- * and the captured smooth and flat triangles differ only in this bit,
- * each sending its own
- * colour before every vertex (ESTABLISHED). Set means GL_FLAT, clear
+ * The GL library keeps the shade model in the same register: the GL library's
+ * glShadeModel merges (mode == GL_FLAT) << 12 into its 0x0404 shadow, and the
+ * captured smooth and flat triangles differ only in this bit, each sending
+ * its own colour before every vertex (ESTABLISHED). Set means GL_FLAT, clear
  * GL_SMOOTH.
  */
 #define ODSY_MODE_FLAT_SHADE (1u << 12)
 /*
- * Bit 18 of the same register is GL_DITHER (docs/analysis/odyssey-gl-
- * dither.md, ESTABLISHED): glEnable/glDisable(GL_DITHER) set and clear it in
- * the library's 0x0404 shadow, a new context has it on, the library clears
- * it around its own clears, and the X server's word keeps it off.
+ * Bit 18 of the same register is GL_DITHER (ESTABLISHED):
+ * glEnable/glDisable(GL_DITHER) set and clear it in the library's 0x0404
+ * shadow, a new context has it on, the library clears it around its own
+ * clears, and the X server's word keeps it off.
  */
 #define ODSY_MODE_DITHER (1u << 18)
 /*
- * Bit 14 of the same register is GL_ALPHA_TEST
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): glEnable/
+ * Bit 14 of the same register is GL_ALPHA_TEST: glEnable/
  * glDisable(GL_ALPHA_TEST) set and clear it in the library's 0x0404 shadow.
  * 0x041e carries the function and reference together in one word: bits 14:12
  * the comparison, GL_NEVER = 0 to GL_ALWAYS = 7, and bits 11:0 the reference
@@ -1479,9 +1434,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * Bit 17 of the same register is a computed enable, not a plain mirror of
  * glEnable(GL_BLEND): the library sets it when blending is on and colour
- * logic op, bit 20 below, is off (docs/reviews/odyssey-fragment-state-
- * evidence-20261001.md). The library also rewrites 0x0c21 to all zeros
- * whenever this bit is clear, so a draw must not apply that register's
+ * logic op, bit 20 below, is off. The library also rewrites 0x0c21 to all
+ * zeros whenever this bit is clear, so a draw must not apply that register's
  * factors, equation or colour while the bit is clear -- doing so would
  * overwrite the real blend state with the library's parked zeros.
  */
@@ -1507,19 +1461,18 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_LOGIC_OP_MASK 0xf
 
 /*
- * Bit 15 of the same register is GL_STENCIL_TEST
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md), conditional on
- * the drawable's stencil planes. This model has none (the shared rasterizer's
+ * Bit 15 of the same register is GL_STENCIL_TEST, conditional on the
+ * drawable's stencil planes. This model has none (the shared rasterizer's
  * stencil pipeline is wired for no visual here), and absent a stencil buffer
  * OpenGL's own stencil test is defined to always pass, so feeding the enable
  * is decoding real GL state, not drawing with a stencil test that has any
  * effect. 0x041f carries the function, reference and value mask together:
  * bits 27:25 the comparison, GL_NEVER = 0 to GL_ALWAYS = 7, bits 7:0 the
- * reference clamped to [0, 2^s - 1], bits 15:8 the value mask ANDed with
- * 2^s - 1, and bits 24:22, 21:19, 18:16 the fail, depth-fail and depth-pass
- * operations: KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4, INVERT 5. 0x452
- * bits 19:12 are the write mask under the same (2^s - 1) rule, forced 0
- * without stencil planes.
+ * reference clamped to [0, 2^s - 1], bits 15:8 the value mask ANDed with 2^s
+ * - 1, and bits 24:22, 21:19, 18:16 the fail, depth-fail and depth-pass
+ * operations: KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4, INVERT 5. 0x452 bits
+ * 19:12 are the write mask under the same (2^s - 1) rule, forced 0 without
+ * stencil planes.
  */
 #define ODSY_MODE_STENCIL_TEST (1u << 15)
 #define ODSY_REG_STENCIL_FUNC 0x041f    /* 1 operand */
@@ -1536,25 +1489,23 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_WRITE_STENCIL_MASK 0xff
 
 /*
- * 0x452 bits 11:0 are glIndexMask ANDed with the drawable's index-plane mask
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): every retained
- * capture is RGBA, where the field is always 0 because an RGBA drawable has
- * no index planes, so no capture shows what a real colour-index drawable
- * sends here. This board's own reset default for the word also leaves these
- * bits 0, a value every colour-index draw already relies on reading as
- * unmasked (odyssey_gl_store_colour()). Applying the bits as a literal write
- * mask would make that the ordinary, unconfigured case instead of the
- * exception, which no known guest does -- so the bits are decoded and a
- * non-default value is reported, not applied.
+ * 0x452 bits 11:0 are glIndexMask ANDed with the drawable's index-plane mask:
+ * every retained capture is RGBA, where the field is always 0 because an RGBA
+ * drawable has no index planes, so no capture shows what a real colour-index
+ * drawable sends here. This board's own reset default for the word also
+ * leaves these bits 0, a value every colour-index draw already relies on
+ * reading as unmasked (odyssey_gl_store_colour()). Applying the bits as a
+ * literal write mask would make that the ordinary, unconfigured case instead
+ * of the exception, which no known guest does -- so the bits are decoded and
+ * a non-default value is reported, not applied.
  */
 #define ODSY_WRITE_INDEX_MASK 0xfff
 
 /*
  * Bit 8 of the 0x0404 mode register is GL_CULL_FACE, bits 10:9 the face it
- * culls -- 01 GL_BACK, 10 GL_FRONT, 11 GL_FRONT_AND_BACK, with 00 never
- * sent by a probe word -- and bit 23 glFrontFace's orientation, literally
- * set for GL_CW and clear for GL_CCW
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md).
+ * culls -- 01 GL_BACK, 10 GL_FRONT, 11 GL_FRONT_AND_BACK, with 00 never sent
+ * by a probe word -- and bit 23 glFrontFace's orientation, literally set for
+ * GL_CW and clear for GL_CCW.
  *
  * Bit 23's literal sense is NOT the sense fed to the shared layer. The
  * board's own established window transform bakes y' = -(vh/2) y + (h - vy -
@@ -1572,14 +1523,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the orientation a client submits.
  *
  * This inversion is this implementation's own derivation from the above
- * citations, not a literal statement in the evidence review, and has not
- * had independent review. It is consistent with the only empirical check
- * available, the proposal's own test 6
- * (docs/reviews/odyssey-fragment-state-proposal-20261001.md, not amended by
- * the review): a CCW triangle with front LINE, back FILL draws an outline,
- * and reversing the winding or setting bit 23 draws a fill. The underlying
- * hardware contract for this bit's sense needs independent evidence review
- * before being treated as settled.
+ * citations, not a literal statement in any source. It is consistent with the
+ * only empirical check available: a CCW triangle with front LINE, back FILL
+ * draws an outline, and reversing the winding or setting bit 23 draws a
+ * fill. The underlying hardware contract for this bit's sense is not
+ * established.
  */
 #define ODSY_MODE_CULL_FACE (1u << 8)
 #define ODSY_MODE_CULL_MODE_SHIFT 9
@@ -1587,11 +1535,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_MODE_FRONT_FACE_CW (1u << 23)
 
 /*
- * Bits 5, 6 and 7 of the same register are GL_POLYGON_OFFSET_POINT, _LINE
- * and _FILL (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
- * glEnable/glDisable set and clear them in the library's 0x0404 shadow.
- * 0x0458 carries the constant term alone -- bits 24:0 a signed value in
- * steps of 2^-24 of window depth, with no slope term -- so it is fed as a
+ * Bits 5, 6 and 7 of the same register are GL_POLYGON_OFFSET_POINT, _LINE and
+ * _FILL: glEnable/glDisable set and clear them in the library's 0x0404
+ * shadow. 0x0458 carries the constant term alone -- bits 24:0 a signed value
+ * in steps of 2^-24 of window depth, with no slope term -- so it is fed as a
  * factor of 0 and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT.
  */
 #define ODSY_MODE_OFFSET_POINT (1u << 5)
@@ -1602,10 +1549,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_POLYGON_OFFSET_SCALE (1.0f / (1 << 24))
 
 /*
- * 0x0415 packs glPolygonMode's two faces in one word
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): bits 3:2 the
- * front face, bits 1:0 the back face, each GL_POINT 0, GL_LINE 1, GL_FILL 2;
- * the board's reset value 0xa decodes to FILL for both. Fed as two separate
+ * 0x0415 packs glPolygonMode's two faces in one word: bits 3:2 the front
+ * face, bits 1:0 the back face, each GL_POINT 0, GL_LINE 1, GL_FILL 2; the
+ * board's reset value 0xa decodes to FILL for both. Fed as two separate
  * SGI_GL_OP_POLYGON_MODE calls, one per face.
  */
 #define ODSY_REG_POLYGON_MODE 0x0415 /* 1 operand */
@@ -1614,36 +1560,34 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_POLYGON_MODE_MASK 0x3
 
 /*
- * 0x084a packs the line width and point size together
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): two operands,
- * line width then point size, each a 24-bit unsigned field (bits 23:0) read
- * as size = field / 128.0, the fixed-point convention this register file
- * uses elsewhere.
+ * 0x084a packs the line width and point size together: two operands, line
+ * width then point size, each a 24-bit unsigned field (bits 23:0) read as
+ * size = field / 128.0, the fixed-point convention this register file uses
+ * elsewhere.
  */
 #define ODSY_REG_LINE_POINT_SIZE 0x084a /* 2 operands: line width, point size */
 #define ODSY_LINE_POINT_SIZE_MASK 0xffffff
 #define ODSY_LINE_POINT_SIZE_SCALE 128.0f
 
 /*
- * The scissor and window clip box, 0x081d, two operands
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): word 0
- * (x_min << 12) | x_max, word 1 (y_min << 12) | y_max, each field 12 bits,
- * inclusive, relative to the window origin with y counted in rows down from
- * the window's top edge. The library always sends the intersection of the
- * window, the viewport and, while GL_SCISSOR_TEST is on, the scissor box; an
- * empty intersection arrives as minimum 1, maximum 0. Fed to the shared
- * layer as SGI_GL_OP_SCISSOR's x, y, width, height taken directly with no
- * flip: x = x_min, width = x_max - x_min + 1, y = y_min, height =
- * y_max - y_min + 1, clamped to 0 rather than negative for an empty box.
- * This family never sets the shared context's window_rows_down flag --
- * odyssey_gl_load_combined() loads the client's own combined matrix through
- * a fixed viewport centred on the window origin, which already makes the
- * ordinary projection/viewport math come out top-down -- so "no flip" here
- * means the direct y = y_min mapping, not that literal flag. Confirmed
- * against the evidence review's own worked example: a box of x 0-127, y
- * 0-7 is observed to affect only the top eight rows of the window, which
- * only the direct mapping predicts. Whether the board's own row count
- * matches the library's top-down box is inferred, not directly observed.
+ * The scissor and window clip box, 0x081d, two operands: word 0 (x_min << 12)
+ * | x_max, word 1 (y_min << 12) | y_max, each field 12 bits, inclusive,
+ * relative to the window origin with y counted in rows down from the window's
+ * top edge. The library always sends the intersection of the window, the
+ * viewport and, while GL_SCISSOR_TEST is on, the scissor box; an empty
+ * intersection arrives as minimum 1, maximum 0. Fed to the shared layer as
+ * SGI_GL_OP_SCISSOR's x, y, width, height taken directly with no flip: x =
+ * x_min, width = x_max - x_min + 1, y = y_min, height = y_max - y_min + 1,
+ * clamped to 0 rather than negative for an empty box. This family never sets
+ * the shared context's window_rows_down flag -- odyssey_gl_load_combined()
+ * loads the client's own combined matrix through a fixed viewport centred on
+ * the window origin, which already makes the ordinary projection/viewport
+ * math come out top-down -- so "no flip" here means the direct y = y_min
+ * mapping, not that literal flag. Confirmed against a worked
+ * example: a box of x 0-127, y 0-7 is observed to affect only the top
+ * eight rows of the window, which only the direct mapping predicts. Whether
+ * the board's own row count matches the library's top-down box is inferred,
+ * not directly observed.
  *
  * No probe ever shows a 0x404 enable bit for GL_SCISSOR_TEST: the library
  * keeps the three rectangles intersected into 0x81d whether or not
@@ -1658,19 +1602,18 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_CLIP_BOX_FIELD_MASK 0xfff
 
 /*
- * User clip planes, class 0x31 index 0x120 + 4j
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md), reusing the
- * same index-select field as the light-vector loads
- * (ODSY_PROG_LIGHT_VEC_SELECT, gl_light_vec_sel): the slot select word is
- * followed by ODSY_GL_CLIP_PLANE_LOAD and the plane's four eye-space floats,
- * a, b, c, d, passed through to SGI_GL_OP_CLIP_PLANE unchanged -- the shared
- * layer transforms by the inverse modelview itself. The library loads every
- * enabled plane, user planes first and then its own two internal
- * depth-range planes, into consecutive slots starting at 0x120, including
- * slots beyond the hardware's six-plane budget: a model accepts those loads
- * and leaves the ones past SGI_GL_CLIP_PLANES silently unmodeled, since the
- * shared context has no storage for them and this is expected library
- * traffic, not a guest error.
+ * User clip planes, class 0x31 index 0x120 + 4j, reusing the same
+ * index-select field as the light-vector loads (ODSY_PROG_LIGHT_VEC_SELECT,
+ * gl_light_vec_sel): the slot select word is followed by
+ * ODSY_GL_CLIP_PLANE_LOAD and the plane's four eye-space floats, a, b, c, d,
+ * passed through to SGI_GL_OP_CLIP_PLANE unchanged -- the shared layer
+ * transforms by the inverse modelview itself. The library loads every enabled
+ * plane, user planes first and then its own two internal depth-range planes,
+ * into consecutive slots starting at 0x120, including slots beyond the
+ * hardware's six-plane budget: a model accepts those loads and leaves the
+ * ones past SGI_GL_CLIP_PLANES silently unmodeled, since the shared context
+ * has no storage for them and this is expected library traffic, not a guest
+ * error.
  *
  * Which of the stored planes are actually tested is a separate question,
  * answered by 0x0405 bits 2:0 (the same register as ODSY_TEX_MODE_2D): a
@@ -1688,16 +1631,15 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 
 /*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
- * above root/EZsetup/demos/guest) and the text-field caret
- * (docs/analysis/odyssey-glyph-raster-format.md). BEGIN with primitive 0xa
- * opens an image; its destination box is the 0xcf80a92f record's floats 4, 5
- * (top-left) and 7, 8 (exclusive bottom-right). A single (0, 0) vertex and a
- * transfer header follow, then the pixel bursts. These structural words are
- * not register-selects, so they are recognised by value; the state word
- * 0x29008000 | v (the transfer trigger and its teardown twin) carries its own
- * value in the low 10 bits. The pixel bursts are register-select words the
- * generic arity rule already sizes, routed to the painter while an image is
- * open.
+ * above root/EZsetup/demos/guest) and the text-field caret. BEGIN with
+ * primitive 0xa opens an image; its destination box is the 0xcf80a92f
+ * record's floats 4, 5 (top-left) and 7, 8 (exclusive bottom-right). A single
+ * (0, 0) vertex and a transfer header follow, then the pixel bursts. These
+ * structural words are not register-selects, so they are recognised by value;
+ * the state word 0x29008000 | v (the transfer trigger and its teardown twin)
+ * carries its own value in the low 10 bits. The pixel bursts are
+ * register-select words the generic arity rule already sizes, routed to the
+ * painter while an image is open.
  */
 #define ODSY_CMD_STATE_WORD 0x29008000
 #define ODSY_CMD_STATE_WORD_MASK 0xfffffc00
@@ -1735,14 +1677,13 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 
 /*
  * The source pixel format: the transfer header's low byte, and the same code
- * in the low byte of a DMA header's word 7 (docs/analysis/odyssey-gl-
- * texturing.md, section 3; ESTABLISHED from the X server's icons and caret
- * and the GL library's texture uploads). All are big-endian byte streams:
- * 0x4c one 0x00RRGGBB word a pixel, 0x4b one 0xRRGGBBAA word, 0x49 three
- * bytes R, G, B, 0x42 one luminance byte, 0x41 one colour-index byte. The
- * burst tag's own format bits (0x10, 0x11) do not fix the layout: the X
- * server's 0x00RRGGBB icon words and the library's RRGGBBAA texels share
- * the tag 0x7c11.
+ * in the low byte of a DMA header's word 7 (section 3; ESTABLISHED from the X
+ * server's icons and caret and the GL library's texture uploads). All are
+ * big-endian byte streams: 0x4c one 0x00RRGGBB word a pixel, 0x4b one
+ * 0xRRGGBBAA word, 0x49 three bytes R, G, B, 0x42 one luminance byte, 0x41
+ * one colour-index byte. The burst tag's own format bits (0x10, 0x11) do not
+ * fix the layout: the X server's 0x00RRGGBB icon words and the library's
+ * RRGGBBAA texels share the tag 0x7c11.
  */
 #define ODSY_IMAGE_CODE_MASK 0xff
 #define ODSY_IMAGE_CODE_CI 0x41
@@ -1768,11 +1709,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_CMD_OLD_OPERANDS 5
 
 /*
- * Window placement (docs/analysis/odyssey-gl-window-placement.md). A GL
- * client's vertices and clear rectangle are window-relative; the kernel tells
- * the board where the current context's window is, after every context switch
- * into it and every clip change, with three register-select words on either
- * command port:
+ * Window placement. A GL client's vertices and clear rectangle are
+ * window-relative; the kernel tells the board where the current context's
+ * window is, after every context switch into it and every clip change, with
+ * three register-select words on either command port:
  *
  * - 0x841, two operands: the screen x and y of the window's top-left pixel in
  *   bits 12:0 of each (ESTABLISHED encoding; the kernel masks 0x1fff and
@@ -1800,24 +1740,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * APPROXIMATION, INFERRED to skip the rectangles, keeping only the plane
  * bound and the id compare: IRIX 6.5.30's X server issues copies whose
  * destinations lie wholly outside the rectangles in force, with no 0x204b
- * push in between, and expects them to land
- * (docs/reviews/odyssey-window-move-copy-diagnosis-20261001.md, its
- * evidence review). A per-command clip enable in one of the block's
- * constant words fits the same traces equally well; OpenBSD's tail word
- * 0x3222204b carries 0x204b in its low half, where the X server's tails
- * carry 0x0041 or 0x4000. Whether the origin applies to copies is unknown:
- * it was 0 in every traced copy.
+ * push in between, and expects them to land. A
+ * per-command clip enable in one of the block's constant words fits the same
+ * traces equally well; OpenBSD's tail word 0x3222204b carries 0x204b in its
+ * low half, where the X server's tails carry 0x0041 or 0x4000. Whether the
+ * origin applies to copies is unknown: it was 0 in every traced copy.
  */
 /*
- * The window restore (docs/analysis/odyssey-gl-texturing.md, "Window
- * restore"). To render into an off-screen object the GL library overrides
- * 0x841, 0x204b and 0x840 on the user port, and before its next screen draw
- * it sends only the bare word 0x90008116 and a 0x1017 select; no window word
- * follows. The kernel's own window block ends with the same word, and the X
- * server sends it before each of its selects. INFERRED: the word makes the
- * context's committed window -- the values the kernel last pushed on its own
- * port -- current again. The alternative, that something unseen restores the
- * registers, draws the same pictures in every capture.
+ * The window restore. To render into an off-screen object the GL library
+ * overrides 0x841, 0x204b and 0x840 on the user port, and before its next
+ * screen draw it sends only the bare word 0x90008116 and a 0x1017 select; no
+ * window word follows. The kernel's own window block ends with the same word,
+ * and the X server sends it before each of its selects. INFERRED: the word
+ * makes the context's committed window -- the values the kernel last pushed
+ * on its own port -- current again. The alternative, that something unseen
+ * restores the registers, draws the same pictures in every capture.
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
@@ -2226,8 +2163,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
  * registers take their words here; the two I2C command indices keep their
  * existing dispatch, so a count == 1 I2C selector still reaches the same
  * register it always did. The third I2C-unit index 0x2700 has no established
- * function and stays unimplemented, as it did before this became a stream
- * (docs/analysis/odyssey-colormap-format.md).
+ * function and stays unimplemented, as it did before this became a stream.
  */
 static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
                                  uint32_t data)
@@ -2300,18 +2236,17 @@ static void odyssey_backend_write(SGIOdysseyState *s, uint64_t value,
 }
 
 /*
- * The hardware shadow page (docs/analysis/odyssey-context-state.md, section
- * 3): the layout the kernel driver's shadow-page template setup gives the
- * page the kernel names in 0x4004/0x400c and reads back after every switch
- * (ESTABLISHED as the kernel's template and reads; that the board fills it
- * is INFERRED).
+ * The hardware shadow page: the layout the kernel driver's shadow-page
+ * template setup gives the page the kernel names in 0x4004/0x400c and reads
+ * back after every switch (ESTABLISHED as the kernel's template and reads;
+ * that the board fills it is INFERRED).
  *
  * - +0x80: the pipe state, bits 3:0 the open primitive's type or 0xf idle;
  *   the other fields are ring positions, 0 selecting slot 0.
  * - +0x84/+0x88: the current attribute descriptor, each attribute's ring
  *   slot selector (bits 25:24 the texture coordinate's); +0x8c + 8 S the
  *   same for vertex slot S, 0 to 3. Within the kernel range the context
- *   completeness evidence review scanned, only the template writes them, so
+ *   range checked for completeness, only the template writes them, so
  *   the board is their only writer there; for the rest of the kernel that
  *   is inferred.
  * - +0x240/+0x250: the current colour index and colour words the kernel
@@ -2322,8 +2257,7 @@ static void odyssey_backend_write(SGIOdysseyState *s, uint64_t value,
  *   material, 12 the shininess. The kernel replays rings 1, 2 and 7 at every
  *   switch-in, and the others on its full restore path: a switch to a
  *   nonzero context other than the last one loaded, whether or not a
- *   primitive was open (the "Integer normals" verdict in
- *   docs/reviews/odyssey-query-open-items-evidence-20261001.md).
+ *   primitive was open (the integer-normals case).
  */
 #define ODSY_HW_PIPE_STATE 0x80
 #define ODSY_HW_PIPE_IDLE 0xf
@@ -2548,34 +2482,29 @@ static void odyssey_restart_finish(SGIOdysseyState *s)
  * with its raw operands and the count its bits 13:10 give, at +0x240/+0x800
  * and +0x250/+0x840 and in ring slot 0 of attributes 1 and 2. Nothing is
  * converted between a setter, this save and a later query, so the kernel's
- * replay restores the same record the client set, in whatever format it
- * used. This is an approximation
- * (docs/reviews/odyssey-query-formats-7-13-evidence-20260930.md): the
- * physical board's saved words and operand encodings are unknown, and the
- * template's fixed 0xce80c406 and 0xc580cc0d are only the kernel's defaults
- * for a page never saved. The normal goes to ring 3 slot 0 the same way, as
- * the normal record's word and raw operands, so a replay leaves a later
- * query answering in the format the client used; a never-set record saves
- * its default 0xc180cc19 0 0 1.0. The board's saved normal word is unknown
- * (docs/reviews/odyssey-query-open-items-evidence-20261001.md). Back
- * material is retained without evaluating it for lighting. The texture
- * coordinate goes to ring 4 slot 0 as the raw two-float word. The edge flag
- * goes to ring 7 slot 0 as its retained word, 0x2f00c02e (true, also the
- * never-set default) or 0x3000c02e, with no operands; without it every
- * switch-in replayed the template's false word and cleared the client's
- * flag. The board's saved edge word is unknown.
+ * replay restores the same record the client set, in whatever format it used.
+ * This is an approximation: the physical board's saved words and operand
+ * encodings are unknown, and the template's fixed 0xce80c406 and 0xc580cc0d
+ * are only the kernel's defaults for a page never saved. The normal goes to
+ * ring 3 slot 0 the same way, as the normal record's word and raw operands,
+ * so a replay leaves a later query answering in the format the client used; a
+ * never-set record saves its default 0xc180cc19 0 0 1.0. The board's saved
+ * normal word is unknown. Back material is retained without evaluating it for
+ * lighting. The texture coordinate goes to ring 4 slot 0 as the raw two-float
+ * word. The edge flag goes to ring 7 slot 0 as its retained word, 0x2f00c02e
+ * (true, also the never-set default) or 0x3000c02e, with no operands; without
+ * it every switch-in replayed the template's false word and cleared the
+ * client's flag. The board's saved edge word is unknown.
  *
- * Every save writes all ten descriptor words. Idle selects ring slot 0.
- * A float primitive of type 0..8 packs its retained raw attribute records
- * into ring slots 0..N-1 at save time, and current records into slot 3.
- * Its descriptors point to those slots, while the raw vertex words retain
- * their model cursor slots. The store itself leaves the primitive open,
- * including for the 0x7f snapshot. Integer 2D, type 10 and type 9 polygon
- * assembly still report an unsupported switch and save idle. Type 9's
- * assembler holds every vertex, beyond this page policy's retained set.
- * This producer and its restart
- * decode are model approximations, not established board behavior
- * (docs/reviews/odyssey-context-completeness-evidence-20261001.md).
+ * Every save writes all ten descriptor words. Idle selects ring slot 0. A
+ * float primitive of type 0..8 packs its retained raw attribute records into
+ * ring slots 0..N-1 at save time, and current records into slot 3. Its
+ * descriptors point to those slots, while the raw vertex words retain their
+ * model cursor slots. The store itself leaves the primitive open, including
+ * for the 0x7f snapshot. Integer 2D, type 10 and type 9 polygon assembly
+ * still report an unsupported switch and save idle. Type 9's assembler holds
+ * every vertex, beyond this page policy's retained set. This producer and its
+ * restart decode are model approximations, not established board behavior.
  */
 static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
 {
@@ -2905,21 +2834,20 @@ static uint32_t odyssey_display_group(SGIOdysseyState *s, uint32_t main_id)
 }
 
 /*
- * Resolve the colour buffers at scanout (docs/analysis/odyssey-colormap-
- * scanout.md, "What the model must do"). Per pixel: the id plane's main
+ * Resolve the colour buffers at scanout. Per pixel: the id plane's main
  * drawable (bits 7:3) selects the buffer shown, by its ODSY_DISPLAYED_BUFFER
  * bit, and display mode 0x2900 + id, whose bits 8:4 are the group. INFERRED:
  * that the displayed-buffer bits index windows by main drawable id, as the
- * display-mode path's 1 << id writes to 0x10c4 and 0x10cc do. Main id 0
- * shows by its own bit 0; how the board treats id 0 is unknown. A group at
- * or above 26 is an RGB mode: each channel of the plane word goes through
- * the gamma table. Below it the plane word is an index: lut[256 * group +
- * (index & 0xff)], or lut[index & 0xfff] for group 0, the 4,096-entry case;
- * no second gamma pass. Main id 0 takes drawable
- * 1's mode (ODSY_DID_ROOT_MODE, an approximation). Group 25 (0x1900, the
- * table the server keeps out of its software gamma) resolves as an index
- * table and is reported once as unverified; a non-zero overlay field (bits
- * 2:0) is UNKNOWN territory, resolved through the main id and reported once.
+ * display-mode path's 1 << id writes to 0x10c4 and 0x10cc do. Main id 0 shows
+ * by its own bit 0; how the board treats id 0 is unknown. A group at or above
+ * 26 is an RGB mode: each channel of the plane word goes through the gamma
+ * table. Below it the plane word is an index: lut[256 * group + (index &
+ * 0xff)], or lut[index & 0xfff] for group 0, the 4,096-entry case; no second
+ * gamma pass. Main id 0 takes drawable 1's mode (ODSY_DID_ROOT_MODE, an
+ * approximation). Group 25 (0x1900, the table the server keeps out of its
+ * software gamma) resolves as an index table and is reported once as
+ * unverified; a non-zero overlay field (bits 2:0) is UNKNOWN territory,
+ * resolved through the main id and reported once.
  */
 static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
@@ -2958,9 +2886,8 @@ static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 }
 
 /*
- * A vertical retrace, driven by the shared SGIScanout at the mode's rate
- * (docs/analysis/odyssey-swap-wake-mechanism.md), as the guest driver's
- * retrace handler, swap scheduling and buffer swap use it.
+ * A vertical retrace, driven by the shared SGIScanout at the mode's rate, as
+ * the guest driver's retrace handler, swap scheduling and buffer swap use it.
  *
  * The driver issues a swap by writing ODSY_SWAP_ARM, a toggle mask with one
  * bit per window whose displayed buffer must flip at the next retrace, and
@@ -3135,7 +3062,7 @@ static void odyssey_fill_rect(SGIOdysseyState *s, uint32_t x, uint32_t y,
  * odyssey_clear_planes(): the X server's drawable-id plane write. For each
  * pixel of the rectangle, replace the plane bits the 0x1023 mask selects with
  * the id value the COLOR_INDEX word carried, leaving the colour framebuffer
- * untouched (docs/analysis/odyssey-account-panel-black-band.md).
+ * untouched.
  */
 static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
                                  uint32_t w, uint32_t h, uint8_t value,
@@ -3258,8 +3185,8 @@ static void odyssey_copy_rect(SGIOdysseyState *s)
 
 /* Pattern mode is on when the 0x0404 mode's bits 3,4 are set and a shape is
  * selected. A quad drawn in this state paints the current colour through the
- * pattern instead of as a solid rectangle
- * (docs/analysis/odyssey-glyph-raster-format.md). */
+ * pattern instead of as a solid rectangle.
+ */
 static bool odyssey_pattern_enabled(SGIOdysseyState *s)
 {
     if ((s->pattern_mode & ODSY_PATTERN_MODE_ENABLE) !=
@@ -3726,10 +3653,10 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  * Approximation: colour index 0 in an image is the text-field caret's erase
  * (a 6x20 all-zeros block the DDX writes before redrawing the I-beam). With
  * plain overwrite it would paint opaque black over the mauve input field; the
- * write mode that makes the erase-then-redraw correct is not established
- * (docs/analysis/odyssey-glyph-raster-format.md). Leave index-0 image pixels
- * unpainted rather than stamp black -- the field keeps the colour its fill
- * drew, and the black I-beam still lands as its own pattern quad.
+ * write mode that makes the erase-then-redraw correct is not established.
+ * Leave index-0 image pixels unpainted rather than stamp black -- the field
+ * keeps the colour its fill drew, and the black I-beam still lands as its own
+ * pattern quad.
  */
 static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 {
@@ -3839,13 +3766,13 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
 
 /*
  * The family side of the shared OpenGL context (hw/display/sgi/gl-context.h)
- * and software rasterizer (hw/display/sgi/rasterizer.h). It is a thin decoder:
- * odyssey_cmd_dispatch() turns the float-GL words into SGIGLCmds and feeds them
- * through odyssey_gl_feed(); the shared context runs the GL state machine and
- * assembles primitives, emitting each to the sink below as its last vertex
- * arrives. The sink rasterizes into the one colour plane through the raster
- * target. The 2D greeter path (odyssey_gl_end() and friends) is untouched
- * (docs/designs/odyssey-gl-family-side.md).
+ * and software rasterizer (hw/display/sgi/rasterizer.h). It is a thin
+ * decoder: odyssey_cmd_dispatch() turns the float-GL words into SGIGLCmds and
+ * feeds them through odyssey_gl_feed(); the shared context runs the GL state
+ * machine and assembles primitives, emitting each to the sink below as its
+ * last vertex arrives. The sink rasterizes into the one colour plane through
+ * the raster target. The 2D greeter path (odyssey_gl_end() and friends) is
+ * untouched.
  *
  * The rasterizer rule set is CHOSEN, PENDING CAPTURE: MGRAS's Octane RE4 set
  * is the only one sgi_raster_rules_supported() implements, and a flat single
@@ -3853,8 +3780,7 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
  * heads (the fill is colour-constant, so subpixel snapping and interpolation
  * do not change which pixels take the colour, and there is no depth or line
  * work). Odyssey's own subpixel grid and interpolated-colour depth are
- * unmeasured; an Odyssey rule set of its own waits on a hardware capture
- * (docs/designs/odyssey-gl-family-side.md, "The rasterizer rule set").
+ * unmeasured; an Odyssey rule set of its own waits on a hardware capture.
  */
 static const SGIRasterRules odyssey_gl_rules = {
     .subpixel_bits = 8,
@@ -5177,8 +5103,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
-     * Bit assignments are established by claim 1 in
-     * docs/reviews/odyssey-fragment-state-evidence-20261001.md.
+     * Bit assignments follow the library's fragment-state encoding.
      */
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_POINT_SMOOTH ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &point_smooth, 1);
@@ -5278,8 +5203,7 @@ static void odyssey_gl_apply_clip_planes(SGIOdysseyState *s)
 }
 
 /*
- * 0x0c21's 6-bit blend factor code to the shared layer's enum
- * (docs/reviews/odyssey-fragment-state-evidence-20261001.md, established):
+ * 0x0c21's 6-bit blend factor code to the shared layer's enum (established):
  * 0 GL_ZERO, 0x08 GL_ONE, 0x10 "the other colour" (GL_DST_COLOR as a source
  * factor, GL_SRC_COLOR as a destination factor -- the board never needs both
  * names at the same position, so one code covers both), 0x18 GL_SRC_ALPHA,
@@ -5404,8 +5328,7 @@ static const uint32_t odyssey_gl_light_words[] = {
 };
 
 /*
- * The texture-coordinate and generation fragments
- * (docs/analysis/odyssey-gl-geometry-program.md, section 6 item 2).
+ * The texture-coordinate and generation fragments.
  */
 static const uint32_t odyssey_ucode_texgen[] = {
     0x033, 0x04d, 0x052, 0x057, 0x05c, 0x061, 0x066, 0x06b, 0x06c, 0x077,
@@ -5882,15 +5805,14 @@ static void odyssey_normalize3(double v[3])
  * vertex, front material, from the kept light, material and matrix words.
  * APPROXIMATION: the board's geometry engine computes this in microcode the
  * model does not run; the equation is the one that reproduces both lighting
- * captures offline (docs/analysis/odyssey-gl-shading-depth-lighting.md,
- * section 3). The eye position is the model-view (slot 0x24) applied to
+ * captures offline. The eye position is the model-view (slot 0x24) applied to
  * the vertex, the normal the upper 3x3 of slot 0x34 applied to the current
  * normal and normalised. A light block is directional when its precomputed
  * half vector (floats 3-5) is not zero, positional otherwise (INFERRED from
  * the values; a directional light straight down -z would have a zero half
- * vector and is then read as positional, which is unknown). A light with
- * zero ambient, diffuse and specular colour -- every disabled one, as the
- * library sends it -- adds nothing and is skipped.
+ * vector and is then read as positional, which is unknown). A light with zero
+ * ambient, diffuse and specular colour -- every disabled one, as the library
+ * sends it -- adds nothing and is skipped.
  *
  * Two deviations from the GL text, neither exercised by a capture. The
  * transformed normal is always normalised, so programs with the plain
@@ -6053,19 +5975,17 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, bool has_z)
  * The combined matrix (slot 0x00): the client's model-view and projection
  * composed with its window map, so it takes object coordinates straight to
  * window pixels with row 0 at the window's top. That it carries the
- * model-view is ESTABLISHED from glfalls' capture (docs/analysis/odyssey-gl-
- * demos.md): its fourth row is minus the third row of the model-view it
- * loads into slot 0x24, as a frustum times that model-view gives, and its
- * vertices land in its window through the combined matrix alone and nowhere
- * in it when the model-view is applied first. So the model-view (slot 0x24)
- * is kept only for lighting's eye position (odyssey_gl_light()), and the
- * shared context's own model-view stays the identity. For a 128x128 window
- * under an identity model-view and projection it
- * is x' = 64x + 64, y' = -64y + 63.996, and glOrtho(-2, 2, -2, 2, -1, 1)
- * halves the x and y scales (docs/reviews/odyssey-datasheet-fold-
- * 8eaf559842.md, claim 12). The two cannot be pulled apart, and nothing else
- * says where glViewport put the viewport, so the model applies the product
- * whole, as the board must.
+ * model-view is ESTABLISHED from glfalls' capture: its fourth row is minus
+ * the third row of the model-view it loads into slot 0x24, as a frustum times
+ * that model-view gives, and its vertices land in its window through the
+ * combined matrix alone and nowhere in it when the model-view is applied
+ * first. So the model-view (slot 0x24) is kept only for lighting's eye
+ * position (odyssey_gl_light()), and the shared context's own model-view
+ * stays the identity. For a 128x128 window under an identity model-view and
+ * projection it is x' = 64x + 64, y' = -64y + 63.996, and glOrtho(-2, 2, -2,
+ * 2, -1, 1) halves the x and y scales (claim 12). The two cannot be pulled
+ * apart, and nothing else says where glViewport put the viewport, so the
+ * model applies the product whole, as the board must.
  *
  * The shared context's pipeline is projection, divide, then viewport map. It
  * is given a fixed viewport of +-ODSY_GL_WINDOW_REACH about the window
@@ -6076,20 +5996,18 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, bool has_z)
  * no flip is needed. Clipping is then the window's own rectangles; where the
  * board clips geometry that leaves the window is unknown.
  *
- * Depth: the retained block-16 fourth float scales the combined depth
- * row. In native orthographic 1/5, 1/10 and 1/20 controls, dividing the
- * signed row by that float gives the GL window depth. This is an
- * experimental model policy, not a measured board contract. Malformed zero
- * or non-finite words retain the previous sign-only fallback. The shared
- * pipeline's window depth is (z_c / w_c + 1) / 2, so its z row is
- * row2 / (block16[3] * S) - row3, with S = ODSY_GL_DEPTH_S.
- * A depth outside [0, 1] is then dropped by the shared rasterizer, which is
- * the near and far clip. The other three block-16 floats have no observed
- * role. A non-default glDepthRange changes the row in
- * a way this rule does not fit (docs/analysis/odyssey-gl-shading-depth-
- * lighting.md, "Depth range"): it is drawn with the default [0, 1] range,
- * and the near and far clip planes the library adds for it are reported as
- * a program stage (odyssey_gl_program()).
+ * Depth: the retained block-16 fourth float scales the combined depth row. In
+ * native orthographic 1/5, 1/10 and 1/20 controls, dividing the signed row by
+ * that float gives the GL window depth. This is an experimental model policy,
+ * not a measured board contract. Malformed zero or non-finite words retain
+ * the previous sign-only fallback. The shared pipeline's window depth is (z_c
+ * / w_c + 1) / 2, so its z row is row2 / (block16[3] * S) - row3, with S =
+ * ODSY_GL_DEPTH_S. A depth outside [0, 1] is then dropped by the shared
+ * rasterizer, which is the near and far clip. The other three block-16 floats
+ * have no observed role. A non-default glDepthRange changes the row in a way
+ * this rule does not fit: it is drawn with the default [0, 1] range, and the
+ * near and far clip planes the library adds for it are reported as a program
+ * stage (odyssey_gl_program()).
  *
  * A matrix whose x or y row is zero -- the library's load before its window
  * exists, or the kernel's zero restore at a context switch -- leaves an empty
@@ -6130,13 +6048,12 @@ static void odyssey_gl_load_combined(SGIOdysseyState *s, const float m[16])
 }
 
 /*
- * A board-side matrix load: 16 IEEE-754 floats, ROW-major on the wire
- * (docs/analysis/odyssey-gl-triangle-stream.md, confirmed against the traced
- * glRotatef(30) load). sgi_gl_set_matrix() takes column-major, so transpose
- * before the call. gl_matrix_slot is the slot the last matrix-select chose;
- * the normal slot (ODSY_GL_SLOT_NORMAL) is one the context refuses, and its
- * false return is expected. The texture matrix is kept as sent and applied
- * to the current ST by the shared context.
+ * A board-side matrix load: 16 IEEE-754 floats, ROW-major on the wire load).
+ * sgi_gl_set_matrix() takes column-major, so transpose before the call.
+ * gl_matrix_slot is the slot the last matrix-select chose; the normal slot
+ * (ODSY_GL_SLOT_NORMAL) is one the context refuses, and its false return is
+ * expected. The texture matrix is kept as sent and applied to the current ST
+ * by the shared context.
  */
 static void odyssey_gl_transpose(const uint32_t *rows, float m[16])
 {
@@ -6217,19 +6134,18 @@ static void odyssey_gl_load_block16(SGIOdysseyState *s)
  * rectangle is the box within the plane and its clip list the kept 0x204b
  * rectangles.
  *
- * glClear of the depth buffer is the same rectangle
- * (docs/analysis/odyssey-gl-shading-depth-lighting.md): the library sets the
+ * glClear of the depth buffer is the same rectangle: the library sets the
  * 0x0452 depth write bit and puts the clear depth, d x 2S, in both corners'
  * z, and for a depth-only clear also zeroes the colour write mask, leaving
  * the colour operands uninitialised. So the rectangle writes depth, from the
  * first corner's z scaled to the 24-bit plane, when the depth write bit is
- * set, and writes colour only when the colour mask is not zero
- * (ESTABLISHED for the words). The library forces GL_ALWAYS around every
- * rectangle it sends; how the board would test a rectangle under another
- * comparison is not known, so that case is reported and the rectangle
- * written unconditionally. In index mode the first float is the clear index,
- * not red (glClearIndex(3) sends 3.0 there, ESTABLISHED from the colour-index
- * probe's capture), and the rectangle stores it like any index fragment.
+ * set, and writes colour only when the colour mask is not zero (ESTABLISHED
+ * for the words). The library forces GL_ALWAYS around every rectangle it
+ * sends; how the board would test a rectangle under another comparison is not
+ * known, so that case is reported and the rectangle written unconditionally.
+ * In index mode the first float is the clear index, not red (glClearIndex(3)
+ * sends 3.0 there, ESTABLISHED from the colour-index probe's capture), and
+ * the rectangle stores it like any index fragment.
  */
 static void odyssey_gl_rect(SGIOdysseyState *s)
 {
@@ -6407,11 +6323,10 @@ static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
 
     /*
      * The X server's drawable-id plane write, marked by the 0x1017
-     * destination word: it updates the did plane under the rectangle and
-     * does not touch the colour framebuffer. The id value is the raw
-     * COLOR_INDEX operand (id << 3), the mask the 0x1023 operand shifted
-     * down from its << 12 position
-     * (docs/analysis/odyssey-account-panel-black-band.md).
+     * destination word: it updates the did plane under the rectangle and does
+     * not touch the colour framebuffer. The id value is the raw COLOR_INDEX
+     * operand (id << 3), the mask the 0x1023 operand shifted down from its <<
+     * 12 position.
      */
     if (s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
         odyssey_clear_planes(s, x0, y0, x1 - x0, y1 - y0,
@@ -6446,17 +6361,16 @@ static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
 }
 
 /*
- * One line segment (docs/analysis/odyssey-account-icons.md). The DDX pushes an
- * X span (x, y, w) as the vertices (x, y), (x + w, y) for a solid span and in
- * the reverse order for a stippled one, and both are right only if a line
- * paints the pixels whose centres lie strictly between its endpoints along the
- * major axis -- [min, max) -- whichever way it runs (INFERRED from the two
- * DDX routines; the same is what lets the X server's line routine add a
- * one-pixel stub to draw a polyline's last point). Along the major axis
- * pixel i is painted at the minor-axis position of its centre, rounded
- * down. With the stipple enabled
- * (0x0404 bits 3 and 4) the k-th covered pixel from the first vertex, k = 1
- * next to it, is painted only where bit (k & 31) of the 0x0c48 pattern is set.
+ * One line segment. The DDX pushes an X span (x, y, w) as the vertices (x,
+ * y), (x + w, y) for a solid span and in the reverse order for a stippled
+ * one, and both are right only if a line paints the pixels whose centres lie
+ * strictly between its endpoints along the major axis -- [min, max) --
+ * whichever way it runs (INFERRED from the two DDX routines; the same is what
+ * lets the X server's line routine add a one-pixel stub to draw a polyline's
+ * last point). Along the major axis pixel i is painted at the minor-axis
+ * position of its centre, rounded down. With the stipple enabled (0x0404 bits
+ * 3 and 4) the k-th covered pixel from the first vertex, k = 1 next to it, is
+ * painted only where bit (k & 31) of the 0x0c48 pattern is set.
  */
 static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
                                int32_t x2, int32_t y2, bool stippled)
@@ -6597,13 +6511,13 @@ static void odyssey_gl_hold(SGIOdysseyState *s, unsigned int slot, uint32_t x,
 
 /*
  * One integer vertex, window origin already added. The command FIFO is a
- * stream with no batch size (docs/analysis/odyssey-gl-demos.md, failure 4),
- * so each piece is drawn as its last vertex arrives, the way the shared GL
- * context assembles the float path, holding only what a later piece needs:
- * a QUADS rectangle's corners, a LINES span's first vertex, a strip's first
- * and previous vertex (slots 0 and 1). A trailing partial piece -- a QUADS
- * remainder, an odd LINES vertex -- is never drawn, as glEnd drops it. A
- * primitive this path does not draw is reported at END.
+ * stream with no batch size, so each piece is drawn as its last vertex
+ * arrives, the way the shared GL context assembles the float path, holding
+ * only what a later piece needs: a QUADS rectangle's corners, a LINES span's
+ * first vertex, a strip's first and previous vertex (slots 0 and 1). A
+ * trailing partial piece -- a QUADS remainder, an odd LINES vertex -- is
+ * never drawn, as glEnd drops it. A primitive this path does not draw is
+ * reported at END.
  *
  * A POINTS vertex paints pixel (x, y). INFERRED: a line's pixels lie at the
  * minor-axis position rounded down (odyssey_gl_segment()), so an integer
@@ -6861,13 +6775,13 @@ static uint32_t odyssey_dma_code(SGIOdysseyState *s, const uint32_t *hdr,
 
 /*
  * A transfer into the colour buffer the screen shows (obj -1) or into
- * board-memory object obj: paint the header's rectangle from the source
- * (docs/analysis/odyssey-dma-image-header.md). The
+ * board-memory object obj: paint the header's rectangle from the source. The
  * source is a stream of pixel bytes spread over the entries: each row takes
  * rowbytes bytes, moving to the next entry whenever the current one's count
- * runs out, then the cursor steps over skip bytes that are not counted. A skip
- * that runs past an entry's end is overtaken by the next entry, whose address
- * the driver already moved past the gap. No byte outside the entries is read.
+ * runs out, then the cursor steps over skip bytes that are not counted. A
+ * skip that runs past an entry's end is overtaken by the next entry, whose
+ * address the driver already moved past the gap. No byte outside the entries
+ * is read.
  */
 static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
                                   uint64_t table, uint64_t seq,
@@ -7495,15 +7409,14 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
 /*
  * A 0xe01/0xe03 descriptor: read the table's header, move the pixels, and
  * raise the DMA-done interrupt when the header asks for it. A header with
- * word 7 bit 24 set is a read (odyssey_dma_from_board()); any other names
- * its destination in word 0: the colour buffer the screen shows, or an
- * off-screen object -- the X server's 0x16a000 buffer, or a texture level
- * too large for the FIFO (docs/analysis/odyssey-gl-texturing.md) -- whose
- * row length is word 2's (16-pixel units), created when no 0x1017 named it
- * first. A zero word 0 names no buffer and is refused. An upload to a
- * sentinel (GL's DMA image write) is accepted only by the experimental
- * draw-sentinel SHORT adapter. The 0xe03 opcode, which only the diagnostic
- * region path emits, is reported and not performed.
+ * word 7 bit 24 set is a read (odyssey_dma_from_board()); any other names its
+ * destination in word 0: the colour buffer the screen shows, or an off-screen
+ * object -- the X server's 0x16a000 buffer, or a texture level too large for
+ * the FIFO -- whose row length is word 2's (16-pixel units), created when no
+ * 0x1017 named it first. A zero word 0 names no buffer and is refused. An
+ * upload to a sentinel (GL's DMA image write) is accepted only by the
+ * experimental draw-sentinel SHORT adapter. The 0xe03 opcode, which only the
+ * diagnostic region path emits, is reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
 {
@@ -7620,13 +7533,12 @@ static void odyssey_query_cancel(SGIOdysseyState *s)
 
 /*
  * Retain a completed setter in its public record: the whole command word and
- * its raw operands, never a converted value
- * (docs/reviews/odyssey-query-formats-7-13-evidence-20260930.md). The GL
- * consumer reads the format from the word's low six bits: 6 and 7 for the
- * index, 8, 13, 14 and 21 for the colour, 22 to 25 for the normal. The
- * 0xce80 twins of the index and colour words set the same records as their
- * 0xc580 siblings; that is a model choice, since whether the board updates
- * its queried value for them is unknown.
+ * its raw operands, never a converted value. The GL consumer reads the format
+ * from the word's low six bits: 6 and 7 for the index, 8, 13, 14 and 21 for
+ * the colour, 22 to 25 for the normal. The 0xce80 twins of the index and
+ * colour words set the same records as their 0xc580 siblings; that is a model
+ * choice, since whether the board updates its queried value for them is
+ * unknown.
  *
  * The consumer indexes a 256-entry table with a byte colour's raw words and
  * no mask, so a byte operand above 255 has no defined answer. Such a record
@@ -7860,14 +7772,13 @@ static uint32_t odyssey_float_channel(uint32_t bits)
 }
 
 /*
- * The GL library's conversion of a signed-integer colour or normal operand
- * to a float, in single precision as its query decoder does
- * (docs/reviews/odyssey-query-formats-7-13-evidence-20260930.md). The exact
- * scales are 1/255, 1/65535 and 1/(2^32 - 2304); ODSY_F32_SCALE_32 is the
- * single-precision quotient of that last one, which is exactly
- * 1/(2^32 - 2560). Formats 22 and 23 form 2v + 1 in
- * 32-bit integer arithmetic before converting; 13 and 24 convert v first,
- * then form v * 2 + 1 with a fused multiply-add.
+ * The GL library's conversion of a signed-integer colour or normal operand to
+ * a float, in single precision as its query decoder does. The exact scales
+ * are 1/255, 1/65535 and 1/(2^32 - 2304); ODSY_F32_SCALE_32 is the
+ * single-precision quotient of that last one, which is exactly 1/(2^32 -
+ * 2560). Formats 22 and 23 form 2v + 1 in 32-bit integer arithmetic before
+ * converting; 13 and 24 convert v first, then form v * 2 + 1 with a fused
+ * multiply-add.
  *
  * This is the software's expectation for what the current value means; the
  * board's own arithmetic for these words is unknown. The model renders with
@@ -8814,13 +8725,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         uint32_t op1 = s->cmd_operand[1];
         /*
          * The standalone host-write/sync command is the board's own DMA
-         * completion signal (docs/analysis/odyssey-dma-submit-swap-path.md), so
-         * it raises the same fence the DMA engine's completion does, through the
-         * one fence implementation: op0's slot and interrupt bit and op1's token
-         * become the completion cookie, published to odyssey_publish() ->
-         * odyssey_fence(). op0's interrupt bit and op1's token already sit at the
-         * fence word's own positions (ODSY_HOST_WRITE_INTERRUPT is the fence
-         * word's bit 15).
+         * completion signal, so it raises the same fence the DMA engine's
+         * completion does, through the one fence implementation: op0's slot
+         * and interrupt bit and op1's token become the completion cookie,
+         * published to odyssey_publish() -> odyssey_fence(). op0's interrupt
+         * bit and op1's token already sit at the fence word's own positions
+         * (ODSY_HOST_WRITE_INTERRUPT is the fence word's bit 15).
          */
         uint32_t word = ((op1 & 0xffff) << ODSY_DMA_FENCE_TOKEN_SHIFT) |
                         (op0 & (ODSY_DMA_FENCE_INTERRUPT |
@@ -9482,9 +9392,9 @@ static const MemoryRegionOps odyssey_ops = {
 
 /*
  * The board-identity record. Its field spelling is the one this project
- * captured off real SGI firmware (docs/library/boot-logs.md), and the
- * prologue -- a format byte, four spaces and a semicolon, so a scanning
- * reader meets ";Name:" and a positional reader finds the value at byte 11
+ * captured off real SGI firmware, and the prologue -- a format byte, four
+ * spaces and a semicolon, so a scanning reader meets ";Name:" and a
+ * positional reader finds the value at byte 11
  * -- is the convention hw/pci-host/sgi-bridge.c already writes.
  *
  * One field by default, because the stock IP35 PROM was observed reading
@@ -9654,8 +9564,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      * index record's default 0xc580c406 1 saves and a replay restores, so a
      * context that never sets an index draws GL vertices in index 1 before
      * and after its first switch. The board's reset index is unknown; this
-     * is a model default (the "Never-set index" verdict in
-     * docs/reviews/odyssey-query-open-items-evidence-20261001.md).
+     * is a model default (the never-set index case).
      * Limitation: the integer rectangle fill takes the index only after an
      * index word, so with none since reset it draws the packed colour 0, and
      * index 1 after a replay. Only a register test reaches that: the X
@@ -9863,13 +9772,12 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
 }
 
 /*
- * The generation/capacity pairs the family evidence supports
- * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md): v12 is the
- * measured 128 MB board odyssey_properties' defaults already describe; v10
- * is the same second-generation part cut down to 32 MB; v8 and v6 are the
- * first generation (revision nibble 1) at 128 MB and 32 MB. No profile
- * offers 64 MB, size code 3, or a revision nibble other than 0x1 and 0xa:
- * the evidence record does not establish them.
+ * The generation/capacity pairs the family evidence supports: v12 is the
+ * measured 128 MB board odyssey_properties' defaults already describe; v10 is
+ * the same second-generation part cut down to 32 MB; v8 and v6 are the first
+ * generation (revision nibble 1) at 128 MB and 32 MB. No profile offers 64
+ * MB, size code 3, or a revision nibble other than 0x1 and 0xa: the evidence
+ * record does not establish them.
  */
 static const struct {
     const char *name;
@@ -10286,11 +10194,9 @@ static void odyssey_instance_init(Object *obj)
  * synthetic and says so.
  *
  * "profile" is a named preset for the generation/capacity pairs the family
- * evidence supports
- * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md): v12
- * (default, the measured board above), v10, v8 and v6. Selecting one
- * overrides "revision" and "memory-size"; left unset, both keep their own
- * defaults/overrides unchanged.
+ * evidence supports: v12 (default, the measured board above), v10, v8 and v6.
+ * Selecting one overrides "revision" and "memory-size"; left unset, both keep
+ * their own defaults/overrides unchanged.
  */
 static const Property odyssey_properties[] = {
     DEFINE_PROP_LINK("pi", SGIOdysseyState, pi, TYPE_SGI_PI_GFX, Object *),
