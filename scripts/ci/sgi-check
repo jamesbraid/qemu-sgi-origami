@@ -29,7 +29,6 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[2]
 CHECKER = SOURCE / 'scripts/check-sgi-test-results.py'
-OPTIONAL_QTEST_SKIPS = SOURCE / 'tests/qtest/mips64-qtest-optional-skips.txt'
 QTEST_DURATIONS = SOURCE / 'scripts/ci/qtest-durations.txt'
 
 CONFIGURE_ARGS = [
@@ -99,8 +98,8 @@ class Build:
     def ninja(self, *targets):
         run(['ninja', '-C', self.path, *targets])
 
-    def meson_test(self, logbase, args, expect, allow_skips=None,
-                   processes=None, setup='qemu:thorough'):
+    def meson_test(self, logbase, args, expect, processes=None,
+                   setup='qemu:thorough'):
         """Run one Meson test invocation and check its JUnit report."""
         cmd = [self.meson, 'test', '-C', self.path, '--setup', setup,
                '--logbase', logbase, '--print-errorlogs']
@@ -114,8 +113,6 @@ class Build:
                      f'found {len(reports)}')
         check = [sys.executable, CHECKER, '--junit', reports[0],
                  '--expect', expect]
-        if allow_skips:
-            check += ['--allow-skips-from', allow_skips]
         run(check)
 
     def list_meson_tests(self, dest, *selection):
@@ -292,7 +289,6 @@ def smoke(args):
     # depend on which binaries are selected.
     build.meson_test('smoke-qtest',
                      expected.read_text(encoding='utf-8').split(), expected,
-                     allow_skips=OPTIONAL_QTEST_SKIPS,
                      processes=QTEST_PROCESSES, setup='qemu:quick')
 
     expected = build.path / 'expected-linux.txt'
@@ -436,7 +432,6 @@ def full_qtest(build, index, count):
     expected = build.path / f'{logbase}.expected'
     expected.write_text('\n'.join(share) + '\n', encoding='utf-8')
     build.meson_test(logbase, share, expected,
-                     allow_skips=OPTIONAL_QTEST_SKIPS,
                      processes=QTEST_PROCESSES)
 
 

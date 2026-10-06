@@ -1,8 +1,0 @@
-# Meson-level skip reported for the selected MIPS64 CD-ROM target.
-qemu	qemu:qtest+qtest-mips64+slow / qtest-mips64/cdrom-test
-
-# KONA GPU renderer cases require QEMU_TEST_SGI_RENDER_NODE.
-qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/real-gl
-qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/gpu-to-cpu-migration
-qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/cpu-to-gpu-migration
-qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/excluded-state
