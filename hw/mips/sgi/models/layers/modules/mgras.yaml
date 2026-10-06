@@ -34,7 +34,7 @@ layer:
           widget_part: "0xc003"
           widget_revision: 0
         datasheet_contracts: [docs/datasheets/mgras-hq4.md]
-        sources: [docs/designs/2026-09-24-mgras-family-architecture.md]
+        sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbowdevs lines 22 and 40: vendor SGI5 0x02aa, product IMPACT 0xc003 ImpactSR"]
         notes: "The widget identity register answers manufacturer 0x2aa and part 0xc003, the ImpactSR identity OpenBSD's xbowdevs and Linux's IMPACTSR_XTALK_MFGR/PART expect of every HQ4 board. The widget revision is not captured for this population: 0 is a placeholder matching the QEMU device's own default, not a decoded hardware revision. QEMU's mgras preset answers these values from the device itself; the catalogue record does not drive them."
 
     connections:
