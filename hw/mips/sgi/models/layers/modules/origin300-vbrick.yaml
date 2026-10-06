@@ -62,7 +62,7 @@ layer:
         system_controller: {kind: l1}
         parent: vbrick
         provenance: vendor-document
-        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
         sources: ["007-4264-002 printed pages 52 and 54"]
       - id: v12
         name: VPro V12 board

@@ -346,7 +346,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-0 second slot B"
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -378,7 +378,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-1 second slot D"
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -401,13 +401,13 @@
         "SN1 Hub (descriptive, from SGI reusing the Hub's identifiers for it)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/ip35-address-map.md",
-        "docs/datasheets/bedrock-processor-interface.md",
-        "docs/datasheets/bedrock-local-block.md",
-        "docs/datasheets/bedrock-network-interface.md",
-        "docs/datasheets/bedrock-io-interface.md",
-        "docs/datasheets/bedrock-memory-directory.md",
-        "docs/datasheets/bedrock-crossbar.md"
+        "qemu:docs/specs/sgi-ip35-address-map.rst",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb"
       ],
       "description": "The node controller: two processor interfaces, the I/O interface that is the XIO port, the local block, the network interface, the internal crossbar and the memory and directory interface. Its registers are XIO widget 1 of its own node, an 8 MB window with a local alias.",
       "hardware_kind": "bedrock",
@@ -762,7 +762,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/lucent-ohci.md"
+        "qemu:docs/specs/sgi-lucent-ohci.rst"
       ],
       "description": "The board's two USB ports at 00:05.0 on the IO-8 bus. Real Origin 300s report an AT&T/Lucent 0x11c1:0x5802 two-port controller at PCI revision 0x10, with OHCI revision 1.0 and legacy support.",
       "hardware_kind": "lucent-ohci",
@@ -830,7 +830,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/l1-controller.md"
+        "qemu:docs/specs/sgi-l1.rst"
       ],
       "description": "The per-chassis system controller: a packet protocol over the Bedrock's UART, not a register file. It runs whenever the chassis has mains power, shows \"L1 running\" before anything else is powered, powers the node up on command, multiplexes the operator console, and answers the display, board-identity and memory-module requests a guest sends.",
       "hardware_kind": "l1",
@@ -1002,7 +1002,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-0 second slot B"
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -1034,7 +1034,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-1 second slot D"
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -1057,13 +1057,13 @@
         "SN1 Hub (descriptive, from SGI reusing the Hub's identifiers for it)"
       ],
       "datasheet_contracts": [
-        "docs/datasheets/ip35-address-map.md",
-        "docs/datasheets/bedrock-processor-interface.md",
-        "docs/datasheets/bedrock-local-block.md",
-        "docs/datasheets/bedrock-network-interface.md",
-        "docs/datasheets/bedrock-io-interface.md",
-        "docs/datasheets/bedrock-memory-directory.md",
-        "docs/datasheets/bedrock-crossbar.md"
+        "qemu:docs/specs/sgi-ip35-address-map.rst",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb"
       ],
       "description": "The node controller: two processor interfaces, the I/O interface that is the XIO port, the local block, the network interface, the internal crossbar and the memory and directory interface. Its registers are XIO widget 1 of its own node, an 8 MB window with a local alias.",
       "hardware_kind": "bedrock",
@@ -1418,7 +1418,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/lucent-ohci.md"
+        "qemu:docs/specs/sgi-lucent-ohci.rst"
       ],
       "description": "The board's two USB ports at 00:05.0 on the IO-8 bus. Real Origin 300s report an AT&T/Lucent 0x11c1:0x5802 two-port controller at PCI revision 0x10, with OHCI revision 1.0 and legacy support.",
       "hardware_kind": "lucent-ohci",
@@ -1486,7 +1486,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/l1-controller.md"
+        "qemu:docs/specs/sgi-l1.rst"
       ],
       "description": "The per-chassis system controller: a packet protocol over the Bedrock's UART, not a register file. It runs whenever the chassis has mains power, shows \"L1 running\" before anything else is powered, powers the node up on command, multiplexes the operator console, and answers the display, board-identity and memory-module requests a guest sends.",
       "hardware_kind": "l1",
@@ -1801,7 +1801,7 @@
       "provenance": "observed-hardware",
       "role": "master",
       "sources": [
-        "docs/library/boot-logs.md, the Origin 300 captures (Nekochan threads 17314, 16724335, 16727514; IRIXnet thread 2737) and the Fuel dmesg",
+        "qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-io",
         "web:marc-openbsd-sgi-139223952727384 lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "web:nekonomicon-17314 IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"
       ],
@@ -2057,7 +2057,7 @@
       "provenance": "observed-hardware",
       "role": "master",
       "sources": [
-        "docs/library/boot-logs.md, the Origin 300 captures (Nekochan threads 17314, 16724335, 16727514; IRIXnet thread 2737) and the Fuel dmesg",
+        "qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-io",
         "web:marc-openbsd-sgi-139223952727384 lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15",
         "web:nekonomicon-17314 IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"
       ],

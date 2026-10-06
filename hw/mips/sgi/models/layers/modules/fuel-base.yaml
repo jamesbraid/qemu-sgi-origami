@@ -57,7 +57,7 @@ layer:
             IRIX 6.5.22 hinv -v reports HUB revision 2 for a revision G
             board. Both are software labels, not Bedrock register reads,
             and neither establishes a reset value or a universal revision.
-        datasheet_contracts: [docs/datasheets/bedrock-processor-interface.md, docs/datasheets/bedrock-local-block.md, docs/datasheets/bedrock-io-interface.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io]
         sources: ["007-4480-001 printed pages 127 to 130: power-on test components", "web:sgi-sh-fuel-repair-attempt PROM 6.201 inventory, Bedrock revision 2", "web:tingo-fuel-irix-console raw HTML lines 132 to 145: HUB revision 2"]
       - id: xbridge
         name: XBridge
@@ -133,7 +133,7 @@ layer:
             Its revision and unavailable subsystem fields are emulator
             compatibility choices; no Fuel PCI configuration dump confirms
             those bytes.
-        datasheet_contracts: [docs/datasheets/lucent-ohci.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-lucent-ohci.rst]
         sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312"]
       - id: graphics-connector
         name: graphics board connector
@@ -158,7 +158,7 @@ layer:
         system_controller: {kind: l1}
         provenance: vendor-document
         description: Dedicated diagnostic connection, separate from external serial ports.
-        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
         sources: ["007-4480-001 printed pages 6 and 127 to 130"]
     buses:
       - {id: sysad0, name: processor interface, kind: sysad, master: cpu0, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
