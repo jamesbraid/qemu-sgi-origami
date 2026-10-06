@@ -45,8 +45,8 @@ import shutil
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
-                      run_record, utc_now)
+from lib_prom import (BOOT_TIMEOUT_SECONDS, FIRMWARE_REL, FORK_ROOT, MACHINES,
+                      drive_console, run_record, utc_now)
 from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
 from lib_prom_mdk import PROM_SHA256, payload_identity_problems
 
@@ -61,8 +61,7 @@ SCRATCH_DISK_BYTES = 1 << 30
 
 # Boot to the menu is minutes under a contended host; fx loads in
 # seconds, the 100,000-block write-compare took 19s and the butterfly
-# read 4s. 840 keeps the usual 60s margin under the 900s meson timeout.
-BOOT_TIMEOUT_SECONDS = 840
+# read 4s, so lib_prom's shared boot timeout covers it.
 
 # Each step fires once, in order, on the first tail match after the
 # previous step -- fx reprints some prompts (>>, fx/exercise>) and the

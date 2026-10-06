@@ -76,8 +76,9 @@ import re
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
-                      file_sha256, fork_git_identity, utc_now)
+from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, MACHINES,
+                      drive_console, file_record, file_sha256,
+                      fork_git_identity, utc_now)
 
 
 # The miniroot kernel's own release banner, printed at kernel entry. The
@@ -188,8 +189,7 @@ KERNEL_SHA256 = (
 # miniroot kernel is a 12 MiB image the PROM fetches over SLIRP TFTP before
 # it even enters, so a larger margin than test_prom_sash's is kept, a
 # little under the meson timeout registered for this test in
-# mips64/meson.build (900s).
-BOOT_TIMEOUT_SECONDS = 840
+# mips64/meson.build (900s). lib_prom's shared boot timeout is that value.
 
 # tools/serial-console's own console driver, ported the same way
 # test_prom_sash.py ports it: each (pattern, response) fires once, the

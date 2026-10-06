@@ -22,6 +22,8 @@ DISK_REL = os.path.join('irix', '6.5.30',
                         'root-diags-origin300.qcow2')
 DISK_SHA256 = (
     '150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390')
+# Own value: a margin of 60s under the 960s meson timeout for this test,
+# above the shared 840s in lib_prom.py.
 BOOT_TIMEOUT_SECONDS = 900
 
 DRIVER_STEPS = (

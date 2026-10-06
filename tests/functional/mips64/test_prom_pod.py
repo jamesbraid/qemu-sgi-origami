@@ -28,8 +28,8 @@ import time
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test.asset import LocalAsset
 
-from lib_prom import (FORK_ROOT, file_sha256, run_record,
-                      utc_now)
+from lib_prom import (BOOT_TIMEOUT_SECONDS, FORK_ROOT, file_sha256,
+                      run_record, utc_now)
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
 from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
@@ -48,9 +48,8 @@ PROM_SHA256 = RELEASES[RELEASE]['prom_sha256']
 
 
 # Boot to the POD prompt is about two minutes under a contended host and
-# every command but memtest answers immediately; 840 keeps the usual 60s
-# margin under the 900s meson timeout.
-BOOT_TIMEOUT_SECONDS = 840
+# every command but memtest answers immediately, so lib_prom's shared
+# boot timeout covers it.
 
 PROMPT_RE = re.compile(rb"POD [A-Za-z]* ?(?:Cac|Dex|Unc)>[ \t]*")
 SWITCHES_RE = re.compile(rb"DIP switches \[[0-9a-fA-F]*\]:")

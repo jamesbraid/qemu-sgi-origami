@@ -15,6 +15,8 @@ from qemu_test import (LocalAsset, QemuSystemTest, skipBigDataTest,
                        skipIfMissingEnv, skipSlowTest)
 
 
+# Own value: a margin of 60s under the 960s meson timeout for this test,
+# above the shared 840s in lib_prom.py.
 BOOT_TIMEOUT_SECONDS = 900
 DRIVER_STEPS = (
     (r'Option\?', '1\n'),

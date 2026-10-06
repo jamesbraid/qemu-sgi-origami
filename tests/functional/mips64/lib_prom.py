@@ -37,6 +37,13 @@ FIRMWARE_SHA256 = ('c2c69bf33c375b43ec7ac511fab41ddf'
 FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 
+# How long a boot test waits for its console to reach the state it is
+# driving toward. 840 keeps the usual 60s margin under the 900s meson
+# timeout a test gets when mips64/meson.build does not register its own.
+# A test whose boot is measurably longer or shorter than that default
+# keeps its own BOOT_TIMEOUT_SECONDS and says why beside it.
+BOOT_TIMEOUT_SECONDS = 840
+
 # The -M fragment for each board a boot test in this directory starts.
 # debug-leds=off on the two origin200 entries: a real -bios boot runs
 # the PROM's own LED-lighting code, and turning the indicator off keeps
