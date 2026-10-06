@@ -148,8 +148,8 @@
  * Second-level masks use public OpenBSD if_xgereg.h offsets: PCIXB(x) =
  * 0x0800 + x, MACRB(x) = 0x2000 + x. Link change passes through
  * MAC_RMAC_ERR_MASK (leaf) and MAC_INT_MASK (RMAC block). Active-high masks
- * use DISABLE_ALL_INTRS_64 to mask all sources. GENERAL_INT_MASK only retains
- * IRIX xg writes for readback.
+ * use DISABLE_ALL_INTRS_64 to mask all sources. GENERAL_INT_MASK is the
+ * final gate over each block's aggregate bit.
  */
 #define PIC_INT_MASK             0x0808
 #define TX_TRAFFIC_MASK          0x08e8
@@ -2333,11 +2333,10 @@ static void test_xg_enable_path_link_via_block_masks(void)
 }
 
 /*
- * IRIX xg opens only PIC_INT_MASK and TXPIC_INT_MASK during bring-up. It
- * leaves GENERAL_INT_MASK, GPIO_INT_MASK, and the MAC masks at their all-ones
- * reset values. The GPIO link edge must nevertheless reach INTx through the
- * PIC block, appear in the raw GENERAL_INT_STATUS summary, and clear when xg
- * reads GPIO_INT_REG.
+ * Bring-up opens PIC_INT_MASK, TXPIC_INT_MASK, the GPIO UP leaf and the
+ * GENERAL TXPIC bit; the MAC masks stay at their all-ones reset values. The
+ * GPIO link edge then reaches INTx through the PIC block, appears in the raw
+ * GENERAL_INT_STATUS summary, and clears when the driver reads GPIO_INT_REG.
  */
 static void test_xg_bringup_pic_summary_serviced(void)
 {
@@ -2356,6 +2355,8 @@ static void test_xg_bringup_pic_summary_serviced(void)
 
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
+    pif_writeq(&t, GPIO_INT_MASK, ~GPIO_INT_MASK_LINK_UP);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
 
     g_assert_false(xframe_intx_asserted(t.dev));
     pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
@@ -2399,9 +2400,10 @@ static void test_scheduled_interrupt_feeds_watchdog(void)
 
     xframe_start(&t);
 
-    /* Open the two masks xg programs; GENERAL_INT_MASK stays at reset. */
+    /* Open the PIC and TXPIC masks and the GENERAL TXPIC bit. */
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
 
     /*
      * Arm the scheduled interrupt as xg does: write enable and a period.
@@ -2466,8 +2468,56 @@ static void test_scheduled_interrupt_feeds_watchdog(void)
     xframe_stop(&t);
 }
 
-/* GENERAL_INT_MASK retains readback state but does not mask xg's source. */
-static void test_general_mask_is_readback_only(void)
+/*
+ * GENERAL_INT_MASK is the final gate: all ones hides a pending source without
+ * acknowledging it, and clearing the bit delivers it. Both 32-bit halves are
+ * written separately, in either order.
+ */
+static void test_general_mask_gates_pending_source(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+
+    g_assert_cmphex(pif_readq(&t, GENERAL_INT_MASK), ==,
+                    DISABLE_ALL_INTRS_64);
+
+    pif_writeq(&t, PIC_INT_MASK, 0);
+    pif_writeq(&t, TXPIC_INT_MASK, 0);
+
+    /* The source becomes pending while GENERAL still masks it (reset). */
+    pif_writeq(&t, SCHED_INT_CTRL,
+               SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    g_assert_cmphex(pif_readq(&t, PIC_INT_STATUS) & PIC_INT_TX, ==, PIC_INT_TX);
+
+    /* Unmask after pending: the latched source is delivered. Low half first. */
+    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
+    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    /* Mask again: the line drops, the leaf stays pending. */
+    pif_writel(&t, GENERAL_INT_MASK + 4, UINT32_MAX);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    pif_writel(&t, GENERAL_INT_MASK + 0, UINT32_MAX);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    g_assert_cmphex(pif_readq(&t, PIC_INT_STATUS) & PIC_INT_TX, ==, PIC_INT_TX);
+
+    /* Reassert, this time with the high half first. */
+    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
+    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    /* Acknowledging the leaf drops the line. */
+    pif_writel(&t, TXPIC_INT_REG + 4, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    xframe_stop(&t);
+}
+
+/* Only the GENERAL bit of the pending source's own block gates it. */
+static void test_general_mask_bit_is_per_source(void)
 {
     XframeTest t;
 
@@ -2475,34 +2525,15 @@ static void test_general_mask_is_readback_only(void)
 
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Exercise the register's two supported 32-bit halves explicitly. */
-    pif_writel(&t, GENERAL_INT_MASK + 0, UINT32_MAX);
-    pif_writel(&t, GENERAL_INT_MASK + 4, UINT32_MAX);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_RXTRAFFIC);
 
     pif_writeq(&t, SCHED_INT_CTRL,
                SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
     qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    pif_writel(&t, GENERAL_INT_MASK + 0, UINT32_MAX);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    pif_writel(&t, GENERAL_INT_MASK + 4, UINT32_MAX);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    pif_writel(&t, TXPIC_INT_REG + 4, 0);
     g_assert_false(xframe_intx_asserted(t.dev));
+
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    g_assert_true(xframe_intx_asserted(t.dev));
 
     xframe_stop(&t);
 }
@@ -2532,15 +2563,21 @@ static void xframe_backend_link_up_with_gpio_mask(uint64_t gpio_mask,
                              "{'name': 'n0', 'up': true}}");
     qtest_clock_step_next(t.qs->qts);
 
+    /*
+     * Only delivery is asserted. Whether silicon keeps an event raised while
+     * its leaf is masked, and delivers it on unmask, is unresolved.
+     */
     g_assert_cmpint(xframe_intx_asserted(t.dev), ==, expect_irq);
     xframe_tx_stop(&t);
 }
 
-/* GPIO_INT_MASK is retained for readback; PIC_INT_MASK gates LINK_UP. */
-static void test_gpio_link_up_mask_is_readback_only(void)
+/* GPIO_INT_MASK gates the LINK_UP leaf. */
+static void test_gpio_link_up_mask_gates_delivery(void)
 {
     xframe_backend_link_up_with_gpio_mask(~GPIO_INT_MASK_LINK_UP, true);
-    xframe_backend_link_up_with_gpio_mask(DISABLE_ALL_INTRS_64, true);
+    xframe_backend_link_up_with_gpio_mask(DISABLE_ALL_INTRS_64, false);
+    /* The DOWN bit does not gate an UP event. */
+    xframe_backend_link_up_with_gpio_mask(~GPIO_INT_MASK_LINK_DOWN, false);
 }
 
 static void xframe_backend_link_down_with_gpio_mask(uint64_t gpio_mask,
@@ -2562,11 +2599,12 @@ static void xframe_backend_link_down_with_gpio_mask(uint64_t gpio_mask,
     xframe_tx_stop(&t);
 }
 
-/* GPIO_INT_MASK is likewise readback-only for a LINK_DOWN edge. */
-static void test_gpio_link_down_mask_is_readback_only(void)
+/* GPIO_INT_MASK likewise gates the LINK_DOWN leaf. */
+static void test_gpio_link_down_mask_gates_delivery(void)
 {
     xframe_backend_link_down_with_gpio_mask(~GPIO_INT_MASK_LINK_DOWN, true);
-    xframe_backend_link_down_with_gpio_mask(DISABLE_ALL_INTRS_64, true);
+    xframe_backend_link_down_with_gpio_mask(DISABLE_ALL_INTRS_64, false);
+    xframe_backend_link_down_with_gpio_mask(~GPIO_INT_MASK_LINK_UP, false);
 }
 
 /* A masked MAC link source retains its existing read-clear behavior. */
@@ -2678,9 +2716,10 @@ static void test_xg_scheduled_interrupt_acks_via_write(void)
 
     xframe_start(&t);
 
-    /* Open the two masks xg programs; GENERAL_INT_MASK stays at reset. */
+    /* Open the PIC and TXPIC masks and the GENERAL TXPIC bit. */
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
 
     /* Arm the scheduled interrupt and step past one period, as xg does. */
     pif_writeq(&t, SCHED_INT_CTRL,
@@ -2724,8 +2763,8 @@ static void test_xg_scheduled_interrupt_acks_via_write(void)
 }
 
 /*
- * A transmit completion reaches INTx when its traffic block mask is open,
- * even while GENERAL_INT_MASK remains at reset as in the xg sequence.
+ * A transmit completion reaches INTx only when its traffic block mask and the
+ * GENERAL transmit-traffic bit are both open.
  */
 static void test_xg_enable_path_transmit_via_block_masks(void)
 {
@@ -2744,7 +2783,7 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
 
     xframe_tx_start(&t);
 
-    /* Leave GENERAL_INT_MASK at reset and open only the traffic block. */
+    /* GENERAL_INT_MASK resets to all ones; the block mask alone fails. */
     g_assert_cmphex(sock_pif_readq(&t, GENERAL_INT_MASK), ==,
                     DISABLE_ALL_INTRS_64);
     sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
@@ -2755,10 +2794,14 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
     len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
     g_assert_cmpint(len, ==, sizeof(frame));
 
-    /* The open block is sufficient for the pending completion to assert. */
-    g_assert_true(xframe_intx_asserted(t.dev));
+    /* The completion is latched but held back by the GENERAL mask. */
+    g_assert_false(xframe_intx_asserted(t.dev));
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
                     TX_TRAFFIC_FIFO0);
+
+    /* Opening the GENERAL transmit bit delivers the pending completion. */
+    sock_pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXTRAFFIC);
+    g_assert_true(xframe_intx_asserted(t.dev));
 
     /* The block mask gates the line. */
     sock_pif_writeq(&t, TX_TRAFFIC_MASK, DISABLE_ALL_INTRS_64);
@@ -5108,18 +5151,20 @@ int main(int argc, char **argv)
                    test_xg_bringup_pic_summary_serviced);
     qtest_add_func("xframe/scheduled-interrupt-feeds-watchdog",
                    test_scheduled_interrupt_feeds_watchdog);
-    qtest_add_func("xframe/gpio-link-up-mask-is-readback-only",
-                   test_gpio_link_up_mask_is_readback_only);
-    qtest_add_func("xframe/gpio-link-down-mask-is-readback-only",
-                   test_gpio_link_down_mask_is_readback_only);
+    qtest_add_func("xframe/gpio-link-up-mask-gates-delivery",
+                   test_gpio_link_up_mask_gates_delivery);
+    qtest_add_func("xframe/gpio-link-down-mask-gates-delivery",
+                   test_gpio_link_down_mask_gates_delivery);
     qtest_add_func("xframe/masked-mac-link-latch-clears-on-read",
                    test_masked_mac_link_latch_clears_on_read);
     qtest_add_func("xframe/redundant-adapter-en-does-not-relink",
                    test_redundant_adapter_en_does_not_relink);
     qtest_add_func("xframe/scheduled-interrupt-holds-carrier-steady",
                    test_scheduled_interrupt_holds_carrier_steady);
-    qtest_add_func("xframe/general-mask-is-readback-only",
-                   test_general_mask_is_readback_only);
+    qtest_add_func("xframe/general-mask-gates-pending-source",
+                   test_general_mask_gates_pending_source);
+    qtest_add_func("xframe/general-mask-bit-is-per-source",
+                   test_general_mask_bit_is_per_source);
     qtest_add_func("xframe/xg-scheduled-interrupt-acks-via-write",
                    test_xg_scheduled_interrupt_acks_via_write);
     qtest_add_func("xframe/xg-enable-path-transmit-via-block-masks",

@@ -892,15 +892,18 @@ static void test_combined_interrupts(const void *data)
                  INT_HOST_IO_VIEW_NODE0 | XFRAME_IRQ_NUMBER);
     qtest_writel(qts, BRIDGE_INT_MODE, 0);
 
-    /* Open only the two PIC masks xg programs, using 32-bit cycles. */
-    irq_win_writel(qts, GENERAL_INT_MASK + 0, UINT32_MAX);
-    irq_win_writel(qts, GENERAL_INT_MASK + 4, UINT32_MAX);
+    /*
+     * Open the GENERAL, PIC, TXPIC and GPIO LINK_UP masks, using 32-bit
+     * cycles. Each is active high and resets to all ones.
+     */
+    irq_win_writel(qts, GENERAL_INT_MASK + 0, 0);
+    irq_win_writel(qts, GENERAL_INT_MASK + 4, 0);
     irq_win_writel(qts, PIC_INT_MASK + 0, 0);
     irq_win_writel(qts, PIC_INT_MASK + 4, 0);
     irq_win_writel(qts, TXPIC_INT_MASK + 0, 0);
     irq_win_writel(qts, TXPIC_INT_MASK + 4, 0);
     irq_win_writel(qts, GPIO_INT_MASK + 0, UINT32_MAX);
-    irq_win_writel(qts, GPIO_INT_MASK + 4, UINT32_MAX);
+    irq_win_writel(qts, GPIO_INT_MASK + 4, ~GPIO_INT_LINK_UP_HIGH);
 
     irq_win_writel(qts, ADAPTER_CONTROL + 0, 0);
     irq_win_writel(qts, ADAPTER_CONTROL + 4, ADAPTER_EN_HIGH);

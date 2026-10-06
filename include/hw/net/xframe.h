@@ -130,16 +130,16 @@ struct XframeState {
     uint64_t xmsi_address;      /* MSI address / byte-swap scratch */
     uint64_t sw_reset;          /* reset-lane control (key is write-only) */
     uint64_t adapter_control;   /* ADAPTER_EN, LED, EOI, wait-int, ECC */
-    uint64_t general_int_mask;  /* readback only for a fresh device */
+    uint64_t general_int_mask;  /* GENERAL_INT_MASK: final INTx gate */
     /*
      * Active-high leaf and block interrupt masks. These gate the modelled
-     * sources; GENERAL_INT_MASK does not gate INTx on a fresh device. All
-     * reset to all-ones.
+     * sources; GENERAL_INT_MASK gates their aggregate bits. All reset to
+     * all-ones.
      */
     uint64_t pic_int_mask;      /* PIC_INT_MASK: gates the GPIO link source */
     uint64_t txpic_int_mask;    /* TXPIC_INT_MASK: scheduled source leaf */
     uint64_t rxpic_int_mask;    /* RXPIC_INT_MASK (no modelled src) */
-    uint64_t gpio_int_mask;     /* readback only for a fresh device */
+    uint64_t gpio_int_mask;     /* GPIO_INT_MASK: gates the link leaves */
     uint64_t tx_traffic_mask;   /* TX_TRAFFIC_MASK: gates TX_TRAFFIC_INT */
     uint64_t rx_traffic_mask;   /* RX_TRAFFIC_MASK: gates RX_TRAFFIC_INT */
     uint64_t mac_int_mask;      /* MAC_INT_MASK: gates RMAC roll-up */

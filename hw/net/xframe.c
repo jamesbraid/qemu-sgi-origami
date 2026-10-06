@@ -401,13 +401,17 @@ static bool xframe_link_pending(XframeState *s)
  * OpenBSD xge uses. Linux services it the same way (s2io_txpic_intr_handle
  * reads pic_int_status for PIC_INT_GPIO, then gpio_int_reg for LINK_UP).
  *
- * IRIX xg opens PIC_INT_MASK but leaves GPIO_INT_MASK at its all-ones reset,
- * yet the link source reaches its ISR. Gate the source on PIC_INT_GPIO alone
- * and retain GPIO_INT_MASK for readback.
+ * GPIO_INT_MASK gates the matching UP and DOWN leaf bits (active high, reset
+ * all-ones), and PIC_INT_MASK's PIC_INT_GPIO bit gates the roll-up (Linux
+ * s2io.c s2io_txpic_intr_handle and its link-up unmask sequence). An event
+ * raised while its leaf bit is masked stays latched in GPIO_INT_REG and is
+ * delivered once the bit is cleared. Whether silicon retains it is OPEN in
+ * the datasheet.
  */
 static bool xframe_gpio_link_pending(XframeState *s)
 {
-    return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS) != 0) &&
+    return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS &
+             ~s->gpio_int_mask) != 0) &&
            !(s->pic_int_mask & XFRAME_PIC_INT_GPIO);
 }
 
@@ -430,8 +434,9 @@ static bool xframe_sched_int_pending(XframeState *s)
 
 /*
  * Recompute the level-sensitive INTx line from each source's block masks.
- * GENERAL_INT_MASK does not gate delivery: IRIX xg leaves it at its all-ones
- * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK.
+ * GENERAL_INT_MASK is the final gate: each source also needs its GENERAL
+ * aggregate bit clear (active high, reset all-ones). Masking lowers the line
+ * without clearing the pending leaf, and unmasking raises it again.
  *
  * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
  * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
@@ -449,6 +454,11 @@ static void xframe_update_irq(XframeState *s)
     bool link_pending = xframe_link_pending(s);
     bool pic_pending = xframe_gpio_link_pending(s) ||
                        xframe_sched_int_pending(s);
+
+    rx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
+    tx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXTRAFFIC);
+    link_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXMAC);
+    pic_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXPIC);
 
     pci_set_irq(PCI_DEVICE(s),
                 rx_pending || tx_pending || link_pending || pic_pending);
@@ -1420,11 +1430,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          */
         return;
     case XFRAME_GENERAL_INT_MASK:
-        /*
-         * Retained for readback. IRIX xg leaves this at reset and enables the
-         * interrupt sources it uses through their block masks.
-         */
+        /* The final gate on every source's aggregate bit. Recompute. */
         s->general_int_mask = full;
+        xframe_update_irq(s);
         return;
     case XFRAME_TX_TRAFFIC_MASK:
         /* Second-level mask: gates TX_TRAFFIC_INT -> INTx. Recompute. */
@@ -1461,12 +1469,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_update_irq(s);
         return;
     case XFRAME_GPIO_INT_MASK:
-        /*
-         * The model keeps this for readback only and gates the link source
-         * on PIC_INT_GPIO; the datasheet has this mask gate the GPIO
-         * leaves, so the two differ here.
-         */
+        /* Gates the GPIO UP and DOWN leaves. Recompute. */
         s->gpio_int_mask = full;
+        xframe_update_irq(s);
         return;
     case XFRAME_TXPIC_INT_MASK:
         /*
@@ -3337,8 +3342,8 @@ static int xframe_post_load(void *opaque, int version_id)
  * pending TX_TRAFFIC_INT completion status feed xframe_update_irq, so a
  * migrated target that lost them would recompute a wrong INTx line; the
  * PIC/GPIO-block link path IRIX xg uses (gpio_int_reg, the link-state
- * status, and gpio_int_mask, retained for readback; pic_int_mask's
- * PIC_INT_GPIO bit gates delivery); the link-up timer; and the scheduled
+ * status, and gpio_int_mask, which gates the link leaves; pic_int_mask's
+ * PIC_INT_GPIO bit gates the roll-up); the link-up timer; and the scheduled
  * interrupt: SCHED_INT_CTRL (the register the driver arms it with), the
  * sched_int_pending latch (which also feeds the INTx recompute),
  * sched_int_armed (whether an arm is actually outstanding, see
