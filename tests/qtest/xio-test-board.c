@@ -21,7 +21,7 @@
 #include "system/system.h"
 
 /*
- * hw/misc/sgi-xio-test-target.c declares this type entirely inside its own
+ * fixtures/sgi-xio-test-target.c declares this type entirely inside its own
  * source file; it has no header because nothing before this file has needed
  * to name it. Only the string is needed here, to create one by type name.
  */

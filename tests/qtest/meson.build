@@ -288,19 +288,18 @@ sn1_xbridge_qtests = \
     ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-xbridge-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sn1_xbridge_qtests = []
-elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
+elif not config_all_devices.has_key('CONFIG_PCI')
   sn1_xbridge_qtests = ['sn1-xbridge-xbow-test']
 elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
-     not config_all_devices.has_key('CONFIG_SGI_IOMMU_NOTIFIER_TEST') or \
      not config_all_devices.has_key('CONFIG_IOMMU_TESTDEV')
   sn1_xbridge_qtests = ['sn1-xbridge-chip-test',
                         'sn1-xbridge-xbow-test']
 endif
 
 sn1_pci_expansion_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') and
+  (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-pci-expansion-module-test', 'sgi-pci-expansion-ni-test'] : [])
@@ -323,21 +322,21 @@ endif
 # omit it where that fixture is not present in a minimal device build.
 sn0_xbow_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-xbow-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sn0_xbow_qtests = []
 endif
 
 sn0_router_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
     ['sn0-router-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_ROUTER_TEST')
+if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sn0_router_qtests = []
 endif
 
 sn0_xbow_transport_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
     ['sn0-xbow-transport-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XBOW_TRANSPORT_TEST')
+if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sn0_xbow_transport_qtests = []
 endif
 
@@ -347,8 +346,7 @@ endif
 # the merged file needs both guards since it exercises fixtures built
 # under each.
 sgi_board_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') and
-   config_all_devices.has_key('CONFIG_SGI_XIO_BOARD_TEST') ?
+  (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['sgi-board-test'] : [])
 
 # Cards that ship behind a Bridge, on the libqos head: one Bridge and the
@@ -361,7 +359,7 @@ sgi_bridge_card_qtests = \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \
-   not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
+   not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
   sgi_bridge_card_qtests = []
 endif
 
@@ -375,7 +373,7 @@ sn1_board_qtests = \
     ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
     ['sn1-bedrock-md-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_COMMAND_PORT_TEST') ?
+  (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['sgi-command-port-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_IO') ?
     ['sn1-bedrock-io-test'] : []) + \
@@ -468,7 +466,7 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test'] + \
-  (config_all_devices.has_key('CONFIG_SGI_HEART_XTALK_TEST') and
+  (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['sgi-heart-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?

@@ -307,29 +307,6 @@ config SGI_IOC3
     select SGI_IOC3_KBC
     select SGI_IOC3_PARALLEL
 
-config SGI_ROUTER_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_SN0
-    select SGI_ROUTER
-
-config SGI_DMA_WORD_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_ODYSSEY
-
-config SGI_HUB_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_SN0
-    select SGI_HUB
-
-# A graphics head stand-in: returns credits when a qtest says so.
-config SGI_PI_GFX_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_PI_GFX
-
 config SGI_ROUTER
     bool
     select ONEWIRE
@@ -369,27 +346,9 @@ config SGI_ODYSSEY
     select SGI_PI_GFX
     select SGI_XIO_BOARD
 
-config SGI_BRIDGE_DMA_TEST
-    bool
-    select SGI_DMA_BUFFER
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && PCI
-
 config SGI_L1
     bool
     default y if SGI_DEVICES
-
-config SGI_XIO_TEST_TARGET
-    bool
-    select SGI_XIO_PORT
-    select SGI_BEDROCK_IO
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES
-
-config SGI_IOMMU_NOTIFIER_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES
 
 config SGI_BEDROCK_NI
     bool
@@ -429,22 +388,10 @@ config SGI_BEDROCK
     # The node's one network port takes a cable, as the Hub's does.
     select SGI_NET_CABLE
 
-config SGI_XBOW_TRANSPORT_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_SN0
-    select SGI_XBOW
-
 # The command-port framer is a plain object, not a device in its own
 # right; an owner selects it. sgi-kona will be the first real owner.
 config SGI_COMMAND_PORT
     bool
-
-config SGI_COMMAND_PORT_TEST
-    bool
-    default y if TEST_DEVICES
-    depends on TEST_DEVICES
-    select SGI_COMMAND_PORT
 
 # InfiniteReality/KONA's own port roles and selector tables: data only,
 # no device or MemoryRegion of its own. sgi-kona increment 2 selects
@@ -453,12 +400,6 @@ config SGI_COMMAND_PORT_TEST
 config SGI_KONA_PORTS
     bool
     select SGI_COMMAND_PORT
-
-config SGI_HEART_XTALK_TEST
-    bool
-    default y if SGI_DEVICES
-    depends on TEST_DEVICES && SGI_DEVICES
-    select SGI_XBOW
 
 config MEMORY_TRANSACTION_TEST
     bool

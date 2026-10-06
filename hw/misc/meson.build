@@ -37,21 +37,14 @@ system_ss.add(when: 'CONFIG_K230', if_true: files('k230_ddr.c'))
 system_ss.add(when: 'CONFIG_MCHP_PFSOC_DMC', if_true: files('mchp_pfsoc_dmc.c'))
 system_ss.add(when: 'CONFIG_MCHP_PFSOC_IOSCB', if_true: files('mchp_pfsoc_ioscb.c'))
 system_ss.add(when: 'CONFIG_MCHP_PFSOC_SYSREG', if_true: files('mchp_pfsoc_sysreg.c'))
-system_ss.add(when: 'CONFIG_SGI_BRIDGE_DMA_TEST', if_true: files('sgi-bridge-dma-test.c'))
 system_ss.add(when: 'CONFIG_SGI_ELSC', if_true: files('sgi-elsc.c'))
 system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
               if_true: files('sgi-sn0-module-management.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
-system_ss.add(when: 'CONFIG_SGI_HUB_TEST', if_true: files('sgi-hub-test.c'))
-system_ss.add(when: 'CONFIG_SGI_DMA_WORD_TEST', if_true: files('sgi-dma-word-test.c'))
-system_ss.add(when: 'CONFIG_SGI_PI_GFX_TEST',
-              if_true: files('sgi-pi-gfx-test-head.c'))
 system_ss.add(when: 'CONFIG_SGI_BOARD_RECORD',
               if_true: files('sgi-board-record.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
-system_ss.add(when: 'CONFIG_SGI_IOMMU_NOTIFIER_TEST', if_true: files('sgi-iommu-notifier-test.c'))
 system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
-system_ss.add(when: 'CONFIG_SGI_ROUTER_TEST', if_true: files('sgi-router-test.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_ODYSSEY', if_true: files('sgi-odyssey.c'))
@@ -63,7 +56,6 @@ system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-texture.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-dma.c'))
-system_ss.add(when: 'CONFIG_SGI_XIO_TEST_TARGET', if_true: files('sgi-xio-test-target.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_PRCI', if_true: files('sifive_e_prci.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_AON', if_true: files('sifive_e_aon.c'))
@@ -222,34 +214,46 @@ system_ss.add(when: 'CONFIG_SGI_BEDROCK_FLASH',
 system_ss.add(when: 'CONFIG_SGI_BEDROCK',
               if_true: files('sgi-bedrock.c', 'sgi-bedrock-pi.c'))
 
-system_ss.add(when: 'CONFIG_SGI_XBOW_TRANSPORT_TEST', if_true: files('sgi-xbow-transport-test.c'))
-
 system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT', if_true: files('sgi-command-port.c'))
-system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT_TEST',
-              if_true: files('sgi-command-port-test.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA_PORTS', if_true: files('sgi-kona-ports.c'))
 system_ss.add(when: 'CONFIG_SGI_DEVICES', if_true: files('sgi-heart.c'))
-system_ss.add(when: 'CONFIG_SGI_HEART_XTALK_TEST',
-              if_true: files('sgi-heart-xtalk-test.c'))
+
+# Qtest-only SGI devices. Each model they exercise is selected by
+# CONFIG_SGI_TEST_FIXTURES, and each file is also gated on the machine
+# or bus it only makes sense with.
+system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_PCI'],
+              if_true: files('../../tests/qtest/fixtures/sgi-bridge-dma-test.c'))
+system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_ODYSSEY'],
+              if_true: files('../../tests/qtest/fixtures/sgi-dma-word-test.c'))
+system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_PI_GFX'],
+              if_true: files('../../tests/qtest/fixtures/sgi-pi-gfx-test-head.c'))
+system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_SN0'],
+              if_true: files('../../tests/qtest/fixtures/sgi-hub-test.c',
+                             '../../tests/qtest/fixtures/sgi-router-test.c',
+                             '../../tests/qtest/fixtures/sgi-xbow-transport-test.c'))
+system_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
+              if_true: files('../../tests/qtest/fixtures/sgi-command-port-test.c',
+                             '../../tests/qtest/fixtures/sgi-heart-xtalk-test.c',
+                             '../../tests/qtest/fixtures/sgi-iommu-notifier-test.c',
+                             '../../tests/qtest/fixtures/sgi-xio-test-target.c'))
 
 system_ss.add(when: 'CONFIG_MEMORY_TRANSACTION_TEST',
               if_true: files('memory-transaction-test.c'))
 
 system_ss.add(when: 'CONFIG_SGI_BIC_BOARD_INTERFACE',
               if_true: files('sgi-bic-board-interface.c'))
-system_ss.add(when: ['CONFIG_SGI_BIC_BOARD_INTERFACE', 'CONFIG_TEST_DEVICES'],
+system_ss.add(when: ['CONFIG_SGI_BIC_BOARD_INTERFACE', 'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/bic-board-interface-fixture.c'))
 
-system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_TEST_DEVICES'],
+system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/l1-query-routing-fixture.c'))
 
-system_ss.add(when: ['CONFIG_SGI_BOARD_TEST', 'CONFIG_SGI_SN1',
-                     'CONFIG_TEST_DEVICES'],
+system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_SN1'],
               if_true: files('../../tests/qtest/sgi-pci-expansion-ni-fixture.c'))
 
 system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_SGI_BIC_BOARD_INTERFACE',
-                     'CONFIG_TEST_DEVICES'],
+                     'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/l1-bic-startup-fixture.c'))
 
-system_ss.add(when: ['CONFIG_SGI_KONA', 'CONFIG_TEST_DEVICES'],
+system_ss.add(when: ['CONFIG_SGI_KONA', 'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/kona-read-fixture.c'))
