@@ -254,7 +254,7 @@
 #define ODSY_STATUS0 0x1064
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_FLCTL_CONFIG 0x1070
-#define ODSY_SW_SYNC 0x107c
+#define ODSY_SW_TOKEN 0x107c
 #define ODSY_NIC_PROM 0x10d8
 #define ODSY_NIC_KERNEL 0x10dc
 
@@ -1877,7 +1877,7 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
     case ODSY_CFIFO_SELFTEST:
     case ODSY_MEMORY_CONFIG:
     case ODSY_FLCTL_CONFIG:
-    case ODSY_SW_SYNC:
+    case ODSY_SW_TOKEN:
     case ODSY_NIC_PROM:
     case ODSY_NIC_KERNEL:
     case ODSY_BUZZ_1:
@@ -2081,8 +2081,8 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     case ODSY_FLCTL_CONFIG:
         value = s->flctl_config;
         break;
-    case ODSY_SW_SYNC:
-        value = s->sw_sync;
+    case ODSY_SW_TOKEN:
+        value = s->sw_token;
         break;
     case ODSY_BUZZ_1:
         value = s->buzz[0];
@@ -9252,8 +9252,8 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
     case ODSY_FLCTL_CONFIG:
         s->flctl_config = value;
         break;
-    case ODSY_SW_SYNC:
-        s->sw_sync = value;
+    case ODSY_SW_TOKEN:
+        s->sw_token = value;
         break;
     case ODSY_BUZZ_1:
         s->buzz[0] = value;
@@ -9504,7 +9504,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->intr_flags = ODSY_INTR_FIFO_LOW_WATER;
     s->intr_enable = 0;
     s->flctl_config = ODSY_FLCTL_CONFIG_RESET;
-    s->sw_sync = 0;
+    s->sw_token = 0;
     s->route_dest_upper = 0;
     s->route_dest_lower = 0;
     s->route_vectors = 0;
@@ -10395,7 +10395,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(intr_flags, SGIOdysseyState),
         VMSTATE_UINT32(intr_enable, SGIOdysseyState),
         VMSTATE_UINT32(flctl_config, SGIOdysseyState),
-        VMSTATE_UINT32(sw_sync, SGIOdysseyState),
+        VMSTATE_UINT32(sw_token, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_upper, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_lower, SGIOdysseyState),
         VMSTATE_UINT32(route_vectors, SGIOdysseyState),
