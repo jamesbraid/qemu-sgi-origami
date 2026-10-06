@@ -688,6 +688,15 @@ static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
     return MEMTX_ERROR;
 }
 
+/* The forwarding hop a window cycle into @space takes. */
+static SGIPioForward *sgi_bridge_forward(SGIBridgeState *s,
+                                         AddressSpace *space)
+{
+    assert(space == &s->pci_io_as || space == &s->pci_mmio_as);
+    return space == &s->pci_io_as ? &s->pci_io_forward
+                                   : &s->pci_mmio_forward;
+}
+
 /* Raw PCI bytes are packed according to the programmed-I/O swap bit. */
 /*
  * One corrected window cycle of up to four bytes: a byte, halfword or word,
@@ -711,8 +720,8 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
     MemTxResult result;
 
     assert(size <= sizeof(bytes));
-    result = address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes,
-                                size);
+    result = sgi_pio_forward_read(sgi_bridge_forward(s, space), target,
+                                  MEMTXATTRS_UNSPECIFIED, bytes, size);
     *value = swap && size == 4 ? (uint32_t)ldl_le_p(bytes) :
              ldn_be_p(bytes, size);
     return sgi_bridge_window_failed(s, device, space, target, result);
@@ -764,8 +773,9 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
         uint8_t bytes[8] = { 0 };
         MemTxResult result;
 
-        result = address_space_read(space, base + addr,
-                                    MEMTXATTRS_UNSPECIFIED, bytes, 8);
+        result = sgi_pio_forward_read(sgi_bridge_forward(s, space),
+                                      base + addr, MEMTXATTRS_UNSPECIFIED,
+                                      bytes, 8);
         *value = (dev & DEV_SWAP_PROGRAMMED) ? ldq_le_p(bytes)
                                              : ldq_be_p(bytes);
         return sgi_bridge_window_failed(s, slot, space, base + addr, result);
@@ -803,9 +813,10 @@ static void sgi_bridge_window_write_word(SGIBridgeState *s,
         stn_be_p(bytes, size, val);
     }
     sgi_bridge_window_failed(s, device, space, target,
-                             address_space_write(space, target,
-                                                 MEMTXATTRS_UNSPECIFIED,
-                                                 bytes, size));
+                             sgi_pio_forward_write(sgi_bridge_forward(s, space),
+                                                   target,
+                                                   MEMTXATTRS_UNSPECIFIED,
+                                                   bytes, size));
 }
 
 /*
@@ -830,9 +841,10 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
             stq_be_p(bytes, val);
         }
         sgi_bridge_window_failed(s, slot, space, base + addr,
-                                 address_space_write(space, base + addr,
-                                                     MEMTXATTRS_UNSPECIFIED,
-                                                     bytes, 8));
+                                 sgi_pio_forward_write(
+                                     sgi_bridge_forward(s, space),
+                                     base + addr, MEMTXATTRS_UNSPECIFIED,
+                                     bytes, 8));
         return;
     }
 
@@ -2464,6 +2476,10 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->pci_io, obj, "sgi-bridge.pci-io", 4 * GiB);
     address_space_init(&s->pci_mmio_as, &s->pci_mmio, "sgi-bridge.pci-mmio");
     address_space_init(&s->pci_io_as, &s->pci_io, "sgi-bridge.pci-io");
+    sgi_pio_forward_init(&s->pci_mmio_forward, &s->pci_mmio_as,
+                         "sgi-bridge.pci-mmio-forward");
+    sgi_pio_forward_init(&s->pci_io_forward, &s->pci_io_as,
+                         "sgi-bridge.pci-io-forward");
 
     /*
      * See the header comment on SGI_BRIDGE_PIO_XLATE_BASE for the evidence.
@@ -2589,6 +2605,8 @@ static void sgi_bridge_unrealize(DeviceState *dev)
         address_space_destroy(&s->dma[slot].as);
     }
     sgi_dma_placement_destroy(&s->placement);
+    sgi_pio_forward_destroy(&s->pci_io_forward);
+    sgi_pio_forward_destroy(&s->pci_mmio_forward);
     address_space_destroy(&s->pci_io_as);
     address_space_destroy(&s->pci_mmio_as);
     address_space_destroy(&s->fabric_as);

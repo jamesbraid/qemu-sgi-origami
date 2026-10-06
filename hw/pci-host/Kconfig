@@ -119,6 +119,7 @@ config SGI_DMA_PLACEMENT
 
 config SGI_BRIDGE
     bool
+    select SGI_PIO_FORWARD
     select SGI_DMA_PLACEMENT
     select ONEWIRE
     select PCI

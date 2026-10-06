@@ -308,9 +308,13 @@ source macio/Kconfig
 config QCOM_QDSP6SS_CLK
     bool
 
+config SGI_PIO_FORWARD
+    bool
+
 config SGI_HUB
     bool
     select SGI_PI_GFX
+    select SGI_PIO_FORWARD
     select AT24C
     select ONEWIRE
     select PCF8584

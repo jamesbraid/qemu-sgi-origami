@@ -39,6 +39,7 @@ system_ss.add(when: 'CONFIG_SGI_ELSC', if_true: files('sgi-elsc.c'))
 system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
               if_true: files('sgi-sn0-module-management.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
+system_ss.add(when: 'CONFIG_SGI_PIO_FORWARD', if_true: files('sgi-pio-forward.c'))
 system_ss.add(when: 'CONFIG_SGI_BOARD_RECORD',
               if_true: files('sgi-board-record.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
