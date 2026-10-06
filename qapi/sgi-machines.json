@@ -1465,7 +1465,8 @@
 #
 # @argument: the QEMU argument form this line becomes
 #
-# @launcher-name: stable launch-tool endpoint name, when exposed by name
+# @launcher-name: stable launch-tool endpoint name, when exposed
+#     by name
 #
 # @line: the zero-based -serial position the machine reads this line
 #     from, given for Origin 300 and Fuel offerings, where a further
@@ -1705,6 +1706,9 @@
 # @clock-hz: core clock
 #
 # @cache-mib: secondary cache size
+#
+# @required-properties: CPU properties the launcher must set
+#     explicitly
 #
 # Since: 11.2
 ##
