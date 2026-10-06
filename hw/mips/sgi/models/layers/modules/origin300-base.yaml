@@ -623,7 +623,7 @@ layer:
           The fixed board route is ISP12160 INTA to head-F physical pin 1. Every
           pending-bit and processor destination after that pin is programmed by
           the guest.
-        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: scsi, as: "PCI INTA at 00:01.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 1", mechanism: wire }
@@ -637,7 +637,7 @@ layer:
         description: >-
           The IOC3 SuperIO block has a separate board output to head-F physical pin
           0. It does not share the Ethernet function's PCI INTA route.
-        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: ioc3, as: "SuperIO interrupt output", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 0", mechanism: wire }
@@ -651,7 +651,7 @@ layer:
         description: >-
           The IOC3 Ethernet PCI function asserts INTA at 00:04.0, wired to head-F
           physical pin 4 independently of the SuperIO output.
-        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: ioc3, as: "Ethernet PCI INTA at 00:04.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 4", mechanism: wire }
@@ -666,7 +666,7 @@ layer:
           The OHCI controller's INTA at 00:05.0 is wired to head-F physical pin 5.
           The observed Bedrock interrupt number 59 is a guest allocation, not board
           wiring.
-        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"]
         chain:
           - { at: usb, as: "PCI INTA at 00:05.0", mechanism: level }
           - { at: xbridge-bridge-f, as: "physical interrupt pin 5", mechanism: wire }

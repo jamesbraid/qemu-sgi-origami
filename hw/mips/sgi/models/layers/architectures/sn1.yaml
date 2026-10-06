@@ -13,7 +13,7 @@ layer:
       bits: "58:57"
       count: 4
       provenance: public-header
-      sources: ["openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113", "linux-ip35:9f613a321ea0 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"]
+      sources: ["openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113", "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"]
       notes: >-
         Unchanged from the Origin 200: two uncached-attribute bits the R10000-family
         processor drives beside the 40-bit physical address. The seven-space,

@@ -1110,7 +1110,7 @@
         "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
         "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
-        "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
+        "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"
       ]
     },
     {
@@ -1150,7 +1150,7 @@
         "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
         "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
-        "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
+        "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"
       ]
     },
     {
@@ -1190,7 +1190,7 @@
         "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
         "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
-        "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
+        "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"
       ]
     },
     {
@@ -1230,7 +1230,7 @@
         "web:marc-openbsd-sgi-125897882029839 lines 55 to 90",
         "web:marc-openbsd-sgi-139223952727384 lines 150 to 183",
         "openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411",
-        "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"
+        "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/pci/pci-sgipic.c"
       ]
     }
   ],
@@ -1610,7 +1610,7 @@
     "provenance": "public-header",
     "sources": [
       "openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113",
-      "linux-ip35:9f613a321ea0 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22",
+      "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22",
       "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"
     ]
   }
