@@ -2,9 +2,9 @@
 
 .. _sgi-baseio:
 
-======================================
+===================================
 SGI Origin 2000 BaseIO and BaseIO-G
-======================================
+===================================
 
 BaseIO is the standard XIO I/O board of the Origin 2000 and Onyx2: a
 Bridge joins it to a Crossbow, and one 32-bit PCI bus joins the Bridge

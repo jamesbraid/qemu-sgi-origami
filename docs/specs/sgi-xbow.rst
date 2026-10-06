@@ -2,9 +2,9 @@
 
 .. _sgi-xbow:
 
-====================================
+================================
 SGI Crossbow XIO crossbar (XBow)
-====================================
+================================
 
 Crossbow is the eight-link crossbar of the Origin 2000 and Onyx2
 modules and of the Origin 200 GIGAchannel cabinet. It routes packets

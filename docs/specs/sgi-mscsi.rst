@@ -2,9 +2,9 @@
 
 .. _sgi-mscsi:
 
-=================================
+================================
 SGI MSCSI four-channel XIO board
-=================================
+================================
 
 The MSCSI is SGI's XIO SCSI board for the Origin family: one Bridge
 with four QLogic ISP1040 SCSI controllers on its PCI bus. QEMU builds it

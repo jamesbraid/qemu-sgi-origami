@@ -692,6 +692,24 @@ web:
     obtain:
       url: null
       message_id: "<a47377f9.0401261309.38ca70ab@posting.google.com>"
+  openhci-1.0a:
+    title: "OpenHCI: Open Host Controller Interface Specification for USB, release 1.0a"
+    publisher: "Compaq, Microsoft, National Semiconductor"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://web.archive.org/web/20200518185527/https://www.getusb.info/resources/hcir1_0a.pdf
+      sha256: 588a27e934e3fd17ade596321d482ffb2269db17576293cd646065abd59f2a98
+  lucent-uss312-ds:
+    title: "USS-312 Two-Port PCI-to-USB OpenHCI Host Controller, Lucent advance data sheet, rev. 5, March 2000"
+    publisher: "Lucent Technologies"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://datasheetspdf.com/pdf/613977/Lucent/USS-312/1
+      sha256: 0752255bb111833180e57c8c8d09e12a5a18fd465e59a4bc755e63f7b23af5eb
   galles-spider-1997:
     title: "Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)"
     publisher: "IEEE Computer Society"
