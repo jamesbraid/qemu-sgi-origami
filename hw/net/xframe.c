@@ -40,6 +40,7 @@
 #include "net/checksum.h"
 #include "net/eth.h"
 #include "hw/net/net_tx_pkt.h"
+#include "system/replay.h"
 
 #include "qapi/error.h"
 #include "trace.h"
@@ -2152,7 +2153,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     s->defer_backend_rx = false;
     if (s->backend_rx_deferred) {
         s->backend_rx_deferred = false;
-        qemu_bh_schedule(s->rx_flush_bh);
+        replay_bh_schedule_event(s->rx_flush_bh);
     }
 }
 
@@ -2715,6 +2716,11 @@ static bool xframe_can_receive(NetClientState *nc)
     return owned;
 }
 
+/*
+ * Scheduled through record/replay: delivering a queued frame writes guest
+ * memory and raises an interrupt, so a replay has to do it at the same
+ * instruction its recording did.
+ */
 static void xframe_rx_flush(void *opaque)
 {
     XframeState *s = opaque;
