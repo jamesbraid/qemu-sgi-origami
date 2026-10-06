@@ -28,6 +28,7 @@
 #include "qemu/cutils.h"
 #include "qemu/units.h"
 #include "qemu/host-utils.h"
+#include "qemu/log.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "qapi/util.h"
@@ -69,6 +70,8 @@
 #include "system/blockdev.h"
 #include "system/qtest.h"
 #include "system/reset.h"
+#include "system/replay.h"
+#include "system/runstate.h"
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
@@ -288,6 +291,16 @@ struct SGIMachineState {
     bool debug_leds;
     bool junk_uart_present;
     uint8_t elsc_dip_switches;
+
+    /*
+     * Each Origin 2000 module controller's power output, by controller
+     * index; which have fallen since the bottom half that acts on a fall
+     * last ran; and whether it is scheduled.
+     */
+    bool *module_powered;
+    bool *module_power_fell;
+    unsigned int module_power_count;
+    bool module_power_bh_pending;
 
     /*
      * The Bedrock nodes, for a topology whose node kind is Bedrock: one
@@ -2680,6 +2693,72 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
 }
 
 /*
+ * A module controller removed power. "pwr c" restores it at once, and the
+ * power line handler resets the machine for that cold restart before this
+ * runs. What is still off here was powered down: with every module off the
+ * machine powers down. One module off while others run is not modelled:
+ * QEMU has no per-module power, so the machine keeps running and the event
+ * is logged.
+ */
+static void sgi_machine_module_power_bh(void *opaque)
+{
+    SGIMachineState *s = opaque;
+    unsigned int i, off = 0;
+
+    s->module_power_bh_pending = false;
+    for (i = 0; i < s->module_power_count; i++) {
+        s->module_power_fell[i] = false;
+        off += !s->module_powered[i];
+    }
+    if (off == s->module_power_count) {
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    } else if (off) {
+        qemu_log_mask(LOG_UNIMP, "sgi-sn: %u of %u modules powered off; "
+                      "powering off one module of several is not "
+                      "modelled\n", off, s->module_power_count);
+    }
+}
+
+/*
+ * A fall is carried out by the bottom half, after the controller's own
+ * sequence has finished. Power returning to a module whose fall has not
+ * been carried out yet is "pwr c", a cold restart, so the machine resets
+ * there and then: the bottom half is not migrated, and the restart must not
+ * depend on it. Power rising at any other time, as a reset or a migration
+ * load drives the line, is no event.
+ */
+static void sgi_machine_module_power(void *opaque, int n, int level)
+{
+    SGIMachineState *s = opaque;
+    bool was = s->module_powered[n];
+
+    s->module_powered[n] = level;
+    if (was && !level) {
+        s->module_power_fell[n] = true;
+        if (!s->module_power_bh_pending) {
+            s->module_power_bh_pending = true;
+            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                             sgi_machine_module_power_bh, s);
+        }
+    } else if (!was && level && s->module_power_fell[n]) {
+        s->module_power_fell[n] = false;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+/*
+ * A module reset holds every node in the module in reset. QEMU resets the
+ * whole machine, which is the module on a one-module Origin 2000; a rack
+ * of several modules resets them all.
+ */
+static void sgi_machine_module_reset(void *opaque, int n, int level)
+{
+    if (level) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+/*
  * One shared controller per module that names one: an MSC with one
  * PCF8584 adapter reflected into each of the module's nodes. The
  * adapter array is capacity SGI_O2000_ADAPTER_COUNT (every module
@@ -2695,6 +2774,9 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
 
     controllers = sgi_model_controller_array(t->controllers, &controller_count);
     modules = sgi_model_module_array(t->modules, &module_count);
+    s->module_power_count = controller_count;
+    s->module_powered = g_new(bool, controller_count);
+    s->module_power_fell = g_new0(bool, controller_count);
     for (controller_index = 0; controller_index < controller_count;
          controller_index++) {
         const SGIModelController *controller = controllers[controller_index];
@@ -2737,6 +2819,15 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                             module->initial_module_number);
         qdev_prop_set_string(dev, "model-serial", module->serial);
         qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
+        qdev_prop_set_bit(dev, "can-reset", true);
+        qdev_prop_set_bit(dev, "can-power", true);
+        s->module_powered[controller_index] = true;
+        qdev_connect_gpio_out_named(dev, "reset", 0,
+                                    qemu_allocate_irq(sgi_machine_module_reset,
+                                                      s, controller_index));
+        qdev_connect_gpio_out_named(dev, "power", 0,
+                                    qemu_allocate_irq(sgi_machine_module_power,
+                                                      s, controller_index));
         aux = serial_hd(sgi_machine_compute_serial_line(
             t, module_nodes[0], SN0_ELSC_CHARDEV));
         if (aux) {
