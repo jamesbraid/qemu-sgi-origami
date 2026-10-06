@@ -12,7 +12,6 @@
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
 #include "qemu/bswap.h"
-#include "qemu/rcu.h"
 #include "hw/pci/pci-64bit.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci-host/sgi-dma-placement.h"
@@ -106,41 +105,24 @@ static void sgi_dma_placement_reverse(uint8_t *dst, const uint8_t *src,
 }
 
 /*
- * The whole units of a long transfer, in one onward transfer and one
- * reversal. Each unit is what one naturally aligned access of the unit's
- * size would move, so the bytes match the per-access path exactly; partial
- * units at either end are left to it. Only an onward range that is RAM is
- * taken: anything else could see different access widths, and a packet
- * leg's far end alone knows where its bytes land, so both decline. The
- * check translates the onward range, so where it is not RAM every offered
- * step pays one extra translation before falling back.
+ * The whole units of a long transfer, reversed and passed on as one buffer.
+ * Each unit is what one naturally aligned access of the unit's size would
+ * move, so the bytes match the per-access path exactly; partial units at
+ * either end are left to it. The onward transfer is buffer-only: it moves
+ * what lies in RAM or what a region beyond, such as a node's inbound
+ * window, takes as a buffer, and stops where an ordinary access would be
+ * needed. The units that moved are consumed and the core makes the
+ * per-access steps for the rest, so anything beyond sees the accesses it saw
+ * before. Should the onward transfer stop inside a unit, the bytes of that
+ * unit it moved are moved again, unchanged, by the per-access step; see
+ * docs/devel/memory.rst. A packet leg's far end alone knows where its bytes
+ * land, so it declines.
  */
-static hwaddr sgi_dma_placement_buffer_span(SGIDMAPlacementTarget *t,
-                                            hwaddr addr, hwaddr len,
-                                            bool is_write, MemTxAttrs attrs)
+static bool sgi_dma_placement_buffer_ok(SGIDMAPlacementTarget *t, hwaddr addr,
+                                        hwaddr len)
 {
-    SGIDMAPlacementSet *set = t->set;
-    hwaddr span = QEMU_ALIGN_DOWN(len, t->unit);
-    hwaddr ram = span;
-    hwaddr xlat;
-    MemoryRegion *mr;
-
-    if (set->send || t->unit == 1 || (addr & (t->unit - 1)) || !span) {
-        return 0;
-    }
-    RCU_READ_LOCK_GUARD();
-    mr = address_space_translate(set->onward, addr, &xlat, &ram, is_write,
-                                 attrs);
-    if (!memory_access_is_direct(mr, is_write, attrs)) {
-        return 0;
-    }
-    span = QEMU_ALIGN_DOWN(MIN(span, ram), t->unit);
-    if (span) {
-        trace_sgi_dma_placement_buffer(memory_region_name(&t->mr),
-                                       is_write ? "write" : "read", addr,
-                                       span);
-    }
-    return span;
+    return !t->set->send && t->unit > 1 && !(addr & (t->unit - 1)) &&
+           len >= t->unit;
 }
 
 static hwaddr sgi_dma_placement_read_buffer(void *opaque, hwaddr addr,
@@ -149,14 +131,35 @@ static hwaddr sgi_dma_placement_read_buffer(void *opaque, hwaddr addr,
                                             MemTxResult *result)
 {
     SGIDMAPlacementTarget *t = opaque;
-    hwaddr span = sgi_dma_placement_buffer_span(t, addr, len, false, attrs);
+    uint8_t scratch[SGI_DMA_PLACEMENT_SCRATCH];
+    hwaddr span = QEMU_ALIGN_DOWN(len, t->unit);
+    hwaddr off, n, moved;
+    MemTxResult part;
 
-    if (span) {
-        *result = address_space_read(t->set->onward, addr, attrs, buffer,
-                                     span);
-        sgi_dma_placement_reverse(buffer, buffer, span, t->unit);
+    if (!sgi_dma_placement_buffer_ok(t, addr, len)) {
+        return 0;
     }
-    return span;
+    for (off = 0; off < span; off += moved) {
+        n = MIN(span - off, sizeof(scratch));
+        moved = QEMU_ALIGN_DOWN(address_space_read_buffer_only(t->set->onward,
+                                    addr + off, attrs, scratch, n, &part),
+                                t->unit);
+        if (!moved) {
+            break;
+        }
+        sgi_dma_placement_reverse((uint8_t *)buffer + off, scratch, moved,
+                                  t->unit);
+        *result |= part;
+        if (moved < n) {
+            off += moved;
+            break;
+        }
+    }
+    if (off) {
+        trace_sgi_dma_placement_buffer(memory_region_name(&t->mr), "read",
+                                       addr, off);
+    }
+    return off;
 }
 
 static hwaddr sgi_dma_placement_write_buffer(void *opaque, hwaddr addr,
@@ -165,18 +168,35 @@ static hwaddr sgi_dma_placement_write_buffer(void *opaque, hwaddr addr,
                                              MemTxResult *result)
 {
     SGIDMAPlacementTarget *t = opaque;
-    hwaddr span = sgi_dma_placement_buffer_span(t, addr, len, true, attrs);
     uint8_t scratch[SGI_DMA_PLACEMENT_SCRATCH];
-    hwaddr off, n;
+    hwaddr span = QEMU_ALIGN_DOWN(len, t->unit);
+    hwaddr off, n, moved;
+    MemTxResult part;
 
-    for (off = 0; off < span; off += n) {
+    if (!sgi_dma_placement_buffer_ok(t, addr, len)) {
+        return 0;
+    }
+    for (off = 0; off < span; off += moved) {
         n = MIN(span - off, sizeof(scratch));
         sgi_dma_placement_reverse(scratch, (const uint8_t *)buffer + off, n,
                                   t->unit);
-        *result |= address_space_write(t->set->onward, addr + off, attrs,
-                                       scratch, n);
+        moved = QEMU_ALIGN_DOWN(address_space_write_buffer_only(t->set->onward,
+                                    addr + off, attrs, scratch, n, &part),
+                                t->unit);
+        if (!moved) {
+            break;
+        }
+        *result |= part;
+        if (moved < n) {
+            off += moved;
+            break;
+        }
     }
-    return span;
+    if (off) {
+        trace_sgi_dma_placement_buffer(memory_region_name(&t->mr), "write",
+                                       addr, off);
+    }
+    return off;
 }
 
 /* Little-endian, so a value's bytes are the PCI bytes in address order. */
