@@ -67,16 +67,17 @@ Product identity
    * - CPU-side Crosstown board
      - 030-1264-001, "PCA XBOX EXTENSION BOARD O200"; board record
        ``XBOX_EXT`` rev C (``2G_MPLN`` rev B in the upgrade guide's example)
-     - established (108-0187-001 Tables 1-1 and 1-2, page 1-2;
+     - established (108-0187-001 Table 1-1, page 1-2;
        ``web:preterhuman-origin-200``; ``web:usenet-pigot-3edc9a71``)
    * - Cabinet midplane
      - 030-1380-002, "PCA XBOX MIDPLANE O200"
-     - established as a part identity by two seller listings; no capture
-       shows its board record
+     - inferred as a part identity: the number comes from seller listings
+       that are not registered sources; no capture shows its board record
    * - Cabinet Bridge revision
-     - widget revision 4 (Bridge rev D)
-     - established (108-0187-001 page 3-8; ``web:nekonomicon-16726704``;
-       ``web:preterhuman-origin-200``)
+     - Bridge revision 4, as printed (``ASIC BRIDGE Rev 4, (widget 8)``)
+     - established (108-0187-001 page 3-8; ``web:nekonomicon-16726704``).
+       The letter that revision corresponds to is not printed anywhere
+       and is not claimed
    * - Upgrade kits
      - ``HU-CONNECT-XBOX`` (module hardware), ``561-CHAS-XBOX`` (cables)
      - established (108-0187-001 Table 1-1)
@@ -162,8 +163,14 @@ unknown.
    * - 9
      - the module's IP29 Bridge (base I/O)
      - ``io1``, board ``MotherBoard``
-     - established: ``BASEIO ... Slot io1``, ``ASIC BRIDGE Rev 4, (widget
-       9)`` (``web:nekonomicon-16726704``)
+     - established by one capture: ``BASEIO ... Slot io1``, ``ASIC BRIDGE
+       Rev 4, (widget 9)`` (``web:nekonomicon-16726704``). The upgrade
+       guide's example listing conflicts: it shows ``BASEIO ... Slot
+       MotherBoard`` with ``ASIC BRIDGE Rev 3, (widget 8)`` beside the
+       cabinet's own widget 8 (108-0187-001 page 3-8). Two Bridges cannot
+       share widget 8 on one Crossbow, so the guide's example reads as a
+       composed listing, and the model follows the capture; the
+       base I/O Bridge revision (3 or 4) is unknown
    * - A
      - the module's Hub
      - the node's own slot (``n1``)
@@ -187,8 +194,9 @@ unknown.
 
 Physical XIO slots 11 to 15 correspond, as a set, to links B to F and
 positions ``io2`` to ``io6``; the one-to-one mapping is unknown. The four
-cabinet PCI slots are labelled 0 to 3 on the chassis and IRIX inventories
-number them from 0 (007-3708-002 printed page 135). That they are Bridge
+cabinet PCI slots are labelled 1 to 4 in the owner's guide figure
+(007-3708-002 Figure 1-5), and IRIX numbers PCI slots from 0
+(007-3708-002 printed page 135). That they are Bridge
 devices 0 to 3 is inferred from hardware-graph paths of the form
 ``io7/xbox_dualxtown/pci/0`` (``web:nekonomicon-16731033``).
 
@@ -216,7 +224,8 @@ Each item is real-hardware output unless it names another source.
   exact wiring is unknown; see :ref:`sgi-gigachannel-record-wiring`.
 - **Base I/O location.** With a cabinet the base I/O is
   ``/hw/module/1/slot/io1``; a plain Origin 200 reports ``slot/MotherBoard``.
-  Established (``web:nekonomicon-16726704``).
+  Established by one capture (``web:nekonomicon-16726704``); the upgrade
+  guide's example listing disagrees (see the link table above).
 - **Bridge inventory.** The PROM's ``hinv -v`` prints ``PCI_XIO Origin 200 IO
   Board, Module 1, Slot io7`` with ``ASIC BRIDGE Rev 4, (widget 8)``. The
   Crossbow itself does not appear as an inventory line in any capture.

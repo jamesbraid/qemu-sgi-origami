@@ -126,8 +126,8 @@ IMPACT family's configurations, from one geometry and one raster engine up,
 are described on the wiki page (``web:preterhuman-impact``), which also
 gives the Octane names SI, SI with texture memory (TRAM) and MXI. The exact
 chip counts and the 12 MiB figure are an approximation: the smallest board the
-stock IRIX software brings up, chosen from the project's reading of SGI's
-diagnostic image, and not stated by a public source. The
+stock IRIX software brings up, chosen as the smallest the stock IRIX software
+is known to bring up; no public source states the counts. The
 board's own part number and revision are not captured for this population, so
 the catalogue claims none.
 
