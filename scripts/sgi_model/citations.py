@@ -89,6 +89,11 @@ TOOL = re.compile(r"(^|[\s(`])tools/[a-z]")
 NICKNAMES = re.compile(
     r"\b(joint-buck|true-wombat|model-toad|humble-kiwi|whole-tetra|fancy-akita)\b")
 
+# Pointers that only turn up in comments: pull requests, run ids and
+# notebooks. Comments are free text, so they get the same scan as notes.
+COMMENT_POINTER = re.compile(
+    r"\b(PR|pull request|issue) ?#?\d+\b|\brun[- ]id\b|\bnotebooks?\b", re.I)
+
 # Fields whose prose the internal-pointer scan reads.
 NOTE_FIELDS = {"notes", "note", "reason", "evidence_gap", "description"}
 
@@ -145,6 +150,26 @@ def load_registry(models: pathlib.Path = MODELS) -> dict:
 
 def rst_labels(path: pathlib.Path) -> set[str]:
     return set(re.findall(r"^\.\. _([^:]+):\s*$", path.read_text(), re.M))
+
+
+def yaml_comments(text: str):
+    """Yield (line number, comment text) for every comment in a YAML file.
+
+    A comment starts at a "#" outside quotes that opens the line or follows
+    whitespace. Block-scalar prose is read as notes, so a "#" in one is at
+    worst scanned twice.
+    """
+    for number, line in enumerate(text.splitlines(), 1):
+        quote = ""
+        for index, char in enumerate(line):
+            if quote:
+                if char == quote:
+                    quote = ""
+            elif char in "\"'" and (index == 0 or line[index - 1] in " [{,:"):
+                quote = char
+            elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+                yield number, line[index:]
+                break
 
 
 def internal_pointers(text: str) -> list[str]:
@@ -271,7 +296,11 @@ def _walk(value, where: str, in_question: bool = False):
 def check_file(path: pathlib.Path, models: pathlib.Path, registry: dict,
                tree: pathlib.Path, report: Report) -> None:
     relative = path.relative_to(models).as_posix()
-    document = yaml.safe_load(path.read_text())
+    source = path.read_text()
+    for number, comment in yaml_comments(source):
+        if internal_pointers(comment) or COMMENT_POINTER.search(comment):
+            report.add("internal-note", relative, f"comment line {number}", comment)
+    document = yaml.safe_load(source)
     if not isinstance(document, dict):
         return
     table = document.pop("sources", None)
