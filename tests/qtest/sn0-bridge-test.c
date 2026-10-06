@@ -759,6 +759,7 @@ static void test_translation_entries_reset_clear(const void *data)
 #define DMA_REG_SOURCE          0x14
 #define DMA_REG_ADDRESS_HI      0x18   /* high 32 bits of the destination */
 #define DMA_REG_SOURCE_HI       0x1c   /* high 32 bits of the copy source */
+#define DMA_REG_REQ64           0x38   /* REQ64# the card sampled at reset */
 
 /*
  * The two-node machine: a node-1 target needs the 64-bit decode, because
@@ -1796,13 +1797,14 @@ static void test_dma_local_space_is_never_swapped(const void *data)
 
 /*
  * The placement matrix: every DMA route, both swap settings, every start
- * alignment and both directions, at each slot data-phase width. A swap-set
- * transfer is a byte stream; a swap-clear one puts PCI byte k of each
- * aligned unit at host byte k ^ 3 in a 32-bit slot and k ^ 7 (7 - k) in a
- * 64-bit slot, including transfers shorter than a doubleword. Transfers
- * start 16 bytes before a page end, so the translated route crosses into a
- * second, non-adjacent translation entry and the direct routes into the
- * next page. Memory is read raw against a sentinel fill.
+ * alignment and both directions, for a 64-bit and a 32-bit card in a slot
+ * wired to the 64-bit data path and a 64-bit card in one that is not. A
+ * swap-set transfer is a byte stream; a swap-clear one puts PCI byte k of
+ * each aligned unit at host byte k ^ 3 on 32-bit data phases and k ^ 7
+ * (7 - k) on 64-bit ones, including transfers shorter than a doubleword.
+ * Transfers start 16 bytes before a page end, so the translated route
+ * crosses into a second, non-adjacent translation entry and the direct
+ * routes into the next page. Memory is read raw against a sentinel fill.
  */
 enum {
     PLACE_DIRECT32,
@@ -1869,16 +1871,44 @@ static void place_fill(QTestState *qts, bool pattern)
     }
 }
 
+/*
+ * The slot the transfer source sits in for the case running now. The
+ * Origin 200 wires devices 5 to 7 to the 64-bit data path; device 4 is
+ * not a chassis slot and is not wired.
+ */
+#define PLACE_REQ64_SLOTS       0xe0u
+#define PLACE_UNWIRED_SLOT      4
+
+static unsigned place_slot = DMA_SLOT;
+
+static void place_start_source(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(place_slot, 0) + 0x10, CARD_MMIO(place_slot));
+    qtest_writel(qts, CFG0(place_slot, 0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | 0x0004);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(place_slot)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(place_slot) >> 20));
+}
+
+static void place_bridge_transfer(QTestState *qts, uint32_t addr,
+                                  uint32_t length, uint32_t seed)
+{
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS, addr);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_LENGTH, length);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SEED, seed);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_GO, 1);
+}
+
 static void place_set_swap(QTestState *qts, unsigned route, bool swap)
 {
-    bridge_source_with_swap(qts, !swap ? 0 :
+    bridge_source_with_swap_at(qts, place_slot, !swap ? 0 :
                             route == PLACE_TRANSLATED ? DEV_SWAP_TRANSLATED :
                                                         DEV_SWAP_DIRECT);
 }
 
 static void place_prepare(QTestState *qts)
 {
-    bridge_start_the_transfer_source(qts);
+    place_start_source(qts);
     bridge_clear_the_direct_map(qts);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0xa));
     qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa));
@@ -1923,8 +1953,8 @@ static void place_transfer(QTestState *qts, unsigned route, unsigned start,
 {
     uint64_t pci = place_pci(route, PLACE_HEAD + start);
 
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI, pci >> 32);
-    bridge_transfer(qts, (uint32_t)pci, length, SWAP_SEED);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS_HI, pci >> 32);
+    place_bridge_transfer(qts, (uint32_t)pci, length, SWAP_SEED);
 }
 
 /* Copy through the route under test into local space, which no swap reaches. */
@@ -1934,29 +1964,44 @@ static void place_copy(QTestState *qts, unsigned route, unsigned start,
     uint64_t pci = place_pci(route, PLACE_HEAD + start);
 
     qtest_memset(qts, PLACE_COPY_DST, SWAP_SENTINEL, 64);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, (uint32_t)pci);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI, pci >> 32);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, PLACE_COPY_DST);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI, 0);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE, (uint32_t)pci);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE_HI, pci >> 32);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS, PLACE_COPY_DST);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS_HI, 0);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_LENGTH, length);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_GO, 2);
 }
 
 typedef struct PlaceWidth {
-    uint8_t mask;       /* the Bridge's dma-64bit-slots */
+    unsigned slot;
+    bool card64;        /* the card type is a 64-bit PCI agent */
     bool native;        /* plain address_space_rw, not the buffer layer */
 } PlaceWidth;
 
+/* Doubleword placement only for a 64-bit card in a wired slot. */
+static bool place_wide(const PlaceWidth *w)
+{
+    return w->card64 && (PLACE_REQ64_SLOTS & (1u << w->slot));
+}
+
 static unsigned place_unit(const PlaceWidth *w, bool swap)
 {
-    return swap ? 1 : (w->mask & (1u << DMA_SLOT)) ? 8 : 4;
+    return swap ? 1 : place_wide(w) ? 8 : 4;
+}
+
+static QTestState *place_start_with(const PlaceWidth *w, const char *extra)
+{
+    place_slot = w->slot;
+    return qtest_initf(MACHINE_WITH_BRIDGE
+                       " -device %s,addr=%u,dma-buffer=%s%s",
+                       w->card64 ? "sgi-bridge-dma-test-64bit" :
+                                   "sgi-bridge-dma-test",
+                       w->slot, w->native ? "off" : "on", extra);
 }
 
 static QTestState *place_start(const PlaceWidth *w)
 {
-    return qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD ",dma-buffer=%s"
-                       " -global sgi-bridge.dma-64bit-slots=0x%x",
-                       w->native ? "off" : "on", w->mask);
+    return place_start_with(w, "");
 }
 
 static void test_dma_placement_matrix(const void *data)
@@ -1980,13 +2025,13 @@ static void test_dma_placement_matrix(const void *data)
                                    length, unit);
                     place_fill(qts, false);
                     place_transfer(qts, route, start, length);
-                    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28),
+                    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28),
                                     ==, MEMTX_OK);
                     place_check_write(qts, route, unit, start, length);
 
                     place_fill(qts, true);
                     place_copy(qts, route, start, length);
-                    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28),
+                    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28),
                                     ==, MEMTX_OK);
                     place_check_read(qts, route, unit, start, length);
                 }
@@ -2010,28 +2055,29 @@ static void test_dma_placement_refusals(const void *data)
     qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa) & ~1ull);
     place_fill(qts, false);
     place_transfer(qts, PLACE_TRANSLATED, 0, 32);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), !=, MEMTX_OK);
     /* The first page's sixteen bytes land; the denied page gets nothing. */
     place_check_write(qts, PLACE_TRANSLATED, place_unit(w, false), 0, 16);
 
     qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa));
     for (unsigned route = 0; route < PLACE_ROUTES; route++) {
-        qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+        qtest_writel(qts, CFG0(place_slot, 0) + PCI_COMMAND,
+                     PCI_COMMAND_MEMORY);
         place_set_swap(qts, route, false);
         place_fill(qts, false);
         place_transfer(qts, route, 3, 24);
-        g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+        g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), ==,
                         MEMTX_DECODE_ERROR);
         place_check_write(qts, route, place_unit(w, false), 0, 0);
-        qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND,
+        qtest_writel(qts, CFG0(place_slot, 0) + PCI_COMMAND,
                      PCI_COMMAND_MEMORY | 0x0004);
     }
     qtest_quit(qts);
 }
 
 /*
- * A reset clears the swap bits and keeps the board's width: after it the
- * same slot places by the width it was fitted with, not by what the guest
+ * A reset clears the swap bits and settles the width again: after it the
+ * slot places by its wiring and the card's width, not by what the guest
  * had programmed before.
  */
 static void test_dma_placement_after_reset(const void *data)
@@ -2042,27 +2088,31 @@ static void test_dma_placement_after_reset(const void *data)
     place_prepare(qts);
     place_set_swap(qts, PLACE_DIRECT32, true);
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(DMA_SLOT))) &
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(place_slot))) &
                     (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED), ==, 0);
-    bridge_start_the_transfer_source(qts);
+    place_start_source(qts);
     bridge_clear_the_direct_map(qts);
     place_fill(qts, false);
     place_transfer(qts, PLACE_DIRECT32, 1, 13);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), ==, MEMTX_OK);
     place_check_write(qts, PLACE_DIRECT32, place_unit(w, false), 1, 13);
+    /*
+     * The card's own reset cleared what it sampled; the Bridge told it
+     * again as reset ended, and only a 64-bit card is told.
+     */
+    g_assert_cmpuint(qtest_readl(qts, WINDOW(place_slot) + DMA_REG_REQ64), ==,
+                     place_wide(w));
     qtest_quit(qts);
 }
 
 static const PlaceWidth place_widths[] = {
-    { 0, false },
-    { 0, true },
-    { 1u << DMA_SLOT, false },
-    { 1u << DMA_SLOT, true },
-    /* Every other slot wide: the bit is the requesting slot's own. */
-    { (uint8_t)~(1u << DMA_SLOT), false },
-    /* Every slot wide, so the chip builds no word placement at all. */
-    { 0xff, false },
-    { 0xff, true },
+    { DMA_SLOT, true, false },
+    { DMA_SLOT, true, true },
+    /* A 32-bit card in a wired slot. */
+    { DMA_SLOT, false, false },
+    { DMA_SLOT, false, true },
+    /* A 64-bit card in a slot that does not drive REQ64#. */
+    { PLACE_UNWIRED_SLOT, true, false },
 };
 
 /*
@@ -2075,10 +2125,7 @@ static const PlaceWidth place_widths[] = {
 static void test_dma_placement_converted(const void *data)
 {
     const PlaceWidth *w = data;
-    QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
-                                  ",dma-buffer=%s,dma-r32=on"
-                                  " -global sgi-bridge.dma-64bit-slots=0x%x",
-                                  w->native ? "off" : "on", w->mask);
+    QTestState *qts = place_start_with(w, ",dma-r32=on");
     unsigned lane = place_unit(w, false) - 1;
     uint8_t seen[32], expected[32], fill[32];
 
@@ -2086,8 +2133,8 @@ static void test_dma_placement_converted(const void *data)
     place_set_swap(qts, PLACE_DIRECT32, false);
 
     qtest_memset(qts, TARGET_PAGE_A, SWAP_SENTINEL, sizeof(seen));
-    bridge_transfer(qts, PCI_DIRECT_32 | TARGET_PAGE_A, 16, SWAP_SEED);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    place_bridge_transfer(qts, PCI_DIRECT_32 | TARGET_PAGE_A, 16, SWAP_SEED);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), ==, MEMTX_OK);
     memset(expected, SWAP_SENTINEL, sizeof(expected));
     for (unsigned i = 0; i < 16; i++) {
         expected[(i ^ 3) ^ lane] = SWAP_SEED + i;
@@ -2101,13 +2148,13 @@ static void test_dma_placement_converted(const void *data)
     }
     qtest_memwrite(qts, TARGET_PAGE_A, fill, sizeof(fill));
     qtest_memset(qts, PLACE_COPY_DST, SWAP_SENTINEL, sizeof(seen));
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE,
                  PCI_DIRECT_32 | TARGET_PAGE_A);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI, 0);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, PLACE_COPY_DST);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, 16);
-    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
-    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_SOURCE_HI, 0);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_ADDRESS, PLACE_COPY_DST);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_LENGTH, 16);
+    qtest_writel(qts, WINDOW(place_slot) + DMA_REG_GO, 2);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), ==, MEMTX_OK);
     memset(expected, SWAP_SENTINEL, sizeof(expected));
     for (unsigned p = 0; p < 16; p++) {
         expected[p] = fill[p ^ lane];
@@ -2117,13 +2164,40 @@ static void test_dma_placement_converted(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Bridge places by slot, so a slot is 64-bit only if every function in
+ * it is a 64-bit agent: a 32-bit function 1 beside a 64-bit function 0
+ * narrows function 0's transfers too. Function 0 is still told REQ64#.
+ */
+static void test_dma_placement_mixed_functions(const void *data)
+{
+    bool all64 = GPOINTER_TO_INT(data);
+    QTestState *qts;
+
+    place_slot = DMA_SLOT;
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -device sgi-bridge-dma-test-64bit,addr=%u.0,"
+                      "multifunction=on -device %s,addr=%u.1",
+                      DMA_SLOT, all64 ? "sgi-bridge-dma-test-64bit" :
+                                        "sgi-bridge-dma-test", DMA_SLOT);
+    place_prepare(qts);
+    place_set_swap(qts, PLACE_DIRECT32, false);
+    place_fill(qts, false);
+    place_transfer(qts, PLACE_DIRECT32, 0, 16);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(place_slot) + 0x28), ==, MEMTX_OK);
+    place_check_write(qts, PLACE_DIRECT32, all64 ? 8 : 4, 0, 16);
+    g_assert_cmpuint(qtest_readl(qts, WINDOW(place_slot) + DMA_REG_REQ64), ==,
+                     1);
+    qtest_quit(qts);
+}
+
 static void add_dma_placement_tests(void)
 {
     for (unsigned i = 0; i < ARRAY_SIZE(place_widths); i++) {
         const PlaceWidth *w = &place_widths[i];
-        g_autofree char *suffix = g_strdup_printf("mask-%02x-%s", w->mask,
-                                                  w->native ? "native" :
-                                                              "buffer");
+        g_autofree char *suffix = g_strdup_printf(
+            "slot%u-%s-%s", w->slot, w->card64 ? "card64" : "card32",
+            w->native ? "native" : "buffer");
         g_autofree char *matrix = g_strdup_printf(
             "sn0/bridge/dma-placement/matrix/%s", suffix);
         g_autofree char *refusals = g_strdup_printf(
@@ -2134,7 +2208,7 @@ static void add_dma_placement_tests(void)
         qtest_add_data_func(matrix, w, test_dma_placement_matrix);
         qtest_add_data_func(refusals, w, test_dma_placement_refusals);
         qtest_add_data_func(reset, w, test_dma_placement_after_reset);
-        if (w->mask == 0 || w->mask == 1u << DMA_SLOT) {
+        if (w->slot == DMA_SLOT) {
             g_autofree char *converted = g_strdup_printf(
                 "sn0/bridge/dma-placement/converted/%s", suffix);
 
@@ -4693,6 +4767,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/dma-swap-on-an-exempt-slot-is-reported",
                         NULL, test_dma_swap_on_an_exempt_slot_is_reported);
     add_dma_placement_tests();
+    qtest_add_data_func("sn0/bridge/dma-placement/mixed-functions/narrow",
+                        GINT_TO_POINTER(0), test_dma_placement_mixed_functions);
+    qtest_add_data_func("sn0/bridge/dma-placement/mixed-functions/wide",
+                        GINT_TO_POINTER(1), test_dma_placement_mixed_functions);
     qtest_add_data_func("sn0/bridge/dma-direct-window-swap-clear", NULL,
                         test_dma_direct_window_swap_clear);
     qtest_add_data_func("sn0/bridge/dma-direct-window-swap-set", NULL,

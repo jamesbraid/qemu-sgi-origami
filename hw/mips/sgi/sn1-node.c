@@ -59,6 +59,9 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 
+/* The Origin 300 IO-8 board, which carries the two-slot option riser. */
+#define SN1_IO8_BOARD_PART "030-1673-003"
+
 /*
  * The node's own I/O-space and Hub-register address decode: identical on
  * every Origin 300 measured, so constants here rather than descriptor
@@ -1742,6 +1745,18 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         g_autofree char *prefix = g_strdup_printf("node%u-", node->nasid);
 
         qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
+    }
+    /*
+     * The PCI riser card's two option slots, head E devices 1 and 2, are
+     * sold as 64-bit universal slots, so they are taken to drive REQ64#
+     * (inferred). The riser connects the IP45 motherboard to the IO-8
+     * (007-4365-002, printed page 12), so the model fits it with the IO-8
+     * at widget 15. Head F's own devices are left 32-bit, an
+     * approximation: no held document gives that bus's width.
+     */
+    if (node->io_board_part && node->io_board_widget == 15 &&
+        !strcmp(node->io_board_part, SN1_IO8_BOARD_PART)) {
+        qdev_prop_set_uint8(node->xbridge, "req64-slots-e", BIT(1) | BIT(2));
     }
     if (node->io_board_part) {
         g_assert(node->io_board_widget == 14 || node->io_board_widget == 15);

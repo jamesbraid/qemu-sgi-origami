@@ -1343,6 +1343,13 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(node), "bridge", OBJECT(bridge));
     sgi_baseio_preset_set_bridge_identity(bridge, identity, bridge_serial);
+    /*
+     * The option slots, devices 5 to 7, are sold as 64-bit, so they are
+     * taken to drive REQ64# (inferred); the on-board SCSI and IOC3 stay
+     * 32-bit. The Bridge cannot drive REQ64# itself, so this assumes the
+     * board's external driver is fitted.
+     */
+    qdev_prop_set_uint8(bridge, "req64-slots", BIT(5) | BIT(6) | BIT(7));
     if (pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", pci_bus_name);
     }

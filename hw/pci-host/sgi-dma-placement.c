@@ -11,6 +11,8 @@
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
 #include "qemu/bswap.h"
+#include "hw/pci/pci-64bit.h"
+#include "hw/pci/pci_bus.h"
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "trace.h"
 
@@ -174,4 +176,24 @@ AddressSpace *sgi_dma_placement_as(SGIDMAPlacementSet *set,
         return set->onward;
     }
     return &set->target[placement].as;
+}
+
+uint8_t sgi_dma_placement_reset_widths(PCIBus *bus, uint8_t req64_slots)
+{
+    uint8_t present = 0, narrow = 0;
+    unsigned devfn;
+
+    for (devfn = 0; devfn < PCI_DEVFN(8, 0); devfn++) {
+        PCIDevice *dev = bus->devices[devfn];
+        unsigned slot = PCI_SLOT(devfn);
+
+        if (!dev) {
+            continue;
+        }
+        present |= BIT(slot);
+        if (!pci_64bit_device_reset_done(dev, req64_slots & BIT(slot))) {
+            narrow |= BIT(slot);
+        }
+    }
+    return present & ~narrow;
 }

@@ -14,10 +14,13 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-dma-buffer.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/pci-64bit.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_BRIDGE_DMA_TEST "sgi-bridge-dma-test"
+/* The same card as a 64-bit PCI agent. */
+#define TYPE_SGI_BRIDGE_DMA_TEST_64BIT "sgi-bridge-dma-test-64bit"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST)
 
 /* Large enough for page-straddling and synchronous DMA benchmarks. */
@@ -86,6 +89,9 @@ struct SGIBridgeDMATestState {
 
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
+
+    /* REQ64# as sampled at the end of reset; only the 64-bit type sees it. */
+    bool req64;
 };
 
 #define REG_ADDRESS     0x00
@@ -109,6 +115,8 @@ struct SGIBridgeDMATestState {
 #define REG_READ_DATA_HI 0x30
 /* Write 1 to observe/clear this range, 0 to stop; reads consume its bitmap. */
 #define REG_DIRTY       0x34
+/* Read-only: 1 if REQ64# was asserted at the end of the last reset. */
+#define REG_REQ64       0x38
 #define REG_WINDOW      0x40   /* size of the register block */
 #define IO_WINDOW       0x08   /* size of the I/O-space scratch */
 
@@ -357,6 +365,8 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return s->read_data >> 32;
     case REG_DIRTY:
         return sgi_bridge_dma_test_dirty_read(s);
+    case REG_REQ64:
+        return s->req64;
     case REG_LANE_FIXED:
         return 0x12345678;
     case REG_LANE_SCRATCH:
@@ -586,13 +596,19 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->interrupt = 0;
     s->result = MEMTX_OK;
     s->read_data = 0;
+    s->req64 = false;
     pci_set_irq(PCI_DEVICE(s), 0);
+}
+
+static void sgi_bridge_dma_test_req64_sampled(PCIDevice *dev, bool asserted)
+{
+    SGI_BRIDGE_DMA_TEST(dev)->req64 = asserted;
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .pre_save = sgi_bridge_dma_test_dirty_migration,
     .pre_load = sgi_bridge_dma_test_dirty_migration,
     .fields = (const VMStateField[]) {
@@ -607,6 +623,7 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
         VMSTATE_UINT32(result, SGIBridgeDMATestState),
         VMSTATE_UINT64(read_data, SGIBridgeDMATestState),
+        VMSTATE_BOOL(req64, SGIBridgeDMATestState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -648,6 +665,16 @@ static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 
+static void sgi_bridge_dma_test_64bit_class_init(ObjectClass *oc,
+                                                 const void *data)
+{
+    PCI64BitDeviceClass *pc = PCI_64BIT_DEVICE_CLASS(oc);
+
+    DEVICE_CLASS(oc)->desc = "64-bit transfer source for testing a host "
+                             "bridge's translation";
+    pc->req64_sampled = sgi_bridge_dma_test_req64_sampled;
+}
+
 static const TypeInfo sgi_bridge_dma_test_types[] = {
     {
         .name = TYPE_SGI_BRIDGE_DMA_TEST,
@@ -656,6 +683,14 @@ static const TypeInfo sgi_bridge_dma_test_types[] = {
         .class_init = sgi_bridge_dma_test_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { },
+        },
+    }, {
+        .name = TYPE_SGI_BRIDGE_DMA_TEST_64BIT,
+        .parent = TYPE_SGI_BRIDGE_DMA_TEST,
+        .class_init = sgi_bridge_dma_test_64bit_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_PCI_64BIT_DEVICE },
             { },
         },
     },

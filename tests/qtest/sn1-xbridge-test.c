@@ -200,7 +200,7 @@ static void test_config_type1(void)
 #define TARGET_C 0x123400000000ULL
 #define SCRATCH 0x8000
 
-static QTestState *transport_start(const char *extra)
+static QTestState *transport_start_card(const char *card, const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
@@ -212,8 +212,8 @@ static QTestState *transport_start(const char *extra)
         "target-a=/machine/peripheral/targeta/targeta.ram[0],"
         "target-b=/machine/peripheral/targetb/targetb.ram[0],"
         "target-c=/machine/unattached/system[0] "
-        "-device sgi-bridge-dma-test,bus=head.0,addr=0,multifunction=on "
-        "%s", extra);
+        "-device %s,bus=head.0,addr=0,multifunction=on "
+        "%s", card, extra);
 
     qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 0, TARGET_A);
@@ -223,6 +223,11 @@ static QTestState *transport_start(const char *extra)
     qtest_writel(qts, BASE + 0x20004, 6);
     reg_write(qts, 0x200, 0x83010);
     return qts;
+}
+
+static QTestState *transport_start(const char *extra)
+{
+    return transport_start_card("sgi-bridge-dma-test", extra);
 }
 
 /*
@@ -964,7 +969,8 @@ static void test_page_dma_bit29_compat(void)
  * window (device bit 19), the 64-bit direct window (address bit 55), the
  * translated window with the revision-2 address bit 29 and with ATE bit 5,
  * each with the swap request set and clear, every start alignment, both
- * directions, at each slot data-phase width. Transfers start 16 bytes
+ * directions, for 64-bit and 32-bit cards in wired and unwired slots
+ * (the head's req64-slots). Transfers start 16 bytes
  * before a page end so the translated routes cross into a second entry
  * aimed at another widget. Memory is read raw against a sentinel fill.
  */
@@ -1109,25 +1115,39 @@ static void place_copy(QTestState *qts, unsigned route, bool swap,
 }
 
 typedef struct PlaceWidth {
-    uint8_t mask;
+    uint8_t req64;      /* the head's req64-slots: the board's wiring */
+    bool card64;        /* the card type is a 64-bit PCI agent */
     bool native;
 } PlaceWidth;
 
+/* Doubleword placement only for a 64-bit card in a wired slot. */
+static bool place_wide(const PlaceWidth *w)
+{
+    return w->card64 && (w->req64 & (1u << PLACE_SLOT));
+}
+
 static unsigned place_unit(const PlaceWidth *w, bool swap)
 {
-    return swap ? 1 : (w->mask & (1u << PLACE_SLOT)) ? 8 : 4;
+    return swap ? 1 : place_wide(w) ? 8 : 4;
+}
+
+static QTestState *place_start_with(const PlaceWidth *w, const char *more)
+{
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-bridge-dma-test.dma-buffer=%s "
+        "-global sgi-xbridge-head.req64-slots=0x%x %s",
+        w->native ? "off" : "on", w->req64, more);
+    QTestState *qts = transport_start_card(w->card64 ?
+                                           "sgi-bridge-dma-test-64bit" :
+                                           "sgi-bridge-dma-test", extra);
+
+    reg_write(qts, 0x80, 0xa00000);
+    return qts;
 }
 
 static QTestState *place_start(const PlaceWidth *w)
 {
-    g_autofree char *extra = g_strdup_printf(
-        "-global sgi-bridge-dma-test.dma-buffer=%s "
-        "-global sgi-xbridge-head.dma-64bit-slots=0x%x",
-        w->native ? "off" : "on", w->mask);
-    QTestState *qts = transport_start(extra);
-
-    reg_write(qts, 0x80, 0xa00000);
-    return qts;
+    return place_start_with(w, "");
 }
 
 static void test_placement_matrix(const void *data)
@@ -1190,7 +1210,7 @@ static void test_placement_refusals(const void *data)
     qtest_quit(qts);
 }
 
-/* A reset clears bit 19 and keeps the width the head was built with. */
+/* A reset clears bit 19 and settles the slot width again. */
 static void test_placement_after_reset(const void *data)
 {
     const PlaceWidth *w = data;
@@ -1207,18 +1227,28 @@ static void test_placement_after_reset(const void *data)
     place_transfer(qts, PLACE_DIRECT32, false, 1, 13);
     g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
     place_check_write(qts, PLACE_DIRECT32, place_unit(w, false), 1, 13);
+    /*
+     * The card's own reset cleared what it sampled; the head told it again
+     * as reset ended, and only a 64-bit card is told.
+     */
+    g_assert_cmpuint(card_read(qts, 0x38), ==, place_wide(w));
     qtest_quit(qts);
 }
 
 static const PlaceWidth place_widths[] = {
-    { 0, false },
-    { 0, true },
-    { 1u << PLACE_SLOT, false },
-    { 1u << PLACE_SLOT, true },
-    { (uint8_t)~(1u << PLACE_SLOT), false },
-    /* Every slot wide, so the head builds no word placement at all. */
-    { 0xff, false },
-    { 0xff, true },
+    { 1u << PLACE_SLOT, true, false },
+    { 1u << PLACE_SLOT, true, true },
+    /* A 32-bit card in a wired slot. */
+    { 1u << PLACE_SLOT, false, false },
+    { 1u << PLACE_SLOT, false, true },
+    /*
+     * A 64-bit card in an unwired slot beside wired ones, and on a board
+     * that wires nothing.
+     */
+    { (uint8_t)~(1u << PLACE_SLOT), true, false },
+    { 0, true, true },
+    /* Every slot wired. */
+    { 0xff, true, false },
 };
 
 /*
@@ -1231,12 +1261,8 @@ static const PlaceWidth place_widths[] = {
 static void test_placement_memory_only(const void *data)
 {
     const PlaceWidth *w = data;
-    g_autofree char *extra = g_strdup_printf(
-        "-global sgi-bridge-dma-test.dma-buffer=%s "
-        "-global sgi-bridge-dma-test.memory-only=on "
-        "-global sgi-xbridge-head.dma-64bit-slots=0x%x",
-        w->native ? "off" : "on", w->mask);
-    QTestState *qts = transport_start(extra);
+    QTestState *qts = place_start_with(
+        w, "-global sgi-bridge-dma-test.memory-only=on");
 
     reg_write(qts, 0x80, 0xa00000);
     for (unsigned swap = 0; swap < 2; swap++) {
@@ -1258,9 +1284,9 @@ static void add_placement_tests(void)
 {
     for (unsigned i = 0; i < G_N_ELEMENTS(place_widths); i++) {
         const PlaceWidth *w = &place_widths[i];
-        g_autofree char *suffix = g_strdup_printf("mask-%02x-%s", w->mask,
-                                                  w->native ? "native" :
-                                                              "buffer");
+        g_autofree char *suffix = g_strdup_printf(
+            "req64-%02x-%s-%s", w->req64, w->card64 ? "card64" : "card32",
+            w->native ? "native" : "buffer");
         g_autofree char *matrix = g_strdup_printf(
             "/sn1/xbridge/dma-placement/matrix/%s", suffix);
         g_autofree char *refusals = g_strdup_printf(
@@ -1271,7 +1297,7 @@ static void add_placement_tests(void)
         qtest_add_data_func(matrix, w, test_placement_matrix);
         qtest_add_data_func(refusals, w, test_placement_refusals);
         qtest_add_data_func(reset, w, test_placement_after_reset);
-        if (w->mask != (uint8_t)~(1u << PLACE_SLOT)) {
+        if (w->req64 == 1u << PLACE_SLOT) {
             g_autofree char *memory = g_strdup_printf(
                 "/sn1/xbridge/dma-placement/memory-only/%s", suffix);
 
@@ -1801,6 +1827,49 @@ static void test_origin300_xbridge_revisions(void)
     qtest_quit(qts);
 }
 
+/*
+ * A card on head E answers through that head's device window: the window
+ * for device n carries PCI addresses from the Device(n) register's base,
+ * 2 MB windows for devices 0 and 1 and 1 MB ones above.
+ */
+static uint32_t origin300_card_reg(QTestState *qts, unsigned slot,
+                                   unsigned reg)
+{
+    static const uint32_t window[] = { 0x200000, 0x400000, 0x600000,
+                                       0x700000 };
+    uint64_t head = IO_WIDGET(0xe);
+    uint32_t bar = (slot + 1) << 24;
+
+    qtest_writel(qts, head + 0x20010 + slot * 0x1000, bar);
+    qtest_writel(qts, head + 0x20004 + slot * 0x1000, 6);
+    qtest_writel(qts, head + 0x200 + slot * 8 + 4, 0x1000 | (bar >> 20));
+    return qtest_readl(qts, head + window[slot] + reg);
+}
+
+/*
+ * The machine wires the PCI riser's option slots, head E devices 1 and 2,
+ * to the 64-bit data path, and the head tells a 64-bit card so at reset;
+ * device 3 is not wired. Read through the head's own window, this checks
+ * the machine's reset reaches the head as well as its wiring.
+ */
+static void test_origin300_option_slots_drive_req64(void)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s "
+        "-device sgi-bridge-dma-test-64bit,bus=head-e.0,addr=1 "
+        "-device sgi-bridge-dma-test-64bit,bus=head-e.0,addr=2 "
+        "-device sgi-bridge-dma-test-64bit,bus=head-e.0,addr=3", prom);
+    static const uint32_t req64[] = { 0, 1, 1, 0 };
+
+    for (unsigned slot = 1; slot <= 3; slot++) {
+        /* The card's fixed register shows the window reaches it. */
+        g_assert_cmphex(origin300_card_reg(qts, slot, 0x20), !=, 0);
+        g_assert_cmphex(origin300_card_reg(qts, slot, 0x38), ==,
+                        req64[slot]);
+    }
+    qtest_quit(qts);
+}
+
 static char *create_prom(void)
 {
     g_autoptr(GError) error = NULL;
@@ -1913,6 +1982,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/onewire/no-board-stays-inert",
                    test_no_board_stays_inert);
     prom_path = create_prom();
+    qtest_add_func("/sn1/xbridge/origin300-option-slots-drive-req64",
+                   test_origin300_option_slots_drive_req64);
     qtest_add_func("/sn1/xbridge/origin300-revisions",
                    test_origin300_xbridge_revisions);
     qtest_add_func("origin300/xbridge/error-reaches-pending",

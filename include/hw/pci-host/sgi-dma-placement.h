@@ -14,6 +14,7 @@
 #ifndef HW_PCI_HOST_SGI_DMA_PLACEMENT_H
 #define HW_PCI_HOST_SGI_DMA_PLACEMENT_H
 
+#include "qemu/bitops.h"
 #include "system/memory.h"
 
 typedef enum SGIDMAPlacement {
@@ -64,6 +65,22 @@ void sgi_dma_placement_destroy(SGIDMAPlacementSet *set);
 
 AddressSpace *sgi_dma_placement_as(SGIDMAPlacementSet *set,
                                    SGIDMAPlacement placement);
+
+/*
+ * At the end of a reset of the bridge's PCI bus: tell each device on the
+ * first eight slots whether its slot drives REQ64# (req64_slots, one bit
+ * per slot) and return the slots whose DMA runs 64-bit data phases. A slot
+ * with several functions is 64-bit only if every function is, since the
+ * bridge places by slot.
+ */
+uint8_t sgi_dma_placement_reset_widths(PCIBus *bus, uint8_t req64_slots);
+
+/* The targets a bridge builds for a board whose wired slots are req64. */
+static inline unsigned sgi_dma_placement_needed(uint8_t req64_slots)
+{
+    return BIT(SGI_DMA_PLACEMENT_WORD) |
+           (req64_slots ? BIT(SGI_DMA_PLACEMENT_DOUBLEWORD) : 0);
+}
 
 /* The rule both bridges share, from the swap bit and the slot's width. */
 static inline SGIDMAPlacement sgi_dma_placement_select(bool byte_stream,
