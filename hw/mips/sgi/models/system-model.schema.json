@@ -1165,7 +1165,7 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 7,
-      "description": "For a node slot only: the value the midplane drives on the Hub's slot-identity pins, the low three bits of the Hub's slot-identity register, where it differs from the eight-processor module's own wiring of 8 minus the slot number. The Onyx2 deskside's 4P1G5 midplane drives 3 for node slot 1 and 2 for node slot 2 (docs/datasheets/onyx2.md, Node slot codes)."
+      "description": "For a node slot only: the value the midplane drives on the Hub's slot-identity pins, the low three bits of the Hub's slot-identity register, where it differs from the eight-processor module's own wiring of 8 minus the slot number. The Onyx2 deskside's 4P1G5 midplane drives 3 for node slot 1 and 2 for node slot 2 (docs/specs/sgi-onyx2.rst, Node slot codes)."
     },
     "identifier": {
       "type": "string",

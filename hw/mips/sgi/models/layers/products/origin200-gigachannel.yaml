@@ -91,7 +91,7 @@ layer:
           the IP29 record under io1/MotherBoard. That it answers on the IP29
           Bridge's own one-wire line is inferred from that grouping, the way
           the BaseIO-G's MIO record shares its Bridge's line.
-        sources: ["docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"]
+        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
       - id: base-cpu1
         name: R10000
         kind: cpu
@@ -142,7 +142,7 @@ layer:
           shows the Bridge on the interface board or on the visible part of
           the PCI backplane. The board record firmware reads through this
           Bridge names the interface board instead (gigachannel-identity).
-        sources: ["007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted", "docs/datasheets/sgi-gigachannel.md Physical composition"]
+        sources: ["007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted", qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-composition]
       - id: gigachannel-bridge
         name: Bridge
         kind: pci-host-bridge
@@ -173,7 +173,7 @@ layer:
           INTERFACE board, which firmware reports at io7. Which one-wire line
           carries it is not established; this model presents it on the
           cabinet Bridge's own line, the one the firmware names io7 from.
-        sources: ["docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"]
+        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
       - {id: xio-slot-11, name: XIO slot 11, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 11, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
       - {id: xio-slot-12, name: XIO slot 12, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 12, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
       - {id: xio-slot-13, name: XIO slot 13, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 13, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
@@ -215,7 +215,7 @@ layer:
         kind: one-wire
         master: gigachannel-bridge
         provenance: derived
-        sources: [qemu:docs/specs/sgi-bridge.rst, "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"]
+        sources: [qemu:docs/specs/sgi-bridge.rst, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
       - {id: gigachannel-pci, name: GIGAchannel PCI, kind: pci, master: gigachannel-bridge, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
     connections:
       - {component: base-cpu1, bus: base-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
@@ -275,12 +275,12 @@ layer:
         bus: gigachannel-bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: ["docs/datasheets/sgi-gigachannel.md What a model needs, item 3: the record is presented without claiming a wiring"]
+        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-record-wiring]
       - component: crosstown-identity
         bus: base-bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: ["docs/datasheets/sgi-gigachannel.md Firmware and IRIX view: XBOX_EXT listed beside the IP29 record under io1/MotherBoard"]
+        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
     interrupts:
       - id: gigachannel-bridge-error
         source: gigachannel-bridge

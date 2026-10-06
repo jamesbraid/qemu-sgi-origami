@@ -10,7 +10,7 @@ layer:
     max_nodes: 1
     supported_cpu_populations: [[2], [4]]
     provenance: derived
-    sources: ["007-4365-002 printed pages 8 and 10", "docs/datasheets/odyssey.md, Configuration identity"]
+    sources: ["007-4365-002 printed pages 8 and 10", qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey-attachment]
   population:
     nodes: 1
     cpus_per_node: [2]

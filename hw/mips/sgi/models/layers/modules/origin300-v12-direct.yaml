@@ -17,8 +17,8 @@ layer:
           notes: >-
             Revision 0xa is the QEMU Odyssey device's selected default, not
             a measurement of a board attached to an Origin 300.
-        datasheet_contracts: [docs/datasheets/odyssey.md]
-        sources: ["docs/datasheets/odyssey.md, Configuration identity", "007-4365-002 printed page 8"]
+        datasheet_contracts: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey]
+        sources: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey-identity, "007-4365-002 printed page 8"]
         notes: >-
           This direct widget is an emulator approximation. No graphics
           enclosure, extra XBridge or L1 is represented here. The Odyssey
@@ -30,7 +30,7 @@ layer:
         bus: cable-xio
         role: endpoint
         provenance: derived
-        sources: ["007-4365-002 printed page 8", "docs/datasheets/odyssey.md, Configuration identity"]
+        sources: ["007-4365-002 printed page 8", qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey-attachment]
         notes: >-
           The model connects Odyssey directly to the Origin 300 XBridge;
           no reviewed physical configuration establishes this route.

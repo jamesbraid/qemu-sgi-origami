@@ -94,7 +94,7 @@
       "name": "Crossbow host link to node 1",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -104,7 +104,7 @@
       "name": "Crossbow host link to node 2",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -114,7 +114,7 @@
       "name": "Crossbow XIO position IO1",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -124,7 +124,7 @@
       "name": "Crossbow XIO position IO2",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -134,7 +134,7 @@
       "name": "Crossbow XIO position IO3",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -144,7 +144,7 @@
       "name": "Crossbow XIO position IO4, the graphics board set",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -154,7 +154,7 @@
       "name": "Crossbow XIO position IO5",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -164,7 +164,7 @@
       "name": "Crossbow XIO position IO6",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -314,7 +314,7 @@
       "name": "Pipe one-wire identity chain",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     }
   ],
@@ -346,7 +346,7 @@
       "parent": "compute-module",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Product identity: 4P1G5_MPLN, part 013-1839-001, from the real deskside board lists"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-identity"
       ]
     },
     {
@@ -369,7 +369,7 @@
       "parent": "module-midplane",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: a deskside has one Crossbow"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ]
     },
     {
@@ -1205,8 +1205,8 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/onyx2.md",
-        "docs/datasheets/infinitereality-host-interface.md"
+        "qemu:docs/specs/sgi-onyx2.rst",
+        "qemu:docs/specs/sgi-graphics.rst#sgi-graphics-kona"
       ],
       "hardware_kind": "kona",
       "id": "io4-pipe",
@@ -1221,13 +1221,14 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md Role and Pipe identity"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-role",
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-identity"
       ]
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/onyx2.md",
-        "docs/datasheets/infinitereality-host-interface.md"
+        "qemu:docs/specs/sgi-onyx2.rst",
+        "qemu:docs/specs/sgi-graphics.rst#sgi-graphics-kona"
       ],
       "hardware_kind": "xg",
       "id": "io4-xg",
@@ -1243,7 +1244,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md Widget part number",
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-identity",
         "linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"
       ]
     },
@@ -1257,7 +1258,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -1270,7 +1271,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -1283,7 +1284,7 @@
       "provenance": "datasheet",
       "regions": [],
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -1312,7 +1313,7 @@
         "provenance": "derived",
         "reason": "Fit the one InfiniteReality pipe the deskside carries.",
         "sources": [
-          "docs/datasheets/onyx2.md Deskside: the graphics board set takes XIO slot 4 directly."
+          "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-slots"
         ]
       },
       {
@@ -1620,7 +1621,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: n2 at widget 9"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 9,
       "xio": {
@@ -1633,7 +1634,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: n1 at widget A"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 10,
       "xio": {
@@ -1648,7 +1649,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io4 at widget 8"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 8,
       "xio": {
@@ -1662,7 +1663,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io2 at widget B"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 11,
       "xio": {
@@ -1676,7 +1677,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io6 at widget C"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 12,
       "xio": {
@@ -1690,7 +1691,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io5 at widget D"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 13,
       "xio": {
@@ -1704,7 +1705,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io3 at widget E"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 14,
       "xio": {
@@ -1719,7 +1720,7 @@
       "provenance": "datasheet",
       "role": "bridge-upstream",
       "sources": [
-        "docs/datasheets/onyx2.md Widget-to-slot map: io1 at widget F"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map"
       ],
       "widget": 15,
       "xio": {
@@ -1941,7 +1942,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md How a pipe reaches the compute module"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-pipe-link"
       ]
     },
     {
@@ -1950,7 +1951,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     },
     {
@@ -1960,7 +1961,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/onyx2.md One-wire records"
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire"
       ]
     }
   ],
@@ -2104,7 +2105,7 @@
       "sources": [
         "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
         "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface",
-        "docs/datasheets/onyx2.md Node slot codes: the deskside codes need configuration-flags bit 0 clear, which the stock image carries."
+        "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes"
       ]
     },
     "generation": "SN0",

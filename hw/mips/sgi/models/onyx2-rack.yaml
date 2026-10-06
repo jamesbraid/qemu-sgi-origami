@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 rack: the eight-processor compute module with a BaseIO-G in IO1
 # and one InfiniteReality pipe whose Xtown occupies IO3, Crossbow 0 widget F,
-# where the real rack capture has it (docs/datasheets/onyx2.md, Rack).
+# where the real rack capture has it (docs/specs/sgi-onyx2.rst, Rack compute module).
 # Launch it with tools/origami run irix --machine onyx2 (QEMU: -M onyx2,
 # whose default topology this is).
 configuration_version: 1
@@ -15,7 +15,7 @@ configuration_version: 1
 # only sources are internal documents" rather than resolving it; an empty-
 # occupancy selection has no external document to cite in the first place.
 sources:
-  rack-pipe-placement: "docs/datasheets/onyx2.md Xtown placement and pipe limits: the real rack capture has its one pipe at io3, Crossbow 0 widget F."
+  rack-pipe-placement: qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-xtown-placement
 layers:
 - layers/architectures/sn0.yaml
 - layers/assemblies/ip27.yaml

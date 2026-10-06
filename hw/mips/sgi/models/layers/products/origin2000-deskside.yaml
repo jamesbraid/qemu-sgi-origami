@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Origin 2000 deskside: the eight-processor module in a deskside
-# enclosure (docs/datasheets/onyx2.md, Telling an Onyx2 from an Origin 2000),
+# enclosure (docs/specs/sgi-onyx2.rst, How firmware chooses the widget map),
 # with a plain BaseIO in IO1 and no graphics, and one to four node boards
 # fitted in SGI's fill order. The composition describes the chassis with all
 # four fitted on two Standard Routers, the rack module's fabric, which one

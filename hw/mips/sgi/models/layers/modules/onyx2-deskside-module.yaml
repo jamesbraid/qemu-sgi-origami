@@ -3,7 +3,7 @@
 # two node slots joined by a Null Router, one Crossbow, a BaseIO-G fixed in
 # XIO slot 1, four more XIO slots numbered 2, 3, 5 and 6, and the graphics
 # board set, whose geometry board takes XIO slot 4 directly with no Ktown
-# (docs/datasheets/onyx2.md, Deskside). The Crossbow's widget-to-slot table
+# (docs/specs/sgi-onyx2.rst, Deskside). The Crossbow's widget-to-slot table
 # exists only for this chassis: widget 8 is io4, 9 is n2, A is n1, B io2,
 # C io6, D io5, E io3 and F io1.
 #
@@ -32,11 +32,11 @@ layer:
         kind: board
         parent: compute-module
         provenance: datasheet
-        sources: ["docs/datasheets/onyx2.md Product identity: 4P1G5_MPLN, part 013-1839-001, from the real deskside board lists"]
+        sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-identity]
         notes: >-
           Part 013-1839-001 in the real deskside board lists. The model
           presents no midplane record.
-      - {id: crossbow-0, name: Crossbow, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: datasheet, parent: module-midplane, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: a deskside has one Crossbow"]}
+      - {id: crossbow-0, name: Crossbow, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: datasheet, parent: module-midplane, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
       - {id: baseio, name: BaseIO-G board in IO1, kind: board, identity: {part: "030-0734-002", notes: "The BaseIO-G base board part in the real deskside board lists."}, provenance: vendor-document, parent: module-midplane, physical_slot: {kind: io, number: 1}, sources: ["007-3454-005 printed page 24 PDF page 42: the BaseIO-G stays in XIO slot 1"]}
       - {id: baseio-bridge, name: Bridge, kind: pci-host-bridge, hardware_kind: bridge, pci_host_bridge: {heads: 1}, identity: {widget_part: "0xc002", widget_mfg: "0x36", widget_revision: 4, notes: "Select Bridge D; the revision encodings were independently reviewed."}, datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
       - {id: baseio-ioc3, name: IOC3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1, notes: "Select the revision 1 component supported by the IOC3 page (docs/specs/sgi-ioc3.rst); subsystem compatibility is a separate software policy."}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
@@ -90,14 +90,14 @@ layer:
         provenance: vendor-document
         sources: ["007-3439-002 printed page 57 PDF page 71: the Null Router joins two node boards in one deskside and cannot be expanded", "007-3454-005 printed page 19 PDF page 37: the Null-Router board"]
         notes: "A direct Hub-to-Hub link. No PROM or IRIX inventory lists the Null Router."
-      - {id: xbow0-node1, name: Crossbow host link to node 1, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-node2, name: Crossbow host link to node 2, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io1, name: Crossbow XIO position IO1, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io2, name: Crossbow XIO position IO2, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io3, name: Crossbow XIO position IO3, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io4, name: "Crossbow XIO position IO4, the graphics board set", kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io5, name: Crossbow XIO position IO5, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
-      - {id: xbow0-io6, name: Crossbow XIO position IO6, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-node1, name: Crossbow host link to node 1, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-node2, name: Crossbow host link to node 2, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io1, name: Crossbow XIO position IO1, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io2, name: Crossbow XIO position IO2, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io3, name: Crossbow XIO position IO3, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io4, name: "Crossbow XIO position IO4, the graphics board set", kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io5, name: Crossbow XIO position IO5, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: xbow0-io6, name: Crossbow XIO position IO6, kind: xio, master: crossbow-0, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
       - {id: baseio-pci, name: BaseIO PCI, kind: pci, master: baseio-bridge, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
     connections:
       - {component: node-board-1-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: [onyx2-deskside-module-management]}
@@ -106,14 +106,14 @@ layer:
       - {component: module-management-nvram, bus: module-management-i2c, role: endpoint, i2c_address: 80, i2c_address_count: 8, provenance: derived, sources: [onyx2-deskside-module-management]}
       - {component: node-board-1-hub, bus: null-router, role: master, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
       - {component: node-board-2-hub, bus: null-router, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
-      - {component: node-board-2-hub, bus: xbow0-node2, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: n2 at widget 9"]}
-      - {component: node-board-1-hub, bus: xbow0-node1, role: endpoint, widget: 10, xio: {physical_port: 2}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: n1 at widget A"]}
-      - {component: graphics-slots, bus: xbow0-io4, role: endpoint, controlled_by: node-board-1-node-board, widget: 8, xio: {physical_port: 0}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io4 at widget 8"], notes: "Which node a deskside's XIO positions answer to is unpublished; node 1 is selected for every position."}
-      - {component: xio-slot-2, bus: xbow0-io2, role: endpoint, controlled_by: node-board-1-node-board, widget: 11, xio: {physical_port: 3}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io2 at widget B"]}
-      - {component: xio-slot-6, bus: xbow0-io6, role: endpoint, controlled_by: node-board-1-node-board, widget: 12, xio: {physical_port: 4}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io6 at widget C"]}
-      - {component: xio-slot-5, bus: xbow0-io5, role: endpoint, controlled_by: node-board-1-node-board, widget: 13, xio: {physical_port: 5}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io5 at widget D"]}
-      - {component: xio-slot-3, bus: xbow0-io3, role: endpoint, controlled_by: node-board-1-node-board, widget: 14, xio: {physical_port: 6}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io3 at widget E"]}
-      - {component: baseio-bridge, bus: xbow0-io1, role: bridge-upstream, controlled_by: node-board-1-node-board, widget: 15, xio: {physical_port: 7}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io1 at widget F"], notes: BaseIO-G is fixed at IO1; Bridge is the board's upstream Crossbow endpoint.}
+      - {component: node-board-2-hub, bus: xbow0-node2, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: node-board-1-hub, bus: xbow0-node1, role: endpoint, widget: 10, xio: {physical_port: 2}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: graphics-slots, bus: xbow0-io4, role: endpoint, controlled_by: node-board-1-node-board, widget: 8, xio: {physical_port: 0}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map], notes: "Which node a deskside's XIO positions answer to is unpublished; node 1 is selected for every position."}
+      - {component: xio-slot-2, bus: xbow0-io2, role: endpoint, controlled_by: node-board-1-node-board, widget: 11, xio: {physical_port: 3}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: xio-slot-6, bus: xbow0-io6, role: endpoint, controlled_by: node-board-1-node-board, widget: 12, xio: {physical_port: 4}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: xio-slot-5, bus: xbow0-io5, role: endpoint, controlled_by: node-board-1-node-board, widget: 13, xio: {physical_port: 5}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: xio-slot-3, bus: xbow0-io3, role: endpoint, controlled_by: node-board-1-node-board, widget: 14, xio: {physical_port: 6}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {component: baseio-bridge, bus: xbow0-io1, role: bridge-upstream, controlled_by: node-board-1-node-board, widget: 15, xio: {physical_port: 7}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map], notes: BaseIO-G is fixed at IO1; Bridge is the board's upstream Crossbow endpoint.}
       - {component: baseio-bridge, bus: baseio-pci, role: bridge-downstream, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
       - {component: baseio-scsi-0, bus: baseio-pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
       - {component: baseio-scsi-1, bus: baseio-pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}

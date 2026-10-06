@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
 # IO1 (Crossbow widget F) and one InfiniteReality pipe on XIO4 (widget 8)
-# with no Ktown (docs/datasheets/onyx2.md, Deskside). Launch it with
+# with no Ktown (docs/specs/sgi-onyx2.rst, Deskside). Launch it with
 # tools/origami run irix --machine onyx2 --topology onyx2-deskside
 # (QEMU: -M onyx2,topology=onyx2-deskside).
 #
 # Each node board's physical_slot carries the Hub slot bits this midplane
 # drives: 3 in node slot 1 and 2 in node slot 2, which firmware and IRIX
-# decode as the deskside's n1 and n2 (docs/datasheets/onyx2.md, Node slot
+# decode as the deskside's n1 and n2 (docs/specs/sgi-onyx2.rst, Node slot
 # codes).
 configuration_version: 1
 sources:
-  deskside-graphics: "docs/datasheets/onyx2.md Deskside: the graphics board set takes XIO slot 4 directly."
+  deskside-graphics: qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-slots
 layers:
   - layers/architectures/sn0.yaml
   - layers/assemblies/ip27.yaml

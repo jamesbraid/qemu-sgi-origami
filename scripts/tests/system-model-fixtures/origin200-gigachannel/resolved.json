@@ -210,7 +210,7 @@
       "provenance": "derived",
       "sources": [
         "qemu:docs/specs/sgi-bridge.rst",
-        "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view"
       ]
     },
     {
@@ -355,7 +355,8 @@
       "parent": "crosstown-cpu",
       "provenance": "observed-hardware",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity",
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view"
       ]
     },
     {
@@ -445,7 +446,7 @@
       "provenance": "vendor-document",
       "sources": [
         "007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted",
-        "docs/datasheets/sgi-gigachannel.md Physical composition"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-composition"
       ]
     },
     {
@@ -483,7 +484,8 @@
       "parent": "gigachannel-chassis",
       "provenance": "observed-hardware",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity",
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view"
       ]
     },
     {
@@ -1987,7 +1989,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md What a model needs, item 3: the record is presented without claiming a wiring"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-record-wiring"
       ]
     },
     {
@@ -1996,7 +1998,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view: XBOX_EXT listed beside the IP29 record under io1/MotherBoard"
+        "qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view"
       ]
     },
     {
