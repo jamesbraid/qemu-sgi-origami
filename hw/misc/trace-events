@@ -697,6 +697,7 @@ sgi_bedrock_pi_nmi(unsigned interface, unsigned slot, uint64_t value) "pi%u slot
 # sgi-bedrock-io.c
 sgi_bedrock_io_scratch_read(int cpu, unsigned index, uint64_t value) "cpu %d II scratch %u read: 0x%" PRIx64
 sgi_bedrock_io_scratch_write(int cpu, unsigned index, uint64_t value) "cpu %d II scratch %u <- 0x%" PRIx64
+sgi_bedrock_io_inbound_buffer(unsigned widget, unsigned device, uint64_t addr, uint64_t len, bool write, uint64_t moved) "widget %u device %u addr 0x%" PRIx64 " len %" PRIu64 " write %d moved %" PRIu64
 
 # sgi-bedrock-lb.c
 sgi_bedrock_lb_scratch_twin_read(int cpu, unsigned index, uint64_t old) "cpu %d LB scratch %u read-set-if-zero: was 0x%" PRIx64

@@ -853,6 +853,46 @@ static void test_data_transfer_reaches_memory(const void *data)
     disks_remove(&disks);
 }
 
+/*
+ * On the base system the heads run in widget mode, so the sector's DMA
+ * reaches the Bedrock's shared inbound window. It must arrive there as one
+ * buffer, not as 64 accesses of eight bytes.
+ */
+static void test_data_transfer_is_one_buffer(const void *data)
+{
+    GError *error = NULL;
+    g_autofree char *trace = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *args = NULL;
+    MachineConfig traced = origin300;
+    DiskPair disks;
+    QTestState *qts;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t sector[SECTOR_BYTES];
+    g_autofree char *needle = g_strdup_printf(
+        "len %u write 1 moved %u", SECTOR_BYTES, SECTOR_BYTES);
+    int fd = g_file_open_tmp("sn1-io8-buffer-XXXXXX", &trace, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    args = g_strdup_printf("%s -trace enable=sgi_bedrock_io_inbound_buffer,"
+                           "file=%s", origin300.args, trace);
+    traced.args = args;
+    qts = machine_start_with_disks(&disks, &traced);
+    init_queues(qts);
+    absorb_unit_attention(qts, 0, 0xa1);
+    read_sector(qts, 0xa2, 0, 0, sector, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    expect_first_sector(sector, 0);
+    qtest_quit(qts);
+    disks_remove(&disks);
+
+    g_assert_true(g_file_get_contents(trace, &contents, NULL, NULL));
+    g_assert_cmpint(g_unlink(trace), ==, 0);
+    g_assert_nonnull(strstr(contents, needle));
+}
+
 typedef struct InboundMaskCase {
     const MachineConfig *machine;
     uint64_t denied_widget;
@@ -1398,6 +1438,8 @@ int main(int argc, char **argv)
                         test_command_reaches_memory);
     qtest_add_data_func("origin300/io8-scsi/data-transfer-reaches-memory",
                         NULL, test_data_transfer_reaches_memory);
+    qtest_add_data_func("origin300/io8-scsi/data-transfer-is-one-buffer",
+                        NULL, test_data_transfer_is_one_buffer);
     qtest_add_data_func("origin300/io8-scsi/inbound-deny-15-allow-14",
                         &inbound_masks[0], test_scsi_dma_with_inbound_mask);
     qtest_add_data_func("origin300/io8-scsi/inbound-allow-15-deny-14",
