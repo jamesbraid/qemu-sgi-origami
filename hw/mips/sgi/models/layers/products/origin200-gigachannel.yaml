@@ -159,7 +159,7 @@ layer:
           widget_part: "0xc002"
           widget_mfg: "0x036"
           widget_revision: 4
-        datasheet_contracts: [docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
         sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
       - id: gigachannel-identity
         name: cabinet board-identity NIC

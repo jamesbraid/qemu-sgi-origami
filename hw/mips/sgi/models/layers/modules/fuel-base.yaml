@@ -72,7 +72,7 @@ layer:
           notes: >-
             Both bridge heads report revision 2 in the cited Fuel capture.
             No Fuel board part number is established by this source.
-        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
       - id: xbridge-crossbar
         name: XBridge crossbar section
@@ -82,7 +82,7 @@ layer:
         parent: xbridge
         provenance: observed-hardware
         description: The capture reports XXBow revision 2 at widget 0.
-        datasheet_contracts: [docs/datasheets/xbridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
       - {id: xbridge-bridge-e, name: XBridge head at widget 14, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
       - {id: xbridge-bridge-f, name: XBridge head at widget 15, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
@@ -92,7 +92,7 @@ layer:
         parent: ip34-system-board
         hardware_kind: isp12160
         provenance: observed-hardware
-        datasheet_contracts: [docs/datasheets/isp12160.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541"]
       - id: ioc3
         name: IOC3
@@ -104,7 +104,7 @@ layer:
           The integrated Ethernet, two serial ports, keyboard, mouse and parallel
           port attach through IOC3. The Fuel PCI subsystem bytes and interrupt
           wiring have not been observed.
-        datasheet_contracts: [docs/datasheets/ioc3.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
         sources: ["007-4480-001 printed pages 6 and 28: external ports", "web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541", "web:tingo-fuel-irix-console raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
       - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 135", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
       - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}

@@ -472,12 +472,7 @@ layer:
             offset: "0xc000_0000"
             size: "0x4000_0000"
         datasheet_contracts: &hub-datasheet-contracts
-          - docs/datasheets/hub-processor-interface.md
-          - docs/datasheets/hub-memory-directory.md
-          - docs/datasheets/hub-io-interface.md
-          - docs/datasheets/hub-network-interface.md
-          - docs/datasheets/hub-bte.md
-          - docs/datasheets/hub-onewire.md
+          - qemu:docs/specs/sgi-hub.rst
 
       - id: hub-pi
         name: Hub processor interface
@@ -598,7 +593,7 @@ layer:
             offset: "0x0800_0000"
             size: "0x100_0000"
             notes: Widget 8 small window, at widget number times 16 MB.
-        datasheet_contracts: [docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
         notes: >-
           This chip answers at widget 0 as well as at widget 8, because there is no
           crossbar between it and the Hub and so nothing routes by widget number.
@@ -622,7 +617,7 @@ layer:
           pci_subsystem_id: "0xc303"
           pci_revision: 1
         datasheet_contracts: &ioc3-datasheet-contracts
-          - docs/datasheets/ioc3.md
+          - qemu:docs/specs/sgi-ioc3.rst
 
       - id: pci-slot-5
         name: PCI slot 5
@@ -710,7 +705,7 @@ layer:
         parent: ioc3
         aliases: ["DP83840AVCE (package marking)"]
         description: The ethernet physical-layer transceiver, reached through the chip's management interface.
-        datasheet_contracts: [docs/datasheets/dp83840.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
         sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface", "web:theretroweb-origin200-image-1 Ethernet section, package marked DP83840AVCE"]
 
       - id: isp1040
@@ -731,7 +726,7 @@ layer:
           pci_revision: 5
           hardware_revision: 6
         datasheet_contracts: &isp1040-datasheet-contracts
-          - docs/datasheets/isp1040.md
+          - qemu:docs/specs/sgi-qlogic-isp.rst
         sources: ["web:theretroweb-origin200-image-1 adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B", "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path"]
         notes: >-
           Two artifacts, and they establish different halves. The capture observes a SCSI adapter
@@ -808,7 +803,7 @@ layer:
             offset: "0x3000_0000"
             size: "0x1000_0000"
             notes: Node-explicit maintenance view of the same flash storage.
-        datasheet_contracts: [docs/datasheets/boot-flash.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-prom-image.rst]
         sources: ["linux:db2ddb871435 arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"]
 
       - id: rtc
@@ -818,7 +813,7 @@ layer:
         parent: ip29-system-board
         aliases: ["M48T35-70PCI (package marking)", "M48T35 (Linux driver name)", "DS1742W (what OpenBSD prints)", "DS1747"]
         description: Battery-backed non-volatile memory with a real-time clock, on the IOC3's byte bus.
-        datasheet_contracts: [docs/datasheets/timekeeper.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
         sources: ["web:theretroweb-origin200-image-1 battery-backed clock package, marked M48T35-70PCI"]
         notes: >-
           The photograph shows a battery-backed Timekeeper package marked M48T35-70PCI on the
@@ -884,7 +879,7 @@ layer:
             notes: >-
               Write-only control and read-only status share this offset; which one
               an access reaches is decided by the serial-interface-enable bit.
-        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-elsc.rst]
         sources: ["web:theretroweb-origin200-image-1 I2C section, package marked PCF8584T", "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113", "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86"]
         notes: >-
           The Origin 200 board photograph directly shows the PCF8584T package. The
@@ -908,7 +903,7 @@ layer:
           carries an 8-character display and multi-module commands the Origin 200
           has no hardware for), and separately multiplexes a serial terminal on
           its own rear diagnostic connector onto the same link.
-        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-elsc.rst]
         sources: ["007-3708-002 Origin 200 and Origin 200 GIGAchannel Owner's Guide, printed page 123"]
         notes: >-
           This one is attested by our own machine's manual rather than a
@@ -930,7 +925,7 @@ layer:
           and cell numbers, the supervisor password, the debug-switch values and the
           built-in-self-test flag.
         datasheet_contracts:
-          - docs/datasheets/pcf8584-elsc.md
+          - qemu:docs/specs/sgi-elsc.rst
         notes: >-
           NOT the same part as the machine's other non-volatile store: the clock
           component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at
@@ -956,7 +951,7 @@ layer:
           address 0x20, driven directly by a pair of firmware routines the interactive
           monitor calls.
         datasheet_contracts:
-          - docs/datasheets/pcf8584-elsc.md
+          - qemu:docs/specs/sgi-elsc.rst
         notes: >-
           WHAT THIS DEVICE IS HAS NOT BEEN ESTABLISHED, and the reviewed datasheet deliberately
           declines to guess. The entry exists because an unidentified part that provably answers is

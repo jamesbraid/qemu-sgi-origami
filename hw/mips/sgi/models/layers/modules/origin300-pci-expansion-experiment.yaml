@@ -39,7 +39,7 @@ layer:
         name: XBridge U0
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -49,7 +49,7 @@ layer:
         name: XBridge U1
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -59,7 +59,7 @@ layer:
         name: XBridge U2
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document

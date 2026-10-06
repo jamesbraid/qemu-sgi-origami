@@ -392,7 +392,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/bridge.md"
+        "qemu:docs/specs/sgi-bridge.rst"
       ],
       "hardware_kind": "bridge",
       "id": "baseio-bridge",
@@ -415,7 +415,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "hardware_kind": "ioc3",
       "id": "baseio-ioc3",
@@ -433,7 +433,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/isp1040.md"
+        "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
       "hardware_kind": "isp1040",
       "id": "baseio-scsi-0",
@@ -453,7 +453,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/isp1040.md"
+        "qemu:docs/specs/sgi-qlogic-isp.rst"
       ],
       "hardware_kind": "isp1040",
       "id": "baseio-scsi-1",
@@ -473,7 +473,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "Separate serial support component on IOC3 byte bus.",
       "id": "baseio-superio",
@@ -508,7 +508,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/timekeeper.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "description": "Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.",
       "hardware_kind": "ioc3-timekeeper",
@@ -555,7 +555,7 @@
     {
       "datasheet_contracts": [
         "docs/datasheets/baseio.md",
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ],
       "hardware_kind": "ioc3",
       "id": "mediaio-ioc3",
@@ -653,8 +653,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md",
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "hardware_kind": "msc",
       "id": "module-msc",
@@ -668,8 +667,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md",
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "description": "One logical 2048-byte store across eight slave addresses; physical package count is unknown.",
       "hardware_kind": "i2c-management-nvram",
@@ -806,7 +804,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/hub-memory-directory.md"
+        "qemu:docs/specs/sgi-hub.rst"
       ],
       "id": "node-board-1-bx",
       "kind": "bus-controller",
@@ -821,10 +819,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/hub-network-interface.md",
-        "docs/datasheets/hub-processor-interface.md",
-        "docs/datasheets/hub-memory-directory.md",
-        "docs/datasheets/hub-io-interface.md"
+        "qemu:docs/specs/sgi-hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-1-hub",
@@ -891,7 +886,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/boot-flash.md"
+        "qemu:docs/specs/sgi-prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-1-boot-flash",
@@ -926,8 +921,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md",
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-1-management-adapter",
@@ -1069,7 +1063,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/hub-memory-directory.md"
+        "qemu:docs/specs/sgi-hub.rst"
       ],
       "id": "node-board-2-bx",
       "kind": "bus-controller",
@@ -1084,10 +1078,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/hub-network-interface.md",
-        "docs/datasheets/hub-processor-interface.md",
-        "docs/datasheets/hub-memory-directory.md",
-        "docs/datasheets/hub-io-interface.md"
+        "qemu:docs/specs/sgi-hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-2-hub",
@@ -1154,7 +1145,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/boot-flash.md"
+        "qemu:docs/specs/sgi-prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-2-boot-flash",
@@ -1189,8 +1180,7 @@
     },
     {
       "datasheet_contracts": [
-        "docs/datasheets/pcf8584-elsc.md",
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-2-management-adapter",

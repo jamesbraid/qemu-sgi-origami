@@ -46,7 +46,7 @@ layer:
             forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html).
             Whether every one does is unknown. The model implements Bridge D behavior and only
             reports this revision in the widget identification register.
-        datasheet_contracts: [docs/datasheets/bridge.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
         provenance: derived
         parent: pci-carrier
       - {id: slot-1, name: PCI slot 1 (full size), kind: connector, provenance: vendor-document, parent: pci-carrier, connector: {interface: PCI, location: carrier slot 1, occupancy: empty}, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54, two full-size slots and one half-size slot"]}
