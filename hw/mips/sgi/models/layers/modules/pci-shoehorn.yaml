@@ -32,7 +32,7 @@ layer:
             is open (see the datasheet).
         provenance: derived
         datasheet_contracts: [docs/datasheets/sgi-pci-shoehorn.md]
-        sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html board label 030-1275-002 REV B, PCI-XTALK ADAPTER"]
+        sources: ["web:ebay-277925514107-image-3 board label 030-1275-002 REV B, PCI-XTALK ADAPTER"]
       - id: bridge
         name: Bridge
         kind: pci-host-bridge
@@ -48,7 +48,7 @@ layer:
         datasheet_contracts: [docs/datasheets/bridge.md]
         provenance: derived
         parent: pci-shoehorn
-        sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html board ASIC marked LSI L2A0710 Bridge Rev D, 099-0125-007"]
+        sources: ["web:ebay-277925514107-image-5 board ASIC marked LSI L2A0710 Bridge Rev D, 099-0125-007"]
       - id: cad-duo
         name: SGI Cad Duo PCI card IOC3
         kind: io-controller
@@ -64,7 +64,7 @@ layer:
       - {id: cad-duo-ethernet, name: Cad Duo Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: cad-duo, provenance: datasheet}
       - {id: cad-duo-keyboard-mouse, name: Cad Duo PS/2 keyboard and mouse, kind: subfunction, hardware_kind: ioc3-keyboard-mouse, parent: cad-duo, provenance: datasheet}
     buses:
-      - {id: pci, name: Shoehorn PCI, kind: pci, master: bridge, provenance: derived, sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html one PCI daughter-card position on the adapter"]}
+      - {id: pci, name: Shoehorn PCI, kind: pci, master: bridge, provenance: derived, sources: ["web:ebay-277925514107-image-1 one PCI daughter-card position on the adapter"]}
     connections:
       - component: bridge
         bus: upstream
@@ -75,7 +75,7 @@ layer:
           A placeholder each instance binds to its connector's XIO bus
           (bus_bindings); the connector's own attachment carries the widget and
           controlling node.
-      - {component: bridge, bus: pci, role: bridge-downstream, provenance: derived, sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html one PCI daughter-card position on the adapter"]}
+      - {component: bridge, bus: pci, role: bridge-downstream, provenance: derived, sources: ["web:ebay-277925514107-image-1 one PCI daughter-card position on the adapter"]}
       - component: cad-duo
         bus: pci
         role: endpoint
