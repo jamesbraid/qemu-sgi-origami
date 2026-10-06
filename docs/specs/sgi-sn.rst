@@ -781,6 +781,90 @@ logged and does not stop the others, and one module's reset or power
 cycle resets them all. The module's NMI output is not connected; the
 controller model does not implement ``nmi`` and answers it ``err cmd``.
 
+.. _sgi-sn-launch-metadata:
+
+Launch metadata
+===============
+
+Each product's catalogue offering carries hints for launch tools: the
+console port, the firmware dialogue a launcher drives, the disk bus,
+the netboot adapter and the guests and install media it supports. The
+machine does not act on them. They are emulator and harness choices, not
+hardware facts; where a hardware fact backs a choice, the device and
+product sections of these pages state it.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Products
+     - Console
+     - PROM dialogue
+     - Disk bus
+     - Netboot adapter
+     - Default ``-cpu``
+   * - ``origin200``, ``origin2000``, ``onyx2``
+     - ``ioc3-serial-a``
+     - ``ip27-menu``
+     - ``scsi.0``
+     - ``ioc3-ethernet``
+     - R10000
+   * - ``origin300`` and its variants, ``fuel``
+     - ``l1-uart``
+     - ``ip35-l1-prompt``
+     - ``scsi.0``
+     - ``ioc3-ethernet``
+     - R14000
+   * - ``octane``, ``octane2``
+     - ``ioc3-serial-a``
+     - ``none``
+     - ``scsi``
+     - ``none``
+     - R10000, R12000
+
+.. _sgi-sn-launch-console:
+
+Console
+-------
+
+``ioc3-serial-a`` means the first IOC3 UART on the console base I/O
+board; ``l1-uart`` means the L1 system controller's serial line, which
+the IP35 PROM's console sits behind. The choice names the port the
+stock PROM's own monitor uses on the model; it does not claim which
+physical connector an owner must use.
+
+.. _sgi-sn-launch-dialogue:
+
+PROM dialogue
+-------------
+
+``ip27-menu`` is the IP27 PROM's maintenance menu and command monitor.
+``ip35-l1-prompt`` is the L1 prompt in front of the IP35 PROM, which a
+launcher passes through before the PROM's own menu. ``none`` means no
+launcher-driven dialogue is defined. These name what a launcher
+scripts, not a hardware behaviour.
+
+.. _sgi-sn-launch-disk-bus:
+
+Disk bus and other hints
+------------------------
+
+The disk bus is the QEMU SCSI bus id a launcher attaches the boot disk
+to: ``scsi.0`` is the first onboard SCSI controller's bus on every SN
+product. The netboot adapter names the device the stock PROM's netboot
+has been confirmed to drive on the model. The Origin 200 offering also
+asks launchers without a display to pass ``debug-leds=off``. Origin 300
+launchers support booting an installed IRIX disk and netboot but not an
+IRIX installation run; that is a harness limit, not a machine one. The
+Onyx2 offerings reuse the Origin 2000 module's dialogue, console and
+disk bus, since they are built on the same IP27 node boards and stock
+PROM.
+
+The Origin 300 offering lists identity inputs a launcher may supply:
+raw chassis, board and SPD EEPROM records, a brick serial and L1 debug
+switches. These are model inputs that replace synthetic defaults; the
+machine's own identity values are marked synthetic and are not taken
+from any real machine.
+
 .. _sgi-sn-fuel-interrupts:
 
 Fuel onboard interrupt routing (approximation)
