@@ -416,7 +416,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "docs/datasheets/xbow.md"
+        "qemu:docs/specs/sgi-xbow.rst"
       ],
       "description": "External cabinet Crossbow. Link A reaches the attached Hub, link 9 reaches the IP29 Bridge at io1, link 8 reaches the cabinet Bridge at io7, and links B-F reach the optional positions io2-io6. Revision 12.0 retains a read/write NIC register but identifies its MicroLAN controller as nonfunctional, so this reference exposes no Crossbow one-wire bus or responder.",
       "hardware_kind": "xbow",

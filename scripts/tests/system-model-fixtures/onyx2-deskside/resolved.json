@@ -69,7 +69,7 @@
       "name": "Shared module management I2C bus",
       "provenance": "derived",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -354,7 +354,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "docs/datasheets/xbow.md"
+        "qemu:docs/specs/sgi-xbow.rst"
       ],
       "hardware_kind": "xbow",
       "id": "crossbow-0",
@@ -1564,7 +1564,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -1573,7 +1573,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -1583,7 +1583,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -1594,7 +1594,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/origin2000-module-management.md"
+        "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
       ]
     },
     {
@@ -2103,7 +2103,7 @@
       },
       "provenance": "derived",
       "sources": [
-        "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
+        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode",
         "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface",
         "qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes"
       ]

@@ -17,7 +17,8 @@
 # and not a Router component.
 layer_version: 1
 sources:
-  onyx2-deskside-module-management: "docs/datasheets/origin2000-module-management.md"
+  onyx2-deskside-module-management: "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+  onyx2-deskside-module-management-nvram: "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
 layer:
   kind: module
   id: onyx2-deskside-module
@@ -36,7 +37,7 @@ layer:
         notes: >-
           Part 013-1839-001 in the real deskside board lists. The model
           presents no midplane record.
-      - {id: crossbow-0, name: Crossbow, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: datasheet, parent: module-midplane, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
+      - {id: crossbow-0, name: Crossbow, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [qemu:docs/specs/sgi-xbow.rst], provenance: datasheet, parent: module-midplane, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
       - {id: baseio, name: BaseIO-G board in IO1, kind: board, identity: {part: "030-0734-002", notes: "The BaseIO-G base board part in the real deskside board lists."}, provenance: vendor-document, parent: module-midplane, physical_slot: {kind: io, number: 1}, sources: ["007-3454-005 printed page 24 PDF page 42: the BaseIO-G stays in XIO slot 1"]}
       - {id: baseio-bridge, name: Bridge, kind: pci-host-bridge, hardware_kind: bridge, pci_host_bridge: {heads: 1}, identity: {widget_part: "0xc002", widget_mfg: "0x36", widget_revision: 4, notes: "Select Bridge D; the revision encodings were independently reviewed."}, datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
       - {id: baseio-ioc3, name: IOC3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1, notes: "Select the revision 1 component supported by the IOC3 page (docs/specs/sgi-ioc3.rst); subsystem compatibility is a separate software policy."}, datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
@@ -103,7 +104,7 @@ layer:
       - {component: node-board-1-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: [onyx2-deskside-module-management]}
       - {component: node-board-2-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: [onyx2-deskside-module-management]}
       - {component: module-msc, bus: module-management-i2c, role: master, i2c_address: 8, provenance: derived, sources: [onyx2-deskside-module-management]}
-      - {component: module-management-nvram, bus: module-management-i2c, role: endpoint, i2c_address: 80, i2c_address_count: 8, provenance: derived, sources: [onyx2-deskside-module-management]}
+      - {component: module-management-nvram, bus: module-management-i2c, role: endpoint, i2c_address: 80, i2c_address_count: 8, provenance: derived, sources: [onyx2-deskside-module-management-nvram]}
       - {component: node-board-1-hub, bus: null-router, role: master, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
       - {component: node-board-2-hub, bus: null-router, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
       - {component: node-board-2-hub, bus: xbow0-node2, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: datasheet, sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-widget-map]}
