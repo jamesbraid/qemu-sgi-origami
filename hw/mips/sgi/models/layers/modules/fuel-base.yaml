@@ -38,7 +38,7 @@ layer:
         description: >-
           Two 256 MiB DIMMs in paired sockets 0 and 2 supply the selected
           512 MiB. The socket-to-Bedrock-bank map and SPD bytes are unknown.
-        sources: ["007-4480-001 printed pages 31 and 60: paired sockets and 512 MiB minimum", "openbsd:2df91d80c1 sys/arch/sgi/sgi/l1.c lines 997 to 1014: Fuel SPD component indices 4 plus DIMM number"]
+        sources: ["007-4480-001 printed pages 31 and 60: paired sockets and 512 MiB minimum", "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/l1.c lines 997 to 1014: Fuel SPD component indices 4 plus DIMM number"]
       - id: bedrock
         name: Bedrock
         kind: node-asic
@@ -106,12 +106,12 @@ layer:
           wiring have not been observed.
         datasheet_contracts: [docs/datasheets/ioc3.md]
         sources: ["007-4480-001 printed pages 6 and 28: external ports", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
-      - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
+      - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
       - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
       - {id: ioc3-serial-b, name: serial port B, kind: subfunction, hardware_kind: ioc3-serial-b, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
       - {id: ioc3-parallel, name: parallel port, kind: subfunction, hardware_kind: ioc3-parallel, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed page 28"]}
-      - {id: ioc3-keyboard, name: PS/2 keyboard, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
-      - {id: ioc3-mouse, name: PS/2 mouse, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
+      - {id: ioc3-keyboard, name: PS/2 keyboard, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
+      - {id: ioc3-mouse, name: PS/2 mouse, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
       - id: usb
         name: USB controller (OHCI)
         kind: io-controller
