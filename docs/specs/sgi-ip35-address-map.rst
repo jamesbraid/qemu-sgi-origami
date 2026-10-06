@@ -1,0 +1,412 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-ip35-address-map:
+
+============================================
+IP35 physical address map (Origin 300, IP45)
+============================================
+
+This page is the address map the Origin 300 and Fuel machine models
+(``hw/mips/sgi/sn1.c`` and ``sn1-node.c``) follow: how an R10000-family
+processor selects a space, how the node number sits in a physical
+address, node memory, the crosstalk windows, the Bedrock's register
+space, the hand-off and reset registers, and the interrupt-send address.
+The Bedrock units behind the register space are on :doc:`sgi-bedrock`.
+Ratings follow :ref:`sgi-ip30`.
+
+Sources, all public. Citations give the file and lines at the pinned
+commit:
+
+- OpenBSD sgi, ``openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf``:
+  ``sys/arch/mips64/include/cpu.h``, ``sys/arch/sgi/include/mnode.h``,
+  ``sys/arch/sgi/xbow/hub.h``, ``xbow.c``, ``xbridge.c``,
+  ``sys/arch/sgi/sgi/ip27.h``, ``ip27_machdep.c``, ``sginode.c``,
+  ``l1.c`` and ``sys/arch/sgi/conf/GENERIC-IP27``.
+- SGI's Linux SN1 headers, ``linux-history:7570df54ef8c`` (tag
+  v2.5.40): ``include/asm-ia64/sn/sn1/addrs.h``, ``arch.h``,
+  ``bedrock.h``, ``hubpi.h``, ``hubpi_next.h``, ``hubio.h``,
+  ``hubio_next.h``, ``hublb.h``, ``hubni.h``, ``hubni_next.h``,
+  ``hubmd.h``, ``include/asm-ia64/sn/kldir.h`` and
+  ``arch/ia64/sn/io/sn1/ip37.c``. These are SGI-written, generated from
+  its register database: a register-definition source and an Itanium
+  consumer, not a MIPS guest and not independent corroboration of
+  anything else SGI wrote.
+- The out-of-tree MIPS IP35 port, ``linux-ip35:9f613a321ea0``:
+  ``arch/mips/include/asm/mach-ip35/spaces.h``,
+  ``arch/mips/include/asm/sn/sn1/addrs.h``, ``arch/mips/sgi-ip35/`` and
+  ``arch/mips/pci/pci-sgipic.c``; nothing records it booting.
+- *Origin 300 User's Guide* (007-4365-002), *Origin 3000 System
+  Architecture* (108-0240-002), *XBridge ASIC Specification* revision
+  0.5 (``web:xbridge-asic-spec-0.5``) and *sMDK-based Field
+  Diagnostics* (108-0264-004).
+
+.. _sgi-ip35-address-map-spaces:
+
+Processor-side spaces
+=====================
+
+The processor selects a space with two bits beside the address, not inside
+it: an R10000-family processor takes the uncached attribute from
+virtual-address bits 58:57 of an uncached xkphys address and drives it with
+the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113; linux-ip35
+``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines 40-44).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 10 26 46
+
+   * - Space
+     - Attribute
+     - Base an unmapped R10000 guest uses
+     - Source (all established)
+   * - cached memory
+     - none
+     - ``0xa800_0000_0000_0000``
+     - OpenBSD ``mnode.h`` line 40, ``cpu.h`` line 87, ``GENERIC-IP27``
+       line 20; linux-ip35 ``spaces.h`` line 17; same value as the
+       Origin 200.
+   * - Hub special
+     - 0
+     - ``0x9000_0000_0000_0000``
+     - ``cpu.h`` line 98, ``mnode.h`` line 46; ``spaces.h`` line 19.
+   * - I/O
+     - 1
+     - ``0x9200_0000_0000_0000``
+     - ``cpu.h`` line 99, ``mnode.h`` line 47, ``ip27_machdep.c`` line
+       161; ``spaces.h`` line 20.
+   * - memory special
+     - 2
+     - ``0x9400_0000_0000_0000``
+     - ``cpu.h`` line 100, ``mnode.h`` line 48; ``spaces.h`` line 21.
+   * - uncached memory
+     - 3
+     - ``0x9600_0000_0000_0000``
+     - ``cpu.h`` line 101, ``mnode.h`` line 49; ``spaces.h`` line 22.
+
+There are exactly four uncached spaces on the MIPS side. The Itanium port's
+seven bases do not apply. The Origin 200's 42-bit machine-bus carrier
+(a two-bit window number above the 40-bit physical address) fits this
+generation unchanged (emulator choice).
+
+.. _sgi-ip35-address-map-node:
+
+The node number
+===============
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 24 24 32
+
+   * - Item
+     - M mode
+     - N mode
+     - Source (established)
+   * - node field
+     - bits 39:33 (7 bits)
+     - bits 39:32 (8 bits)
+     - linux-ip35 ``sn1/addrs.h`` lines 50-71; Linux SN1 ``sn1/addrs.h``
+       lines 71-92; OpenBSD ``sginode.c`` line 102.
+   * - node window
+     - 8 GB
+     - 4 GB
+     - the same lines; OpenBSD ``mnode.h`` line 55.
+   * - maximum nodes
+     - 128
+     - 128
+     - ``sn1/arch.h`` ``MAX_NASIDS``; OpenBSD ``mnode.h`` line 438 (the
+       64-node M-mode cap in ``sginode.c`` is an OpenBSD choice).
+   * - Origin 200
+     - bits 39:32, 4 GB
+     - bits 39:31, 2 GB
+     - mainline Linux ``sn0/addrs.h`` lines 53-74.
+
+The vendor's own Origin 300 field-diagnostics manual prints a sample
+configuration for an Origin 3000 pair in which node 1's cached memory base
+is ``0xa800000200000000``, 2^33 above node 0's (108-0264-004 printed page
+A-2), agreeing with the seven-bit field at bit 33 (established).
+
+How a guest learns the mode conflicts across consumers: OpenBSD takes bit
+18 of the network port status register (offset ``0x680000``) as "more nodes
+than M mode holds" (``sginode.c`` lines 100-103, ``hub.h`` line 218), the
+Origin 200 rule; the Bedrock register file defines only bits 2:0 of that
+register (Linux SN1 ``sn1/hubni.h`` lines 1015-1033), and the Itanium
+port reads the local block's system-size field, bits 47:46 of its revision
+register, where 2 means N mode (``hublb_next.h`` lines 19-32, ``ip37.c``
+lines 34-38). The model returns zero in both (an approximation): OpenBSD
+prints "Machine is in M mode" on real Origin 300s, one chassis and two
+cabled, so bit 18 reading clear is observed; what an N-mode Bedrock
+returns, and which register the PROM consults, are unknown.
+
+.. _sgi-ip35-address-map-memory:
+
+Node memory and the low-memory map
+==================================
+
+Memory is reported per bank in 1 GB steps (OpenBSD ``sginode.c`` lines
+549-590); the Linux SN1 headers give a 1 GB slot shift, a 64 MB minimum and
+eight slots per node (``sn1/arch.h`` lines 47 and 53-54). OpenBSD does not
+manage the first 64 MB of a node on IP35, against 32 MB on IP27
+(``sginode.c`` lines 566-575, 519-528). The Origin 300 has four DIMM slots
+as two pairs, 512 MB to 4 GB per chassis, the pairs allowed to differ
+(007-4365-002 printed page 11). Established.
+
+The firmware's low-memory map, as the Linux SN1 tree draws it
+(``kldir.h`` lines 164-283 for the diagram, 310-361 for the constants):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 54 30
+
+   * - Offset
+     - Contents
+     - Fixed-offset readers
+   * - ``0x0000``
+     - processor 0 exception handlers; cache-error frame at ``+0x400``,
+       early cache-exception stack at ``+0x800``
+     - firmware
+   * - ``0x1000``
+     - ARCS system parameter block, 1 KB
+     - every ARCS guest
+   * - ``0x2000``
+     - low-memory directory, 1 KB, 16 entries of 64 bytes
+     - OpenBSD ``mnode.h`` line 90; both Linux trees
+   * - ``0x2400``
+     - launch area: four entries of ``0x100``
+     - firmware
+   * - ``0x3000``
+     - NMI handler page, four entries of ``0x40``
+     - firmware
+   * - ``0x8000``, ``0x10000``, ``0x18000``
+     - processors 1 to 3: handlers, cache-error frame, early stack
+     - firmware
+   * - ``0x9000``, ``0xa000``
+     - NMI register save and exception-frame areas, ``0x400`` per
+       processor
+     - OpenBSD ``ip27.h`` lines 29-31
+   * - ``0xb000``
+     - global data area, 1 KB (directory slot 3)
+     - guests via the directory
+   * - ``0x20000``
+     - processor-interface error spools, 64 KB (slot 6)
+     - via the directory
+   * - ``0x30000``
+     - configuration graph (KLCONFIG), 64 KB (slot 1)
+     - via the directory
+   * - ``0x40000``
+     - first free memory; non-debug kernel load address
+     - ``kldir.h`` line 336; linux-ip35 ``Platform`` line 11; OpenBSD
+       links the same address (``GENERIC-IP27`` line 19, one kernel for
+       both boards)
+
+The directory slot numbers are unchanged from the Origin 200 (0 launch, 1
+KLCONFIG, 2 NMI, 3 GDA, 4 free memory, 5 symmon stack, 6 PI error, 7
+kernel variables, 8 kernel cross-partition, 9 partition id: OpenBSD
+``mnode.h`` lines 91-100; both Linux trees). That the stock IP35 PROM
+places its configuration graph at ``0x30000`` is measured from the stock
+image (``firmware:ip35-prom-6.210``, ``init_klcfg: nasid 0 start
+9600000000030000``). The Origin 200's offsets (NMI save area ``0x11400``,
+GDA ``0x11000``, KLCONFIG ``0x4000``, kernel ``0x19000``) do not apply to
+IP35.
+
+.. _sgi-ip35-address-map-io:
+
+Crosstalk windows
+=================
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Item
+     - Value
+     - Source (established unless marked)
+   * - small window
+     - 16 MB per widget; widget ``w`` at node I/O base ``+ w << 24``;
+       devices are widgets 8 to 15.
+     - OpenBSD ``hub.h`` lines 22-26, ``ip27_machdep.c`` lines 488-489;
+       both Linux trees' ``sn/addrs.h``.
+   * - big window
+     - 512 MB in M mode, 256 MB in N mode; window ``k`` at node I/O base
+       ``+ (k + 1) << 29`` (28 in N mode).
+     - OpenBSD ``ip27_machdep.c`` lines 69, 236-237, 493-497; linux-ip35
+       ``sn1/addrs.h`` lines 65 and 51; Linux SN1 lines 86 and 72.
+   * - translation entries
+     - seven, at hub offsets ``0x400160`` to ``0x400190`` in 8-byte
+       steps; software numbers them 0 to 6, hardware manuals 1 to 7.
+     - OpenBSD ``hub.h`` lines 191-193; Linux SN1 ``hubio.h`` lines
+       132-174.
+   * - entry encoding
+     - bit 12 space (1 device, 0 memory), bits 11:8 widget, low bits the
+       XIO address above the window size.
+     - OpenBSD ``hub.h`` lines 195-201; Linux ``sn/io.h`` lines 20-46.
+   * - widget 0
+     - reached through big window 6, which the PROM programs for it.
+     - OpenBSD ``ip27_machdep.c`` lines 478-486, 535-536; both Linux
+       trees. Whether the remap is still needed on a Bedrock is open
+       (Linux's own header asks, ``hubio_next.h`` line 144); reading
+       entry 6 after a stock PROM boot would settle it, and the model
+       answers both forms.
+
+The crossbar is at widget 0, the XBridge heads at widgets 14 and 15 and the
+Bedrock enters at port ``0xa`` (observed on real Origin 300s in three
+owners' inventories, ``ASIC XBOW Rev 2`` with ``ASIC BRIDGE Rev 2`` at
+widgets 14 and 15, and a verbose PROM trace printing ``HUB at 0x0 attached
+as widget 0xa`` and ``xbow_base= 0x9200000000000000``); the XBridge
+specification, revision 0.5 printed pages 17 and 44-46, gives the XBridge
+mode with internal ports ``0xe`` and ``0xf`` (:doc:`sgi-xbridge`). A device
+register behind the XBridge composes as I/O space plus the node offset plus
+the widget window (``widget << 24``) plus the bridge's device window plus the
+register offset; the device windows are two 2 MB windows from ``0x200000``
+and six 1 MB windows from ``0x600000``.
+
+.. _sgi-ip35-address-map-hub:
+
+Hub register space
+==================
+
+The Bedrock's registers are XIO widget 1 of its own node.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - Form
+     - Address
+     - Source (established)
+   * - local register ``r``
+     - ``0x9200_0000_0100_0000 + r``
+     - OpenBSD ``hub.h`` lines 28-29; both Linux trees' ``IALIAS_BASE``.
+   * - remote register ``r`` on node ``n``
+     - ``0x9200_0000_0180_0000 + (n << 33) + r``
+     - ``hub.h`` lines 30-31; ``sn/addrs.h`` ``REMOTE_HUB_ADDR``.
+   * - second processor interface
+     - remote form ``+ 0x200000``
+     - ``hub.h`` lines 32-34 and 110-114; ``hubpi_next.h`` lines 16-19.
+
+Unit bases inside the 8 MB window (hub-relative; established): processor
+interface 0 at ``0x000000`` (OpenBSD ``hub.h`` line 85); processor
+interface 1 at ``0x200000`` (lines 110-114); I/O interface ``0x400000``
+(line 189); local block ``0x600000`` (line 208); network interface
+``0x680000`` (line 215); crossbar ``0x700000`` (line 233); memory and
+directory ``0x780000`` (line 180); each matches the first register of the
+corresponding ``hub*.h`` header. OpenBSD expects the local form to reach the
+requester's own interface; whether the Bedrock selects the interface that
+way is unmeasured, and the two-processor board needs a PI0/PI1 local-read
+test to settle it.
+
+.. _sgi-ip35-address-map-special:
+
+Hub special space
+=================
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 52
+
+   * - Region (offset from the node's Hub-special base)
+     - Size
+     - Source
+   * - local register window, ``0x1000_0000``
+     - 128 MB
+     - established: OpenBSD ``hub.h`` lines 63-64; Linux SN1
+       ``sn/addrs.h`` lines 123-125.
+   * - boot window, ``0x1800_0000``
+     - 128 MB
+     - observed: Linux SN1 ``sn/addrs.h`` lines 126-128; OpenBSD defines
+       and never uses it. The PROM copies itself from
+       ``0x9000000018000000`` (the Tezro verbose trace).
+   * - second PROM, boot-window offset ``0x0200_0000``
+     - 32 MiB stride
+     - established: Linux SN1 defines two PROMs on 32 MiB boundaries; the
+       model maps the upper 8 MiB of the 16 MiB backing there
+       (emulator choice).
+   * - remote register window of node ``n``, ``0x3000_0000``
+     - 128 MB
+     - established: OpenBSD ``hub.h`` lines 48-49; Linux SN1
+       ``sn/addrs.h`` line 148.
+   * - remote boot window of node ``n``, ``0x3800_0000``
+     - 128 MB
+     - observed plus derived: Linux SN1 ``sn/addrs.h`` line 153;
+       OpenBSD never forms it.
+   * - directory backdoor, ``0x1c000_0000``
+     - 1 GB aperture
+     - observed: Linux v2.5.0 (``linux-history:381ab1f538162``)
+       ``sn/addrs.h`` maps one Bedrock directory word at ``+0`` and
+       names ``+8`` as the page-counter address.
+
+The uncached alias of the reader's own node memory at offset 0 is
+inherited text from the Origin 200 headers and no IP35 consumer uses it
+(observed, linux-ip35 ``sn/addrs.h`` lines 119-133). The cached-alias size
+register in each processor interface (``0x28``) takes a 4-bit code, 0 off
+and 1 to 15 for 4 KB doubling to 64 MB (``hubpi_next.h`` lines 199-215;
+OpenBSD ``hub.h`` lines 89-90); OpenBSD writes 0 to both interfaces and all
+ones to both region-present registers at setup (``ip27_machdep.c`` lines
+338-345). Whether IP35 flips the bottom 128 KB of the uncached alias per
+processor as the Origin 200 does is unknown; observing where a stock PROM
+places each processor's handler copies would settle it.
+
+.. _sgi-ip35-address-map-interrupt:
+
+Interrupt send
+==============
+
+A widget raises a Bedrock interrupt by writing to an XIO address naming the
+node, the Bedrock's own widget 1, the remote form and the
+interrupt-pending-modify register: bit 47, the node shifted by 39 (38 on
+IP27) and ``0x0180_0090`` (OpenBSD ``ip27_machdep.c`` lines 350-353; Linux
+``sn/xtalk/xtalkaddrs.h`` lines 66-91, adding ``0x200000`` for a target
+on the second interface, ``hub_intr.c`` line 145). Writing ``0x100 | level``
+sets, ``level`` alone clears (``hub.h`` lines 98-100; Linux ``sn1/intr.h``
+lines 122-143). The bridge's interrupt-destination registers carry the
+Bedrock's crossbar widget number in bits 51:48 (``xbridge.c`` lines
+2177-2191), from the configuration graph's crossbar record, default ``0xa``
+(``sginode.c`` lines 159-160, 338). For a Bridge-class bridge on a node
+other than 0 OpenBSD places the node at bit 9 and linux-ip35 at bit 8
+(``xbridge.c`` lines 1393-1394; ``pci-sgipic.c`` line 77): open, and
+irrelevant until a second node exists. Established, except the open item.
+
+.. _sgi-ip35-address-map-handoff:
+
+Firmware hand-off, reset and launch
+===================================
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 40 30
+
+   * - Item
+     - Value
+     - Source
+   * - firmware operation request on halt or reboot
+     - local block scratch register 2, hub offset ``0x608010``: magic
+       ``0x0ead0000`` or-ed with a command (halt ``0x10``, power down
+       ``0x20``, restart ``0x30``, reboot ``0x40``, interactive monitor
+       ``0x50``) and options (no diagnostics ``0x100``, no memory init
+       ``0x200``, no device init ``0x400``).
+     - OpenBSD ``ip27_machdep.c`` lines 680-704, ``mnode.h`` lines
+       456-466 (established). The Origin 200 uses processor-interface
+       ``0x418`` (line 703); both Linux SN1 trees name ``0x418`` here
+       and never write it, and the held IP35 PROM's choice on a warm
+       reset is unconfirmed (open).
+   * - network port reset
+     - hub offset ``0x680008``: bit 0 link reset, bit 1 port (warm)
+       reset, bit 2 local Bedrock reset.
+     - OpenBSD ``hub.h`` lines 219-225; Linux ``hubni_next.h`` lines
+       28-30 (established).
+   * - reset enable
+     - hub offset ``0x680010``, bit 0 = 1 allows the reset.
+     - ``hub.h`` lines 226-227; ``hubni.h`` line 35 (established).
+   * - halt sequence
+     - for each other node write reset-enable 1 then the reset register,
+       then the local node last; the reset value is local plus link
+       reset in OpenBSD (``0x5``) and local plus port reset in the
+       Itanium port (``0x6``).
+     - ``ip27_machdep.c`` lines 706-729; ``ip37.c`` lines 45-46.
+   * - secondary-processor launch
+     - OpenBSD calls the PROM's launch-slave entry at compatibility
+       address ``0x1fc0_0038`` with node, slice, function, parameter,
+       stack and global pointer; no public MIPS consumer uses a
+       register-level launch. The launch area holds four entries of
+       ``0x100`` on IP35 against two of ``0x200`` on the Origin 200.
+     - ``ip27.h`` lines 60-64; ``ip27_machdep.c`` lines 1083-1085; Linux
+       ``kldir.h`` lines 310-313 (established).

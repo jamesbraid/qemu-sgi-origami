@@ -45,6 +45,7 @@ guest hardware that is specific to QEMU.
    s390x-secure-ipl
    r10000-coherence
    sgi-baseio
+   sgi-bedrock
    sgi-bridge
    sgi-elsc
    sgi-gigachannel
@@ -52,8 +53,11 @@ guest hardware that is specific to QEMU.
    sgi-hub
    sgi-ioc3
    sgi-ioc3-boards
+   sgi-ip35-address-map
+   sgi-lucent-ohci
    sgi-ip30
    sgi-onyx2
+   sgi-l1
    sgi-mscsi
    sgi-origin2000-module
    sgi-pci-expansion

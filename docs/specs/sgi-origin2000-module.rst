@@ -2,9 +2,9 @@
 
 .. _sgi-origin2000-module:
 
-====================================================
+==================================================
 SGI Origin 2000 module: nodes, Routers, management
-====================================================
+==================================================
 
 An Origin 2000 module is the deskside chassis or one rack module: a
 midplane with four node-board slots, two Router slots, two Crossbows
