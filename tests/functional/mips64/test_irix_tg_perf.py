@@ -38,6 +38,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_irix_tg as base  # noqa: E402
+from lib_prom import launch_paused  # noqa: E402
 
 def tg_perf_verdict(login_reached, tg_up, results):
     """Decide PASS/FAIL for one IRIX tg transport-and-throughput run.
@@ -381,7 +382,7 @@ if base.QemuSystemTest is not None:
                 '-netdev', netdev,
                 '-device', f'bcm570x,netdev=tgnet,addr={base.TG_ADDR},mac={base.TG_MAC}',
                 '-object', f'filter-dump,id=tgcap,netdev=tgnet,file={pcap}')
-            vm.launch()
+            launch_paused(vm)
 
             tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT)
             udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT)

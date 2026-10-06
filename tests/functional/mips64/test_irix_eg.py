@@ -86,7 +86,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import (HarnessError, IrixConsole,  # noqa: E402
                      drive_irix_to_shell, irix_interface_at_pci_slot)
-from lib_prom import MACHINES, file_sha256  # noqa: E402
+from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
 
 def mtu_probe_result(rc, output):
     """Classify one IRIX ifconfig MTU request from status and diagnostics."""
@@ -788,7 +788,7 @@ if QemuSystemTest is not None:
                     vm.add_args('-trace', 'enable=' + event)
                 vm.add_args('-trace',
                             'file=' + self.log_file('tigon-trace.log'))
-            vm.launch()
+            launch_paused(vm)
 
             tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT)
             udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT)

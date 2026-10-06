@@ -26,7 +26,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import HarnessError, IrixConsole, drive_irix_to_shell  # noqa: E402
-from lib_prom import MACHINES, file_sha256  # noqa: E402
+from lib_prom import MACHINES, file_sha256, launch_paused  # noqa: E402
 
 try:
     from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv
@@ -216,7 +216,7 @@ if QemuSystemTest is not None:
                 '-drive', f'if=none,id=disk0,file={disk},format=qcow2',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
                 '-snapshot', '-nic', netdev)
-            vm.launch()
+            launch_paused(vm)
 
             tcp_host_port = _hostfwd_port(vm, 'tcp', TCP_RX_PORT)
             udp_host_port = _hostfwd_port(vm, 'udp', UDP_RX_PORT)

@@ -17,7 +17,7 @@ from qemu_test.asset import LocalAsset
 from lib_net import IrixConsole, arp_request_frame, drive_irix_to_shell
 from lib_net import irix_interface_at_pci_slot
 from lib_net import parse_arp_frame
-from lib_prom import FIRMWARE_REL, MACHINES, file_sha256
+from lib_prom import FIRMWARE_REL, MACHINES, file_sha256, launch_paused
 
 RELEASE = "6.5.30"
 DISK_REL = os.path.join("irix", RELEASE, "root.qcow2")
@@ -75,7 +75,7 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
                 "-device", (f"{device_model},netdev=netdev,"
                             f"addr={ADDIN_SLOT},"
                             f"mac={configured_mac.hex(':')}"))
-        vm.launch()
+        launch_paused(vm)
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
                           test.log_file(f"irix-{adapter}-arp-console.log"),

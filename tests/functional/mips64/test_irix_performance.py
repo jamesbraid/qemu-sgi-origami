@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import IrixConsole, drive_irix_to_shell, posix_cksum
 from lib_performance import measure, summarize
-from lib_prom import FORK_ROOT, MACHINES, file_sha256, run_record, utc_now
+from lib_prom import (FORK_ROOT, MACHINES, file_sha256, launch_paused,
+                      run_record, utc_now)
 from test_irix_ef import (DISK_REL, DISK_SHA256, FIRMWARE_REL, PROM_SHA256,
                           GATEWAY, GUEST_ADDR, TCP_RX_PORT, _finish_guest,
                           _host_cksum, _hostfwd_port, _run_guest, _send_tcp,
@@ -65,7 +66,7 @@ class IrixPerformance(QemuSystemTest):
         report_path = self.log_file('performance.json')
         con = None
         try:
-            vm.launch()
+            launch_paused(vm)
             con = IrixConsole(vm.console_socket, self.log_file('console.log'),
                               exited=lambda: vm.exitcode() is not None)
             drive_irix_to_shell(con, 1200)
