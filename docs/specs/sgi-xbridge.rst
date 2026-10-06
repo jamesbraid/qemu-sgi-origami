@@ -145,8 +145,11 @@ address space for each and the shared placement targets over it
 (``hw/pci-host/sgi-dma-placement.c``, as on the Bridge), so byte
 placement follows the XBridge's own swap tables: a set swap control is
 a byte stream, a clear one reverses each aligned 32-bit word in a
-32-bit slot and each aligned doubleword in a slot the head's
-``dma-64bit-slots`` property marks 64-bit, as on the Bridge. In
+32-bit slot and each aligned doubleword in a slot that runs 64-bit
+data phases, settled at reset from the head's ``req64-slots`` wiring
+and the card's 64-bit interface as on the Bridge (the chip forwards
+``req64-slots-e`` and ``req64-slots-f``; the Origin 300 wires head E
+devices 1 and 2). In
 packet mode the targets send each step as an explicit packet carrying
 this head and the requesting slot instead of writing an address space.
 

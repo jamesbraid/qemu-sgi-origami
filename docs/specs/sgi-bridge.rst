@@ -208,12 +208,23 @@ their order on a 32-bit data phase (specification Tables 73 and 76),
 and each aligned doubleword is reversed on a 64-bit one (Tables 77
 and 80).
 
-PCI negotiates data-phase width per transaction. The model takes it
-per slot instead, from the ``dma-64bit-slots`` property (one bit per
-slot, all 32-bit by default), and in a 64-bit slot every transfer,
-including one shorter than a doubleword, takes the doubleword
-placement. Which width a card runs at in an SGI slot is not
-established; the machine or launcher that fits the card chooses it.
+PCI settles data-phase width per transaction: a slot wired to the
+64-bit data path drives REQ64# during reset, and a 64-bit card that
+sampled it requests 64-bit transfers, which the target acknowledges
+with ACK64#. QEMU carries no width with an access, and both ends are
+fixed once reset ends, so the Bridge settles each slot's width at the
+end of every reset and caches it. A slot runs 64-bit data phases when
+the board wires it (the ``req64-slots`` property, one bit per slot,
+set by the machine) and every function in it implements
+``INTERFACE_PCI_64BIT_DEVICE`` (``include/hw/pci/pci-64bit.h``), which
+is also how a card learns what it sampled. Because placement is per
+slot, a 32-bit function narrows a 64-bit function beside it; hardware
+would let each function negotiate. In a 64-bit slot every
+transfer, including one shorter than a doubleword, takes the
+doubleword placement. The doubleword target is built only on a board
+that wires some slot; the word target is always built, for a 32-bit
+card in a wired slot. The Origin 200 machine wires the option slots,
+devices 5 to 7.
 
 Which window applies is judged on the raw PCI address the device
 issued, before any translation rewrites it. Local-window transfers

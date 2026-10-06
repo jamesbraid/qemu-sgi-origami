@@ -1002,8 +1002,8 @@ static void run_source_dma_byte_lanes(bool wide)
 {
     QTestState *s = assembly_start(wide ?
         "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
-        "-global sgi-xbridge-head.dma-64bit-slots=1 "
-        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0" :
+        "-global sgi-xbridge.req64-slots-e=1 "
+        "-device sgi-bridge-dma-test-64bit,bus=fixture1-head-e.0,addr=0" :
         "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
         "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0");
     uint64_t head = VIEW(2), card = head + 0x200000;

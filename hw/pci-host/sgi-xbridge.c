@@ -269,7 +269,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         goto out;
     }
     *placement = sgi_dma_placement_select(
-        swap, s->dma_64bit_slots & (1U << dma->slot));
+        swap, s->dma_64bit & (1U << dma->slot));
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
         *onward = NULL;
@@ -942,6 +942,19 @@ static const MemoryRegionOps xbridge_ops = {
     .impl.max_access_size = 8,
 };
 
+/*
+ * The end of reset is when a card samples REQ64#; the slot width is settled
+ * here and cached in place of the per-transaction handshake, as on the
+ * Bridge.
+ */
+static void xbridge_reset_exit(Object *obj, ResetType type)
+{
+    SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(obj);
+
+    s->dma_64bit = sgi_dma_placement_reset_widths(PCI_HOST_BRIDGE(s)->bus,
+                                                  s->req64_slots);
+}
+
 static void xbridge_reset_hold(Object *obj, ResetType type)
 {
     SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(obj);
@@ -1027,10 +1040,7 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         /* Packet mode places through each slot's sender instead. */
         sgi_dma_placement_init(&endpoint->placement, OBJECT(s), name,
                                &endpoint->as, s->packet_sender ? 0 :
-                               (s->dma_64bit_slots != 0xff ?
-                                BIT(SGI_DMA_PLACEMENT_WORD) : 0) |
-                               (s->dma_64bit_slots ?
-                                BIT(SGI_DMA_PLACEMENT_DOUBLEWORD) : 0));
+                               sgi_dma_placement_needed(s->req64_slots));
     }
     memory_region_init(&s->denied, OBJECT(s), "xbridge.denied", UINT64_MAX);
     address_space_init(&s->denied_as, &s->denied, "xbridge.denied");
@@ -1053,9 +1063,8 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
                                         source_name,
                                         SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE,
                                         BIT(SGI_DMA_PLACEMENT_IDENTITY) |
-                                        BIT(s->dma_64bit_slots & BIT(i) ?
-                                            SGI_DMA_PLACEMENT_DOUBLEWORD :
-                                            SGI_DMA_PLACEMENT_WORD),
+                                        sgi_dma_placement_needed(
+                                            s->req64_slots & BIT(i)),
                                         xbridge_source_send, &s->dma[i]);
         }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
@@ -1160,9 +1169,8 @@ static const Property xbridge_properties[] = {
     DEFINE_PROP_UINT8("pci-speed", SGIXBridgeHeadState, speed, 0),
     DEFINE_PROP_STRING("board-part", SGIXBridgeHeadState, board_part),
     DEFINE_PROP_STRING("bus-name", SGIXBridgeHeadState, bus_name),
-    /* As on the Bridge: slots whose DMA runs 64-bit data phases. */
-    DEFINE_PROP_UINT8("dma-64bit-slots", SGIXBridgeHeadState,
-                      dma_64bit_slots, 0),
+    /* As on the Bridge: slots whose REQ64# the board drives at reset. */
+    DEFINE_PROP_UINT8("req64-slots", SGIXBridgeHeadState, req64_slots, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIXBridgeHeadState, onewire_serial,
                        SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
@@ -1180,6 +1188,7 @@ static void xbridge_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_xbridge;
     hc->is_hotpluggable_bus = xbridge_is_hotpluggable_bus;
     rc->phases.hold = xbridge_reset_hold;
+    rc->phases.exit = xbridge_reset_exit;
     device_class_set_props(dc, xbridge_properties);
     SGI_DMA_BUFFER_CLASS(oc)->get_provider = xbridge_dma_buffer_provider;
 }
@@ -1275,6 +1284,7 @@ struct SGIXBridgeState {
     uint8_t host_port;
     uint8_t xio_port;
     uint8_t pci_speed[2];
+    uint8_t req64_slots[2];
     char *board_part[2];
     /*
      * Prefixed to each head's bus name, so a second chip in one machine (a
@@ -1653,6 +1663,8 @@ static void chip_build(DeviceState *dev, Error **errp)
             s->head[i].packet_opaque = s;
         }
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
+        qdev_prop_set_uint8(DEVICE(&s->head[i]), "req64-slots",
+                            s->req64_slots[i]);
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
                                  s->board_part[i]);
@@ -1864,6 +1876,8 @@ static const Property chip_properties[] = {
                       SGI_XBRIDGE_XIO_PORT_DEFAULT),
     DEFINE_PROP_UINT8("pci-speed-e", SGIXBridgeState, pci_speed[0], 1),
     DEFINE_PROP_UINT8("pci-speed-f", SGIXBridgeState, pci_speed[1], 0),
+    DEFINE_PROP_UINT8("req64-slots-e", SGIXBridgeState, req64_slots[0], 0),
+    DEFINE_PROP_UINT8("req64-slots-f", SGIXBridgeState, req64_slots[1], 0),
     /*
      * A head's own MicroLAN board-identity NIC (BRIDGE_NIC, offset 0xb0):
      * unset leaves that head's register inert, matching a widget with no
