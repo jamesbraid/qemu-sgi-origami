@@ -26,6 +26,7 @@
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
 #include "migration/vmstate.h"
+#include "system/replay.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -772,7 +773,7 @@ static void qlogic_isp_channel_unplug(const HotplugHandler *hotplug_dev,
     qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
     s->recovering = was_recovering;
     if (!was_recovering) {
-        qemu_bh_schedule(s->resume_bh);
+        replay_bh_schedule_event(s->resume_bh);
     }
 }
 
@@ -1123,7 +1124,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
      */
     if (s->recovering) {
         s->recovering = false;
-        qemu_bh_schedule(s->resume_bh);
+        replay_bh_schedule_event(s->resume_bh);
     }
 
     s->semaphore = ISP_SEMAPHORE_LOCK;
@@ -1513,7 +1514,7 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
      * done, and a reset is taking the ring away rather than freeing room
      * in it.
      */
-    qemu_bh_schedule(s->resume_bh);
+    replay_bh_schedule_event(s->resume_bh);
 }
 
 /*
@@ -2174,6 +2175,12 @@ static void qlogic_isp_process_requests(QLogicISPState *s)
  * nothing to consume: a recovery command re-arms this on its way out, an
  * adapter that is unrealised or in reset is about to lose its rings, and
  * a zero length is a ring the guest has not built yet.
+ *
+ * Scheduled through record/replay, because consuming the ring reads guest
+ * memory and posts completions: a plain bottom half would do that at a
+ * different instruction in a replay than in its recording. A replay event
+ * outlives qemu_bh_cancel(), so these checks are also what keeps a resume
+ * queued before a reset from acting on the reset adapter.
  */
 static void qlogic_isp_resume_bh(void *opaque)
 {
