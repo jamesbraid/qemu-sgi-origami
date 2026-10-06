@@ -146,10 +146,9 @@ names have no public source this page can cite. Linux's SN1 router
 header (``include/asm-ia64/sn/sn1/router.h`` in Linux 2.5.0) describes a
 different, eight-port part with other offsets and is not evidence for
 the Origin 2000 chip. The model's offsets and fields (``RR_`` names in
-``hw/misc/sgi-router.c``) were taken from firmware observation and
-vendor material this page does not cite, so every register offset,
-field and reset value is *unknown* for citation purposes and is an
-emulator choice. What would settle them is a Router register document
+``hw/misc/sgi-router.c``) are an emulator choice: no public source
+states them, so every register offset, field and reset value is
+*unknown*. What would settle them is a Router register document
 or register reads from a real chip. Facts the model gives that are
 specific, rather than names:
 

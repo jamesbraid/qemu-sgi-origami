@@ -202,4 +202,4 @@ established; the Origin 2000 model puts it at widget 8 on Crossbow 0
 (:ref:`sgi-xbow-role`). Whether a multi-enclosure system fits one BaseIO
 per enclosure or one for the whole system is configuration-dependent; SGI
 states a deskside holds at most one BaseIO (007-3439-002 printed page
-67). The panel LEDs have no register in any source and are not modelled.
+69, after Figure 2-25). The panel LEDs have no register in any source and are not modelled.

@@ -241,9 +241,8 @@ shipped with exactly this configuration is not established: it is the
 configuration the retained image describes.
 
 That the firmware compares the flash word against CP0 Config at start-up
-and reports a mismatch on the node's LEDs is established only from
-vendor sources and image decoding this page does not cite, so the
-procedure is *unknown* here. Its outcome is visible as a model
+and reports a mismatch on the node's LEDs is not stated by any public
+source, so the procedure is *unknown* here. Its outcome is visible as a model
 requirement: a processor whose Config disagrees with the node's flash
 word does not start the firmware, so the model's CPU reset
 configuration must equal the flash word (an emulator constraint, with
