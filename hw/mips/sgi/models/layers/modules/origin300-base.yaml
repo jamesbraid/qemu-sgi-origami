@@ -13,9 +13,6 @@ layer_version: 1
 # connection to `provenance: unsourced` with a stated `evidence_gap`, is follow-up
 # work on the evidence itself, not a citation-form change.
 sources:
-  ioc3-datasheet: "docs/datasheets/ioc3.md"
-  ioc3-datasheet-origin-300: "docs/datasheets/ioc3.md, Origin 300 IO-8 supplement"
-  timekeeper-datasheet: "docs/datasheets/timekeeper.md"
   boot-logs-b: "docs/library/boot-logs.md, the Origin 300 captures (Nekochan threads 17314, 16724335, 16727514; IRIXnet thread 2737) and the Fuel dmesg"
 layer:
   kind: module
@@ -567,7 +564,7 @@ layer:
         kind: byte-bus
         master: ioc3
         provenance: datasheet
-        sources: [ioc3-datasheet]
+        sources: [qemu:docs/specs/sgi-ioc3.rst]
 
       - id: numalink
         name: NUMAlink 3
@@ -608,8 +605,8 @@ layer:
       - { component: scsi, bus: pci-io8, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
       - { component: ioc3, bus: pci-io8, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "108-0264-004 Table 2-4, printed page 2-11"] }
       - { component: usb, bus: pci-io8, role: endpoint, pci_device: 5, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
-      - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [ioc3-datasheet] }
-      - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [ioc3-datasheet-origin-300, timekeeper-datasheet] }
+      - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-ioc3.rst] }
+      - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [qemu:docs/specs/sgi-ioc3.rst] }
       - { component: pci-option-slot-1, bus: pci-option, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
       - { component: pci-option-slot-2, bus: pci-option, role: endpoint, pci_device: 2, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
       - { component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: ["007-4365-002 printed page 14, Table 1-2"] }

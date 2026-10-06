@@ -544,7 +544,7 @@ class SystemModelResolutionTests(unittest.TestCase):
                 ],
                 "provenance": "derived",
                 "sources": [
-                    "D-0023: minimum documented Origin 300 product configuration",
+                    "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
                     "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
                     "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
                 ]

@@ -109,7 +109,7 @@
       "name": "IOC3 byte bus",
       "provenance": "datasheet",
       "sources": [
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -810,7 +810,7 @@
       "nodes": 1,
       "provenance": "derived",
       "sources": [
-        "D-0023: minimum documented Origin 300 product configuration",
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
         "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
@@ -822,7 +822,7 @@
       "min_nodes": 1,
       "provenance": "derived",
       "sources": [
-        "D-0023: minimum documented Origin 300 product configuration",
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
       ],
@@ -1016,7 +1016,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "docs/datasheets/ioc3.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -1026,8 +1026,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "docs/datasheets/ioc3.md, Origin 300 IO-8 supplement",
-        "docs/datasheets/timekeeper.md"
+        "qemu:docs/specs/sgi-ioc3.rst"
       ]
     },
     {
@@ -1274,10 +1273,9 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": "0x1686a8",
         "sources": [
-          "docs/library/ip35-source-map.md: measured container, payload, load address, entry address and ten trampolines",
-          "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length",
-          "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset",
-          "D-0024: bounded emulator carrier with the physical decoder left unresolved"
+          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views"
         ],
         "views": [
           {
@@ -1324,7 +1322,7 @@
           "provenance": "derived",
           "sources": [
             "hw/mips/sgi/baseio.c",
-            "docs/datasheets/l1-controller.md"
+            "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
           ]
         }
       },
@@ -1381,8 +1379,7 @@
           "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
           "provenance": "derived",
           "sources": [
-            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
-            "docs/reviews/fuel-rtc-refinement-review-20261001.md"
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"
           ],
           "year_base": 1968
         }
@@ -1424,9 +1421,8 @@
         "tftp_mode": "fixed"
       },
       "sources": [
-        "tools/origami_lib/prom.py: ORIGIN300_EEPROM_INPUTS and PromLaunchRequest.brick_serial, the harness's Origin 300 identity inputs; hw/mips/sgi/sn-machine.c: the chassis-eeprom, board-eeprom and spd-eeprom raw record overrides; include/hw/mips/sgi/sn-machine.h: sgi_sn1_serial_line(), which puts each node's L1 console first",
-        "tools/origami_lib/irix.py: _select_irix_profile rejecting IRIX install mode on Origin 300 (\"Origin 300 currently supports IRIX boot mode\")",
-        "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection"
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus",
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata"
       ],
       "supported_guests": [
         "irix"
