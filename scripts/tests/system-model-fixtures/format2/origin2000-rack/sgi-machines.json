@@ -35,12 +35,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -212,12 +206,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -389,12 +377,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -566,12 +548,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -743,12 +719,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -918,12 +888,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1087,12 +1051,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1256,12 +1214,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1425,12 +1377,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1592,12 +1538,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1753,12 +1693,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -1914,12 +1848,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2073,12 +2001,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [
@@ -2226,12 +2148,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
-      "firmware": {
-        "argument": "-bios",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
       "init-inputs": [

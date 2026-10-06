@@ -32,7 +32,7 @@ IMPLEMENTED_TOPOLOGIES = (
 
 # Authored reference compositions are useful for comparing product topology,
 # but their unresolved hardware inputs keep them out of the runtime catalogue.
-PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY = ("tezro",)
+PRODUCTS_REQUIRING_EXPLICIT_TOPOLOGY = ("onyx350", "tezro")
 
 REFERENCE_TOPOLOGIES = (
     "origin350-reference",

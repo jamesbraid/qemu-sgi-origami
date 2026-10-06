@@ -1096,6 +1096,11 @@ static bool sgi_machine_ip53_experiment_policy(
         (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
         (tezro && tezro_trial_topology);
 
+    if (onyx350 && !s->topology_name) {
+        error_setg(errp, "Onyx 350 runtime trial requires explicit "
+                   "topology=onyx350-compat selection");
+        return false;
+    }
     if (tezro && !s->topology_name) {
         error_setg(errp, "Tezro runtime trial requires explicit topology="
                    "tezro-deskside-700mhz-4mib-serial-trial selection");

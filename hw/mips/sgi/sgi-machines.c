@@ -63,24 +63,16 @@ const SGIModelTopology *sgi_model_find_topology(const char *name)
 
 const char *sgi_model_default_topology(const char *product)
 {
-    SGIModelTopologyList *entry;
-    const char *single = NULL;
-    unsigned int matches = 0;
+    const SGIModelOfferingList *entry;
 
     sgi_machines_load();
-    for (entry = machines->topologies; entry; entry = entry->next) {
-        const SGIModelTopology *topology = entry->value;
-
-        if (strcmp(topology->product, product)) {
-            continue;
+    for (entry = machines->offerings; entry; entry = entry->next) {
+        if (!strcmp(entry->value->product, product) &&
+            entry->value->default_topology) {
+            return entry->value->default_topology;
         }
-        if (!strcmp(topology->name, product)) {
-            return topology->name;
-        }
-        matches++;
-        single = topology->name;
     }
-    return matches == 1 ? single : NULL;
+    return NULL;
 }
 
 SGIMachines *qmp_query_sgi_machines(Error **errp)

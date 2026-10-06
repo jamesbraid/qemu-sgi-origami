@@ -1025,12 +1025,14 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
-                if "hardware_revision" in identity:
+                if product == "tezro-deskside-700mhz-4mib-serial-trial":
+                    if "hardware_revision" in identity:
+                        integer(identity["hardware_revision"], 15,
+                                f"'{cid}' hardware_revision")
+                else:
+                    required(identity, "hardware_revision", f"Bedrock '{cid}'")
                     integer(identity["hardware_revision"], 15,
                             f"'{cid}' hardware_revision")
-                elif product != "tezro-deskside-700mhz-4mib-serial-trial":
-                    raise ResolutionError(
-                        f"'{cid}' requires a Bedrock hardware revision")
                 integer(entry.get("local_region"), 63, f"'{cid}' local_region")
                 integer(entry.get("initiator_region"), 63,
                         f"'{cid}' initiator_region")

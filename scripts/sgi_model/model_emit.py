@@ -1109,7 +1109,8 @@ def _offerings_for(model: dict, topology: dict,
                     **({"required-properties": list(assembly["required_properties"])}
                        if "required_properties" in assembly else {}),
                 },
-                "firmware": firmware,
+                **({"firmware": firmware}
+                   if launch_recipe == "ip53-discovery" else {}),
                 "init-inputs": init_inputs,
                 "storage": storage,
                 "resources": resources,

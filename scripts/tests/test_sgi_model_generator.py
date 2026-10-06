@@ -40,7 +40,7 @@ class GeneratorTests(unittest.TestCase):
             INPUTS / "tezro-deskside-compat.yaml", model_schema=schema(INPUTS))
         topology = compile_reference_construction(model)
         catalogue = json.loads(
-            render_qemu_inputs(INPUTS)["hw/mips/sgi/sn-catalogue.json"])
+            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
         self.assertFalse(any(
             item["name"] == "tezro-deskside-compat"
             for item in catalogue["topologies"]))
@@ -238,7 +238,10 @@ class StorageTests(unittest.TestCase):
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
                     f",nodes={offering['nodes']}")
-                self.assertNotIn("firmware", offering)
+                if offering.get("launch-recipe") == "ip53-discovery":
+                    self.assertEqual(offering["firmware"]["kind"], "ip35-prom")
+                else:
+                    self.assertNotIn("firmware", offering)
                 names = [item["name"] for item in offering["storage"]]
                 self.assertEqual(len(names), len(set(names)))
                 self.assertEqual(
@@ -257,7 +260,8 @@ class StorageTests(unittest.TestCase):
                                     or item["initial"] in inputs)
                 for resource in offering["resources"]:
                     self.assertIn(resource["kind"],
-                                  {"identity-eeprom", "spd-eeprom"})
+                                  {"identity-eeprom", "spd-eeprom", "ds1742",
+                                   "boot-flash"})
 
     def test_two_node_origin2000_deskside(self):
         offering = next(
@@ -291,6 +295,7 @@ class StorageTests(unittest.TestCase):
             expected = ({"ip27-nvram"}
                         if offering["product"] in {"origin200", "origin2000",
                                                    "onyx2"}
+                        else set() if offering.get("launch-recipe") == "ip53-discovery"
                         else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)
@@ -452,13 +457,19 @@ class FuelTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         for topology in catalogue["topologies"]:
-            if topology["product"] not in ("origin300", "fuel"):
+            if topology["product"] not in ("origin300", "fuel", "origin350",
+                                           "onyx350", "tezro"):
                 self.assertNotIn("ip35-firmware", topology)
                 continue
             with self.subTest(topology=topology["name"]):
+                if topology["product"] in {"origin300", "fuel"}:
+                    expected_mode = 0x549aa985
+                else:
+                    expected_mode = topology["nodes"][0]["cpu-slots"][0][
+                        "assembly"]["mode-bits"]
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 2 if topology["product"] == "fuel" else 1,
-                    "cpu-mode-word": 0x549aa985})
+                    "cpu-mode-word": expected_mode})
 
     def test_overrides_follow_what_each_machine_binds(self):
         """The Bedrock board values are listed only where a Bedrock, an L1

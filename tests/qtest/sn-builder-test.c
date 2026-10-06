@@ -2547,6 +2547,10 @@ static void test_ip53_runtime_permission_refusals(void)
         { "onyx350,topology=onyx350-compat",
           "8G", "4", "R16000",
           "onyx350 requires ip53-experimental=on", false },
+        { "onyx350,ip53-experimental=on",
+          "8G", "4", "R16000",
+          "Onyx 350 runtime trial requires explicit "
+          "topology=onyx350-compat selection", false },
         { "tezro,ip53-experimental=on", "4G", "4", "R16000",
           "Tezro runtime trial requires explicit topology="
           "tezro-deskside-700mhz-4mib-serial-trial selection", false },
@@ -2988,7 +2992,8 @@ static IP53RuntimeTestFixture *ip53_onyx350_runtime_test_start(
     const char *extra)
 {
     return ip53_runtime_test_start_with_binary_profile(
-        NULL, "onyx350,ip53-experimental=on", extra, "8G", "0x009caf85");
+        NULL, "onyx350,topology=onyx350-compat,ip53-experimental=on",
+        extra, "8G", "0x009caf85");
 }
 
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
