@@ -39,6 +39,9 @@ R_S1 = 17
 R_S2 = 18
 R_S3 = 19
 R_S4 = 20
+R_S5 = 21
+R_S6 = 22
+R_S7 = 23
 
 
 def mips_i(op, rs, rt, immediate):
@@ -95,10 +98,57 @@ class MipsProgram:
         self.emit(mips_i(0x0d, R_AT, R_AT, offset & 0xffff))
         self.emit(mips_r(register, R_AT, register, 0, 0x25))     # or
 
+    def li64(self, register, value):
+        """register = a full 64-bit constant: the top halfword, then
+        three shift-and-or steps."""
+        self.emit(mips_i(0x0d, R_ZERO, register, value >> 48))
+        for shift in (32, 16, 0):
+            self.emit(mips_r(R_ZERO, register, register, 16, 0x38))  # dsll
+            self.emit(mips_i(0x0d, register, register, value >> shift))
+
     def write(self, path):
         Path(path).write_bytes(b''.join(
             struct.pack('>I', instruction)
             for instruction in self.instructions))
+
+
+# The size of the Origin 300 stock PROM, which the board takes as the
+# -bios file's size; a generated image is padded to it.
+PROM_SIZE = 0x1686a8
+# Where a generated PROM keeps its code: the exception vectors sit below.
+CODE_START = 0x400
+
+
+class PromImage(MipsProgram):
+    """A -bios image whose code starts at CODE_START.
+
+    The reset vector branches over the exception vectors, which are
+    left as branches to themselves, so a stray exception parks the
+    processor rather than running off into zeros. A vector a test
+    handles itself is put in with set_vector().
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.instructions = [0] * (CODE_START // 4)
+        self.instructions[0] = mips_i(0x04, R_ZERO, R_ZERO,
+                                      (CODE_START - 4) // 4)
+        for vector in (0x200, 0x280, 0x300, 0x380):
+            self.instructions[vector // 4] = mips_i(0x04, R_ZERO, R_ZERO,
+                                                    0xffff)
+
+    def set_vector(self, offset, instructions):
+        """Replace the instructions at byte offset, which must lie
+        before CODE_START."""
+        assert offset + 4 * len(instructions) <= CODE_START
+        self.instructions[offset // 4:offset // 4 + len(instructions)] = \
+            instructions
+
+    def write(self, path, size=PROM_SIZE):
+        data = b''.join(struct.pack('>I', instruction)
+                        for instruction in self.instructions)
+        assert len(data) <= size
+        Path(path).write_bytes(data.ljust(size, b'\0'))
 
 
 # The emulator's own log lines these exercises read their answer out of:
