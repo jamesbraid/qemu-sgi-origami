@@ -203,6 +203,11 @@ static void crime_realize(DeviceState *dev, Error **errp)
                    "synthetic fit");
         return;
     }
+    if (memory_region_is_rom(s->ram)) {
+        error_setg(errp, "sgi-crime requires writable RAM for the "
+                   "synthetic fit");
+        return;
+    }
     if (s->ram_aliases_initialized && s->ram != s->alias_target) {
         error_setg(errp, "sgi-crime RAM backing cannot change after realize");
         return;

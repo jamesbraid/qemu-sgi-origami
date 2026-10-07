@@ -315,6 +315,37 @@ static void test_ram_unsupported_fit(void)
     qtest_quit(s);
 }
 
+static void test_ram_readonly_fit(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *path = NULL;
+    QTestState *s;
+    int fd;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*requires writable RAM*");
+        return;
+    }
+    directory = g_dir_make_tmp("crime-rom-XXXXXX", &error);
+    g_assert_no_error(error);
+    path = g_build_filename(directory, "backing", NULL);
+    fd = g_open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, CRIME_FITTED_RAM), ==, 0);
+    close(fd);
+    s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 -S "
+                    "-object memory-backend-file,id=rom,size=64M,"
+                    "mem-path=%s,readonly=on,rom=on "
+                    "-device sgi-crime,id=crime,interface-revision=1,"
+                    "ram=/objects/rom/rom[0]", path);
+    qtest_quit(s);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -330,5 +361,7 @@ int main(int argc, char **argv)
                    test_ram_alias_mapping_migration);
     qtest_add_func("/sgi/crime/ram-unsupported-fit",
                    test_ram_unsupported_fit);
+    qtest_add_func("/sgi/crime/ram-readonly-fit",
+                   test_ram_readonly_fit);
     return g_test_run();
 }
