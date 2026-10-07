@@ -29,6 +29,7 @@
 
 #define TYPE_SGI_KONA "sgi-kona"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
+typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 
 /* One widget's worth of crosstalk address space; the rest reads unmapped. */
 #define SGI_KONA_APERTURE_SIZE (16 * MiB)
@@ -792,8 +793,10 @@ struct SGIKonaState {
 
     /* Disposable host execution state; canonical planes alone migrate. */
     SGIRenderer *renderer;
+    SGIKonaMesaProvider *mesa_provider;
     bool host_gpu;
     bool renderer_failed;
+    bool mesa_failed;
     uint64_t renderer_generation;
     uint64_t renderer_requests;
     uint64_t renderer_draws;
