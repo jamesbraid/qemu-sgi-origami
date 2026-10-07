@@ -54,7 +54,7 @@
 #define PI_PROFILE_ENABLE_A  0x150
 #define PI_PROFILE_ENABLE_B  0x158
 #define PI_PENDING_ALIAS     0x180
-#define PI_ERROR_SET         0x3f8
+#define PI_ERR_INT_PEND_WR   0x3f8
 #define PI_ERROR_PENDING     0x400
 #define PI_ERROR_MASK_A      0x408
 #define PI_ERROR_MASK_B      0x410
@@ -400,7 +400,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_RT_ENABLE_B: return s->rt_enable[1];
     case PI_PROFILE_ENABLE_A: return s->profile_enable[0];
     case PI_PROFILE_ENABLE_B: return s->profile_enable[1];
-    case PI_ERROR_SET:
+    case PI_ERR_INT_PEND_WR:
     case PI_ERROR_PENDING: return s->error_pending;
     case PI_ERROR_MASK_A: return s->error_mask[0];
     case PI_ERROR_MASK_B: return s->error_mask[1];
@@ -641,7 +641,7 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_PROFILE_ENABLE_B:
         s->profile_enable[1] = value & 1;
         break;
-    case PI_ERROR_SET:
+    case PI_ERR_INT_PEND_WR:
         s->error_pending =
             (s->error_pending & PI_ERROR_MEMORY_UNCORRECTABLE) |
             (value & PI_ERROR_MASK & ~PI_ERROR_MEMORY_UNCORRECTABLE);
