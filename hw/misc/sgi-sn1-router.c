@@ -136,6 +136,9 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     }
     if (!address || address == 0x600000) {
         if (write) {
+            if (!address && ingress && s->synthetic_diagnostics) {
+                return SGI_NET_PACKET_OK;
+            }
             return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
         }
         packet->value = router_status(s, ingress);
