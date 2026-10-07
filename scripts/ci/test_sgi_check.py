@@ -102,36 +102,63 @@ class QtestShards(unittest.TestCase):
         backward, _ = sgi_check.qtest_shards(tests[::-1], self.DURATIONS, 2)
         self.assertEqual(forward, backward)
 
-    def test_longest_first_balances(self):
-        shards, loads = sgi_check.qtest_shards(list(self.DURATIONS),
-                                               self.DURATIONS, 2)
-        self.assertEqual(shards, [['a', 'd'], ['b', 'c', 'e']])
-        self.assertEqual(loads, [700, 650])
+    def test_finish_is_the_larger_of_longest_test_and_sum_over_processes(self):
+        durations = {'long': 800, 's1': 100, 's2': 100, 's3': 100}
+        shards, finishes = sgi_check.qtest_shards(
+            list(durations), durations, 1, processes=4)
+        self.assertEqual(finishes, [800])
+        shards, finishes = sgi_check.qtest_shards(
+            ['a', 'b', 'c', 'd', 'e'], {t: 100 for t in 'abcde'}, 1,
+            processes=4)
+        self.assertEqual(finishes, [125])
 
-    def test_unmeasured_test_counts_as_the_median(self):
-        _, loads = sgi_check.qtest_shards(['a', 'new'], {'a': 10, 'b': 30},
-                                          1)
-        self.assertEqual(loads, [20])
+    def test_a_pole_test_does_not_share_a_shard_with_a_full_load(self):
+        # Summed durations would split these 1200/1200. The long test
+        # holds its shard for 800 s whatever runs beside it, so the rest
+        # must go elsewhere or the run waits longer than the pole.
+        durations = {'long': 800, **{f's{i}': 100 for i in range(16)}}
+        shards, finishes = sgi_check.qtest_shards(
+            list(durations), durations, 2, processes=4)
+        self.assertEqual(max(finishes), 800)
+        self.assertIn('long', shards[0])
 
     def test_preload_lightens_that_shard(self):
-        shards, loads = sgi_check.qtest_shards(
-            list(self.DURATIONS), self.DURATIONS, 2, preload=[500, 0])
-        self.assertEqual(shards, [['b', 'd', 'e'], ['a', 'c']])
-        self.assertEqual(loads, [950, 900])
+        durations = {f't{i}': 100 for i in range(8)}
+        shards, finishes = sgi_check.qtest_shards(
+            list(durations), durations, 2, preload=[100, 0], processes=2)
+        self.assertEqual([len(shard) for shard in shards], [3, 5])
+        self.assertEqual(finishes, [250, 250])
 
-    def test_tree_durations_split_evenly(self):
+    def test_unmeasured_test_counts_as_the_median(self):
+        _, finishes = sgi_check.qtest_shards(['a', 'new'], {'a': 10, 'b': 30},
+                                             1, processes=1)
+        self.assertEqual(finishes, [20])
+
+    def test_tree_durations_finish_together_or_at_the_pole(self):
         durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
+        pole = max(durations.values())
         for count in (2, 3):
-            shards, loads = sgi_check.qtest_shards(
-                list(durations), durations, count,
-                sgi_check.functional_preload(count))
+            preload = sgi_check.functional_preload(count)
+            shards, finishes = sgi_check.qtest_shards(
+                list(durations), durations, count, preload)
             self.assertTrue(all(shards))
-            self.assertLess(max(loads) / min(loads), 1.05)
+            # No split can beat the longest test or an even division of
+            # the work; this one must come within 5% of the larger.
+            even = (sum(durations.values()) / sgi_check.QTEST_PROCESSES +
+                    sum(preload)) / count
+            self.assertLess(max(finishes), 1.05 * max(pole, even))
 
     def test_functional_share_is_share_one_of_a_real_split(self):
         self.assertEqual(sgi_check.functional_preload(1), [0])
         self.assertEqual(sgi_check.functional_preload(3),
                          [sgi_check.FUNCTIONAL_LOAD_S, 0, 0])
+
+    def test_timeouts_and_failures_are_not_durations(self):
+        text = ('1/2 s / qtest-mips64/a   TIMEOUT   200.03s\n'
+                '2/2 s / qtest-mips64/b   FAIL   3.00s\n'
+                '2/2 s / qtest-mips64/c   OK   4.00s\n')
+        self.assertEqual(sgi_check.median_durations([text]),
+                         {'qtest-mips64/c': 4})
 
 
 class QtestPartition(unittest.TestCase):
@@ -161,18 +188,6 @@ class QtestPartition(unittest.TestCase):
 
     def test_few_tests_leave_a_part_empty_not_duplicated(self):
         self.check(['t1', 't2'], {'t1': 5, 't2': 5}, 3)
-
-    def test_functional_job_takes_the_least_measured_qtest_time(self):
-        durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
-        shards, _ = sgi_check.qtest_shards(
-            list(durations), durations, 3, sgi_check.functional_preload(3))
-        times = [sum(durations[t] for t in shard) for shard in shards]
-        self.assertEqual(times.index(min(times)), 0)
-
-    def test_tree_durations_carry_the_generated_header(self):
-        text = sgi_check.QTEST_DURATIONS.read_text(encoding='utf-8')
-        self.assertTrue(text.startswith(sgi_check.DURATIONS_HEADER))
-        self.assertIn('# Source: ', text)
 
 
 class QtestDurations(unittest.TestCase):

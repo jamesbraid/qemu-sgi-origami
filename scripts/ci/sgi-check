@@ -575,43 +575,57 @@ def read_durations(path):
     return durations
 
 
-# What the functional part costs the job that runs it, in the units of the
-# qtest durations, so that job takes a smaller share of the qtests and the
-# full run's jobs finish together. Estimated, not measured. In full run 44198
-# a qtest job spent 14.7 minutes of test time on 2929 s of qtest durations,
-# so one duration second costs about 0.3 s. The functional job's boots, ROMs
-# and unit tests took 8.4 minutes one at a time and should take three to four
-# when run at once, and its setup (assets, script suites) runs about two
-# minutes longer than a qtest job's: about six minutes, or 1200 duration
-# seconds. Refresh it from the next full run's job times.
-FUNCTIONAL_LOAD_S = 1200
+# What the functional part costs the job that runs it, in seconds of wall
+# time: its setup (assets, script suites) runs about 2.3 minutes longer than
+# a qtest job's, and its boots, ROMs and unit tests ran 3.7 minutes at four
+# at a time. Measured in full run 44301, job 52713, which started its first
+# test 6.9 minutes in against 4.6 for a qtest job. Refresh it from a later
+# full run.
+FUNCTIONAL_LOAD_S = 360
 
 
-def qtest_shards(tests, durations, count, preload=None):
-    """Split tests into count lists of roughly equal measured duration.
+def qtest_shards(tests, durations, count, preload=None,
+                 processes=QTEST_PROCESSES):
+    """Split tests into count lists that finish at about the same time.
 
-    Take the longest test first and give each to the least-loaded shard,
-    breaking ties by name and shard number, so every job that computes
-    the split from the same tests gets the same answer. A test with no
-    measurement counts as the median of those that have one. Preload
-    gives each shard the load it already carries, in the same units.
+    Meson runs `processes` tests at once, so a share's wall time is not the
+    sum of its durations: it is at least the longest test, and at least
+    the sum over the processes. In full run 44301 one test took 14 of a
+    job's 14 minutes while its share's durations summed to 25. Estimate
+    a share's finish as its preload (the wall time its job spends before
+    the qtests) plus the larger of those two bounds. Take the longest
+    test first and give each to the share it finishes earliest on,
+    breaking ties by shard number, so every job that computes the split
+    from the same tests gets the same answer. A test with no measurement
+    counts as the median of those that have one.
 
-    The shards are disjoint and together hold every test once.
+    The shards are disjoint and together hold every test once. Return
+    them with each one's estimated finish.
     """
     known = [durations[test] for test in tests if test in durations]
     default = statistics.median(known) if known else 1.0
     weight = {test: durations.get(test, default) for test in tests}
+    base = [float(load) for load in (preload or [0] * count)]
     shards = [[] for _ in range(count)]
-    loads = [float(load) for load in (preload or [0] * count)]
+    totals = [0.0] * count
+    longest = [0.0] * count
+
+    def finish(shard, extra):
+        return base[shard] + max(max(longest[shard], extra),
+                                 (totals[shard] + extra) / processes)
+
     for test in sorted(tests, key=lambda test: (-weight[test], test)):
-        shard = min(range(count), key=lambda k: (loads[k], k))
+        shard = min(range(count),
+                    key=lambda k: (finish(k, weight[test]), k))
         shards[shard].append(test)
-        loads[shard] += weight[test]
-    return [sorted(shard) for shard in shards], loads
+        totals[shard] += weight[test]
+        longest[shard] = max(longest[shard], weight[test])
+    return ([sorted(shard) for shard in shards],
+            [finish(k, 0.0) for k in range(count)])
 
 
 def functional_preload(count):
-    """The load each of count qtest shares starts with.
+    """The wall seconds each of count qtest shares' jobs spends first.
 
     Share 1 goes to the job that also runs the functional part. A run
     that is one share has no other job to balance against.
@@ -625,14 +639,16 @@ def full_qtest(build, index, count):
     every = build.path / 'full-qtest.all'
     build.list_meson_tests(every, '--suite', 'qemu:qtest-mips64')
     tests = every.read_text(encoding='utf-8').split()
-    shards, loads = qtest_shards(tests, read_durations(QTEST_DURATIONS),
-                                 count, functional_preload(count))
+    shards, finishes = qtest_shards(
+        tests, read_durations(QTEST_DURATIONS), count,
+        functional_preload(count))
     share = shards[index - 1]
     if not share:
         sys.exit(f'qtest shard {index} of {count} has no tests')
     print(f'qtest shard {index} of {count}: {len(share)} of {len(tests)} '
-          f'tests, about {loads[index - 1] / 60:.0f} of '
-          f'{sum(loads) / 60:.0f} test-minutes', flush=True)
+          f'tests, estimated to finish {finishes[index - 1] / 60:.1f} '
+          f'minutes after its job starts testing (the slowest share: '
+          f'{max(finishes) / 60:.1f})', flush=True)
     logbase = f'full-qtest-{index}-of-{count}'
     expected = build.path / f'{logbase}.expected'
     expected.write_text('\n'.join(share) + '\n', encoding='utf-8')
@@ -759,7 +775,8 @@ DURATIONS_REFRESH = """\
 # A Meson console result line, as printed in a CI job log:
 #   12/69 qemu:qtest+... / qtest-mips64/sn0-hub-test   OK   34.36s   150 ...
 QTEST_RESULT = re.compile(
-    r'\s/\s(?P<name>qtest-mips64/\S+)\s+[A-Z]+\s+(?P<seconds>[\d.]+)s\b')
+    r'\s/\s(?P<name>qtest-mips64/\S+)\s+(?P<status>[A-Z]+)\s+'
+    r'(?P<seconds>[\d.]+)s\b')
 
 
 def log_durations(text):
@@ -771,7 +788,9 @@ def log_durations(text):
                 yield entry['name'], float(entry['duration'])
         else:
             match = QTEST_RESULT.search(line)
-            if match:
+            # A timeout or failure stopped early, so its time says nothing
+            # about how long the test takes.
+            if match and match['status'] in ('OK', 'SKIP'):
                 yield match['name'], float(match['seconds'])
 
 
