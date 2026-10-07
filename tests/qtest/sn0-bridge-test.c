@@ -815,8 +815,15 @@ static void test_translation_entries_reset_clear(const void *data)
 #define WIDE_ROUNDTRIP_VALUE    0xdeadbeefcafef00dULL
 #define WIDE_GOLDEN_UNCHANGED   0x0123456789abcdefULL
 #define WIDE_GOLDEN_MIRRORED    0xefcdab8967452301ULL
-#define WIDE_GOLDEN_WORD_SWAPPED 0x67452301efcdab89ULL
-#define WIDE_WRITE_WORD_SWAPPED  0xefbeadde0df0fecaULL
+/*
+ * A 32-bit device's doubleword is two word cycles, lower address first,
+ * carrying host bytes 0 to 3 then 4 to 7 (Tables 68 and 76): with the swap
+ * clear each word is byte-reversed in place, so the halves read back in
+ * address order rather than as one 64-bit value.
+ */
+#define WIDE_GOLDEN_SPLIT        0x89abcdef01234567ULL
+#define WIDE_SPLIT_HALVES        0xcafef00ddeadbeefULL
+#define WIDE_WRITE_STREAM        0x0df0fecaefbeaddeULL
 
 /*
  * The translated window, and the two pages of it this test uses. A page is 4
@@ -2445,8 +2452,8 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
  * eight-byte access as one cycle and mirrors the doubleword on the
  * programmed-access swap bit. Read a fixed register whole under both
  * settings (unchanged clear, byte-reversed set), confirm a 32-bit slot still
- * splits and reverses each word separately, and round-trip the scratch through
- * the write path.
+ * splits into two word cycles in address order, and round-trip the scratch
+ * through the write path.
  */
 static void test_dma_device_window_64bit_doubleword(const void *data)
 {
@@ -2473,13 +2480,14 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
                     WIDE_GOLDEN_MIRRORED);
 
     /*
-     * A 32-bit slot splits the doubleword into two word cycles. The swap
-     * bit reverses bytes within each word, preserving their order.
+     * A 32-bit slot splits the doubleword into two word cycles, the lower
+     * address carrying the more significant half. With the swap clear each
+     * word reads as its own value; set, the bytes stream in address order.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
-                    WIDE_GOLDEN_UNCHANGED);
+                    WIDE_GOLDEN_SPLIT);
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_SWAP_PROGRAMMED | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
@@ -2487,7 +2495,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_FIXED + 4), ==,
                     0x67452301);
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
-                    WIDE_GOLDEN_WORD_SWAPPED);
+                    WIDE_GOLDEN_MIRRORED);
 
     /*
      * The write direction round-trips a doubleword to the scratch. The swap
@@ -2512,10 +2520,11 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
      * The 32-bit-slot split has its own write reassembly, uncovered by the
      * round-trip above, which drives both directions through the one-cycle
      * path. Exercise it across paths: write the scratch through the split,
-     * read it back through the one-cycle path. A transposed split write
-     * surfaces here as a halves-swapped one-cycle read; it returns the value
-     * only when both directions place the big-endian high word at the lower
-     * offset.
+     * read it back through the one-cycle path. The split puts the more
+     * significant half at the lower PCI address, which the one-cycle path,
+     * reversing the whole doubleword, reads as the less significant half:
+     * the halves exchange, as SGI's driver guide warns for a 64-bit
+     * register written by two word stores.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
@@ -2523,7 +2532,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
-                    WIDE_ROUNDTRIP_VALUE);
+                    WIDE_SPLIT_HALVES);
 
     /* Read a swapped split write through the unswapped one-cycle path. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
@@ -2537,8 +2546,164 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH + 4), ==,
                     0xefbeadde);
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
-                    WIDE_WRITE_WORD_SWAPPED);
+                    WIDE_WRITE_STREAM);
 
+    qtest_quit(qts);
+}
+
+/*
+ * Programmed-I/O byte placement, one case per row of the Bridge
+ * specification's big-endian tables (revision 4.0, Appendix A, Tables 65 to
+ * 80): where host byte k of a load or store lands on the PCI bus, for a
+ * 32-bit or 64-bit device (Device(x) bit 22) with the programmed-access swap
+ * (bit 13) clear or set. The fixed 64-bit register supplies eight distinct
+ * PCI bytes, so a read at every width and aligned offset says exactly which
+ * PCI byte each host byte came from.
+ */
+struct pio_row {
+    const char *name;
+    uint32_t bits;
+    /* The PCI byte that host byte k of an aligned doubleword lands on. */
+    unsigned int (*pci_byte)(unsigned int k);
+};
+
+static unsigned int pio_word_reversed(unsigned int k)
+{
+    return k ^ 3;               /* Tables 73 to 76 */
+}
+
+static unsigned int pio_byte_stream(unsigned int k)
+{
+    return k;                   /* Tables 65 to 72 */
+}
+
+static unsigned int pio_doubleword_reversed(unsigned int k)
+{
+    return 7 - k;               /* Tables 77 to 80 */
+}
+
+static const struct pio_row pio_rows[] = {
+    { "32bit-swap-clear", 0, pio_word_reversed },
+    { "32bit-swap-set", DEV_SWAP_PROGRAMMED, pio_byte_stream },
+    { "64bit-swap-clear", DEV_64BIT_DEVICE, pio_doubleword_reversed },
+    { "64bit-swap-set", DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED,
+      pio_byte_stream },
+};
+
+/* WIDE_GOLDEN_UNCHANGED's bytes as they sit on the bus, PCI byte 0 first. */
+static const uint8_t wide_fixed_pci[8] = {
+    0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+};
+
+static QTestState *pio_row_start(void)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_BAR1, WIDE_CARD_MMIO);
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    return qts;
+}
+
+static void pio_row_select(QTestState *qts, uint32_t bits)
+{
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | bits | (WIDE_CARD_MMIO >> 20));
+}
+
+static uint64_t pio_read(QTestState *qts, uint64_t addr, unsigned int size)
+{
+    switch (size) {
+    case 1:
+        return qtest_readb(qts, addr);
+    case 2:
+        return qtest_readw(qts, addr);
+    case 4:
+        return qtest_readl(qts, addr);
+    default:
+        return qtest_readq(qts, addr);
+    }
+}
+
+static void pio_write(QTestState *qts, uint64_t addr, unsigned int size,
+                      uint64_t val)
+{
+    switch (size) {
+    case 1:
+        qtest_writeb(qts, addr, val);
+        break;
+    case 2:
+        qtest_writew(qts, addr, val);
+        break;
+    case 4:
+        qtest_writel(qts, addr, val);
+        break;
+    default:
+        qtest_writeq(qts, addr, val);
+        break;
+    }
+}
+
+static void test_pio_placement_read(const void *data)
+{
+    const struct pio_row *row = data;
+    QTestState *qts = pio_row_start();
+    static const unsigned int sizes[] = { 1, 2, 4, 8 };
+
+    pio_row_select(qts, row->bits);
+    for (unsigned int s = 0; s < ARRAY_SIZE(sizes); s++) {
+        unsigned int size = sizes[s];
+
+        for (unsigned int o = 0; o < 8; o += size) {
+            uint64_t want = 0;
+
+            /* A big-endian load: host byte o is the most significant. */
+            for (unsigned int i = 0; i < size; i++) {
+                want = (want << 8) | wide_fixed_pci[row->pci_byte(o + i)];
+            }
+            g_test_message("%s: %u bytes at %u", row->name, size, o);
+            g_assert_cmphex(pio_read(qts, WINDOW(DMA_SLOT) + WIDE_FIXED + o,
+                                     size), ==, want);
+        }
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The write direction. A store's bytes are found on the bus through the
+ * 64-bit swap-set configuration, whose byte reads the read case establishes
+ * as PCI byte k at host offset k.
+ */
+static void test_pio_placement_write(const void *data)
+{
+    const struct pio_row *row = data;
+    QTestState *qts = pio_row_start();
+    static const unsigned int sizes[] = { 1, 2, 4, 8 };
+    uint64_t scratch = WINDOW(DMA_SLOT) + WIDE_SCRATCH;
+
+    for (unsigned int s = 0; s < ARRAY_SIZE(sizes); s++) {
+        unsigned int size = sizes[s];
+
+        for (unsigned int o = 0; o < 8; o += size) {
+            uint8_t want[8] = { 0 };
+            uint64_t val = 0;
+
+            for (unsigned int i = 0; i < size; i++) {
+                uint8_t b = 0x11 * (i + 1);
+
+                val = (val << 8) | b;
+                want[row->pci_byte(o + i)] = b;
+            }
+            pio_row_select(qts, row->bits);
+            qtest_writeq(qts, scratch, 0);
+            pio_write(qts, scratch + o, size, val);
+
+            pio_row_select(qts, DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED);
+            g_test_message("%s: %u bytes at %u", row->name, size, o);
+            for (unsigned int k = 0; k < 8; k++) {
+                g_assert_cmphex(qtest_readb(qts, scratch + k), ==, want[k]);
+            }
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -4692,6 +4857,97 @@ static void test_pio_xlate_stops_at_its_declared_size(void)
     qtest_quit(qts);
 }
 
+/*
+ * Placement through the inbound PIO translated window follows the control
+ * register's memory-swap bit, the swap for PCI memory not reached through a
+ * device window (Bridge specification revision 4.0, section 4.2.3 and
+ * Table 11). This range is the alias for 32-bit device targets, so the
+ * 32-bit rows apply: each word byte-reversed with the bit clear (Tables 73
+ * to 76), a plain byte stream with it set (Tables 65 to 68).
+ */
+#define PIOX_DMA_CARD       " -device sgi-bridge-dma-test,bus=pci,addr=" \
+                            stringify(CARD_SLOT)
+#define PIOX_CONTROL        PIOX_REG(0x20)
+#define PIOX_MEM_SWAP       (1u << 22)
+#define PIOX_WIDE_FIXED     0x00
+#define PIOX_WIDE_SCRATCH   0x08
+
+static const uint8_t piox_fixed_pci[8] = {
+    0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+};
+
+static QTestState *piox_wide_start(bool mem_swap)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S "
+        "-device sgi-bridge,id=bridge,board-part=" BOARD_PART ","
+        "fabric=/machine/unattached/system[0]" PIOX_DMA_CARD);
+    uint32_t control;
+
+    qtest_sysbus_mmio_map(qts, BRIDGE, 0, 0);
+    qtest_writel(qts, PIOX_CFG0(CARD_SLOT) + PCI_BAR1, PIOX_CARD_MMIO);
+    qtest_writel(qts, PIOX_CFG0(CARD_SLOT) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    control = qtest_readl(qts, PIOX_CONTROL);
+    qtest_writel(qts, PIOX_CONTROL, mem_swap ? control | PIOX_MEM_SWAP
+                                             : control & ~PIOX_MEM_SWAP);
+    return qts;
+}
+
+static uint64_t piox_read(QTestState *qts, uint64_t addr, unsigned int size)
+{
+    switch (size) {
+    case 1:
+        return qtest_readb(qts, addr);
+    case 2:
+        return qtest_readw(qts, addr);
+    case 4:
+        return qtest_readl(qts, addr);
+    default:
+        return qtest_readq(qts, addr);
+    }
+}
+
+static void test_pio_xlate_placement(const void *data)
+{
+    bool mem_swap = data != NULL;
+    QTestState *qts = piox_wide_start(mem_swap);
+    static const unsigned int sizes[] = { 1, 2, 4, 8 };
+    uint64_t fixed = PIO_XLATE(PIOX_CARD_MMIO + PIOX_WIDE_FIXED);
+    uint64_t scratch = PIO_XLATE(PIOX_CARD_MMIO + PIOX_WIDE_SCRATCH);
+
+    for (unsigned int s = 0; s < ARRAY_SIZE(sizes); s++) {
+        unsigned int size = sizes[s];
+
+        for (unsigned int o = 0; o < 8; o += size) {
+            uint64_t want = 0;
+
+            for (unsigned int i = 0; i < size; i++) {
+                unsigned int k = o + i;
+
+                want = (want << 8) | piox_fixed_pci[mem_swap ? k : k ^ 3];
+            }
+            g_test_message("swap %d: %u bytes at %u", mem_swap, size, o);
+            g_assert_cmphex(piox_read(qts, fixed + o, size), ==, want);
+        }
+    }
+
+    /*
+     * A store lands by the same row: with the swap set, a byte stored at
+     * host offset k is the byte a load at k returns and also PCI byte k,
+     * which a load with the swap clear finds at k ^ 3.
+     */
+    qtest_writeq(qts, scratch, 0x0011223344556677ULL);
+    qtest_writel(qts, PIOX_CONTROL,
+                 qtest_readl(qts, PIOX_CONTROL) & ~PIOX_MEM_SWAP);
+    for (unsigned int k = 0; k < 8; k++) {
+        unsigned int pci = mem_swap ? k : k ^ 3;
+
+        g_assert_cmphex(qtest_readb(qts, scratch + (pci ^ 3)), ==, 0x11 * k);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -4887,6 +5143,17 @@ int main(int argc, char **argv)
                     test_pio_xlate_reaches_pci_memory);
     qtest_add_func("sn0/bridge/pio-xlate/stops-at-its-declared-size",
                     test_pio_xlate_stops_at_its_declared_size);
+    qtest_add_data_func("sn0/bridge/pio-xlate/placement/mem-swap-clear", NULL,
+                        test_pio_xlate_placement);
+    for (unsigned int r = 0; r < ARRAY_SIZE(pio_rows); r++) {
+        g_autofree char *read = g_strdup_printf(
+            "sn0/bridge/pio-placement/read/%s", pio_rows[r].name);
+        g_autofree char *write = g_strdup_printf(
+            "sn0/bridge/pio-placement/write/%s", pio_rows[r].name);
+
+        qtest_add_data_func(read, &pio_rows[r], test_pio_placement_read);
+        qtest_add_data_func(write, &pio_rows[r], test_pio_placement_write);
+    }
 
     ret = g_test_run();
     qtest_quit(qts);

@@ -2335,12 +2335,18 @@ static void test_rad_subcode_width_swap(void)
     const uint64_t value = UINT64_C(0x0123456789abcdef);
     const uint64_t sentinel = UINT64_C(0xfedcba9876543210);
 
+    /*
+     * Under every width and swap setting the Bridge's tables pair a store
+     * and a load the same way, so a word load finds a doubleword's halves
+     * as big-endian memory would hold them: the more significant at +0.
+     */
+    const uint32_t low = value >> 32;
+    const uint32_t high = (uint32_t)value;
+
     octane_rad_map(qts);
     for (unsigned mode = 0; mode < 4; mode++) {
         uint32_t config = 0x1130 | ((mode & 1) ? 1u << 22 : 0) |
                           ((mode & 2) ? 1u << 13 : 0);
-        uint32_t low = mode == 3 ? value >> 32 : value;
-        uint32_t high = mode == 3 ? value : value >> 32;
 
         qtest_writel(qts, BRIDGE_REG(0x218), config);
         for (unsigned offset = 0x1000; offset <= 0x1218; offset += 8) {
@@ -2352,9 +2358,9 @@ static void test_rad_subcode_width_swap(void)
             qtest_writeq(qts, RAD_BAR0 + offset, pattern);
             g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + offset), ==, pattern);
             g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + offset), ==,
-                            mode == 3 ? pattern >> 32 : (uint32_t)pattern);
+                            pattern >> 32);
             g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + offset + 4), ==,
-                            mode == 3 ? (uint32_t)pattern : pattern >> 32);
+                            (uint32_t)pattern);
         }
         qtest_writeq(qts, RAD_BAR0 + 0x1100, sentinel);
         g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1100), ==, sentinel);
@@ -2762,18 +2768,23 @@ static void test_rad_startup_unsupported(void)
     memtx_writel(qts, RAD_BAR0 + 0x81, 0x12345678);
     qtest_writel(qts, BRIDGE_REG(0x218), 0x1130);
     octane_rad_startup_check(qts, false);
-    /* An unaligned CPU doubleword becomes accepted aligned BAR halves. */
+    /*
+     * An unaligned CPU doubleword becomes accepted aligned BAR halves. Each
+     * split puts the more significant half at the lower address (Bridge
+     * Tables 68 and 76), so a word read finds the halves of the doubleword
+     * stored around it in address order.
+     */
     qtest_writeq(qts, RAD_BAR0 + 0x1104, UINT64_MAX);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1104), ==, UINT32_MAX);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==, UINT32_MAX);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1100), ==,
-                    (uint32_t)octane_rad_subcode_pattern(0x1100));
+                    octane_rad_subcode_pattern(0x1100) >> 32);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==,
-                    octane_rad_subcode_pattern(0x1108) >> 32);
+                    (uint32_t)octane_rad_subcode_pattern(0x1108));
     /* Split cycles commit separately, even when either half is rejected. */
     qtest_writeq(qts, RAD_BAR0 + 0x90, UINT64_C(0x1234567889abcdef));
-    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x90), ==, 0x89abcdef);
-    qtest_writeq(qts, RAD_BAR0 + 0x48, UINT64_C(0x0300000200000011));
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x90), ==, 0x12345678);
+    qtest_writeq(qts, RAD_BAR0 + 0x48, UINT64_C(0x0000001103000002));
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0x10);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0x03000002);
     qtest_clock_step(qts, 1000000);

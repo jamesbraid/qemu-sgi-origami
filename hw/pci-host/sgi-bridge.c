@@ -697,170 +697,110 @@ static SGIPioForward *sgi_bridge_forward(SGIBridgeState *s,
                                    : &s->pci_mmio_forward;
 }
 
-/* Raw PCI bytes are packed according to the programmed-I/O swap bit. */
 /*
- * One corrected window cycle of up to four bytes: a byte, halfword or word,
- * and each half of a 32-bit device's split doubleword. impl.max caps size at
- * four here; the assert makes that bound visible to the compiler's
- * array-bounds check, the eight-byte doubleword being the caller's.
- * Parameterized on a plain base rather than a slot: the per-device windows
- * pass their slot's own base, the inbound PIO translated window corrects
- * from PCI address zero and leaves word lanes unswapped.
- * device is the number a failure records.
+ * Programmed-I/O byte placement, from the Bridge specification's big-endian
+ * tables (revision 4.0, Appendix A, Tables 65 to 80). Host byte k of an
+ * aligned unit lands on PCI byte k with the swap set; with it clear, on
+ * k ^ 3 within a 32-bit device's word (Tables 73 to 76) and on 7 - k within
+ * a 64-bit device's doubleword (Tables 77 to 80). An access narrower than
+ * the device moves to offset ^ (width - size) and its bytes reverse; the
+ * swap keeps both. A doubleword to a 32-bit device is two word cycles,
+ * lower address first, carrying host bytes 0 to 3 and then 4 to 7.
+ *
+ * The windows are DEVICE_LITTLE_ENDIAN on a big-endian processor, so the
+ * handler's value is the access in little-endian order: its bytes, least
+ * significant first, are the host bytes at offsets 0 upward.
  */
-static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
-                                               unsigned int device,
-                                               hwaddr base, bool swap,
-                                               AddressSpace *space,
-                                               hwaddr addr, unsigned int size,
-                                               uint64_t *value)
-{
-    hwaddr target = base + sgi_bridge_window_correct(addr, size);
-    uint8_t bytes[4] = { 0 };
-    MemTxResult result;
+typedef struct SGIBridgePio {
+    SGIBridgeState *s;
+    AddressSpace *space;
+    hwaddr base;            /* PCI address of window offset zero */
+    unsigned int device;    /* the number a failure records */
+    unsigned int width;     /* device bus width in bytes, 4 or 8 */
+    bool swap;
+} SGIBridgePio;
 
-    assert(size <= sizeof(bytes));
-    result = sgi_pio_forward_read(sgi_bridge_forward(s, space), target,
-                                  MEMTXATTRS_UNSPECIFIED, bytes, size);
-    *value = swap && size == 4 ? (uint32_t)ldl_le_p(bytes) :
-             ldn_be_p(bytes, size);
-    return sgi_bridge_window_failed(s, device, space, target, result);
+/* One PCI cycle of @size bytes at window offset @addr, at most bus width. */
+static MemTxResult sgi_bridge_pio_cycle(const SGIBridgePio *p, hwaddr addr,
+                                        uint8_t *host, unsigned int size,
+                                        bool write)
+{
+    hwaddr target = p->base + (p->swap ? addr : addr ^ (p->width - size));
+    SGIPioForward *forward = sgi_bridge_forward(p->s, p->space);
+    uint8_t pci[8];
+    MemTxResult result;
+    unsigned int i;
+
+    assert(size <= p->width && size <= sizeof(pci));
+    if (write) {
+        for (i = 0; i < size; i++) {
+            pci[i] = host[p->swap ? i : size - 1 - i];
+        }
+        result = sgi_pio_forward_write(forward, target,
+                                       MEMTXATTRS_UNSPECIFIED, pci, size);
+    } else {
+        memset(pci, 0, sizeof(pci));
+        result = sgi_pio_forward_read(forward, target,
+                                      MEMTXATTRS_UNSPECIFIED, pci, size);
+        for (i = 0; i < size; i++) {
+            host[i] = pci[p->swap ? i : size - 1 - i];
+        }
+    }
+    return sgi_bridge_window_failed(p->s, p->device, p->space, target, result);
 }
 
 /*
- * Two word cycles for a doubleword, big-endian high word at the lower
- * offset. A first cycle that fails ends the read there: the specification
- * does not say whether the Bridge still issues the second, and the
- * requester gets the failure either way.
+ * A read that fails on its first cycle ends there: the specification does
+ * not say whether the Bridge still issues the second, and the requester
+ * gets the failure either way. A write posts, so both cycles go out.
  */
-static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
-                                                unsigned int device,
-                                                hwaddr base, bool swap,
-                                                AddressSpace *space,
-                                                hwaddr addr, uint64_t *value)
+static MemTxResult sgi_bridge_pio_read(const SGIBridgePio *p, hwaddr addr,
+                                       unsigned int size, uint64_t *value)
 {
-    uint64_t word0, word1;
+    uint8_t host[8] = { 0 };
     MemTxResult result;
 
-    result = sgi_bridge_window_read_word(s, device, base, swap, space, addr, 4,
-                                         &word0);
-    if (result == MEMTX_OK) {
-        result = sgi_bridge_window_read_word(s, device, base, swap, space,
-                                             addr + 4, 4, &word1);
+    if (size > p->width) {
+        result = sgi_bridge_pio_cycle(p, addr, host, 4, false);
+        if (result == MEMTX_OK) {
+            result = sgi_bridge_pio_cycle(p, addr + 4, host + 4, 4, false);
+        }
+    } else {
+        result = sgi_bridge_pio_cycle(p, addr, host, size, false);
     }
-    *value = result == MEMTX_OK ? (word0 << 32) | word1 : 0;
+    *value = result == MEMTX_OK ? ldn_le_p(host, size) : 0;
     return result;
 }
 
-/*
- * A device-window read. The slot's device-size bit picks how a doubleword is
- * served: a 32-bit device gets two word cycles (each corrected), a 64-bit
- * device one eight-byte cycle with no narrow correction, mirrored end to end
- * on the programmed-access swap bit. The window is DEVICE_LITTLE_ENDIAN, so
- * reading the buffer big-endian nets to the doubleword unchanged and
- * little-endian to the mirror. A byte, halfword or word is one corrected
- * cycle; the programmed-access swap bit also reverses each four-byte cycle.
- */
-static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
-                                          unsigned int slot,
-                                          AddressSpace *space, hwaddr addr,
-                                          unsigned int size, uint64_t *value)
+static void sgi_bridge_pio_write(const SGIBridgePio *p, hwaddr addr,
+                                 unsigned int size, uint64_t value)
 {
-    uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
-    hwaddr base = s->device_window_base[slot];
+    uint8_t host[8];
 
-    if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
-        uint8_t bytes[8] = { 0 };
-        MemTxResult result;
-
-        result = sgi_pio_forward_read(sgi_bridge_forward(s, space),
-                                      base + addr, MEMTXATTRS_UNSPECIFIED,
-                                      bytes, 8);
-        *value = (dev & DEV_SWAP_PROGRAMMED) ? ldq_le_p(bytes)
-                                             : ldq_be_p(bytes);
-        return sgi_bridge_window_failed(s, slot, space, base + addr, result);
-    }
-
-    if (size == 8) {
-        return sgi_bridge_window_read_split(s, slot, base,
-                                            dev & DEV_SWAP_PROGRAMMED, space,
-                                            addr, value);
-    }
-
-    return sgi_bridge_window_read_word(s, slot, base,
-                                       dev & DEV_SWAP_PROGRAMMED, space, addr,
-                                       size, value);
-}
-
-/*
- * One window write cycle of up to four bytes, the counterpart of
- * sgi_bridge_window_read_word.
- */
-static void sgi_bridge_window_write_word(SGIBridgeState *s,
-                                         unsigned int device, hwaddr base,
-                                         bool swap,
-                                         AddressSpace *space,
-                                         hwaddr addr, uint64_t val,
-                                         unsigned int size)
-{
-    hwaddr target = base + sgi_bridge_window_correct(addr, size);
-    uint8_t bytes[4];
-
-    assert(size <= sizeof(bytes));
-    if (swap && size == 4) {
-        stl_le_p(bytes, val);
+    stn_le_p(host, size, value);
+    if (size > p->width) {
+        sgi_bridge_pio_cycle(p, addr, host, 4, true);
+        sgi_bridge_pio_cycle(p, addr + 4, host + 4, 4, true);
     } else {
-        stn_be_p(bytes, size, val);
+        sgi_bridge_pio_cycle(p, addr, host, size, true);
     }
-    sgi_bridge_window_failed(s, device, space, target,
-                             sgi_pio_forward_write(sgi_bridge_forward(s, space),
-                                                   target,
-                                                   MEMTXATTRS_UNSPECIFIED,
-                                                   bytes, size));
 }
 
-/*
- * The write counterpart of sgi_bridge_window_read: the device-size bit picks
- * the same split or single cycle and the swap bit mirrors a 64-bit
- * doubleword, so a value round-trips through a 64-bit window under either
- * swap setting.
- */
-static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
-                                    AddressSpace *space, hwaddr addr,
-                                    uint64_t val, unsigned int size)
+/* A device window: its device register picks the bus width and the swap. */
+static SGIBridgePio sgi_bridge_window_pio(SGIBridgeState *s,
+                                          unsigned int slot,
+                                          AddressSpace *space)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
-    hwaddr base = s->device_window_base[slot];
 
-    if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
-        uint8_t bytes[8];
-
-        if (dev & DEV_SWAP_PROGRAMMED) {
-            stq_le_p(bytes, val);
-        } else {
-            stq_be_p(bytes, val);
-        }
-        sgi_bridge_window_failed(s, slot, space, base + addr,
-                                 sgi_pio_forward_write(
-                                     sgi_bridge_forward(s, space),
-                                     base + addr, MEMTXATTRS_UNSPECIFIED,
-                                     bytes, 8));
-        return;
-    }
-
-    if (size == 8) {
-        sgi_bridge_window_write_word(s, slot, base,
-                                     dev & DEV_SWAP_PROGRAMMED, space, addr,
-                                     val >> 32, 4);
-        sgi_bridge_window_write_word(s, slot, base,
-                                     dev & DEV_SWAP_PROGRAMMED, space,
-                                     addr + 4, val, 4);
-        return;
-    }
-
-    sgi_bridge_window_write_word(s, slot, base,
-                                 dev & DEV_SWAP_PROGRAMMED, space, addr, val,
-                                 size);
+    return (SGIBridgePio) {
+        .s = s,
+        .space = space,
+        .base = s->device_window_base[slot],
+        .device = slot,
+        .width = dev & DEV_64BIT_DEVICE ? 8 : 4,
+        .swap = dev & DEV_SWAP_PROGRAMMED,
+    };
 }
 
 static MemTxResult sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
@@ -868,9 +808,10 @@ static MemTxResult sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
                                               MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
+    SGIBridgePio p = sgi_bridge_window_pio(win->s, win->slot,
+                                           &win->s->pci_mmio_as);
 
-    return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_mmio_as,
-                                  addr, size, data);
+    return sgi_bridge_pio_read(&p, addr, size, data);
 }
 
 static MemTxResult sgi_bridge_window_mem_write(void *opaque, hwaddr addr,
@@ -878,9 +819,10 @@ static MemTxResult sgi_bridge_window_mem_write(void *opaque, hwaddr addr,
                                                MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
+    SGIBridgePio p = sgi_bridge_window_pio(win->s, win->slot,
+                                           &win->s->pci_mmio_as);
 
-    sgi_bridge_window_write(win->s, win->slot, &win->s->pci_mmio_as, addr,
-                            val, size);
+    sgi_bridge_pio_write(&p, addr, size, val);
     return MEMTX_OK;
 }
 
@@ -889,9 +831,10 @@ static MemTxResult sgi_bridge_window_io_read(void *opaque, hwaddr addr,
                                              MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
+    SGIBridgePio p = sgi_bridge_window_pio(win->s, win->slot,
+                                           &win->s->pci_io_as);
 
-    return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_io_as, addr,
-                                  size, data);
+    return sgi_bridge_pio_read(&p, addr, size, data);
 }
 
 static MemTxResult sgi_bridge_window_io_write(void *opaque, hwaddr addr,
@@ -899,9 +842,10 @@ static MemTxResult sgi_bridge_window_io_write(void *opaque, hwaddr addr,
                                               MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
+    SGIBridgePio p = sgi_bridge_window_pio(win->s, win->slot,
+                                           &win->s->pci_io_as);
 
-    sgi_bridge_window_write(win->s, win->slot, &win->s->pci_io_as, addr, val,
-                            size);
+    sgi_bridge_pio_write(&p, addr, size, val);
     return MEMTX_OK;
 }
 
@@ -909,9 +853,8 @@ static MemTxResult sgi_bridge_window_io_write(void *opaque, hwaddr addr,
  * A doubleword is a native access here (the firmware's device-pointer
  * dereference is one). Both maxima are eight so it reaches the handlers
  * whole: a 64-bit device is served one cycle, a 32-bit device the two
- * four-byte cycles the handler now splits itself, since impl past four stops
- * the core doing it. The byte-lane correction still sees each four-byte cycle
- * in its own right.
+ * four-byte cycles the handler splits itself, since impl past four stops
+ * the core doing it.
  */
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
     .read_with_attrs = sgi_bridge_window_mem_read,
@@ -934,56 +877,41 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
 };
 
 /*
- * The inbound PIO translated window's cycle: the same byte-lane correction
- * as a per-device window's, but based at PCI address zero rather than a
- * slot's programmed base, and always corrected. There is no per-device
- * register behind this window to select a test override or a 64-bit
- * device, so a doubleword access always gets the two
- * corrected four-byte cycles a 32-bit device's window would use, the common
- * case, and the only one this window can express. No slot selects
- * the cycle either, so a failure records device number zero: which number
- * the chip records for a cycle this window issues is not stated.
- *
- * This correction is a no-op for the only traffic confirmed to use this
- * window today: PsiTech RAD4's BAR2 is 4-byte-access-only end to end
- * (rad4_bar2_ops), and sgi_bridge_window_correct's offset adjustment is the
- * identity function at size 4. A live boot with the correction forced off
- * produced byte-identical screendumps to a corrected boot. See the header
- * comment on SGI_BRIDGE_PIO_XLATE_BASE for what was tested and what remains
- * unexplained. RAD4's wrong login-screen colors are confirmed independent
- * of the correction.
+ * The inbound PIO translated window: PCI memory from address zero, the
+ * alias for 32-bit device targets (specification printed page 52), so a
+ * doubleword is two word cycles, placed as a swap-clear device window's.
+ * No slot selects the cycle, so a failure records device number zero:
+ * which number the chip records for a cycle this window issues is not
+ * stated.
  */
+static SGIBridgePio sgi_bridge_pio_xlate_pio(SGIBridgeState *s)
+{
+    return (SGIBridgePio) {
+        .s = s,
+        .space = &s->pci_mmio_as,
+        .base = 0,
+        .device = 0,
+        .width = 4,
+        .swap = false,
+    };
+}
+
 static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
                                              uint64_t *data, unsigned size,
                                              MemTxAttrs attrs)
 {
-    SGIBridgeState *s = opaque;
+    SGIBridgePio p = sgi_bridge_pio_xlate_pio(opaque);
 
-    if (size == 8) {
-        return sgi_bridge_window_read_split(s, 0, 0, false,
-                                            &s->pci_mmio_as, addr, data);
-    }
-
-    return sgi_bridge_window_read_word(s, 0, 0, false,
-                                       &s->pci_mmio_as, addr, size, data);
+    return sgi_bridge_pio_read(&p, addr, size, data);
 }
 
 static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
                                               uint64_t val, unsigned size,
                                               MemTxAttrs attrs)
 {
-    SGIBridgeState *s = opaque;
+    SGIBridgePio p = sgi_bridge_pio_xlate_pio(opaque);
 
-    if (size == 8) {
-        sgi_bridge_window_write_word(s, 0, 0, false,
-                                     &s->pci_mmio_as, addr, val >> 32, 4);
-        sgi_bridge_window_write_word(s, 0, 0, false,
-                                     &s->pci_mmio_as, addr + 4, val, 4);
-        return MEMTX_OK;
-    }
-
-    sgi_bridge_window_write_word(s, 0, 0, false,
-                                 &s->pci_mmio_as, addr, val, size);
+    sgi_bridge_pio_write(&p, addr, size, val);
     return MEMTX_OK;
 }
 
