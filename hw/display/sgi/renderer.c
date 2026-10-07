@@ -389,13 +389,24 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         if (!sgi_renderer_clear(renderer, clear, errp)) {
             return SGI_RENDER_HOST_ERROR;
         }
-        for (size_t pixel = 0; pixel < pixels; pixel++) {
-            for (unsigned c = 0; c < res->component_count; c++) {
-                unsigned bits = res->component[c].storage_bits;
-                uint32_t max = (1u << bits) - 1;
+        for (unsigned j = 0; j < clear->rect_count; j++) {
+            const SGIRendererClearRect *r = &clear->rects[j];
 
-                slots[pixel * res->component_count + c] =
-                    ((uint64_t)rgba[pixel * 4 + c] * max + 32767) / 65535;
+            for (uint32_t y = r->y0; y <= r->y1; y++) {
+                for (uint32_t x = r->x0; x <= r->x1; x++) {
+                    size_t pixel = (size_t)y * res->width + x;
+
+                    for (unsigned c = 0; c < res->component_count; c++) {
+                        unsigned bits = res->component[c].storage_bits;
+                        uint32_t max = (1u << bits) - 1;
+
+                        if (clear->colour_mask & (1u << c)) {
+                            slots[pixel * res->component_count + c] =
+                                ((uint64_t)rgba[pixel * 4 + c] * max +
+                                 32767) / 65535;
+                        }
+                    }
+                }
             }
         }
         committed = sgi_render_resource_commit(target, res, 0, &rect,
