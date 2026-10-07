@@ -1243,6 +1243,9 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     }
     c->last_used = ++s->context_clock;
     s->texture_associate_pending = false;
+    if (s->context_current != slot) {
+        s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+    }
     s->context_current = slot;
     s->gl_grammar = true;
     s->context_page_pending = first;
@@ -1422,6 +1425,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     }
     s->gl_map_upload.refused = true;
     s->texture_associate_pending = false;
+    s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
     sgi_kona_post_reason(s, SGI_KONA_CMD_CONTEXT_DEACTIVATE,
@@ -2299,10 +2303,12 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
         .texture = sgi_kona_texture_resolve(&s->textures),
     };
     /* A rejected live binding must not become an untextured draw. */
-    if (!s->textures.bound && s->texture_bind_valid &&
-        s->texture_bind[0] != UINT32_MAX &&
-        g_hash_table_lookup(s->textures.objects,
-                            GUINT_TO_POINTER(s->texture_bind[0]))) {
+    if ((s->context_current != SGI_KONA_CONTEXT_NONE &&
+         s->gl_pipe[s->context_current].texture_rebind_refused) ||
+        (!s->textures.bound && s->texture_bind_valid &&
+         s->texture_bind[0] != UINT32_MAX &&
+         g_hash_table_lookup(s->textures.objects,
+                             GUINT_TO_POINTER(s->texture_bind[0])))) {
         t->texture = &unsupported_texture;
     }
 }
@@ -5972,6 +5978,40 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     }
 }
 
+/* An allocated texture object may still have no sampleable base image. */
+static bool sgi_kona_texture_bound_ordinary_2d(SGIKonaState *s,
+                                                uint32_t handle)
+{
+    const SGIGLTexImage *image;
+    const SGIGLTexPyramid *pyramid;
+
+    if (!s->textures.bound || s->textures.bound_handle != handle) {
+        return false;
+    }
+    image = sgi_kona_texture_resolve(&s->textures);
+    if (!image || image->one_dimensional || image->volume ||
+        (image->min_filter != SGI_GL_NEAREST &&
+         image->min_filter != SGI_GL_LINEAR) ||
+        (image->mag_filter != SGI_GL_NEAREST &&
+         image->mag_filter != SGI_GL_LINEAR) ||
+        !image->pyramid || !image->pyramid->levels ||
+        image->pyramid->count > SGI_GL_TEX_LEVELS_MAX) {
+        return false;
+    }
+    pyramid = image->pyramid;
+    for (unsigned k = 0; k < pyramid->count; k++) {
+        const SGIGLTexLevel *level = &pyramid->levels[k];
+
+        if (level->level == pyramid->base_level &&
+            level->read_texel && level->width && level->height &&
+            is_power_of_2(level->width) &&
+            is_power_of_2(level->height)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void sgi_kona_texture_association_forget(SGIKonaState *s,
                                                 uint32_t handle)
 {
@@ -6890,6 +6930,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                                   argc > 2 ? args[2] : 0, argc);
     if (selector != SGI_KONA_CMD_GL_TEX_BIND_2D) {
         s->texture_associate_pending = false;
+        s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     }
     if (i != SGI_KONA_CONTEXT_NONE && !s->gl[i].in_begin &&
         ((s->gl[i].matrix_mode == 0x1800 && selector >= 0xcf &&
@@ -6995,6 +7036,11 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         }
         s->texture_bind[0] = args[0];
         sgi_kona_gl_texture_bind(s);
+        if (i != SGI_KONA_CONTEXT_NONE &&
+            s->gl_pipe[i].texture_rebind_refused &&
+            sgi_kona_texture_bound_ordinary_2d(s, args[0])) {
+            s->gl_pipe[i].texture_rebind_refused = false;
+        }
         return;
     case SGI_KONA_CMD_GL_TEX_BIND:
     case SGI_KONA_CMD_GL_TEX_BIND_LINEAR: {
@@ -7002,6 +7048,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
 
         s->texture_state_used = true;
         memcpy(s->texture_bind, args, sizeof(s->texture_bind));
+        s->texture_bind_context = i;
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_LINEAR &&
             (args[1] >> 28) == 2 && i != SGI_KONA_CONTEXT_NONE) {
             SGIKonaGLPipe *p = &s->gl_pipe[i];
@@ -7014,6 +7061,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                     handle = p->texture_assoc_handle[slot];
                     s->texture_bind[0] = handle;
                 } else {
+                    p->texture_rebind_refused = true;
                     qemu_log_mask(LOG_UNIMP,
                                   "sgi-kona: texture rebind without an "
                                   "associated selector; draw refused\n");
@@ -7058,6 +7106,13 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             }
         }
         sgi_kona_gl_texture_bind(s);
+        if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
+            i != SGI_KONA_CONTEXT_NONE && i == s->texture_bind_context &&
+            s->gl_pipe[i].texture_rebind_refused &&
+            sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0])) {
+            s->gl_pipe[i].texture_rebind_refused = false;
+        }
+        s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             s->texture_associate_pending) {
             uint32_t handle = s->texture_bind[0];
@@ -11288,6 +11343,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->texture_bind_valid = false;
     s->texture_record_valid = false;
     s->texture_state_used = false;
+    s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_pending = false;
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_slot = 0;
@@ -11529,6 +11585,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->texture_bind_valid = false;
     s->texture_record_valid = false;
     s->texture_state_used = false;
+    s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_pending = false;
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_slot = 0;
@@ -12286,6 +12343,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
         VMSTATE_BOOL(texture_selector_valid, SGIKonaGLPipe),
         VMSTATE_UINT32_ARRAY(texture_assoc_handle, SGIKonaGLPipe, 2),
         VMSTATE_UINT8(texture_assoc_valid, SGIKonaGLPipe),
+        VMSTATE_BOOL(texture_rebind_refused, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -13225,6 +13283,10 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D &&
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT) ||
+        (s->texture_bind_context != SGI_KONA_CONTEXT_NONE &&
+         (s->texture_bind_context < 0 ||
+          s->texture_bind_context >= SGI_KONA_CONTEXTS ||
+          s->texture_bind_context != s->context_current)) ||
         (s->texture_associate_pending &&
          (s->texture_associate_context < 0 ||
           s->texture_associate_context >= SGI_KONA_CONTEXTS ||
@@ -13338,6 +13400,7 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
         VMSTATE_BOOL(texture_bind_valid, SGIKonaState),
         VMSTATE_BOOL(texture_record_valid, SGIKonaState),
         VMSTATE_BOOL(texture_state_used, SGIKonaState),
+        VMSTATE_INT32(texture_bind_context, SGIKonaState),
         VMSTATE_UINT32(texture_record_token, SGIKonaState),
         VMSTATE_BOOL(texture_associate_pending, SGIKonaState),
         VMSTATE_INT32(texture_associate_context, SGIKonaState),
