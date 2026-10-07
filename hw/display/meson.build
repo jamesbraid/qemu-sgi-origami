@@ -30,7 +30,7 @@ system_ss.add(when: 'CONFIG_SGI_DISPLAY',
               if_true: files('sgi/board-memory.c', 'sgi/command-fetch.c',
                              'sgi/gl-context.c', 'sgi/pixel-dma.c',
                              'sgi/rasterizer.c', 'sgi/render-resource.c',
-                             'sgi/scanout.c', 'sgi/x-gc.c'))
+                             'sgi/renderer.c', 'sgi/scanout.c', 'sgi/x-gc.c'))
 
 system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_fimd.c'))
 system_ss.add(when: 'CONFIG_FRAMEBUFFER', if_true: files('framebuffer.c'))

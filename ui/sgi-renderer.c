@@ -136,6 +136,32 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     return true;
 }
 
+bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
+                             Error **errp)
+{
+    if (!renderer || !frame || !frame->vertices || !frame->rgba ||
+        !frame->width || !frame->height || frame->width > INT_MAX ||
+        frame->height > INT_MAX || frame->count != 3 ||
+        frame->width > SIZE_MAX / frame->height / 4 /
+                       sizeof(*frame->rgba)) {
+        error_setg(errp, "Invalid SGI OpenGL frame request");
+        return false;
+    }
+    if (renderer->failed) {
+        error_setg(errp, "SGI OpenGL renderer has failed");
+        return false;
+    }
+    if (!renderer->ops->draw_frame) {
+        error_setg(errp, "SGI OpenGL frame rendering is unavailable");
+        return false;
+    }
+    if (!renderer->ops->draw_frame(renderer->opaque, frame, errp)) {
+        renderer->failed = true;
+        return false;
+    }
+    return true;
+}
+
 void sgi_renderer_free(SGIRenderer *renderer)
 {
     if (renderer) {

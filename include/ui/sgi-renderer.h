@@ -17,9 +17,19 @@ typedef struct SGIRendererRequest {
     uint8_t rgba[SGI_RENDERER_BYTES];
 } SGIRendererRequest;
 
+#define SGI_RENDERER_FRAME_VERTEX_FLOATS 8
+
+typedef struct SGIRendererFrame {
+    uint32_t width, height, count;
+    const float *vertices; /* position xyzw, then premade colour rgba */
+    float modelview[16], projection[16];
+    uint16_t *rgba; /* width * height * 4 host slots, bottom row first */
+} SGIRendererFrame;
+
 typedef struct SGIRendererOps {
     void *(*create)(Error **errp);
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
+    bool (*draw_frame)(void *opaque, SGIRendererFrame *frame, Error **errp);
     void (*destroy)(void *opaque);
 } SGIRendererOps;
 
@@ -27,6 +37,8 @@ void sgi_renderer_register_gl(const SGIRendererOps *ops);
 SGIRenderer *sgi_renderer_new(Error **errp);
 bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp);
+bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
+                             Error **errp);
 void sgi_renderer_free(SGIRenderer *renderer);
 bool sgi_renderer_request_valid(const SGIRendererRequest *request);
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request);
