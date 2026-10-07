@@ -381,6 +381,11 @@ typedef struct SGIKonaGLPipe {
     bool read_compatible;
     bool read_binding_unknown;
     uint32_t read_binding_word;
+    /* Bounded model association for observed 0x178/0x106 rebinds. */
+    uint32_t texture_selector;
+    bool texture_selector_valid;
+    uint32_t texture_assoc_handle[2];
+    uint8_t texture_assoc_valid;
 } SGIKonaGLPipe;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
@@ -996,6 +1001,10 @@ struct SGIKonaState {
     bool texture_bind_valid;
     bool texture_record_valid;
     bool texture_state_used;
+    /* A complete 0x179 commits the preceding explicit association. */
+    bool texture_associate_pending;
+    int32_t texture_associate_context;
+    uint8_t texture_associate_slot;
     /*
      * Each entry's attribute stack (sgi_kona_gl_push_attrib()): entry i's
      * copies at gl_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH] on, how many it
