@@ -1055,6 +1055,8 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .line_width = c->line_width,
         .point_smooth = !!(c->raster_enables & SGI_GL_RASTER_POINT_SMOOTH),
         .line_smooth = !!(c->raster_enables & SGI_GL_RASTER_LINE_SMOOTH),
+        .polygon_smooth =
+            !!(c->raster_enables & SGI_GL_RASTER_POLYGON_SMOOTH),
         .polygon_modes = c->polygon.enabled ? c->polygon_mode : NULL,
         .line_stipple_enabled = stipple &&
             !!(c->raster_enables & SGI_GL_RASTER_LINE_STIPPLE),
@@ -1808,8 +1810,8 @@ static void sgi_gl_clip_plane(SGIGLContext *c, uint32_t plane,
 }
 
 /*
- * The rasterization enables kept but not drawn with, as their
- * raster_enables bits; 0 for any other capability.
+ * The rasterization enables kept as raster_enables bits; 0 for any other
+ * capability.
  */
 static uint32_t sgi_gl_raster_enable(uint32_t cap)
 {
@@ -1915,10 +1917,6 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         if (on && cap == SGI_GL_LINE_STIPPLE && !c->standalone_stipple) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: standalone line stipple is "
                           "kept; standalone lines are drawn without it\n");
-        } else if (on && cap != SGI_GL_POLYGON_STIPPLE &&
-                   cap != SGI_GL_LINE_STIPPLE) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is kept; "
-                          "drawn without it\n", cap);
         }
         return;
     }
@@ -2372,6 +2370,8 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     !!(c->raster_enables & SGI_GL_RASTER_POINT_SMOOTH),
                 .line_smooth =
                     !!(c->raster_enables & SGI_GL_RASTER_LINE_SMOOTH),
+                .polygon_smooth =
+                    !!(c->raster_enables & SGI_GL_RASTER_POLYGON_SMOOTH),
                 .polygon_modes = c->polygon_mode, .fill_by_triangle = true,
                 .polygon_stipple = c->polygon_stipple,
                 .polygon_stipple_enabled =

@@ -4567,7 +4567,7 @@ static void test_raster_state_kept(void)
  * Clip coordinates are compared to within 2^-40 and attributes, which are
  * floats, to within 2^-20.
  */
-static void test_point_smoothing_coverage(void)
+static void point_smoothing_coverage_scene(void)
 {
     FragScene f;
     SGIRasterRules smooth_rules = rules_stencil;
@@ -4610,7 +4610,14 @@ static void test_point_smoothing_coverage(void)
     g_assert_cmphex(frag_pixel(&f, 29, 9), ==, 0x0000ff);
 }
 
-static void test_line_smoothing_coverage(void)
+static void test_point_smoothing_coverage(void)
+{
+    g_autofree char *log = logged_by(point_smoothing_coverage_scene);
+
+    g_assert_cmpstr(log, ==, "");
+}
+
+static void line_smoothing_coverage_scene(void)
 {
     FragScene f;
     SGIRasterRules smooth_rules = rules_stencil;
@@ -4661,6 +4668,13 @@ static void test_line_smoothing_coverage(void)
     g_assert_cmphex(frag_pixel(&f, 40, 30), ==, 0x0000ff);
 }
 
+static void test_line_smoothing_coverage(void)
+{
+    g_autofree char *log = logged_by(line_smoothing_coverage_scene);
+
+    g_assert_cmpstr(log, ==, "");
+}
+
 static void test_line_smoothing_stipple(void)
 {
     FragScene f;
@@ -4708,7 +4722,7 @@ static void test_line_smoothing_stipple(void)
     g_assert_cmpuint((p >> 8) & 0xff, ==, 0);
 }
 
-static void test_smoothing_rules_disabled(void)
+static void smoothing_rules_disabled_scene(void)
 {
     FragScene aliased, requested;
     uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
@@ -4748,8 +4762,70 @@ static void test_smoothing_rules_disabled(void)
     wide_vertex(&requested, 14, 20);
     frag_command(&requested, SGI_GL_OP_END, NULL, 0);
 
+    frag_command(&aliased, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    wide_vertex(&aliased, 10, 30);
+    wide_vertex(&aliased, 16, 30);
+    wide_vertex(&aliased, 10, 36);
+    frag_command(&aliased, SGI_GL_OP_END, NULL, 0);
+    enable(&requested.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_command(&requested, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    wide_vertex(&requested, 10, 30);
+    wide_vertex(&requested, 16, 30);
+    wide_vertex(&requested, 10, 36);
+    frag_command(&requested, SGI_GL_OP_END, NULL, 0);
+
     g_assert(memcmp(aliased.p.colour, requested.p.colour,
                     sizeof(aliased.p.colour)) == 0);
+}
+
+static void test_smoothing_rules_disabled(void)
+{
+    g_autofree char *log = logged_by(smoothing_rules_disabled_scene);
+
+    g_assert_cmpstr(log, ==,
+                    "sgi-gl: point smoothing requested but unsupported by "
+                    "raster rules; drawn aliased\n"
+                    "sgi-gl: line smoothing requested but unsupported by "
+                    "raster rules; drawn aliased\n"
+                    "sgi-gl: polygon smoothing requested but unsupported by "
+                    "raster rules; drawn aliased\n");
+}
+
+static void polygon_smoothing_unimplemented_scene(void)
+{
+    FragScene aliased, requested;
+    SGIRasterRules smooth_rules = rules_stencil;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&aliased);
+    frag_init(&requested);
+    aliased.rec.rules = requested.rec.rules = &smooth_rules;
+    frag_command(&aliased, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    wide_vertex(&aliased, 10, 30);
+    wide_vertex(&aliased, 16, 30);
+    wide_vertex(&aliased, 10, 36);
+    frag_command(&aliased, SGI_GL_OP_END, NULL, 0);
+    enable(&requested.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_command(&requested, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    wide_vertex(&requested, 10, 30);
+    wide_vertex(&requested, 16, 30);
+    wide_vertex(&requested, 10, 36);
+    frag_command(&requested, SGI_GL_OP_END, NULL, 0);
+
+    g_assert(memcmp(aliased.p.colour, requested.p.colour,
+                    sizeof(aliased.p.colour)) == 0);
+}
+
+static void test_polygon_smoothing_unimplemented(void)
+{
+    g_autofree char *log = logged_by(polygon_smoothing_unimplemented_scene);
+
+    g_assert_cmpstr(log, ==,
+                    "sgi-gl: polygon smoothing is not implemented\n");
 }
 
 #define CLIP_EPSILON (1.0 / (1ull << 40))
@@ -10441,6 +10517,8 @@ int main(int argc, char **argv)
                     test_line_smoothing_stipple);
     g_test_add_func("/sgi-gl/smoothing-rules-disabled",
                     test_smoothing_rules_disabled);
+    g_test_add_func("/sgi-gl/polygon-smoothing-unimplemented",
+                    test_polygon_smoothing_unimplemented);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
