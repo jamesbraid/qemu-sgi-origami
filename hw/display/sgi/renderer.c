@@ -46,6 +46,17 @@ static const SGIRenderResource *sgi_render_scalar_resource(
     return found;
 }
 
+static bool sgi_render_blend_pair_supported(const SGIGLDrawState *st)
+{
+    return (st->blend_src == SGI_GL_SRC_ALPHA &&
+            st->blend_dst == SGI_GL_ONE_MINUS_SRC_ALPHA) ||
+           (st->blend_src == SGI_GL_DST_ALPHA && st->blend_dst == 0) ||
+           (st->blend_src == 0 &&
+            st->blend_dst == SGI_GL_ONE_MINUS_DST_ALPHA) ||
+           (st->blend_src == SGI_GL_SRC_ALPHA_SATURATE &&
+            st->blend_dst == 1);
+}
+
 static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
                                       const SGIRenderResource **result)
@@ -111,9 +122,8 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         }
     }
     if (st->blend &&
-        (st->blend_src != SGI_GL_SRC_ALPHA ||
-         st->blend_dst != SGI_GL_ONE_MINUS_SRC_ALPHA ||
-         st->blend_equation != SGI_GL_FUNC_ADD ||
+        (st->blend_equation != SGI_GL_FUNC_ADD ||
+         !sgi_render_blend_pair_supported(st) ||
          res->component_count != 3)) {
         return false;
     }
