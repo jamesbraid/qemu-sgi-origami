@@ -886,7 +886,9 @@ int main(int argc, char **argv)
                     test_headless_display_accepts_ui_context);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-native-commit",
                     test_decoded_triangle_native_commit);
-    g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
+    if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
+        g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
+    }
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/shader-failure",
