@@ -1502,6 +1502,7 @@ F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
 F: hw/input/sgi-ioc3-kbc.c
 F: hw/misc/sgi-*.c
+F: hw/misc/sgi-kona-mesa-provider.h
 F: hw/net/dp83840.c
 F: hw/net/ics1890.c
 F: hw/net/sgi-ioc3-eth.c
