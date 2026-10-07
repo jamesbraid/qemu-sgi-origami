@@ -9,6 +9,7 @@ qemu_sgi_machine_init = executable('qemu-sgi-machine-init',
         '../../hw/mips/sgi/sn-model-runtime.c',
         '../../hw/mips/sgi/prom-image.c',
         '../../hw/mips/sgi/initial-flash.c',
-        '../../hw/rtc/m48t35-ip27.c') + [sgi_machines_embed_c, genh],
+        '../../hw/rtc/m48t35-ip27.c',
+        '../../hw/nvram/sgi-elsc-nvram-image.c') + [sgi_machines_embed_c, genh],
   dependencies: [qemuutil, zlib],
   install: true)

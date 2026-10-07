@@ -188,10 +188,10 @@ none has been assigned. IRIX names devices by module number. The number
 is stored in MSC NVRAM, and a backup copy is stored in each node card's
 PROM log, from which it is voted if the NVRAM is inaccessible
 (established, 108-0170-001 section 1.5, printed page 1-4, PDF 18).
-Where inside the NVRAM the number, its validity marker and the
-partition number sit has no public source and is *unknown* for this
-page; :ref:`sgi-elsc-nvram` says what the model chose and seeds from the
-product description's module number. The selected one-module machine
+The number sits at NVRAM address 0x708 in the controller's block;
+:ref:`sgi-elsc-nvram` gives the block's layout, its sources, and how a
+store with no backing file is seeded from the product description's
+module number. The selected one-module machine
 numbers its module 1; that value is a selected installation, not a
 hardware reset default.
 

@@ -74,6 +74,31 @@ unsigned int sgi_model_io_board_index(
     bool (*has)(const SGIModelIoBoard *board));
 
 /*
+ * A module system controller's configuration NVRAM (a module<N>-nvram
+ * store), by the rule the catalogue generator applies: a module whose
+ * Origin 2000 or Onyx2 module controller (MSC) the topology lists, or an
+ * Origin 200 module one of whose fitted nodes' Hubs embeds the ELSC.
+ * The store's N counts the modules before it that have one. On success
+ * sgi_model_module_nvram_seed() gives the configuration, module and
+ * clock-select (0x70b) bytes a new store starts with: the controller's own
+ * power-up defaults, 0x02, 0 and 0x78 for the Origin 200 build, and 0 and
+ * the module's initial module number for the Origin 2000 build, whose
+ * 0x70b stays 0 (see sgi-sn0-module-management.c). A two-module Origin
+ * 200's slave store is seeded like the master's, an approximation: its
+ * controller does not initialize it, so its contents are unknown (an
+ * erased part usually reads 0xff), and which store the slave Hub reaches
+ * is unknown too.
+ */
+bool sgi_model_module_has_nvram(const SGIModelTopology *t,
+                                const SGIModelModule *module);
+unsigned int sgi_model_module_nvram_index(const SGIModelTopology *t,
+                                          const SGIModelModule *module);
+void sgi_model_module_nvram_seed(const SGIModelTopology *t,
+                                 const SGIModelModule *module,
+                                 uint8_t *config, uint8_t *module_number,
+                                 uint8_t *clock);
+
+/*
  * The offering a -M option string selects: "<machine>[,topology=T]
  * [,nodes=N]", resolved as the machine resolves it, with the product's
  * default topology from its offerings when topology= is absent. Any other

@@ -15,8 +15,9 @@ Description
 -----------
 
 :program:`qemu-sgi-machine-init` creates the writable state of a new SGI
-machine: its node boot flash, its BASEIO or GIGAchannel I/O PROM flash and
-its Timekeeper NVRAM with the clock record beside it. It writes one raw
+machine: its node boot flash, its BASEIO or GIGAchannel I/O PROM flash,
+its Timekeeper NVRAM with the clock record beside it, and each module
+system controller's configuration NVRAM. It writes one raw
 file per store into the new directory *DIR*, each named for the store and
 exactly the size the machine requires.
 
@@ -87,6 +88,15 @@ Each store starts from one of these:
   month and the PROM environment checksum over the result. The month is
   taken from the host clock in UTC, as the Timekeeper takes it under the
   default ``-rtc``.
+
+``controller-nvram``
+  A module system controller's 2048-byte configuration NVRAM as the
+  controller leaves it after its first power-up: zeroes, then at 0x700
+  the validity marker ``0x37``, the password ``none``, the configuration
+  byte, the module number and the clock-select byte at 0x70b. The Origin
+  200 build writes configuration ``0x02``, module 0 and clock ``0x78``;
+  the Origin 2000 build writes configuration 0 and the module number the
+  topology selects for that module, and the store keeps 0 at 0x70b.
 
 ``zero``
   Zero-filled. A selected system Timekeeper, as Origin 300 and Fuel fit,

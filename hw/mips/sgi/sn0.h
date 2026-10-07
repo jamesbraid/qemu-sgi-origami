@@ -218,6 +218,15 @@ typedef struct SN0NodeState {
      */
     BlockBackend *flash_drive;
     const char *flash_node;
+    /*
+     * The embedded ELSC's configuration NVRAM, on a node that carries one:
+     * the block node or drive the machine's module<N>-nvram property
+     * names, or NULL, and the bytes an unbacked store starts with.
+     */
+    const char *elsc_nvram_node;
+    uint8_t elsc_nvram_config;
+    uint8_t elsc_nvram_module;
+    uint8_t elsc_nvram_clock;
     uint64_t flash_size;
     MemoryRegion flash_reset_view;
     MemoryRegion flash_hub_view;

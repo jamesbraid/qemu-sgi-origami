@@ -1399,22 +1399,29 @@
 #     installs: zero-filled apart from IRIX's leap-cycle record for
 #     the creation date and the PROM environment checksum
 #
+# @controller-nvram: the configuration NVRAM a module system
+#     controller leaves after its first power-up: zero-filled apart
+#     from its block of the validity marker, the password `none`, its
+#     configuration byte and the module number
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelStorageInitial',
-  'data': ['zero', 'boot-prom', 'io-prom', 'ip27-nvram'] }
+  'data': ['zero', 'boot-prom', 'io-prom', 'ip27-nvram',
+           'controller-nvram'] }
 
 ##
 # @SGIModelStorageItem:
 #
 # One writable persistent store of a machine: a node's boot flash, an
-# I/O board's PROM flash, a Timekeeper's NVRAM or the clock record
-# kept beside it.  A launcher creates one file per item, attaches it
-# as a block node named @name and binds that node through the machine
-# property of the same name.
+# I/O board's PROM flash, a Timekeeper's NVRAM, the clock record kept
+# beside it, or a module system controller's configuration NVRAM.  A
+# launcher creates one file per item, attaches it as a block node
+# named @name and binds that node through the machine property of the
+# same name.
 #
-# @name: the store's name: `node<N>-flash`, `io<N>-flash`, `nvram<N>`
-#     or `nvram<N>-clock`
+# @name: the store's name: `node<N>-flash`, `io<N>-flash`, `nvram<N>`,
+#     `nvram<N>-clock` or `module<N>-nvram`
 #
 # @size: the store's exact size in bytes; a clock record may instead
 #     be larger
