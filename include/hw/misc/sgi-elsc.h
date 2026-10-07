@@ -63,6 +63,20 @@ typedef enum SGIElscMessage {
     SGI_ELSC_MESSAGE_COUNT,
 } SGIElscMessage;
 
+/* How queued console input chooses the processor it is announced to. */
+typedef enum SGIElscSelect {
+    SGI_ELSC_SELECT_AUTO = 0,   /* the most recent console output sender */
+    SGI_ELSC_SELECT_NONE,       /* nobody: input selection disabled */
+    SGI_ELSC_SELECT_EXPLICIT,   /* sel_processor */
+    SGI_ELSC_SELECT_COUNT,
+} SGIElscSelect;
+
+/* "see all": every processor's console output reaches the serial port. */
+#define SGI_ELSC_SEE_ALL 0xff
+
+/* Processor numbers the console commands name: slots 1 to 4, a and b. */
+#define SGI_ELSC_PROCESSORS 8
+
 /* Unprefixed spellings used by the model and its migration state. */
 #define ELSC_ACTION_NONE     SGI_ELSC_ACTION_NONE
 #define ELSC_ACTION_RESET    SGI_ELSC_ACTION_RESET
@@ -94,9 +108,16 @@ typedef struct SGIElscModuleOps {
     bool (*nmi)(void *opaque);
     /* This controller is being addressed as a target, or has finished. */
     void (*slave_active)(void *opaque, bool active);
-    /* The processor that most recently sent console output. */
+    /*
+     * The processor queued alternate-console input is announced to: the
+     * selected one, or with automatic selection the one that most recently
+     * sent console output.
+     */
     void (*console_owner)(void *opaque, unsigned processor);
-    /* Queued alternate-console input is or is not waiting. */
+    /*
+     * Queued alternate-console input is or is not waiting for an
+     * announcement; never true while input selection is disabled.
+     */
     void (*console_input)(void *opaque, bool pending);
     /* One bit slot on the module-owned midplane identity line. */
     bool (*onewire_slot)(void *opaque, uint32_t pulse, uint32_t sample);
@@ -281,6 +302,19 @@ struct SGIElscState {
     uint8_t message;
     uint8_t message_mask;
     QEMUTimer *message_timer;
+
+    /*
+     * Console selection ("sel", "see"): the input selection mode (an
+     * SGIElscSelect) and its processor when explicit, the output filter's
+     * processor or SGI_ELSC_SEE_ALL, and the processor that most recently
+     * sent console output, which automatic selection follows: the frame's
+     * selector character less '0', -1 before any output, and possibly a
+     * number no processor has.
+     */
+    uint8_t sel_mode;
+    uint8_t sel_processor;
+    uint8_t see_processor;
+    int16_t console_sender;
 
     /* Warn once per dark-console boot, not once per dropped flush. */
     bool aux_no_backend_warned;

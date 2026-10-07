@@ -1423,7 +1423,7 @@ static void test_module_message_reaches_every_code(void)
     /* A whole eight-code ring is about eight milliseconds. */
     wait_for_global_grant_within(qts, GRANT_BASE | 0x08 | 3, 20 * POLL_STEPS);
     assert_exact(qts, 0, "get", "pd remote");
-    assert_exact(qts, 0, "get", "acp 0 ");
+    assert_exact(qts, 0, "get", "acp . ");
     wait_for_global_grant_within(qts, GRANT_BASE | 0x08 | 5, 20 * POLL_STEPS);
     wait_for_global_grant_within(qts, GRANT_BASE | 0, 20 * POLL_STEPS);
     assert_exact(qts, 0, "clr", "ok ");

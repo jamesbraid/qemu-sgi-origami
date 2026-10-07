@@ -1388,6 +1388,8 @@ static void test_get_returns_queued_console_input(const void *data)
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len, resp_len;
 
+    /* Input is announced only once a processor has sent output. */
+    assert_reply(qts, "acp 0 ", "ok 0");
     aux_write(fd, "hello");
 
     arb_enable_observer(qts);
@@ -1404,7 +1406,7 @@ static void test_get_returns_queued_console_input(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], >=, 6 + 5);
-    assert_response_begins(resp, "acp 0 hello");
+    assert_response_begins(resp, "acp . hello");
 
     close(fd);
     close(lfd);
@@ -1432,6 +1434,7 @@ static void test_escape_byte_is_not_queued(const void *data)
      * A single \r terminator: what ends an escaped command is the model's
      * own choice, and this exercises that choice, not a CRLF claim.
      */
+    assert_reply(qts, "acp 0 ", "ok 0");
     aux_write(fd, "AB\x14zzz\rCD");
 
     arb_enable_observer(qts);
@@ -1446,7 +1449,7 @@ static void test_escape_byte_is_not_queued(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 6 + 4);
-    assert_response_begins(resp, "acp 0 ABCD");
+    assert_response_begins(resp, "acp . ABCD");
 
     close(fd);
     close(lfd);
@@ -1692,6 +1695,8 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
     int fd = aux_accept(lfd);
     g_autofree char *out = NULL;
 
+    /* Input is announced only once a processor has sent output. */
+    assert_reply(qts, "acp 0 ", "ok 0");
     aux_write(fd, "hello");
 
     arb_enable_observer(qts);
@@ -2840,14 +2845,14 @@ static void test_pwr_down_posts_pd_remote(const void *data)
     assert_reply(qts, "get", "pd remote");
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
-    assert_reply(qts, "get", "acp 0 ");
+    assert_reply(qts, "get", "acp . ");
 
     /* Unfetched, it lapses after a second. */
     assert_reply(qts, "pwr d 8", "ok ");
     qtest_clock_step(qts, 1000 * (int64_t)SCALE_MS);
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
-    assert_reply(qts, "get", "acp 0 ");
+    assert_reply(qts, "get", "acp . ");
 
     /* The soft power-down tells the Hubs too. */
     assert_reply(qts, "clr", "ok ");
@@ -2967,6 +2972,129 @@ static void test_nmi_pulses_after_one_second(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "sel" and "see": the console input selection and output filter, their
+ * reports, the processor names, and what each setting leaves for "get".
+ */
+static void test_console_selection_commands(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
+        "-chardev ringbuf,id=aux,size=4096 -serial chardev:aux");
+
+    assert_reply(qts, "sel", "ok auto");
+    assert_reply(qts, "see", "ok all");
+    assert_reply(qts, "get", "acp . ");
+
+    assert_reply(qts, "sel 2b", "ok ");
+    assert_reply(qts, "sel", "ok 2b");
+    assert_reply(qts, "get", "acp 3 ");
+    assert_reply(qts, "sel all", "ok ");
+    assert_reply(qts, "sel", "ok none");
+    assert_reply(qts, "get", "acp / ");
+    assert_reply(qts, "sel  4 A", "ok ");
+    assert_reply(qts, "sel", "ok 4a");
+    assert_reply(qts, "sel AUTO", "ok ");
+    assert_reply(qts, "sel", "ok auto");
+    assert_reply(qts, "sel no", "ok ");
+    assert_reply(qts, "sel", "ok none");
+
+    /* A bad name changes nothing. */
+    assert_reply(qts, "sel 5a", "err arg");
+    assert_reply(qts, "sel 1", "err arg");
+    assert_reply(qts, "sel 1c", "err arg");
+    assert_reply(qts, "sel x", "err arg");
+    assert_reply(qts, "see au", "err arg");
+    assert_reply(qts, "sel", "ok none");
+
+    /* "see" with a processor filters output and selects that input. */
+    assert_reply(qts, "see 1b", "ok ");
+    assert_reply(qts, "see", "ok 1b");
+    assert_reply(qts, "sel", "ok 1b");
+    /* qtest output belongs to processor 0: counted, not copied. */
+    assert_reply(qts, "acp 0 hi", "ok 2");
+    assert_aux_captured(qts, "aux", "");
+    /* The filter goes by the frame's selector, "1" being processor 1. */
+    assert_reply(qts, "acp 1 ab", "ok 2");
+    assert_aux_captured(qts, "aux", "ab");
+    assert_reply(qts, "see 1a", "ok ");
+    assert_reply(qts, "acp 0 yo", "ok 2");
+    assert_aux_captured(qts, "aux", "yo");
+    assert_reply(qts, "see none", "ok ");
+    assert_reply(qts, "see", "ok all");
+    assert_reply(qts, "sel", "ok 1a");
+
+    /* "clr" leaves the selection; an outside reset restores the default. */
+    assert_reply(qts, "clr", "ok ");
+    assert_reply(qts, "sel", "ok 1a");
+    qtest_system_reset(qts);
+    assert_reply(qts, "sel", "ok auto");
+    qtest_quit(qts);
+}
+
+/*
+ * Queued console input is announced to the selected processor only. An
+ * explicit selection of processor 1 leaves code 0 at signal 1 with input
+ * waiting; a new selection discards the queue; selecting processor 0
+ * announces fresh input there again.
+ */
+static void test_console_selection_announcement(const void *data)
+{
+    uint16_t port;
+    int lfd = aux_listen(&port);
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200 " ELSC_AUX_LEADING_SERIALS
+        "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:aux", port);
+    QTestState *qts = qtest_init(args);
+    int fd = aux_accept(lfd);
+
+    arb_enable_observer(qts);
+    assert_reply(qts, "sel 1b", "ok ");
+    aux_write(fd, "hi");
+    aux_wait_for_queued(qts, 2);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+
+    assert_reply(qts, "sel 1a", "ok ");
+    aux_wait_for_queued(qts, 0);
+    aux_write(fd, "yo");
+    aux_wait_for_queued(qts, 2);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+    assert_reply(qts, "get", "acp 0 yo");
+
+    /*
+     * Automatic selection follows the selector in the last output frame,
+     * not the processor that sent it: every qtest request comes from
+     * processor 0, yet output naming processor 1 moves the announcement
+     * off code 0. A frame with a corrupted checksum still counts.
+     */
+    assert_reply(qts, "sel auto", "ok ");
+    /* No output yet since the start: nobody is announced to. */
+    aux_write(fd, "zz");
+    aux_wait_for_queued(qts, 2);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+    assert_reply(qts, "acp 0 ", "ok 0");
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+    {
+        uint8_t req[16], resp[RESP_CAP];
+        unsigned req_len = build_request(req, "acp 1 ");
+
+        req[req_len - 1] ^= 0xff;
+        elsc_transact(qts, req, req_len, resp, sizeof(resp));
+        assert_response_begins(resp, "err csum");
+    }
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3069,6 +3197,10 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/console-selection-commands", NULL,
+                        test_console_selection_commands);
+    qtest_add_data_func("sn0/elsc/console-selection-announcement", NULL,
+                        test_console_selection_announcement);
     qtest_add_data_func("sn0/elsc/nmi-pulses-after-one-second", NULL,
                         test_nmi_pulses_after_one_second);
     qtest_add_data_func("sn0/elsc/rst-waits-one-second", NULL,

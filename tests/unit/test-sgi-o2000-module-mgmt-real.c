@@ -1264,6 +1264,8 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
 
     expect_response(f, "dsp RETAINED", "ok ");
     expect_response(f, "tas A", "ok 0");
+    /* Input is announced only once a processor has sent output. */
+    expect_response(f, "acp 0 ", "ok 0");
     qemu_chr_be_write(f->chr, input, sizeof(input));
     g_assert_cmpuint(s->rx_queue_len, ==, 5);
     g_assert_true(s->in_escape);
@@ -1291,7 +1293,7 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
 
     /* Post-recovery input enters neither the old line nor the old queue. */
     qemu_chr_be_write(f->chr, fresh, sizeof(fresh));
-    expect_response(f, "get", "acp 0 N");
+    expect_response(f, "get", "acp . N");
     expect_response(f, "tas B", "ok A");
     g_assert_cmpmem(s->display, sizeof(s->display), "RETAINED", 8);
     expect_response(f, "dsc 1 X", "ok ");
