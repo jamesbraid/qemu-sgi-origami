@@ -354,6 +354,10 @@ static void mace_init(Object *obj)
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_DS1685);
     object_initialize_child(obj, "uart-a", &s->uart[0], TYPE_SERIAL);
     object_initialize_child(obj, "uart-b", &s->uart[1], TYPE_SERIAL);
+    object_property_add_alias(obj, "chardev-a", OBJECT(&s->uart[0]),
+                              "chardev");
+    object_property_add_alias(obj, "chardev-b", OBJECT(&s->uart[1]),
+                              "chardev");
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mace_compare_fire, s);
 }
 
