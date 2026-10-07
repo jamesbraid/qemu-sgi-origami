@@ -25,6 +25,7 @@ system_ss.add(when: 'CONFIG_VMWARE_VGA', if_true: files('vmware_vga.c'))
 system_ss.add(when: 'CONFIG_BOCHS_DISPLAY', if_true: files('bochs-display.c'))
 system_ss.add(when: 'CONFIG_PSITECH_RAD1', if_true: files('psitech-rad1.c'))
 system_ss.add(when: 'CONFIG_PSITECH_RAD4', if_true: files('psitech-rad4.c'))
+system_ss.add(when: 'CONFIG_SGI_O2_GBE', if_true: files('sgi/gbe.c'))
 system_ss.add(when: 'CONFIG_SGI_DISPLAY',
               if_true: files('sgi/board-memory.c', 'sgi/command-fetch.c',
                              'sgi/gl-context.c', 'sgi/pixel-dma.c',

@@ -85,6 +85,10 @@ config SGI_DISPLAY
     bool
     default y if SGI_DEVICES
 
+config SGI_O2_GBE
+    bool
+    default y if SGI_DEVICES
+
 config FRAMEBUFFER
     bool
 
