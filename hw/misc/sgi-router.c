@@ -169,6 +169,8 @@ struct SGIRouterState {
     uint8_t reset_masks[SGI_ROUTER_PORTS];
     bool port_working[SGI_ROUTER_PORTS];
     bool port_eight_bit[SGI_ROUTER_PORTS];
+    /* A link reset of the port found no peer to complete it with. */
+    bool port_reset_failed[SGI_ROUTER_PORTS];
 
     /* This Router's six numbered network ports' cables, machine-wired. */
     SGINetCableState *port_cable[SGI_ROUTER_PORTS];
@@ -345,15 +347,18 @@ static SGINetPortLinkState sgi_router_net_port_link_state(Object *port,
 /*
  * Recompute one port's cached working/eight-bit status bits from its cable
  * and both ends' own link_state(), the same check a live vector forward and
- * an offline route walk both use to find a neighbor.
-*/
+ * an offline route walk both use to find a neighbor. The width is a property
+ * of the link, settled when it comes up: a port that was already working
+ * keeps the width it has, so writing a force bit alone changes nothing until
+ * the next link reset, and a port that comes up negotiates afresh.
+ */
 static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
 {
     SGINetCableState *cable = s->port_cable[port - 1];
     Object *peer_port;
     unsigned int peer_index;
     bool working;
-    bool eight_bit;
+    bool eight_bit = false;
 
     if (!cable) {
         /*
@@ -367,9 +372,41 @@ static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
     }
     working = sgi_net_cable_neighbor(cable, OBJECT(s), port, &peer_port,
                                      &peer_index);
-    eight_bit = working &&
-        sgi_router_net_port_link_state(OBJECT(s), port).eight_bit;
+    if (working && s->port_working[port - 1]) {
+        eight_bit = s->port_eight_bit[port - 1];
+    } else if (working) {
+        eight_bit = sgi_net_port_negotiate_eight_bit(OBJECT(s), port,
+                                                     peer_port, peer_index);
+    }
     sgi_router_set_port_link(s, port, working, eight_bit);
+}
+
+/*
+ * A link reset of one port, completed at once: the port re-runs its reset
+ * handshake with whatever answers across its cable, the two ends settle the
+ * width from both force bits, and the peer hears that its link was reset.
+ * With nothing to answer the port does not come out of reset. The Router
+ * itself latches no error for it: its status/error register has no
+ * link-reset bit. Fences are not consulted (software only resets open
+ * ports, and whether the reset masks apply to a link reset is not known).
+ */
+static void sgi_router_port_link_reset(SGIRouterState *s, unsigned int port)
+{
+    SGINetCableState *cable = s->port_cable[port - 1];
+    Object *peer_port;
+    unsigned int peer_index;
+
+    if (!cable || !sgi_net_cable_neighbor(cable, OBJECT(s), port, &peer_port,
+                                          &peer_index)) {
+        sgi_router_set_port_link(s, port, false, false);
+        s->port_reset_failed[port - 1] = true;
+        return;
+    }
+    sgi_router_set_port_link(s, port, true,
+                             sgi_net_port_negotiate_eight_bit(OBJECT(s), port,
+                                                              peer_port,
+                                                              peer_index));
+    sgi_net_port_link_reset(peer_port, peer_index);
 }
 
 /*
@@ -410,6 +447,47 @@ static void sgi_router_net_port_peer_changed(Object *port, unsigned int index)
 {
     sgi_router_net_changed_at(SGI_ROUTER(port), sgi_net_port_flood_current(),
                               index);
+}
+
+/*
+ * A warm reset retrains every fitted link. The flood that follows it has
+ * already brought this Router's ports up at a width settled from its
+ * now-cleared force bits; tell each working peer its link was reset so it
+ * settles the same width and latches what it records for a link reset.
+ * Without this a Hub that ran eight bits wide only because this Router
+ * forced it would stay eight bits wide while the Router read sixteen.
+ */
+static void sgi_router_retrain_peers(SGIRouterState *s)
+{
+    unsigned int port;
+
+    for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        SGINetCableState *cable = s->port_cable[port - 1];
+        Object *peer_port;
+        unsigned int peer_index;
+
+        if (s->port_working[port - 1] && cable &&
+            sgi_net_cable_neighbor(cable, OBJECT(s), port, &peer_port,
+                                   &peer_index)) {
+            sgi_net_port_link_reset(peer_port, peer_index);
+        }
+    }
+}
+
+/* The peer reset this port's link: settle the width again, latch nothing. */
+static void sgi_router_net_port_link_reset(Object *port, unsigned int index)
+{
+    SGIRouterState *s = SGI_ROUTER(port);
+    SGINetCableState *cable = s->port_cable[index - 1];
+    Object *peer_port;
+    unsigned int peer_index;
+
+    if (cable && sgi_net_cable_neighbor(cable, port, index, &peer_port,
+                                        &peer_index)) {
+        sgi_router_set_port_link(s, index, true,
+            sgi_net_port_negotiate_eight_bit(port, index, peer_port,
+                                             peer_index));
+    }
 }
 
 static void sgi_router_net_port_record_check_error(Object *port,
@@ -521,6 +599,9 @@ static uint64_t sgi_router_status(SGIRouterState *s,
     unsigned int port;
 
     for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        if (s->port_reset_failed[port - 1]) {
+            status |= UINT64_C(1) << (25 + 3 * port);
+        }
         if (s->port_working[port - 1]) {
             status |= UINT64_C(1) << (26 + 3 * port);
         }
@@ -703,6 +784,7 @@ static void sgi_router_reset_state(SGIRouterState *s, bool reset_links)
         if (reset_links) {
             s->port_working[port] = false;
             s->port_eight_bit[port] = false;
+            s->port_reset_failed[port] = false;
         }
     }
     memset(s->meta_table, 0, sizeof(s->meta_table));
@@ -875,6 +957,10 @@ static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
     case RR_STATUS_REV_ID:
         *value = sgi_router_status(s, arrival_port);
         return true;
+    case RR_PORT_RESET:
+        /* Every field acts on a write and stores nothing; no reader uses it. */
+        *value = 0;
+        return true;
     case RR_PROTECTION_CONFIG:
         *value = s->protection_config;
         return true;
@@ -985,11 +1071,17 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         if (value & RR_RESET_WARM) {
             sgi_router_reset_state(s, true);
             sgi_router_reset_complete(s);
+            sgi_router_retrain_peers(s);
         } else if (value & RR_RESET_ADMIN) {
             sgi_router_reset_state(s, false);
             sgi_router_reset_complete(s);
         } else if (value & RR_RESET_PORT_MASK) {
             /* There is no queued transport state in the bounded model. */
+            for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+                if (value & (UINT64_C(1) << port)) {
+                    sgi_router_port_link_reset(s, port);
+                }
+            }
             sgi_router_changed(s);
         }
         return true;
@@ -1146,6 +1238,9 @@ void sgi_router_set_port_link(SGIRouterState *s, unsigned int port,
     g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
     s->port_working[port - 1] = working;
     s->port_eight_bit[port - 1] = working && eight_bit;
+    if (working) {
+        s->port_reset_failed[port - 1] = false;
+    }
 }
 
 void sgi_router_latch_local_error(SGIRouterState *s, uint64_t errors)
@@ -1383,7 +1478,8 @@ static int sgi_router_post_load(void *opaque, int version_id)
     }
     for (i = 0; i < SGI_ROUTER_PORTS; i++) {
         if (s->reset_masks[i] & ~RR_RESET_MASK_MASK ||
-            (!s->port_working[i] && s->port_eight_bit[i])) {
+            (!s->port_working[i] && s->port_eight_bit[i]) ||
+            (s->port_working[i] && s->port_reset_failed[i])) {
             return -EINVAL;
         }
     }
@@ -1408,8 +1504,8 @@ static int sgi_router_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_router = {
     .name = "sgi-router",
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .pre_save = sgi_router_pre_save,
     .pre_load = sgi_router_pre_load,
     .post_load = sgi_router_post_load,
@@ -1437,6 +1533,8 @@ static const VMStateDescription vmstate_sgi_router = {
         VMSTATE_UINT8_ARRAY(reset_masks, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_BOOL_ARRAY(port_working, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_BOOL_ARRAY(port_eight_bit, SGIRouterState, SGI_ROUTER_PORTS),
+        VMSTATE_BOOL_ARRAY(port_reset_failed, SGIRouterState,
+                           SGI_ROUTER_PORTS),
         VMSTATE_UINT32_ARRAY(meta_table, SGIRouterState, RR_META_TABLE_COUNT),
         VMSTATE_UINT32_ARRAY(local_table, SGIRouterState,
                              RR_LOCAL_TABLE_COUNT),
@@ -1643,6 +1741,7 @@ static void sgi_router_class_init(ObjectClass *oc, const void *data)
     pc->forwards = sgi_router_net_port_forwards;
     pc->link_state = sgi_router_net_port_link_state;
     pc->peer_changed = sgi_router_net_port_peer_changed;
+    pc->link_reset = sgi_router_net_port_link_reset;
     pc->receive = sgi_router_net_port_receive;
     pc->record_check_error = sgi_router_net_port_record_check_error;
 }

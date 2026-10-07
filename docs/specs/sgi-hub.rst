@@ -472,7 +472,9 @@ end): the link comes up eight bits wide if either end forces it,
 sixteen otherwise. Status bit 30 reads that width at both ends, link-up
 stays set and the down reason clear, and both Hub ends latch bit 37,
 "link reset", in their port error registers; a Router end latches
-nothing, its error registers having no such bit. With no peer the link stays down with the reason "never came out of
+nothing, its error registers having no such bit. A Router resetting
+the port a Hub is cabled to latches bit 37 in that Hub the same way.
+With no peer the link stays down with the reason "never came out of
 reset" and only this Hub latches bit 37. A plain read of the port
 error register leaves the bit and a read of the clearing alias clears
 it, so the IRIX power-off path, which reads the clearing alias with
