@@ -2548,8 +2548,8 @@ static void test_ip53_runtime_permission_refusals(void)
           "Onyx 350 runtime trial requires explicit "
           "topology=onyx350-compat selection", false },
         { "tezro,ip53-experimental=on", "4G", "4", "R16000",
-          "Tezro runtime trial requires explicit topology="
-          "tezro-deskside-700mhz-4mib-serial-trial selection", false },
+          "Tezro runtime profile requires explicit topology selection",
+          false },
         { "origin300,ip53-experimental=on", "512M", "2", "R14000",
           "ip53-experimental=on requires a registered IP53 runtime "
           "profile", false },
