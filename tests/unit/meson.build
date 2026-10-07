@@ -13,7 +13,8 @@ fork_unit_tests = [
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
   'test-sgi-gl-vmstate', 'test-sgi-kona-texture',
-  'test-sgi-renderer', 'test-sgi-egl-display',
+  'test-sgi-renderer', 'test-sgi-renderer-gl',
+  'test-sgi-render-resource', 'test-sgi-egl-display',
 ]
 
 tests = {
