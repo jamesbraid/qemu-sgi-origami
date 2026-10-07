@@ -2,9 +2,10 @@
 /*
  * Adaptec AIC-7880 PCI SCSI controller, isolated initiator experiment.
  *
- * The downloaded sequencer controls selection and command delivery. This
- * subset accepts one asynchronous narrow target command at a time; other
- * sequencer operations and SCSI phases remain unsupported and observable.
+ * The downloaded sequencer controls selection, command delivery, status,
+ * and Command Complete. This subset accepts one asynchronous narrow command
+ * at a time. Manual host PIO, disconnect/reselection, and target mode
+ * are unsupported.
  * Reset values transferred from the AIC-7870 manual are provisional.
  */
 
@@ -13,6 +14,7 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "hw/pci/pci_device.h"
+#include "hw/core/resettable.h"
 #include "hw/scsi/scsi.h"
 #include "scsi/utils.h"
 #include "migration/vmstate.h"
@@ -29,11 +31,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 
 #define REG_SCSISEQ  0x00
 #define REG_SXFRCTL0 0x01
+#define REG_SXFRCTL1 0x02
+#define REG_SCSISIGI 0x03
 #define REG_SCSIID   0x05
 #define REG_SCSIDATL 0x06
 #define REG_STCNT    0x08
 #define REG_SSTAT0   0x0b
 #define REG_SSTAT1   0x0c
+#define REG_SIMODE0  0x10
+#define REG_SIMODE1  0x11
 #define REG_SHADDR   0x14
 #define REG_SEQCTL   0x60
 #define REG_SEQRAM   0x61
@@ -61,6 +67,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define HOST_SWINT   0x10
 #define HOST_POWRDN  0x40
 
+#define SCSI_SIG_COMMAND 0x86
+#define SCSI_SIG_DATA_IN 0x46
+#define SCSI_SIG_DATA_OUT 0x06
+#define SCSI_SIG_STATUS 0xc6
+#define SCSI_SIG_MSG_IN 0xe6
+
+enum {
+    AIC_PHASE_BUS_FREE,
+    AIC_PHASE_COMMAND,
+    AIC_PHASE_DATA,
+    AIC_PHASE_STATUS,
+    AIC_PHASE_MSG_IN,
+};
+
 struct AIC7880State {
     PCIDevice parent_obj;
     MemoryRegion io;
@@ -76,6 +96,7 @@ struct AIC7880State {
     uint8_t cdb_len;
     uint8_t cdb_need;
     uint8_t target;
+    uint8_t phase;
     uint8_t qout[16];
     uint8_t qout_head;
     uint8_t qout_tail;
@@ -96,6 +117,18 @@ static void aic7880_update_irq(AIC7880State *s)
     pci_set_irq(PCI_DEVICE(s), enabled && pending &&
                 !(s->regs[REG_HCNTRL] & HOST_POWRDN) &&
                 (PCI_DEVICE(s)->config[PCI_COMMAND] & PCI_COMMAND_MASTER));
+}
+
+static void aic7880_update_scsi_irq(AIC7880State *s)
+{
+    if ((s->regs[REG_SSTAT0] & s->regs[REG_SIMODE0]) ||
+        (s->regs[REG_SSTAT1] & s->regs[REG_SIMODE1])) {
+        s->regs[REG_INTSTAT] |= 0x04;
+        s->regs[REG_HCNTRL] |= HOST_PAUSE;
+    } else {
+        s->regs[REG_INTSTAT] &= ~0x04;
+    }
+    aic7880_update_irq(s);
 }
 
 static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
@@ -147,8 +180,10 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
     AIC7880State *s = req->hba_private;
 
     s->regs[REG_SCSIDATL] = req->status;
-    s->regs[REG_SSTAT1] |= 0x08; /* Bus free after status and message. */
-    s->selected = false;
+    s->regs[REG_SCSISIGI] = SCSI_SIG_STATUS;
+    s->regs[REG_SSTAT0] |= 0x02;
+    s->phase = AIC_PHASE_STATUS;
+    aic7880_update_scsi_irq(s);
     s->req = NULL;
     scsi_req_unref(req);
     if (!s->running) {
@@ -179,6 +214,9 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     uint8_t fifo[64];
     uint32_t done = 0;
 
+    s->phase = AIC_PHASE_DATA;
+    s->regs[REG_SCSISIGI] = from_target ? SCSI_SIG_DATA_IN :
+                             SCSI_SIG_DATA_OUT;
     if ((s->regs[REG_DFCNTRL] & 0x38) != 0x38 ||
         !!(s->regs[REG_DFCNTRL] & 0x04) == from_target ||
         len > hcnt || len > stcnt) {
@@ -218,6 +256,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     if (stcnt == len) {
         s->regs[REG_SSTAT0] |= 0x04;
     }
+    aic7880_update_scsi_irq(s);
     scsi_req_continue(req);
 }
 
@@ -228,9 +267,7 @@ static void aic7880_start_request(AIC7880State *s)
 
     if (!target) {
         s->regs[REG_SSTAT1] |= 0x80;
-        s->regs[REG_INTSTAT] |= 0x04;
-        s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        aic7880_update_irq(s);
+        aic7880_update_scsi_irq(s);
         return;
     }
     s->req = scsi_req_new(target, 0, 0, s->cdb, s->cdb_need, s);
@@ -250,14 +287,34 @@ static void aic7880_select(AIC7880State *s)
     s->cdb_len = s->cdb_need = 0;
     s->selected = scsi_device_find(&s->bus, 0, s->target, 0) != NULL;
     if (s->selected) {
+        s->phase = AIC_PHASE_COMMAND;
+        s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
         s->regs[REG_SSTAT0] |= 0x42; /* Selection done, PIO ready. */
         s->regs[REG_SSTAT1] &= ~0x08;
-    } else {
+        aic7880_update_scsi_irq(s);
+    } else if (s->regs[REG_SXFRCTL1] & 0x04) {
         s->regs[REG_SSTAT1] |= 0x80;
-        s->regs[REG_INTSTAT] |= 0x04;
-        s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        aic7880_update_irq(s);
+        aic7880_update_scsi_irq(s);
+    } else {
+        s->regs[REG_SSTAT0] |= 0x10;
+        aic7880_update_scsi_irq(s);
     }
+}
+
+static void aic7880_scsi_reset(AIC7880State *s)
+{
+    if (s->req) {
+        scsi_req_cancel(s->req);
+    }
+    bus_cold_reset(BUS(&s->bus));
+    s->selected = false;
+    s->phase = AIC_PHASE_BUS_FREE;
+    s->cdb_len = s->cdb_need = 0;
+    s->regs[REG_SCSISEQ] = 1;
+    s->regs[REG_SCSISIGI] = 0;
+    s->regs[REG_SSTAT0] = 0;
+    s->regs[REG_SSTAT1] = 0x08;
+    aic7880_update_scsi_irq(s);
 }
 
 static void aic7880_chip_reset(AIC7880State *s)
@@ -269,6 +326,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     memset(s->cdb, 0, sizeof(s->cdb));
     s->error = 0;
     s->cdb_len = s->cdb_need = s->target = 0;
+    s->phase = AIC_PHASE_BUS_FREE;
     s->qout_head = s->qout_tail = s->qout_count = 0;
     s->selected = false;
     s->regs[REG_DFSTATUS] = 0x01;
@@ -295,6 +353,29 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     if (addr >= AIC_REG_SPACE) {
         return 0xff;
     }
+    if (addr == REG_SCSIDATL) {
+        uint8_t data = s->regs[REG_SCSIDATL];
+
+        if ((s->phase == AIC_PHASE_STATUS ||
+             s->phase == AIC_PHASE_MSG_IN) && !s->running) {
+            aic7880_error(s, "manual status PIO is unsupported");
+            return 0xff;
+        }
+        if (s->phase == AIC_PHASE_STATUS) {
+            s->phase = AIC_PHASE_MSG_IN;
+            s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
+            s->regs[REG_SCSIDATL] = 0; /* Command Complete. */
+            aic7880_update_scsi_irq(s);
+        } else if (s->phase == AIC_PHASE_MSG_IN) {
+            s->phase = AIC_PHASE_BUS_FREE;
+            s->regs[REG_SCSISIGI] = 0;
+            s->regs[REG_SSTAT0] &= ~0x42;
+            s->regs[REG_SSTAT1] |= 0x08;
+            s->selected = false;
+            aic7880_update_scsi_irq(s);
+        }
+        return data;
+    }
     if (addr >= REG_SCB_BASE &&
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
         if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
@@ -304,14 +385,25 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
         return s->scb_ram[s->regs[REG_SCBPTR] * AIC_SCB_PAGE_BYTES +
                           addr - REG_SCB_BASE];
     }
-    if ((addr <= 0x11) ||
-        (addr >= REG_SHADDR && addr < REG_SHADDR + 4) ||
+    if ((addr >= REG_SHADDR && addr < REG_SHADDR + 4) ||
         (addr >= 0x88 && addr <= 0x8e) ||
         addr == REG_DFCNTRL || addr == REG_DFSTATUS ||
         (addr >= 0x20 && addr <= 0x5f)) {
         return s->regs[addr];
     }
     switch (addr) {
+    case REG_SCSISEQ:
+    case REG_SXFRCTL0:
+    case REG_SXFRCTL1:
+    case REG_SCSISIGI:
+    case REG_SCSIID:
+    case REG_STCNT:
+    case REG_STCNT + 1:
+    case REG_STCNT + 2:
+    case REG_SSTAT0:
+    case REG_SSTAT1:
+    case REG_SIMODE0:
+    case REG_SIMODE1:
     case REG_SEQCTL:
     case REG_HCNTRL:
     case REG_SCBPTR:
@@ -378,6 +470,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[addr] = val;
         if (addr >= REG_STCNT && addr < REG_STCNT + 3) {
             s->regs[REG_SSTAT0] &= ~0x04;
+            aic7880_update_scsi_irq(s);
         }
         if (addr >= 0x8c && addr <= 0x8e) {
             s->regs[REG_DFSTATUS] &= ~0x08;
@@ -387,23 +480,75 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
     switch (addr) {
     case REG_SSTAT0: /* CLRSINT0 on writes. */
         s->regs[REG_SSTAT0] &= ~(val & 0x7a);
+        aic7880_update_scsi_irq(s);
         break;
     case REG_SSTAT1: /* CLRSINT1 on writes. */
         s->regs[REG_SSTAT1] &= ~(val & 0xef);
+        aic7880_update_scsi_irq(s);
+        break;
+    case REG_SIMODE0:
+        if (val & ~0x46) {
+            aic7880_error(s, "unsupported SIMODE0 event mask");
+            break;
+        }
+        s->regs[addr] = val;
+        aic7880_update_scsi_irq(s);
+        break;
+    case REG_SIMODE1:
+        if (val & ~0x88) {
+            aic7880_error(s, "unsupported SIMODE1 event mask");
+            break;
+        }
+        s->regs[addr] = val;
+        aic7880_update_scsi_irq(s);
         break;
     case REG_SXFRCTL0:
+        if (val & ~0x08) {
+            aic7880_error(s, "unsupported SXFRCTL0 control");
+            break;
+        }
+        s->regs[addr] = val;
+        break;
+    case REG_SXFRCTL1:
+        if (val & ~0x04) {
+            aic7880_error(s, "unsupported SXFRCTL1 control");
+            break;
+        }
+        s->regs[addr] = val;
+        break;
+    case REG_DFCNTRL:
+        if (val & ~0x3c) {
+            aic7880_error(s, "unsupported DFCNTRL control");
+            break;
+        }
+        s->regs[addr] = val;
+        break;
     case REG_SCSIID:
     case REG_SCBPTR:
-    case REG_DFCNTRL:
         s->regs[addr] = val;
         break;
     case REG_SCSISEQ:
+        if ((val & ~0x41) || (val & 0x41) == 0x41) {
+            aic7880_error(s, "unsupported SCSISEQ control");
+            break;
+        }
+        if ((val & 0x40) && !s->running) {
+            aic7880_error(s, "manual SCSI selection is unsupported");
+            break;
+        }
+        if ((val & 1) && !(s->regs[addr] & 1)) {
+            aic7880_scsi_reset(s);
+        }
         s->regs[addr] = val;
         if (val & 0x40) {
             aic7880_select(s);
         }
         break;
     case REG_SCSIDATL:
+        if (!s->running || s->phase != AIC_PHASE_COMMAND) {
+            aic7880_error(s, "manual command PIO is unsupported");
+            break;
+        }
         if (s->req ||
             (s->cdb_need && s->cdb_len == s->cdb_need)) {
             aic7880_error(s, "CDB byte while command is active");
@@ -413,6 +558,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_error(s, "CDB byte without selected target");
             break;
         }
+        s->regs[REG_SSTAT0] &= ~0x02;
+        s->regs[REG_SCSISIGI] &= ~0x02;
         s->cdb[s->cdb_len++] = val;
         if (s->cdb_len == 1) {
             s->cdb_need = scsi_cdb_length(s->cdb);
@@ -423,7 +570,11 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         if (s->cdb_len == s->cdb_need) {
             aic7880_start_request(s);
+        } else {
+            s->regs[REG_SSTAT0] |= 0x02;
+            s->regs[REG_SCSISIGI] |= 0x02;
         }
+        aic7880_update_scsi_irq(s);
         break;
     case REG_SEQCTL:
         if (val & SEQ_RESET) {
@@ -472,7 +623,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case REG_CLRINT:
         s->regs[REG_INTSTAT] &= ~(val & 0x0f);
-        aic7880_update_irq(s);
+        aic7880_update_scsi_irq(s);
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "aic7880: write to unsupported register "
@@ -583,6 +734,7 @@ static int aic7880_post_load(void *opaque, int version_id)
 
     if (s->seqaddr > AIC_SEQ_INSNS ||
         s->seqbyte >= 4 ||
+        s->phase > AIC_PHASE_MSG_IN ||
         s->cdb_len > sizeof(s->cdb) ||
         s->cdb_need > sizeof(s->cdb) ||
         s->qout_count > ARRAY_SIZE(s->qout) ||
@@ -592,7 +744,7 @@ static int aic7880_post_load(void *opaque, int version_id)
     }
     s->req = NULL;
     s->running = false;
-    aic7880_update_irq(s);
+    aic7880_update_scsi_irq(s);
     return 0;
 }
 
@@ -615,6 +767,7 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(cdb_len, AIC7880State),
         VMSTATE_UINT8(cdb_need, AIC7880State),
         VMSTATE_UINT8(target, AIC7880State),
+        VMSTATE_UINT8(phase, AIC7880State),
         VMSTATE_UINT8_ARRAY(qout, AIC7880State, 16),
         VMSTATE_UINT8(qout_head, AIC7880State),
         VMSTATE_UINT8(qout_tail, AIC7880State),

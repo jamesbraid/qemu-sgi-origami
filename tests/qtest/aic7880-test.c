@@ -134,7 +134,7 @@ static size_t build_command_program(uint8_t *program, const uint8_t *cdb,
 {
     size_t n = 0;
     unsigned wait_at = 4 + cdb_len;
-    unsigned idle_at = wait_at + 3;
+    unsigned idle_at = wait_at + 6;
 
     g_assert_cmpuint(cdb_len, <=, 16);
     emit_or(program, &n, 0x08, 0x01); /* automatic PIO */
@@ -144,8 +144,12 @@ static size_t build_command_program(uint8_t *program, const uint8_t *cdb,
     for (size_t i = 0; i < cdb_len; i++) {
         emit_or(program, &n, cdb[i], 0x06);
     }
-    emit(program, &n, 0x08u | (0x0cu << 8) |
+    emit(program, &n, 0x02u | (0x0bu << 8) |
                       (wait_at << 16) | (0xfu << 25));
+    emit(program, &n, (0x06u << 8) | (0x22u << 16)); /* status */
+    emit(program, &n, (0x06u << 8) | (0x23u << 16)); /* message */
+    emit(program, &n, 0x08u | (0x0cu << 8) |
+                      ((wait_at + 3) << 16) | (0xfu << 25));
     emit_or(program, &n, 1, 0x9d); /* completion identifier */
     emit_or(program, &n, 2, 0x91); /* completion interrupt */
     emit(program, &n, (idle_at << 16) | (0x8u << 25));
@@ -164,6 +168,150 @@ static void start_program(QTestState *qts, const uint8_t *program, size_t len)
     qtest_writeb(qts, REG_BASE + 0x62, 0);
     qtest_writeb(qts, REG_BASE + 0x63, 0);
     qtest_writeb(qts, REG_BASE + 0x87, 0x02);
+}
+
+static void test_status_message_phases(void)
+{
+    static const uint8_t cdb[6] = { 0x12, 0, 0, 0, 36, 0 };
+    uint8_t program[96] = { 0 };
+    uint8_t status_read[8] = { 0 };
+    uint8_t finish[16] = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("aic7880-phase-XXXXXX", &error);
+    g_autofree char *socket_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *qts, *to;
+    size_t n, wait_at = 4 + sizeof(cdb);
+    uint32_t jump = (wait_at << 16) | (0x8u << 25);
+
+    g_assert_no_error(error);
+    socket_path = g_strdup_printf("%s/migrate.sock", dir);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    qts = start_disk();
+
+    qtest_writeb(qts, REG_BASE + 0x88, 0x00);
+    qtest_writeb(qts, REG_BASE + 0x89, 0x00);
+    qtest_writeb(qts, REG_BASE + 0x8a, 0x01);
+    qtest_writeb(qts, REG_BASE + 0x8c, 36);
+    qtest_writeb(qts, REG_BASE + 0x08, 36);
+    build_command_program(program, cdb, sizeof(cdb), false);
+    for (unsigned byte = 0; byte < 4; byte++) {
+        program[wait_at * 4 + byte] = jump >> (byte * 8);
+    }
+    start_program(qts, program, (wait_at + 1) * 4);
+    for (unsigned i = 0; i < 1000; i++) {
+        if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe6) == 0xc6) {
+            break;
+        }
+        qtest_clock_step(qts, 1000);
+    }
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xc6);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+
+    to = qtest_init("-M pc -m 128M -nodefaults -S -incoming defer "
+                    "-drive if=none,id=disk0,file=null-co://,format=raw "
+                    "-device aic7880,id=hba,bus=pci.0,addr=04.0 "
+                    "-device scsi-hd,drive=disk0,bus=hba.0,"
+                    "scsi-id=0,lun=0");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    sgi_migrate_stopped(qts, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_quit(qts);
+    qts = to;
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xc6);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+
+    qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    n = 0;
+    emit(status_read, &n, (0x06u << 8) | (0x22u << 16));
+    emit(status_read, &n, (1u << 16) | (0x8u << 25));
+    start_program(qts, status_read, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x22), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xe6);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+
+    qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    n = 0;
+    emit(finish, &n, (0x06u << 8) | (0x23u << 16));
+    emit_or(finish, &n, 1, 0x9d);
+    emit_or(finish, &n, 2, 0x91);
+    emit(finish, &n, (3u << 16) | (0x8u << 25));
+    start_program(qts, finish, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
+    qtest_quit(qts);
+    unlink(socket_path);
+    g_rmdir(dir);
+}
+
+static void test_unmasked_selection_timeout(void)
+{
+    uint8_t program[12] = { 0 };
+    size_t n = 0;
+    QTestState *qts = start_aic();
+
+    emit_or(program, &n, 0x07, 0x05);
+    emit_or(program, &n, 0x40, 0x00);
+    emit(program, &n, (2u << 16) | (0x8u << 25));
+    qtest_writeb(qts, REG_BASE + 0x02, 0x04);
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 0x04, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x80);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x0c, 0x80);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_unsupported_scsi_controls(void)
+{
+    QTestState *qts = start_aic();
+
+    qtest_writeb(qts, REG_BASE + 0x00, 0x20);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x00) & 0x20, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x02);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x02, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x01);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x01, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    qtest_writeb(qts, REG_BASE + 0x10, 0x10);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x20);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x11), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x04), ==, 0xff);
+    qtest_quit(qts);
+}
+
+static void test_manual_command_path_is_unsupported(void)
+{
+    QTestState *qts = start_disk();
+
+    qtest_writeb(qts, REG_BASE + 0x05, 0x07);
+    qtest_writeb(qts, REG_BASE + 0x00, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x00) & 0x40, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x40, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    qtest_quit(qts);
 }
 
 static void test_scb_pages_and_sequencer_access(void)
@@ -197,7 +345,7 @@ static void test_scb_pages_and_sequencer_access(void)
 
 static void test_inquiry_via_sequencer(void)
 {
-    uint8_t program[64] = { 0 };
+    uint8_t program[96] = { 0 };
     uint8_t answer[40];
     uint8_t fill[sizeof(answer)];
     size_t n;
@@ -303,6 +451,8 @@ static void test_missing_target(void)
     emit_or(program, &n, 0x07, 0x05);
     emit_or(program, &n, 0x40, 0x00);
     emit_or(program, &n, 0x02, 0x91);
+    qtest_writeb(qts, REG_BASE + 0x02, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x80);
     qtest_writeb(qts, REG_BASE + 0x60, 0x91);
     qtest_writeb(qts, REG_BASE + 0x62, 0);
     for (size_t i = 0; i < n; i++) {
@@ -325,7 +475,7 @@ static void test_missing_target(void)
 static void test_dma_requires_bus_master(void)
 {
     static const uint8_t cdb[6] = { 0x12, 0, 0, 0, 36, 0 };
-    uint8_t program[64] = { 0 };
+    uint8_t program[96] = { 0 };
     uint8_t before[36], after[36];
     QTestState *qts = start_disk();
     size_t n = 0;
@@ -433,7 +583,8 @@ static uint8_t run_disk_cdb(QTestState *qts, const uint8_t *cdb, size_t cdb_len,
         g_usleep(1000); /* The block throttle uses host time. */
     }
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
-    status = qtest_readb(qts, REG_BASE + 0x06);
+    status = qtest_readb(qts, REG_BASE + 0x22);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 1);
     if (status == 0) {
@@ -443,6 +594,29 @@ static uint8_t run_disk_cdb(QTestState *qts, const uint8_t *cdb, size_t cdb_len,
     qtest_writeb(qts, REG_BASE + 0x92, 2);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
     return status;
+}
+
+static void test_scsi_reset_out(void)
+{
+    static const uint8_t read_cdb[10] = {
+        0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0
+    };
+    static const uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, 18, 0 };
+    QTestState *qts = start_disk();
+
+    g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
+                                  0x10000, 512, false), ==, 2);
+    g_assert_cmphex(run_disk_cdb(qts, sense_cdb, sizeof(sense_cdb),
+                                  0x11000, 18, false), ==, 0);
+    g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
+                                  0x10000, 512, false), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x00, 0x01);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x00) & 1, ==, 1);
+    qtest_writeb(qts, REG_BASE + 0x00, 0);
+    g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
+                                  0x10000, 512, false), ==, 2);
+    qtest_quit(qts);
 }
 
 static void test_read_write_via_sequencer(void)
@@ -655,6 +829,14 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/sequencer-upload", test_sequencer_upload);
     qtest_add_func("aic7880/sequencer-exec", test_sequencer_exec);
     qtest_add_func("aic7880/scb-pages", test_scb_pages_and_sequencer_access);
+    qtest_add_func("aic7880/status-message-phases",
+                   test_status_message_phases);
+    qtest_add_func("aic7880/unmasked-selection-timeout",
+                   test_unmasked_selection_timeout);
+    qtest_add_func("aic7880/unsupported-scsi-controls",
+                   test_unsupported_scsi_controls);
+    qtest_add_func("aic7880/manual-command-unsupported",
+                   test_manual_command_path_is_unsupported);
     qtest_add_func("aic7880/reset-and-interrupt",
                    test_reset_and_interrupt_level);
     qtest_add_func("aic7880/missing-target", test_missing_target);
@@ -664,6 +846,7 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/inquiry-via-sequencer", test_inquiry_via_sequencer);
     qtest_add_func("aic7880/read-write-via-sequencer",
                    test_read_write_via_sequencer);
+    qtest_add_func("aic7880/scsi-reset-out", test_scsi_reset_out);
     qtest_add_func("aic7880/independent-functions", test_independent_functions);
     qtest_add_func("aic7880/reset-cancels-busy",
                    test_reset_cancels_busy_request);
