@@ -312,12 +312,12 @@ Onyx2 deskside:
      - ``origin200``
      - 1
      - 1 or 2
-     - 64, 128, 256 or 512 MiB
+     - 64 to 1664 MiB, as banks (see below)
    * - ``origin200-dual``
      - ``origin200``
      - 2, direct-linked
      - 2+2 (fixed)
-     - 64, 128, 256 or 512 MiB, same on both nodes
+     - as ``origin200``, same on both nodes
    * - ``origin2000-rack`` (default)
      - ``origin2000``
      - 1 to 4; two Crossbows, and two Routers from two nodes on
@@ -371,10 +371,23 @@ given, the way a bare ``-smp 8`` on ``origin2000`` becomes four sockets
 of two cores each; naming sockets and cores explicitly must still match
 one of the topology's own accepted populations. ``-m`` splits evenly
 across nodes and each node's share must be one of its own accepted
-sizes -- ``origin200-dual`` accepts the same four per-node sizes
-``origin200`` does, so its total ranges from 128 MiB to 1024 MiB, while
+sizes -- ``origin200-dual`` accepts the same per-node sizes
+``origin200`` does, so its total ranges from 128 MiB to 3328 MiB, while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
-size. ``nodes`` is part of the machine configuration: a snapshot restores
+size.
+
+An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
+largest first, starting at bank 0 with no empty bank between two
+populated ones (SGI 007-3709-002, printed page 48). Bank 0 holds 64 or
+128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives the 20
+accepted sizes from 64 to 1664 MiB. The board also takes 256 MB banks,
+but the stock IP27 PROM 6.156 disables a 256 MB bank whenever the
+configuration block gives a processor clock of 180 or 195 MHz, the only
+SN0 processor options here, so QEMU never builds one (*established*,
+from disassembly of the PROM's memory test). A 512 MB bank 0 is real
+hardware too, but the PROM tests the RAM under the boot flash's reset
+address, which QEMU's flash overlay hides, so QEMU leaves it out
+(*approximation*); 1024, 1536 and 2048 MiB need one and are refused. ``nodes`` is part of the machine configuration: a snapshot restores
 only into a machine with the same value. ``origin300`` accepts only R14000 for ``-cpu``; the
 other two accept only R10000, the default and the only member of
 their own ``valid_cpu_types``.

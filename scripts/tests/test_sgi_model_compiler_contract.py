@@ -1632,7 +1632,9 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
     def test_bank_and_accepted_memory(self):
         node = self.entry["nodes"][0]
         self.assertEqual(node["bank_mib"], [64, 0, 0, 0, 0, 0, 0, 0])
-        self.assertEqual(node["accepted_memory_mib"], [512, 256, 128, 64])
+        self.assertEqual(node["accepted_memory_mib"], [
+            64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832,
+            896, 1088, 1152, 1216, 1280, 1600, 1664])
 
     def test_flash(self):
         self.assertEqual(

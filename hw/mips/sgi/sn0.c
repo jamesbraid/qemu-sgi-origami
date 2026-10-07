@@ -119,9 +119,15 @@ const SN0ModelAddressMap sn0_hub_address_map = {
  * The Hub's bank decode is the same on every SN0 node; which banks a board
  * wires and which sizes its DIMMs make is the board's. This is the Origin 200
  * (IP29) board: four banks.
+ *
+ * The board takes 256 MB banks, but SGI's IP27 PROM 6.156 disables one
+ * whenever the node's processor clock is 180 or 195 MHz ("256 MB dimm banks
+ * not allowed on IP27 node boards"), and those are the only SN0 processors
+ * the catalogue offers. A disabled bank 0 leaves the PROM no usable memory,
+ * so 256 MiB is two 128 MiB banks here, as on the IP27.
  */
 static const uint64_t sn0_hub_memory_sizes_mib[] = {
-    0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
+    0x200ULL, 0x80ULL, 0x40ULL,
 };
 
 const SN0ModelMemory sn0_hub_memory = {
