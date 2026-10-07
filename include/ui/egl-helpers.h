@@ -86,6 +86,7 @@ bool egl_init_session(const char *rendernode, DisplayGLMode mode,
 void egl_cleanup_session(QemuEGLDisplayLease *session);
 QemuEGLDisplayLease *qemu_egl_display_acquire_existing(DisplayGLMode mode,
                                                      Error **errp);
+QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp);
 bool qemu_egl_display_acquire_context(QemuEGLDisplayLease **lease,
                                       Error **errp);
 DisplayGLMode qemu_egl_display_lease_mode(const QemuEGLDisplayLease *lease);

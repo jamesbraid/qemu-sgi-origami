@@ -279,8 +279,7 @@ static void *renderer_gl_create(Error **errp)
         error_setg(errp, "Cannot allocate SGI GL worker");
         return NULL;
     }
-    renderer->lease = qemu_egl_display_acquire_existing(DISPLAY_GL_MODE_CORE,
-                                                       errp);
+    renderer->lease = qemu_egl_display_acquire_surfaceless(errp);
     if (!renderer->lease) {
         g_free(renderer);
         return NULL;
