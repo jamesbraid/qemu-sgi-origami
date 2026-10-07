@@ -63,6 +63,19 @@ static void test_compare_mask_and_ack(void)
     qtest_quit(s);
 }
 
+static void test_compare_overshoot(void)
+{
+    QTestState *s = mace_start();
+    uint32_t now = qtest_readq(s, MACE_UST);
+
+    qtest_writeq(s, MACE_IMASK, MACE_TIMER0);
+    qtest_writeq(s, MACE_COMPARE0, (uint32_t)(now + 3));
+    qtest_clock_step(s, 10 * 960);
+    g_assert_true(qtest_readq(s, MACE_ISTAT) & MACE_TIMER0);
+    g_assert_true(qtest_get_irq(s, 5));
+    qtest_quit(s);
+}
+
 static void test_external_reset_control(void)
 {
     QTestState *s = mace_start();
@@ -207,6 +220,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/mace/compare-mask-ack", test_compare_mask_and_ack);
+    qtest_add_func("/sgi/mace/compare-overshoot", test_compare_overshoot);
     qtest_add_func("/sgi/mace/external-reset", test_external_reset_control);
     qtest_add_func("/sgi/mace/rtc-direct-stride", test_rtc_direct_stride);
     qtest_add_func("/sgi/mace/uart-register-spacing",
