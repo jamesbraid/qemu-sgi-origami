@@ -427,11 +427,14 @@
 
 /*
  * Port reset: bit 0 resets this Hub, tested alone because the three writers
- * set different companion bits. The protection register is not consulted;
- * only OpenBSD arms it.
+ * set different companion bits; the model resets the whole machine for it.
+ * Bit 1 resets the link and bit 7 sends a warm reset across it. The
+ * protection register is not consulted; only OpenBSD arms it.
 */
 #define HUB_NI_PORT_RESET       0x600008
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
+#define NI_PORT_RESET_LINK      (1ULL << 1)  /* resets the link */
+#define NI_PORT_RESET_WARM      (1ULL << 7)  /* warm reset over the link */
 
 /*
  * Protection configuration: one bit that permits reset, resetting permissive.
@@ -446,14 +449,16 @@
 /*
  * Diagnostic parameters: nineteen bits of link fault injection and tuning:
  * a port-timeout reset, forced eight-bit mode, port disable, deliberate data
- * errors. The routed fabric consumes the data-error bit; the remaining
- * controls are stored and never acted on. No source establishes a reset value
- * for the port-timeout bit or a nonzero reset for the rest; zero at reset is
- * the model's stated choice, the port-error precedent.
+ * errors. The routed fabric consumes the data-error bit, and the next link
+ * reset samples the eight-bit bit; the remaining controls are stored and
+ * never acted on. No source establishes a reset value for the port-timeout
+ * bit or a nonzero reset for the rest; zero at reset is the model's stated
+ * choice, the port-error precedent.
 */
 #define HUB_NI_DIAG_PARMS       0x600110
 #define NI_DIAG_PARMS_MASK      0x7ffffULL
 #define NI_DIAG_SEND_DATA_ERROR (1ULL << 0)
+#define NI_DIAG_EIGHT_BIT       (1ULL << 12)
 
 /*
  * PIO protection: region-permission storage this model never consults (one
@@ -479,6 +484,7 @@
 #define NI_PORT_PARMS_MASK      0xffffULL
 #define NI_PORT_PARMS_RESET     ((6ULL << 10) | 0x3f0)
 #define NI_PORT_ERROR_MASK      0x3fffffffffULL
+#define NI_PORT_ERROR_LINK_RESET (1ULL << 37)
 #define NI_PORT_CHECK_ERROR_SHIFT 8
 #define NI_PORT_ERROR_COUNT_MASK 0xffULL
 #define HUB_NI_AGEING_BASE      0x600500
@@ -497,6 +503,7 @@
  * stock PROM leaves protection permitting it.
 */
 #define NI_STATUS_MORE_NODES    (1ULL << 18)
+#define NI_STATUS_EIGHT_BIT     (1ULL << 30)
 #define NI_STATUS_LINK_UP       (1ULL << 29)
 #define NI_STATUS_NEVER_OUT_OF_RESET (1ULL << 28)
 #define NI_STATUS_REGION_SIZE   (1ULL << 17)
@@ -912,12 +919,30 @@ static void sgi_hub_claim_apply(SGIHubState *s)
 }
 
 /*
+ * Bring this Hub's end of the link up at the width the two ends settle on
+ * now. The link coming up clears the never-out-of-reset reason for good,
+ * until the next reset; a later loss reads as a failure.
+ */
+static void sgi_hub_link_up(SGIHubState *s, Object *peer_port,
+                            unsigned int peer_index)
+{
+    s->ni_status = (s->ni_status & ~(NI_STATUS_NEVER_OUT_OF_RESET |
+                                     NI_STATUS_EIGHT_BIT)) |
+                   NI_STATUS_LINK_UP;
+    if (sgi_net_port_negotiate_eight_bit(OBJECT(s), 0, peer_port,
+                                         peer_index)) {
+        s->ni_status |= NI_STATUS_EIGHT_BIT;
+    }
+}
+
+/*
  * This Hub's own network port's link-up bit: a cable present, not down, with
  * the peer port enabled (sgi_net_cable_neighbor() also requires this Hub's
  * own side enabled, always true because a Hub has no admin-disable
- * diagnostic). It is read-only to the guest and set again at every reset. The
- * link coming up clears the never-out-of-reset reason for good, until the
- * next reset; a later loss reads as a failure.
+ * diagnostic). It is read-only to the guest and set again at every reset.
+ * The eight-bit bit is the width the link settled on when it came up or was
+ * last reset, so a link that stays up keeps it; a link that is down has no
+ * width and reads zero.
 */
 static void sgi_hub_link_refresh(SGIHubState *s)
 {
@@ -925,11 +950,39 @@ static void sgi_hub_link_refresh(SGIHubState *s)
     unsigned int peer_index;
     bool up = sgi_hub_net_neighbor(s, &peer_port, &peer_index);
 
-    s->ni_status &= ~NI_STATUS_LINK_UP;
-    if (up) {
-        s->ni_status = (s->ni_status & ~NI_STATUS_NEVER_OUT_OF_RESET) |
-                       NI_STATUS_LINK_UP;
+    if (!up) {
+        s->ni_status &= ~(NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
+    } else if (!(s->ni_status & NI_STATUS_LINK_UP)) {
+        sgi_hub_link_up(s, peer_port, peer_index);
     }
+}
+
+/*
+ * A link reset, completed at the moment it is asked for: the link layers
+ * re-run their reset handshake and settle the width from both ends' force
+ * bits, and both ends latch the port error's link-reset bit. With nothing
+ * to answer, the link stays down, never out of reset, and only this end
+ * latches. Everything else, the node number and mode, routing, vector and
+ * diagnostic state, keeps its value, which is what lets software reset the
+ * link and keep running. Finishing at once satisfies every software wait
+ * seen: the kernel polls the clearing alias without a bound until the bit
+ * reads clear, and the firmware reads it once and then checks the link.
+ */
+static void sgi_hub_ni_link_reset(SGIHubState *s)
+{
+    Object *peer_port;
+    unsigned int peer_index;
+
+    trace_sgi_hub_ni_link_reset(s->cpu_base, s->nasid);
+    sgi_hub_latch_port_error(s, NI_PORT_ERROR_LINK_RESET);
+    if (!sgi_hub_net_neighbor(s, &peer_port, &peer_index)) {
+        s->ni_status = (s->ni_status & ~(NI_STATUS_LINK_UP |
+                                         NI_STATUS_EIGHT_BIT)) |
+                       NI_STATUS_NEVER_OUT_OF_RESET;
+        return;
+    }
+    sgi_hub_link_up(s, peer_port, peer_index);
+    sgi_net_port_link_reset(peer_port, peer_index);
 }
 
 /*
@@ -2410,8 +2463,27 @@ static bool sgi_hub_net_port_forwards(Object *port, unsigned int index)
 static SGINetPortLinkState sgi_hub_net_port_link_state(Object *port,
                                                         unsigned int index)
 {
-    /* A Hub has no admin-disable or forced-width diagnostic of its own. */
-    return (SGINetPortLinkState) { .enabled = true, .eight_bit = false };
+    SGIHubState *s = SGI_HUB(port);
+
+    /* The port-disable diagnostic is stored, not acted on. */
+    return (SGINetPortLinkState) {
+        .enabled = true,
+        .eight_bit = s->ni_diag_parms & NI_DIAG_EIGHT_BIT,
+    };
+}
+
+/* The peer reset the link: settle the width again and latch the event. */
+static void sgi_hub_net_port_link_reset(Object *port, unsigned int index)
+{
+    SGIHubState *s = SGI_HUB(port);
+    Object *peer_port;
+    unsigned int peer_index;
+
+    trace_sgi_hub_ni_link_reset(s->cpu_base, s->nasid);
+    sgi_hub_latch_port_error(s, NI_PORT_ERROR_LINK_RESET);
+    if (sgi_hub_net_neighbor(s, &peer_port, &peer_index)) {
+        sgi_hub_link_up(s, peer_port, peer_index);
+    }
 }
 
 /*
@@ -3291,8 +3363,23 @@ static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
-    /* Bit 0 alone: the three writers set different companion bits. */
+    /*
+     * Bit 0 alone decides a reset: the three writers set different
+     * companion bits. Every software reset path writes bits 7 and 0
+     * together, which resets every node a reset can reach; bit 0 without bit
+     * 7 resets only this node on hardware, but every supported guest
+     * restarts the whole machine after it, so the model resets the whole
+     * machine for either. A link reset alongside it is superseded.
+     */
     if (!(val & NI_PORT_RESET_LOCAL)) {
+        if (val & NI_PORT_RESET_LINK) {
+            sgi_hub_ni_link_reset(s);
+        }
+        if (val & NI_PORT_RESET_WARM) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-hub: warm reset over the link without a "
+                          "local reset is not modelled\n");
+        }
         return;
     }
     if (current_cpu) {
@@ -4331,6 +4418,12 @@ static void sgi_hub_reset_exit(Object *obj, ResetType type)
 {
     SGIHubState *s = SGI_HUB(obj);
 
+    /*
+     * The link comes out of reset now, so its width is settled from both
+     * ends' force bits as they stand after every enter phase, not from
+     * whatever a peer still held when this Hub's own enter phase ran.
+     */
+    s->ni_status &= ~(NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
     sgi_hub_report_number(s);
     sgi_hub_calias_update(s);
 }
@@ -5597,6 +5690,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     npc->describe = sgi_hub_net_port_describe;
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;
+    npc->link_reset = sgi_hub_net_port_link_reset;
     npc->peer_changed = sgi_hub_net_port_peer_changed;
     npc->receive = sgi_hub_net_port_receive;
     npc->record_check_error = sgi_hub_net_port_record_check_error;

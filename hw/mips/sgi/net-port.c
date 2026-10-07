@@ -39,6 +39,23 @@ void sgi_net_port_peer_changed(Object *port, unsigned int index)
     }
 }
 
+void sgi_net_port_link_reset(Object *port, unsigned int index)
+{
+    SGINetPortClass *pc = SGI_NET_PORT_GET_CLASS(port);
+
+    if (pc->link_reset) {
+        pc->link_reset(port, index);
+    }
+}
+
+bool sgi_net_port_negotiate_eight_bit(Object *port, unsigned int index,
+                                      Object *peer_port,
+                                      unsigned int peer_index)
+{
+    return sgi_net_port_link_state(port, index).eight_bit ||
+           sgi_net_port_link_state(peer_port, peer_index).eight_bit;
+}
+
 SGINetPacketResult sgi_net_port_receive(Object *port, unsigned int index,
                                         SGINetPacket *packet, Error **errp)
 {

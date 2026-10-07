@@ -134,6 +134,17 @@ struct SGINetPortClass {
     void (*peer_changed)(Object *port, unsigned int index);
 
     /*
+     * The device at the other end of this port's cable has just reset the
+     * link between them, and the link is up again. The two link layers
+     * re-ran their reset handshake, so adopt the width
+     * sgi_net_port_negotiate_eight_bit() gives for this link and latch
+     * whatever this port's owner records for a link reset: a Hub's port
+     * error link-reset bit, nothing on a Router. Optional; a port without it
+     * keeps its state.
+     */
+    void (*link_reset)(Object *port, unsigned int index);
+
+    /*
      * A vector packet arrived on this port. A Router consumes one nybble of a
      * nonzero packet->vector through its tables and forwards out the exit
      * port's cable; a zero packet->vector, on a Router or a Hub, is answered
@@ -159,6 +170,17 @@ const char *sgi_net_port_describe(Object *port, unsigned int index);
 bool sgi_net_port_forwards(Object *port, unsigned int index);
 SGINetPortLinkState sgi_net_port_link_state(Object *port, unsigned int index);
 void sgi_net_port_peer_changed(Object *port, unsigned int index);
+void sgi_net_port_link_reset(Object *port, unsigned int index);
+
+/*
+ * The width a link between (port, index) and (peer_port, peer_index) comes
+ * up at after a reset: each end offers sixteen bits unless its own
+ * forced-width bit restricts it to eight, and the two settle on the widest
+ * width both offer. Symmetric, so both ends derive the same answer.
+ */
+bool sgi_net_port_negotiate_eight_bit(Object *port, unsigned int index,
+                                      Object *peer_port,
+                                      unsigned int peer_index);
 SGINetPacketResult sgi_net_port_receive(Object *port, unsigned int index,
                                         SGINetPacket *packet, Error **errp);
 void sgi_net_port_record_check_error(Object *port, unsigned int index);

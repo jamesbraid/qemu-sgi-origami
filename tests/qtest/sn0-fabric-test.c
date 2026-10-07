@@ -45,6 +45,22 @@
 #define NI_STATUS_LINK_UP   (1ULL << 29)
 #define NI_STATUS_NEVER_OUT_OF_RESET (1ULL << 28)
 #define NI_STATUS_LINK      (NI_STATUS_LINK_UP | NI_STATUS_NEVER_OUT_OF_RESET)
+#define NI_STATUS_EIGHT_BIT (1ULL << 30)
+#define NI_STATUS_WIDTH_LINK (NI_STATUS_EIGHT_BIT | NI_STATUS_LINK)
+
+#define NI_PORT_RESET       0x600008
+#define NI_PORT_RESET_LOCAL (1ULL << 0)
+#define NI_PORT_RESET_LINK  (1ULL << 1)
+#define NI_PORT_RESET_WARM  (1ULL << 7)
+#define NI_PROTECTION       0x600010
+#define NI_DIAG_PARMS       0x600110
+#define NI_DIAG_EIGHT_BIT   (1ULL << 12)
+#define NI_PORT_PARMS       0x608000
+#define NI_PORT_ERROR       0x608008
+#define NI_PORT_ERROR_CLEAR 0x608088
+#define NI_PORT_ERROR_LINK_RESET (1ULL << 37)
+#define NI_META_TABLE       0x638000
+#define NI_LOCAL_TABLE      0x638100
 
 #define BTE_BASE(e)         (0x410000 + (e) * 0x10000)
 #define BTE_LENGTH(e)       (BTE_BASE(e) + 0x00)
@@ -582,6 +598,261 @@ static void test_direct_link_refuses_nonzero_route(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Link reset on the dual: both Hubs latch the port error's link-reset bit,
+ * a plain read leaves it and one clearing read clears it, each Hub
+ * separately. The port reset register reads zero and the machine is not
+ * reset. The link stays up and every programmed register keeps its value.
+ */
+static void test_link_reset_latches_both_ends(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
+    const uint64_t programmed[] = {
+        NI_STATUS, NI_PROTECTION, NI_DIAG_PARMS, NI_PORT_PARMS,
+        NI_META_TABLE + 8, NI_LOCAL_TABLE + 16, NI_VECTOR, NI_VECTOR_DATA,
+        NI_SCRATCH_0,
+    };
+    uint64_t saved[2][G_N_ELEMENTS(programmed)];
+    unsigned int i, n;
+
+    sn0_program_nasid(qts, 1);
+    qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+    for (n = 0; n < 2; n++) {
+        qtest_writeq(qts, hubs[n] + NI_STATUS,
+                     NI_REGION_SIZE | NI_NODE(n));
+        qtest_writeq(qts, hubs[n] + NI_PROTECTION, 0);
+        qtest_writeq(qts, hubs[n] + NI_DIAG_PARMS, 0x40 << n);
+        qtest_writeq(qts, hubs[n] + NI_PORT_PARMS, 0x1230 + n);
+        qtest_writeq(qts, hubs[n] + NI_META_TABLE + 8, 0x21 + n);
+        qtest_writeq(qts, hubs[n] + NI_LOCAL_TABLE + 16, 0x31 + n);
+        qtest_writeq(qts, hubs[n] + NI_VECTOR, 0x456 + n);
+        qtest_writeq(qts, hubs[n] + NI_VECTOR_DATA, 0xfeed0 + n);
+        qtest_writeq(qts, hubs[n] + NI_SCRATCH_0, 0xabc0 + n);
+        for (i = 0; i < G_N_ELEMENTS(programmed); i++) {
+            saved[n][i] = qtest_readq(qts, hubs[n] + programmed[i]);
+        }
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_PORT_ERROR), ==, 0);
+    }
+
+    qtest_writeq(qts, hubs[0] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_RESET), ==, 0);
+    /* A machine reset would have landed by the end of a monitor round trip. */
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+
+    for (n = 0; n < 2; n++) {
+        for (i = 0; i < G_N_ELEMENTS(programmed); i++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + programmed[i]), ==,
+                            saved[n][i]);
+        }
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) & NI_STATUS_LINK,
+                        ==, NI_STATUS_LINK_UP);
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_PORT_ERROR), ==,
+                        NI_PORT_ERROR_LINK_RESET);
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_PORT_ERROR), ==,
+                        NI_PORT_ERROR_LINK_RESET);
+    }
+
+    /* One clearing read on node 0 leaves node 1 latched. */
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_ERROR), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_ERROR_CLEAR), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, hubs[1] + NI_PORT_ERROR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(qtest_readq(qts, hubs[1] + NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(qtest_readq(qts, hubs[1] + NI_PORT_ERROR_CLEAR), ==, 0);
+
+    /* Neither a zero write nor a lone link reset is a machine reset. */
+    qtest_writeq(qts, hubs[1] + NI_PORT_RESET, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+    for (n = 0; n < 2; n++) {
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_PORT_ERROR), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_SCRATCH_0), ==,
+                        0xabc0 + n);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * Forced eight-bit mode is an input to the next link reset. Setting the bit
+ * on one Hub changes neither Hub's width; the next link reset brings both
+ * ends up eight bits wide, whichever end writes it, and clearing the bit and
+ * resetting again brings them back to sixteen.
+ */
+static void test_link_reset_negotiates_width(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
+    unsigned int resetter, n;
+
+    sn0_program_nasid(qts, 1);
+    qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+
+    for (resetter = 0; resetter < 2; resetter++) {
+        qtest_writeq(qts, hubs[0] + NI_DIAG_PARMS, NI_DIAG_EIGHT_BIT);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==, NI_STATUS_LINK_UP);
+        }
+        qtest_writeq(qts, hubs[resetter] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==,
+                            NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
+        }
+
+        qtest_writeq(qts, hubs[0] + NI_DIAG_PARMS, 0);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==,
+                            NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
+        }
+        qtest_writeq(qts, hubs[resetter] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==, NI_STATUS_LINK_UP);
+            qtest_readq(qts, hubs[n] + NI_PORT_ERROR_CLEAR);
+        }
+    }
+
+    /*
+     * The peer's force bit, written and read back by vector the way the
+     * kernel decides the current mode, survives the link reset it governs.
+     */
+    qtest_writeq(qts, hubs[0] + NI_VECTOR_DATA, NI_DIAG_EIGHT_BIT);
+    g_assert_cmphex(vector_operation(qts, hubs[0], NI_DIAG_PARMS,
+                                     PIOTYPE_WRITE) &
+                    (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+    qtest_readq(qts, hubs[0] + NI_VECTOR_CLEAR);
+    qtest_writeq(qts, hubs[0] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+    g_assert_cmphex(vector_operation(qts, hubs[0], NI_DIAG_PARMS,
+                                     PIOTYPE_READ) &
+                    (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_VECTOR_READ_DATA), ==,
+                    NI_DIAG_EIGHT_BIT);
+    for (n = 0; n < 2; n++) {
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                        NI_STATUS_WIDTH_LINK, ==,
+                        NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A system reset clears both force bits, and the link that comes out of it
+ * runs sixteen bits wide at both ends, whichever Hub had forced it. The
+ * width is settled once every Hub has left its reset enter phase, not from
+ * a force bit a peer still held when this Hub's own enter phase ran.
+ */
+static void test_reset_exit_renegotiates_width(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
+    unsigned int forcing, n;
+
+    for (forcing = 0; forcing < 2; forcing++) {
+        sn0_program_nasid(qts, 1);
+        qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+        qtest_writeq(qts, hubs[forcing] + NI_DIAG_PARMS, NI_DIAG_EIGHT_BIT);
+        qtest_writeq(qts, hubs[0] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==,
+                            NI_STATUS_LINK_UP | NI_STATUS_EIGHT_BIT);
+        }
+
+        qtest_system_reset(qts);
+        sn0_program_nasid(qts, 1);
+        qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+        for (n = 0; n < 2; n++) {
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_DIAG_PARMS), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_STATUS) &
+                            NI_STATUS_WIDTH_LINK, ==, NI_STATUS_LINK_UP);
+        }
+        qtest_system_reset(qts);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The two software sequences. The kernel's power-off sets both force bits,
+ * resets the link from one Hub, then has every processor read its own
+ * Hub's clearing alias until the link-reset bit reads clear, with no bound:
+ * each Hub must read it set at most once and clear within two reads, and
+ * with both ends latching each reads it set exactly once. The
+ * firmware resets the link, does one clearing read, reads the peer's status
+ * by vector 32 times, then expects a plain read of the port error to be zero.
+ */
+static void test_link_reset_software_sequences(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
+    unsigned int n, i, set;
+
+    sn0_program_nasid(qts, 1);
+    qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+
+    qtest_writeq(qts, hubs[0] + NI_VECTOR_DATA, NI_DIAG_EIGHT_BIT);
+    vector_operation(qts, hubs[0], NI_DIAG_PARMS, PIOTYPE_WRITE);
+    qtest_readq(qts, hubs[0] + NI_VECTOR_CLEAR);
+    qtest_writeq(qts, hubs[0] + NI_DIAG_PARMS, NI_DIAG_EIGHT_BIT);
+    qtest_writeq(qts, hubs[0] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+    for (n = 0; n < 2; n++) {
+        set = 0;
+        for (i = 0; i < 2; i++) {
+            if (qtest_readq(qts, hubs[n] + NI_PORT_ERROR_CLEAR) &
+                NI_PORT_ERROR_LINK_RESET) {
+                set++;
+            }
+        }
+        /* The poll ends; this model latched both ends, so it saw it once. */
+        g_assert_cmpuint(set, ==, 1);
+        g_assert_cmphex(qtest_readq(qts, hubs[n] + NI_PORT_ERROR_CLEAR) &
+                        NI_PORT_ERROR_LINK_RESET, ==, 0);
+    }
+
+    qtest_writeq(qts, hubs[0] + NI_DIAG_PARMS, 0);
+    qtest_writeq(qts, hubs[0] + NI_PORT_RESET, NI_PORT_RESET_LINK);
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    for (i = 0; i < 32; i++) {
+        g_assert_cmphex(vector_operation(qts, hubs[0], NI_STATUS,
+                                         PIOTYPE_READ) &
+                        (NVS_VALID | NVS_TYPE_MASK), ==,
+                        NVS_VALID | PIOTYPE_READ);
+        qtest_readq(qts, hubs[0] + NI_VECTOR_CLEAR);
+    }
+    g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_PORT_ERROR), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * Bits 7 and 0 together reset the whole machine from either node of the
+ * pair: the other node's programmed state returns to its reset value.
+ */
+static void test_warm_reset_resets_the_pair(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
+    unsigned int writer;
+
+    for (writer = 0; writer < 2; writer++) {
+        sn0_program_nasid(qts, 1);
+        qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
+        qtest_writeq(qts, hubs[0] + NI_SCRATCH_0, 0x5150);
+        qtest_writeq(qts, hubs[1] + NI_SCRATCH_0, 0x5151);
+        qtest_writeq(qts, hubs[writer] + NI_PORT_RESET,
+                     NI_PORT_RESET_WARM | NI_PORT_RESET_LOCAL);
+        qtest_qmp_eventwait(qts, "RESET");
+        g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_SCRATCH_0), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -602,6 +873,16 @@ int main(int argc, char **argv)
                         NULL, test_bridge_dma_reaches_the_peer_node);
     qtest_add_data_func("/sn0/fabric/dual-migration",
                         NULL, test_dual_migration);
+    qtest_add_data_func("/sn0/fabric/link-reset-latches-both-ends",
+                        NULL, test_link_reset_latches_both_ends);
+    qtest_add_data_func("/sn0/fabric/link-reset-negotiates-width",
+                        NULL, test_link_reset_negotiates_width);
+    qtest_add_data_func("/sn0/fabric/reset-exit-renegotiates-width",
+                        NULL, test_reset_exit_renegotiates_width);
+    qtest_add_data_func("/sn0/fabric/link-reset-software-sequences",
+                        NULL, test_link_reset_software_sequences);
+    qtest_add_data_func("/sn0/fabric/warm-reset-resets-the-pair",
+                        NULL, test_warm_reset_resets_the_pair);
 
     return g_test_run();
 }
