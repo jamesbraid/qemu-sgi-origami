@@ -2,9 +2,12 @@
 /* Register tests for the standalone MACE 2.0 peripheral block. */
 
 #include "qemu/osdep.h"
+#include <sys/socket.h>
+#include <sys/un.h>
 #include "libqtest.h"
 #include "hw/mips/sgi/mace-timer.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define MACE_BASE       0x1f000000ULL
 #define MACE_RING_BASE  (MACE_BASE + 0x310000)
@@ -236,6 +239,78 @@ static void test_reset_after_pending_sources(void)
     qtest_quit(s);
 }
 
+static int mace_connect_socket(const char *path)
+{
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpuint(strlen(path), <, sizeof(addr.sun_path));
+    g_strlcpy(addr.sun_path, path, sizeof(addr.sun_path));
+    g_assert_cmpint(connect(fd, (struct sockaddr *)&addr, sizeof(addr)),
+                    ==, 0);
+    return fd;
+}
+
+static void test_uart_receive_backends(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("mace-uart-XXXXXX",
+                                                &error);
+    g_autofree char *path_a = NULL;
+    g_autofree char *path_b = NULL;
+    QTestState *s;
+    int fd_a, fd_b;
+    uint8_t byte_a = 'A', byte_b = 'B';
+
+    g_assert_no_error(error);
+    path_a = g_build_filename(directory, "a.sock", NULL);
+    path_b = g_build_filename(directory, "b.sock", NULL);
+    s = qtest_initf("-M none -cpu R10000 "
+        "-chardev socket,id=port-a,path=%s,server=on,wait=off "
+        "-chardev socket,id=port-b,path=%s,server=on,wait=off "
+        "-device sgi-mace,id=mace,chardev-a=port-a,chardev-b=port-b",
+        path_a, path_b);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/mace", 0, MACE_BASE);
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/mace", "crime");
+    fd_a = mace_connect_socket(path_a);
+    fd_b = mace_connect_socket(path_b);
+
+    qtest_writeq(s, MACE_RING_BASE, 0);
+    qtest_writeq(s, MACE_IMASK, MACE_UART_A_INT | MACE_UART_B_INT);
+    qtest_writeb(s, MACE_UART_A + 0x100, 0x01);
+    qtest_writeb(s, MACE_UART_B + 0x100, 0x01);
+    g_assert_cmpint(write(fd_a, &byte_a, 1), ==, 1);
+    g_assert_cmpint(write(fd_b, &byte_b, 1), ==, 1);
+    sgi_wait_socket_read(fd_a);
+    sgi_wait_socket_read(fd_b);
+
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x500) & 1, ==, 1);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_B + 0x500) & 1, ==, 1);
+    g_assert_cmphex(qtest_readq(s, MACE_ISTAT) &
+                    (MACE_UART_A_INT | MACE_UART_B_INT), ==,
+                    MACE_UART_A_INT | MACE_UART_B_INT);
+    g_assert_true(qtest_get_irq(s, 4));
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A), ==, byte_a);
+    g_assert_false(qtest_readq(s, MACE_ISTAT) & MACE_UART_A_INT);
+    g_assert_true(qtest_readq(s, MACE_ISTAT) & MACE_UART_B_INT);
+    g_assert_true(qtest_get_irq(s, 4));
+    g_assert_cmphex(qtest_readb(s, MACE_UART_B), ==, byte_b);
+    g_assert_false(qtest_readq(s, MACE_ISTAT) & MACE_UART_B_INT);
+    g_assert_false(qtest_get_irq(s, 4));
+
+    close(fd_a);
+    close(fd_b);
+    qtest_quit(s);
+    if (g_file_test(path_a, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(path_a), ==, 0);
+    }
+    if (g_file_test(path_b, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(path_b), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -255,5 +330,7 @@ int main(int argc, char **argv)
                    test_migrate_pending_compare);
     qtest_add_func("/sgi/mace/reset-after-pending-sources",
                    test_reset_after_pending_sources);
+    qtest_add_func("/sgi/mace/uart-receive-backends",
+                   test_uart_receive_backends);
     return g_test_run();
 }
