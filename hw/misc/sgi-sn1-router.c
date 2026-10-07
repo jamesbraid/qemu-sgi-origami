@@ -97,12 +97,18 @@ static uint64_t router_status(SGISN1RouterState *s, unsigned ingress)
     uint64_t value = (UINT64_C(0x3017) << 12) |
         ((uint64_t)s->revision << 28) | ((uint64_t)ingress << 52);
 
+    if (s->synthetic_diagnostics) {
+        value |= (UINT64_C(0x24) << 1) | 1;
+    }
+
     for (unsigned p = 1; p <= SGI_SN1_ROUTER_PORTS; p++) {
         Object *peer;
         unsigned index;
 
         if (sgi_sn1_router_port_neighbor(s, p, &peer, &index)) {
             value |= UINT64_C(1) << (35 + 2 * p);
+        } else if (s->synthetic_diagnostics) {
+            value |= UINT64_C(1) << (34 + 2 * p);
         }
     }
     return value;
