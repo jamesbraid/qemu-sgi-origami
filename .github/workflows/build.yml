@@ -168,15 +168,17 @@ jobs:
         run: bash scripts/ci/runner-setup nudge-queue
 
   # The full run is three jobs on separate builders, each building its own
-  # QEMU: half the qtests each in two, and the boots, ROMs and unit tests in
-  # the third. full-suite below collects them.
+  # QEMU: a third of the qtests each, except that the first also runs the
+  # boots, ROMs and unit tests and so takes a smaller share. The split is
+  # weighted so the three finish together; see FUNCTIONAL_LOAD_S in
+  # scripts/ci/sgi-check. full-suite below collects them.
   full-part:
     if: ${{ github.server_url != 'https://github.com' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
     strategy:
       # Let every part finish, so one failure does not hide another.
       fail-fast: false
       matrix:
-        part: [qtest-1-of-2, qtest-2-of-2, functional]
+        part: [functional+qtest-1-of-3, qtest-2-of-3, qtest-3-of-3]
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 175
     # Save the current step name for failure reporting.
@@ -207,7 +209,7 @@ jobs:
 
       # The checks that need no build run once, in the functional part.
       - name: every qtest source is one the suite runs
-        if: ${{ matrix.part == 'functional' }}
+        if: ${{ startsWith(matrix.part, 'functional') }}
         run: |
           echo "$PART: every qtest source is one the suite runs" > "$CI_STEP"
           python3 scripts/check-qtest-registered.py
@@ -225,7 +227,7 @@ jobs:
 
       # Only the boots read guest assets.
       - name: fetch SGI test assets
-        if: ${{ matrix.part == 'functional' }}
+        if: ${{ startsWith(matrix.part, 'functional') }}
         env:
           ASSET_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
         run: |
@@ -240,7 +242,7 @@ jobs:
       # These need no QEMU build, so run them first: a broken model file
       # or script fails the job in minutes instead of after the build.
       - name: script and model suites
-        if: ${{ matrix.part == 'functional' }}
+        if: ${{ startsWith(matrix.part, 'functional') }}
         run: |
           echo "$PART: script and model suites" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \

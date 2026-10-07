@@ -113,11 +113,61 @@ class QtestShards(unittest.TestCase):
                                           1)
         self.assertEqual(loads, [20])
 
+    def test_preload_lightens_that_shard(self):
+        shards, loads = sgi_check.qtest_shards(
+            list(self.DURATIONS), self.DURATIONS, 2, preload=[500, 0])
+        self.assertEqual(shards, [['b', 'd', 'e'], ['a', 'c']])
+        self.assertEqual(loads, [950, 900])
+
     def test_tree_durations_split_evenly(self):
         durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
-        shards, loads = sgi_check.qtest_shards(list(durations), durations, 2)
-        self.assertTrue(all(shards))
-        self.assertLess(max(loads) / min(loads), 1.05)
+        for count in (2, 3):
+            shards, loads = sgi_check.qtest_shards(
+                list(durations), durations, count,
+                sgi_check.functional_preload(count))
+            self.assertTrue(all(shards))
+            self.assertLess(max(loads) / min(loads), 1.05)
+
+    def test_functional_share_is_share_one_of_a_real_split(self):
+        self.assertEqual(sgi_check.functional_preload(1), [0])
+        self.assertEqual(sgi_check.functional_preload(3),
+                         [sgi_check.FUNCTIONAL_LOAD_S, 0, 0])
+
+
+class QtestPartition(unittest.TestCase):
+    """Every qtest runs in exactly one part, whatever the part count."""
+
+    def parts(self, tests, durations, count):
+        """Each job's qtests, computed as each job does, from its own run."""
+        return [sgi_check.qtest_shards(
+                    list(reversed(tests)) if index % 2 else tests,
+                    durations, count,
+                    sgi_check.functional_preload(count))[0][index]
+                for index in range(count)]
+
+    def check(self, tests, durations, count):
+        parts = self.parts(tests, durations, count)
+        flat = [test for part in parts for test in part]
+        self.assertEqual(sorted(flat), sorted(tests))
+        self.assertEqual(len(flat), len(set(flat)))
+
+    def test_every_count_runs_each_test_once(self):
+        durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
+        tests = sorted(durations) + ['qtest-mips64/new-1',
+                                     'qtest-mips64/new-2']
+        for count in range(1, 9):
+            with self.subTest(count=count):
+                self.check(tests, durations, count)
+
+    def test_few_tests_leave_a_part_empty_not_duplicated(self):
+        self.check(['t1', 't2'], {'t1': 5, 't2': 5}, 3)
+
+    def test_functional_job_takes_the_least_measured_qtest_time(self):
+        durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
+        shards, _ = sgi_check.qtest_shards(
+            list(durations), durations, 3, sgi_check.functional_preload(3))
+        times = [sum(durations[t] for t in shard) for shard in shards]
+        self.assertEqual(times.index(min(times)), 0)
 
     def test_tree_durations_carry_the_generated_header(self):
         text = sgi_check.QTEST_DURATIONS.read_text(encoding='utf-8')
@@ -511,14 +561,45 @@ class SelectQtests(unittest.TestCase):
 class FullPart(unittest.TestCase):
     def test_accepted(self):
         for part in ('functional', 'qtest-1-of-2', 'qtest-2-of-2',
-                     'qtest-3-of-10'):
+                     'qtest-3-of-10', 'functional+qtest-1-of-3'):
             self.assertEqual(sgi_check.full_part(part), part)
 
     def test_rejected(self):
         for part in ('qtest-3-of-2', 'qtest-0-of-2', 'qtest-1', 'qtest',
-                     'functional-1', 'qtest-1-of-0'):
+                     'functional-1', 'qtest-1-of-0', '',
+                     'functional+', 'functional+qtest-2-of-3',
+                     'functional+qtest-4-of-3', 'qtest-1-of-3+functional',
+                     'functional+functional', 'qtest-1-of-2+qtest-2-of-2'):
             with self.assertRaises(argparse.ArgumentTypeError):
                 sgi_check.full_part(part)
+
+
+class ParsePart(unittest.TestCase):
+    def test_parts(self):
+        for text, want in (('functional', (True, None, None)),
+                           ('qtest-2-of-3', (False, 2, 3)),
+                           ('functional+qtest-1-of-3', (True, 1, 3))):
+            self.assertEqual(sgi_check.parse_part(text), want)
+
+
+class FullModes(unittest.TestCase):
+    def run_full(self, part):
+        calls = []
+        with mock.patch.object(sgi_check, 'full_functional',
+                               lambda build: calls.append('functional')), \
+                mock.patch.object(sgi_check, 'full_qtest',
+                                  lambda build, i, n: calls.append((i, n))):
+            sgi_check.full(argparse.Namespace(build=Path('b'), part=part))
+        return calls
+
+    def test_each_part_runs_what_it_names(self):
+        self.assertEqual(self.run_full('functional'), ['functional'])
+        self.assertEqual(self.run_full('qtest-3-of-3'), [(3, 3)])
+        self.assertEqual(self.run_full('functional+qtest-1-of-3'),
+                         ['functional', (1, 3)])
+
+    def test_no_part_runs_everything(self):
+        self.assertEqual(self.run_full(None), ['functional', (1, 1)])
 
 
 class NeedsPassed(unittest.TestCase):
