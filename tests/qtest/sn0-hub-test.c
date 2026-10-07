@@ -6020,6 +6020,47 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
 }
 
+/*
+ * The engines carry 40-bit addresses (bits 39:7) and this window sits in
+ * the I/O space above them, so an engine aimed at the Hub's own registers
+ * lands in node memory at the truncated address instead. The window is
+ * lockless, so the memory core no longer guards it against a transfer that
+ * re-enters it; this pins that no engine transfer or notification can.
+ */
+static void test_bte_cannot_reach_the_register_window(const void *data)
+{
+    const uint64_t window = HUB_LOCAL + BTE_BASE(1);
+    const uint64_t landing = window & BTE_ADDR_MASK;
+    uint8_t expect[BTE_LINE], got[BTE_LINE];
+    unsigned int i;
+
+    hub_reset();
+
+    for (i = 0; i < BTE_LINE; i++) {
+        expect[i] = 0x5a ^ i;
+    }
+    qtest_bufwrite(qts, BTE_TEST_SRC, expect, BTE_LINE);
+    qtest_memset(qts, landing, 0xcc, BTE_LINE);
+    qtest_memset(qts, landing + BTE_LINE, 0xff, 8);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(1), BTE_TEST_SRC);
+
+    qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | 1);
+    qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC);
+    qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), window);
+    qtest_writeq(qts, HUB_LOCAL + BTE_NOTIFY(0), window + BTE_LINE);
+    qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), BTE_CTL_NOTIFY);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
+    qtest_bufread(qts, landing, got, BTE_LINE);
+    g_assert_cmpmem(got, BTE_LINE, expect, BTE_LINE);
+    g_assert_cmphex(qtest_readq(qts, landing + BTE_LINE), ==, 0);
+
+    /* The second engine's registers, where the window address points. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_SOURCE(1)), ==,
+                    BTE_TEST_SRC);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(1)), ==, 0);
+}
+
 static void test_bte_physical_node_ownership(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -6671,6 +6712,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/bte-zero-fill", NULL, test_bte_zero_fill);
     qtest_add_data_func("sn0/hub/bte-error-not-cleared-by-store", NULL,
                         test_bte_error_latches_and_no_store_clears_it);
+    qtest_add_data_func("sn0/hub/bte-cannot-reach-the-register-window", NULL,
+                        test_bte_cannot_reach_the_register_window);
     qtest_add_data_func("sn0/hub/bte-physical-node-ownership", NULL,
                         test_bte_physical_node_ownership);
     qtest_add_data_func("sn0/hub/bte-addresses-ignore-calias", NULL,

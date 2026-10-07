@@ -4102,11 +4102,81 @@ static uint64_t sgi_hub_read_sized(SGIHubState *s, hwaddr addr, unsigned size)
     return value;
 }
 
-static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * The register window is lockless (sgi_hub_realize()), so each access decides
+ * whether it needs the BQL. A doubleword read of the counter or a pending
+ * bank does not: those are the registers a waiting processor polls, a
+ * hundred thousand times a second while the PROM loads the BASEIO PROM, and
+ * under the lock every poll held up the other processor and the main loop.
+ * The counter is read from the virtual clock under the counter's seqlock, a
+ * bank with acquire order, and a pending read's other state is the reading
+ * processor's own (sgi_hub_int_pending_read(), sgi_hub_int_pend1_read()).
+ * A word-sized read goes through the general decode's table lookup and
+ * keeps the lock, as does every read the protocol, coordination or pending
+ * trace is watching, because those trace helpers read other registers.
+ */
+static bool sgi_hub_read_is_lockless(hwaddr addr, unsigned size)
+{
+    if (size != 8 || (addr != HUB_PI_RT_COUNT && addr != HUB_PI_INT_PEND0 &&
+                      addr != HUB_PI_INT_PEND1)) {
+        return false;
+    }
+    return !trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ) &&
+           !trace_event_get_state_backends(TRACE_SGI_HUB_COORDINATION_READ) &&
+           !trace_event_get_state_backends(TRACE_SGI_HUB_PENDING_READ);
+}
+
+/*
+ * A lockless region loses the memory core's reentrancy guard
+ * (memory_region_enable_lockless_io()). This window still needs it. Its
+ * writes start the block-transfer engines and change state that a transfer
+ * started inside them could reach again: an interrupt write from the I/O
+ * interface lands here, through the engines' own view. So every access
+ * that holds the BQL applies the same guard on the same per-device flag
+ * and is refused the same way. The BQL serialises every user of the flag,
+ * and an unlocked polled read neither uses it nor makes an onward access.
+ */
+static bool sgi_hub_enter_io(SGIHubState *s, hwaddr addr)
+{
+    MemReentrancyGuard *guard = &DEVICE(s)->mem_reentrancy_guard;
+
+    if (guard->engaged_in_io) {
+        warn_report_once("Blocked re-entrant IO on MemoryRegion: "
+                         "%s at addr: 0x%" HWADDR_PRIX,
+                         memory_region_name(&s->regs), addr);
+        return false;
+    }
+    guard->engaged_in_io = true;
+    return true;
+}
+
+static void sgi_hub_exit_io(SGIHubState *s)
+{
+    DEVICE(s)->mem_reentrancy_guard.engaged_in_io = false;
+}
+
+static MemTxResult sgi_hub_read(void *opaque, hwaddr addr, uint64_t *data,
+                                unsigned size, MemTxAttrs attrs)
 {
     SGIHubState *s = opaque;
 
-    return sgi_hub_read_sized(s, addr, size);
+    /*
+     * Only a processor's own read comes here without the BQL. One made with
+     * it held, from qtest or from inside another of this Hub's accesses,
+     * takes the guarded path, as every read did before.
+     */
+    if (!bql_locked() && sgi_hub_read_is_lockless(addr, size)) {
+        *data = sgi_hub_read_sized(s, addr, size);
+        return MEMTX_OK;
+    }
+
+    BQL_LOCK_GUARD();
+    if (!sgi_hub_enter_io(s, addr)) {
+        return MEMTX_ACCESS_ERROR;
+    }
+    *data = sgi_hub_read_sized(s, addr, size);
+    sgi_hub_exit_io(s);
+    return MEMTX_OK;
 }
 
 static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
@@ -4210,12 +4280,18 @@ static void sgi_hub_write_sized(SGIHubState *s, hwaddr addr, uint64_t val,
     }
 }
 
-static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
-                          unsigned size)
+static MemTxResult sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size, MemTxAttrs attrs)
 {
     SGIHubState *s = opaque;
 
+    BQL_LOCK_GUARD();
+    if (!sgi_hub_enter_io(s, addr)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     sgi_hub_write_sized(s, addr, val, size);
+    sgi_hub_exit_io(s);
+    return MEMTX_OK;
 }
 
 /*
@@ -4280,8 +4356,8 @@ static void sgi_hub_processor_read_error(SGIHubState *s, unsigned int slice,
 }
 
 static const MemoryRegionOps sgi_hub_ops = {
-    .read = sgi_hub_read,
-    .write = sgi_hub_write,
+    .read_with_attrs = sgi_hub_read,
+    .write_with_attrs = sgi_hub_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 8,
@@ -4503,12 +4579,38 @@ bool sgi_hub_attach_board_record(SGIHubState *s, const SGIBoardRecord *record,
  */
 #define SGI_HUB_IIBUSERR        (0x01000000 + 0x1400208)
 
+/* A Hub's register window, at widget 1's small window (LOCAL_HUB_ADDR). */
+#define SGI_HUB_REGISTER_ALIAS  0x01000000
+
+/*
+ * Whether a processor read can go out without the BQL: one of the polled
+ * registers sgi_hub_read() answers unlocked, at any node's register window,
+ * matched the way SGI_HUB_IIBUSERR is. Every other read takes the lock
+ * here, as it always did, so the forward can use its remembered page, which
+ * it trusts only under the lock (sgi_pio_forward_target()). A polled read
+ * goes the long way through the address space instead, and needs no lock
+ * there: if the address turns out to land anywhere but a register window,
+ * whatever answers still takes the BQL if it needs it.
+ */
+static bool sgi_hub_pi_read_is_lockless(SGIHubState *s, hwaddr addr,
+                                        unsigned size)
+{
+    hwaddr local = addr & MAKE_64BIT_MASK(0, s->claim_node_shift);
+
+    return local >= SGI_HUB_REGISTER_ALIAS &&
+           local < SGI_HUB_REGISTER_ALIAS + SGI_HUB_WINDOW_SIZE &&
+           sgi_hub_read_is_lockless(local - SGI_HUB_REGISTER_ALIAS, size);
+}
+
 static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
                                       uint64_t *data, unsigned size,
                                       MemTxAttrs attrs)
 {
     struct SGIHubProcessorPath *path = opaque;
     SGIHubState *s = path->hub;
+    g_autoptr(BQLLockAuto) bql G_GNUC_UNUSED =
+        sgi_hub_pi_read_is_lockless(s, addr, size) ?
+        NULL : bql_auto_lock(__FILE__, __LINE__);
     uint8_t bytes[8] = { 0 };
     MemTxResult result;
     bool previous;
@@ -4527,6 +4629,8 @@ static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
     sgi_pi_gfx_unmark_store(previous);
     *data = ldq_be_p(bytes);
     if (result != MEMTX_OK) {
+        BQL_LOCK_GUARD();
+
         sgi_hub_processor_read_error(s, path->slice, addr);
     }
     return result;
@@ -4541,6 +4645,8 @@ static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
     uint8_t bytes[8];
     MemTxResult result;
     bool counted, previous;
+
+    BQL_LOCK_GUARD();
 
     /*
      * A graphics write: the slice pays a credit when its graphics page is
@@ -4600,8 +4706,13 @@ static bool sgi_hub_init_processor_paths(SGIHubState *s, Error **errp)
         memory_region_init_io(&s->pi_io[slice], OBJECT(s),
                               &sgi_hub_pi_io_ops, &s->pi_path[slice],
                               io_name, SGI_HUB_IO_SPACE_SIZE);
-        /* What it forwards to can be this Hub's own registers. */
-        s->pi_io[slice].disable_reentrancy_guard = true;
+        /*
+         * Only a polled register read goes out without the BQL
+         * (sgi_hub_pi_io_read()). This also drops the reentrancy guard,
+         * which a lockless region cannot keep, and which this one did not
+         * keep anyway: what it forwards to can be this Hub's own registers.
+         */
+        memory_region_enable_lockless_io(&s->pi_io[slice]);
     }
     s->pi_io_installed = true;
     return true;
@@ -5013,6 +5124,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_hub_ops, s,
                           "sgi-hub.regs", SGI_HUB_WINDOW_SIZE);
+    /*
+     * Each access takes the BQL, and the reentrancy guard this drops,
+     * unless it can do without (sgi_hub_read()).
+     */
+    memory_region_enable_lockless_io(&s->regs);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     /*
      * The engines address memory as a processor does, by programmed node
