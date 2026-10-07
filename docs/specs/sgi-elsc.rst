@@ -229,8 +229,10 @@ Command vocabulary
     0x41 seconds. IRIX 6.5.30 sends ``hbt 30 20``
     only when its heartbeat tunable is set, which it is not by default,
     and formats the numbers in decimal, so the controller reads 0x30
-    and 0x20 seconds. The Origin 2000 build's warning on its display
-    and an Origin 200 master's forwarding to its slave are not modelled.
+    and 0x20 seconds. The Origin 2000 build shows its heartbeat-timeout
+    status message at the warning. An Origin 200 master's forwarding to
+    its slave needs the controller-to-controller link (see `Deliberate
+    gaps`_).
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error
@@ -285,8 +287,9 @@ Command vocabulary
     processor's NMI pin is not modelled. The firmware starts the second
     when it answers, and so does the model: unlike a reset, the pulse
     disturbs nothing an unread ``ok`` would protect. The Origin 2000
-    build's display message and an Origin 200 master's forwarding to
-    its slave are not modelled.
+    build shows its NMI status message. An Origin 200 master's
+    forwarding to its slave needs the controller-to-controller link
+    (see `Deliberate gaps`_).
 
 ``sel [<name>|all|none|auto]`` / ``see [<name>|all|none]``
     The console input selection and output filter. Each takes two
@@ -353,7 +356,7 @@ Command vocabulary
     2000 build blanks the display. It leaves the ``tas`` byte, the
     margins, the ``fsc`` and ``tst`` flags and the NVRAM alone. The
     serial echo and supervisor mode it also resets belong to the
-    operator's serial line, which the model does not have.
+    operator's serial line.
 
 ``fan [h|n]``
     ``fan h`` and ``fan n`` set and clear the fan-high request and
@@ -367,15 +370,17 @@ Command vocabulary
     Declares a multimodule controller present or absent and answers
     ``ok``. The query form loses its answer over I2C, as the firmware's
     does, and answers a bare ``ok``; any other argument is that query
-    too and leaves the flag alone. The flag's effects belong to an
-    Origin 2000 module's key switch and display mirroring, neither of
-    which the model drives, so it is only stored.
+    too and leaves the flag alone. In the Origin 2000 build the flag
+    stops the controller powering the module up on its own when the key
+    moves, which the model's key never does; its display mirroring
+    belongs to the serial line.
 
 ``tst <c>``
     The factory's short timeouts: ``1`` sets them and any other
     character clears them, answering ``ok``; no character is ``err
-    arg``. They shorten waits the model does not have, so the flag is
-    only stored.
+    arg``. They shorten the power-up supply check and fan-check delays,
+    which in a model whose supplies and fans never fail change nothing
+    a host can see, so the flag is only stored.
 
 ``tmp``
     ``ok n``: the model has no temperature inputs. A master controller
@@ -411,6 +416,23 @@ The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 ``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
 no other effect. Every other command either build answers over I2C is
 modelled.
+
+Deliberate gaps
+---------------
+
+Two parts of the controller are left out on purpose:
+
+* The controller-to-controller link between the two controllers of a
+  two-module Origin 200. A master forwards ``pwr d 0``, ``pwr u``,
+  ``nmi`` and ``fan h``/``fan n`` to its slave over it, and a slave
+  sends its ``sla`` reports to its master. The model has neither side:
+  each controller acts on its own module only, a slave keeps its
+  ``sla`` report, and a master logs rather than carries out the
+  shutdowns and fan reports ``sla o``, 0x04, 0x05 and 0x06 would start.
+* The temperature, fan, supply and key-switch fault inputs. The model's
+  module is healthy, cool, its fans and supplies never fail and its
+  key is on, so none of the shutdowns, messages or replies those
+  inputs drive arises.
 
 Module power
 ------------
