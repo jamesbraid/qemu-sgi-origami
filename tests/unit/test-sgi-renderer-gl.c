@@ -135,19 +135,21 @@ static void test_worker_fault(gconstpointer opaque)
         { 16.25f, 111.25f, 0, 1 },
     };
 
-    if (!node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
-        return;
-    }
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_passed();
         return;
     }
-    g_assert_true(egl_init_session(node, DISPLAY_GL_MODE_CORE,
-                                  &provider, &err));
-    g_assert_null(err);
-    fd = qemu_egl_rn_fd;
+    if (node) {
+        g_assert_true(egl_init_session(node, DISPLAY_GL_MODE_CORE,
+                                       &provider, &err));
+        g_assert_null(err);
+        fd = qemu_egl_rn_fd;
+    } else {
+        g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
+        g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+        fd = -1;
+    }
     saved_create = epoxy_eglCreateContext;
     saved_shader_status = (PFNGLGETSHADERIVPROC)
                           eglGetProcAddress("glGetShaderiv");
@@ -206,10 +208,26 @@ static void test_worker_fault(gconstpointer opaque)
     epoxy_eglDestroyContext = saved_destroy;
     epoxy_eglReleaseThread = saved_release;
     egl_cleanup_session(provider);
-    if (failure >= 5) {
-        g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
+    if (node) {
+        if (failure >= 5) {
+            g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
+        } else {
+            g_assert_cmpint(fcntl(fd, F_GETFD), ==, -1);
+        }
     } else {
-        g_assert_cmpint(fcntl(fd, F_GETFD), ==, -1);
+        SGIRenderer *next;
+
+        err = NULL;
+        next = sgi_renderer_new(&err);
+        if (failure >= 5) {
+            g_assert_null(next);
+            g_assert_nonnull(err);
+            error_free(err);
+        } else {
+            g_assert_nonnull(next);
+            g_assert_null(err);
+            sgi_renderer_free(next);
+        }
     }
 }
 
@@ -359,12 +377,74 @@ static void test_surfaceless_llvmpipe_pixels(void)
     g_assert_true(eglReleaseThread());
 }
 
+static void test_two_headless_renderers(void)
+{
+    const float vertices[3][4] = {
+        { 16.25f, 16.25f, 0, 1 },
+        { 111.25f, 16.25f, 0, 1 },
+        { 16.25f, 111.25f, 0, 1 },
+    };
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    SGIRenderer *first, *second;
+    Error *err = NULL;
+
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    memcpy(request->vertices, vertices, sizeof(vertices));
+    request->clip[2] = request->clip[3] = SGI_RENDERER_SIZE - 1;
+    request->rgb[0] = 255;
+
+    first = sgi_renderer_new(&err);
+    g_assert_nonnull(first);
+    g_assert_null(err);
+    second = sgi_renderer_new(&err);
+    g_assert_nonnull(second);
+    g_assert_null(err);
+
+    g_assert_true(sgi_renderer_draw(first, request, &err));
+    g_assert_null(err);
+    request->rgb[0] = 0;
+    request->rgb[1] = 255;
+    g_assert_true(sgi_renderer_draw(second, request, &err));
+    g_assert_null(err);
+    sgi_renderer_free(first);
+    request->rgb[1] = 0;
+    request->rgb[2] = 255;
+    g_assert_true(sgi_renderer_draw(second, request, &err));
+    g_assert_null(err);
+    sgi_renderer_free(second);
+}
+
+static void test_headless_display_accepts_ui_context(void)
+{
+    QemuEGLDisplayLease *lease = NULL;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_true(qemu_egl_display_acquire_context(&lease, &err));
+    g_assert_nonnull(lease);
+    g_assert_null(err);
+    g_assert_cmpint(qemu_egl_display_lease_mode(lease), ==,
+                    DISPLAY_GL_MODE_CORE);
+    qemu_egl_display_release(lease);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
     g_test_add_func("/sgi-renderer-gl/surfaceless-llvmpipe-pixels",
                     test_surfaceless_llvmpipe_pixels);
+    g_test_add_func("/sgi-renderer-gl/two-headless-renderers",
+                    test_two_headless_renderers);
+    g_test_add_func("/sgi-renderer-gl/headless-display-ui-context",
+                    test_headless_display_accepts_ui_context);
     g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);

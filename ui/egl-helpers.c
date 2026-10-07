@@ -42,6 +42,7 @@ typedef struct QemuEGLDisplayRecord {
     unsigned references;
     unsigned providers;
     bool gbm;
+    bool surfaceless;
     bool quarantined;
 #ifdef CONFIG_GBM
     struct gbm_device *native;
@@ -125,6 +126,96 @@ void qemu_egl_display_quarantine(QemuEGLDisplayLease *lease)
     egl_record_unlock();
 }
 
+QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp)
+{
+    const EGLint attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE,
+    };
+    PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform;
+    QemuEGLDisplayLease *lease;
+    QemuEGLDisplayRecord *record;
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLConfig config;
+    EGLint nconfigs;
+    bool initialized = false;
+
+    egl_record_lock();
+    if (egl_record && (egl_record->quarantined ||
+                       egl_record->mode != DISPLAY_GL_MODE_CORE ||
+                       (!egl_record->providers && !egl_record->surfaceless))) {
+        error_setg(errp, "No compatible managed OpenGL display");
+        goto fail_locked;
+    }
+    lease = g_try_new0(QemuEGLDisplayLease, 1);
+    if (!lease) {
+        error_setg(errp, "Cannot allocate EGL display lease");
+        goto fail_locked;
+    }
+    if (egl_record) {
+        record = egl_record;
+        goto acquired;
+    }
+    record = g_try_new0(QemuEGLDisplayRecord, 1);
+    if (!record) {
+        error_setg(errp, "Cannot allocate EGL display record");
+        goto fail_lease;
+    }
+    get_platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+        eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!get_platform) {
+        error_setg(errp, "Mesa surfaceless EGL platform is unavailable");
+        goto fail_record;
+    }
+    display = get_platform(EGL_PLATFORM_SURFACELESS_MESA,
+                           EGL_DEFAULT_DISPLAY, NULL);
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
+        error_setg(errp, "Cannot initialize surfaceless EGL: %s",
+                   qemu_egl_get_error_string());
+        goto fail_record;
+    }
+    initialized = true;
+    if (!eglBindAPI(EGL_OPENGL_API) ||
+        !eglChooseConfig(display, attrs, &config, 1, &nconfigs) || !nconfigs) {
+        error_setg(errp, "No surfaceless EGL OpenGL config: %s",
+                   qemu_egl_get_error_string());
+        goto fail_record;
+    }
+    record->display = display;
+    record->config = config;
+    record->mode = DISPLAY_GL_MODE_CORE;
+    record->root = EGL_NO_CONTEXT;
+    record->generation = ++egl_generation;
+    record->surfaceless = true;
+    qemu_thread_get_self(&record->owner);
+    egl_record = record;
+acquired:
+    lease->record = record;
+    record->references++;
+    egl_record_unlock();
+    return lease;
+fail_record:
+    if (initialized && !eglTerminate(display)) {
+        record->display = display;
+        record->mode = DISPLAY_GL_MODE_CORE;
+        record->root = EGL_NO_CONTEXT;
+        record->surfaceless = true;
+        record->quarantined = true;
+        record->references = 1;
+        lease->record = record;
+        lease->quarantined = true;
+        egl_record = record;
+        error_report("egl: surfaceless startup quarantined");
+        goto fail_locked;
+    }
+    g_free(record);
+fail_lease:
+    g_free(lease);
+fail_locked:
+    egl_record_unlock();
+    return NULL;
+}
+
 QemuEGLDisplayLease *qemu_egl_display_acquire_existing(DisplayGLMode mode,
                                                      Error **errp)
 {
@@ -157,7 +248,8 @@ bool qemu_egl_display_acquire_context(QemuEGLDisplayLease **result,
     egl_record_lock();
     if (!egl_record) {
         success = true;
-    } else if (egl_record->quarantined || !egl_record->providers) {
+    } else if (egl_record->quarantined ||
+               (!egl_record->providers && !egl_record->surfaceless)) {
         error_setg(errp, "No usable EGL provider for a new context");
     } else {
         lease = g_try_new0(QemuEGLDisplayLease, 1);
