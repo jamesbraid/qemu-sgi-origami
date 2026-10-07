@@ -124,14 +124,13 @@ gl /mips64/sn1/odyssey/command-fifo-gl-window-origin-and-clip
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-rectangles
 gl /mips64/sn1/odyssey/command-fifo-gl-ortho-combined-matrix
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-slot-leaves-geometry
-gl /mips64/sn1/odyssey/command-fifo-gl-id-compare
+gl /mips64/sn1/odyssey/command-fifo-compare-unsupported
 gl /mips64/sn1/odyssey/command-fifo-gl-float-colour-integer-conversion
 gl /mips64/sn1/odyssey/command-fifo-gl-byte-colour-float-and-replay
 gl /mips64/sn1/odyssey/command-fifo-gl-float-colour-integer-vertices
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index-write-mask
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-unknown
-gl /mips64/sn1/odyssey/command-fifo-gl-program-window-known
 gl /mips64/sn1/odyssey/command-fifo-gl-combined-carries-modelview
 gl /mips64/sn1/odyssey/command-fifo-gl-flat-shading
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-curve

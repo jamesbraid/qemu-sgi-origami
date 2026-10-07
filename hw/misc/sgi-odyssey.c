@@ -1104,9 +1104,6 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_UCODE_LIT_DIR1 0x5cb
 #define ODSY_UCODE_LIT_DIR1_2A 0x5d8
 #define ODSY_UCODE_LIT_DIR1_2C 0x5e5
-#define ODSY_UCODE_LIT_POS2_TEX 0x9ac
-#define ODSY_UCODE_LIT_POS2_TEX_2A 0x9d4
-#define ODSY_UCODE_LIT_POS2_TEX_2C 0x9fb
 #define ODSY_PROG_WINDOW_BASE 0x738
 #define ODSY_PROG_WINDOW_ENTRIES SGI_ODYSSEY_GL_WINDOW_ENTRIES
 /*
@@ -1712,7 +1709,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * Window placement. A GL client's vertices and clear rectangle are
  * window-relative; the kernel tells the board where the current context's
  * window is, after every context switch into it and every clip change, with
- * three register-select words on either command port:
+ * register-select words on either command port:
  *
  * - 0x841, two operands: the screen x and y of the window's top-left pixel in
  *   bits 12:0 of each (ESTABLISHED encoding; the kernel masks 0x1fff and
@@ -1724,23 +1721,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  *   (ESTABLISHED). A rectangle whose minimum exceeds its maximum is empty; the
  *   kernel marks unused ones (1, 1) .. (0, 0). The top byte is preserved by
  *   the kernel and ignored here.
- * - 0x840, two operands: the first is a constant 0x142000 whose meaning is
- *   unknown; the second is the drawable-id compare word, bit 16 enabling it,
- *   bits 15:8 the id-plane mask and bits 7:0 the value (ESTABLISHED as the
- *   kernel builds it). No capture enables it.
+ * - The compare record has no reviewed decode; encountering it stops command
+ *   execution without drawing or publishing a completion.
  *
  * The board adds the origin to window coordinates and keeps only pixels inside
- * one of the rectangles and, with the compare enabled, whose id plane matches
- * (INFERRED: the only reading under which the client's window-relative clear
+ * one of the rectangles (INFERRED: the only reading under which the client's
+ * window-relative clear
  * and the kernel's screen rectangle describe the same window). Both ports
- * write the one copy: the kernel re-pushes all three at every switch-in, so no
+ * write the one copy: the kernel re-pushes the window state at switch-in, so no
  * per-context copy is kept.
  *
  * Screen-to-screen copies (0x2031, odyssey_copy_rect_buffer()) are
  * APPROXIMATION, INFERRED to skip the rectangles, keeping only the plane
- * bound and the id compare: IRIX 6.5.30's X server issues copies whose
- * destinations lie wholly outside the rectangles in force, with no 0x204b
- * push in between, and expects them to land. A
+ * bound: IRIX 6.5.30's X server issues copies whose destinations lie wholly
+ * outside the rectangles in force, with no 0x204b push in between, and
+ * expects them to land. A
  * per-command clip enable in one of the block's constant words fits the same
  * traces equally well; OpenBSD's tail word 0x3222204b carries 0x204b in its
  * low half, where the X server's tails carry 0x0041 or 0x4000. Whether the
@@ -1758,14 +1753,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
-#define ODSY_REG_DID_COMPARE 0x0840     /* 2 operands: constant, compare word */
+#define ODSY_REG_DID_COMPARE 0x0840     /* unsupported command */
 #define ODSY_REG_WINDOW_CLIP 0x204b     /* 8 operands: four rectangles */
 #define ODSY_ORIGIN_BITS 13
 #define ODSY_CLIP_FIELD_MASK 0xfff
 #define ODSY_CLIP_X_SHIFT 12
-#define ODSY_DID_COMPARE_ENABLE (1u << 16)
-#define ODSY_DID_COMPARE_MASK_SHIFT 8
-#define ODSY_DID_COMPARE_OPERAND 1
 
 /*
  * The clip rectangles out of reset: the hardware's reset value is unknown. The
@@ -2761,7 +2753,8 @@ static void odyssey_publish(void *opaque, const SGICompletion *c)
      * board that never wrote the fence halfword. A cookie without the validity
      * marker (a future credit-return record) wants no fence.
      */
-    if (c->kind == SGI_DONE_WRITTEN && (c->cookie & ODSY_FENCE_VALID)) {
+    if (!s->did_compare && c->kind == SGI_DONE_WRITTEN &&
+        (c->cookie & ODSY_FENCE_VALID)) {
         odyssey_fence(s, c->cookie);
     }
 }
@@ -2962,9 +2955,8 @@ static void odyssey_clip_update(SGIOdysseyState *s)
 }
 
 /*
- * The plane and drawable-id test (the window-placement comment at
- * ODSY_REG_WINDOW_ORIGIN): inside the plane and, with the drawable-id
- * compare enabled, over an id-plane byte that matches its mask and value.
+ * A command with an unknown compare record stops command execution. This
+ * guard also prevents a pending pixel write from drawing after that stop.
  * The plane itself drops an out-of-plane store, but the family checks first
  * so the shared code never has to guess whose error it is (head-ops.h).
  * odyssey_pixel_allowed() below adds the window-clip rectangles for every
@@ -2976,13 +2968,8 @@ static bool odyssey_pixel_in_bounds(SGIOdysseyState *s, int64_t x, int64_t y)
     if (x < 0 || y < 0 || x >= SGI_ODYSSEY_WIDTH || y >= SGI_ODYSSEY_HEIGHT) {
         return false;
     }
-    if (s->did_compare & ODSY_DID_COMPARE_ENABLE) {
-        uint8_t mask = s->did_compare >> ODSY_DID_COMPARE_MASK_SHIFT;
-        uint8_t value = s->did_compare;
-
-        if ((s->did[y * SGI_ODYSSEY_WIDTH + x] & mask) != value) {
-            return false;
-        }
+    if (s->did_compare) {
+        return false;
     }
     return true;
 }
@@ -3101,7 +3088,7 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
  * APPROXIMATION, INFERRED: a destination pixel passes odyssey_pixel_in_bounds()
  * only, not the window-clip rectangles odyssey_pixel_allowed() also tests
  * (the window-placement comment at ODSY_REG_WINDOW_ORIGIN). The plane bound
- * and the drawable-id compare still apply.
+ * still applies.
  */
 static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned source,
                                      unsigned dest)
@@ -5517,49 +5504,21 @@ static void odyssey_gl_program_halfword(SGIOdysseyState *s, uint32_t word)
     }
 }
 
-static const struct {
-    uint64_t digest;
-    uint32_t entry;
-} odyssey_ucode_bodies[] = {
-    { 0x3e97b9b9e8252570ull, ODSY_UCODE_LIT_POS2_TEX },
-};
-
 static bool odyssey_prog_in_window(uint32_t a)
 {
     return a >= ODSY_PROG_WINDOW_BASE &&
            a < ODSY_PROG_WINDOW_BASE + ODSY_PROG_WINDOW_ENTRIES;
 }
 
-static bool odyssey_gl_resident(SGIOdysseyState *s, uint32_t e[3])
+/* Uploaded program bodies have no reviewed decoder. */
+static bool odyssey_gl_resident(const uint32_t e[3])
 {
-    unsigned int i, j, k;
+    unsigned int i;
 
     for (i = 0; i < 3; i++) {
-        const uint16_t *body;
-        uint64_t digest = 0xcbf29ce484222325ull;
-
-        if (!odyssey_prog_in_window(e[i])) {
-            continue;
-        }
-        body = &s->gl_program_mem[e[i] * ODSY_PROG_ENTRY_HALFWORDS];
-        for (k = 0; k < ODSY_PROG_ENTRY_HALFWORDS; k++) {
-            digest = (digest ^ (body[k] >> 8)) * 0x100000001b3ull;
-            digest = (digest ^ (body[k] & 0xff)) * 0x100000001b3ull;
-        }
-        for (k = 0; k < ARRAY_SIZE(odyssey_ucode_bodies); k++) {
-            if (odyssey_ucode_bodies[k].digest == digest) {
-                break;
-            }
-        }
-        if (k == ARRAY_SIZE(odyssey_ucode_bodies)) {
+        if (odyssey_prog_in_window(e[i])) {
             return false;
         }
-        for (j = 3; j-- > i;) {
-            if (odyssey_prog_in_window(e[j])) {
-                e[j] += odyssey_ucode_bodies[k].entry - e[i];
-            }
-        }
-        return true;
     }
     return true;
 }
@@ -5587,11 +5546,11 @@ static void odyssey_gl_program(SGIOdysseyState *s)
     uint32_t e29 = r[0], e2a = r[1], e2c = r[2];
     uint32_t k = s->gl_entry[ODSY_ENTRY_33];
     OdysseyProgram p = { 0 };
-    bool resident = odyssey_gl_resident(s, r);
+    bool resident = odyssey_gl_resident(r);
     unsigned int i;
 
     if (!resident) {
-        /* A relocated body the model does not know: reported below. */
+        /* An uploaded program is unsupported and reported below. */
     } else if (!r[0] && !r[1] && !r[2]) {
         p.known = true;
     } else if (r[0] == ODSY_UCODE_UNLIT && r[1] == ODSY_UCODE_UNLIT_2A &&
@@ -5608,18 +5567,6 @@ static void odyssey_gl_program(SGIOdysseyState *s)
         odyssey_gl_walk_list(s, k, false, &p);
         p.known = true;
         p.lit = true;
-    } else if (r[0] == ODSY_UCODE_LIT_POS2_TEX &&
-               r[1] == ODSY_UCODE_LIT_POS2_TEX_2A &&
-               r[2] == ODSY_UCODE_LIT_POS2_TEX_2C) {
-        /*
-         * The lights, their kinds and GL_NORMALIZE are taken from the light
-         * blocks as for every lit program (odyssey_gl_light()); the texture
-         * the record also asks for is reported below.
-         */
-        odyssey_gl_walk_list(s, k, false, &p);
-        p.known = true;
-        p.lit = true;
-        p.texture = true;
     } else if (r[1] == ODSY_UCODE_END && r[2] == ODSY_UCODE_END) {
         switch (r[0]) {
         case ODSY_UCODE_HEAD_LOCAL_DIR:
@@ -5665,8 +5612,7 @@ static void odyssey_gl_program(SGIOdysseyState *s)
                           c[(k + 1) & m], c[(k + 2) & m], c[(k + 3) & m],
                           c[(k + 4) & m], c[(k + 5) & m], c[(k + 6) & m],
                           c[(k + 7) & m], resident ? "" :
-                          " (its program-window body is not a known image "
-                          "entry)");
+                          " (uploaded program is unsupported)");
         }
     }
     if (p.two_sided && !s->gl_two_sided_logged) {
@@ -8642,27 +8588,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         /* The committed window back (ODSY_CMD_WINDOW_RESTORE; INFERRED). */
         memcpy(s->win_origin, s->win_committed_origin, sizeof(s->win_origin));
         memcpy(s->clip_words, s->win_committed_clip, sizeof(s->clip_words));
-        s->did_compare = s->win_committed_did;
         odyssey_clip_update(s);
-        break;
-    case ODSY_REG_DID_COMPARE:
-        /*
-         * The first operand (0x142000 in every capture) is unknown and not
-         * kept. The compare itself is implemented from the kernel's
-         * construction, but no capture has enabled it yet: say so the first
-         * time one does.
-         */
-        s->did_compare = s->cmd_operand[ODSY_DID_COMPARE_OPERAND];
-        if (s->cmd_from_kernel) {
-            s->win_committed_did = s->did_compare;
-        }
-        if ((s->did_compare & ODSY_DID_COMPARE_ENABLE) &&
-            !s->did_compare_reported) {
-            s->did_compare_reported = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: drawable-id compare 0x%x "
-                          "enabled; modeled from the kernel's encoding, not "
-                          "from a capture\n", s->did_compare);
-        }
         break;
     case ODSY_REG_LINE_STIPPLE:
         memcpy(s->line_stipple, s->cmd_operand, sizeof(s->line_stipple));
@@ -8966,6 +8892,12 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
                 reg == ODSY_REG_PATTERN_HIGH ? ODSY_PATTERN_WORDS : 0;
             return;
         }
+        if (reg == ODSY_REG_DID_COMPARE) {
+            s->did_compare = 1;
+            odyssey_query_cancel(s);
+            odyssey_cmd_unimplemented(s, word);
+            return;
+        }
         odyssey_cmd_start(s, reg, operands);
         return;
     }
@@ -8975,6 +8907,9 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
 /* One command-FIFO word, wherever the parser currently is. */
 static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
 {
+    if (s->did_compare) {
+        return;
+    }
     switch (s->query_stage) {
     case 1:
         s->query_count = word;
@@ -9533,7 +9468,6 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->reported_addr_count = 0;
     s->reported_cmd_count = 0;
     s->line_stipple_reported = false;
-    s->did_compare_reported = false;
     s->dma_bpp_reported = false;
     s->dma_readback_reported = false;
     s->dma_code_reported = false;
@@ -10510,6 +10444,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_INT32_ARRAY(read_origin, SGIOdysseyState, 2),
         VMSTATE_UINT32_ARRAY(clip_words, SGIOdysseyState,
                              2 * SGI_ODYSSEY_CLIP_RECTS),
+        /* Sticky unsupported-command marker; keep this migration slot. */
         VMSTATE_UINT32(did_compare, SGIOdysseyState),
         /* The colour buffer's base a DMA header names. */
         VMSTATE_UINT32(dma_colour_base, SGIOdysseyState),
@@ -10538,6 +10473,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_INT32_ARRAY(win_committed_origin, SGIOdysseyState, 2),
         VMSTATE_UINT32_ARRAY(win_committed_clip, SGIOdysseyState,
                              2 * SGI_ODYSSEY_CLIP_RECTS),
+        /* Retained for migration layout; no compare interpretation remains. */
         VMSTATE_UINT32(win_committed_did, SGIOdysseyState),
         /* The image source format and a pixel split across words. */
         VMSTATE_UINT32(image_code, SGIOdysseyState),

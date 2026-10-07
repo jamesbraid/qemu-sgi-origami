@@ -351,8 +351,7 @@ struct SGIOdysseyState {
      * every context switch and clip change (hw/misc/sgi-odyssey.c):
      * win_origin the screen pixel of the window's top-left corner (register
      * 0x841, sign-extended 13-bit fields), clip_words the eight raw operands
-     * of the four inclusive clip rectangles (0x204b) and did_compare the
-     * drawable-id compare word (0x840's second operand). clip_kept and
+     * of the four inclusive clip rectangles (0x204b). clip_kept and
      * clip_rect are derived from clip_words -- the non-empty rectangles --
      * rebuilt on every 0x204b and after migration, so they are not migrated
      * themselves.
@@ -361,6 +360,7 @@ struct SGIOdysseyState {
     /* The bound reading drawable's 0x60b origin survives scratch selects. */
     int32_t read_origin[2];
     uint32_t clip_words[2 * SGI_ODYSSEY_CLIP_RECTS];
+    /* Sticky unsupported-command marker in the existing migration slot. */
     uint32_t did_compare;
     uint32_t clip_kept;
     SGIClipRect clip_rect[SGI_ODYSSEY_CLIP_RECTS];
@@ -373,6 +373,7 @@ struct SGIOdysseyState {
      */
     int32_t win_committed_origin[2];
     uint32_t win_committed_clip[2 * SGI_ODYSSEY_CLIP_RECTS];
+    /* Serialized legacy slot, no longer used for command interpretation. */
     uint32_t win_committed_did;
     bool cmd_from_kernel;
 
@@ -701,8 +702,6 @@ struct SGIOdysseyState {
     unsigned int reported_cmd_count;
     /* A line-stipple control other than 32 pixels has been reported. */
     bool line_stipple_reported;
-    /* A drawable-id compare has been reported enabled. */
-    bool did_compare_reported;
     /* An unmodeled DMA pixel size, and an 0xe03 descriptor, reported. */
     bool dma_bpp_reported;
     bool dma_readback_reported;

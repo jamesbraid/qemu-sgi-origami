@@ -1836,8 +1836,7 @@ static void test_framebuffer_pixel_accessor_bounds(void)
 /*
  * The kernel's window-placement block, pushed on the kernel port the way the
  * kernel driver's clip-rectangle push does after every context switch: 0x841
- * with the window origin, 0x840 with the constant and the drawable-id compare
- * word in one 8-byte store, and 0x204b with the four clip rectangles, one
+ * with the window origin and 0x204b with the four clip rectangles, one
  * 8-byte store each. A rectangle is x0 << 12 | y0 then x1 << 12 | y1,
  * inclusive; (1, 1) .. (0, 0) is empty.
  */
@@ -1846,19 +1845,12 @@ static void test_framebuffer_pixel_accessor_bounds(void)
 #define ODSY_CMD_WINDOW_CLIP 0x0001204bu
 #define ODSY_CLIP_WORD(x, y) (((uint32_t)(x) << 12) | (y))
 #define ODSY_CLIP_EMPTY_LO 0x00001001u
-#define ODSY_DID_COMPARE_ON 0x00010000u
 
 static void window_origin(QTestState *qts, uint32_t x, uint32_t y)
 {
     cmd_push(qts, ODSY_CMD_WINDOW_ORIGIN);
     cmd_push(qts, x);
     cmd_push(qts, y);
-}
-
-static void did_compare(QTestState *qts, uint32_t word)
-{
-    cmd_push(qts, ODSY_CMD_DID_COMPARE);
-    cmd_push64(qts, 0x142000, word);
 }
 
 /* Up to four inclusive rectangles {x0, y0, x1, y1}; the rest empty. */
@@ -2147,8 +2139,8 @@ static void test_command_fifo_copyrect_large_offscreen(void)
  * lie wholly outside the rectangles in force and expects them to land, which
  * is what moving a window relies on. Both the X server's own tail words and
  * OpenBSD's literal ones (test_command_fifo_copyrect's) must still land under
- * a clip disjoint from the destination. The drawable-id compare still bounds
- * a copy, and an ordinary fill is still clipped: the fix must drop only the
+ * a clip disjoint from the destination. An ordinary fill is still clipped:
+ * the fix must drop only the
  * rectangle test on the copy path, not everywhere.
  */
 static void test_command_fifo_copyrect_ignores_window_clip(void)
@@ -2219,37 +2211,6 @@ static void test_command_fifo_copyrect_ignores_window_clip(void)
                              0x10101010 * (y * w + x + 1));
         }
     }
-
-    /*
-     * The id compare still bounds a copy: back to a full-screen clip,
-     * enable the compare for an id the destination's id plane does not
-     * hold (reset is 0), and the destination stays untouched.
-     */
-    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
-    for (y = 0; y < h; y++) {
-        for (x = 0; x < w; x++) {
-            odsy_test_pixel_write(qts, dx + x, dy + y, 0);
-        }
-    }
-    did_compare(qts, ODSY_DID_COMPARE_ON | 0xf800 | (5 << 3));
-    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX);
-    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
-    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
-    cmd_push(qts, 0x00002000);
-    cmd_push(qts, (sy << 16) | sx);   /* SRC */
-    cmd_push(qts, 0x80502050);
-    cmd_push(qts, (h << 16) | w);     /* SIZE */
-    cmd_push(qts, 0x82223042);
-    cmd_push(qts, 0x00002000);
-    cmd_push(qts, (dy << 16) | dx);   /* DST */
-    cmd_push(qts, 0x3222204b);
-    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_1);
-    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_ARG);
-    cmd_push(qts, ODSY_CMD_STROBE);
-    cmd_push(qts, ODSY_CMD_STROBE);
-    did_compare(qts, 0);
-
-    g_assert_cmphex(odsy_test_pixel(qts, dx, dy), ==, 0);
 
     /*
      * Control: an ordinary fill is still clipped by the disjoint
@@ -5090,14 +5051,13 @@ static void test_command_fifo_gl_texture_slot_leaves_geometry(void)
 
 /*
  * A 200x150 window at (300, 200), placed the way the kernel places the
- * probe's: origin (300, 200), one rectangle (300, 200) .. (499, 349), the
- * compare off. The distinct x and y catch swapped origin operands, which the
+ * probe's: origin (300, 200), one rectangle (300, 200) .. (499, 349).
+ * Distinct x and y catch swapped origin operands, which the
  * probe's (256, 256) cannot.
  */
 static void window_300_200(QTestState *qts)
 {
     window_origin(qts, 300, 200);
-    did_compare(qts, 0);
     window_clip(qts, (const uint32_t[][4]) { { 300, 200, 499, 349 } }, 1);
     push_window_transform(qts, odsy_window_transform_200x150);
 }
@@ -5173,36 +5133,29 @@ static void test_command_fifo_gl_clip_rectangles(void)
 }
 
 /*
- * The drawable-id compare. Id 12 owns (300, 200) .. (399, 349), written with
- * the X server's id-plane words (id << 3 under mask 0xf8). With the compare
- * enabled for id 12 -- 0x10000 | 0xf8 << 8 | 12 << 3 -- a whole-window clear
- * paints only the pixels id 12 owns; with it off, the whole window.
+ * An unknown compare command stops the stream. Later drawing and host-write
+ * commands must not publish a result for work the model cannot decode.
  */
-static void test_command_fifo_gl_id_compare(void)
+static void test_command_fifo_compare_unsupported(void)
 {
     QTestState *qts = board_start("");
+    const uint64_t base = 0xb70000;
 
-    id_plane_write(qts, 12, 0xf8, 300, 200, 400, 350);
-    window_300_200(qts);
-    did_compare(qts, ODSY_DID_COMPARE_ON | 0xf800 | (12 << 3));
-    push_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_200,
-               ODSY_F_150);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
+    odsy_test_pixel_write(qts, 10, 10, 0x01020304);
+    cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x5a00);
 
-    g_assert_cmphex(odsy_test_pixel(qts, 320, 300), ==, ODSY_PLANE_BLUE);
-    g_assert_cmphex(odsy_test_pixel(qts, 399, 349), ==, ODSY_PLANE_BLUE);
-    g_assert_cmphex(odsy_test_pixel(qts, 400, 300), ==, 0);
-    g_assert_cmphex(odsy_test_pixel(qts, 470, 300), ==, 0);
-
-    did_compare(qts, 0);
-    push_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_200,
-               ODSY_F_150);
-
-    g_assert_cmphex(odsy_test_pixel(qts, 320, 300), ==, ODSY_PLANE_BLUE);
-    g_assert_cmphex(odsy_test_pixel(qts, 470, 300), ==, ODSY_PLANE_BLUE);
-
-    board_quit(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    qtest_quit(qts);
 }
-
 
 /*
  * The GL feature probes' window: 128x128 at (256, 256), one clip
@@ -5217,7 +5170,6 @@ static void test_command_fifo_gl_id_compare(void)
 static void probe_window(QTestState *qts)
 {
     window_origin(qts, 256, 256);
-    did_compare(qts, 0);
     window_clip(qts, (const uint32_t[][4]) { { 256, 256, 383, 383 } }, 1);
     push_window_transform(qts, odsy_captured_window_transform);
     push_block_16(qts, 0x3f800000);
@@ -5863,7 +5815,6 @@ static void test_command_fifo_gl_depth_scale_fallback(void)
                 qtest_system_reset(qts);
             }
             window_origin(qts, 256, 256);
-            did_compare(qts, 0);
             window_clip(qts,
                         (const uint32_t[][4]) { { 256, 256, 383, 383 } }, 1);
             push_window_transform(qts, odsy_captured_window_transform);
@@ -8390,7 +8341,6 @@ static void upload_begin_xy(QTestState *qts, uint32_t base, uint32_t wunits,
         0x00010405, 0x00002400,
         ODSY_CMD_WINDOW_ORIGIN, 0, 0,
         ODSY_CMD_WINDOW_CLIP, 0, 0x00ffffff, 0, 0, 0, 0, 0, 0,
-        ODSY_CMD_DID_COMPARE, 0, 0,
         ODSY_CMD_DEST_SELECT, base, wunits, fmt, 0,
         ODSY_REG_WRITE_MASK, 0x01ffffff,
         0x0001081d, (x << 12) | (x + w), (y << 12) | (y + h),
@@ -9183,7 +9133,6 @@ static void test_command_fifo_gl_float_colour_integer_vertices(void)
     const uint32_t clip[][4] = { { 312, 212, 347, 227 } };
 
     window_origin(qts, 300, 200);
-    did_compare(qts, 0);
     window_clip(qts, clip, ARRAY_SIZE(clip));
 
     /* The explicit index-mode RGB word preserves the preceding index. */
@@ -9492,11 +9441,7 @@ static void test_byte_colour_drawable_id(void)
     cmd_push(qts, 0);
     push_integer_quad(qts, 10, 10, 20, 20);
     g_assert_cmphex(odsy_test_pixel(qts, 271, 271), ==, 0x00ff00ff);
-    did_compare(qts, ODSY_DID_COMPARE_ON | 0xf800 | (24 << 3));
-    colour_index_fill(qts, 5, 10, 10, 20, 20);
-    g_assert_cmphex(odsy_test_pixel(qts, 271, 271), ==, 5);
-    g_assert_cmphex(odsy_shown(qts, 271, 271), ==, 0x804020ff);
-    board_quit(qts);
+    qtest_quit(qts);
 }
 
 /*
@@ -9526,7 +9471,6 @@ static void test_command_fifo_gl_float_colour_integer_conversion(void)
     unsigned j, k;
 
     window_origin(qts, 300, 200);
-    did_compare(qts, 0);
     user_cmd_push(qts, ODSY_GL_MODE_RGBA_A);
     user_cmd_push(qts, ODSY_GL_MODE_RGBA_B);
     for (j = 0; j < ARRAY_SIZE(cases); j++) {
@@ -9556,7 +9500,7 @@ static void context_switch_to(QTestState *qts, uint32_t id)
                                 ODSY_CTX_SWITCH_DONE_OFFSET), ==, 1);
 }
 
-/* Synthetic instruction values must not match a recognised image body. */
+/* Synthetic halfwords exercise the unsupported uploaded-program path. */
 static void push_synthetic_program_entry(QTestState *qts, uint32_t value)
 {
     unsigned i;
@@ -9600,67 +9544,8 @@ static void test_command_fifo_gl_program_window_unknown(void)
 
     log = lit_finish(qts, log_path);
     g_assert_cmpuint(count_substr(log, "is not recognised"), ==, 1);
-    g_assert_nonnull(strstr(log, "not a known image entry"));
+    g_assert_nonnull(strstr(log, "uploaded program is unsupported"));
     g_assert_null(strstr(log, "texture-mode lighting finish"));
-}
-
-/*
- * A 16-bit program-memory halfword push (odyssey_gl_program_halfword(),
- * hw/misc/sgi-odyssey.c): class 0x40, tag bit 15 set, the value's low ten
- * bits in the word's low ten bits and its high six bits at word bits
- * 23-28. ODSY_PROG() above only reaches an 11-bit value, too narrow for
- * the halfwords below.
- */
-#define ODSY_PROG_HALFWORD(h) \
-    (0x40000000u | (((uint32_t)(h) & 0xfc00u) << 13) | 0x8000u | \
-     ((uint32_t)(h) & 0x3ffu))
-
-/*
- * The twelve bytes of the one image entry odyssey_ucode_bodies[] in
- * hw/misc/sgi-odyssey.c recognises, big-endian halfword 0 first
- * Each class-0x40 push lands
- * at the entry's last free halfword and works backward
- * (odyssey_gl_program_halfword()), so the six pushes below run from the
- * entry's last halfword to its first.
- */
-static void push_known_program_entry(QTestState *qts)
-{
-    static const uint16_t body[6] = {
-        0x06c4, 0x2000, 0x01e2, 0xc000, 0x0008, 0x0000,
-    };
-    int i;
-
-    user_cmd_push(qts, ODSY_PROG(0x27, 0x738));
-    for (i = 5; i >= 0; i--) {
-        user_cmd_push(qts, ODSY_PROG_HALFWORD(body[i]));
-    }
-}
-
-/*
- * The positive case test_command_fifo_gl_program_window_unknown lacks: the
- * image's own entry, uploaded at the program window's first slot, is
- * recognised and relocated to the lit, textured record it names
- * (ODSY_UCODE_LIT_POS2_TEX and its two companions), so the triangle is lit
- * instead of staying unlit, and the texture-mode finish the model does not
- * implement is logged once.
- */
-static void test_command_fifo_gl_program_window_known(void)
-{
-    static const uint32_t list[] = { 0x481, 0x203, 0x4ca, 0x4c5 };
-    char *log_path = NULL;
-    g_autofree char *log = NULL;
-    QTestState *qts = lit_start(&log_path);
-
-    push_known_program_entry(qts);
-    push_constants(qts, list, ARRAY_SIZE(list));
-    push_program(qts, 0, 0x738, 0x760, 0x787);
-    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), !=, 0xff0000ffu);
-
-    log = lit_finish(qts, log_path);
-    g_assert_null(strstr(log, "is not recognised"));
-    g_assert_null(strstr(log, "not a known image entry"));
-    g_assert_nonnull(strstr(log, "texture-mode lighting finish"));
 }
 
 /*
@@ -14436,14 +14321,7 @@ static void test_rgba_pattern_origin_ownership(void)
                             x == 311 && y == 211 ? 0x0a141e80 : 0x0a141e28);
         }
     }
-    set_reg(qts, ODSY_REG_GL_MODE, 0);
-    did_compare(qts, ODSY_DID_COMPARE_ON | 0xf800 | (3 << 3));
-    rgba_rect(qts, 0, 0, 0, 0, 10, 10, 14, 14);
-    g_assert_cmphex(odsy_test_pixel(qts, 311, 211), ==, 0x0a141e80);
-    did_compare(qts, 0);
-    rgba_rect(qts, 0, 0, 0, 0, 10, 10, 14, 14);
-    g_assert_cmphex(odsy_test_pixel(qts, 311, 211), ==, 0x0a141e00);
-    board_quit(qts);
+    qtest_quit(qts);
 }
 
 static void test_rgba_pattern_float_rectangle(void)
@@ -14700,7 +14578,6 @@ static void test_rgba_read_bounds(void)
 
     /* Valid zero data must remain distinguishable from failed reads. */
     g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
-    did_compare(qts, ODSY_DID_COMPARE_ON | 0xf800 | (3 << 3));
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         QDict *resp;
 
@@ -16424,27 +16301,7 @@ static void test_readback_gl_rgba8_scratch_copy(void)
     stl_be_p(&expect[16], 0x2468ace0);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
-    /*
-     * Retain the captured class-2/code-8 transfer and copy packet verbatim.
-     * The observed source values match, but this format/tail pair is not
-     * accepted by the model; the preceding object texel must remain intact.
-     */
-    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
-    cmd_push(qts, 0x30000019);
-    cmd_push(qts, 0x003f0040);
-    cmd_push(qts, 0x80200050);
-    cmd_push(qts, 0x00010001);
-    cmd_push(qts, 0x12331069);
-    cmd_push(qts, 0x0016a800);
-    cmd_push(qts, 0);
-    cmd_push(qts, 0x380100cb);
-    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 0, 0), ==,
-                    0x2468ace0);
-    readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
-    readback_run(qts, captured_hdr, captured_pte, 1);
-    stl_be_p(&expect[16], 0x2468ace0);
-    readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    board_quit(qts);
+    qtest_quit(qts);
 }
 
 /*
@@ -16816,8 +16673,8 @@ int main(int argc, char **argv)
              test_rgba_clear_masks);
     add_case("sn1/odyssey/rgba/material-masks",
              test_rgba_material_masks);
-    add_case("sn1/odyssey/rgba/pattern-origin-ownership",
-             test_rgba_pattern_origin_ownership);
+    add_fresh_case("sn1/odyssey/rgba/pattern-origin-ownership",
+                   test_rgba_pattern_origin_ownership);
     add_case("sn1/odyssey/rgba/pattern-float-rectangle",
              test_rgba_pattern_float_rectangle);
     add_fresh_case("sn1/odyssey/rgba/pattern-float-rectangle-migration",
@@ -17089,8 +16946,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_ortho_combined_matrix);
     add_case("sn1/odyssey/command-fifo-gl-texture-slot-leaves-geometry",
              test_command_fifo_gl_texture_slot_leaves_geometry);
-    add_case("sn1/odyssey/command-fifo-gl-id-compare",
-             test_command_fifo_gl_id_compare);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-unsupported",
+                   test_command_fifo_compare_unsupported);
     add_case("sn1/odyssey/"
              "command-fifo-gl-float-colour-integer-conversion",
              test_command_fifo_gl_float_colour_integer_conversion);
@@ -17110,11 +16967,9 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
-                   test_command_fifo_gl_colour_index_write_mask);
+             test_command_fifo_gl_colour_index_write_mask);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-unknown",
-                   test_command_fifo_gl_program_window_unknown);
-    add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-known",
-                   test_command_fifo_gl_program_window_known);
+             test_command_fifo_gl_program_window_unknown);
     add_case("sn1/odyssey/command-fifo-gl-combined-carries-modelview",
              test_command_fifo_gl_combined_carries_modelview);
     add_case("sn1/odyssey/scanout-main-id-0-uses-drawable-1-mode",
