@@ -838,6 +838,7 @@
         {
           "controller-index": 0,
           "id": "compute-module",
+          "identity-serial": 89358092032256,
           "initial-module-number": 1,
           "nodes": [
             0,
@@ -990,7 +991,6 @@
           "id": "node-board-1-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029200,
             "ni-revision": 5,
             "serial": 89358092029440,
             "system-controller": false,
@@ -1053,7 +1053,6 @@
           "id": "node-board-2-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029201,
             "ni-revision": 5,
             "serial": 89358092029441,
             "system-controller": false,

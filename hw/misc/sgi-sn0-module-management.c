@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -639,10 +640,9 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
 
 /*
  * A module's one-wire identity pages, from its serial alone: page 0 is the
- * family byte plus the ten-character serial, page 1 the fixed "MODULEID" name
- * at offset sixteen, both CRC16-terminated. Fed by the "model-serial"
- * property's value, not by this device's own onewire-bus responder above,
- * which answers the module's separate serial chip.
+ * format byte 0x01 and the ten-character serial, page 1 the fixed "MODULEID"
+ * name at offset sixteen, every other byte 0xff, both closed by a stored
+ * CRC-16.
  */
 bool sgi_sn0_module_management_identity_pages(
     const char *serial, uint8_t page[2][DS2502_PAGE_SIZE])
@@ -674,52 +674,45 @@ bool sgi_sn0_module_management_identity_pages(
 }
 
 /*
- * A node's module-identity responder ROM: family code 0x09, the node's own
- * 48-bit ROM serial from the machine's model, least significant byte first,
- * then the Dallas CRC-8 over those seven bytes. The serial is a marked
- * synthetic one; no captured part supplies it, and neither the node's slot
- * nor the mutable module number enters it.
+ * The module's two module-level one-wire parts, on the midplane net the
+ * controller's own line drives: the family-0x09 MODULEID part, its pages
+ * built from the module serial, and, when the module's midplane record is
+ * known, the family-0x0b midplane part holding it. The machine also wires
+ * the n1 node's Hub line to this net.
  */
-bool sgi_sn0_module_management_responder_rom(const char *module_id,
-                                             unsigned int node_index,
-                                             const uint64_t *serial,
-                                             uint8_t rom[8], Error **errp)
+bool sgi_sn0_module_management_attach_parts(SN0ModuleManagementState *s,
+                                            const char *module_serial,
+                                            uint64_t identity_serial,
+                                            const SGIBoardRecord *midplane,
+                                            uint64_t midplane_serial,
+                                            Error **errp)
 {
-    if (!serial) {
-        error_setg(errp, "module '%s' node %u has no module-responder serial",
-                   module_id, node_index);
+    uint8_t page[2][DS2502_PAGE_SIZE];
+    DeviceState *part;
+
+    if (!sgi_sn0_module_management_identity_pages(module_serial, page)) {
+        error_setg(errp, "module serial '%s' is not ten printable "
+                   "non-separator characters", module_serial);
         return false;
     }
-    rom[0] = 0x09;
-    for (unsigned int i = 0; i < 6; i++) {
-        rom[1 + i] = *serial >> (8 * i);
+    part = qdev_new(TYPE_ONEWIRE_DS2502);
+    object_property_add_child(OBJECT(s), "module-identity", OBJECT(part));
+    qdev_prop_set_uint8(part, "family", 0x09);
+    qdev_prop_set_uint64(part, "serial", identity_serial);
+    ds2502_set_image(part, &page[0][0], sizeof(page));
+    if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+        return false;
     }
-    rom[7] = onewire_crc8(0, rom, 7);
-    return true;
+    return !midplane ||
+           sgi_board_record_attach(OBJECT(s), "midplane", s->onewire_bus,
+                                   midplane, midplane_serial, "midplane",
+                                   errp);
 }
 
-static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
-    0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
-    0x4c, 0x45, 0x31, 0x53, 0x47, 0x49, 0x2d, 0x4f,
-    0x32, 0x30, 0x30, 0x30, 0x2d, 0x4d, 0x4f, 0x44,
-    0x55, 0x4c, 0x45, 0x2d, 0x53, 0x4e, 0x80, 0x45,
-    0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
-    [64 ... DS2502_DATA_SIZE - 1] = 0xff,
-};
-
-static void mgmt_build_module_serial_image(SN0ModuleManagementState *s,
-                                           uint8_t image[DS2502_DATA_SIZE])
+OneWireBus *sgi_sn0_module_management_midplane_onewire(
+    SN0ModuleManagementState *s)
 {
-    uint16_t crc;
-
-    memcpy(image, module_serial_image_template, DS2502_DATA_SIZE);
-    memcpy(&image[1], s->module_serial_text, SGI_O2000_MODULE_SERIAL_LEN);
-    crc = ~onewire_crc16(0, image, 30);
-    image[30] = crc;
-    image[31] = crc >> 8;
+    return s->onewire_bus;
 }
 
 static DeviceState *mgmt_add_child(SN0ModuleManagementState *s,
@@ -766,7 +759,6 @@ static bool mgmt_create_nvram(SN0ModuleManagementState *s, Error **errp)
 static void mgmt_realize(DeviceState *dev, Error **errp)
 {
     SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
-    uint8_t module_serial_image[DS2502_DATA_SIZE];
     unsigned i;
 
     const struct {
@@ -819,21 +811,6 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     }
 
     if (!qdev_realize(DEVICE(s->msc), BUS(s->bus), errp)) {
-        return;
-    }
-    if (!s->module_serial_text ||
-        strlen(s->module_serial_text) != SGI_O2000_MODULE_SERIAL_LEN) {
-        error_setg(errp, "module management requires a %u-byte serial",
-                   SGI_O2000_MODULE_SERIAL_LEN);
-        return;
-    }
-    mgmt_build_module_serial_image(s, module_serial_image);
-    /* The serial chip's own ROM serial: marked, one per module number. */
-    qdev_prop_set_uint64(s->module_serial, "serial",
-                         SGI_SYNTHETIC_ONEWIRE_SERIAL('M', s->module_number));
-    ds2502_set_image(s->module_serial, module_serial_image,
-                     sizeof(module_serial_image));
-    if (!qdev_realize(s->module_serial, BUS(s->onewire_bus), errp)) {
         return;
     }
     if (!mgmt_create_nvram(s, errp)) {
@@ -900,9 +877,6 @@ static void mgmt_init(Object *obj)
 
     s->bus = i2c_init_bus_type(TYPE_I2C_WIRE, DEVICE(obj), "i2c");
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "module-onewire");
-    s->module_serial = mgmt_add_child(s, "module-serial",
-                                      TYPE_ONEWIRE_DS2502);
-    qdev_prop_set_uint8(s->module_serial, "family", 0x09);
     s->msc = SGI_ELSC(mgmt_add_child(s, "msc", TYPE_SGI_ELSC));
     sgi_elsc_set_module_ops(s->msc, &mgmt_elsc_ops, s);
     /*
@@ -1009,8 +983,6 @@ static const VMStateDescription vmstate_sgi_sn0_module_management = {
 static const Property mgmt_properties[] = {
     DEFINE_PROP_UINT8("module-number", SN0ModuleManagementState,
                       module_number, 1),
-    DEFINE_PROP_STRING("model-serial", SN0ModuleManagementState,
-                       module_serial_text),
     DEFINE_PROP_STRING("nvram-drive", SN0ModuleManagementState, nvram_drive),
     DEFINE_PROP_BOOL("can-reset", SN0ModuleManagementState, can_reset, false),
     DEFINE_PROP_BOOL("can-nmi", SN0ModuleManagementState, can_nmi, false),

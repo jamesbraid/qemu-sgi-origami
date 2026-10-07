@@ -12,6 +12,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/nvram/sgi-elsc-nvram.h"
 #include "qemu/timer.h"
@@ -54,7 +55,6 @@ struct SN0ModuleManagementState {
      * module byte when no backing file supplies the store.
      */
     uint8_t module_number;
-    char *module_serial_text;
     /* The block node or drive backing the NVRAM, or NULL. */
     char *nvram_drive;
 
@@ -71,8 +71,8 @@ struct SN0ModuleManagementState {
     I2CBus *bus;
     DeviceState *adapters[SGI_O2000_ADAPTER_COUNT];
     SGIElscState *msc;
+    /* The midplane one-wire net the controller's nic line drives. */
     OneWireBus *onewire_bus;
-    DeviceState *module_serial;
 
     qemu_irq reset_out;
     qemu_irq nmi_out;
@@ -113,21 +113,25 @@ DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
                                                unsigned index);
 
 /*
- * The module's one-wire identity, attached directly to each node's Hub: the
- * page layout is the same on every module of this kind, so the machine
- * passes only the model's values (the module's serial text, each node's
- * responder ROM serial) rather than building the bytes itself.
+ * The MODULEID part's two pages, from the module's ten-character serial;
+ * false for a serial that does not fit the record.
  */
 bool sgi_sn0_module_management_identity_pages(
     const char *serial, uint8_t page[2][DS2502_PAGE_SIZE]);
 /*
- * Node @node_index's responder ROM from its model serial; false, with
- * @errp set, when the node of module @module_id carries none (@serial NULL).
+ * Fit the module's MODULEID part, ROM serial @identity_serial, and, unless
+ * @midplane is NULL, its midplane part holding @midplane, ROM serial
+ * @midplane_serial, on the controller's midplane net. Call after realize.
  */
-bool sgi_sn0_module_management_responder_rom(const char *module_id,
-                                             unsigned int node_index,
-                                             const uint64_t *serial,
-                                             uint8_t rom[8], Error **errp);
+bool sgi_sn0_module_management_attach_parts(SN0ModuleManagementState *s,
+                                            const char *module_serial,
+                                            uint64_t identity_serial,
+                                            const SGIBoardRecord *midplane,
+                                            uint64_t midplane_serial,
+                                            Error **errp);
+/* The midplane net, for wiring the n1 node's Hub line to it. */
+OneWireBus *sgi_sn0_module_management_midplane_onewire(
+    SN0ModuleManagementState *s);
 
 /*
  * Controller-side requests the scheduler arbitrates against processor grants.

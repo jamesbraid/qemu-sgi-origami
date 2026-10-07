@@ -3941,26 +3941,17 @@
       ],
       "lifecycle": "implemented",
       "machine_name": "onyx2",
-      "module_responder_identities": [
+      "module_onewire_parts": [
         {
-          "component": "node-board-1-hub",
-          "reason": "Synthetic module-identity responder serial for node 1, the module letter M at instance 16, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d10"
-        },
-        {
-          "component": "node-board-2-hub",
-          "reason": "Synthetic module-identity responder serial for node 2, the module letter M at instance 17, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d11"
-        },
-        {
-          "component": "node-board-3-hub",
-          "reason": "Synthetic module-identity responder serial for node 3, the module letter M at instance 18, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d12"
-        },
-        {
-          "component": "node-board-4-hub",
-          "reason": "Synthetic module-identity responder serial for node 4, the module letter M at instance 19, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d13"
+          "component": "compute-module",
+          "identity_serial": "0x51454d555900",
+          "midplane": {
+            "name": "8P12_MPLN",
+            "part": "030-0762-006",
+            "revision": "H"
+          },
+          "midplane_serial": "0x51454d554c00",
+          "reason": "Synthetic ROM serials for module 1's MODULEID part, letter Y, and its 8P12_MPLN midplane part, letter L, each at the module's index 0 and carrying the \"QEMU\" marker. The midplane record is the four-node module's 030-0762-006 rev H, the 030- part most often seen in real inventories; the serials are not hardware evidence."
         }
       ],
       "module_semantic_serials": [

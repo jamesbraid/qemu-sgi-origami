@@ -64,13 +64,9 @@ void cpus_set_virtual_clock(int64_t value)
     virtual_time = value;
 }
 
-/* The device takes its serial from the machine's model; any ten bytes do. */
 static DeviceState *module_new(void)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
-
-    qdev_prop_set_string(dev, "model-serial", "TESTSERIAL");
-    return dev;
+    return qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 }
 
 enum { LINE_RESET, LINE_NMI, LINE_POWER };

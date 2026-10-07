@@ -346,8 +346,8 @@ class CheckSystemModelTests(unittest.TestCase):
         accepted["machine"]["emulation"]["module_semantic_serials"][0][
             "serial"
         ] = "OK=SERIAL1"
-        accepted["machine"]["emulation"]["module_responder_identities"][0][
-            "serial"
+        accepted["machine"]["emulation"]["module_onewire_parts"][0][
+            "identity_serial"
         ] = "0xffff_ffff_ffff"
         self.assertEqual(list(validator.iter_errors(accepted)), [])
 
@@ -360,8 +360,8 @@ class CheckSystemModelTests(unittest.TestCase):
                 self.assertTrue(list(validator.iter_errors(changed)))
 
         changed = copy.deepcopy(model)
-        changed["machine"]["emulation"]["module_responder_identities"][0][
-            "serial"
+        changed["machine"]["emulation"]["module_onewire_parts"][0][
+            "identity_serial"
         ] = "0x1_0000_0000_0000"
         self.assertTrue(list(validator.iter_errors(changed)))
 

@@ -3380,7 +3380,54 @@ static void test_model_population_overrides_class_globals(const void *data)
     qtest_quit(qts);
 }
 
-static void test_origin2000_hubs_carry_module_identity(const void *data)
+/* Every ROM on a node's Hub bus, by the standard search, lowest first. */
+static unsigned int onewire_cpu_search_all(QTestState *qts, unsigned int cpu,
+                                           uint64_t *roms, unsigned int max)
+{
+    uint64_t rom = 0;
+    int last_conflict = -1;
+    unsigned int found = 0;
+
+    do {
+        int conflict = -1;
+
+        g_assert_false(onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_RESET));
+        onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_SEARCH);
+        for (int i = 0; i < 64; i++) {
+            bool bit = onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_SHORT);
+            bool complement = onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_SHORT);
+            bool direction;
+
+            g_assert_false(bit && complement);
+            if (bit != complement) {
+                direction = bit;
+            } else {
+                direction = i < last_conflict ? (rom >> i) & 1 :
+                                                i == last_conflict;
+                if (!direction) {
+                    conflict = i;
+                }
+            }
+            rom = (rom & ~(1ULL << i)) | ((uint64_t)direction << i);
+            onewire_cpu_slot(qts, cpu, direction ? ONEWIRE_PULSE_SHORT :
+                                                 ONEWIRE_PULSE_ZERO);
+        }
+        g_assert_cmpuint(found, <, max);
+        roms[found++] = rom;
+        last_conflict = conflict;
+    } while (last_conflict >= 0);
+    return found;
+}
+
+/*
+ * An Origin 2000 module's MODULEID and 8P12_MPLN parts are wired to the n1
+ * node's Hub alone, as real inventories list them only under slot n1: the
+ * n1 bus answers with the IP27 node part and both module parts, every other
+ * node's bus with its own node part only. The MODULEID pages carry the
+ * module serial; the midplane record is module 1's, byte for byte as the
+ * module one-wire records contract gives it.
+ */
+static void test_origin2000_module_parts_on_n1_only(const void *data)
 {
     static const uint8_t expected_pages[2][32] = {
         { 0x01, 0x45, 0x4d, 0x55, 0x4d, 0x30, 0x30, 0x30,
@@ -3392,78 +3439,85 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
           0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x4b, 0x59 },
     };
-    static const uint64_t module_serials[ORIGIN2000_NODE_COUNT] = {
-        0x51454d554d10ULL, 0x51454d554d11ULL,
-        0x51454d554d12ULL, 0x51454d554d13ULL,
+    static const uint8_t mpln[64] = {
+        0x01, 0x45, 0x4d, 0x55, 0x4c, 0x30, 0x30, 0x20,
+        0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+        0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+        0x2d, 0x30, 0x37, 0x36, 0x32, 0x2d, 0xd8, 0x16,
+        0x20, 0x20, 0x20, 0x30, 0x30, 0x36, 0x48, 0x20,
+        0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x38, 0x50, 0x31, 0x32, 0x5f, 0x4d, 0x50, 0x4c,
+        0x4e, 0x20, 0x20, 0x20, 0x20, 0x20, 0x78, 0x3e,
     };
+    uint64_t module_rom = ONEWIRE_FAMILY_DS2502 | (0x51454d555900ULL << 8);
+    const uint64_t midplane_rom = onewire_expected_identity(0x51454d554c00ULL);
     QTestState *qts = qtest_init("-M origin2000");
+    uint64_t roms[4];
+    uint8_t midplane[64];
 
+    module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
     for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
         unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
-        uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
-                              (module_serials[node] << 8);
-        uint64_t pimm_rom = onewire_expected_identity(
+        uint64_t node_rom = onewire_expected_identity(
             0x51454d554e00ULL + node);
-        g_autofree char *path =
-            g_strdup_printf("/machine/node%u/hub", node);
-        QDict *response = qtest_qmp(
-            qts, "{ 'execute': 'qom-list',"
-                 " 'arguments': { 'path': %s } }", path);
-        QList *children = qdict_get_qlist(response, "return");
-        const QListEntry *entry;
-        bool found = false;
+        unsigned int count = onewire_cpu_search_all(qts, cpu, roms,
+                                                    G_N_ELEMENTS(roms));
+        bool seen[3] = { false };
 
-        for (entry = qlist_first(children); entry;
-             entry = qlist_next(entry)) {
-            QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
-
-            if (!strcmp(qdict_get_str(child, "name"), "module-identity")) {
-                found = true;
-                break;
+        g_assert_cmpuint(count, ==, node == 0 ? 3 : 1);
+        for (unsigned int i = 0; i < count; i++) {
+            if (roms[i] == node_rom) {
+                seen[0] = true;
+            } else if (roms[i] == module_rom) {
+                seen[1] = true;
+            } else if (roms[i] == midplane_rom) {
+                seen[2] = true;
+            } else {
+                g_error("node %u bus answers unexpected ROM 0x%016" PRIx64,
+                        node, roms[i]);
             }
         }
-        g_assert_true(found);
-        qobject_unref(response);
-
-        module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
-        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
-        onewire_cpu_search_for_identity(qts, cpu, module_rom);
-        for (unsigned int page_index = 0; page_index < 2; page_index++) {
-            uint8_t request[3] = { 0xc3, page_index * 32, 0 };
-            uint8_t actual[32];
-
-            g_assert_false(onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_RESET));
-            onewire_cpu_write_byte(qts, cpu, 0x55);
-            for (unsigned int i = 0; i < 8; i++) {
-                onewire_cpu_write_byte(qts, cpu, module_rom >> (8 * i));
-            }
-            for (unsigned int i = 0; i < sizeof(request); i++) {
-                onewire_cpu_write_byte(qts, cpu, request[i]);
-            }
-            g_assert_cmphex(onewire_cpu_read_byte(qts, cpu), ==,
-                            onewire_crc8(request[0] |
-                                        ((uint64_t)request[1] << 8), 3));
-            for (unsigned int i = 0; i < sizeof(actual); i++) {
-                actual[i] = onewire_cpu_read_byte(qts, cpu);
-            }
-            g_assert_cmpmem(actual, sizeof(actual),
-                            expected_pages[page_index],
-                            sizeof(expected_pages[page_index]));
-            g_assert_cmphex(onewire_crc16(0, actual, sizeof(actual)),
-                            ==, 0xb001);
-            g_assert_cmphex(onewire_cpu_read_byte(qts, cpu), ==,
-                            onewire_crc8_bytes(actual, sizeof(actual)));
-        }
+        g_assert_true(seen[0]);
+        g_assert_cmpint(seen[1], ==, node == 0);
+        g_assert_cmpint(seen[2], ==, node == 0);
     }
+
+    for (unsigned int page_index = 0; page_index < 2; page_index++) {
+        uint8_t request[3] = { 0xc3, page_index * 32, 0 };
+        uint8_t actual[32];
+
+        onewire_cpu_search_for_identity(qts, 0, module_rom);
+        for (unsigned int i = 0; i < sizeof(request); i++) {
+            onewire_cpu_write_byte(qts, 0, request[i]);
+        }
+        g_assert_cmphex(onewire_cpu_read_byte(qts, 0), ==,
+                        onewire_crc8(request[0] |
+                                    ((uint64_t)request[1] << 8), 3));
+        for (unsigned int i = 0; i < sizeof(actual); i++) {
+            actual[i] = onewire_cpu_read_byte(qts, 0);
+        }
+        g_assert_cmpmem(actual, sizeof(actual), expected_pages[page_index],
+                        sizeof(expected_pages[page_index]));
+        g_assert_cmphex(onewire_crc16(0, actual, sizeof(actual)), ==,
+                        0xb001);
+        g_assert_cmphex(onewire_cpu_read_byte(qts, 0), ==,
+                        onewire_crc8_bytes(actual, sizeof(actual)));
+    }
+
+    onewire_cpu_search_for_identity(qts, 0, midplane_rom);
+    onewire_cpu_write_byte(qts, 0, ONEWIRE_CMD_READ_MEM);
+    onewire_cpu_write_byte(qts, 0, 0);
+    onewire_cpu_write_byte(qts, 0, 0);
+    for (unsigned int i = 0; i < sizeof(midplane); i++) {
+        midplane[i] = onewire_cpu_read_byte(qts, 0);
+    }
+    g_assert_cmpmem(midplane, sizeof(midplane), mpln, sizeof(mpln));
 
     /* Reset drops a partial match while leaving the immutable image
      * intact. */
     {
-        uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
-                              (module_serials[0] << 8);
         uint8_t request[3] = { 0xc3, 0, 0 };
 
-        module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
         g_assert_false(onewire_cpu_slot(qts, 0, ONEWIRE_PULSE_RESET));
         onewire_cpu_write_byte(qts, 0, 0x55);
         onewire_cpu_write_byte(qts, 0, module_rom);
@@ -3508,6 +3562,29 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         g_assert_cmphex(onewire_crc16(0, &record[32], 32), ==, 0xb001);
     }
 
+    qtest_quit(qts);
+}
+
+/*
+ * The Onyx2 deskside's two-slot midplane record is not known, so its
+ * module carries the MODULEID part alone: n1 finds its node part and the
+ * MODULEID part and no midplane part, and n2 its own node part only.
+ */
+static void test_onyx2_deskside_n1_has_no_midplane(const void *data)
+{
+    uint64_t module_rom = ONEWIRE_FAMILY_DS2502 | (0x51454d555900ULL << 8);
+    QTestState *qts = qtest_init(
+        "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M -display none");
+    uint64_t roms[4];
+
+    module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
+    g_assert_cmpuint(onewire_cpu_search_all(qts, 0, roms, 4), ==, 2);
+    g_assert_true(roms[0] == module_rom || roms[1] == module_rom);
+    g_assert_true(roms[0] == onewire_expected_identity(0x51454d554e00ULL) ||
+                  roms[1] == onewire_expected_identity(0x51454d554e00ULL));
+    g_assert_cmpuint(onewire_cpu_search_all(qts, 2, roms, 4), ==, 1);
+    g_assert_cmphex(roms[0], ==,
+                    onewire_expected_identity(0x51454d554e01ULL));
     qtest_quit(qts);
 }
 
@@ -6689,8 +6766,10 @@ int main(int argc, char **argv)
                         test_origin200_hub_holds_the_pimm_record);
     qtest_add_data_func("sn0/hub/origin200-dual-pimm-records", NULL,
                         test_dual_origin200_pimm_records_are_per_node);
-    qtest_add_data_func("sn0/hub/origin2000-rack-identity-present",
-                        NULL, test_origin2000_hubs_carry_module_identity);
+    qtest_add_data_func("sn0/hub/origin2000-module-parts-on-n1-only",
+                        NULL, test_origin2000_module_parts_on_n1_only);
+    qtest_add_data_func("sn0/hub/onyx2-deskside-n1-has-no-midplane",
+                        NULL, test_onyx2_deskside_n1_has_no_midplane);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
     qtest_add_data_func("sn0/hub/bte-registers-reset-to-zero", NULL,

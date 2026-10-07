@@ -122,13 +122,10 @@ layer:
         - component: compute-module
           serial: EMUM000001
           reason: Synthetic module serial for module 1, carrying the "EMU" marker; not hardware evidence.
-        module_responder_identities:
-        - component: node-board-1-hub
-          serial: '0x51454d554d10'
-          reason: Synthetic module-identity responder serial for node 1, the module letter M at instance 16, carrying the "QEMU" marker; not hardware evidence.
-        - component: node-board-2-hub
-          serial: '0x51454d554d11'
-          reason: Synthetic module-identity responder serial for node 2, the module letter M at instance 17, carrying the "QEMU" marker; not hardware evidence.
+        module_onewire_parts:
+        - component: compute-module
+          identity_serial: '0x51454d555900'
+          reason: Synthetic ROM serial for module 1's MODULEID part, letter Y at the module's index 0, carrying the "QEMU" marker; not hardware evidence. No midplane part, because the record this deskside's two-slot midplane holds is not known.
         synthetic_identities:
         - component: node-board-1-hub
           serial: '0x51454d554e00'

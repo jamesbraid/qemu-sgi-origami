@@ -216,8 +216,9 @@ static uint8_t module_onewire_read_byte(QTestState *qts)
 static void test_module_identity_page_progress_survives_migration(
     const void *data)
 {
+    /* The module's MODULEID part, letter Y at index 0, on the n1 bus. */
     static const uint8_t rom[8] = {
-        0x09, 0x10, 0x4d, 0x55, 0x4d, 0x45, 0x51, 0x0b,
+        0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
     };
     static const uint8_t page[32] = {
         0x01, 0x45, 0x4d, 0x55, 0x4d, 0x30, 0x30, 0x30,

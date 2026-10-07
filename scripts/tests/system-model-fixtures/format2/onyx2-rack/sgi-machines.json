@@ -2417,7 +2417,14 @@
         {
           "controller-index": 0,
           "id": "compute-module",
+          "identity-serial": 89358092032256,
           "initial-module-number": 1,
+          "midplane-record": {
+            "name": "8P12_MPLN",
+            "part": "030-0762-006",
+            "revision": "H"
+          },
+          "midplane-serial": 89358092028928,
           "nodes": [
             0,
             1,
@@ -2793,7 +2800,6 @@
           "id": "node-board-1-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029200,
             "ni-revision": 5,
             "serial": 89358092029440,
             "system-controller": false,
@@ -2855,7 +2861,6 @@
           "id": "node-board-2-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029201,
             "ni-revision": 5,
             "serial": 89358092029441,
             "system-controller": false,
@@ -2917,7 +2922,6 @@
           "id": "node-board-3-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029202,
             "ni-revision": 5,
             "serial": 89358092029442,
             "system-controller": false,
@@ -2979,7 +2983,6 @@
           "id": "node-board-4-hub",
           "identity": {
             "i2c-controller": true,
-            "module-responder-serial": 89358092029203,
             "ni-revision": 5,
             "serial": 89358092029443,
             "system-controller": false,

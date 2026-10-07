@@ -65,14 +65,12 @@ class SyntheticSerialTests(unittest.TestCase):
         self.assertIn('SGI_SYNTHETIC_TEXT_MARKER     "EMU"', header)
         table = re.findall(r"^ \*   ([A-Z])  ", header, re.MULTILINE)
         self.assertEqual(table, list(ss.LETTERS))
-        self.assertIn("SGI_SYNTHETIC_MODULE_RESPONDER_FIRST "
-                      f"{ss.MODULE_RESPONDER_FIRST_INSTANCE}\n", header)
 
 
-class ModuleResponderTests(unittest.TestCase):
-    """The compiler refuses module-identity responders a machine would
-    confuse: unmarked, repeated, shared, missing, or on the module serial
-    chip's side of the module letter's instances."""
+class ModuleOnewirePartsTests(unittest.TestCase):
+    """The compiler refuses module one-wire parts a machine could confuse:
+    unmarked, repeated, missing, under the wrong letter or instance, or a
+    midplane serial without its record."""
 
     @classmethod
     def setUpClass(cls):
@@ -87,54 +85,48 @@ class ModuleResponderTests(unittest.TestCase):
     def setUp(self):
         self.model = copy.deepcopy(self.rack)
         self.emulation = self.model["machine"]["emulation"]
-        self.responders = self.emulation["module_responder_identities"]
+        self.parts = self.emulation["module_onewire_parts"]
 
     def refused(self, pattern):
         with self.assertRaisesRegex(self.CompileError, pattern):
             self.compile_model(self.model)
 
-    def test_catalogue_responders_compile(self):
-        nodes = self.compile_model(self.model)["nodes"]
-        self.assertEqual(
-            [node["identity"]["module_responder_serial"] for node in nodes],
-            [ss.onewire_serial("M", 16 + i) for i in range(len(nodes))])
+    def test_catalogue_parts_compile(self):
+        compiled = self.compile_model(self.model)
+        module = compiled["modules"][0]
+        self.assertEqual(module["identity_serial"], ss.onewire_serial("Y", 0))
+        self.assertEqual(module["midplane_serial"], ss.onewire_serial("L", 0))
+        self.assertEqual(module["midplane_record"]["name"], "8P12_MPLN")
+        for node in compiled["nodes"]:
+            self.assertNotIn("module_responder_serial", node["identity"])
 
-    def test_unmarked_module_responder_is_refused(self):
-        self.responders[0]["serial"] = "0x100000000009"
+    def test_unmarked_identity_serial_is_refused(self):
+        self.parts[0]["identity_serial"] = "0x100000000009"
         self.refused("marker")
 
-    def test_repeated_module_responder_is_refused(self):
-        self.responders.append(dict(self.responders[0]))
+    def test_repeated_parts_are_refused(self):
+        self.parts.append(dict(self.parts[0]))
         self.refused("more than one")
 
-    def test_shared_module_responder_is_refused(self):
-        self.responders[1]["serial"] = self.responders[0]["serial"]
-        self.refused("share module responder serial")
+    def test_missing_parts_are_refused(self):
+        self.parts.clear()
+        self.refused("has no module one-wire parts")
 
-    def test_module_serial_chip_responder_is_refused(self):
-        self.responders[0]["serial"] = hex(ss.onewire_serial("M", 1))
-        self.refused("serial chip's own")
+    def test_identity_under_another_letter_is_refused(self):
+        self.parts[0]["identity_serial"] = hex(ss.onewire_serial("M", 0))
+        self.refused("not letter Y")
 
-    def test_missing_module_responder_is_refused(self):
-        del self.responders[2]
-        self.refused("node 'node-board-3-hub' .* has no module responder "
-                     "serial")
+    def test_midplane_at_another_instance_is_refused(self):
+        self.parts[0]["midplane_serial"] = hex(ss.onewire_serial("L", 1))
+        self.refused("not letter L")
 
-    def test_responder_below_the_reserved_instances_is_refused(self):
-        self.responders[0]["serial"] = hex(ss.onewire_serial("M", 15))
-        self.refused("instance 16 or above")
+    def test_midplane_serial_without_record_is_refused(self):
+        del self.parts[0]["midplane"]
+        self.refused("both or neither")
 
-    def test_responder_under_another_letter_is_refused(self):
-        self.responders[0]["serial"] = hex(ss.onewire_serial("N", 16))
-        self.refused("instance 16 or above")
-
-    def test_module_number_in_responder_instances_is_refused(self):
-        self.emulation["initial_module_numbers"][0]["number"] = 16
-        self.refused("responders' range")
-
-    def test_highest_module_number_below_responders_compiles(self):
-        self.emulation["initial_module_numbers"][0]["number"] = 15
-        self.compile_model(self.model)
+    def test_unknown_module_is_refused(self):
+        self.parts[0]["component"] = "no-such-module"
+        self.refused("unknown module")
 
 
 class CatalogueMarkerTests(unittest.TestCase):

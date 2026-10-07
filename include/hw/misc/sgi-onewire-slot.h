@@ -38,4 +38,21 @@ static inline bool sgi_onewire_slot(OneWireBus *bus, uint32_t pulse,
     return onewire_touch_bit(bus, pulse < 40);
 }
 
+/*
+ * One bit slot on a master whose wire also reaches a second net's parts:
+ * the master's own bus and @shared are one open-drain line, so every part on
+ * either sees the slot and the line reads low if any part on either pulls
+ * it low. @shared may be NULL.
+ */
+static inline bool sgi_onewire_slot_wired(OneWireBus *bus, OneWireBus *shared,
+                                          uint32_t pulse, uint32_t sample)
+{
+    bool level = sgi_onewire_slot(bus, pulse, sample);
+
+    if (shared) {
+        level &= sgi_onewire_slot(shared, pulse, sample);
+    }
+    return level;
+}
+
 #endif

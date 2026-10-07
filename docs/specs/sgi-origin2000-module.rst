@@ -198,6 +198,63 @@ hardware reset default.
 The per-node PROM logs are separate storage from the shared NVRAM and
 from the BaseIO's own non-volatile store.
 
+.. _sgi-origin2000-module-identity:
+
+Module serial and midplane parts
+--------------------------------
+
+Each module carries two module-level one-wire parts: a family 0x09
+part whose record is named ``MODULEID`` and holds the module serial,
+and a family 0x0b midplane part holding the midplane's board record.
+Real inventories list each once per module, under node slot ``n1``,
+and the firmware and kernel print a record under the node whose Hub
+bus it came from, so the two parts are on the ``n1`` Hub's one-wire
+bus and no other (inferred from software and captures; a continuity
+check on a real midplane would settle it). The firmware can also read
+them through the controller's ``nic`` passthrough when ``n1`` is
+empty, so the controller's midplane line reaches the same two parts
+(inferred).
+
+The model puts both parts on the controller's midplane one-wire net
+and wires the ``n1`` node's Hub line to that net as well, so the ``n1``
+Hub reaches its own node part and both module parts. The connection is
+one-way: the controller's ``nic`` line reaches the two module parts but
+not the ``n1`` node's own part. The datasheet infers a single net, but
+nothing visible depends on the difference, because the firmware uses
+``nic`` only when ``n1`` is empty. The other nodes' Hub buses carry
+only their own node part. A module whose
+``n1`` slot is empty reaches the parts through the controller alone.
+The module-management chip has no part of its own on the line.
+
+The ``MODULEID`` pages carry the module serial in the layout the Hub
+module-serial record uses: format byte 0x01, the ten-character serial,
+the name at page one offset sixteen, 0xff in every other field and a
+stored CRC per page. The four-node module's
+midplane record is ``8P12_MPLN``, part 030-0762-006 revision H, the
+``030-`` part seen most often in real inventories; which midplane an
+IP27-era module carried is *unknown*, and every held capture uses later
+nodes. Its barcode is marked synthetic, ``EMUL`` and the part's
+instance. The ROM serials are synthetic too: letter ``Y`` for the
+``MODULEID`` part and ``L`` for the midplane, each at the module's
+index in the configuration.
+
+Limitation: the Onyx2 deskside carries the ``MODULEID`` part only. Its
+two-slot ``4P1G5_MPLN`` midplane's record values -- part number,
+revision and barcode layout -- are *unknown*, so the model fits no
+midplane part there and IRIX should list no midplane record for it. A real
+Onyx2 deskside inventory would settle the values.
+
+The kernel takes the module serial from the first Crossbow master's
+midplane record that has one, and a Hub that does not master its
+Crossbow marks its record a duplicate. With the parts on ``n1`` only,
+the ``n1`` Hub must therefore master its Crossbow, or IRIX warns that
+the module's serial is invalid. The model does not choose the
+Crossbow master: the firmware does, and its choice is what makes
+``n1``'s record the non-duplicate one. Booting IRIX 6.5.30 on the
+four-node Origin 2000 with this model, ``hinv -mvv`` lists
+``MODULEID`` and ``8P12_MPLN`` under ``n1`` only and the boot prints
+no serial warning, which shows the firmware chose ``n1``.
+
 .. _sgi-origin2000-module-grants:
 
 Processor grants

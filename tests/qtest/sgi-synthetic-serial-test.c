@@ -16,9 +16,9 @@
  *  - every L1 that builds a node board's identity areas names its own
  *    instance, so no two nodes' board-area serials match.
  *
- * Every one-wire part is included, the Hub's module-identity responders
- * too. The scheme's values are repeated here as literals, not taken from
- * the header that defines them.
+ * Every one-wire part is included, the module controllers' MODULEID and
+ * midplane parts too. The scheme's values are repeated here as literals,
+ * not taken from the header that defines them.
  *
  * The topologies come from the catalogue the binary carries
  * (query-sgi-machines), so a new one is checked without editing this file.
