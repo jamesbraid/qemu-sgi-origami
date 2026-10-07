@@ -9,9 +9,12 @@
 #define FAULT_ENTRY 0x400
 #define DATA_A      0x00200000u
 #define DATA_B      (DATA_A + 0x100)
+#define EXEC_CODE   0x00202000u
+#define MAPPED_A    0x00400000u
 #define RESULT      0x00201000u
 #define RESULT_GUEST SN0_KSEG1(RESULT)
 #define CACHED_A    (UINT64_C(0x9800000000000000) | DATA_A)
+#define CACHED_CODE (UINT64_C(0x9800000000000000) | EXEC_CODE)
 #define PHASE       0x00
 #define COMMAND     0x04
 #define FAULT       0x08
@@ -85,7 +88,7 @@ static void build_image(SN0Image *p, unsigned int which)
     sn0_emit_li64(p, SN0_R_S0, CACHED_A);
     sn0_emit_li(p, SN0_R_S1, RESULT_GUEST);
 
-    if (which == 1 || which == 3) {
+    if (which != 2) {
         emit_read(p, 0, READ_1);
         sn0_emit_li(p, SN0_R_T0, NEW_A);
         sn0_emit_i(p, SN0_OPC_SW, SN0_R_S0, SN0_R_T0, 0);
@@ -97,12 +100,21 @@ static void build_image(SN0Image *p, unsigned int which)
             emit_checkpoint(p, 2);
             emit_cache(p, 0x17, 0);
             emit_read(p, 0, READ_4);
-        } else {
+        } else if (which == 3) {
             emit_read(p, 0x100, READ_3);
             emit_read(p, 0, READ_4);
             emit_checkpoint(p, 2);
             emit_cache(p, 0x17, 0);
             emit_read(p, 0, READ_5);
+        } else {
+            emit_cache(p, which == 4 ? 0x01 : 0x03, 0);
+            emit_cache(p, which == 4 ? 0x01 : 0x03, 1);
+            emit_read(p, 0, READ_3);
+            emit_checkpoint(p, 2);
+            if (which == 4) {
+                emit_cache(p, 0x17, 0);
+            }
+            emit_read(p, 0, READ_4);
         }
     } else {
         emit_read(p, 0x100, READ_1);
@@ -194,11 +206,15 @@ static void run_case(unsigned int which)
     } else if (which == 2) {
         g_assert_cmphex(qtest_readl(qts, RESULT + READ_2), ==, OLD_B);
         g_assert_cmphex(backing_word(qts, DATA_B), ==, NEW_B);
-    } else {
+    } else if (which == 3) {
         g_assert_cmphex(qtest_readl(qts, RESULT + READ_3), ==, NEW_B);
         g_assert_cmphex(qtest_readl(qts, RESULT + READ_4), ==, NEW_A);
         g_assert_cmphex(backing_word(qts, DATA_A), ==, OLD_A);
         g_assert_cmphex(backing_word(qts, DATA_B), ==, NEW_B);
+    } else {
+        g_assert_cmphex(qtest_readl(qts, RESULT + READ_3), ==, NEW_A);
+        g_assert_cmphex(backing_word(qts, DATA_A), ==,
+                        which == 4 ? OLD_A : NEW_A);
     }
     qtest_writel(qts, RESULT + COMMAND, 2);
 
@@ -209,7 +225,7 @@ static void run_case(unsigned int which)
     } else {
         g_assert_cmphex(backing_word(qts, DATA_A), ==, NEW_A);
         g_assert_cmphex(qtest_readl(qts, RESULT + READ_2), ==, NEW_A);
-        if (which == 1) {
+        if (which == 1 || which >= 4) {
             g_assert_cmphex(qtest_readl(qts, RESULT + READ_4), ==, NEW_A);
         } else {
             g_assert_cmphex(qtest_readl(qts, RESULT + READ_5), ==, NEW_A);
@@ -222,6 +238,79 @@ static void run_case(unsigned int which)
 static void test_dirty_data(void) { run_case(1); }
 static void test_external_write(void) { run_case(2); }
 static void test_two_lines(void) { run_case(3); }
+static void test_index_primary_writeback(void) { run_case(4); }
+static void test_index_secondary_writeback(void) { run_case(5); }
+
+static void build_fault_image(SN0Image *p, unsigned int which)
+{
+    emit_fault(p);
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li64(p, SN0_R_S0, CACHED_A);
+    sn0_emit_li(p, SN0_R_S1, RESULT_GUEST);
+
+    if (which == 0) {
+        sn0_emit_li64(p, SN0_R_S2, CACHED_CODE);
+        sn0_emit(p, mips_rtype(SN0_R_S2, 0, 0, 0, 0x08)); /* jr s2 */
+        sn0_emit_nop(p);
+    } else {
+        sn0_emit_i(p, SN0_OPC_LW, SN0_R_S0, SN0_R_T0, 0);
+        sn0_emit_li(p, SN0_R_T0, NEW_A);
+        sn0_emit_i(p, SN0_OPC_SW, SN0_R_S0, SN0_R_T0, 0);
+        if (which == 1) {
+            sn0_emit_map_page(p, 0, MAPPED_A, DATA_A, 0);
+            sn0_emit_li(p, SN0_R_S2, MAPPED_A);
+            sn0_emit(p, mips_cache(0x17, SN0_R_S2, 0));
+        } else {
+            uint64_t alias = ((uint64_t)(which == 2 ? 0xa0 : 0xa8) << 56) |
+                             DATA_A;
+
+            sn0_emit_li64(p, SN0_R_S2, alias);
+            sn0_emit_i(p, SN0_OPC_LW, SN0_R_S2, SN0_R_T0, 0);
+        }
+    }
+    sn0_emit_break(p);
+}
+
+static void run_fault_case(unsigned int which)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    SgiWait wait;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    build_fault_image(image, which);
+    path = sn0_image_write(image, "o2-r10k-cache-fault");
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000,cache-data-visibility=on "
+                      "-bios %s -accel tcg,thread=single -S "
+                      "-no-reboot -no-shutdown", path);
+    unlink(path);
+    set_backing_word(qts, DATA_A, OLD_A);
+    set_backing_word(qts, EXEC_CODE, 0x0000000d); /* break */
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    sgi_wait_start(&wait, "R10000 cache unsupported access");
+    while (!qtest_readl(qts, RESULT + FAULT)) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    g_assert_cmphex((qtest_readl(qts, RESULT + CAUSE) >> 2) & 0x1f, ==, 4);
+    if (which == 0) {
+        g_assert_cmphex(qtest_readq(qts, RESULT + EPC) & UINT32_MAX, ==,
+                        EXEC_CODE);
+    }
+    g_assert_cmphex(backing_word(qts, DATA_A), ==, OLD_A);
+    qtest_quit(qts);
+}
+
+static void test_cached_instruction_fetch(void) { run_fault_case(0); }
+static void test_mapped_cache_operand(void) { run_fault_case(1); }
+static void test_coherent_exclusive_load(void) { run_fault_case(2); }
+static void test_coherent_write_load(void) { run_fault_case(3); }
 
 int main(int argc, char **argv)
 {
@@ -229,5 +318,17 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/r10k-cache/dirty-data", test_dirty_data);
     qtest_add_func("/o2/r10k-cache/external-write", test_external_write);
     qtest_add_func("/o2/r10k-cache/two-lines", test_two_lines);
+    qtest_add_func("/o2/r10k-cache/index-primary-writeback",
+                   test_index_primary_writeback);
+    qtest_add_func("/o2/r10k-cache/index-secondary-writeback",
+                   test_index_secondary_writeback);
+    qtest_add_func("/o2/r10k-cache/cached-instruction-fetch",
+                   test_cached_instruction_fetch);
+    qtest_add_func("/o2/r10k-cache/mapped-cache-operand",
+                   test_mapped_cache_operand);
+    qtest_add_func("/o2/r10k-cache/coherent-exclusive-load",
+                   test_coherent_exclusive_load);
+    qtest_add_func("/o2/r10k-cache/coherent-write-load",
+                   test_coherent_write_load);
     return g_test_run();
 }
