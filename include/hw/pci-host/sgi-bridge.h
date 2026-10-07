@@ -120,31 +120,17 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
  * ATE-translated window, but for an inbound access the evidence shows a plain
  * offset into PCI memory space, not an ATE lookup. The ATE stores an
  * XIO destination, which has no reverse mapping to a PCI address.
- * "Plain offset" describes the address math only: the model still applies the
- * same byte-lane correction as the per-device windows
- * (sgi_bridge_window_correct), since this is the same
- * big-endian-processor-onto-little-endian-PCI-bus path they correct, just
- * reached without a slot's own programmed base. There is no per-device
- * register behind this window, so unlike a per-device window it has no
- * test override. Every access through it is corrected. Only this
- * range is modeled; the adjacent 0x80000000-0xffffffff "direct-mapped" DMA
- * range has no equivalent inbound evidence yet.
+ * "Plain offset" describes the address math only: the specification names
+ * this range the alias of PCI memory for 32-bit device targets, so bytes are
+ * placed as for a swap-clear 32-bit device window.
+ * Only this range is modeled; the 64-bit device alias above it and the PCI
+ * I/O range are not.
  *
  * Tested directly against this window's only current consumer: PsiTech RAD4's
  * 8 MiB BAR2 (framebuffer plus control registers, hw/display/psitech-rad4.c)
  * is too large for a per-slot window and is reachable only through here. IRIX
  * 6.5.30 booted through it renders a real but wrong-colored xdm login screen
- * (correct shapes and layout, wrong colors). A live A/B boot with this
- * window's correction forced off produced byte-identical screendumps
- * because RAD4's BAR2 device declares 4-byte-only access
- * (rad4_bar2_ops, valid/impl min and max both 4), and
- * sgi_bridge_window_correct's offset adjustment is the identity function at
- * size 4 regardless of the correct flag. The color defect is confirmed
- * independent of this window's correction; since it reproduces even though
- * the control-register sequence a working mode-zero recognizer requires
- * already matches byte-for-byte through this same window, the remaining
- * defect most likely sits in psitech-rad4.c's own pixel-value handling, not
- * here.
+ * (correct shapes and layout, wrong colors).
  */
 #define SGI_BRIDGE_PIO_XLATE_BASE 0x40000000
 #define SGI_BRIDGE_PIO_XLATE_SIZE 0x40000000
