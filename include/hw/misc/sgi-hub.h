@@ -541,6 +541,11 @@ MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
 /*
+ * Clear a processor's enable because its module lost power: the processor
+ * is reset and halted, a state no interrupt ends.
+ */
+void sgi_hub_power_off_cpu(SGIHubState *s, unsigned int cpu);
+/*
  * Wire this Hub's one-wire line to a module's midplane net, whose parts the
  * module controller owns: an Origin 2000 module's n1 node reaches its
  * MODULEID and midplane parts this way.

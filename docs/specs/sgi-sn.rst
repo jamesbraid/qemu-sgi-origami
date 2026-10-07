@@ -807,18 +807,22 @@ Module power and reset
 
 An Origin 2000 module controller carries out ``pwr d``, ``pwr c`` and
 ``rst`` through its module's power and reset outputs, which the machine
-connects. Once every module's power is off the machine powers down; IRIX
-6.5.30 sends ``pwr d 1`` to every module at ``shutdown -p``. A module
-whose power returns before that power-down is carried out went through
-``pwr c``, a cold restart, and the machine resets. A module reset resets
-the whole machine. QEMU has no per-module power or reset, so a rack of
-several modules approximates both: one module powering off alone is
-logged and does not stop the others, and one module's reset or power
-cycle resets them all. The module's NMI output, which the controller
-pulses for ``nmi`` and for its heartbeat watchdog, reaches the NMI input
-of every processor in the module directly. On an Origin 200 each node's
-own controller drives an NMI output that the node wires the same way to
-its processors.
+connects; an Origin 200 controller holds its module's power itself. When
+a controller removes power, the machine resets and halts the processors
+of every node in that module with their Hub's processor enables clear, a
+state no interrupt ends, and its resets keep them stopped until the
+controller restores power and resets the machine. Once every module's
+power is off with no power-up to come the machine powers down
+(:doc:`sgi-elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
+1`` to every module at ``shutdown -p``. A module reset resets the whole
+machine. QEMU has no per-module reset, so one module's reset or power-up
+resets them all, and on a machine of several modules the running
+modules' processors could still write an unpowered module's processor
+enables. The module's NMI output, which the controller pulses for
+``nmi`` and for its heartbeat watchdog, reaches the NMI input of every
+processor in the module directly. On an Origin 200 each node's own
+controller drives an NMI output that the node wires the same way to its
+processors.
 
 .. _sgi-sn-launch-metadata:
 

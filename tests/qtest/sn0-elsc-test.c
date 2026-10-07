@@ -43,6 +43,12 @@
 /* An acknowledged "rst" resets the machine a second later. */
 #define ELSC_RESET_WAIT_NS NANOSECONDS_PER_SECOND
 
+/*
+ * A default "pwr c" on an Origin 200: five seconds off, then four seconds
+ * of power-up with reset held.
+ */
+#define ELSC_CYCLE_NS (9 * NANOSECONDS_PER_SECOND)
+
 /* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
 #define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
 
@@ -2442,6 +2448,8 @@ static void test_pwr_cycle_resets(const void *data)
     g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
+    /* Power comes back after the interval and the power-up hold. */
+    qtest_clock_step(qts, ELSC_CYCLE_NS);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -2610,10 +2618,9 @@ static void test_pwr_down_without_delay(const void *data)
  */
 static void test_pwr_cycle_rearms_cold_power(const void *data)
 {
+    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
-
-    elsc_reset();
 
     /* Clear the cold-power latch: the first query reads 1, the next 0. */
     req_len = build_request(req, "pwr q");
@@ -2624,10 +2631,15 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     assert_response_begins(resp, "ok 0");
 
-    /* Power-cycle. */
+    /*
+     * Power-cycle: power goes at once, and comes back after the five-second
+     * interval and the four-second power-up hold.
+     */
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     assert_response_begins(resp, "ok");
+    assert_reply(qts, "pwr q", "ok 0");
+    qtest_clock_step(qts, ELSC_CYCLE_NS);
     qtest_qmp_eventwait(qts, "RESET");
 
     /* The cycle re-armed the latch: the first post-cycle query reads 1. */
@@ -2636,6 +2648,7 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok 1");
+    qtest_quit(qts);
 }
 
 /*
@@ -2916,7 +2929,6 @@ static void test_rst_waits_one_second(const void *data)
     assert_reply(qts, "rst", "ok ");
     qtest_clock_step(qts, 300 * (int64_t)SCALE_MS);
     assert_reply(qts, "pwr c", "ok ");
-    qtest_qmp_eventwait(qts, "RESET");
     assert_reply(qts, "tas A", "ok 0");
     qtest_clock_step(qts, 699 * (int64_t)SCALE_MS);
     assert_reply(qts, "tas", "ok A");
@@ -2969,13 +2981,18 @@ static void test_nmi_pulses_after_one_second(const void *data)
     assert_reply(qts, "tas", "ok 0");
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
 
-    /* A power cycle inside the wait does not cancel it. */
+    /*
+     * A power cycle inside the wait does not cancel it, but the pulse then
+     * reaches no processor of the unpowered module: the lock is still
+     * freed and no NMI goes out.
+     */
     assert_reply(qts, "nmi", "ok ");
     qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
     assert_reply(qts, "pwr c", "ok ");
-    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "tas C", "ok 0");
     qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
-    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 2);
+    assert_reply(qts, "tas", "ok 0");
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
     qtest_quit(qts);
 }
 
@@ -3126,7 +3143,10 @@ static void test_hbt_watchdog_stages(const void *data)
     qtest_clock_step(qts, 9999 * (int64_t)SCALE_MS);
     assert_reply(qts, "pwr q", "ok 0");
     qtest_clock_step(qts, SCALE_MS);
+    assert_reply(qts, "pwr", "ok d");
+    qtest_clock_step(qts, ELSC_CYCLE_NS);
     qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "pwr", "ok u");
     assert_reply(qts, "pwr q", "ok 1");
 
     /* Idle now: neither time nor a heartbeat brings another NMI. */
@@ -3189,6 +3209,261 @@ static void test_hbt_stopped_only_by_clr_or_zero(const void *data)
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
     assert_reply(qts, "hbt 0", "ok ");
     qtest_quit(qts);
+}
+
+/*
+ * Whether the Hub lets this node's first processor run: the machine clears
+ * the processor enables while the module has no power.
+ */
+#define PI_CPU_ENABLE_A 0x000050
+
+static bool cpus_enabled(QTestState *qts)
+{
+    return qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A) & 1;
+}
+
+/*
+ * "pwr c" keeps the module unpowered for its interval and then the
+ * power-up hold, and the machine does not run meanwhile: every processor
+ * is held while the controller keeps answering, and keeps publishing its
+ * grants. "clr" does not cancel the power-up, and "pwr u" starts the
+ * power-up sequence early.
+ */
+static void test_pwr_cycle_holds_power_off(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+    g_autofree char *off = NULL;
+    int64_t t0;
+
+    g_assert_true(cpus_enabled(qts));
+    assert_reply(qts, "pwr c 6", "ok ");
+    t0 = qtest_clock_step(qts, 1);
+    assert_reply(qts, "pwr", "ok d");
+    g_assert_false(cpus_enabled(qts));
+    assert_reply(qts, "rst", "err cmd");
+    assert_reply(qts, "nmi", "err cmd");
+    assert_reply(qts, "pwr d 1", "ok ");
+    assert_reply(qts, "clr", "ok ");
+    off = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(off, "module power: off"));
+    /*
+     * The Origin 200 build keeps publishing while the module is off, the
+     * "pd cycle" message still announced for its second.
+     */
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    /* Six seconds off, then four of power-up with reset held. */
+    qtest_clock_set(qts, t0 + 9998 * (int64_t)SCALE_MS);
+    assert_reply(qts, "pwr", "ok d");
+    g_assert_false(cpus_enabled(qts));
+    qtest_clock_step(qts, 2 * SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "pwr", "ok u");
+    g_assert_true(cpus_enabled(qts));
+
+    /* "pwr u" cuts the off interval short; power is back four seconds on. */
+    assert_reply(qts, "pwr c 258", "ok ");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "pwr u", "ok ");
+    qtest_clock_step(qts, 3999 * (int64_t)SCALE_MS);
+    assert_reply(qts, "pwr", "ok d");
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "pwr", "ok u");
+    qtest_quit(qts);
+}
+
+/*
+ * A two-module Origin 200's slave controller powers off only its own
+ * module: its processors stop while the master's machine runs on, and the
+ * machine powers down only once the master's module is off too.
+ */
+static void test_two_towers_slave_power_off(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,topology=origin200-dual -m 128M -smp 4 -no-shutdown");
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned req_len, resp_len;
+
+    sn0_program_nasid(qts, 1);
+    req_len = build_request(req, "pwr d 0");
+    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
+                                resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "ok");
+    req_len = build_request(req, "pwr");
+    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
+                                resp, sizeof(resp));
+    assert_response_begins(resp, "ok d");
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE +
+                                PI_CPU_ENABLE_A) & 1, ==, 0);
+    g_assert_true(cpus_enabled(qts));
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+
+    assert_reply(qts, "pwr d 0", "ok ");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/*
+ * A processor running with interrupts enabled counts in memory; the
+ * general exception vector marks that an interrupt was taken.
+ */
+#define HOLD_COUNT          0x3000u
+#define HOLD_MARK           0x3008u
+#define HOLD_MARK_MAGIC     0x1e7u
+#define HOLD_ENTRY          0x800u
+#define HOLD_STATUS         (SN0_STATUS_KERNEL | 0x400u | 0x1u) /* IM2, IE */
+#define HUB_PI_INT_MODIFY   0x000090
+#define HUB_PI_INT_MASK0_A  0x0000a8
+#define HUB_INT_MODIFY_SET  0x100
+#define HOLD_INT_BIT        12
+
+static void build_hold_image(SN0Image *p)
+{
+    unsigned int at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    unsigned int loop;
+
+    sn0_patch_branch(p, at, HOLD_ENTRY);
+    p->pos = SN0_VEC_TLB_REFILL;
+    sn0_emit_park(p);
+    p->pos = SN0_VEC_XTLB_REFILL;
+    sn0_emit_park(p);
+    p->pos = SN0_VEC_GENERAL;
+    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(HOLD_MARK));
+    sn0_emit_li(p, SN0_R_K1, HOLD_MARK_MAGIC);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_K1, 0);
+    sn0_emit_park(p);
+
+    p->pos = HOLD_ENTRY;
+    sn0_emit_li(p, SN0_R_T1, SN0_KSEG1(HOLD_COUNT));
+    sn0_emit_li(p, SN0_R_T2, 0);
+    sn0_emit_li(p, SN0_R_T0, HOLD_STATUS);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T1, SN0_R_T2, 0);
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
+    sn0_patch_branch(p, at, loop);
+}
+
+/* The count once it has stopped moving, or the test fails. */
+static uint32_t hold_wait_stopped(QTestState *qts)
+{
+    uint32_t before = qtest_readl(qts, HOLD_COUNT), after;
+    int i;
+
+    for (i = 0; i < 200; i++) {
+        g_usleep(50 * 1000);
+        after = qtest_readl(qts, HOLD_COUNT);
+        if (after == before) {
+            return after;
+        }
+        before = after;
+    }
+    g_assert_not_reached();
+}
+
+/* Time for a woken processor to take the interrupt, then check it did not. */
+static void hold_assert_stopped(QTestState *qts, uint32_t count)
+{
+    g_usleep(300 * 1000);
+    g_assert_cmphex(qtest_readl(qts, HOLD_MARK), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HOLD_COUNT), ==, count);
+}
+
+/*
+ * Removing power stops a running processor for good: an enabled interrupt
+ * the Hub raises afterwards does not wake it, nor does a stop and
+ * continue, nor a migration.
+ */
+static void test_power_off_holds_against_interrupts(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    GError *err = NULL;
+    QTestState *qts, *to;
+    SgiWait w;
+    uint32_t count;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    build_hold_image(image);
+    path = sn0_image_write(image, "sn0-elsc-hold");
+    tmpfs = g_dir_make_tmp("sn0-elsc-hold-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    qts = qtest_initf("-M origin200 -m 64M -cpu R10000 -accel tcg "
+                      "-bios %s", path);
+    sgi_wait_start(&w, "the processor counting");
+    while (!qtest_readl(qts, HOLD_COUNT) && sgi_wait_continue(&w, 1000)) {
+        continue;
+    }
+    g_assert_cmphex(qtest_readl(qts, HOLD_COUNT), !=, 0);
+
+    assert_reply(qts, "pwr c 258", "ok ");
+    count = hold_wait_stopped(qts);
+    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MASK0_A, 1ULL << HOLD_INT_BIT);
+    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MODIFY,
+                 HUB_INT_MODIFY_SET | HOLD_INT_BIT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
+                    1ULL << HOLD_INT_BIT);
+    hold_assert_stopped(qts, count);
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    hold_assert_stopped(qts, count);
+
+    to = qtest_initf("-M origin200 -m 64M -cpu R10000 -accel tcg "
+                     "-bios %s -incoming %s", path, uri);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(qts, uri);
+    qtest_quit(qts);
+    sgi_migrate_resume(to);
+    hold_assert_stopped(to, count);
+    assert_reply(to, "pwr", "ok d");
+    qtest_quit(to);
+
+    unlink(path);
+    unlink(uri + strlen("unix:"));
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
+/*
+ * A module powered off for good shuts the machine down even when the
+ * machine stopped before it could, and the stopped machine was migrated:
+ * the request is not in the stream, so the destination makes it again.
+ */
+static void test_power_off_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-elsc-off-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    dest = g_strdup_printf("-M origin200 -no-shutdown -incoming %s", uri);
+
+    from = qtest_init("-M origin200 -no-shutdown");
+    assert_reply(from, "pwr d 0", "ok ");
+    qtest_qmp_eventwait(from, "SHUTDOWN");
+    to = qtest_init(dest);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_qmp_eventwait(to, "SHUTDOWN");
+    qtest_quit(from);
+    qtest_quit(to);
 }
 
 int main(int argc, char **argv)
@@ -3305,6 +3580,14 @@ int main(int argc, char **argv)
                         test_console_selection_announcement);
     qtest_add_data_func("sn0/elsc/nmi-pulses-after-one-second", NULL,
                         test_nmi_pulses_after_one_second);
+    qtest_add_data_func("sn0/elsc/two-towers-slave-power-off", NULL,
+                        test_two_towers_slave_power_off);
+    qtest_add_data_func("sn0/elsc/power-off-survives-migration", NULL,
+                        test_power_off_survives_migration);
+    qtest_add_data_func("sn0/elsc/power-off-holds-against-interrupts", NULL,
+                        test_power_off_holds_against_interrupts);
+    qtest_add_data_func("sn0/elsc/pwr-cycle-holds-power-off", NULL,
+                        test_pwr_cycle_holds_power_off);
     qtest_add_data_func("sn0/elsc/rst-waits-one-second", NULL,
                         test_rst_waits_one_second);
     qtest_add_data_func("sn0/elsc/pwr-down-posts-pd-remote", NULL,

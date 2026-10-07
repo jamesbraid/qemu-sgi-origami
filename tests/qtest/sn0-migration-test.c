@@ -84,6 +84,8 @@
     (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE + \
      4 + 4 + 8)
 #define ELSC_RXLEN_VMSTATE_OFFSET   (1 + ELSC_RXBUF_VMSTATE_SIZE)
+#define ELSC_RESET_OWED_VMSTATE_OFFSET (ELSC_ARB_CODE_VMSTATE_OFFSET + 4)
+#define PI_CPU_ENABLE_A         0x000050
 #define ELSC_TXLEN_VMSTATE_OFFSET \
     (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE)
 #define QEMU_VM_SECTION_FULL      4
@@ -339,8 +341,8 @@ static void enable_cpu_pcf_observer(QTestState *qts, unsigned int cpu)
                I2C_CTL_PIN | I2C_CTL_ESO);
 }
 
-static void patch_master_elsc_field(const char *path, unsigned offset,
-                                    uint32_t value)
+static void patch_master_elsc_bytes(const char *path, unsigned offset,
+                                    const void *bytes, size_t n)
 {
     static const char name[] = "sgi-elsc";
     g_autofree gchar *contents = NULL;
@@ -352,7 +354,7 @@ static void patch_master_elsc_field(const char *path, unsigned offset,
     g_assert_no_error(err);
 
     for (i = 6;
-         i + sizeof(name) - 1 + 8 + offset + 4 < length;
+         i + sizeof(name) - 1 + 8 + offset + n < length;
          i++) {
         uint8_t *p = (uint8_t *)contents + i;
         uint8_t *versionp;
@@ -367,13 +369,22 @@ static void patch_master_elsc_field(const char *path, unsigned offset,
         versionp = p + sizeof(name) - 1 + 4;
         datap = versionp + 4;
         g_assert_cmpuint(ldl_be_p(versionp), ==, ELSC_VMSTATE_VERSION);
-        stl_be_p(datap + offset, value);
+        memcpy(datap + offset, bytes, n);
         found = true;
         break;
     }
     g_assert_true(found);
     g_assert_true(g_file_set_contents(path, contents, length, &err));
     g_assert_no_error(err);
+}
+
+static void patch_master_elsc_field(const char *path, unsigned offset,
+                                    uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, value);
+    patch_master_elsc_bytes(path, offset, bytes, sizeof(bytes));
 }
 
 static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
@@ -772,6 +783,62 @@ static void test_elsc_framing_lengths_checked(const void *data)
         qtest_wait_qemu(to);
         qtest_quit(to);
     }
+
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
+/*
+ * A power-up asks for the reset that starts the module's processors; a
+ * stream taken before that reset ran carries the debt, and the destination
+ * asks for the reset itself once it runs, not while it loads. The stream
+ * here is a source whose processor enable is clear, as it is between power
+ * returning and that reset.
+ */
+static void test_elsc_power_up_reset_survives_migration(const void *data)
+{
+    static const uint8_t owed = 1;
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *stream = NULL;
+    g_autofree gchar *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    SgiWait w;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(tmpfs, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+
+    from = qtest_init(MACHINE);
+    qtest_writeq(from, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
+    g_assert_cmphex(qtest_readq(from, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 0);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    patch_master_elsc_bytes(stream, ELSC_RESET_OWED_VMSTATE_OFFSET, &owed,
+                            sizeof(owed));
+
+    to = qtest_init(MACHINE " -S -incoming defer");
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+        uri);
+    sgi_wait_migration(to, "completed");
+
+    /* Nothing is reset while the destination is still paused. */
+    g_usleep(200 * 1000);
+    qtest_qmp_assert_success(to, "{ 'execute': 'query-status' }");
+    g_assert_null(qtest_qmp_event_ref(to, "RESET"));
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 0);
+
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    sgi_wait_start(&w, "processor enable after the owed reset");
+    while (!(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1) &&
+           sgi_wait_continue(&w, 1000)) {
+        continue;
+    }
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 1);
+    qtest_qmp_eventwait(to, "RESET");
+    qtest_quit(to);
 
     g_assert_cmpint(g_unlink(stream), ==, 0);
     g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
@@ -1352,6 +1419,8 @@ int main(int argc, char **argv)
                         NULL, test_staged_i2c_start_survives_migration);
     qtest_add_data_func("sn0/migration/elsc-framing-lengths-checked", NULL,
                         test_elsc_framing_lengths_checked);
+    qtest_add_data_func("sn0/migration/elsc-power-up-reset-owed", NULL,
+                        test_elsc_power_up_reset_survives_migration);
     qtest_add_data_func("sn0/migration/elsc-rotation-position",
                         NULL,
                         test_elsc_rotation_position_patched);

@@ -209,6 +209,7 @@ CTL_ACK = 0x01
 # the guest program, which has no need to compute a checksum it never
 # varies.
 RST = bytes([0x03]) + b'rst' + bytes([0xa4])
+PWR_C = bytes([0x05]) + b'pwr c' + bytes([0x1f])
 
 # The one response this exercise drives back is "ok " (length 3): "rst"
 # needs no supervisor mode over I2C. The guest program never reads the
@@ -218,8 +219,10 @@ RESP_TOTAL = 5
 
 # An acknowledged "rst" resets the machine a second later, as the controller
 # firmware does, so each cycle costs a second of guest time; a few cycles
-# show every requested reset arriving.
+# show every requested reset arriving. A "pwr c" holds the machine
+# unpowered for nine seconds, so it runs fewer.
 ELSC_CYCLES = 3
+PWR_C_CYCLES = 2
 
 
 class ElscProgram(MipsProgram):
@@ -265,9 +268,9 @@ class ElscProgram(MipsProgram):
         self.write_reg(R_S4, CTL_PIN | CTL_ESO | CTL_STO)
 
 
-def build_elsc_reset():
-    """Slice A resets the machine while slice B spins,
-    ELSC_CYCLES times over; then each slice publishes its own done word."""
+def build_elsc_reset(request=RST, cycles=ELSC_CYCLES):
+    """Slice A sends request (resetting the machine) while slice B spins,
+    cycles times over; then each slice publishes its own done word."""
     program = ElscProgram()
 
     # The 64-bit kernel mode the firmware itself selects at entry.
@@ -283,7 +286,7 @@ def build_elsc_reset():
     program.emit(mips_i(0x19, R_ZERO, R_T1, 1))                  # t1 = 1
 
     program.emit(mips_i(0x37, R_S0, R_T4, STATE_PHASE))          # ld: cycle
-    program.emit(mips_i(0x0b, R_T4, R_T3, ELSC_CYCLES))          # sltiu
+    program.emit(mips_i(0x0b, R_T4, R_T3, cycles))               # sltiu
     done = program.branch(0x04, R_T3, R_ZERO)                    # beq
     program.emit(mips_i(0x19, R_T4, R_T5, 1))                    # this cycle
 
@@ -304,7 +307,7 @@ def build_elsc_reset():
     # follows the reset takes the next one.
     program.emit(mips_i(0x3f, R_S0, R_T5, STATE_PHASE))          # sd
 
-    program.elsc_command(RST)
+    program.elsc_command(request)
     program.spin()
 
     # Slice B runs a loop whose every iteration writes, so a slice of
@@ -360,51 +363,85 @@ class SN0ElscReset(_ResetCycleMixin, QemuSystemTest):
     """An ELSC "rst" resets the machine one second after the guest has read
     its "ok", as the module controller's firmware does: it answers, waits
     a second and then pulses reset. Processors keep running through that
-    second, so the peer is free to run after the committing write; what
-    these require is that every requested reset arrives, from the slice
-    that asked, and that both slices resume after the last one."""
+    second, so the peer is free to run after the committing write; those
+    cases require that every requested reset arrives, from the slice that
+    asked, and that both slices resume after the last one.
 
-    def run_resets(self, *accelerator):
+    A "pwr c" removes power once its "ok" is read, and the requesting
+    processor stops every processor at its next block boundary, as the
+    Hub's port reset does. Power comes back after the off interval and the
+    power-up hold, through a second reset. Those cases keep the guard that
+    no peer runs past the committing write."""
+
+    def run_resets(self, request, cycles, *accelerator, exec_log=False):
         self.set_machine('origin200')
         firmware = self.scratch_file('sn0-elsc-reset.bin')
-        build_elsc_reset().write(firmware)
+        build_elsc_reset(request, cycles).write(firmware)
         log = self.log_file('qemu-trace.log')
+        events = 'trace:memory_region_ops_write,trace:cpu_reset'
 
         self.vm.set_machine('origin200,debug-leds=off')
         self.vm.add_args(
             *accelerator, '-smp', '2', '-bios', firmware,
-            '-d', 'trace:memory_region_ops_write,trace:cpu_reset',
-            '-D', log)
+            '-d', ('exec,' if exec_log else '') + events, '-D', log)
         launch_paused(self.vm)
         self.wait_for_both_slices(timeout=180)
         # The log is flushed when the emulator exits, so read it after.
         self.vm.shutdown()
         return Path(log).read_text(errors='replace')
 
-    def assert_every_reset_arrived(self, log):
+    def assert_every_reset_arrived(self, log, resets):
         windows = reset_windows(log, elsc_committing_write)
-        self.assertEqual(len(windows), ELSC_CYCLES,
-                         f'{len(windows)} of {ELSC_CYCLES} resets are in '
-                         f'the log')
+        self.assertEqual(len(windows), resets,
+                         f'{len(windows)} of {resets} resets are in the log')
         self.assertEqual([requester for requester, _ in windows],
-                         [0] * ELSC_CYCLES)
+                         [0] * resets)
+        return windows
+
+    def assert_only_the_requester_ran(self, log):
+        # Each power cycle resets twice, as power goes and as it returns,
+        # and nothing runs between the two, so the log shows one run.
+        windows = self.assert_every_reset_arrived(log, PWR_C_CYCLES)
+        ran = [entered for _, entered in windows if entered]
+        self.assertEqual(
+            [entered[0] for entered in ran[:4]], [],
+            f'a peer entered a translation block after the "pwr c" STOP '
+            f'write in {len(ran)} of {len(windows)} resets')
 
     def test_round_robin_reset_arrives(self):
         """Plain single-threaded round robin."""
         self.assert_every_reset_arrived(
-            self.run_resets('-accel', 'tcg,thread=single'))
+            self.run_resets(RST, ELSC_CYCLES, '-accel', 'tcg,thread=single'),
+            ELSC_CYCLES)
 
     def test_instruction_counted_reset_arrives(self):
         """The fixed instruction-count clock a reproducible run uses, where
         the second's wait is counted in instructions."""
         self.assert_every_reset_arrived(
-            self.run_resets('-accel', 'tcg,thread=single',
-                            '-icount', 'shift=0,align=off,sleep=off'))
+            self.run_resets(RST, ELSC_CYCLES, '-accel', 'tcg,thread=single',
+                            '-icount', 'shift=0,align=off,sleep=off'),
+            ELSC_CYCLES)
 
     def test_multi_threaded_reset_completes(self):
         """Multi-threaded execution."""
         self.assert_every_reset_arrived(
-            self.run_resets('-accel', 'tcg,thread=multi'))
+            self.run_resets(RST, ELSC_CYCLES, '-accel', 'tcg,thread=multi'),
+            ELSC_CYCLES)
+
+    def test_power_cycle_stops_the_peer_at_the_write(self):
+        """Round robin under the fixed instruction-count clock: no peer
+        enters a translation block between the "pwr c" STOP write and
+        either reset of its power cycle."""
+        self.assert_only_the_requester_ran(
+            self.run_resets(PWR_C, PWR_C_CYCLES, '-accel', 'tcg,thread=single',
+                            '-icount', 'shift=0,align=off,sleep=off',
+                            exec_log=True))
+
+    def test_round_robin_power_cycle_stops_the_peer(self):
+        """Plain single-threaded round robin, with no fixed clock."""
+        self.assert_only_the_requester_ran(
+            self.run_resets(PWR_C, PWR_C_CYCLES, '-accel', 'tcg,thread=single',
+                            exec_log=True))
 
 if __name__ == '__main__':
     QemuSystemTest.main()

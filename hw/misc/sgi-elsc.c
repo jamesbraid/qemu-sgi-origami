@@ -97,10 +97,21 @@ static const char *elsc_action_name(uint8_t action)
 static bool elsc_module_powered(SGIElscState *s)
 {
     if (!s->module_ops || !s->module_ops->powered) {
-        return true;
+        return !s->module_off;
     }
     return s->module_ops->powered(s->module_opaque);
 }
+
+bool sgi_elsc_module_powered(SGIElscState *s)
+{
+    return elsc_module_powered(s);
+}
+
+bool sgi_elsc_resetting_itself(SGIElscState *s)
+{
+    return s->resetting_itself;
+}
+
 
 static bool elsc_module_can_execute(SGIElscState *s, SGIElscAction action)
 {
@@ -108,6 +119,12 @@ static bool elsc_module_can_execute(SGIElscState *s, SGIElscAction action)
         return true;
     }
     return s->module_ops->can_execute(s->module_opaque, action);
+}
+
+static bool elsc_module_pulsing(SGIElscState *s)
+{
+    return s->module_ops && s->module_ops->pulsing &&
+           s->module_ops->pulsing(s->module_opaque);
 }
 
 static void elsc_module_slave_active(SGIElscState *s, bool active)
@@ -158,6 +175,10 @@ static void elsc_console_update(SGIElscState *s)
     }
     elsc_module_console_input(s, target >= 0 && s->rx_queue_len > 0);
 }
+
+/* The off interval "pwr c" defaults to, and the heartbeat's power cycle. */
+#define ELSC_CYCLE_DEFAULT_SECONDS 5
+#define ELSC_HBT_CYCLE_SECONDS     5
 
 /* The "tas" cell's free value. */
 #define ELSC_TAS_FREE '0'
@@ -710,19 +731,17 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
     case 'c': {
         /*
          * "pwr c [<sec>]": the optional off interval is read like the
-         * "pwr d" delay and runs from 5 to 0x258 seconds. The model restarts
-         * at once whatever it is (see the specification's power section).
+         * "pwr d" delay and runs from 5 to 0x258 seconds, 5 without one.
          *
-         * "pwr c" replies "ok" before the reset, as "rst" does. CYCLE is a
-         * cold restart: its bottom half re-arms the cold-power latch when
-         * the action fires after the ack. A superseded request causes
-         * neither reset nor false cold-power bit.
+         * "pwr c" replies "ok" before the power goes, as "rst" does, and
+         * acts once the ack is read; a superseded request does nothing.
          */
         uint32_t sec;
+        bool has_interval;
 
         elsc_skip(r);
-        if (elsc_read_hex(r, &sec) &&
-            (sec < 5 || sec > SGI_ELSC_DELAY_MAX)) {
+        has_interval = elsc_read_hex(r, &sec);
+        if (has_interval && (sec < 5 || sec > SGI_ELSC_DELAY_MAX)) {
             elsc_frame_response_str(s, "err arg");
             return;
         }
@@ -731,6 +750,7 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
             return;
         }
         elsc_frame_ok(s);
+        s->cycle_seconds = has_interval ? sec : ELSC_CYCLE_DEFAULT_SECONDS;
         elsc_arm_action(s, ELSC_ACTION_CYCLE, "pwr c");
         return;
     }
@@ -1162,6 +1182,12 @@ static void elsc_handle_sla(SGIElscState *s, ElscRequest *r)
  */
 static void elsc_pulse_nmi(SGIElscState *s)
 {
+    if (!elsc_module_powered(s)) {
+        /* The pulse reaches no processor of an unpowered module. */
+        s->tas_lock = ELSC_TAS_FREE;
+        sgi_elsc_reinitialize(s);
+        return;
+    }
     if (s->module_ops && s->module_ops->nmi) {
         if (!s->module_ops->nmi(s->module_opaque)) {
             qemu_log_mask(LOG_UNIMP,
@@ -1218,6 +1244,128 @@ static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
 }
 
 /*
+ * The power-up sequence holds the module's reset from when it enables the
+ * supplies until it has checked them: about four seconds on the Origin 200
+ * build and 4.4 on the Origin 2000 build.
+ */
+static int64_t elsc_power_up_hold_ms(SGIElscState *s)
+{
+    return s->origin2000 ? 4400 : 4000;
+}
+
+bool sgi_elsc_power_return_pending(SGIElscState *s)
+{
+    if (timer_pending(s->power_up_timer)) {
+        return true;
+    }
+    if (!timer_pending(s->hbt_timer)) {
+        return false;
+    }
+    switch (s->hbt_stage) {
+    case SGI_ELSC_HEARTBEAT_WAITING:
+    case SGI_ELSC_HEARTBEAT_WARNED:
+        return s->hbt_delay != 0;
+    case SGI_ELSC_HEARTBEAT_CYCLING:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * Count down to power-up: the off interval of a power cycle, measured from
+ * now and replacing any countdown already running.
+ */
+static void elsc_power_countdown(SGIElscState *s, unsigned seconds)
+{
+    s->power_sequence = false;
+    timer_mod(s->power_up_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)seconds * 1000);
+}
+
+/*
+ * The power-up sequence starts: the supplies come on with reset held, the
+ * lock is freed and queued serial input goes. The module runs again when
+ * the hold ends (elsc_power_up_expired).
+ */
+static void elsc_power_sequence(SGIElscState *s)
+{
+    s->power_sequence = true;
+    s->tas_lock = ELSC_TAS_FREE;
+    sgi_elsc_reinitialize(s);
+    timer_mod(s->power_up_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              elsc_power_up_hold_ms(s));
+}
+
+/*
+ * Remove module power. The processors of an unpowered module do not run:
+ * the power output tells the machine, which stops them at once through
+ * their Hub's processor enables and keeps them stopped across resets
+ * (sgi_elsc_module_powered()), while the virtual clock, and so this
+ * controller, keeps running. Once every module of the machine is off with
+ * no power-up to come, the machine powers down. Answers whether this
+ * controller's own processors should stop where they are.
+ */
+static bool elsc_remove_power(SGIElscState *s)
+{
+    /* The power-off ends a power-down countdown. */
+    timer_del(s->pwr_down_timer);
+    if (!elsc_module_powered(s)) {
+        return false;
+    }
+    if (s->module_ops && s->module_ops->execute) {
+        /* The module's power output reaches the machine. */
+        s->module_ops->execute(s->module_opaque, ELSC_ACTION_SHUTDOWN);
+        return false;
+    }
+    s->module_off = true;
+    sgi_elsc_reinitialize(s);
+    if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
+        i2c_end_transfer(s->bus);
+    }
+    qemu_set_irq(s->power_out, 0);
+    return true;
+}
+
+/*
+ * The countdown or the hold ran out. After the off interval the power-up
+ * sequence starts; after the hold, power is back: the cold-power latch is
+ * set and the machine is reset so the module's processors start.
+ */
+static void elsc_power_up_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    if (!s->power_sequence) {
+        elsc_power_sequence(s);
+        return;
+    }
+    s->power_sequence = false;
+    s->cold_power_on = true;
+    if (s->module_ops && s->module_ops->execute) {
+        s->module_ops->execute(s->module_opaque, ELSC_ACTION_POWER_UP);
+    } else {
+        s->module_off = false;
+        qemu_set_irq(s->power_out, 1);
+    }
+    s->self_reset = true;
+    s->power_up_reset_owed = true;
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+}
+
+/*
+ * A power cycle: power goes now and comes back after the interval and the
+ * power-up sequence. On a module already off it only restarts the
+ * countdown. The power-off ends a power-down countdown.
+ */
+static bool elsc_power_cycle(SGIElscState *s, unsigned seconds)
+{
+    timer_del(s->pwr_down_timer);
+    elsc_power_countdown(s, seconds);
+    return elsc_remove_power(s);
+}
+
+/*
  * The watchdog's timer ran out. Waiting: warn, and give the host five more
  * seconds. Warned: pulse the NMI at once, with no wait and no message for
  * the Hubs, and start the delay. Cycling: power the module off and on and go
@@ -1225,10 +1373,9 @@ static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
  * anything; only "hbt" with an interval does. Nothing here looks at module
  * power, so an armed watchdog brings back a module "pwr d" turned off.
  *
- * The firmware powers up again five seconds after the power-off. The model
- * restarts at once, as for "pwr c", and the restart sets the cold-power
- * latch. The Origin 2000 build's warning on its display and an Origin 200
- * master's forwarding to its slave are not modelled.
+ * The power comes back five seconds after the power-off, through the
+ * power-up sequence, as for "pwr c". An Origin 200 master's forwarding to
+ * its slave is not modelled.
  */
 static void elsc_hbt_expired(void *opaque)
 {
@@ -1247,25 +1394,26 @@ static void elsc_hbt_expired(void *opaque)
         }
         break;
     case SGI_ELSC_HEARTBEAT_CYCLING:
-        s->hbt_stage = SGI_ELSC_HEARTBEAT_IDLE;
-        s->cold_power_on = true;
-        timer_del(s->pwr_down_timer);
-        if (s->module_ops && s->module_ops->execute) {
-            if (!elsc_module_can_execute(s, ELSC_ACTION_CYCLE)) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-elsc: the module refused the heartbeat "
-                              "watchdog's power cycle\n");
-                break;
-            }
-            s->self_reset = true;
-            s->module_ops->execute(s->module_opaque, ELSC_ACTION_CYCLE);
-            break;
+        if (elsc_module_can_execute(s, ELSC_ACTION_CYCLE)) {
+            s->hbt_stage = SGI_ELSC_HEARTBEAT_IDLE;
+            elsc_power_cycle(s, ELSC_HBT_CYCLE_SECONDS);
+        } else if (elsc_module_pulsing(s)) {
+            /*
+             * The watchdog's own NMI pulse, or a reset, is still running;
+             * the cycle follows once it has ended.
+             */
+            timer_mod(s->hbt_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      ELSC_NMI_PULSE_MS);
+        } else {
+            /*
+             * The module has no power path, so no cycle will ever run and
+             * none is pending. Such a module never loses power either, so
+             * nothing waits on this one to power the machine down.
+             */
+            qemu_log_mask(LOG_UNIMP, "sgi-elsc: the heartbeat watchdog's "
+                          "power cycle cannot run on this module\n");
+            s->hbt_stage = SGI_ELSC_HEARTBEAT_IDLE;
         }
-        if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
-            i2c_end_transfer(s->bus);
-        }
-        s->self_reset = true;
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         break;
     default:
         break;
@@ -1460,23 +1608,9 @@ static bool elsc_run_committed_action(SGIElscState *s)
 
     switch (action) {
     case ELSC_ACTION_CYCLE:
-        /*
-         * A power-cycle is a cold restart, so re-arm the cold-power latch for
-         * the post-reset "pwr q". elsc_reset_hold leaves the latch alone (a
-         * warm "rst" must not re-arm it), so setting it here, before the
-         * action fires, carries it through whoever carries it out. The
-         * Hubs hear "pd cycle" first, though they lose power before they
-         * could read it.
-         */
-        s->cold_power_on = true;
+        /* The Hubs hear "pd cycle" before the power goes. */
         elsc_post_message(s, SGI_ELSC_MESSAGE_PD_CYCLE);
-        /*
-         * The power-off ends a power-down countdown, and the restart that
-         * follows is this controller's own doing.
-         */
-        timer_del(s->pwr_down_timer);
-        s->self_reset = true;
-        break;
+        return elsc_power_cycle(s, s->cycle_seconds);
     case ELSC_ACTION_RESET:
         /*
          * The reset comes a second later (elsc_reset_wait_expired); another
@@ -1487,15 +1621,17 @@ static bool elsc_run_committed_action(SGIElscState *s)
                   ELSC_RESET_WAIT_MS);
         return false;
     case ELSC_ACTION_SHUTDOWN:
-        break;
+        return elsc_remove_power(s);
     case ELSC_ACTION_POWER_UP:
         /*
-         * Every power-up sets the cold-power latch and frees the lock. Only
-         * a module owner can have an unpowered module to power up.
+         * "pwr u" on an unpowered module starts the power-up sequence now,
+         * cutting short any countdown.
          */
-        s->cold_power_on = true;
-        s->tas_lock = ELSC_TAS_FREE;
-        break;
+        if (!elsc_module_powered(s) &&
+            !(s->power_sequence && timer_pending(s->power_up_timer))) {
+            elsc_power_sequence(s);
+        }
+        return false;
     default:
         /*
          * Only the actions above can be committed; post_load rejects
@@ -1503,23 +1639,6 @@ static bool elsc_run_committed_action(SGIElscState *s)
          */
         g_assert_not_reached();
     }
-
-    /*
-     * A module owner decides what the action reaches; the hardware reset is
-     * module-scoped, and only the single-module Origin 200 can read that as
-     * the whole machine.
-     */
-    if (s->module_ops && s->module_ops->execute) {
-        s->module_ops->execute(s->module_opaque, action);
-        return false;
-    }
-
-    if (action == ELSC_ACTION_SHUTDOWN) {
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-    } else {
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-    }
-    return true;
 }
 
 static void elsc_deferred_action_bh(void *opaque)
@@ -1613,7 +1732,10 @@ static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
 
     if (elsc_run_committed_action(s)) {
         CPU_FOREACH(peer) {
-            cpu_pause(peer);
+            if (peer->cpu_index >= s->cpu_base &&
+                peer->cpu_index < s->cpu_base + s->num_cpus) {
+                cpu_pause(peer);
+            }
         }
     }
 }
@@ -2000,6 +2122,8 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     bool keep = s->self_reset;
 
     s->self_reset = false;
+    s->power_up_reset_owed = false;
+    s->resetting_itself = keep;
     s->rxlen = 0;
     s->txlen = 0;
     s->txpos = 0;
@@ -2031,6 +2155,10 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     }
 
     timer_del(s->pwr_down_timer);
+    timer_del(s->power_up_timer);
+    s->module_off = false;
+    s->power_sequence = false;
+    s->cycle_seconds = ELSC_CYCLE_DEFAULT_SECONDS;
     timer_del(s->rst_timer);
     timer_del(s->nmi_timer);
     timer_del(s->nmi_pulse_timer);
@@ -2068,6 +2196,7 @@ static void elsc_reset_exit(Object *obj, ResetType type)
     SGIElscState *s = SGI_ELSC(obj);
 
     s->self_reset = false;
+    s->resetting_itself = false;
     if (s->arbitration && !timer_pending(s->arb_timer)) {
         elsc_arb_step(s);
     }
@@ -2108,6 +2237,24 @@ static void elsc_shutdown(Notifier *n, void *opaque)
     SGIElscState *s = container_of(n, SGIElscState, shutdown_notifier);
 
     s->self_reset = false;
+    s->power_up_reset_owed = false;
+}
+
+/*
+ * A reset request is not in the migration stream: one a power-up asked for
+ * that had not run when the source stopped is asked for again once the
+ * destination runs, or the module would stay powered with its processors
+ * still stopped. Asking during the load would let the reset run before
+ * later sections load over it.
+ */
+static void elsc_vm_state_change(void *opaque, bool running, RunState state)
+{
+    SGIElscState *s = opaque;
+
+    if (running && s->power_up_reset_owed) {
+        s->self_reset = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
 }
 
 static void elsc_realize(DeviceState *dev, Error **errp)
@@ -2152,11 +2299,14 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->nmi_pulse_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                       elsc_nmi_pulse_ended, s);
     s->hbt_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_hbt_expired, s);
+    s->power_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                     elsc_power_up_expired, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
     s->shutdown_notifier.notify = elsc_shutdown;
     qemu_register_shutdown_notifier(&s->shutdown_notifier);
+    s->vm_state = qemu_add_vm_change_state_handler(elsc_vm_state_change, s);
 }
 
 static void elsc_unrealize(DeviceState *dev)
@@ -2178,9 +2328,12 @@ static void elsc_unrealize(DeviceState *dev)
     s->nmi_pulse_timer = NULL;
     timer_free(s->hbt_timer);
     s->hbt_timer = NULL;
+    timer_free(s->power_up_timer);
+    s->power_up_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
     notifier_remove(&s->shutdown_notifier);
+    qemu_del_vm_change_state_handler(s->vm_state);
 }
 
 /*
@@ -2243,6 +2396,14 @@ static int elsc_post_load(void *opaque, int version_id)
         replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
                                          elsc_deferred_action_bh, s);
     }
+    /*
+     * A shutdown the machine had asked for is not in the stream: an
+     * unpowered module tells the machine again, which shuts down if
+     * nothing will power anything back up.
+     */
+    if (!s->module_ops && s->module_off) {
+        qemu_set_irq(s->power_out, 0);
+    }
     return 0;
 }
 
@@ -2259,6 +2420,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT32(txpos, SGIElscState),
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),
         VMSTATE_UINT32(arb_code, SGIElscState),
+        VMSTATE_BOOL(power_up_reset_owed, SGIElscState),
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
         VMSTATE_BOOL(in_escape, SGIElscState),
@@ -2304,6 +2466,10 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT16(hbt_delay, SGIElscState),
         VMSTATE_UINT8(hbt_stage, SGIElscState),
         VMSTATE_TIMER_PTR(hbt_timer, SGIElscState),
+        VMSTATE_BOOL(module_off, SGIElscState),
+        VMSTATE_BOOL(power_sequence, SGIElscState),
+        VMSTATE_UINT16(cycle_seconds, SGIElscState),
+        VMSTATE_TIMER_PTR(power_up_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
@@ -2328,6 +2494,7 @@ static void elsc_init(Object *obj)
     SGIElscState *s = SGI_ELSC(obj);
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->power_out, "power", 1);
 }
 
 static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
@@ -2379,6 +2546,11 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
     uint32_t i;
 
     g_string_append_printf(buf, "%s\n", path ? path : TYPE_SGI_ELSC);
+    g_string_append_printf(buf, "  module power: %s\n",
+                           elsc_module_powered(s) ? "on" :
+                           s->power_sequence ? "off, powering up" :
+                           timer_pending(s->power_up_timer) ?
+                           "off, power-up counting down" : "off");
     g_string_append_printf(buf,
                            "  rx queue: %u byte(s) waiting for \"get\"\n",
                            s->rx_queue_len);

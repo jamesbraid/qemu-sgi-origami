@@ -555,6 +555,11 @@ bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
     return true;
 }
 
+static bool mgmt_elsc_pulsing(void *opaque)
+{
+    return ((SN0ModuleManagementState *)opaque)->pulse_active;
+}
+
 static bool mgmt_elsc_powered(void *opaque)
 {
     return ((SN0ModuleManagementState *)opaque)->power_on;
@@ -670,6 +675,7 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .powered = mgmt_elsc_powered,
     .can_execute = mgmt_elsc_can_execute,
     .execute = mgmt_elsc_execute,
+    .pulsing = mgmt_elsc_pulsing,
     .nmi = mgmt_elsc_nmi,
     .slave_active = mgmt_elsc_slave_active,
     .console_owner = mgmt_elsc_console_owner,
@@ -950,8 +956,16 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
     s->pulse_nmi = false;
     mgmt_drive_pulse_lines(s, false, false);
     mgmt_reset_state(s);
-    s->power_on = true;
-    s->publication_enabled = true;
+    /*
+     * A reset the module's controller asked for (a module reset or power
+     * cycle) leaves module power as the controller has it; any other is the
+     * cabinet's start, which powers the module up. The controller is on
+     * this device's bus, so its reset phase has already run.
+     */
+    if (!sgi_elsc_resetting_itself(s->msc)) {
+        s->power_on = true;
+    }
+    s->publication_enabled = s->power_on;
     mgmt_drive_power(s);
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                           SERVICE_PERIOD_NS;
