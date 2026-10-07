@@ -210,11 +210,11 @@ CTL_ACK = 0x01
 # varies.
 RST = bytes([0x03]) + b'rst' + bytes([0xa4])
 
-# The one response this exercise drives back is "ok" (length 2): "rst"
+# The one response this exercise drives back is "ok " (length 3): "rst"
 # needs no supervisor mode over I2C. The guest program never reads the
 # content, only completes the framing, so the fixed length is all it
 # needs.
-RESP_TOTAL = 4
+RESP_TOTAL = 5
 
 
 class ElscProgram(MipsProgram):
