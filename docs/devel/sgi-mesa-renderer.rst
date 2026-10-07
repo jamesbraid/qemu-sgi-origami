@@ -91,17 +91,23 @@ retry through the software rasterizer.
 Build and test
 --------------
 
-Configure a MIPS64 build with OpenGL, GBM, and test dependencies available.
-From a QEMU source checkout, build the emulator and the two focused tests:
+From an Origami worktree, select the QEMU source worktree explicitly. These
+wrappers run the build and tests in the project's rootless Podman environment:
 
 .. code-block:: sh
 
-   ./configure --target-list=mips64-softmmu --enable-tests --enable-opengl
-   ninja -C build qemu-system-mips64 \
-       tests/unit/test-sgi-renderer-gl tests/unit/test-sgi-render-resource
-   QEMU_TEST_SGI_REQUIRE_MESA=1 build/pyvenv/bin/meson test -C build \
-       --setup qemu:thorough --print-errorlogs \
+   cd /absolute/path/to/origami-worktree
+   tools/build-env/qemu-build --src /absolute/path/to/qemu-worktree \
+       --build build -j4
+   UV_CACHE_DIR=/storage/nvme/origami/uv QEMU_TEST_SGI_REQUIRE_MESA=1 \
+       tools/qtest --src /absolute/path/to/qemu-worktree --suite unit \
        test-sgi-renderer-gl test-sgi-render-resource
+
+On this host, ``/storage/nvme/origami/uv`` is the configured uv cache.
+``tools/qtest`` starts through a uv shebang before it can read Origami's
+scratch configuration, so set ``UV_CACHE_DIR`` on the command line. Use the
+configured cache path on another host. The ``build`` flavor is the one used
+for tests. ``-j4`` limits compilation to four workers.
 
 The renderer test selects software llvmpipe and checks the reported GL
 renderer. ``QEMU_TEST_SGI_REQUIRE_MESA=1`` makes missing surfaceless Mesa a
@@ -110,11 +116,12 @@ when ``QEMU_TEST_SGI_RENDER_NODE`` is set. The required SGI unit selection is
 documented in :doc:`testing/sgi`. These tests exercise Linux surfaceless EGL
 and GBM. They do not qualify macOS or Windows context creation.
 
-Run tests against the build directory for the source checkout being edited.
-Meson rebuilds named test binaries, but a unit pass does not prove that a
-separately built ``qemu-system-mips64`` contains the same edits. Record the
-source revision, working-tree state, build artifact, and test result together.
-Do not infer a pass from an old binary or another worktree's build.
+``qemu-build`` compiles ``qemu-system-mips64`` from the selected QEMU worktree.
+``qtest --suite unit`` rebuilds the named unit binaries but does not rebuild
+that emulator. The wrapper retains source revision, local changes, binary
+hashes, and test results under the configured scratch root. Check that
+evidence before claiming a pass. Another worktree's build or an older binary
+does not verify the edited source.
 
 Evidence boundary
 -----------------
