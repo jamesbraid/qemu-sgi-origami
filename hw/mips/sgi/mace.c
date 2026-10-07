@@ -5,6 +5,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/mace.h"
+#include "hw/mips/sgi/mace-timer.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
 #include "hw/core/qdev-properties.h"
@@ -47,6 +48,7 @@ struct SGIMACEState {
     uint32_t istat;
     uint32_t imask;
     uint32_t compare[3];
+    uint64_t compare_due[3];
     bool compare_programmed[3];
 };
 
@@ -85,26 +87,18 @@ static void mace_uart_irq(void *opaque, int n, int level)
 
 static void mace_schedule_compare(SGIMACEState *s)
 {
-    uint64_t ticks = mace_elapsed_ticks(s);
-    uint32_t current = ticks;
     int64_t next = INT64_MAX;
     unsigned i;
 
     timer_del(s->timer);
     for (i = 0; i < ARRAY_SIZE(s->compare); i++) {
-        uint64_t delta;
         int64_t deadline;
 
-        if (!s->compare_programmed[i] || (s->istat & MACE_TIMER_BIT(i))) {
+        if (!s->compare_programmed[i] || (s->istat & MACE_TIMER_BIT(i)) ||
+            s->compare_due[i] == UINT64_MAX) {
             continue;
         }
-        delta = (uint32_t)(s->compare[i] - current);
-        if (!delta) {
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-mace: compare equal to current UST is unsupported\n");
-            continue;
-        }
-        deadline = s->epoch_ns + (ticks + delta) * MACE_TIMER_NS;
+        deadline = s->epoch_ns + s->compare_due[i] * MACE_TIMER_NS;
         next = MIN(next, deadline);
     }
     if (next != INT64_MAX) {
@@ -115,11 +109,12 @@ static void mace_schedule_compare(SGIMACEState *s)
 static void mace_compare_fire(void *opaque)
 {
     SGIMACEState *s = opaque;
-    uint32_t current = mace_elapsed_ticks(s);
+    uint64_t current = mace_elapsed_ticks(s);
     unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(s->compare); i++) {
-        if (s->compare_programmed[i] && s->compare[i] == current) {
+        if (s->compare_programmed[i] && !(s->istat & MACE_TIMER_BIT(i)) &&
+            sgi_mace_compare_reached(s->compare_due[i], current)) {
             s->istat |= MACE_TIMER_BIT(i);
         }
     }
@@ -177,7 +172,13 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
     if (size == 8) {
         if (index >= 0) {
             s->compare[index] = value;
+            s->compare_due[index] = sgi_mace_compare_due_tick(
+                mace_elapsed_ticks(s), s->compare[index]);
             s->compare_programmed[index] = true;
+            if (s->compare_due[index] == UINT64_MAX) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace: compare equal to current UST is unsupported\n");
+            }
             s->istat &= ~MACE_TIMER_BIT(index);
             mace_update_irqs(s);
             mace_schedule_compare(s);
@@ -285,6 +286,9 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->istat = 0;
     s->imask = 0;
     memset(s->compare, 0, sizeof(s->compare));
+    for (i = 0; i < ARRAY_SIZE(s->compare_due); i++) {
+        s->compare_due[i] = UINT64_MAX;
+    }
     memset(s->compare_programmed, 0, sizeof(s->compare_programmed));
     timer_del(s->timer);
     for (i = 0; i < ARRAY_SIZE(s->crime); i++) {
@@ -326,6 +330,7 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT32(istat, SGIMACEState),
         VMSTATE_UINT32(imask, SGIMACEState),
         VMSTATE_UINT32_ARRAY(compare, SGIMACEState, 3),
+        VMSTATE_UINT64_ARRAY(compare_due, SGIMACEState, 3),
         VMSTATE_BOOL_ARRAY(compare_programmed, SGIMACEState, 3),
         VMSTATE_STRUCT_ARRAY(uart, SGIMACEState, 2, 0, vmstate_serial,
                              SerialState),
