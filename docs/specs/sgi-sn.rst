@@ -375,23 +375,27 @@ sizes -- ``origin200-dual`` accepts the same per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 3328 MiB, while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
 size. A refused size is reported with the per-node sizes that are
-accepted.
+accepted. ``nodes`` is part of the machine configuration: a snapshot
+restores only into a machine with the same value. ``origin300`` accepts
+only R14000 for ``-cpu``; the other two accept only R10000, the default
+and the only member of their own ``valid_cpu_types``.
 
 An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
-largest first, starting at bank 0 with no empty bank between two
-populated ones (SGI 007-3709-002, printed page 48). Bank 0 holds 64 or
+starting at bank 0 with no empty bank between two populated ones (SGI
+007-3709-002, printed page 48). Each bank takes the largest size that
+still lets the remaining banks hold the rest, with bank 0 capped at
+128 MiB, so 1664 MiB is 128, 512, 512 and 512 MiB. Bank 0 holds 64 or
 128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives the 20
 accepted sizes from 64 to 1664 MiB. The board also takes 256 MB banks,
 but the stock IP27 PROM 6.156 disables a 256 MB bank whenever the
 configuration block gives a processor clock of 180 or 195 MHz, the only
 SN0 processor options here, so QEMU never builds one (*established*,
 from disassembly of the PROM's memory test). A 512 MB bank 0 is real
-hardware too, but the PROM tests the RAM under the boot flash's reset
-address, which QEMU's flash overlay hides, so QEMU leaves it out
-(*approximation*); 1024, 1536 and 2048 MiB need one and are refused. ``nodes`` is part of the machine configuration: a snapshot restores
-only into a machine with the same value. ``origin300`` accepts only R14000 for ``-cpu``; the
-other two accept only R10000, the default and the only member of
-their own ``valid_cpu_types``.
+hardware too, but it is an unsupported configuration here: the PROM
+fails its memory test at the boot flash's reset address, where QEMU's
+flash overlay covers the RAM. The cause is *inferred*: real firmware
+appears to expect RAM behind a cached access there. 1024, 1536 and
+2048 MiB need such a bank and are refused.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within
