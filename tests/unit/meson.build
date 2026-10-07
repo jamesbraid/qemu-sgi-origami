@@ -239,6 +239,7 @@ if have_system
                     '../../hw/display/sgi/rasterizer.c',
                     '../../hw/display/sgi/board-memory.c',
                     migration, io],
+    'test-sgi-render-resource': ['../../hw/display/sgi/render-resource.c'],
     'test-sgi-kona-texture': ['../../hw/misc/sgi-kona-texture.c',
                               '../../hw/misc/sgi-kona-gl-decode.c',
                               '../../hw/display/sgi/gl-context.c',
