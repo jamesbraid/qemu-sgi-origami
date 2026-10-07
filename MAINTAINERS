@@ -1485,6 +1485,7 @@ SGI Origin and Octane machines
 M: James Braid <jamesb@loreland.org>
 S: Maintained
 F: docs/devel/sgi-byte-order.rst
+F: docs/devel/sgi-mesa-renderer.rst
 F: docs/specs/sgi-*
 F: docs/tools/qemu-sgi-machine-init.rst
 F: hw/mips/sn0*
