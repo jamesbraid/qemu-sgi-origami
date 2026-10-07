@@ -20,6 +20,8 @@
  *   U  processor module (IP30 PM10)
  *   I  I/O board (IO8, BaseIO)
  *   F  frontplane (IP30)
+ *   L  midplane (an Origin 2000 module's midplane record part)
+ *   Y  module-identity part (an Origin 2000 module's MODULEID part)
  *   S  power supply (IP30)
  *   B  Bridge one-wire part
  *   X  XBridge one-wire part
