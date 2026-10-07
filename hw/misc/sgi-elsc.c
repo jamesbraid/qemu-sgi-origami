@@ -306,6 +306,12 @@ static void elsc_post_message(SGIElscState *s, SGIElscMessage message)
 {
     s->message = message;
     trace_sgi_elsc_message(elsc_message_text[message]);
+    /* The Origin 200 build also prints each one on its serial line. */
+    if (!s->origin2000) {
+        elsc_serial_puts(s, "\x14\r\nMSC: ");
+        elsc_serial_puts(s, elsc_message_text[message]);
+        elsc_serial_puts(s, "\x14\r");
+    }
     timer_mod(s->message_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
               ELSC_MESSAGE_LIFETIME_MS);
     if (s->module_ops && s->module_ops->post_message) {
@@ -603,6 +609,15 @@ static void elsc_handle_dsp(SGIElscState *s, ElscRequest *r)
         return;
     }
     memcpy(s->display, &r->text[r->pos], n);
+    /*
+     * With a multimodule controller declared, host display text is copied
+     * to it over the serial line, with severity digit 4.
+     */
+    if (s->fsc_present) {
+        elsc_serial_puts(s, "\x14" "dsp ");
+        elsc_serial_write(s, &r->text[r->pos], n);
+        elsc_serial_puts(s, "4\r\n");
+    }
     s->status = SGI_ELSC_STATUS_NONE;
     elsc_frame_ok(s);
 }
@@ -2862,6 +2877,16 @@ static void elsc_reset_exit(Object *obj, ResetType type)
 {
     SGIElscState *s = SGI_ELSC(obj);
 
+    /*
+     * The controller's own start announces it on the serial line with its
+     * version field.
+     */
+    if (!s->resetting_itself) {
+        elsc_serial_puts(s, "\x14MSC ");
+        elsc_serial_puts(s, s->origin2000 ? SGI_ELSC_VERSION_ORIGIN2000 :
+                                            SGI_ELSC_VERSION_ORIGIN200);
+        elsc_serial_puts(s, "\r\n");
+    }
     s->self_reset = false;
     s->resetting_itself = false;
     if (s->arbitration && !timer_pending(s->arb_timer)) {

@@ -49,6 +49,9 @@
  */
 #define ELSC_CYCLE_NS (9 * NANOSECONDS_PER_SECOND)
 
+/* What a controller prints on its serial line when it starts. */
+#define ELSC_BANNER_200 "\x14MSC V 3.1S  \r\n"
+
 /* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
 #define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
 
@@ -974,7 +977,8 @@ static void test_acp_command_writes_to_console(const void *data)
         g_error("ringbuf-read failed: %s", text->str);
     }
     captured = qdict_get_str(rb, "return");
-    g_assert_cmpstr(captured, ==, "hi");
+    /* The controller's start announcement comes first. */
+    g_assert_cmpstr(captured, ==, ELSC_BANNER_200 "hi");
     qobject_unref(rb);
 
     qtest_quit(qts);
@@ -1037,7 +1041,7 @@ static void test_two_towers_only_master_aux_active(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     assert_response_begins(resp, "ok 2");
 
-    assert_aux_captured(qts, "aux0", "n0");
+    assert_aux_captured(qts, "aux0", ELSC_BANNER_200 "n0");
     assert_aux_captured(qts, "aux1", "");
 
     qtest_quit(qts);
@@ -3037,7 +3041,7 @@ static void test_console_selection_commands(const void *data)
     assert_reply(qts, "sel", "ok 1b");
     /* qtest output belongs to processor 0: counted, not copied. */
     assert_reply(qts, "acp 0 hi", "ok 2");
-    assert_aux_captured(qts, "aux", "");
+    assert_aux_captured(qts, "aux", ELSC_BANNER_200);
     /* The filter goes by the frame's selector, "1" being processor 1. */
     assert_reply(qts, "acp 1 ab", "ok 2");
     assert_aux_captured(qts, "aux", "ab");
@@ -3563,7 +3567,10 @@ static void test_serial_supervisor(const void *data)
     serial_command(qts, fd, "fan h", "ok");
     serial_command(qts, fd, "nvm 707", "ok 3");
 
-    serial_command(qts, fd, "pwr d 258", "ok");
+    /* The Hub message goes out on the line as it is queued. */
+    aux_write(fd, "\x14pwr d 258\r");
+    AUX_EXPECT(qts, fd, "\r\nMSC> pwr d 258\r\n"
+                        "\x14\r\nMSC: pd remote\x14\r\x14ok\r\n");
 
     serial_command(qts, fd, "pas s ab", "err arg");
     serial_command(qts, fd, "pas s  abcd", "err arg");

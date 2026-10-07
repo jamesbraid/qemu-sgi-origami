@@ -846,6 +846,14 @@ always takes input and its output never stalls.
   and ``aut`` answer as they would with every byte zero and lose what
   they write, and the model logs the missing part as unimplemented.
 * A command's power or reset action runs once its reply is printed.
+* Unsolicited output: at its own start the controller prints Ctrl+T,
+  ``MSC`` and a space, its version field and a line end. The Origin 200
+  build prints each Hub message as Ctrl+T, return, line feed, ``MSC:``,
+  a space, the message, Ctrl+T and a return. An Origin 2000 controller
+  with a multimodule controller declared (``fsc 1``) copies each host
+  ``dsp`` as Ctrl+T, ``dsp``, a space, the text, the digit 4 and a line
+  end; its own status messages would go out the same way with severity
+  digits 1 to 3, but their texts are not known, so they are not sent.
 * An Origin 200 slave answers Ctrl+T with the prompt and ``Slave!`` when
   echo is on and takes no command; with echo off it takes the line
   silently and never runs it. The slave's line is not attached to a
