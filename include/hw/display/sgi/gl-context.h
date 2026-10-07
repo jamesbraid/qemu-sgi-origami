@@ -677,6 +677,9 @@ typedef struct SGIGLPolygonAssembly {
 typedef enum SGIGLDrawResult {
     SGI_GL_DRAW_OK,
     SGI_GL_DRAW_OUT_OF_MEMORY,
+    SGI_GL_DRAW_UNSUPPORTED,
+    SGI_GL_DRAW_RESOURCE_ERROR,
+    SGI_GL_DRAW_HOST_ERROR,
 } SGIGLDrawResult;
 
 typedef struct SGIGLContext {
@@ -955,8 +958,10 @@ typedef struct SGIGLSink {
      */
     void (*fence)(void *opaque, uint32_t context);
     void *opaque;
-    /* Activated contexts require this result path and never use draw. */
+    /* Preferred for every draw; activated contexts require it. */
     SGIGLDrawResult (*draw_checked)(void *opaque, const SGIGLDraw *d);
+    /* Borrowed by one synchronous checked command; never migrated. */
+    SGIGLDrawResult *result;
 } SGIGLSink;
 
 /* OpenGL 1.2.1's initial state, for the context with identity hw_id. */
@@ -1091,6 +1096,10 @@ void sgi_gl_set_local_viewer(SGIGLContext *c, bool on);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);
+/* Return the first draw failure from one command. */
+SGIGLDrawResult sgi_gl_command_checked(SGIGLContext *c,
+                                       const SGIGLSink *sink,
+                                       const SGIGLCmd *cmd);
 /*
  * glGetLightfv of light number light (0 for GL_LIGHT0) and
  * glGetMaterialfv of GL_FRONT or GL_BACK: the answer as *n float words

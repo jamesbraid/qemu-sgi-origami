@@ -8095,6 +8095,182 @@ static SGIGLDrawResult recorder_checked_draw(void *opaque, const SGIGLDraw *d)
     return result;
 }
 
+typedef struct CheckedDrawProbe {
+    unsigned void_calls;
+    unsigned checked_calls;
+    SGIGLDrawResult result;
+} CheckedDrawProbe;
+
+static void checked_probe_void_draw(void *opaque, const SGIGLDraw *d)
+{
+    CheckedDrawProbe *probe = opaque;
+
+    probe->void_calls++;
+}
+
+static SGIGLDrawResult checked_probe_draw(void *opaque, const SGIGLDraw *d)
+{
+    CheckedDrawProbe *probe = opaque;
+
+    probe->checked_calls++;
+    return probe->result;
+}
+
+static SGIGLDrawResult checked_command(SGIGLContext *c,
+                                      const SGIGLSink *sink, SGIGLOp op,
+                                      const uint32_t *args, unsigned nargs)
+{
+    SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
+
+    return sgi_gl_command_checked(c, sink, &cmd);
+}
+
+static void test_checked_draw_ordinary(void)
+{
+    SGIGLContext c;
+    CheckedDrawProbe probe = { .result = SGI_GL_DRAW_OUT_OF_MEMORY };
+    SGIGLSink sink = {
+        .draw = checked_probe_void_draw,
+        .draw_checked = checked_probe_draw,
+        .opaque = &probe,
+    };
+    uint32_t mode = SGI_GL_TRIANGLES;
+    uint32_t vertex[2] = { bits(0), bits(0) };
+
+    context_init(&c);
+    command(&c, &sink, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 3; i++) {
+        command(&c, &sink, SGI_GL_OP_VERTEX2F, vertex, 2);
+    }
+    g_assert_cmpuint(probe.checked_calls, ==, 1);
+    g_assert_cmpuint(probe.void_calls, ==, 0);
+    g_assert_cmphex(c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+}
+
+static void test_checked_draw_results(void)
+{
+    const SGIGLDrawResult results[] = {
+        SGI_GL_DRAW_OK, SGI_GL_DRAW_OUT_OF_MEMORY,
+        SGI_GL_DRAW_UNSUPPORTED, SGI_GL_DRAW_RESOURCE_ERROR,
+        SGI_GL_DRAW_HOST_ERROR,
+    };
+    uint32_t mode = SGI_GL_TRIANGLES;
+    uint32_t vertex[2] = { bits(0), bits(0) };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(results); i++) {
+        SGIGLContext c;
+        CheckedDrawProbe probe = { .result = results[i] };
+        SGIGLSink sink = {
+            .draw = checked_probe_void_draw,
+            .draw_checked = checked_probe_draw,
+            .opaque = &probe,
+        };
+
+        context_init(&c);
+        g_assert_cmpint(checked_command(&c, &sink, SGI_GL_OP_BEGIN,
+                                        &mode, 1), ==, SGI_GL_DRAW_OK);
+        for (unsigned v = 0; v < 2; v++) {
+            g_assert_cmpint(checked_command(&c, &sink,
+                                            SGI_GL_OP_VERTEX2F, vertex, 2),
+                            ==, SGI_GL_DRAW_OK);
+        }
+        g_assert_cmpint(checked_command(&c, &sink, SGI_GL_OP_VERTEX2F,
+                                        vertex, 2), ==, results[i]);
+        g_assert_cmpuint(probe.checked_calls, ==, 1);
+        g_assert_cmpuint(probe.void_calls, ==, 0);
+        g_assert_cmphex(c.polygon.error, ==,
+                        results[i] == SGI_GL_DRAW_OUT_OF_MEMORY ?
+                        SGI_GL_OUT_OF_MEMORY : 0);
+    }
+}
+
+static void test_checked_draw_latched_failure(void)
+{
+    SGIGLContext c;
+    CheckedDrawProbe probe = { .result = SGI_GL_DRAW_OK };
+    SGIGLDrawResult latched = SGI_GL_DRAW_RESOURCE_ERROR;
+    SGIGLSink sink = {
+        .draw = checked_probe_void_draw,
+        .draw_checked = checked_probe_draw,
+        .opaque = &probe,
+        .result = &latched,
+    };
+    uint32_t mode = SGI_GL_TRIANGLES;
+    uint32_t vertex[2] = { bits(0), bits(0) };
+
+    context_init(&c);
+    command(&c, &sink, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 3; i++) {
+        command(&c, &sink, SGI_GL_OP_VERTEX2F, vertex, 2);
+    }
+    g_assert_cmpint(latched, ==, SGI_GL_DRAW_RESOURCE_ERROR);
+    g_assert_cmpuint(probe.checked_calls, ==, 0);
+    g_assert_cmpuint(probe.void_calls, ==, 0);
+    g_assert_cmphex(c.polygon.error, ==, 0);
+}
+
+static void test_checked_draw_end_paths(void)
+{
+    const uint32_t modes[] = { SGI_GL_POLYGON, SGI_GL_LINE_LOOP };
+    uint32_t vertex[2] = { bits(0), bits(0) };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        SGIGLContext c;
+        CheckedDrawProbe probe = { .result = SGI_GL_DRAW_OK };
+        SGIGLSink sink = {
+            .draw = checked_probe_void_draw,
+            .draw_checked = checked_probe_draw,
+            .opaque = &probe,
+        };
+
+        context_init(&c);
+        if (modes[i] == SGI_GL_POLYGON) {
+            g_assert_true(sgi_gl_enable_polygon_modes(&c, &sink));
+        }
+        command(&c, &sink, SGI_GL_OP_BEGIN, &modes[i], 1);
+        for (unsigned v = 0; v < (modes[i] == SGI_GL_POLYGON ? 3 : 2); v++) {
+            command(&c, &sink, SGI_GL_OP_VERTEX2F, vertex, 2);
+        }
+        probe.result = SGI_GL_DRAW_OUT_OF_MEMORY;
+        g_assert_cmpint(checked_command(&c, &sink, SGI_GL_OP_END, NULL, 0),
+                        ==, SGI_GL_DRAW_OUT_OF_MEMORY);
+        g_assert_cmpuint(probe.checked_calls, ==,
+                         modes[i] == SGI_GL_POLYGON ? 1 : 2);
+        g_assert_cmpuint(probe.void_calls, ==, 0);
+        g_assert_cmphex(c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    }
+}
+
+static void test_checked_draw_legacy_no_consumer(void)
+{
+    if (g_test_subprocess()) {
+        SGIGLContext c;
+        CheckedDrawProbe probe = { .result = SGI_GL_DRAW_UNSUPPORTED };
+        SGIGLSink sink = {
+            .draw = checked_probe_void_draw,
+            .draw_checked = checked_probe_draw,
+            .opaque = &probe,
+        };
+        uint32_t mode = SGI_GL_TRIANGLES;
+        uint32_t vertex[2] = { bits(0), bits(0) };
+
+        context_init(&c);
+        command(&c, &sink, SGI_GL_OP_BEGIN, &mode, 1);
+        for (unsigned i = 0; i < 3; i++) {
+            command(&c, &sink, SGI_GL_OP_VERTEX2F, vertex, 2);
+        }
+        g_assert_cmpuint(probe.checked_calls, ==, 1);
+        g_assert_cmpuint(probe.void_calls, ==, 0);
+        g_assert_cmphex(c.polygon.error, ==, 0);
+        return;
+    }
+
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_passed();
+    g_test_trap_assert_stderr("*unsupported checked draw has no result "
+                              "consumer*");
+}
+
 static void test_polygon_mode_activation(void)
 {
     FragScene f;
@@ -10582,6 +10758,16 @@ int main(int argc, char **argv)
                     test_polygon_mode_activation);
     g_test_add_func("/sgi-gl/polygon-mode-activation-oom",
                     test_polygon_mode_activation_oom);
+    g_test_add_func("/sgi-gl/checked-draw-ordinary",
+                    test_checked_draw_ordinary);
+    g_test_add_func("/sgi-gl/checked-draw-results",
+                    test_checked_draw_results);
+    g_test_add_func("/sgi-gl/checked-draw-latched-failure",
+                    test_checked_draw_latched_failure);
+    g_test_add_func("/sgi-gl/checked-draw-end-paths",
+                    test_checked_draw_end_paths);
+    g_test_add_func("/sgi-gl/checked-draw-legacy-no-consumer",
+                    test_checked_draw_legacy_no_consumer);
     g_test_add_func("/sgi-gl/polygon-mode-stipple-bounds",
                     test_polygon_mode_stipple_bounds);
     g_test_add_func("/sgi-gl/resume-primitive-matches",
