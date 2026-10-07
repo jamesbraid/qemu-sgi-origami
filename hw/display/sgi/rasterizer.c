@@ -940,8 +940,10 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         if (im->one_dimensional && l->height != 1) {
             goto unsupported;
         }
-        if (!sgi_soft_texture_shadow_supported(im, l->base_format) ||
-            !sgi_soft_texture_border_supported(im, l) ||
+        if (!sgi_soft_texture_shadow_supported(im, l->base_format)) {
+            goto unsupported;
+        }
+        if (!sgi_soft_texture_border_supported(im, l) ||
             !sgi_soft_texture_format(l->base_format) ||
             sgi_soft_texture_internal_format(l->internal_format) !=
             l->base_format) {
