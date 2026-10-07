@@ -32,6 +32,14 @@ static void mace(QTestState *s, unsigned source, bool level)
     qtest_set_irq_in(s, CRIME_PATH, "mace", source, level);
 }
 
+static void assert_cpu_ip(QTestState *s, unsigned expected)
+{
+    for (unsigned output = 0; output < 5; output++) {
+        g_assert_cmpint(qtest_get_irq(s, output), ==,
+                        !!(expected & (1U << output)));
+    }
+}
+
 static void test_reset_and_access(void)
 {
     QTestState *s = crime_start("");
@@ -54,6 +62,13 @@ static void test_reset_and_access(void)
     }
     g_assert_cmpuint(memtx_readl(s, CRIME_ID, &narrow), !=, MEMTX_OK);
     g_assert_cmpuint(memtx_readq(s, CRIME_ID + 4, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(s, CRIME_ENABLE, 1U << 4), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(s, CRIME_SOFTWARE, 1U << 28),
+                     !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeq(s, CRIME_ENABLE + 4, BIT64(4)),
+                     !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, CRIME_ENABLE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, CRIME_SOFTWARE), ==, 0);
     g_assert_cmpuint(memtx_writeq(s, CRIME_CONTROL, BIT64(9)), !=, MEMTX_OK);
     g_assert_cmpuint(memtx_writeq(s, CRIME_CONTROL, BIT64(11)), !=, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, CRIME_CONTROL), ==, 0x120);
@@ -99,11 +114,11 @@ static void test_mace_level_routing(void)
         mace(s, cases[i].source, true);
         g_assert_cmphex(qtest_readq(s, CRIME_HARDWARE), ==, bit);
         g_assert_cmphex(qtest_readq(s, CRIME_STATUS), ==, bit);
-        g_assert_false(qtest_get_irq(s, cases[i].output));
+        assert_cpu_ip(s, 0);
         qtest_writeq(s, CRIME_ENABLE, bit);
-        g_assert_true(qtest_get_irq(s, cases[i].output));
+        assert_cpu_ip(s, 1U << cases[i].output);
         qtest_writeq(s, CRIME_ENABLE, 0);
-        g_assert_false(qtest_get_irq(s, cases[i].output));
+        assert_cpu_ip(s, 0);
         g_assert_cmphex(qtest_readq(s, CRIME_HARDWARE), ==, bit);
         mace(s, cases[i].source, false);
         g_assert_cmphex(qtest_readq(s, CRIME_STATUS), ==, 0);
@@ -111,11 +126,11 @@ static void test_mace_level_routing(void)
     qtest_writeq(s, CRIME_ENABLE, BIT64(8) | BIT64(9));
     mace(s, 8, true);
     mace(s, 9, true);
-    g_assert_true(qtest_get_irq(s, 1));
+    assert_cpu_ip(s, 1U << 1);
     mace(s, 8, false);
-    g_assert_true(qtest_get_irq(s, 1));
+    assert_cpu_ip(s, 1U << 1);
     mace(s, 9, false);
-    g_assert_false(qtest_get_irq(s, 1));
+    assert_cpu_ip(s, 0);
     qtest_quit(s);
 }
 
@@ -127,23 +142,20 @@ static void test_software_interrupts(void)
     qtest_writeq(s, CRIME_SOFTWARE, BIT64(28) | BIT64(29));
     g_assert_cmphex(qtest_readq(s, CRIME_STATUS), ==,
                     BIT64(28) | BIT64(29));
-    g_assert_false(qtest_get_irq(s, 2));
-    g_assert_false(qtest_get_irq(s, 3));
+    assert_cpu_ip(s, 0);
     qtest_writeq(s, CRIME_ENABLE, BIT64(28) | BIT64(29));
-    g_assert_true(qtest_get_irq(s, 2));
-    g_assert_true(qtest_get_irq(s, 3));
+    assert_cpu_ip(s, (1U << 2) | (1U << 3));
     g_assert_cmpuint(memtx_writeq(s, CRIME_ENABLE, BIT64(27)),
                      !=, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, CRIME_ENABLE), ==,
                     BIT64(28) | BIT64(29));
     qtest_writeq(s, CRIME_SOFTWARE, BIT64(29));
-    g_assert_false(qtest_get_irq(s, 2));
-    g_assert_true(qtest_get_irq(s, 3));
+    assert_cpu_ip(s, 1U << 3);
     g_assert_cmpuint(memtx_writeq(s, CRIME_SOFTWARE, BIT64(27)),
                      !=, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, CRIME_SOFTWARE), ==, BIT64(29));
     qtest_writeq(s, CRIME_SOFTWARE, 0);
-    g_assert_false(qtest_get_irq(s, 3));
+    assert_cpu_ip(s, 0);
     qtest_quit(s);
 }
 
@@ -155,14 +167,12 @@ static void test_reset_pending_irq(void)
     qtest_writeq(s, CRIME_ENABLE, BIT64(4) | BIT64(28));
     qtest_writeq(s, CRIME_SOFTWARE, BIT64(28));
     mace(s, 4, true);
-    g_assert_true(qtest_get_irq(s, 0));
-    g_assert_true(qtest_get_irq(s, 2));
+    assert_cpu_ip(s, (1U << 0) | (1U << 2));
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, CRIME_ENABLE), ==, 0);
     g_assert_cmphex(qtest_readq(s, CRIME_SOFTWARE), ==, 0);
     g_assert_cmphex(qtest_readq(s, CRIME_HARDWARE), ==, BIT64(4));
-    g_assert_false(qtest_get_irq(s, 0));
-    g_assert_false(qtest_get_irq(s, 2));
+    assert_cpu_ip(s, 0);
     mace(s, 4, false);
     g_assert_cmphex(qtest_readq(s, CRIME_HARDWARE), ==, 0);
     qtest_quit(s);
@@ -191,10 +201,9 @@ static void test_pending_irq_migration(void)
     sgi_wait_migration(to, "completed");
     g_assert_cmphex(qtest_readq(to, CRIME_HARDWARE), ==, BIT64(4));
     g_assert_cmphex(qtest_readq(to, CRIME_SOFTWARE), ==, BIT64(29));
-    g_assert_true(qtest_get_irq(to, 0));
-    g_assert_true(qtest_get_irq(to, 3));
+    assert_cpu_ip(to, (1U << 0) | (1U << 3));
     mace(to, 4, false);
-    g_assert_false(qtest_get_irq(to, 0));
+    assert_cpu_ip(to, 1U << 3);
     qtest_quit(from);
     qtest_quit(to);
     g_rmdir(directory);
