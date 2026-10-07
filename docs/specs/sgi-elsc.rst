@@ -185,10 +185,9 @@ Command vocabulary
     An immediate ``pwr d`` and ``pwr c`` act, like ``rst``, once the
     caller has read the ``ok``: ``pwr d`` shuts the machine down,
     ``pwr c`` resets it (a power-cycle). A countdown shuts the machine
-    down when it expires, on the virtual clock. Four approximations
-    remain. A system reset cancels a pending countdown, although the
-    controller keeps running through a reset on hardware, so a countdown
-    followed by ``rst`` never powers down. The countdown is the nominal
+    down when it expires, on the virtual clock. A countdown survives a
+    ``rst``, which the controller runs through. Three approximations
+    remain. The countdown is the nominal
     number of seconds, although the datasheet infers that the firmware's
     16-bit millisecond count wraps above 0x41. The power cycle restarts
     at once, whatever its interval: QEMU cannot hold a machine unpowered
@@ -209,14 +208,20 @@ Command vocabulary
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error
-    recovery, never a normal boot. It answers ``ok`` and requests an
-    immediate machine reset, deferred until the caller has read the
-    ``ok`` so the ack is never lost. There is no
-    delayed-reset form -- the delay belongs to ``pwr d``. A caller
-    treats ``ok`` as proof the reset happened and does not fall back to
-    its own hardware reset, so the reset is performed rather than
-    logged. The datasheet's reset is module-scoped; on the single-module
-    Origin 200 the module is the whole machine, so this is exact. On a
+    recovery, never a normal boot. An unpowered module answers ``err
+    cmd``. Otherwise it answers ``ok``, queues ``rst`` for the Hubs and
+    resets the module one second later; another ``rst`` inside that
+    second starts the wait again. The firmware starts the second when it
+    builds the ``ok``; the model starts it once the caller has read the
+    ``ok``, as it does for every destructive action, so an unread ``ok``
+    never resets anything. Processors run through the second, as they do
+    on hardware. The firmware then holds reset for 100 ms; an Origin 2000
+    module drives that pulse itself, and on an Origin 200 QEMU's reset
+    is instantaneous. A caller treats ``ok`` as proof the reset happened
+    and does not fall back to its own hardware reset, so the reset is
+    performed rather than logged. The datasheet's reset is
+    module-scoped; on the single-module Origin 200 the module is the
+    whole machine, so this is exact. On a
     multi-node machine it resets the whole VM, broader than the hardware's
     per-module reset -- QEMU provides no per-module reset and the model
     keeps the whole-machine reset rather than refuse.
@@ -338,6 +343,21 @@ are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
 ``sel`` in both builds.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
 
+Controller state across resets
+------------------------------
+
+The controller is powered from the cabinet, not the module, so it keeps
+running through the module resets and power cycles it causes itself:
+``rst``, ``pwr c`` and, below, the heartbeat watchdog's power cycle.
+Through those it reinitialises its bus interface and its queues, frees
+the ``tas`` byte and drops any message it had queued for the Hubs, and
+keeps everything else: a power-down countdown (which a power cycle's
+power-off ends), the fan request, the ``fsc`` and ``tst`` flags, the
+margins and the display. Any other QEMU reset, such as ``system_reset``
+from the monitor, is taken as the controller's own start and clears all
+of it. On a two-module Origin 200 the machine reset also reaches the
+other module's controller, which takes it as its own start.
+
 Controller messages
 -------------------
 
@@ -395,17 +415,21 @@ fires. The IRIX driver cannot leave a transaction that way: every ELSC
 exchange ends with a STOP, after the datasheet's closing invalid-address
 resync step, so a committed action always reaches a boundary. A stream
 migrated in this window is handled the same way -- a committed action is
-re-armed on load only once its frame was consumed (txlen zero); one still
-open waits for the destination's boundary.
+re-armed on load only if its firing was already scheduled at a boundary
+(``deferred_scheduled``); one still waiting for its boundary waits for
+the destination's.
 
 Firing queues the action on the requesting processor's own work, at the
 processor's next translation-block boundary, rather than a main-loop
 bottom half: round-robin execution reaches queued work before any peer is
 scheduled again, so a bottom half's real defect -- every other processor
 free to keep executing until the main loop next runs the reset, a
-different number of instructions on every run -- does not arise. Where no
-module owns the controller (the Origin 200; see below), every processor
-is then stopped, mirroring the Hub's port-reset write
+different number of instructions on every run -- does not arise. A
+``rst`` only starts its one-second wait there, on the virtual clock, so
+its reset lands at a fixed point of virtual time and the processors run
+until then. For an immediate power-cycle or power-down where no module
+owns the controller (the Origin 200; see below), every processor is
+then stopped, mirroring the Hub's port-reset write
 (``sgi_hub_request_machine_reset()`` in :file:`hw/misc/sgi-hub.c`).
 Multi-threaded execution cannot promise a peer stops before its own next
 instruction -- it runs on its own host thread -- so there only the

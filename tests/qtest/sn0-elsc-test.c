@@ -40,6 +40,9 @@
  * checksum bytes. This is the response limit. */
 #define RESP_CAP 96
 
+/* An acknowledged "rst" resets the machine a second later. */
+#define ELSC_RESET_WAIT_NS NANOSECONDS_PER_SECOND
+
 /* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
 #define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
 
@@ -1203,6 +1206,7 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     assert_response_begins(resp, "ok");
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
@@ -1477,6 +1481,7 @@ static void test_no_supervisor_on_i2c(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -1827,6 +1832,7 @@ static void test_rst_performs_machine_reset(const void *data)
     assert_response_begins(resp, "ok");
 
     /* The reset actually happened, not just an "ok". */
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 
     /* And it cleared controller state: the lock is free again. */
@@ -1861,6 +1867,7 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
     assert_response_begins(resp, "ok");
 
     /* Only now, once the ack has been read, does the reset fire. */
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -1933,6 +1940,7 @@ static void test_rst_reset_fires_without_stop(const void *data)
     assert_response_begins(resp, "ok");
 
     /* Reading the last ack byte fired the reset; no STOP was issued. */
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -1992,6 +2000,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
      * The reset committed on the last text-byte fetch fires; the unrelated
      * request did not cancel it.
      */
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -2038,6 +2047,7 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
     assert_response_begins(resp, "ok");
 
     /* Reading the last ack byte fired the reset. */
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(qts, "RESET");
 
     /*
@@ -2109,6 +2119,7 @@ static void test_rst_reset_survives_migration(const void *data)
     g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
+    qtest_clock_step(to, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(to, "RESET");
 
     qtest_quit(to);
@@ -2173,6 +2184,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
 
     /* The closing STOP is the boundary that carries out the committed
      * reset. */
+    qtest_clock_step(to, ELSC_RESET_WAIT_NS);
     qtest_qmp_eventwait(to, "RESET");
 
     qtest_quit(to);
@@ -2846,6 +2858,78 @@ static void test_pwr_down_posts_pd_remote(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * An acknowledged "rst" resets the module a second later, and another "rst"
+ * inside that second starts the wait again. The controller keeps running
+ * through the reset it caused: the lock is freed, while the fan request
+ * and a pending power-down countdown survive. A reset from outside the
+ * controller is its own start and clears them.
+ */
+static void test_rst_waits_one_second(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+
+    assert_reply(qts, "tas A", "ok 0");
+    assert_reply(qts, "fan h", "ok ");
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    assert_reply(qts, "tas", "ok A");
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    assert_reply(qts, "tas", "ok A");
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "tas", "ok 0");
+    assert_reply(qts, "fan", "ok h");
+
+    /* The countdown keeps running through the reset. */
+    assert_reply(qts, "pwr d 3", "ok ");
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200");
+    assert_reply(qts, "fan h", "ok ");
+    qtest_system_reset(qts);
+    assert_reply(qts, "fan", "ok n");
+
+    /*
+     * A power cycle inside the wait does not cancel it: the reset still
+     * comes a second after the "rst".
+     */
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, 300 * (int64_t)SCALE_MS);
+    assert_reply(qts, "pwr c", "ok ");
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "tas A", "ok 0");
+    qtest_clock_step(qts, 699 * (int64_t)SCALE_MS);
+    assert_reply(qts, "tas", "ok A");
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "tas", "ok 0");
+    qtest_quit(qts);
+
+    /*
+     * A reset the controller asked for that the machine turns into a
+     * shutdown never happens; the next reset, from outside, is the
+     * controller's start.
+     */
+    qts = qtest_init("-M origin200 -action reboot=shutdown,shutdown=pause");
+    assert_reply(qts, "fan h", "ok ");
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'set-action', "
+                             "'arguments': { 'reboot': 'reset' } }");
+    qtest_system_reset(qts);
+    assert_reply(qts, "fan", "ok n");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2948,6 +3032,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/rst-waits-one-second", NULL,
+                        test_rst_waits_one_second);
     qtest_add_data_func("sn0/elsc/pwr-down-posts-pd-remote", NULL,
                         test_pwr_down_posts_pd_remote);
     qtest_add_data_func("sn0/elsc/aut-reads-and-writes-nvram", NULL,

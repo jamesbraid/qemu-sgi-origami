@@ -216,6 +216,11 @@ RST = bytes([0x03]) + b'rst' + bytes([0xa4])
 # needs.
 RESP_TOTAL = 5
 
+# An acknowledged "rst" resets the machine a second later, as the controller
+# firmware does, so each cycle costs a second of guest time; a few cycles
+# show every requested reset arriving.
+ELSC_CYCLES = 3
+
 
 class ElscProgram(MipsProgram):
     """lib_mips's assembler plus the PCF8584 register dance this exercise
@@ -262,7 +267,7 @@ class ElscProgram(MipsProgram):
 
 def build_elsc_reset():
     """Slice A resets the machine while slice B spins,
-    CYCLES times over; then each slice publishes its own done word."""
+    ELSC_CYCLES times over; then each slice publishes its own done word."""
     program = ElscProgram()
 
     # The 64-bit kernel mode the firmware itself selects at entry.
@@ -278,7 +283,7 @@ def build_elsc_reset():
     program.emit(mips_i(0x19, R_ZERO, R_T1, 1))                  # t1 = 1
 
     program.emit(mips_i(0x37, R_S0, R_T4, STATE_PHASE))          # ld: cycle
-    program.emit(mips_i(0x0b, R_T4, R_T3, CYCLES))               # sltiu
+    program.emit(mips_i(0x0b, R_T4, R_T3, ELSC_CYCLES))          # sltiu
     done = program.branch(0x04, R_T3, R_ZERO)                    # beq
     program.emit(mips_i(0x19, R_T4, R_T5, 1))                    # this cycle
 
@@ -352,63 +357,54 @@ def elsc_committing_write(line):
 
 
 class SN0ElscReset(_ResetCycleMixin, QemuSystemTest):
+    """An ELSC "rst" resets the machine one second after the guest has read
+    its "ok", as the module controller's firmware does: it answers, waits
+    a second and then pulses reset. Processors keep running through that
+    second, so the peer is free to run after the committing write; what
+    these require is that every requested reset arrives, from the slice
+    that asked, and that both slices resume after the last one."""
 
     def run_resets(self, *accelerator):
         self.set_machine('origin200')
         firmware = self.scratch_file('sn0-elsc-reset.bin')
         build_elsc_reset().write(firmware)
-        log = self.log_file('qemu-exec.log')
+        log = self.log_file('qemu-trace.log')
 
         self.vm.set_machine('origin200,debug-leds=off')
         self.vm.add_args(
             *accelerator, '-smp', '2', '-bios', firmware,
-            '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',
+            '-d', 'trace:memory_region_ops_write,trace:cpu_reset',
             '-D', log)
         launch_paused(self.vm)
-        self.wait_for_both_slices()
+        self.wait_for_both_slices(timeout=180)
         # The log is flushed when the emulator exits, so read it after.
         self.vm.shutdown()
         return Path(log).read_text(errors='replace')
 
-    def assert_only_the_requester_ran(self, log):
+    def assert_every_reset_arrived(self, log):
         windows = reset_windows(log, elsc_committing_write)
-        self.assertEqual(len(windows), CYCLES,
-                         f'{len(windows)} of {CYCLES} resets are in the log')
-        ran = [(requester, entered) for requester, entered in windows
-               if entered]
-        self.log.info('%d resets, %d with a peer running after the '
-                      'committing write', len(windows), len(ran))
-        self.assertEqual(
-            [entered[0] for _, entered in ran[:4]], [],
-            f'a peer entered a translation block after the "rst" STOP '
-            f'write in {len(ran)} of {len(windows)} resets')
+        self.assertEqual(len(windows), ELSC_CYCLES,
+                         f'{len(windows)} of {ELSC_CYCLES} resets are in '
+                         f'the log')
+        self.assertEqual([requester for requester, _ in windows],
+                         [0] * ELSC_CYCLES)
 
-    def test_round_robin_stops_the_peer_at_the_write(self):
-        """Plain single-threaded round robin, with no fixed clock: measured
-        to already keep the peer from running here before this fix as well
-        as after, unlike the icount case below. A regression guard, not the
-        discriminating case -- this model states no general guarantee about
-        unclocked round robin, only what was measured."""
-        self.assert_only_the_requester_ran(
+    def test_round_robin_reset_arrives(self):
+        """Plain single-threaded round robin."""
+        self.assert_every_reset_arrived(
             self.run_resets('-accel', 'tcg,thread=single'))
 
-    def test_instruction_counted_stops_the_peer_at_the_write(self):
-        """Under the fixed instruction-count clock -- the mode a
-        reproducible run uses -- the peer entered a translation block
-        between the "rst" STOP write and the reset in 14 of 20 resets
-        before this fix (measured 2026-09-14) and in none after it."""
-        self.assert_only_the_requester_ran(
+    def test_instruction_counted_reset_arrives(self):
+        """The fixed instruction-count clock a reproducible run uses, where
+        the second's wait is counted in instructions."""
+        self.assert_every_reset_arrived(
             self.run_resets('-accel', 'tcg,thread=single',
                             '-icount', 'shift=0,align=off,sleep=off'))
 
     def test_multi_threaded_reset_completes(self):
-        """Multi-threaded execution cannot promise the peer stopped before
-        any further instruction -- it is running on its own host thread --
-        so this only requires that every reset still completes and both
-        slices resume."""
-        log = self.run_resets('-accel', 'tcg,thread=multi')
-        self.assertEqual(len(reset_windows(log, elsc_committing_write)),
-                         CYCLES)
+        """Multi-threaded execution."""
+        self.assert_every_reset_arrived(
+            self.run_resets('-accel', 'tcg,thread=multi'))
 
 if __name__ == '__main__':
     QemuSystemTest.main()

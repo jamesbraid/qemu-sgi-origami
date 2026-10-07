@@ -1272,6 +1272,8 @@ static void msc_command_then_reset(QTestState *qts, const char *text)
     for (i = 0; i < POLL_STEPS; i++) {
         qtest_clock_step(qts, POLL_STEP_NS);
     }
+    /* A "rst" waits a second before the reset; "pwr c" does not. */
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
