@@ -830,6 +830,12 @@ struct SGIMgrasState {
     bool gl_restore_in_progress;
     bool gl_cleanup_registered;
     bool gl_oom_logged;
+    /* Host Mesa worker and provider diagnostics, never migrated. */
+    SGIRenderer *gl_renderer;
+    bool gl_renderer_opt_in;
+    bool gl_renderer_unavailable;
+    uint64_t gl_render_snapshots;
+    uint64_t gl_render_commits;
     /* GE-port traffic logged since the last switch; not migrated. */
     bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */

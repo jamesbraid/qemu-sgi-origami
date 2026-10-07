@@ -1184,6 +1184,186 @@ static void test_gl_eviction_migration(void)
     g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
+/* The held Mesa path borrows ordinary MGRAS bank storage for one draw. */
+static void gl_render_resource_scene(QTestState *test)
+{
+    mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+    gl_viewport(test, 0, 0, 1280, 1024);
+    gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
+    gl_draw_buffer(test, 1);
+    gl_clear_color(test, 1, 0, 0, 1);
+    gl_word(test, GL_CLEAR_COLOR_BUFFER);
+}
+
+static void gl_render_resource_triangle(QTestState *test)
+{
+    gl_color3f(test, 0, 1, 0);
+    gl_word(test, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(test, -1, -1);
+    gl_vertex2f(test, 1, -1);
+    gl_vertex2f(test, -1, 1);
+    gl_word(test, GL_END_TRIANGLES);
+}
+
+static void test_gl_render_resource_snapshot_commit_reset(void)
+{
+    QTestState *test = qtest_init(
+        MIGRATION_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+
+    gl_render_resource_scene(test);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-back-pixel"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-commits"), ==, 0);
+
+    gl_render_resource_triangle(test);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-commits"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(test, 1100, 123), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-back-pixel"), ==, 0);
+
+    mgras_reset_state(test);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-commits"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0);
+    gl_render_resource_scene(test);
+    gl_render_resource_triangle(test);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-commits"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x00ff00);
+
+    qtest_quit(test);
+}
+
+static void test_gl_render_resource_bank_alias(void)
+{
+    QTestState *test = qtest_init(
+        MIGRATION_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+
+    gl_render_resource_scene(test);
+    gl_word(test, 0x00009808);
+    gl_word(test, 0);
+    gl_word(test, 0);
+    gl_clear_color(test, 0, 0, 1, 1);
+    gl_word(test, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-back-pixel"), ==, 0x0000ff);
+
+    gl_render_resource_triangle(test);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-commits"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-back-pixel"), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(test, 1100, 123), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-back-pixel"), ==, 0x0000ff);
+
+    qtest_quit(test);
+}
+
+static uint32_t gl_render_resource_pixel(QTestState *test, uint32_t x,
+                                         uint32_t y)
+{
+    mgras_test_pixel(test, x, y);
+    return mgras_qom_get_uint(test, "x-test-render-resource-pixel");
+}
+
+static void gl_render_resource_store(QTestState *test, uint32_t pixel)
+{
+    qtest_qmp_assert_success(test,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-render-resource-pixel', 'value': %u}}",
+        MGRAS_QOM_PATH, pixel);
+}
+
+static void test_gl_render_resource_direct_callbacks(void)
+{
+    static const char *const boards[] = {
+        MIGRATION_ARGS, MIGRATION_ARGS MGRAS_TWO_RE_ARGS,
+    };
+
+    for (size_t board = 0; board < ARRAY_SIZE(boards); board++) {
+        QTestState *test = qtest_init(boards[board]);
+        QDict *response;
+
+        gl_render_resource_scene(test);
+        g_assert_cmphex(gl_render_resource_pixel(test, 100, 923), ==,
+                        0xff0000ff);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-snapshots"), ==, 1);
+        gl_render_resource_store(test, 0x11223344);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-commits"), ==, 1);
+        g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x112233);
+        g_assert_cmphex(gl_render_resource_pixel(test, 100, 923), ==,
+                        0x11223344);
+
+        gl_word(test, 0x00009808);
+        gl_word(test, 0);
+        gl_word(test, 0);
+        gl_clear_color(test, 0, 0, 1, 1);
+        gl_word(test, GL_CLEAR_COLOR_BUFFER);
+        g_assert_cmphex(gl_render_resource_pixel(test, 100, 923), ==,
+                        0x0000ffff);
+        gl_render_resource_store(test, 0x00ff0080);
+        g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x112233);
+        g_assert_cmphex(mgras_qom_get_uint(test,
+            "x-test-back-pixel"), ==, 0x00ff00);
+        g_assert_cmphex(gl_render_resource_pixel(test, 100, 923), ==,
+                        0x00ff0080);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-commits"), ==, 2);
+
+        if (board == 1) {
+            gl_word(test, 0x00009808);
+            gl_word(test, 1);
+            gl_word(test, 1);
+            gl_draw_buffer(test, 4);
+            gl_clear_color(test, 1, 0, 1, 1);
+            gl_word(test, GL_CLEAR_COLOR_BUFFER);
+            g_assert_cmphex(mgras_test_slot_pixel(test, 0, 100, 923), ==,
+                            0xff00ff);
+            gl_word(test, 0x00009808);
+            gl_word(test, 0);
+            gl_word(test, 0);
+            mgras_test_pixel(test, 100, 923);
+            response = qtest_qmp(test,
+                "{'execute': 'qom-get', 'arguments': {'path': %s, "
+                "'property': 'x-test-render-resource-pixel'}}",
+                MGRAS_QOM_PATH);
+            g_assert_true(qdict_haskey(response, "error"));
+            qobject_unref(response);
+        }
+
+        mgras_reset_state(test);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-snapshots"), ==, 0);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-commits"), ==, 0);
+        mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+        mgras_test_pixel(test, 100, 923);
+        response = qtest_qmp(test,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-test-render-resource-pixel'}}",
+            MGRAS_QOM_PATH);
+        g_assert_true(qdict_haskey(response, "error"));
+        qobject_unref(response);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-snapshots"), ==, 1);
+        qtest_quit(test);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1256,6 +1436,17 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-polygon/migration",
         test_gl_native_polygon_migration, false);
+
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-render-resource-snapshot-commit-reset",
+        test_gl_render_resource_snapshot_commit_reset, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-render-resource-bank-alias",
+        test_gl_render_resource_bank_alias, false);
+
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-render-resource-direct-callbacks",
+        test_gl_render_resource_direct_callbacks, false);
 
     ret = g_test_run();
     if (qts) {

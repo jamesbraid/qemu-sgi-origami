@@ -2333,6 +2333,9 @@ static const Property mgras_properties[] = {
     /* Present a board the model cannot render; for identity experiments. */
     DEFINE_PROP_BOOL("x-unimplemented-board", SGIMgrasState,
                      unimplemented_board, false),
+    /* Experimental host renderer; ordinary board rendering stays native. */
+    DEFINE_PROP_BOOL("x-mesa-renderer", SGIMgrasState,
+                     gl_renderer_opt_in, false),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),
