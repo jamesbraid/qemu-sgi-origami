@@ -1273,6 +1273,7 @@ static void test_prom_copy_live_node(gconstpointer opaque)
     g_autofree char *quoted = NULL;
     QTestState *qts;
     uint64_t value = 0;
+    SgiWait w;
     const uint32_t bootstrap[] = {
         0x3c08a030, 0x34090001, 0xad090018, /* ready, still own local RAM */
         0x3c08a1a1,
@@ -1332,12 +1333,17 @@ static void test_prom_copy_live_node(gconstpointer opaque)
         g_usleep(10000);
     }
     g_assert_cmphex(value >> 32, ==, 1);
-    {
+    sgi_wait_start(&w, "sibling PROM park");
+    for (;;) {
         g_autoptr(QDict) sibling = qtest_qmp(qts,
             "{'execute':'human-monitor-command', 'arguments':"
             "{'command-line':'info registers', 'cpu-index':3}}");
-        g_assert_nonnull(strstr(qdict_get_str(sibling, "return"),
-                               "pc=0xffffffffbfc0052c"));
+
+        if (strstr(qdict_get_str(sibling, "return"),
+                   "pc=0xffffffffbfc0052c")) {
+            break;
+        }
+        sgi_wait_pause(&w, 10000);
     }
     set_node_number(qts, 0, other);
     set_node_number(qts, 1, own);
