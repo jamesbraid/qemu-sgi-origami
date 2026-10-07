@@ -590,6 +590,42 @@ static uint32_t odsy_test_pixel(QTestState *qts, uint32_t x, uint32_t y)
     return odsy_qom_get_uint(qts, "x-test-pixel");
 }
 
+/*
+ * The w x h block of plane pixels at (x, y), row-major into @out: the probe
+ * odsy_test_pixel() makes, cheaper. The row is selected once rather than per
+ * pixel, so a pixel takes two QMP commands instead of three, and a row's
+ * commands all go out before any reply is read, so QEMU works through them
+ * without waiting on this side. QMP commands are nearly all a scan costs.
+ */
+static void odsy_test_pixels(QTestState *qts, uint32_t x, uint32_t y,
+                             uint32_t w, uint32_t h, uint32_t *out)
+{
+    for (uint32_t row = 0; row < h; row++) {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-y', 'value': %u}}", BOARD, y + row);
+        for (uint32_t col = 0; col < w; col++) {
+            qtest_qmp_send(qts,
+                "{'execute': 'qom-set', 'arguments': {'path': %s, "
+                "'property': 'x-test-pixel-x', 'value': %u}}", BOARD,
+                x + col);
+            qtest_qmp_send(qts,
+                "{'execute': 'qom-get', 'arguments': {'path': %s, "
+                "'property': 'x-test-pixel'}}", BOARD);
+        }
+        for (uint32_t col = 0; col < w; col++) {
+            QDict *set = qtest_qmp_receive(qts);
+            QDict *get = qtest_qmp_receive(qts);
+
+            g_assert_true(qdict_haskey(set, "return"));
+            g_assert_true(qdict_haskey(get, "return"));
+            out[row * w + col] = qdict_get_int(get, "return");
+            qobject_unref(set);
+            qobject_unref(get);
+        }
+    }
+}
+
 static void odsy_test_pixel_write(QTestState *qts, uint32_t x, uint32_t y,
                                   uint32_t value)
 {
@@ -4554,6 +4590,7 @@ static void x11_captured_line_cap(bool not_last, unsigned shape, bool indexed)
     };
     QTestState *qts = board_start("");
     unsigned mismatches = 0;
+    uint32_t scan[32 * 32];
 
     /* An original GL translation must not affect the captured X11 line. */
     integer_routing_setup(qts, 0x02003200);
@@ -4571,6 +4608,7 @@ static void x11_captured_line_cap(bool not_last, unsigned shape, bool indexed)
         user_cmd_push(qts, words[i]);
     }
     g_test_message("shape %u, mode 0x%08x", shape, mode);
+    odsy_test_pixels(qts, 0, 0, 32, 32, scan);
     for (unsigned y = 0; y < 32; y++) {
         for (unsigned x = 0; x < 32; x++) {
             bool covered = shape == 2 ? x == 10 && y == 10 :
@@ -4582,7 +4620,7 @@ static void x11_captured_line_cap(bool not_last, unsigned shape, bool indexed)
                 covered = false;
             }
             expected = covered ? white : 0;
-            actual = odsy_test_pixel(qts, x, y);
+            actual = scan[y * 32 + x];
             if (actual != expected) {
                 g_test_message("pixel (%u,%u): expected 0x%08x, got 0x%08x",
                                x, y, expected, actual);
@@ -6163,14 +6201,14 @@ static void push_point_3f(QTestState *qts, uint32_t r, uint32_t g, uint32_t b,
 static unsigned odsy_count_yellow(QTestState *qts, uint32_t x0, uint32_t x1,
                                   uint32_t y0, uint32_t y1)
 {
+    uint32_t w = x1 - x0 + 1, h = y1 - y0 + 1;
+    g_autofree uint32_t *scan = g_new(uint32_t, w * h);
     unsigned n = 0;
-    uint32_t x, y;
 
-    for (y = y0; y <= y1; y++) {
-        for (x = x0; x <= x1; x++) {
-            if (odsy_test_pixel(qts, x, y) == ODSY_PLANE_YELLOW) {
-                n++;
-            }
+    odsy_test_pixels(qts, x0, y0, w, h, scan);
+    for (uint32_t i = 0; i < w * h; i++) {
+        if (scan[i] == ODSY_PLANE_YELLOW) {
+            n++;
         }
     }
     return n;
@@ -6180,16 +6218,14 @@ static unsigned odsy_count_partial_red_over_blue(QTestState *qts,
                                                  uint32_t x0, uint32_t x1,
                                                  uint32_t y0, uint32_t y1)
 {
+    uint32_t w = x1 - x0 + 1, h = y1 - y0 + 1;
+    g_autofree uint32_t *scan = g_new(uint32_t, w * h);
     unsigned n = 0;
-    uint32_t x, y;
 
-    for (y = y0; y <= y1; y++) {
-        for (x = x0; x <= x1; x++) {
-            uint32_t pixel = odsy_test_pixel(qts, x, y);
-
-            if (pixel != ODSY_PLANE_BLUE && pixel != ODSY_PLANE_RED) {
-                n++;
-            }
+    odsy_test_pixels(qts, x0, y0, w, h, scan);
+    for (uint32_t i = 0; i < w * h; i++) {
+        if (scan[i] != ODSY_PLANE_BLUE && scan[i] != ODSY_PLANE_RED) {
+            n++;
         }
     }
     return n;
@@ -9742,11 +9778,13 @@ static void test_command_fifo_gl_bitmap_rect_wrap_zero(void)
     };
     const uint32_t empty[32] = { 0 };
     QTestState *qts = board_start("");
+    uint32_t scan[70 * 34];
     unsigned x, y;
 
     bitmap_rect(qts, 0, 0, 1, 10, 35, 80, 69);
     bitmap_rect_pattern(qts, pattern, 0x10);
     bitmap_rect(qts, 1, 0, 0, 10, 35, 80, 69);
+    odsy_test_pixels(qts, 10, 35, 70, 34, scan);
     for (y = 35; y < 69; y++) {
         for (x = 10; x < 80; x++) {
             unsigned row = (y - 35) % 32;
@@ -9755,7 +9793,7 @@ static void test_command_fifo_gl_bitmap_rect_wrap_zero(void)
                                 (row == 1 && col == 2)
                                 ? ODSY_PLANE_RED : ODSY_PLANE_BLUE;
 
-            g_assert_cmphex(odsy_test_pixel(qts, x, y), ==, expected);
+            g_assert_cmphex(scan[(y - 35) * 70 + x - 10], ==, expected);
         }
     }
     bitmap_rect_pattern(qts, empty, 0x10);
@@ -10540,6 +10578,7 @@ static void texture_one_dimensional_clamp(bool linear, bool stored, bool wide)
         0x00101505, stored ? 0x01f0ffff : 0x00f0ffff,
     };
     QTestState *qts = board_start("");
+    g_autofree uint32_t *scan = g_new(uint32_t, 128 * 128);
     unsigned mismatches = 0;
 
     /* Captured PIO geometry preserves the original public texel order. */
@@ -10569,10 +10608,11 @@ static void texture_one_dimensional_clamp(bool linear, bool stored, bool wide)
             0x8080c800, starts[i], 80, 0x00014001,
         }, 17);
     }
+    odsy_test_pixels(qts, 0, 0, 128, 128, scan);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
             uint32_t expected = 0x000000ff;
-            uint32_t actual = odsy_test_pixel(qts, x, y);
+            uint32_t actual = scan[y * 128 + x];
 
             for (unsigned i = 0; i < ARRAY_SIZE(starts); i++) {
                 if (x >= starts[i] && x < starts[i] + 16 &&
@@ -11305,6 +11345,7 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
     };
     QTestState *qts = board_start("");
     unsigned mismatches = 0;
+    g_autofree uint32_t *scan = g_new(uint32_t, 128 * 128);
 
     texture_two_dimensional_border_upload(qts, stored, false);
     texture_adapter_window(qts);
@@ -11327,9 +11368,10 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
             }, 18);
         }
     }
+    odsy_test_pixels(qts, 0, 0, 128, 128, scan);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
-            uint32_t expected = 0x000000ff, actual = odsy_test_pixel(qts, x, y);
+            uint32_t expected = 0x000000ff, actual = scan[y * 128 + x];
 
             if (x >= 8 && y >= 8 && x < 108 && y < 108 &&
                 (x - 8) % 28 < 16 && (y - 8) % 28 < 16) {
@@ -12751,6 +12793,7 @@ static void texture_adapter_l8_table_alpha(bool rgba)
         0x00014001,
     };
     QTestState *qts = board_start("");
+    uint32_t scan[64 * 64];
     unsigned mismatches = 0;
 
     /* Original L8 checker; only the captured table endpoints are sampled. */
@@ -12783,11 +12826,12 @@ static void texture_adapter_l8_table_alpha(bool rgba)
     }
     push_user_words(qts, setup, ARRAY_SIZE(setup));
     push_user_words(qts, quad, ARRAY_SIZE(quad));
+    odsy_test_pixels(qts, 32, 32, 64, 64, scan);
     for (unsigned y = 32; y < 96; y++) {
         for (unsigned x = 32; x < 96; x++) {
             bool high = (x < 64) == (y < 64);
             uint32_t expected = high ? 0x60204000 : 0x20406000;
-            uint32_t actual = odsy_test_pixel(qts, x, y) & 0xffffff00;
+            uint32_t actual = scan[(y - 32) * 64 + x - 32] & 0xffffff00;
 
             if (actual != expected) {
                 if (mismatches < 8) {
@@ -13166,6 +13210,7 @@ static void volume_mipmap_control(unsigned control)
     unsigned end = control == 1 ? 48 : 96;
     uint32_t span = control == 0 ? 0x41400000 :
                     control == 1 ? 0x41800000 : ODSY_F_ONE;
+    g_autofree uint32_t *scan = g_new(uint32_t, 64 * 64);
 
     volume_mipmap_upload(qts, -1);
     volume_mipmap_bind(qts);
@@ -13179,9 +13224,10 @@ static void volume_mipmap_control(unsigned control)
         odsy_test_pixel_write(qts, 64, 64, 0x12345678);
     }
     volume_mipmap_quad(qts, span, end);
+    odsy_test_pixels(qts, 32, 128 - end, end - 32, end - 32, scan);
     for (unsigned y = 128 - end; y < 96; y++) {
         for (unsigned x = 32; x < end; x++) {
-            uint32_t actual = odsy_test_pixel(qts, x, y);
+            uint32_t actual = scan[(y - (128 - end)) * (end - 32) + x - 32];
 
             if (control == 0) {
                 for (unsigned shift = 0; shift < 32; shift += 8) {
@@ -13600,6 +13646,7 @@ static void texture_adapter_linear_strq(bool t_enabled, bool bulk)
     };
     uint32_t pixels[4][4];
     unsigned mismatches = 0;
+    uint32_t scan[64 * 64];
     QTestState *qts = board_start("");
 
     for (unsigned z = 0; z < 4; z++) {
@@ -13650,6 +13697,7 @@ static void texture_adapter_linear_strq(bool t_enabled, bool bulk)
         push_user_words(qts, setup_b, ARRAY_SIZE(setup_b));
     }
     push_user_words(qts, quad, ARRAY_SIZE(quad));
+    odsy_test_pixels(qts, 32, 32, 64, 64, scan);
     for (unsigned y = 32; y < 96; y++) {
         for (unsigned x = 32; x < 96; x++) {
             /* Public linear planes evaluated at the pixel's object position. */
@@ -13664,7 +13712,7 @@ static void texture_adapter_linear_strq(bool t_enabled, bool bulk)
             unsigned t_coord = (unsigned)floor(str[1] * 2) % 2;
             unsigned r_coord = (unsigned)floor(str[2] * 4) % 4;
             uint32_t expected = pixels[r_coord][2 * t_coord + s_coord];
-            uint32_t actual = odsy_test_pixel(qts, x, y);
+            uint32_t actual = scan[(y - 32) * 64 + x - 32];
 
             if (actual != expected) {
                 if (mismatches < 8) {
