@@ -7,7 +7,9 @@
  * destination started from the same build, and compares every register in
  * its read-safe list plus the RAM the workload wrote. A field missing from
  * a device's VMStateDescription leaves the destination at its reset value
- * and fails the comparison.
+ * and fails the comparison. Then it resets the destination and requires
+ * every probe to read its pre-load reset value again, so state a load
+ * restores that a reset does not clear fails too.
  *
  * The comparison only proves anything for state the workload actually
  * moved. So before loading, the test reads each probe marked "moved" on the
@@ -41,6 +43,7 @@ typedef enum RtKind {
     RT_WRITE,   /* workload: write @value */
     RT_PROBE,   /* compare on both sides */
     RT_MOVED,   /* compare, and the workload must have moved it from reset */
+    RT_KEPT,    /* as RT_MOVED, but the model keeps it across system reset */
     RT_SELECT,  /* write @value before the probes that follow, every pass */
 } RtKind;
 
@@ -64,6 +67,7 @@ typedef struct RtStep {
 #define M16(a)          { RT_MOVED, 2, 0, (a), 0 }
 #define M32(a)          { RT_MOVED, 4, 0, (a), 0 }
 #define M64(a)          { RT_MOVED, 8, 0, (a), 0 }
+#define K64(a)          { RT_KEPT, 8, 0, (a), 0 }
 /*
  * An index or select register that picks what the next probes read. Each
  * probe pass writes it in table order on whichever side it reads, so both
@@ -271,9 +275,9 @@ static const RtStep sn0_backdoor[] = {
     W64(BACKDOOR_ECC, 0xcafe),
     W64(BACKDOOR_DIR, 0xbabe),
     W64(BACKDOOR_ECC + 0x1238, 0x1234),
-    M64(BACKDOOR_ECC),
-    M64(BACKDOOR_DIR),
-    M64(BACKDOOR_ECC + 0x1238),
+    K64(BACKDOOR_ECC),
+    K64(BACKDOOR_DIR),
+    K64(BACKDOOR_ECC + 0x1238),
     RT_DONE
 };
 
@@ -445,6 +449,8 @@ static const RtDevice *const onyx2_devices[] = {
 #define MGRAS(o)                (o)
 
 static const RtStep mgras[] = {
+    P32(MGRAS(0x04)),                           /* widget identity */
+    P64(MGRAS(0x00)),                           /* HQ revision */
     W32(MGRAS(0x24), 0x0000300f),               /* widget control */
     W32(MGRAS(0x34), 0x12340000),               /* interrupt dest upper */
     W32(MGRAS(0x3c), 0x5678),                   /* interrupt dest lower */
@@ -811,7 +817,7 @@ static const RtStep bedrock_blocks[] = {
     M64(BEDROCK_LB(0x4100)),
     M64(BEDROCK_LB(0x4200)),
     M64(BEDROCK_LB(0x8000)),
-    M64(BEDROCK_LB(0x8010)),
+    K64(BEDROCK_LB(0x8010)),
     M64(BEDROCK_LB(0x8020)),
     M64(BEDROCK_IO(0x158)),
     M64(BEDROCK_IO(0x190)),
@@ -1043,7 +1049,7 @@ static void rt_write(QTestState *s, const RtStep *p, uint64_t base)
 
 static bool rt_is_probe(const RtStep *p)
 {
-    return p->kind == RT_PROBE || p->kind == RT_MOVED;
+    return p->kind == RT_PROBE || p->kind == RT_MOVED || p->kind == RT_KEPT;
 }
 
 /* Read every probe of every device, in table order. */
@@ -1067,10 +1073,12 @@ static GArray *rt_read_probes(QTestState *s, const RtMachine *m)
 
 /*
  * Compare @got against @want probe by probe. With @differ, require every
- * RT_MOVED probe to differ instead (used against the reset values).
+ * RT_MOVED and RT_KEPT probe to differ instead (used against the reset
+ * values). With @at_reset, skip the RT_KEPT probes: the model does not
+ * clear them on system reset.
  */
 static void rt_compare(const RtMachine *m, GArray *want, GArray *got,
-                       const char *what, bool differ)
+                       const char *what, bool differ, bool at_reset)
 {
     unsigned i = 0, bad = 0;
 
@@ -1084,7 +1092,10 @@ static void rt_compare(const RtMachine *m, GArray *want, GArray *got,
             w = g_array_index(want, uint64_t, i);
             g = g_array_index(got, uint64_t, i);
             i++;
-            if (differ ? (p->kind == RT_MOVED && w == g) : w != g) {
+            if (at_reset && p->kind == RT_KEPT) {
+                continue;
+            }
+            if (differ ? (p->kind != RT_PROBE && w == g) : w != g) {
                 g_test_message("%s: %s %s 0x%" PRIx64 " (%u bytes): "
                                "0x%" PRIx64 " vs 0x%" PRIx64,
                                m->name, what, (*d)->name, (*d)->base + p->addr,
@@ -1151,7 +1162,7 @@ static void test_round_trip(const void *data)
     g_autofree char *dir = g_dir_make_tmp("sgi-roundtrip-XXXXXX", &error);
     g_autofree char *uri = NULL, *prom = NULL, *bios = NULL;
     g_autoptr(GArray) reset = NULL, before = NULL, again = NULL;
-    g_autoptr(GArray) after = NULL;
+    g_autoptr(GArray) after = NULL, rt_reset = NULL;
     QTestState *from, *to;
 
     g_assert_no_error(error);
@@ -1177,8 +1188,8 @@ static void test_round_trip(const void *data)
 
     before = rt_read_probes(from, m);
     again = rt_read_probes(from, m);
-    rt_compare(m, before, again, "unstable source read", false);
-    rt_compare(m, before, reset, "workload left at reset", true);
+    rt_compare(m, before, again, "unstable source read", false, false);
+    rt_compare(m, before, reset, "workload left at reset", true, false);
 
     qtest_qmp_assert_success(to, "{ 'execute': 'migrate-incoming',"
                              " 'arguments': { 'uri': %s } }", uri);
@@ -1186,8 +1197,17 @@ static void test_round_trip(const void *data)
     sgi_wait_migration(to, "completed");
 
     after = rt_read_probes(to, m);
-    rt_compare(m, before, after, "destination differs", false);
+    rt_compare(m, before, after, "destination differs", false, false);
     rt_check_ram(to, m);
+
+    /*
+     * State a load restores but a reset does not clear survives a reset
+
+     */
+    qtest_system_reset(to);
+    rt_reset = rt_read_probes(to, m);
+    rt_compare(m, reset, rt_reset, "not at reset after load and reset", false,
+               true);
 
     qtest_quit(to);
     qtest_quit(from);
