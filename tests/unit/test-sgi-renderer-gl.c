@@ -13,6 +13,121 @@ void qemu_gl_run_texture_blit(QemuGLShader *shader, bool flip)
     g_assert_not_reached();
 }
 
+typedef struct MesaTestEnv {
+    char *software;
+    char *driver;
+} MesaTestEnv;
+
+static void mesa_test_env_clear(MesaTestEnv *env)
+{
+    if (env->software) {
+        g_setenv("LIBGL_ALWAYS_SOFTWARE", env->software, true);
+    } else {
+        g_unsetenv("LIBGL_ALWAYS_SOFTWARE");
+    }
+    if (env->driver) {
+        g_setenv("GALLIUM_DRIVER", env->driver, true);
+    } else {
+        g_unsetenv("GALLIUM_DRIVER");
+    }
+    g_free(env->software);
+    g_free(env->driver);
+}
+
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(MesaTestEnv, mesa_test_env_clear)
+
+static void mesa_test_env_set(MesaTestEnv *env)
+{
+    env->software = g_strdup(g_getenv("LIBGL_ALWAYS_SOFTWARE"));
+    env->driver = g_strdup(g_getenv("GALLIUM_DRIVER"));
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
+}
+
+static bool mesa_test_available(bool need_core)
+{
+    const EGLint config_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE,
+    };
+    const EGLint compat_attrs[] = {
+        EGL_CONTEXT_OPENGL_PROFILE_MASK,
+        EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
+    };
+    const EGLint core_attrs[] = {
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
+    };
+    PFNEGLGETPLATFORMDISPLAYEXTPROC platform_display;
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT;
+    EGLConfig config;
+    EGLint nconfigs;
+    const char *reason = "Mesa surfaceless EGL is unavailable";
+    bool initialized = false;
+    bool available = false;
+
+    platform_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+        eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!platform_display) {
+        goto done;
+    }
+    display = platform_display(EGL_PLATFORM_SURFACELESS_MESA,
+                               EGL_DEFAULT_DISPLAY, NULL);
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
+        goto done;
+    }
+    initialized = true;
+    if (!epoxy_has_egl_extension(display, "EGL_KHR_surfaceless_context") ||
+        !eglBindAPI(EGL_OPENGL_API) ||
+        !eglChooseConfig(display, config_attrs, &config, 1, &nconfigs) ||
+        !nconfigs) {
+        goto done;
+    }
+
+    reason = "Mesa llvmpipe 3.3 compatibility context is unavailable";
+    for (unsigned i = 0; i < (need_core ? 2 : 1); i++) {
+        const char *renderer;
+
+        if (i) {
+            reason = "Mesa llvmpipe 3.3 core context is unavailable";
+        }
+        context = eglCreateContext(display, config, EGL_NO_CONTEXT,
+                                   i ? core_attrs : compat_attrs);
+        if (context == EGL_NO_CONTEXT ||
+            !eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context)) {
+            goto done;
+        }
+        renderer = (const char *)glGetString(GL_RENDERER);
+        if (!renderer || !strstr(renderer, "llvmpipe")) {
+            goto done;
+        }
+        g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                     EGL_NO_CONTEXT));
+        g_assert_true(eglDestroyContext(display, context));
+        context = EGL_NO_CONTEXT;
+    }
+    available = true;
+
+done:
+    if (context != EGL_NO_CONTEXT) {
+        g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                     EGL_NO_CONTEXT));
+        g_assert_true(eglDestroyContext(display, context));
+    }
+    if (initialized) {
+        g_assert_true(eglTerminate(display));
+    }
+    if (!available) {
+        if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+            g_error("%s", reason);
+        }
+        g_test_skip(reason);
+    }
+    return available;
+}
+
 static void test_shader_output(void)
 {
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
@@ -126,6 +241,7 @@ static void test_worker_fault(gconstpointer opaque)
 {
     unsigned failure = GPOINTER_TO_UINT(opaque);
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
+    g_auto(MesaTestEnv) mesa_env = { 0 };
     QemuEGLDisplayLease *provider = NULL;
     SGIRenderer *renderer;
     SGIRendererRequest *request;
@@ -137,6 +253,12 @@ static void test_worker_fault(gconstpointer opaque)
         { 16.25f, 111.25f, 0, 1 },
     };
 
+    if (!node) {
+        mesa_test_env_set(&mesa_env);
+        if (!g_test_subprocess() && !mesa_test_available(false)) {
+            return;
+        }
+    }
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_passed();
@@ -148,8 +270,6 @@ static void test_worker_fault(gconstpointer opaque)
         g_assert_null(err);
         fd = qemu_egl_rn_fd;
     } else {
-        g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
-        g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
         fd = -1;
     }
     saved_create = epoxy_eglCreateContext;
@@ -252,6 +372,7 @@ static GLuint compile_probe_shader(GLenum kind, const char *source)
 
 static void test_surfaceless_llvmpipe_pixels(void)
 {
+    g_auto(MesaTestEnv) mesa_env = { 0 };
     static const char *vertex_source =
         "#version 330 core\n"
         "void main() {\n"
@@ -284,8 +405,10 @@ static void test_surfaceless_llvmpipe_pixels(void)
     g_autofree uint16_t *input = g_new(uint16_t, 4096 * 4);
     g_autofree uint16_t *output = g_new(uint16_t, 4096 * 4);
 
-    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
-    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        return;
+    }
     platform_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
         eglGetProcAddress("eglGetPlatformDisplayEXT");
     g_assert_nonnull(platform_display);
@@ -422,6 +545,7 @@ static void test_surfaceless_llvmpipe_pixels(void)
 
 static void test_two_headless_renderers(void)
 {
+    g_auto(MesaTestEnv) mesa_env = { 0 };
     const float vertices[3][4] = {
         { 16.25f, 16.25f, 0, 1 },
         { 111.25f, 16.25f, 0, 1 },
@@ -431,8 +555,10 @@ static void test_two_headless_renderers(void)
     SGIRenderer *first, *second;
     Error *err = NULL;
 
-    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
-    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
     memcpy(request->vertices, vertices, sizeof(vertices));
     request->clip[2] = request->clip[3] = SGI_RENDERER_SIZE - 1;
     request->rgb[0] = 255;
@@ -460,12 +586,15 @@ static void test_two_headless_renderers(void)
 
 static void test_headless_display_accepts_ui_context(void)
 {
+    g_auto(MesaTestEnv) mesa_env = { 0 };
     QemuEGLDisplayLease *lease = NULL;
     SGIRenderer *renderer;
     Error *err = NULL;
 
-    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
-    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
@@ -552,6 +681,7 @@ static SGIRenderCommitResult native_draw_commit(void *opaque,
 
 static void test_decoded_triangle_native_commit(void)
 {
+    g_auto(MesaTestEnv) mesa_env = { 0 };
     static const float xy[3][2] = {
         { -1, -1 }, { 1, -1 }, { -1, 1 },
     };
@@ -597,8 +727,10 @@ static void test_decoded_triangle_native_commit(void)
     SGIRenderer *renderer;
     Error *err = NULL;
 
-    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
-    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
     for (unsigned i = 0; i < 4; i++) {
         state.modelview[i * 5] = 1;
         state.projection[i * 5] = 1;

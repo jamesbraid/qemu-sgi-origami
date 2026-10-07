@@ -136,6 +136,7 @@ jobs:
           bash scripts/ci/runner-setup run-tests -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e PR_BASE_SHA="$PR_BASE_SHA" \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
+              -e QEMU_TEST_SGI_REQUIRE_MESA=1 \
               "$IMAGE_ID" python3 scripts/ci/sgi-check smoke
 
       - name: retain failure diagnostics
@@ -260,6 +261,7 @@ jobs:
           echo "$PART: run this part of the SGI test suite" > "$CI_STEP"
           bash scripts/ci/runner-setup run-tests -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
+              -e QEMU_TEST_SGI_REQUIRE_MESA=1 \
               "$IMAGE_ID" python3 scripts/ci/sgi-check full --part "$PART"
 
       - name: retain failure diagnostics
