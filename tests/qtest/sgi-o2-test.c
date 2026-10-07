@@ -10,12 +10,15 @@
 #include "sgi-mips-emit.h"
 #include "sgi-wait.h"
 
+#include <sys/socket.h>
+
 #define RAM_FULL 0x40000000ULL
 #define RAM_NO_ECC 0x80000000ULL
 #define RAM_SIZE (64 * MiB)
 #define CRIME 0x14000000ULL
 #define MACE_PCI 0x1f080000ULL
 #define MACE_PERIPH 0x1f310000ULL
+#define MACE_UART_A 0x1f390000ULL
 
 static QTestState *o2_start(void)
 {
@@ -276,6 +279,51 @@ static void test_module_profile(void)
     qtest_quit(qts);
 }
 
+static void test_serial_a(void)
+{
+    const char *args = "-M o2-test -cpu R10000 -m 64M -nodefaults "
+                       "-accel tcg,thread=single -S";
+    const uint8_t sent = 'A';
+    uint8_t received;
+    struct timeval deadline = { .tv_sec = SGI_WAIT_S };
+    SgiWait wait;
+    QTestState *qts;
+    int sock;
+
+    qts = qtest_init_with_serial(args, &sock);
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/mace',"
+        "'property':'chardev-a'}}");
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "s0");
+    g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+
+    qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+    qtest_writeq(qts, MACE_PERIPH, 0);
+    qtest_writeq(qts, MACE_PERIPH + 0x18, 1ULL << 20);
+    qtest_writeq(qts, CRIME + 0x18, 1ULL << 4);
+    qtest_writeb(qts, MACE_UART_A + 0x100, 1);
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    sgi_wait_start(&wait, "MACE serial A receive");
+    while (!(qtest_readb(qts, MACE_UART_A + 0x500) & 1)) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    g_assert_cmphex(qtest_readq(qts, MACE_PERIPH + 0x10) & (1ULL << 20),
+                    ==, 1ULL << 20);
+    g_assert_cmphex(qtest_readq(qts, CRIME + 0x28) & (1ULL << 4),
+                    ==, 1ULL << 4);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(qtest_readb(qts, MACE_UART_A), ==, sent);
+    g_assert_false(qtest_readq(qts, MACE_PERIPH + 0x10) & (1ULL << 20));
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    qtest_writeb(qts, MACE_UART_A, 'O');
+    g_assert_cmpint(read(sock, &received, 1), ==, 1);
+    g_assert_cmphex(received, ==, 'O');
+    close(sock);
+    qtest_quit(qts);
+}
+
 static void assert_o2_rejected(const char *option, const char *value,
                                const char *message)
 {
@@ -313,6 +361,11 @@ static void test_configuration(void)
         "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         "-device", "e1000,bus=mace.0,addr=1", NULL,
     };
+    const char *second_serial[] = {
+        qtest_qemu_binary(NULL), "-M", "o2-test", "-m", "64M",
+        "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
+        "-serial", "null", "-serial", "null", NULL,
+    };
     const char *rom_without_image[] = {
         qtest_qemu_binary(NULL), "-M", "o2-test,rom-size=524288", "-m",
         "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
@@ -334,6 +387,8 @@ static void test_configuration(void)
     assert_launch_rejected(usb, "o2-test does not support USB devices");
     assert_launch_rejected(pci,
                            "o2-test does not support attached PCI devices");
+    assert_launch_rejected(second_serial,
+                           "o2-test supports only one host serial backend");
     assert_launch_rejected(rom_without_image,
                            "o2-test ROM settings require rom-image");
     assert_launch_rejected(rom_without_layout,
@@ -350,6 +405,7 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/rom-aliases", test_rom_aliases);
     qtest_add_func("/o2/cached-data", test_cached_data);
     qtest_add_func("/o2/module-profile", test_module_profile);
+    qtest_add_func("/o2/serial-a", test_serial_a);
     qtest_add_func("/o2/configuration", test_configuration);
     return g_test_run();
 }
