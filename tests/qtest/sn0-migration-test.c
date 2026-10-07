@@ -73,14 +73,11 @@
 #define ELSC_ADDR               0x08
 #define ARB_SIGNAL_AFTER_STAGE  0xe1
 #define ARB_SIGNAL1             0xe0
-/*
- * Code 0 at revolution 0 holds its grant for the base slot of ten
- * milliseconds (hw/misc/sgi-elsc.c elsc_arb_slot_us).
- */
-#define ARB_SLOT0_NS            (10000 * 1000)
+/* The controller publishes one grant per one-millisecond tick. */
+#define ARB_TICK_NS             (1000 * 1000)
 #define ARB_PARTIAL_NS          (400 * 1000)
 
-#define ELSC_VMSTATE_VERSION        15
+#define ELSC_VMSTATE_VERSION        16
 #define ELSC_RXBUF_VMSTATE_SIZE     97
 #define ELSC_TXBUF_VMSTATE_SIZE     96
 #define ELSC_ARB_CODE_VMSTATE_OFFSET \
@@ -620,11 +617,10 @@ static void test_interrupt_output_phase_survives_migration(const void *data)
 /*
  * A first START is split across two guest writes: the address reaches the
  * PCF8584 data register before the control write asserts START. Migrate part
- * way through code 0's held slot, after its grant. Migration must preserve
- * both the remaining slot interval and the next code. Code 1 then replaces
- * readable S0 exactly at the slot deadline. Code 0 holds for the base ten
- * milliseconds, not a fixed tick, while the separately staged address still
- * makes START reach the ELSC.
+ * way through the tick after code 0's grant. Migration must preserve both the
+ * remaining tick interval and the next code. Code 1 then replaces readable S0
+ * exactly at the tick, while the separately staged address still makes START
+ * reach the ELSC.
  */
 static void test_staged_i2c_start_survives_migration(const void *data)
 {
@@ -658,7 +654,7 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     sgi_migrate_stopped(from, uri);
     qtest_clock_set(to, source_time);
 
-    qtest_clock_step(to, ARB_SLOT0_NS - ARB_PARTIAL_NS - 1);
+    qtest_clock_step(to, ARB_TICK_NS - ARB_PARTIAL_NS - 1);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_DATA), ==,
                     ELSC_ADDR << 1);
     qtest_clock_step(to, 1);
@@ -713,7 +709,7 @@ static void test_elsc_rotation_position_patched(const void *data)
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
     sgi_wait_migration(to, "completed");
-    qtest_clock_step(to, ARB_SLOT0_NS);
+    qtest_clock_step(to, ARB_TICK_NS);
     g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
                     ARB_SIGNAL1 + 2);
     g_assert_cmphex(cpu_readq(to, 2, HUB_LOCAL + I2C_DATA), ==,

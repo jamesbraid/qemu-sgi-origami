@@ -392,9 +392,9 @@ time slices does.
 
 Two properties of the rotation are contracts, not conveniences:
 
-* A gap -- a broadcast of neither signal value -- precedes every
-  signal. The firmware's wait loop requires its signal to be absent
-  before it trusts a subsequent appearance of it.
+* A processor's own grant must be absent before it trusts a later
+  appearance of it. The other positions' grants supply that absence;
+  there is no separate gap broadcast.
 * Signal 2 is presented only while something waits for the slot's
   processor: console input, for the console processor, or a pending
   response, for its requester. The console case is what tells the
@@ -414,47 +414,31 @@ request replaces it. A request from a context that carries no
 processor -- a monitor or qtest access -- is attributed to the
 console processor.
 
-Each signal is held for a slot of at least ten milliseconds,
-re-broadcast throughout so that a poll at any cadence finds it, then
-withdrawn behind a fresh gap as the rotation moves to the next code.
-Each re-broadcast recomputes the signal 2 half, so a slot whose
-promise has been kept mid-slot -- the response consumed, the queue
-drained -- downgrades to signal 1 rather than announcing something
-no longer there.
-The rotation is purely timer-driven: no bus traffic ends a hold
-early. The model deliberately does not model a processor answering
-its slot, because on the bus a waiting processor's periodic command
-retries are indistinguishable from its answer -- ending the hold on
-them withdrew a signal microseconds after each presentation, before
-the waiting processor's own poll could sample it.
-
-Slot lengths vary, from ten to eleven point six milliseconds, as a
-fixed function of the code and a revolution counter. Both the hold
-and the variation exist to remove races the model itself created:
-guest polling loops and the rotation run on the one deterministic
-virtual clock, so a signal presented once on a fixed beat could
-phase-lock with a poll and leave a processor never sampling its own
-slot, and even held slots on a metronomic ring let a polling loop
-whose period is commensurate with the ring read the same slot at
-the same phase on every revolution -- observed as a poll pinned to
-one code while the rotation ran beneath it. On hardware the
-controller's and the processors' oscillators are unsynchronized and
-drift; the varying slot length models that non-synchronization with
-a pure function of model state, so record/replay and migration stay
-exact where real drift would not.
-
-The model's timing values are choices, not measurements: the gap
-need only be observable by a polling guest, a held signal stands
-far past the 250 microsecond threshold the datasheet specifies, and
-the roughly ten millisecond slots only need to be impossible for a
-plausible polling cadence to miss while keeping the full eight-code
-round well inside the deadlines the polling firmware applies.
-Whether the real controller holds a signal until acknowledged, and
-how it paces its rotation, is unobserved; settling it would take
-bus traces from a real machine. When the bus is busy with a real transaction the
-rotation defers by short retry rather than through the I2C core's
-pending-master queue, because the PCF8584 model drives transactions
-directly and never calls ``i2c_bus_release()``.
+The controller attempts one address-only grant on each
+one-millisecond periodic tick, so every position stands for one tick
+and a ring of *n* positions turns in *n* milliseconds. A grant stays
+readable in every PCF8584 data register until the next one replaces
+it, which covers the firmware's hold check of 250 converted Hub
+counter units (250 microseconds at the model's counter rate). Each
+publication recomputes the signal 2 half. Each tick re-arms the next
+one tick from when it actually ran, so a tick the host runs late
+stretches that position rather than shortening the next one below
+the hold check. The model publishes code 0 at reset and advances
+after each publication, where the controller firmware advances
+before each eligible attempt; the resulting difference of about one
+tick in the ring's starting phase after reset is a model choice. A
+tick that
+finds either module's bus busy publishes nothing and does not
+advance, and the controller waits for its next tick rather than
+publishing as the bus frees, so a STOP never triggers a grant. The
+datasheet takes this pacing from the controller firmware and forbids
+lengthening a position or inserting a gap to compensate for emulator
+scheduling; the model does neither. The rotation is purely
+timer-driven: no bus traffic ends a position early, and no
+acknowledgement consumes a grant. Busy ticks are detected from the
+I2C core's bus state rather than through its pending-master queue,
+because the PCF8584 model drives transactions directly and never
+calls ``i2c_bus_release()``.
 
 The rotation is this model's synthesis of a mechanism the Origin 200
 midplane provides some other way, so the ``arbitration`` property (on by

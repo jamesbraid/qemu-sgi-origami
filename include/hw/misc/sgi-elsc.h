@@ -141,7 +141,6 @@ struct SGIElscState {
     uint32_t arb_positions;
     uint8_t dip_switches;
     uint32_t arb_code;    /* next encoded ring position */
-    uint32_t arb_rev;     /* full rotations completed */
     uint8_t arb_signal;   /* most recently published grant */
 
     /*
