@@ -621,6 +621,29 @@ static void mgmt_elsc_console_input(void *opaque, bool pending)
     ((SN0ModuleManagementState *)opaque)->console_input_pending = pending;
 }
 
+/* A controller message is announced to all eight processor codes. */
+static void mgmt_elsc_post_message(void *opaque)
+{
+    SN0ModuleManagementState *s = opaque;
+    unsigned code;
+
+    for (code = 0; code < PROCESSOR_CODES; code++) {
+        sgi_sn0_module_management_set_message(s, code, true);
+    }
+}
+
+static bool mgmt_elsc_take_message(void *opaque, unsigned processor)
+{
+    SN0ModuleManagementState *s = opaque;
+
+    if (processor >= PROCESSOR_CODES ||
+        !(s->pending_messages & (1U << processor))) {
+        return false;
+    }
+    sgi_sn0_module_management_message_fetched(s, processor);
+    return true;
+}
+
 static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
                                    uint32_t sample)
 {
@@ -636,6 +659,8 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .console_owner = mgmt_elsc_console_owner,
     .console_input = mgmt_elsc_console_input,
     .onewire_slot = mgmt_elsc_onewire_slot,
+    .post_message = mgmt_elsc_post_message,
+    .take_message = mgmt_elsc_take_message,
 };
 
 /*
