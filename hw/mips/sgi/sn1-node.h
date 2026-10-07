@@ -26,7 +26,6 @@
  */
 #define SGI_SN1_NODE_MAX_CPUS 4
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
-#define SN1_IP53_PROM_PAYLOAD_SIZE UINT64_C(1476264)
 
 /*
  * The four processor-selected spaces a node's window appears in (memory, Hub
