@@ -12,6 +12,7 @@ typedef enum OdysseyPlaneFormat {
 typedef bool (*OdysseyPlanePredicate)(void *opaque, uint32_t x, uint32_t y);
 typedef void (*OdysseyPlaneMarkWritten)(void *opaque, uint32_t x, uint32_t y);
 
+/* The caller assigns targets for one drawable; plane coordinates never flip. */
 typedef struct OdysseyPlaneView {
     uint8_t *bytes;
     size_t capacity_bytes;
@@ -52,6 +53,8 @@ bool odyssey_planes_init(OdysseyPlanes *planes, OdysseyPlaneView *views,
 bool odyssey_planes_refresh(OdysseyPlanes *planes,
                             SGIRenderResource *new_resources, Error **errp);
 void odyssey_planes_end_submission(OdysseyPlanes *planes);
+/* Exchange logical front/back bindings for both eyes without copying pixels. */
+bool odyssey_planes_swap_bindings(OdysseyPlanes *planes, Error **errp);
 const SGIRenderResourceOps *odyssey_planes_resource_ops(void);
 
 #endif
