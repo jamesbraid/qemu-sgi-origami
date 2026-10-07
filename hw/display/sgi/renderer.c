@@ -244,6 +244,10 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
 {
     const SGIRenderResource *resources[SGI_GL_MAX_TARGETS];
     SGIRendererClear clears[SGI_GL_MAX_TARGETS] = { 0 };
+    uint32_t *slots[SGI_GL_MAX_TARGETS] = { 0 };
+    uint16_t *rgba[SGI_GL_MAX_TARGETS] = { 0 };
+    size_t pixels[SGI_GL_MAX_TARGETS], nslots[SGI_GL_MAX_TARGETS];
+    SGIRenderResult status = SGI_RENDER_OK;
 
     if (!renderer || !rules || !target || !op) {
         error_setg(errp, "Missing SGI Mesa raster input");
@@ -347,47 +351,52 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         SGIRendererClear *clear = &clears[i];
         SGIRenderRect rect = { .x1 = res->width - 1,
                                .y1 = res->height - 1 };
-        g_autofree uint32_t *slots = NULL;
-        g_autofree uint16_t *rgba = NULL;
-        size_t pixels, nslots;
-        SGIRenderResult status;
-        SGIRenderCommitResult committed;
 
         if (!clear->rect_count) {
             continue;
         }
-        pixels = (size_t)res->width * res->height;
-        nslots = pixels * res->component_count;
-        slots = g_try_new(uint32_t, nslots);
-        rgba = g_try_new(uint16_t, pixels * 4);
-        if (!slots || !rgba) {
+        pixels[i] = (size_t)res->width * res->height;
+        nslots[i] = pixels[i] * res->component_count;
+        slots[i] = g_try_new(uint32_t, nslots[i]);
+        rgba[i] = g_try_new(uint16_t, pixels[i] * 4);
+        if (!slots[i] || !rgba[i]) {
             error_setg(errp, "Cannot allocate SGI Mesa clear buffers");
-            return SGI_RENDER_OOM;
+            status = SGI_RENDER_OOM;
+            goto out;
         }
         status = sgi_render_resource_snapshot(target, res, 0, &rect,
-                                              slots,
+                                              slots[i],
                                               res->width *
                                               res->component_count,
-                                              nslots, errp);
+                                              nslots[i], errp);
         if (status != SGI_RENDER_OK) {
-            return status;
+            goto out;
         }
-        for (size_t pixel = 0; pixel < pixels; pixel++) {
+        for (size_t pixel = 0; pixel < pixels[i]; pixel++) {
             for (unsigned c = 0; c < res->component_count; c++) {
                 unsigned bits = res->component[c].storage_bits;
                 uint32_t max = (1u << bits) - 1;
 
-                rgba[pixel * 4 + c] =
-                    ((uint64_t)slots[pixel * res->component_count + c] *
+                rgba[i][pixel * 4 + c] =
+                    ((uint64_t)slots[i][pixel * res->component_count + c] *
                      65535 + max / 2) / max;
             }
             if (res->component_count == 3) {
-                rgba[pixel * 4 + 3] = 65535;
+                rgba[i][pixel * 4 + 3] = 65535;
             }
         }
-        clear->pixels = rgba;
+        clear->pixels = rgba[i];
+    }
+    for (unsigned i = 0; i < op->ntargets; i++) {
+        const SGIRenderResource *res = resources[i];
+        SGIRendererClear *clear = &clears[i];
+
+        if (!clear->rect_count) {
+            continue;
+        }
         if (!sgi_renderer_clear(renderer, clear, errp)) {
-            return SGI_RENDER_HOST_ERROR;
+            status = SGI_RENDER_HOST_ERROR;
+            goto out;
         }
         for (unsigned j = 0; j < clear->rect_count; j++) {
             const SGIRendererClearRect *r = &clear->rects[j];
@@ -401,22 +410,39 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                         uint32_t max = (1u << bits) - 1;
 
                         if (clear->colour_mask & (1u << c)) {
-                            slots[pixel * res->component_count + c] =
-                                ((uint64_t)rgba[pixel * 4 + c] * max +
+                            slots[i][pixel * res->component_count + c] =
+                                ((uint64_t)rgba[i][pixel * 4 + c] * max +
                                  32767) / 65535;
                         }
                     }
                 }
             }
         }
+    }
+    for (unsigned i = 0; i < op->ntargets; i++) {
+        const SGIRenderResource *res = resources[i];
+        SGIRendererClear *clear = &clears[i];
+        SGIRenderRect rect = { .x1 = res->width - 1,
+                               .y1 = res->height - 1 };
+        SGIRenderCommitResult committed;
+
+        if (!clear->rect_count) {
+            continue;
+        }
         committed = sgi_render_resource_commit(target, res, 0, &rect,
-                                               slots,
+                                               slots[i],
                                                res->width *
                                                res->component_count,
-                                               nslots, errp);
+                                               nslots[i], errp);
         if (committed.status != SGI_RENDER_OK) {
-            return committed.status;
+            status = committed.status;
+            goto out;
         }
     }
-    return SGI_RENDER_OK;
+out:
+    for (unsigned i = 0; i < SGI_GL_MAX_TARGETS; i++) {
+        g_free(slots[i]);
+        g_free(rgba[i]);
+    }
+    return status;
 }
