@@ -461,6 +461,16 @@ that same sequence indefinitely rather than reaching an interactive
 prompt, because nothing carries its own state across the reset the
 PROM performs early in that sequence.
 
+``qemu-sgi-machine-init`` builds an Origin 300 flash for one processor
+population. Two processors fit slots A and C; PROM 6.210 treats empty
+B and D as failed starts and power-cycles the module three times for
+each before it records them disabled. The tool writes those
+``DisableB`` and ``DisableD`` environment records into the new flash,
+so the first power-up proceeds directly. This is an initialization
+approximation, not a factory image. A four-processor flash has neither
+record, and a flash created for one population should not be booted
+with another.
+
 .. _sgi-sn-storage:
 
 Writable storage

@@ -212,6 +212,8 @@ static void test_inputs_checked(void)
 #define IO_PROM_SIZE 0x3000
 #define IP27_CONFIG 0x60
 #define IP35_LABEL (8 * 1024 * 1024 + 0x1e0000 + 0x10)
+/* The first environment record, after the label. */
+#define IP35_RECORDS (8 * 1024 * 1024 + 0x1e0100)
 /* The exact payload every Bedrock topology's -bios must be. */
 #define IP35_PROM_SIZE 1476264
 
@@ -487,6 +489,92 @@ static void check_ip35_flash(const char *dir)
     assert_all(flash, 8 * 1024 * 1024, IP35_LABEL - 0x10, 0xff);
 }
 
+/*
+ * @name holds a Disable record for each empty slot in @slots ("BD") in
+ * order from the first record position, then erased bytes.
+ */
+static void check_disable_records(const char *dir, const char *name,
+                                  const char *slots)
+{
+    static const char value[] = "32: CPU failed early init.";
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, name, &size);
+    const uint8_t *record = flash + IP35_RECORDS;
+
+    for (; *slots; slots++, record += 64) {
+        g_autofree char *slot_name = g_strdup_printf("Disable%c", *slots);
+
+        g_assert_cmphex(record[0], ==, 0x10);
+        g_assert_cmpstr((const char *)record + 1, ==, slot_name);
+        assert_all(record, 1 + strlen(slot_name), 16, 0);
+        g_assert_cmpstr((const char *)record + 16, ==, value);
+        assert_all(record, 16 + sizeof(value), 64, 0);
+    }
+    assert_all(flash, record - flash, size, 0xff);
+}
+
+/* Create @machine's state for @population in the new directory @stem. */
+static char *create_population(const char *stem, const char *machine,
+                               const char *population)
+{
+    char *dir = scratch_path(stem);
+    ToolRun run = run_tool("--machine", machine, "--population", population,
+                           "--boot-prom", ip35_prom, dir, NULL);
+
+    if (!run_succeeded(&run)) {
+        g_printerr("%s", run.err);
+    }
+    g_assert_true(run_succeeded(&run));
+    tool_run_clear(&run);
+    return dir;
+}
+
+/*
+ * The two-processor Origin 300, the default, fits slots A and C: its flash
+ * records B and D as disabled. Four processors leave no slot empty.
+ */
+static void test_origin300_populations(void)
+{
+    g_autofree char *two = create_population(
+        "o300-2", "origin300,topology=origin300,nodes=1", "2");
+    g_autofree char *four = create_population(
+        "o300-4", "origin300,topology=origin300,nodes=1", "4");
+
+    check_ip35_flash(two);
+    check_disable_records(two, "node0-flash", "BD");
+    check_ip35_flash(four);
+    check_disable_records(four, "node0-flash", "");
+    remove_tree(two);
+    remove_tree(four);
+}
+
+/* Each chassis of the pair gets the records for its own population. */
+static void test_origin300_pair_population(void)
+{
+    g_autofree char *dir = create_population(
+        "o300-pair", "origin300,topology=origin300-two-chassis,nodes=2",
+        "4:2");
+
+    check_disable_records(dir, "node0-flash", "");
+    check_disable_records(dir, "node1-flash", "BD");
+    remove_tree(dir);
+}
+
+/* A population the selection does not offer is refused before any file. */
+static void test_population_refused(void)
+{
+    g_autofree char *dir = scratch_path("o300-3");
+    ToolRun run = run_tool("--machine", "origin300,topology=origin300,nodes=1",
+                           "--population", "3", "--boot-prom", ip35_prom,
+                           dir, NULL);
+
+    assert_refused(&run, "origin300,topology=origin300,nodes=1 has no "
+                   "population '3'");
+    g_assert_nonnull(strstr(run.err, "It offers 2, 4."));
+    tool_run_clear(&run);
+    g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
+}
+
 static void test_origin300(void)
 {
     static const StoreSize stores[] = {
@@ -498,6 +586,7 @@ static void test_origin300(void)
         ARRAY_SIZE(stores));
 
     check_ip35_flash(dir);
+    check_disable_records(dir, "node0-flash", "BD");
     assert_zero_store(dir, "nvram0");
     remove_tree(dir);
 }
@@ -528,6 +617,7 @@ static void test_fuel(void)
         ARRAY_SIZE(stores));
 
     check_ip35_flash(dir);
+    check_disable_records(dir, "node0-flash", "");
     remove_tree(dir);
 }
 
@@ -778,6 +868,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/origin200-gigachannel",
                     test_origin200_gigachannel);
     g_test_add_func("/sgi-machine-init/origin300", test_origin300);
+    g_test_add_func("/sgi-machine-init/origin300-populations",
+                    test_origin300_populations);
+    g_test_add_func("/sgi-machine-init/origin300-pair-population",
+                    test_origin300_pair_population);
+    g_test_add_func("/sgi-machine-init/population-refused",
+                    test_population_refused);
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);

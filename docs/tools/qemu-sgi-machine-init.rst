@@ -7,7 +7,7 @@ QEMU SGI machine state creation tool
 Synopsis
 --------
 
-**qemu-sgi-machine-init** **--machine** *OPTIONS* [**--boot-prom** *FILE*] [**--io-prom** *FILE*] *DIR*
+**qemu-sgi-machine-init** **--machine** *OPTIONS* [**--population** *SPLIT*] [**--boot-prom** *FILE*] [**--io-prom** *FILE*] *DIR*
 
 **qemu-sgi-machine-init** **--machine help**
 
@@ -26,7 +26,8 @@ catalogue compiled into QEMU, the same document ``query-sgi-machines``
 returns. The tool resolves *OPTIONS* with the code the machine uses for
 ``-M`` and builds each store's contents with the code the machine uses when
 it is started with no files. A machine started on the result therefore
-reads the same flash as one started unbacked on the same images.
+reads the same flash as one started unbacked on the same images, apart from
+the Origin 300 environment records described under `Initial contents`_.
 
 Every node of a machine gets the same boot PROM.
 
@@ -42,6 +43,15 @@ Options
   the machine would accept in another spelling is refused with the
   catalogue's own spelling, so that one machine has one name. ``help``
   lists every selection.
+
+.. option:: -p SPLIT, --population SPLIT
+
+  The processors fitted on each node, in node order and colon-separated,
+  as ``-M population=`` takes them: ``2`` or ``4`` for one Origin 300,
+  ``4:2`` for a pair. It must be one of the selection's populations, and
+  defaults to the first, the one the machine runs without ``-smp``. Only
+  Origin 300 flash depends on it, so a machine run with a different
+  processor count needs state created for that count.
 
 .. option:: -b FILE, --boot-prom FILE
 
@@ -78,6 +88,14 @@ Each store starts from one of these:
   the image's configuration block. IP35 node flash holds the image in its
   first PROM position and the blank-media label in its second. Octane boot
   flash holds the image followed by erased bytes.
+
+  An Origin 300 node's flash also holds an active ``Disable`` environment
+  record for each processor slot its population leaves empty: ``DisableB``
+  and ``DisableD`` for two processors in slots A and C, none for four. The
+  PROM writes the same records itself, but only after power-cycling the
+  module three times for each empty slot. The records are an
+  initialization approximation rather than a factory image, and an
+  unbacked machine, whose flash cannot be written, does not have them.
 
 ``io-prom``
   The I/O PROM file as supplied, followed by erased bytes.

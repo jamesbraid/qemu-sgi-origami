@@ -16,11 +16,13 @@
 #include <getopt.h>
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/cutils.h"
 #include "qemu/help-texts.h"
 #include "qemu-version.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sn1-topology.h"
 #include "hw/nvram/sgi-elsc-nvram.h"
 #include "hw/rtc/m48t35-ip27.h"
 
@@ -35,8 +37,8 @@ typedef struct InitInputs {
 static void usage(FILE *out)
 {
     fprintf(out,
-            "Usage: " CMD_NAME " --machine OPTIONS [--boot-prom FILE] "
-            "[--io-prom FILE] DIR\n"
+            "Usage: " CMD_NAME " --machine OPTIONS [--population SPLIT] "
+            "[--boot-prom FILE] [--io-prom FILE] DIR\n"
             "       " CMD_NAME " --machine help\n"
             "\n"
             "Create the directory DIR holding every writable store the SGI\n"
@@ -45,6 +47,9 @@ static void usage(FILE *out)
             "OPTIONS is one of the -M values '--machine help' lists.\n"
             "\n"
             "  -M, --machine OPTIONS  the machine selection, or 'help'\n"
+            "  -p, --population SPLIT the processors on each node, in node\n"
+            "                         order, colon-separated (\"4:2\");\n"
+            "                         default the selection's first\n"
             "  -b, --boot-prom FILE   the node boot PROM image\n"
             "  -i, --io-prom FILE     the BASEIO or GIGAchannel I/O PROM image\n"
             "  -h, --help             print this text\n"
@@ -101,6 +106,56 @@ static const SGIModelOffering *resolve_machine(const char *options,
         return NULL;
     }
     return offering;
+}
+
+/* Whether @offering fits exactly the per-node processor counts @split. */
+static bool population_matches(const SGIModelOffering *offering,
+                               char **split)
+{
+    const uint32List *entry = offering->cpus_per_node;
+    unsigned int count;
+
+    for (; *split; split++, entry = entry->next) {
+        if (!entry || qemu_strtoui(*split, NULL, 10, &count) < 0 ||
+            count != entry->value) {
+            return false;
+        }
+    }
+    return !entry;
+}
+
+/*
+ * The offering for @options that fits the population @text names, in the
+ * colon-separated per-node form -M population= takes. A machine whose new
+ * flash records empty processor slots needs the population it will run.
+ */
+static const SGIModelOffering *resolve_population(
+    const SGIModelOffering *first, const char *text, Error **errp)
+{
+    g_auto(GStrv) split = g_strsplit(text, ":", -1);
+    g_autoptr(GString) offered = g_string_new(NULL);
+    const SGIModelOfferingList *entry;
+
+    for (entry = sgi_machines()->offerings; entry; entry = entry->next) {
+        const SGIModelOffering *offering = entry->value;
+        const uint32List *count;
+
+        if (!g_str_equal(offering->machine_options, first->machine_options)) {
+            continue;
+        }
+        if (population_matches(offering, split)) {
+            return offering;
+        }
+        g_string_append(offered, offered->len ? ", " : "");
+        for (count = offering->cpus_per_node; count; count = count->next) {
+            g_string_append_printf(offered, "%" PRIu32 "%s", count->value,
+                                   count->next ? ":" : "");
+        }
+    }
+    error_setg(errp, "%s has no population '%s'", first->machine_options,
+               text);
+    error_append_hint(errp, "It offers %s.\n", offered->str);
+    return NULL;
 }
 
 /* The file supplied for the init input @name, or NULL. */
@@ -246,8 +301,38 @@ static const SGIModelModule *nvram_module(const SGIModelTopology *t,
     return NULL;
 }
 
+/*
+ * Record each processor slot the node behind @item leaves empty as
+ * disabled in its new IP35 flash @buf, for a product whose PROM would
+ * otherwise power-cycle the module three times per empty slot to get
+ * there.
+ */
+static void disable_empty_cpu_slots(const SGIModelStorageItem *item,
+                                    const SGIModelOffering *offering,
+                                    const SGIModelTopology *t, uint8_t *buf)
+{
+    const SGIModelNodeList *node = t->nodes;
+    const uint32List *cpus = offering->cpus_per_node;
+    unsigned int index;
+    int end = 0, matched;
+
+    if (!t->ip35_firmware || !t->ip35_firmware->disable_empty_cpu_slots) {
+        return;
+    }
+    /* The catalogue names a node's flash node<N>-flash. */
+    matched = sscanf(item->name, "node%u-flash%n", &index, &end);
+    g_assert(matched == 1 && end && !item->name[end]);
+    for (; index; index--) {
+        node = node->next;
+        cpus = cpus->next;
+    }
+    sgi_ip35_disable_empty_cpu_slots(
+        buf, item->size, sn1_cpu_population_mask(node->value, cpus->value));
+}
+
 /* Fill @buf with @item's initial contents for a machine created @now. */
 static void build_item(const SGIModelStorageItem *item,
+                       const SGIModelOffering *offering,
                        const SGIModelInitInput *input,
                        const SGIPromImage *image, const SGIModelTopology *t,
                        const struct tm *now, uint8_t *buf)
@@ -302,6 +387,7 @@ static void build_item(const SGIModelStorageItem *item,
 
             sgi_ip35_flash_configure(buf, &ip35);
         }
+        disable_empty_cpu_slots(item, offering, t, buf);
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
         sgi_ip30_initial_flash(buf, item->size, data, length);
@@ -545,7 +631,7 @@ static bool create_machine(const SGIModelOffering *offering,
         g_autofree uint8_t *buf = g_malloc(item->size);
         g_autofree char *file = g_strdup_printf("%s.raw", item->name);
 
-        build_item(item, find_input(offering, initial),
+        build_item(item, offering, find_input(offering, initial),
                    g_hash_table_lookup(images, initial), t, &now, buf);
         if (!write_store(tmp, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
@@ -585,6 +671,7 @@ int main(int argc, char **argv)
 {
     static const struct option long_options[] = {
         { "machine", required_argument, NULL, 'M' },
+        { "population", required_argument, NULL, 'p' },
         { "boot-prom", required_argument, NULL, 'b' },
         { "io-prom", required_argument, NULL, 'i' },
         { "help", no_argument, NULL, 'h' },
@@ -593,17 +680,20 @@ int main(int argc, char **argv)
     };
     InitInputs inputs = { 0 };
     const SGIModelOffering *offering;
-    const char *machine = NULL;
+    const char *machine = NULL, *population = NULL;
     g_autofree char *dir = NULL;
     Error *err = NULL;
     int c;
 
     error_init(argv[0]);
-    while ((c = getopt_long(argc, argv, "+M:b:i:hV", long_options,
+    while ((c = getopt_long(argc, argv, "+M:p:b:i:hV", long_options,
                             NULL)) != -1) {
         switch (c) {
         case 'M':
             machine = optarg;
+            break;
+        case 'p':
+            population = optarg;
             break;
         case 'b':
             inputs.boot_prom = optarg;
@@ -629,7 +719,8 @@ int main(int argc, char **argv)
         usage_error("--machine is required");
     }
     if (g_str_equal(machine, "help")) {
-        if (optind != argc || inputs.boot_prom || inputs.io_prom) {
+        if (optind != argc || population || inputs.boot_prom ||
+            inputs.io_prom) {
             usage_error("--machine help takes no other arguments");
         }
         list_machines();
@@ -652,6 +743,9 @@ int main(int argc, char **argv)
     }
 
     offering = resolve_machine(machine, &err);
+    if (offering && population) {
+        offering = resolve_population(offering, population, &err);
+    }
     if (!offering || !check_inputs(offering, &inputs, &err) ||
         !create_machine(offering, &inputs, dir, &err)) {
         error_report_err(err);
