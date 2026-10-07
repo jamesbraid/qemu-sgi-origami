@@ -1224,11 +1224,17 @@
 # @cpu-mode-word: the whole reset-mode word the block records for the
 #     fitted processor module
 #
+# @disable-empty-cpu-slots: whether a new machine's boot flash starts
+#     with an active Disable record for each processor slot the
+#     population leaves empty, the state Origin 300's PROM otherwise
+#     reaches only after power-cycling the module three times per slot
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelIp35FirmwareConfig',
   'data': { 'machine-type': 'uint32',
-            'cpu-mode-word': 'uint32' } }
+            'cpu-mode-word': 'uint32',
+            'disable-empty-cpu-slots': 'bool' } }
 
 ##
 # @SGIModelTopology:

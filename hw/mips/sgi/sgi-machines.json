@@ -12818,6 +12818,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": false,
         "machine-type": 2
       },
       "junk-uart": -1,
@@ -12996,6 +12997,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": false,
         "machine-type": 2
       },
       "junk-uart": -1,
@@ -17417,6 +17419,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -17797,6 +17800,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -18180,6 +18184,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -18562,6 +18567,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -18906,6 +18912,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -19272,6 +19279,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -19517,6 +19525,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -19751,6 +19760,7 @@
       ],
       "ip35-firmware": {
         "cpu-mode-word": 1419422085,
+        "disable-empty-cpu-slots": true,
         "machine-type": 1
       },
       "junk-uart": -1,

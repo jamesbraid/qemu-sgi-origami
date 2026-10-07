@@ -2477,7 +2477,9 @@ def _compile_ip35_firmware(model: dict) -> dict:
     """The product values an IP35 PROM's flash configuration block
     carries, from the product's own `machine.emulation.ip35_firmware`.
     Every SN1 product authors them; Origin 300 and Fuel differ in machine
-    type, so neither may default to the other's.
+    type, so neither may default to the other's. The same record says
+    whether a new boot flash starts with the PROM's Disable record for
+    each processor slot the population leaves empty.
     """
     firmware = model["machine"].get("emulation", {}).get("ip35_firmware")
     if not isinstance(firmware, dict):
@@ -2485,7 +2487,8 @@ def _compile_ip35_firmware(model: dict) -> dict:
             "machine.emulation.ip35_firmware is absent; an SN1 configuration "
             "needs its IP35 flash configuration values")
     return {"machine_type": firmware["machine_type"],
-            "cpu_mode_word": firmware["cpu_mode_word"]}
+            "cpu_mode_word": firmware["cpu_mode_word"],
+            "disable_empty_cpu_slots": firmware["disable_empty_cpu_slots"]}
 
 
 def _compile_ip27_firmware(model: dict) -> dict:

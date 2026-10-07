@@ -2729,12 +2729,14 @@
       },
       "ip35_firmware": {
         "cpu_mode_word": 1419422085,
+        "disable_empty_cpu_slots": true,
         "machine_type": 1,
-        "notes": "The values every Origin 300 run has flashed, now carried as data; established against the PROM's own table.",
+        "notes": "The values every Origin 300 run has flashed, now carried as data; established against the PROM's own table. The Disable records stand in for the state the PROM's recovery writes after power-cycling the module three times per empty slot; no factory flash image is available, so they are an initialization approximation.",
         "provenance": "derived",
         "sources": [
           "firmware:ip35-prom-6.210 CPU-configuration table rows 6 and 7 and the flash comparison",
-          "hw/mips/sgi/sn1-node.c"
+          "hw/mips/sgi/sn1-node.c",
+          "firmware:ip35-prom-6.210 failed-start recovery output: the DisableB and DisableD records it writes for an IP45 board's empty slots"
         ]
       },
       "l1_controllers": {
