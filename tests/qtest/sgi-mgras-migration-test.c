@@ -144,7 +144,6 @@ static void mgras_public_pending_migration(bool wide)
     qtest_quit(to);
     g_remove(uri + 5);
     g_rmdir(tmpfs);
-    rmdir(tmpfs);
 }
 
 static void test_public_fifo_glyph_narrow_migration(void)
