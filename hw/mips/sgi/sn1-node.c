@@ -394,6 +394,25 @@ static void sn1_node_cached_alias_changed(Notifier *notifier, void *data)
     sn1_node_update_claims(node);
 }
 
+static MemTxResult sn1_node_ni_special_rw(MemoryRegion *mr, hwaddr offset,
+    void *buffer, size_t size, bool write, MemTxAttrs attrs)
+{
+    uint64_t value;
+    MemTxResult result;
+
+    if (write) {
+        return memory_region_dispatch_write(mr, offset,
+                                            ldn_be_p(buffer, size),
+                                            size_memop(size) | MO_BE, attrs);
+    }
+    result = memory_region_dispatch_read(mr, offset, &value,
+                                         size_memop(size) | MO_BE, attrs);
+    if (result == MEMTX_OK) {
+        stn_be_p(buffer, size, value);
+    }
+    return result;
+}
+
 static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
     unsigned origin, hwaddr address, void *buffer, size_t size, bool write,
     MemTxAttrs attrs)
@@ -436,6 +455,14 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
             return MEMTX_ERROR;
         }
         as = &node->ni_board_id_as;
+    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
+               local - SN1_HUB_REMOTE_REGISTERS_ADDRESS <
+                   SN1_HUB_REGISTER_HEAD_SIZE &&
+               size <= SN1_HUB_REGISTER_HEAD_SIZE -
+                       (local - SN1_HUB_REMOTE_REGISTERS_ADDRESS)) {
+        offset = local - SN1_HUB_REMOTE_REGISTERS_ADDRESS;
+        return sn1_node_ni_special_rw(&node->hub_unidentified, offset, buffer,
+                                      size, write, attrs);
     } else if (local >= SN1_HUB_REMOTE_BOOT &&
                local - SN1_HUB_REMOTE_BOOT < UINT64_C(0x8000000) &&
                size <= UINT64_C(0x8000000) - (local - SN1_HUB_REMOTE_BOOT) &&
@@ -450,12 +477,17 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
                        SN1_HUB_REGISTER_UART_END - local) {
         as = &node->ni_uart_as;
         offset = local - SN1_HUB_REMOTE_REGISTERS_ADDRESS;
-    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
-               local - SN1_HUB_REMOTE_REGISTERS_ADDRESS < SGI_BEDROCK_SIZE &&
-               size <= SGI_BEDROCK_SIZE -
-                       (local - SN1_HUB_REMOTE_REGISTERS_ADDRESS)) {
-        as = &node->ni_hub_as;
-        offset = local - SN1_HUB_REMOTE_REGISTERS_ADDRESS;
+    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                        SN1_HUB_LED_OFFSET &&
+               local - (SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                        SN1_HUB_LED_OFFSET) < SN1_HUB_LED_SIZE &&
+               size <= SN1_HUB_LED_SIZE -
+                       (local - (SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                                 SN1_HUB_LED_OFFSET))) {
+        offset = local - (SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                          SN1_HUB_LED_OFFSET);
+        return sn1_node_ni_special_rw(&node->hub_leds, offset, buffer,
+                                      size, write, attrs);
     } else if (local >= SN1_BEDROCK_NODE_ADDRESS &&
                local - SN1_BEDROCK_NODE_ADDRESS < SN1_BEDROCK_NODE_SIZE &&
                size <= SN1_BEDROCK_NODE_SIZE -
@@ -2361,6 +2393,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_init_io(&node->hub_unidentified, OBJECT(node),
                           &sn1_hub_unidentified_ops, node,
                           "sn1.hub.unidentified", SN1_HUB_REGISTER_HEAD_SIZE);
+    /* These leaf registers can be reached through this node's NI view. */
+    node->hub_unidentified.disable_reentrancy_guard = true;
     memory_region_add_subregion(&node->hub_local_registers, 0,
                                 &node->hub_unidentified);
     memory_region_add_subregion(&node->hub_local_registers,
@@ -2368,6 +2402,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                 sysbus_mmio_get_region(bedrock, 8));
     memory_region_init_io(&node->hub_leds, OBJECT(node), &sn1_hub_led_ops,
                           node, "sn1.hub.leds", SN1_HUB_LED_SIZE);
+    node->hub_leds.disable_reentrancy_guard = true;
     memory_region_add_subregion(&node->hub_local_registers,
                                 SN1_HUB_LED_OFFSET, &node->hub_leds);
     /*

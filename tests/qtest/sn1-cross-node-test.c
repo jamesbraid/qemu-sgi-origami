@@ -26,6 +26,7 @@
 #define BEDROCK_NODE(n) (SPACE_IO + NODE(n) + UINT64_C(0x01800000))
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
+#define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define LB_REVISION UINT64_C(0x600000)
 #define LB_SCRATCH2 UINT64_C(0x608010)
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
@@ -466,6 +467,53 @@ static uint64_t bte_cpu_readq(QTestState *qts, unsigned cpu, uint64_t address)
 
     g_assert_true(qtest_memread_cpu(qts, cpu, address, bytes, sizeof(bytes)));
     return ldq_be_p(bytes);
+}
+
+static void test_routed_hub_special_decoding(void)
+{
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    uint64_t pi_c0;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-hub-special-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw",
+        prom_path, image);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + 0x681010, 5);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + 0x681000, 3);
+    qtest_irq_intercept_out_named(qts, "/machine/node1/bedrock", "nmi");
+
+    g_assert_cmphex(cpu_read_ok(qts, 0, HUB_REMOTE_REGISTERS), ==, 0);
+    bte_cpu_writeq(qts, 0, HUB_REMOTE_REGISTERS + 0xc0, 0x5a);
+    g_assert_cmphex(cpu_read_ok(qts, 0, HUB_REMOTE_REGISTERS + 0xc0), ==,
+                    0x5a);
+    bte_cpu_writeq(qts, 0, NODE(2) + HUB_REMOTE_REGISTERS + 0x70, 0x29);
+    bte_cpu_writeq(qts, 0, NODE(2) + HUB_REMOTE_REGISTERS + 0x78, 0x29);
+    for (unsigned line = 0; line < 4; line++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, line), ==, 0);
+    }
+    pi_c0 = bte_cpu_readq(qts, 0, BEDROCK_NODE(2) + 0xc0);
+    bte_cpu_writeq(qts, 0, NODE(2) + HUB_REMOTE_REGISTERS + 0xc0, 0xa5);
+    g_assert_cmphex(bte_cpu_readq(qts, 0, NODE(2) +
+                                   HUB_REMOTE_REGISTERS + 0xc0), ==, 0xa5);
+    g_assert_cmphex(bte_cpu_readq(qts, 0, BEDROCK_NODE(2) + 0xc0), ==,
+                    pi_c0);
+    assert_unreachable(qts, 0, NODE(2) + HUB_REMOTE_REGISTERS + 0xe0);
+
+    bte_cpu_writeq(qts, 0, BEDROCK_NODE(2) + 0x70, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_quit(qts);
+    unlink(image);
 }
 
 static uint64_t bte_memory_transfer(QTestState *qts, unsigned node,
@@ -1790,6 +1838,8 @@ int main(int argc, char **argv)
                        GUINT_TO_POINTER(3), test_prom_copy_live_node);
     qtest_add_func("sn1/cross-node/remote-interrupt-reaches-the-peer",
                    test_remote_interrupt_reaches_the_peer);
+    qtest_add_func("sn1/cross-node/routed-hub-special-decoding",
+                   test_routed_hub_special_decoding);
     qtest_add_data_func("sn1/cross-node/bte-memory/direct",
                         "origin300-two-chassis", test_bte_memory_route);
     qtest_add_data_func("sn1/cross-node/bte-memory/routed",
