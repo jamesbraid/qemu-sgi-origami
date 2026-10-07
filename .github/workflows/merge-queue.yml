@@ -53,7 +53,18 @@ jobs:
           TOKEN: ${{ secrets.CI_BOT_TOKEN }}
           LAND_WORKFLOW: "build.yml"
           LAND_INPUTS: "suite=full"
-          LAND_CHECK: "build and register suite / full-suite (workflow_dispatch)"
+          # One run waits through a normal full suite. The suite takes 15 to 16
+          # minutes, so with the driver's defaults (a 540 s wait inside a 600 s
+          # budget) the run that dispatched it gave up first and the landing
+          # waited for the next scheduled run, up to half an hour later.
+          # LAND_WAIT is how long the run waits for the suite, about 22
+          # minutes to leave room for a slow builder. RUN_BUDGET bounds the
+          # whole run, so it must exceed LAND_WAIT by the time the run spends
+          # before and after the wait. A run still holds the queue's
+          # concurrency group while it waits, which the small shared runner
+          # can afford.
+          RUN_BUDGET: "1500"
+          LAND_WAIT: "1320"
           # Land up to two green pull requests per pull-request check and full suite
           # instead of one each. Two, not more: a batch goes red whenever any
           # member's full suite would, and with about a fifth of full suites
