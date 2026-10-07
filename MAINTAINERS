@@ -1495,6 +1495,7 @@ F: include/hw/mips/sgi/
 F: hw/1wire/
 F: hw/audio/sgi-rad1-audio.c
 F: hw/display/sgi/
+F: tests/qtest/sgi-gbe-test.c
 F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
 F: hw/input/sgi-ioc3-kbc.c
