@@ -22,6 +22,7 @@ struct SGICrimeState {
     MemoryRegion decoded_ram;
     MemoryRegion invalid_ram;
     MemoryRegion bank_ram[SGI_CRIME_BANK_COUNT];
+    MemoryRegion wrong_geometry[SGI_CRIME_BANK_COUNT];
     qemu_irq cpu_ip[5];
     uint32_t hardware;
     uint32_t enable;
