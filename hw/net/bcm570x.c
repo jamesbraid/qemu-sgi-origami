@@ -222,7 +222,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MODE_RESET          0x00000001u
 #define BCM570X_MISCCFG_RESET_CORE_CLOCKS 0x00000001u
 
-/* PG105 p. 152: ENABLE reports buffer-manager startup completion. */
+/* ENABLE reads back set only after buffer-manager startup completes. */
 #define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
 #define BCM570X_BUFMGR_STATUS       0x4404
 #define BCM570X_BUFMGR_START_NS     1000000
