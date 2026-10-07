@@ -270,6 +270,11 @@ static void test_surfaceless_llvmpipe_pixels(void)
         EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
         EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
     };
+    const EGLint compat_attrs[] = {
+        EGL_CONTEXT_OPENGL_PROFILE_MASK,
+        EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
+    };
     PFNEGLGETPLATFORMDISPLAYEXTPROC platform_display;
     EGLDisplay display;
     EGLConfig config;
@@ -303,8 +308,9 @@ static void test_surfaceless_llvmpipe_pixels(void)
     }
 
     for (unsigned iteration = 0; iteration < 3; iteration++) {
+        const EGLint *attrs = iteration ? compat_attrs : context_attrs;
         EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT,
-                                              context_attrs);
+                                              attrs);
         GLuint source_image, target_image, framebuffer, vao, program;
         GLuint vertex, fragment;
         GLint linked;
@@ -363,6 +369,41 @@ static void test_surfaceless_llvmpipe_pixels(void)
         g_assert_cmpint(glGetError(), ==, GL_NO_ERROR);
         g_assert_cmpmem(output, 4096 * 4 * sizeof(*output),
                         input, 4096 * 4 * sizeof(*input));
+        if (iteration) {
+            GLuint legacy_image;
+            uint16_t pixel[4];
+
+            glGenTextures(1, &legacy_image);
+            glBindTexture(GL_TEXTURE_2D, legacy_image);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, 4, 4, 0,
+                         GL_RGBA, GL_UNSIGNED_SHORT, NULL);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, legacy_image, 0);
+            g_assert_cmpint(glCheckFramebufferStatus(GL_FRAMEBUFFER), ==,
+                            GL_FRAMEBUFFER_COMPLETE);
+            glUseProgram(0);
+            glViewport(0, 0, 4, 4);
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+            glDisable(GL_DITHER);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBegin(GL_TRIANGLES);
+            glColor4f(1, 0.25f, 0.5f, 1);
+            glVertex2f(-1, -1);
+            glVertex2f(3, -1);
+            glVertex2f(-1, 3);
+            glEnd();
+            glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_SHORT, pixel);
+            g_assert_cmpint(glGetError(), ==, GL_NO_ERROR);
+            g_assert_cmpuint(pixel[0], ==, 65535);
+            g_assert_cmpuint(pixel[1], ==, 16384);
+            g_assert_cmpuint(pixel[2], ==, 32768);
+            g_assert_cmpuint(pixel[3], ==, 65535);
+            glDeleteTextures(1, &legacy_image);
+        }
 
         glDeleteFramebuffers(1, &framebuffer);
         glDeleteTextures(1, &target_image);
