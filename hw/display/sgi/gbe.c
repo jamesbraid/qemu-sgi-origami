@@ -45,6 +45,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIO2GBEState, SGI_O2_GBE)
 
 #define VT_FIELDS      0x00ffffffu
 #define VT_FREEZE      0x80000000u
+#define CTRLSTAT_RESET 0x03ffffc1u
 #define TILE_POINTER   0xffffffe1u
 #define DID_FIELDS     0x0001ffffu
 #define RGB_FIELDS     0xffffff00u
@@ -88,7 +89,7 @@ static uint64_t gbe_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case CTRLSTAT:
-        return 1;
+        return CTRLSTAT_RESET;
     case DEVICE_ID:
         return 0x666;
     case VT_0:
@@ -157,6 +158,10 @@ static void gbe_write(void *opaque, hwaddr addr, uint64_t value,
 
     switch (addr) {
     case VT_0:
+        if (!(data & VT_FREEZE)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: VT_0 clock is unsupported\n");
+            return;
+        }
         s->vt0 = data & (VT_FREEZE | VT_FIELDS);
         return;
     case VT_1:
@@ -170,9 +175,9 @@ static void gbe_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     case DID:
     case DID_SHADOW:
-        s->did[(addr - DID) / 4] = data & DID_FIELDS;
-        if (data & BIT(16)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: DID DMA is unsupported\n");
+        if (data & DID_FIELDS) {
+            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: %s is unsupported\n",
+                          addr == DID ? "DID control" : "DID_SHADOW copy");
         }
         return;
     case CTRLSTAT:
@@ -185,21 +190,38 @@ static void gbe_write(void *opaque, hwaddr addr, uint64_t value,
     }
     if (addr >= OVR_0 && addr <= OVR_2) {
         index = (addr - OVR_0) / 4;
-        s->ovr[index] = data & (index ? TILE_POINTER : 0x3fff);
-        if ((index && (data & 1)) || (!index && (data & BIT(13)))) {
-            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: overlay DMA and "
-                          "diagnostic reset are unsupported\n");
+        if (index) {
+            if (data & TILE_POINTER) {
+                qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: %s is unsupported\n",
+                              index == 1 ? "OVR_1 scanout control" :
+                                           "OVR_2 shadow copy");
+            }
+            return;
         }
+        if (data & BIT(13)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: OVR_0 diagnostic "
+                          "reset is unsupported\n");
+            return;
+        }
+        s->ovr[0] = data & 0x1fff;
         return;
     }
     if (addr >= FRM_0 && addr <= FRM_3) {
         index = (addr - FRM_0) / 4;
-        s->frm[index] = data & (index >= 2 ? TILE_POINTER :
-                                index ? 0xffff0000u : 0xffffu);
-        if ((index >= 2 && (data & 1)) || (!index && (data & BIT(15)))) {
-            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: normal DMA and "
-                          "diagnostic reset are unsupported\n");
+        if (index >= 2) {
+            if (data & TILE_POINTER) {
+                qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: %s is unsupported\n",
+                              index == 2 ? "FRM_2 scanout control" :
+                                           "FRM_3 shadow copy");
+            }
+            return;
         }
+        if (!index && (data & BIT(15))) {
+            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: FRM_0 diagnostic reset "
+                          "is unsupported\n");
+            return;
+        }
+        s->frm[index] = data & (index ? 0xffff0000u : 0x7fffu);
         return;
     }
     if (addr >= WID_BASE && addr < WID_BASE + 4 * GBE_WID_COUNT) {
@@ -222,12 +244,13 @@ static void gbe_write(void *opaque, hwaddr addr, uint64_t value,
     }
     if (addr >= CRS_0 && addr <= CRS_CM_BASE + 4 * (GBE_CURSOR_COLORS - 1)) {
         index = (addr - CRS_0) / 4;
+        if (index == 1 && (data & 3)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: cursor scanout and "
+                          "crosshair are unsupported\n");
+            return;
+        }
         s->crs[index] = data & (index == 0 ? UINT32_MAX :
                                 index == 1 ? 3u : RGB_FIELDS);
-        if (index == 1 && (data & 1)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-o2-gbe: cursor scanout is "
-                          "unsupported\n");
-        }
         if (index >= 2) {
             s->crs_color_written[index - 2] = 1;
         }

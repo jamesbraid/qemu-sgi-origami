@@ -64,22 +64,32 @@ static void test_identity_and_reset(void)
         { DID, 0x0001ffff }, { DID_SHADOW, 0x0001ffff },
         { CRS_0, 0xffffffff }, { CRS_1, 0x00000003 },
     };
+    static const struct {
+        unsigned offset;
+        uint32_t value;
+    } writable[] = {
+        { VT_1, 0x0056789a }, { VT_4, 0x00123456 },
+        { VT_5, 0x00654321 }, { OVR_0, 0x00001fff },
+        { FRM_0, 0x00003fff }, { FRM_1, 0x12340000 },
+        { CRS_0, 0x12345678 },
+    };
     QTestState *qts = start("");
 
-    g_assert_cmphex(rd(qts, CTRLSTAT) & 0xf, ==, 1);
+    g_assert_cmphex(rd(qts, CTRLSTAT) & 0x03ffffcf, ==, 0x03ffffc1);
     g_assert_cmphex(rd(qts, DEVICE_ID), ==, 0x666);
     g_assert_cmphex(rd(qts, VT_0) & 0x80ffffff, ==, 0x80000000);
     for (size_t i = 0; i < G_N_ELEMENTS(zero_reset); i++) {
         g_assert_cmphex(rd(qts, zero_reset[i].offset) & zero_reset[i].mask,
                         ==, 0);
-        wr(qts, zero_reset[i].offset, UINT32_MAX);
-        g_assert_cmphex(rd(qts, zero_reset[i].offset) & zero_reset[i].mask,
-                        ==, zero_reset[i].mask);
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(writable); i++) {
+        wr(qts, writable[i].offset, writable[i].value);
+        g_assert_cmphex(rd(qts, writable[i].offset), ==, writable[i].value);
     }
     wr(qts, VT_0, 0x80ffffff);
     g_assert_cmphex(rd(qts, VT_0) & 0x80ffffff, ==, 0x80ffffff);
     qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
-    g_assert_cmphex(rd(qts, CTRLSTAT) & 0xf, ==, 1);
+    g_assert_cmphex(rd(qts, CTRLSTAT) & 0x03ffffcf, ==, 0x03ffffc1);
     g_assert_cmphex(rd(qts, DEVICE_ID), ==, 0x666);
     g_assert_cmphex(rd(qts, VT_0) & 0x80ffffff, ==, 0x80000000);
     for (size_t i = 0; i < G_N_ELEMENTS(zero_reset); i++) {
@@ -89,7 +99,7 @@ static void test_identity_and_reset(void)
     qtest_quit(qts);
 }
 
-static void test_tables_and_shadow_storage(void)
+static void test_tables_and_geometry(void)
 {
     QTestState *qts = start("");
 
@@ -109,18 +119,14 @@ static void test_tables_and_shadow_storage(void)
     g_assert_cmphex(rd(qts, CRS_CM(1)) & 0xffffff00, ==, 0x12345600);
     g_assert_cmphex(rd(qts, CRS_CM(3)) & 0xffffff00, ==, 0x87654300);
 
-    wr(qts, OVR_1, 0x12345001);
-    wr(qts, OVR_2, 0x76543001);
-    wr(qts, FRM_2, 0x12345001);
-    wr(qts, FRM_3, 0x76543001);
-    wr(qts, DID, 0x11234);
-    wr(qts, DID_SHADOW, 0x15678);
-    g_assert_cmphex(rd(qts, OVR_1) & 0xffffffe1, ==, 0x12345001);
-    g_assert_cmphex(rd(qts, OVR_2) & 0xffffffe1, ==, 0x76543001);
-    g_assert_cmphex(rd(qts, FRM_2) & 0xffffffe1, ==, 0x12345001);
-    g_assert_cmphex(rd(qts, FRM_3) & 0xffffffe1, ==, 0x76543001);
-    g_assert_cmphex(rd(qts, DID) & 0x1ffff, ==, 0x11234);
-    g_assert_cmphex(rd(qts, DID_SHADOW) & 0x1ffff, ==, 0x15678);
+    wr(qts, OVR_0, 0x1234);
+    wr(qts, FRM_0, 0x3234);
+    wr(qts, FRM_1, 0x12340000);
+    wr(qts, CRS_0, 0x12345678);
+    g_assert_cmphex(rd(qts, OVR_0) & 0x1fff, ==, 0x1234);
+    g_assert_cmphex(rd(qts, FRM_0) & 0x7fff, ==, 0x3234);
+    g_assert_cmphex(rd(qts, FRM_1) & 0xffff0000, ==, 0x12340000);
+    g_assert_cmphex(rd(qts, CRS_0), ==, 0x12345678);
     qtest_quit(qts);
 }
 
@@ -140,7 +146,7 @@ static void test_unsupported_accesses(void)
     qtest_writel(qts, GBE_REG(OVR_0 + 1), UINT32_MAX);
     g_assert_cmphex(rd(qts, OVR_0) & 0x3fff, ==, 0x1234);
     (void)qtest_readb(qts, GBE_REG(OVR_0));
-    (void)rd(qts, 0x010018); /* Reserved timing row, not in this subset. */
+    (void)rd(qts, 0x010018); /* Timing row unsupported in this subset. */
     wr(qts, 0x078000, UINT32_MAX); /* Glyph start is disputed. */
     g_assert_cmphex(rd(qts, OVR_0) & 0x3fff, ==, 0x1234);
     qtest_quit(qts);
@@ -148,6 +154,50 @@ static void test_unsupported_accesses(void)
     g_assert_nonnull(strstr(contents, "sgi-o2-gbe: unsupported access"));
     g_assert_nonnull(strstr(contents, "(1 bytes)"));
     g_assert_nonnull(strstr(contents, "(2 bytes)"));
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_unsupported_controls(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sgi-gbe-controls-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "unimplemented.txt", NULL);
+    g_autofree char *extra = g_strdup_printf("-d unimp -D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *qts = start(extra);
+
+    wr(qts, VT_0, 0x80012345);
+    wr(qts, VT_0, 0);
+    g_assert_cmphex(rd(qts, VT_0) & 0x80ffffff, ==, 0x80012345);
+    wr(qts, OVR_1, 0x12345000);
+    wr(qts, OVR_2, 0x12345000);
+    wr(qts, FRM_2, 0x12345000);
+    wr(qts, FRM_3, 0x12345000);
+    wr(qts, DID, 0x1234);
+    wr(qts, DID_SHADOW, 0x1234);
+    wr(qts, OVR_1, 1);
+    wr(qts, FRM_2, 1);
+    wr(qts, DID, 0x10000);
+    wr(qts, CRS_1, 1);
+    wr(qts, CRS_1, 2);
+    g_assert_cmphex(rd(qts, OVR_1) & 0xffffffe1, ==, 0);
+    g_assert_cmphex(rd(qts, OVR_2) & 0xffffffe1, ==, 0);
+    g_assert_cmphex(rd(qts, FRM_2) & 0xffffffe1, ==, 0);
+    g_assert_cmphex(rd(qts, FRM_3) & 0xffffffe1, ==, 0);
+    g_assert_cmphex(rd(qts, DID) & 0x1ffff, ==, 0);
+    g_assert_cmphex(rd(qts, DID_SHADOW) & 0x1ffff, ==, 0);
+    g_assert_cmphex(rd(qts, CRS_1) & 3, ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents, "VT_0 clock is unsupported"));
+    g_assert_nonnull(strstr(contents, "OVR_1 scanout control is unsupported"));
+    g_assert_nonnull(strstr(contents, "OVR_2 shadow copy is unsupported"));
+    g_assert_nonnull(strstr(contents, "FRM_2 scanout control is unsupported"));
+    g_assert_nonnull(strstr(contents, "FRM_3 shadow copy is unsupported"));
+    g_assert_nonnull(strstr(contents, "DID control is unsupported"));
+    g_assert_nonnull(strstr(contents, "DID_SHADOW copy is unsupported"));
+    g_assert_nonnull(strstr(contents,
+                            "cursor scanout and crosshair are unsupported"));
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
@@ -162,8 +212,8 @@ static void test_migration(void)
 
     wr(from, VT_1, 0x0056789a);
     wr(from, FRM_0, 0x00004567);
-    wr(from, OVR_2, 0x12345001);
-    wr(from, DID_SHADOW, 0x12345);
+    wr(from, OVR_0, 0x1234);
+    wr(from, FRM_1, 0x12340000);
     wr(from, WID(31), 0x1234);
     wr(from, CMAP(4607), 0x12345600);
     wr(from, GMAP(255), 0x87654300);
@@ -174,8 +224,8 @@ static void test_migration(void)
     sgi_wait_migration(to, "completed");
     g_assert_cmphex(rd(to, VT_1) & 0xffffff, ==, 0x56789a);
     g_assert_cmphex(rd(to, FRM_0) & 0xffff, ==, 0x4567);
-    g_assert_cmphex(rd(to, OVR_2) & 0xffffffe1, ==, 0x12345001);
-    g_assert_cmphex(rd(to, DID_SHADOW) & 0x1ffff, ==, 0x12345);
+    g_assert_cmphex(rd(to, OVR_0) & 0x1fff, ==, 0x1234);
+    g_assert_cmphex(rd(to, FRM_1) & 0xffff0000, ==, 0x12340000);
     g_assert_cmphex(rd(to, WID(31)) & 0x1fff, ==, 0x1234);
     g_assert_cmphex(rd(to, CMAP(4607)) & 0xffffff00, ==, 0x12345600);
     g_assert_cmphex(rd(to, GMAP(255)) & 0xffffff00, ==, 0x87654300);
@@ -190,8 +240,9 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi-gbe/identity-reset", test_identity_and_reset);
-    qtest_add_func("/sgi-gbe/tables-shadow", test_tables_and_shadow_storage);
+    qtest_add_func("/sgi-gbe/tables-geometry", test_tables_and_geometry);
     qtest_add_func("/sgi-gbe/unsupported", test_unsupported_accesses);
+    qtest_add_func("/sgi-gbe/unsupported-controls", test_unsupported_controls);
     qtest_add_func("/sgi-gbe/migration", test_migration);
     return g_test_run();
 }
