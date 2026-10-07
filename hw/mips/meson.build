@@ -14,6 +14,7 @@ mips_ss.add(when: 'CONFIG_SGI_O2_ROM', if_true: files('sgi/o2-rom.c'))
 mips_ss.add(when: 'CONFIG_SGI_OCTANE', if_true: files('sgi/octane.c'))
 mips_ss.add(when: 'CONFIG_SGI_CRIME', if_true: files('sgi/crime.c'))
 mips_ss.add(when: 'CONFIG_SGI_MACE', if_true: files('sgi/mace.c'))
+mips_ss.add(when: 'CONFIG_SGI_O2_TEST', if_true: files('sgi/o2.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn0.c'))
 # These qtest-only fixtures live under tests/qtest, beside the qtest
 # programs that are their only consumer, and are pulled in here because
