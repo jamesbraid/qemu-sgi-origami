@@ -1709,19 +1709,19 @@ static void test_pwr_query_reports_cold_power_on(const void *data)
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok 0");
 
-    /* An unknown power subcommand is an unknown command, not a bad arg. */
+    /* A letter the controller does not know is a bad argument. */
     req_len = build_request(req, "pwr z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err cmd");
+    assert_response_begins(resp, "err arg");
 
-    /* A known subcommand letter with a bad argument is a bad argument. */
+    /* Trailing text after the letter is discarded. */
     req_len = build_request(req, "pwr q x");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
+    g_assert_cmpuint(resp[0], ==, 4);
+    assert_response_begins(resp, "ok 0");
 }
 
 /*
@@ -1737,10 +1737,16 @@ static void test_hbt_watchdog_control(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+    /*
+     * The hex reader takes no digits from "xy" and so reads no value: a
+     * heartbeat, not a bad argument. The same goes for a second value that
+     * is not hex. "hbt 00045" is the four digits 0004 and so too short.
+     */
     const char *ok_forms[] = { "hbt", "hbt 0", "hbt 30 20", "hbt 5", "hbt 258",
-                               "hbt 1e 0" };
-    const char *bad_forms[] = { "hbt xy", "hbt 4", "hbt 259", "hbt 1000 5",
-                                "hbt 30 xy" };
+                               "hbt 1e 0", "hbt xy", "hbt 30 xy",
+                               "hbt 1e  14", "hbt 025814" };
+    const char *bad_forms[] = { "hbt 4", "hbt 259", "hbt 1000 5",
+                                "hbt 00045" };
     unsigned i;
 
     elsc_reset();
@@ -2338,7 +2344,7 @@ static void test_pwr_control_subcommands(const void *data)
      */
     {
         const char *bad_forms[] = { "pwr d 259", "pwr d ffff",
-                                    "pwr c extra", "pwr r x" };
+                                    "pwr c 4", "pwr c 259" };
         unsigned i;
 
         for (i = 0; i < ARRAY_SIZE(bad_forms); i++) {
@@ -2622,12 +2628,86 @@ static void test_nic_onewire_identity(const void *data)
     g_assert_cmpuint(resp[0], ==, 7);
     assert_response_begins(resp, "err arg");
 
+    /*
+     * Each value shorter than four digits consumes the character after it,
+     * so a second space leaves the next value absent.
+     */
+    req_len = build_request(req, "nic 1 2  3");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "err arg");
+
+    /*
+     * A four-digit value consumes nothing after it: the next value follows
+     * with no separator, and a space there is a missing value.
+     */
+    req_len = build_request(req, "nic 000100020003");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "ok 1");
+    req_len = build_request(req, "nic 0001 2 3");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    assert_response_begins(resp, "err arg");
+
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "nicx");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
     assert_response_begins(resp, "err cmd");
+}
+
+
+/*
+ * One reply for one request, against the whole reply text: a request built
+ * from an explicit byte count, so an empty request and one carrying a NUL
+ * can be sent.
+ */
+static void assert_reply_bytes(QTestState *qts, const char *text,
+                               unsigned text_len, const char *want)
+{
+    uint8_t req[RESP_CAP], resp[RESP_CAP];
+    unsigned resp_len;
+
+    req[0] = text_len;
+    memcpy(&req[1], text, text_len);
+    req[text_len + 1] = (uint8_t)(-(int)frame_checksum(req, text_len + 1));
+    resp_len = elsc_transact(qts, req, text_len + 2, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpmem(&resp[1], resp[0], want, strlen(want));
+}
+
+static void assert_reply(QTestState *qts, const char *text, const char *want)
+{
+    assert_reply_bytes(qts, text, strlen(text), want);
+}
+
+/*
+ * The request grammar every command shares: a three-letter lowercase
+ * mnemonic and a space or the end of the text, then arguments the
+ * command's readers take, with anything left over discarded.
+ */
+static void test_request_grammar(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,elsc-dip-switches=240");
+
+    /* The mnemonic and its separator. */
+    assert_reply_bytes(qts, "", 0, "err cmd");
+    assert_reply(qts, "ve", "err cmd");
+    assert_reply(qts, "VER", "err cmd");
+    assert_reply(qts, "verx", "err cmd");
+    assert_reply(qts, "ver", "ok V 3.1S  ");
+    assert_reply(qts, "ver junk", "ok V 3.1S  ");
+
+    /* Hex replies carry no leading zero. */
+    assert_reply(qts, "rsw", "ok f");
+    assert_reply(qts, "rsw 12", "ok f");
+
+    /* The character reader skips spaces and leaves the rest unread. */
+    assert_reply(qts, "pwr   q", "ok 1");
+    assert_reply(qts, "pwr q   junk", "ok 0");
+    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
@@ -2732,6 +2812,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/request-grammar", NULL,
+                        test_request_grammar);
     qtest_add_data_func("sn0/elsc/nic-onewire-identity", NULL,
                         test_nic_onewire_identity);
 

@@ -83,6 +83,9 @@
 #define ELSC_ARB_CODE_VMSTATE_OFFSET \
     (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE + \
      4 + 4 + 8)
+#define ELSC_RXLEN_VMSTATE_OFFSET   (1 + ELSC_RXBUF_VMSTATE_SIZE)
+#define ELSC_TXLEN_VMSTATE_OFFSET \
+    (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE)
 #define QEMU_VM_SECTION_FULL      4
 
 /* PCI type 0 configuration space, and the window each device sits behind. */
@@ -336,7 +339,8 @@ static void enable_cpu_pcf_observer(QTestState *qts, unsigned int cpu)
                I2C_CTL_PIN | I2C_CTL_ESO);
 }
 
-static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
+static void patch_master_elsc_field(const char *path, unsigned offset,
+                                    uint32_t value)
 {
     static const char name[] = "sgi-elsc";
     g_autofree gchar *contents = NULL;
@@ -348,8 +352,7 @@ static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
     g_assert_no_error(err);
 
     for (i = 6;
-         i + sizeof(name) - 1 + 8 + ELSC_ARB_CODE_VMSTATE_OFFSET + 4 <
-             length;
+         i + sizeof(name) - 1 + 8 + offset + 4 < length;
          i++) {
         uint8_t *p = (uint8_t *)contents + i;
         uint8_t *versionp;
@@ -364,13 +367,18 @@ static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
         versionp = p + sizeof(name) - 1 + 4;
         datap = versionp + 4;
         g_assert_cmpuint(ldl_be_p(versionp), ==, ELSC_VMSTATE_VERSION);
-        stl_be_p(datap + ELSC_ARB_CODE_VMSTATE_OFFSET, arb_code);
+        stl_be_p(datap + offset, value);
         found = true;
         break;
     }
     g_assert_true(found);
     g_assert_true(g_file_set_contents(path, contents, length, &err));
     g_assert_no_error(err);
+}
+
+static void patch_master_elsc_stream(const char *path, uint32_t arb_code)
+{
+    patch_master_elsc_field(path, ELSC_ARB_CODE_VMSTATE_OFFSET, arb_code);
 }
 
 static void attach_node_ioc3(QTestState *qts, unsigned int node)
@@ -725,6 +733,45 @@ static void test_elsc_rotation_position_patched(const void *data)
             "'arguments': { 'uri': %s } }", uri);
     qtest_wait_qemu(to);
     qtest_quit(to);
+
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
+/*
+ * The controller's framing indexes address fixed buffers, so a stream
+ * whose request or response length does not fit them fails to load.
+ */
+static void test_elsc_framing_lengths_checked(const void *data)
+{
+    static const unsigned offsets[] = {
+        ELSC_RXLEN_VMSTATE_OFFSET, ELSC_TXLEN_VMSTATE_OFFSET,
+    };
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *stream = NULL;
+    g_autofree gchar *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    unsigned i;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(tmpfs, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+
+    for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+        from = qtest_init(MACHINE_DUAL);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        patch_master_elsc_field(stream, offsets[i], 200);
+        to = qtest_init(MACHINE_DUAL " -incoming defer");
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(
+            to, "{ 'execute': 'migrate-incoming', "
+                "'arguments': { 'uri': %s } }", uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+    }
 
     g_assert_cmpint(g_unlink(stream), ==, 0);
     g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
@@ -1303,6 +1350,8 @@ int main(int argc, char **argv)
                         NULL, test_interrupt_output_phase_survives_migration);
     qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
                         NULL, test_staged_i2c_start_survives_migration);
+    qtest_add_data_func("sn0/migration/elsc-framing-lengths-checked", NULL,
+                        test_elsc_framing_lengths_checked);
     qtest_add_data_func("sn0/migration/elsc-rotation-position",
                         NULL,
                         test_elsc_rotation_position_patched);

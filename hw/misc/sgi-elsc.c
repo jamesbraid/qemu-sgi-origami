@@ -121,10 +121,76 @@ static void elsc_module_console_input(SGIElscState *s, bool pending)
 }
 
 /*
+ * One request as the controller parses it. The firmware keeps the text and
+ * puts a carriage return where the checksum byte was, so every command ends
+ * in one; text[len - 1] is always that carriage return. pos is the next
+ * unread byte, and the readers below never move it past the end.
+ */
+typedef struct ElscRequest {
+    const char *text;
+    unsigned len;
+    unsigned pos;
+} ElscRequest;
+
+static char elsc_peek(const ElscRequest *r)
+{
+    return r->pos < r->len ? r->text[r->pos] : '\r';
+}
+
+static void elsc_skip(ElscRequest *r)
+{
+    if (r->pos < r->len) {
+        r->pos++;
+    }
+}
+
+/*
+ * The character reader most commands use: skip spaces and take the next
+ * character. A carriage return or line feed is no argument, and is left
+ * where it is.
+ */
+static bool elsc_read_char(ElscRequest *r, char *c)
+{
+    while (elsc_peek(r) == ' ') {
+        elsc_skip(r);
+    }
+    *c = elsc_peek(r);
+    if (*c == '\r' || *c == '\n') {
+        return false;
+    }
+    elsc_skip(r);
+    return true;
+}
+
+/*
+ * The hex reader: up to four digits, either case, with no leading spaces
+ * skipped. A number shorter than four digits consumes the character that
+ * ends it, so a following number must come after exactly one space; a
+ * four-digit number consumes nothing after it, so the next number follows
+ * with no space at all, and a fifth digit starts it. No digits at all reads
+ * as no value, and the character that ended the attempt is still consumed.
+ */
+static bool elsc_read_hex(ElscRequest *r, uint32_t *value)
+{
+    unsigned digits = 0;
+
+    *value = 0;
+    while (digits < 4 && g_ascii_isxdigit(elsc_peek(r))) {
+        *value = *value << 4 | g_ascii_xdigit_value(elsc_peek(r));
+        elsc_skip(r);
+        digits++;
+    }
+    if (digits < 4) {
+        elsc_skip(r);
+    }
+    return digits > 0;
+}
+
+/*
  * "get": firmware checks four of the six header bytes and copies from byte
  * six, so the shape must be exact; the selector is always "0".
  */
-static void elsc_handle_get(SGIElscState *s)
+static void elsc_handle_get(SGIElscState *s, ElscRequest *r)
 {
     char buf[SGI_ELSC_MAX_TEXT];
     unsigned payload_max = SGI_ELSC_MAX_TEXT - 6;
@@ -146,10 +212,15 @@ static void elsc_handle_get(SGIElscState *s)
     }
 }
 
-/* "acp": a bare "ok" parses as zero accepted and livelocks the firmware. */
-static void elsc_handle_acp_command(SGIElscState *s, const char *text,
-                                    unsigned len)
+/*
+ * "acp": a bare "ok" parses as zero accepted and livelocks the firmware. The
+ * selector and payload are taken from fixed offsets, as the firmware's output
+ * parser does, with no validation of either.
+ */
+static void elsc_handle_acp(SGIElscState *s, ElscRequest *r)
 {
+    const char *text = r->text;
+    unsigned len = r->len - 1;
     char resp[8];
     unsigned n;
 
@@ -190,107 +261,148 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     }
 }
 
+static void elsc_handle_ver(SGIElscState *s, ElscRequest *r)
+{
+    elsc_frame_response_str(s, s->origin2000 ?
+                            "ok " SGI_ELSC_VERSION_ORIGIN2000 :
+                            "ok " SGI_ELSC_VERSION_ORIGIN200);
+}
+
+/* The physical switches, active-low, as hex with no leading zero. */
+static void elsc_handle_rsw(SGIElscState *s, ElscRequest *r)
+{
+    char resp[6];
+
+    snprintf(resp, sizeof(resp), "ok %x", 0xff ^ s->dip_switches);
+    elsc_frame_response_str(s, resp);
+}
+
 /*
  * "dsp <text>": the Origin 2000 build's eight-character front-panel message.
- * Up to eight characters, spaces included, overwrite the display from its
- * first position and leave the rest alone. The text stops at the first
- * unprintable character and anything past eight is dropped. An empty
- * message is a bad argument.
+ * The text starts right after the space that ends the mnemonic, so spaces in
+ * it count. Up to eight characters overwrite the display from its first
+ * position and leave the rest alone. The text stops at the first unprintable
+ * character, the carriage return included, and anything past eight is
+ * dropped. An empty message is a bad argument.
  */
-static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_dsp(SGIElscState *s, ElscRequest *r)
 {
     unsigned n = 0;
 
-    while (4 + n < len && n < SGI_ELSC_DISPLAY_CHARS &&
-           g_ascii_isprint(text[4 + n])) {
+    while (r->pos + n < r->len && n < SGI_ELSC_DISPLAY_CHARS &&
+           g_ascii_isprint(r->text[r->pos + n])) {
         n++;
     }
     if (n == 0) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    memcpy(s->display, &text[4], n);
+    memcpy(s->display, &r->text[r->pos], n);
     elsc_frame_ok(s);
 }
 
 /*
- * "dsc <pos> <ch>": one display character on the Origin 2000 build. Spaces
- * before each argument are skipped, so the position is the digit 1 to 8,
- * for display positions 0 to 7, and the character is printable and never a
- * space. The PROM sends "dsc %x %c" with positions 2s-1 and 2s for slot s.
+ * "dsc <pos> <ch>": one display character on the Origin 2000 build. Both
+ * arguments come from the character reader, so the position is the digit 1
+ * to 8, for display positions 0 to 7, and the character is printable and
+ * never a space. The PROM sends "dsc %x %c" with positions 2s-1 and 2s for
+ * slot s.
  */
-static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_dsc(SGIElscState *s, ElscRequest *r)
 {
-    unsigned i = 3;
-    char pos;
+    char pos, ch;
 
-    while (i < len && text[i] == ' ') {
-        i++;
-    }
-    pos = i < len ? text[i++] : '\0';
-    while (i < len && text[i] == ' ') {
-        i++;
-    }
-    if (pos < '1' || pos > '8' || i == len || !g_ascii_isgraph(text[i])) {
+    if (!elsc_read_char(r, &pos) || pos < '1' || pos > '8' ||
+        !elsc_read_char(r, &ch) || !g_ascii_isprint(ch)) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    s->display[pos - '1'] = text[i];
+    s->display[pos - '1'] = ch;
     elsc_frame_ok(s);
 }
 
 /*
- * Parse a run of ASCII hex digits into *out; the text is not NUL-terminated.
- * Rejects an empty run and anything wider than 32 bits, so a caller can range
- * check the result. Most arguments in this protocol are hex.
+ * Arm a destructive action whose "ok" has just been framed. Clearing
+ * deferred_committed would demote an acknowledged action to ARMED and lose
+ * the commit after the last text byte is fetched. The committed action
+ * still fires; log if it is weaker than this request and the returned "ok"
+ * therefore describes another action.
  */
-static bool elsc_parse_hex(const char *p, unsigned n, uint32_t *out)
+static void elsc_arm_action(SGIElscState *s, SGIElscAction action,
+                            const char *command)
 {
-    uint32_t v = 0;
-    unsigned i;
-
-    if (n == 0 || n > 8) {
-        return false;
+    if (!s->deferred_committed) {
+        s->deferred_action = action;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-elsc: \"%s\" while a %s is already committed; "
+                      "that action fires and this \"ok\" may not match it\n",
+                      command, elsc_action_name(s->deferred_action));
     }
-    for (i = 0; i < n; i++) {
-        char c = p[i];
+}
 
-        v <<= 4;
-        if (c >= '0' && c <= '9') {
-            v |= c - '0';
-        } else if (c >= 'a' && c <= 'f') {
-            v |= c - 'a' + 10;
-        } else if (c >= 'A' && c <= 'F') {
-            v |= c - 'A' + 10;
-        } else {
-            return false;
-        }
+/*
+ * "pwr d [<sec>]": power down after a hex delay. Exactly one character after
+ * the "d" is skipped, then the hex reader runs, so no digit at all is no
+ * argument. 1 to 0x258 (re)loads the countdown from this request, so a
+ * repeated request moves the deadline either way. 0 powers down at once, as
+ * does no argument while a countdown is pending; no argument otherwise
+ * starts a three-second countdown. Above 0x258 is "err arg" and changes
+ * nothing.
+ *
+ * An immediate power-down replies "ok" first and acts once the ack is read,
+ * as "rst" does. A countdown's expiry needs no ack.
+ */
+static void elsc_handle_pwr_down(SGIElscState *s, ElscRequest *r)
+{
+    uint32_t sec;
+    bool has_delay, immediate;
+
+    elsc_skip(r);
+    has_delay = elsc_read_hex(r, &sec);
+    if (has_delay && sec > SGI_ELSC_DELAY_MAX) {
+        elsc_frame_response_str(s, "err arg");
+        return;
     }
-    *out = v;
-    return true;
+    if (!elsc_module_can_execute(s, ELSC_ACTION_SHUTDOWN)) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    elsc_frame_ok(s);
+
+    immediate = has_delay ? sec == 0 : timer_pending(s->pwr_down_timer);
+    if (!immediate) {
+        timer_mod(s->pwr_down_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  (int64_t)(has_delay ? sec : 3) * 1000);
+        return;
+    }
+    /*
+     * A pending countdown keeps running: the firmware removes power whether
+     * or not this ack is read, so if a new request supersedes the ack before
+     * it commits, the countdown still powers down.
+     */
+    elsc_arm_action(s, ELSC_ACTION_SHUTDOWN, "pwr d");
 }
 
 /*
  * "pwr <sub>": the power subcommands share the "pwr" mnemonic and select on
- * the letter after the space. Only the power-on query is boot-driven; the
- * rest (delayed power-down, power-cycle, redundant supply) are shutdown and
- * reset-recovery paths. An unknown subcommand letter is "err cmd"; a known
- * letter with a bad argument is "err arg".
+ * a letter from the character reader, so "pwr q" and "pwr  q junk" are the
+ * same request. Only the power-on query is boot-driven; the rest (delayed
+ * power-down, power-cycle, redundant supply) are shutdown and reset-recovery
+ * paths. A letter the controller does not know is a bad argument.
  */
-static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
 {
-    if (len < 5 || text[3] != ' ') {
-        /* "pwr", "pwrx", "pwr ": no subcommand letter. */
-        elsc_frame_response_str(s, "err cmd");
+    char sub;
+
+    if (!elsc_read_char(r, &sub)) {
+        elsc_frame_response_str(s, "err arg");
         return;
     }
 
-    switch (text[4]) {
+    switch (sub) {
     case 'q':
-        if (len != 5) {
-            elsc_frame_response_str(s, "err arg");
-            return;
-        }
         /*
          * Power-on query: the PROM issues it once at power-on to detect a
          * cold start and seed a boot-status bit. Answered "ok 1" on the first
@@ -314,75 +426,25 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, resp);
         }
         return;
-    case 'd': {
-        /*
-         * "pwr d [<sec>]": power down after a hex delay. One separator
-         * character follows the "d", then up to four hex digits, stopping at
-         * the first non-hex character; further text is ignored, and no digit
-         * at all is no argument. 1 to 0x258 (re)loads the countdown from
-         * this request, so a repeated request moves the deadline either way.
-         * 0 powers down at once, as does no argument while a countdown is
-         * pending; no argument otherwise starts a three-second countdown.
-         * Above 0x258 is "err arg" and changes nothing.
-         *
-         * An immediate power-down replies "ok" first and acts once the ack
-         * is read, as "rst" does. A countdown's expiry needs no ack.
-         */
-        uint32_t sec = 0;
-        unsigned digits = 0;
-        bool immediate;
-
-        while (len > 6 + digits && digits < 4 &&
-               g_ascii_isxdigit(text[6 + digits])) {
-            sec = sec << 4 | g_ascii_xdigit_value(text[6 + digits]);
-            digits++;
-        }
-        if (digits && sec > SGI_ELSC_DELAY_MAX) {
-            elsc_frame_response_str(s, "err arg");
-            return;
-        }
-        if (!elsc_module_can_execute(s, ELSC_ACTION_SHUTDOWN)) {
-            elsc_frame_response_str(s, "err cmd");
-            return;
-        }
-        elsc_frame_ok(s);
-
-        immediate = digits ? sec == 0 : timer_pending(s->pwr_down_timer);
-        if (!immediate) {
-            timer_mod(s->pwr_down_timer,
-                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
-                      (int64_t)(digits ? sec : 3) * 1000);
-            return;
-        }
-        /*
-         * A pending countdown keeps running: the firmware removes power
-         * whether or not this ack is read, so if a new request supersedes
-         * the ack before it commits, the countdown still powers down.
-         *
-         * Clearing deferred_committed would demote an acknowledged action to
-         * ARMED and lose the commit after the last text byte is fetched. The
-         * committed action still fires; log if it is weaker than this request
-         * and the returned "ok" therefore describes another action.
-         */
-        if (!s->deferred_committed) {
-            s->deferred_action = ELSC_ACTION_SHUTDOWN;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-elsc: \"pwr d\" while a %s is already "
-                          "committed; that action fires and this \"ok\" may "
-                          "not match it\n",
-                          elsc_action_name(s->deferred_action));
-        }
+    case 'd':
+        elsc_handle_pwr_down(s, r);
         return;
-    }
-    case 'c':
+    case 'c': {
         /*
+         * "pwr c [<sec>]": the optional off interval is read like the
+         * "pwr d" delay and runs from 5 to 0x258 seconds. The model restarts
+         * at once whatever it is (see the specification's power section).
+         *
          * "pwr c" replies "ok" before the reset, as "rst" does. CYCLE is a
          * cold restart: its bottom half re-arms the cold-power latch when
          * the action fires after the ack. A superseded request causes
          * neither reset nor false cold-power bit.
          */
-        if (len != 5) {
+        uint32_t sec;
+
+        elsc_skip(r);
+        if (elsc_read_hex(r, &sec) &&
+            (sec < 5 || sec > SGI_ELSC_DELAY_MAX)) {
             elsc_frame_response_str(s, "err arg");
             return;
         }
@@ -391,85 +453,40 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             return;
         }
         elsc_frame_ok(s);
-        /*
-         * Clearing deferred_committed would demote an acknowledged action to
-         * ARMED and lose the commit after the last text byte is fetched. The
-         * committed action still fires; log if it is weaker than this request
-         * and the returned "ok" therefore describes another action.
-         */
-        if (!s->deferred_committed) {
-            s->deferred_action = ELSC_ACTION_CYCLE;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-elsc: \"pwr c\" while a %s is already "
-                          "committed; that action fires and this \"ok\" may "
-                          "not match it\n",
-                          elsc_action_name(s->deferred_action));
-        }
+        elsc_arm_action(s, ELSC_ACTION_CYCLE, "pwr c");
         return;
+    }
     case 'r':
         /*
          * "pwr r": redundant-supply query, read-only. The wire response is a
          * per-module record for each supply, tagged tag:present:health:
          * "m:y:ok"/"m:y:fl"/"m:n" for the master and "s:y:ok"/"s:y:fl"/"s:n"
-         * for the slave. The present flag (y/n) separates an absent supply
-         * ("m:n") from a failed one ("m:y:fl"), and health is "ok" or "fl".
-         * Both supplies are modelled present and healthy. The response
-         * payload is identical on the operator and wire interfaces; only
-         * the command framing differs. This is what the Origin 200
-         * diagnostics guide documents. It supersedes an earlier one-colon
-         * "ok m:ok s:ok" that came from the driver's test-fixture mock rather
-         * than the firmware wire format.
+         * for the slave. Both supplies are modelled present and healthy.
          */
-        if (len != 5) {
-            elsc_frame_response_str(s, "err arg");
-            return;
-        }
         elsc_frame_response_str(s, "ok m:y:ok s:y:ok");
         return;
     default:
-        /* An unrecognised subcommand letter is an unknown command. */
-        elsc_frame_response_str(s, "err cmd");
+        elsc_frame_response_str(s, "err arg");
         return;
     }
 }
 
 /*
  * "hbt [<interval> [<cycle>]]": heartbeat / NMI-watchdog control, both
- * arguments hex like every other numeric argument. "hbt" alone sends one
+ * arguments read by the hex reader. "hbt" with no readable value sends one
  * heartbeat and "hbt 0" disables monitoring. Otherwise the interval is 5 to
- * 0x258 seconds, and the optional second argument sets how long after the
- * NMI the controller waits before power-cycling the module. The kernel
- * sends "hbt 30 20" only when its heartbeat tunable is set, which IRIX
- * 6.5.30 leaves off, so the request is validated and answered without
- * arming a timer; no missed-heartbeat NMI or power cycle is modelled.
+ * 0x258 seconds, and the optional second value sets how long after the NMI
+ * the controller waits before power-cycling the module. The kernel sends
+ * "hbt 30 20" only when its heartbeat tunable is set, which IRIX 6.5.30
+ * leaves off, so the request is validated and answered without arming a
+ * timer; no missed-heartbeat NMI or power cycle is modelled.
  */
-static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_hbt(SGIElscState *s, ElscRequest *r)
 {
-    const char *args, *sp;
-    uint32_t interval, cycle;
-    unsigned first;
+    uint32_t interval;
 
-    if (len == 3) {
-        elsc_frame_ok(s);   /* a single heartbeat */
-        return;
-    }
-    if (text[3] != ' ') {
-        /* "hbtx": junk after the mnemonic with no delimiter is not "hbt". */
-        elsc_frame_response_str(s, "err cmd");
-        return;
-    }
-
-    args = &text[4];
-    sp = memchr(args, ' ', len - 4);
-    first = sp ? sp - args : len - 4;
-    if (!elsc_parse_hex(args, first, &interval) ||
-        (sp && !elsc_parse_hex(sp + 1, len - 4 - first - 1, &cycle))) {
-        elsc_frame_response_str(s, "err arg");
-        return;
-    }
-    if (interval == 0) {
-        elsc_frame_ok(s);   /* monitoring disabled */
+    if (!elsc_read_hex(r, &interval) || interval == 0) {
+        elsc_frame_ok(s);   /* a heartbeat, or monitoring disabled */
         return;
     }
     if (interval < 5 || interval > SGI_ELSC_DELAY_MAX) {
@@ -508,24 +525,19 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
  * comparison needs. The 6.5.7 lock wrappers are dead code; this behavior is
  * unconfirmed for 6.5.30.
  */
-static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_tas(SGIElscState *s, ElscRequest *r)
 {
     uint8_t ch;
     bool was_held;
     uint8_t held;
     char buf[4];
 
-    if (len >= 4 && text[3] != ' ') {
-        /* "tasx": junk after the mnemonic with no delimiter is not "tas". */
-        elsc_frame_response_str(s, "err cmd");
-        return;
-    }
-    if (len != 5) {
+    if (r->len != 6) {
         /* "tas" takes exactly one channel character. */
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    ch = (uint8_t)text[4];
+    ch = (uint8_t)r->text[4];
 
     was_held = s->tas_held;             /* occupancy before this request */
     /* owner before this request, if held */
@@ -552,45 +564,23 @@ static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
 }
 
 /*
- * "nic <p> <s> <d>": one-wire identity passthrough. Three hex arguments
- * (pulse, sample, delay) bit-bang the midplane one-wire line; answers
- * "ok <hex>" with the sampled bit. A controller without a module-provided
- * line retains the absent-part result: the open-drain line idles high.
+ * "nic <p> <s> <d>": one-wire identity passthrough. Three values from the
+ * hex reader (pulse, sample, delay), any of them missing a bad argument,
+ * bit-bang the midplane one-wire line; answers "ok <hex>" with the sampled
+ * bit. A controller without a module-provided line retains the absent-part
+ * result: the open-drain line idles high.
  */
-static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
+static void elsc_handle_nic(SGIElscState *s, ElscRequest *r)
 {
-    const char *end = &text[len];
-    const char *arg, *sp1, *sp2;
     uint32_t pulse, sample, delay;
     bool level = true;
     char response[] = "ok 1";
 
-    if (len < 4 || text[3] != ' ') {
-        /* "nic" and "nicx" have no space-delimited argument list. */
-        elsc_frame_response_str(s, "err cmd");
-        return;
-    }
-    arg = &text[4];
-    sp1 = memchr(arg, ' ', end - arg);
-    if (sp1 == NULL) {
+    if (!elsc_read_hex(r, &pulse) || !elsc_read_hex(r, &sample) ||
+        !elsc_read_hex(r, &delay)) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    sp2 = memchr(sp1 + 1, ' ', end - (sp1 + 1));
-    if (sp2 == NULL) {
-        elsc_frame_response_str(s, "err arg");
-        return;
-    }
-    /*
-     * Validate every timing argument before handing the slot to the module.
-     */
-    if (!elsc_parse_hex(arg, sp1 - arg, &pulse) ||
-        !elsc_parse_hex(sp1 + 1, sp2 - (sp1 + 1), &sample) ||
-        !elsc_parse_hex(sp2 + 1, end - (sp2 + 1), &delay)) {
-        elsc_frame_response_str(s, "err arg");
-        return;
-    }
-    (void)delay;
 
     if (s->module_ops && s->module_ops->onewire_slot) {
         level = s->module_ops->onewire_slot(s->module_opaque, pulse, sample);
@@ -601,111 +591,101 @@ static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, response);
 }
 
+/*
+ * Module reset: panic reboot and fatal-error recovery only, never a normal
+ * boot. A caller treats "ok" as proof the reset happened and does not fall
+ * back to its own hardware reset, so the reset must fire. It is deferred
+ * until the guest has read "ok": committed at the fetch of the last frame
+ * byte that completes the ack (elsc_response_fully_read) and then run from a
+ * bottom half.
+ *
+ * The hardware reset is module-scoped. On the single-module Origin 200 the
+ * module is the whole machine, so qemu_system_reset is exact. A multi-node
+ * machine has one controller per module, and this resets the whole VM;
+ * QEMU has no per-module reset, so the model keeps the whole-machine reset
+ * rather than refuse.
+ *
+ * A module owner decides what a reset reaches, and it is asked before the
+ * acknowledgement is framed rather than after. Answering "ok" for an action
+ * that will not happen is undetectable to the caller, which takes the "ok"
+ * as proof and will not fall back to its own hardware reset; "err cmd"
+ * leaves it that fallback.
+ */
+static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
+{
+    if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    elsc_frame_ok(s);
+    elsc_arm_action(s, ELSC_ACTION_RESET, "rst");
+}
+
+/* Which builds have a command in their table. */
+#define ELSC_BUILD_ORIGIN200    (1u << 0)
+#define ELSC_BUILD_ORIGIN2000   (1u << 1)
+#define ELSC_BUILD_BOTH         (ELSC_BUILD_ORIGIN200 | ELSC_BUILD_ORIGIN2000)
+
+typedef struct ElscCommand {
+    char mnemonic[4];
+    unsigned builds;
+    void (*handler)(SGIElscState *s, ElscRequest *r);
+} ElscCommand;
+
+/*
+ * What each build answers over I2C. A mnemonic a build lacks answers
+ * "err cmd" with no other effect, and so do the serial-only commands
+ * ("cfg", "dbg", "ech", "fre", "mod", "nvm", "pas"), which never appear here.
+ */
+static const ElscCommand elsc_commands[] = {
+    { "acp", ELSC_BUILD_BOTH,       elsc_handle_acp },
+    { "dsc", ELSC_BUILD_ORIGIN2000, elsc_handle_dsc },
+    { "dsp", ELSC_BUILD_ORIGIN2000, elsc_handle_dsp },
+    { "get", ELSC_BUILD_BOTH,       elsc_handle_get },
+    { "hbt", ELSC_BUILD_BOTH,       elsc_handle_hbt },
+    { "nic", ELSC_BUILD_BOTH,       elsc_handle_nic },
+    { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr },
+    { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst },
+    { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw },
+    { "tas", ELSC_BUILD_BOTH,       elsc_handle_tas },
+    { "ver", ELSC_BUILD_BOTH,       elsc_handle_ver },
+};
+
+/*
+ * The first four bytes are a three-letter lowercase mnemonic and its
+ * separator, which must be a space or the carriage return. Matching is
+ * case-sensitive, and a request that is only the terminator is no command.
+ * Whatever a handler leaves unread is discarded.
+ */
 static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
 {
-    if (len == 3 && memcmp(text, "ver", 3) == 0) {
-        elsc_frame_response_str(s, s->origin2000 ?
-                                "ok " SGI_ELSC_VERSION_ORIGIN2000 :
-                                "ok " SGI_ELSC_VERSION_ORIGIN200);
-        return;
-    }
-    if (len == 3 && memcmp(text, "get", 3) == 0) {
-        elsc_handle_get(s);
-        return;
-    }
-    if (len == 3 && memcmp(text, "rsw", 3) == 0) {
-        char resp[6];
+    char line[SGI_ELSC_MAX_FRAME];
+    unsigned build = s->origin2000 ? ELSC_BUILD_ORIGIN2000 :
+                                     ELSC_BUILD_ORIGIN200;
+    ElscRequest r;
+    unsigned i;
 
-        /* The controller reports its physical switches active-low. */
-        snprintf(resp, sizeof(resp), "ok %02x", 0xff ^ s->dip_switches);
-        elsc_frame_response_str(s, resp);
-        return;
-    }
-    if (len >= 4 && memcmp(text, "acp ", 4) == 0) {
-        elsc_handle_acp_command(s, text, len);
-        return;
-    }
-    /*
-     * The display commands exist only in the Origin 2000 build; the Origin
-     * 200 build has no front-panel display and answers them "err cmd". The
-     * PROM and kernel ignore the reply on both machines.
-     */
-    if (s->origin2000 && len >= 3 && (len == 3 || text[3] == ' ')) {
-        if (memcmp(text, "dsp", 3) == 0) {
-            elsc_handle_dsp(s, text, len);
-            return;
-        }
-        if (memcmp(text, "dsc", 3) == 0) {
-            elsc_handle_dsc(s, text, len);
-            return;
-        }
-    }
-    if (len >= 3 && memcmp(text, "pwr", 3) == 0) {
-        elsc_handle_pwr(s, text, len);
-        return;
-    }
-    if (len >= 3 && memcmp(text, "hbt", 3) == 0) {
-        elsc_handle_hbt(s, text, len);
-        return;
-    }
-    if (len >= 3 && memcmp(text, "tas", 3) == 0) {
-        elsc_handle_tas(s, text, len);
-        return;
-    }
-    if (len >= 3 && memcmp(text, "nic", 3) == 0) {
-        elsc_handle_nic(s, text, len);
-        return;
-    }
-    if (len == 3 && memcmp(text, "rst", 3) == 0) {
-        /*
-         * Module reset: panic reboot and fatal-error recovery only, never a
-         * normal boot. No delayed-reset form; the hex delay belongs to
-         * "pwr d". A caller treats "ok" as proof the reset
-         * happened and does not fall back to its own hardware reset, so the
-         * reset must fire. It is deferred until the guest has read "ok":
-         * committed at the fetch of the last frame byte that completes the
-         * ack (elsc_response_fully_read) and then run from a bottom half.
-         *
-         * The hardware reset is module-scoped. On the single-module Origin
-         * 200 the module is the whole machine, so qemu_system_reset is exact.
-         * A multi-node machine (the two-node bring-up is active) has one
-         * controller per module, and this resets the whole VM. Hardware reset
-         * is scoped to one module. QEMU has no per-module reset, and
-         * the controller cannot even tell from its own properties whether the
-         * machine is multi-node, so the model keeps the whole-machine reset
-         * rather than refuse; a true module-scoped reset would need a
-         * machine-level signal.
-         */
-        /*
-         * A module owner decides what a reset reaches, and it is asked before
-         * the acknowledgement is framed rather than after. Answering "ok" for
-         * an action that will not happen is undetectable to the caller, which
-         * takes the "ok" as proof and will not fall back to its own hardware
-         * reset; "err cmd" leaves it that fallback.
-         */
-        if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
-            elsc_frame_response_str(s, "err cmd");
-            return;
-        }
-        elsc_frame_ok(s);
-        /*
-         * Clearing deferred_committed would demote an acknowledged action to
-         * ARMED and lose the commit after the last text byte is fetched. The
-         * committed action still fires; log if it is weaker than this request
-         * and the returned "ok" therefore describes another action.
-         */
-        if (!s->deferred_committed) {
-            s->deferred_action = ELSC_ACTION_RESET;
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-elsc: \"rst\" while a %s is already committed; "
-                          "that action fires and this \"ok\" may not match "
-                          "it\n",
-                          elsc_action_name(s->deferred_action));
-        }
-        return;
-    }
+    memcpy(line, text, len);
+    line[len] = '\r';
+    r.text = line;
+    r.len = len + 1;
+    r.pos = 4;
 
+    if (len < 3 || (line[3] != ' ' && line[3] != '\r')) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    if (line[3] == '\r') {
+        r.pos = 3;
+    }
+    for (i = 0; i < ARRAY_SIZE(elsc_commands); i++) {
+        const ElscCommand *c = &elsc_commands[i];
+
+        if (memcmp(line, c->mnemonic, 3) == 0 && (c->builds & build)) {
+            c->handler(s, &r);
+            return;
+        }
+    }
     elsc_frame_response_str(s, "err cmd");
 }
 
@@ -1397,6 +1377,11 @@ static int elsc_post_load(void *opaque, int version_id)
 {
     SGIElscState *s = opaque;
 
+    /* The framing indexes address fixed buffers; a corrupt stream stops. */
+    if (s->rxlen > sizeof(s->rxbuf) || s->txlen > sizeof(s->txbuf) ||
+        s->txpos > s->txlen) {
+        return -EINVAL;
+    }
     if (s->arb_code >= ELSC_RING_POSITION_COUNT) {
         return -EINVAL;
     }
