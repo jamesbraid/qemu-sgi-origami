@@ -211,6 +211,19 @@ const SGIRenderResource *sgi_kona_mesa_resources(
     return p->resources;
 }
 
+void sgi_kona_mesa_refresh_board_views(SGIKonaMesaProvider *p)
+{
+    if (!p) {
+        return;
+    }
+    for (unsigned i = 0; i < KONA_MESA_TEXTURE; i++) {
+        SGIRenderResource *resource = &p->resources[i];
+
+        resource->backing_generation++;
+        resource->view_generation++;
+    }
+}
+
 static uint64_t backing_key(uint32_t handle, uint32_t image_id, bool native)
 {
     return ((uint64_t)handle << 24) | ((uint64_t)native << 23) | image_id;

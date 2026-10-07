@@ -178,6 +178,106 @@ static void test_aliases_and_precision(void)
     fixture_clear(&f);
 }
 
+static void test_refresh_board_views_without_dirtying(void)
+{
+    Fixture f;
+    SGIRasterTarget target;
+    uint32_t texel = 0x12345678;
+    SGIKonaMesaTextureView texture = {
+        .handle = 41, .level = 2, .image_id = 5,
+        .width = 1, .height = 1, .depth = 1,
+        .pixels = &texel,
+    };
+    uint64_t backing[9], view[9];
+    uint8_t native[128];
+    SGIRenderRect rect = { 0, 0, 1, 0 };
+    uint32_t slots[6] = { 0x11, 0x22, 0x33, 0x10, 0x20, 0x30 };
+    uint32_t snapshot[6] = { 0 };
+    uint8_t written[2] = { 0, 1 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = written,
+        .stride_bytes = sizeof(written),
+        .capacity_bytes = sizeof(written),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    fixture_init(&f, false);
+    g_assert_true(sgi_kona_mesa_bind_texture(f.provider, &texture, &err));
+    g_assert_null(err);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front), 0, 0, 0x112233);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front), 1, 0, 0x00abcd);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front_tag), 0, 0, 3);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front_tag), 1, 0, 3);
+    target = fixture_target(&f);
+    g_assert_cmpuint(target.resource_count, ==, ARRAY_SIZE(backing));
+    g_assert_cmpuint(f.memory.bytes_len, ==, sizeof(native));
+    memcpy(native, f.memory.bytes, sizeof(native));
+    for (unsigned i = 0; i < ARRAY_SIZE(backing); i++) {
+        backing[i] = target.resources[i].backing_generation;
+        view[i] = target.resources[i].view_generation;
+    }
+
+    sgi_kona_mesa_refresh_board_views(f.provider);
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmpuint(target.resources[i].backing_generation, ==,
+                         backing[i] + 1);
+        g_assert_cmpuint(target.resources[i].view_generation, ==,
+                         view[i] + 1);
+    }
+    g_assert_cmpuint(target.resources[0].backing_generation, ==,
+                     target.resources[1].backing_generation);
+    g_assert_cmpuint(target.resources[2].backing_generation, ==,
+                     target.resources[3].backing_generation);
+    g_assert_cmpuint(target.resources[8].backing_generation, ==, backing[8]);
+    g_assert_cmpuint(target.resources[8].view_generation, ==, view[8]);
+    g_assert_cmpuint(f.dirty_planes, ==, 0);
+    g_assert_cmpuint(f.dirty_textures, ==, 0);
+    g_assert_cmpmem(f.memory.bytes, f.memory.bytes_len,
+                    native, sizeof(native));
+    g_assert_cmpint(sgi_render_resource_snapshot(&target,
+                    &target.resources[0], 0, &rect, snapshot, 6,
+                    ARRAY_SIZE(snapshot), &err), ==, SGI_RENDER_OK);
+    g_assert_cmpmem(snapshot, sizeof(snapshot),
+                    ((uint32_t[6]) { 0x11, 0x22, 0x33, 0, 0xab, 0xcd }),
+                    sizeof(snapshot));
+    g_assert_cmpuint(f.dirty_planes, ==, 0);
+
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[0], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 2);
+    g_assert_null(err);
+    g_assert_cmpuint(f.dirty_planes, ==, 2);
+    g_assert_cmpuint(f.dirty_y0, ==, 0);
+    g_assert_cmpuint(f.dirty_y1, ==, 0);
+    g_assert_cmpuint(target.resources[0].backing_generation, ==,
+                     backing[0] + 2);
+    g_assert_cmpuint(target.resources[1].view_generation, ==, view[1] + 2);
+    g_assert_cmpuint(target.resources[4].backing_generation, ==,
+                     backing[4] + 2);
+    g_assert_cmpuint(target.resources[2].backing_generation, ==,
+                     backing[2] + 1);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    0, 0), ==, 0x112233);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front_tag),
+                    0, 0), ==, 3);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    1, 0), ==, 0x102030);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front_tag),
+                    1, 0), ==, 0);
+    fixture_clear(&f);
+}
+
 static void test_partial_commit(void)
 {
     Fixture f;
@@ -498,6 +598,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sgi-kona-mesa/aliases-precision",
                     test_aliases_and_precision);
+    g_test_add_func("/sgi-kona-mesa/refresh-board-views",
+                    test_refresh_board_views_without_dirtying);
     g_test_add_func("/sgi-kona-mesa/partial-commit", test_partial_commit);
     g_test_add_func("/sgi-kona-mesa/later-attachment-failure",
                     test_later_attachment_failure_keeps_colour);
