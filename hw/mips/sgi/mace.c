@@ -193,6 +193,8 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
                 serial_reset_device(&s->uart[0]);
                 serial_reset_device(&s->uart[1]);
             }
+            serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
+            serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
             qemu_set_irq(s->isa_reset, s->ring_base & 1);
             return;
         }
@@ -294,6 +296,8 @@ static void mace_reset_hold(Object *obj, ResetType type)
     for (i = 0; i < ARRAY_SIZE(s->crime); i++) {
         qemu_set_irq(s->crime[i], 0);
     }
+    serial_set_rx_discard(&s->uart[0], true);
+    serial_set_rx_discard(&s->uart[1], true);
     qemu_set_irq(s->isa_reset, 1);
 }
 
@@ -313,6 +317,8 @@ static int mace_post_load(void *opaque, int version_id)
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                   s->saved_elapsed_ns;
     mace_update_irqs(s);
+    serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
+    serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
     mace_schedule_compare(s);
     return 0;
@@ -385,6 +391,7 @@ static void mace_realize(DeviceState *dev, Error **errp)
         MACEUARTPort *port = &s->uart_port[i];
 
         qdev_prop_set_uint32(DEVICE(&s->uart[i]), "baudbase", 115200);
+        serial_set_rx_discard(&s->uart[i], true);
         s->uart[i].irq = qdev_get_gpio_in_named(dev, "uart", i);
         if (!qdev_realize(DEVICE(&s->uart[i]), NULL, errp)) {
             return;
