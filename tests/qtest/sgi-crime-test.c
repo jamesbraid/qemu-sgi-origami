@@ -476,6 +476,7 @@ static void test_populated_banks_and_views(void)
 static void test_populated_priority_and_remap(void)
 {
     QTestState *s = crime_start_populated();
+    uint64_t value;
 
     qtest_writeq(s, CRIME_BANK(0), 0x100);
     qtest_writeq(s, CRIME_BANK(1), 0x104);
@@ -491,6 +492,16 @@ static void test_populated_priority_and_remap(void)
     g_assert_cmphex(qtest_readq(s, CRIME_BANK(0)), ==, 0x107);
     g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM + CRIME_BANK_SIZE),
                     ==, 0x31);
+
+    /* Bank zero's unsupported 16 Mbit match outranks bank one's data. */
+    qtest_writeq(s, CRIME_BANK(0), 0);
+    g_assert_cmpuint(memtx_readq(s, CRIME_FULL_RAM, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeq(s, CRIME_FULL_RAM,
+                                  0x123456789abcdef0ULL), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS) &
+                    (BIT64(25) | BIT64(26)), ==, 0);
+    qtest_writeq(s, CRIME_BANK(0), 0x107);
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM), ==, 0x72);
     qtest_quit(s);
 }
 

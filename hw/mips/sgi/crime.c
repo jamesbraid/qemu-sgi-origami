@@ -22,6 +22,7 @@
 #define CRIME_FITTED_RAM (64 * MiB)
 #define CRIME_OPTIONAL_RAM (128 * MiB)
 #define CRIME_BANK_SIZE (128 * MiB)
+#define CRIME_SMALL_BANK_SIZE (32 * MiB)
 #define CRIME_BANKED_RAM (1 * GiB)
 #define CRIME_LOW_RAM_SIZE (256 * MiB)
 #define CRIME_HIGH_RAM 0x20000000ULL
@@ -73,42 +74,68 @@ static void crime_update_bank_mapping(SGICrimeState *s)
     memory_region_transaction_begin();
     for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
         memory_region_set_enabled(&s->bank_ram[bank], false);
+        memory_region_set_enabled(&s->wrong_geometry[bank], false);
     }
     for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
-        if (s->bank_control[bank] & CRIME_BANK_64_MBIT) {
-            hwaddr address = ((s->bank_control[bank] >> 2) & 7) *
-                             CRIME_BANK_SIZE;
+        uint16_t control = s->bank_control[bank];
+
+        if (control & CRIME_BANK_64_MBIT) {
+            hwaddr address = ((control >> 2) & 7) * CRIME_BANK_SIZE;
 
             memory_region_set_address(&s->bank_ram[bank], address);
             memory_region_set_enabled(&s->bank_ram[bank], true);
+        } else {
+            hwaddr address = (control & 0x1f) * CRIME_SMALL_BANK_SIZE;
+
+            memory_region_set_address(&s->wrong_geometry[bank], address);
+            memory_region_set_enabled(&s->wrong_geometry[bank], true);
         }
     }
     memory_region_transaction_commit();
 }
 
-static bool crime_wrong_bank_geometry(SGICrimeState *s, hwaddr address)
+static MemTxResult crime_unsupported_geometry(void *opaque, hwaddr offset)
 {
-    for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
-        uint16_t control = s->bank_control[bank];
+    const uint16_t *control = opaque;
+    hwaddr address = (*control & 0x1f) * CRIME_SMALL_BANK_SIZE + offset;
 
-        if (!(control & CRIME_BANK_64_MBIT) &&
-            (control & 0x1f) == ((address >> 25) & 0x1f)) {
-            return true;
-        }
-    }
-    return false;
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-crime: unsupported 16 Mbit bank geometry at "
+                  "RAM offset 0x%" HWADDR_PRIx "\n", address);
+    return MEMTX_ERROR;
 }
+
+static MemTxResult crime_unsupported_geometry_read(void *opaque, hwaddr offset,
+                                                   uint64_t *value,
+                                                   unsigned size,
+                                                   MemTxAttrs attrs)
+{
+    *value = 0;
+    return crime_unsupported_geometry(opaque, offset);
+}
+
+static MemTxResult crime_unsupported_geometry_write(void *opaque,
+                                                    hwaddr offset,
+                                                    uint64_t value,
+                                                    unsigned size,
+                                                    MemTxAttrs attrs)
+{
+    return crime_unsupported_geometry(opaque, offset);
+}
+
+static const MemoryRegionOps crime_wrong_geometry_ops = {
+    .read_with_attrs = crime_unsupported_geometry_read,
+    .write_with_attrs = crime_unsupported_geometry_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
 
 static MemTxResult crime_invalid_ram_access(SGICrimeState *s, hwaddr address,
                                              bool write)
 {
-    if (crime_wrong_bank_geometry(s, address)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-crime: unsupported 16 Mbit bank geometry at "
-                      "RAM offset 0x%" HWADDR_PRIx "\n", address);
-        return MEMTX_ERROR;
-    }
-
     s->memory_error_status |= write ? CRIME_ERROR_WRITE : CRIME_ERROR_READ;
     s->memory_error_address = address & 0x3fffffff;
     qemu_log_mask(LOG_GUEST_ERROR,
@@ -370,6 +397,8 @@ static void crime_realize(DeviceState *dev, Error **errp)
             for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
                 g_autofree char *name =
                     g_strdup_printf("sgi-crime.bank%u", bank);
+                g_autofree char *guard_name =
+                    g_strdup_printf("sgi-crime.bank%u-geometry", bank);
 
                 memory_region_init_alias(&s->bank_ram[bank], OBJECT(dev),
                                          name, s->ram,
@@ -380,6 +409,14 @@ static void crime_realize(DeviceState *dev, Error **errp)
                                                     &s->bank_ram[bank],
                                                     SGI_CRIME_BANK_COUNT -
                                                     bank);
+                memory_region_init_io(&s->wrong_geometry[bank], OBJECT(dev),
+                                      &crime_wrong_geometry_ops,
+                                      &s->bank_control[bank], guard_name,
+                                      CRIME_SMALL_BANK_SIZE);
+                memory_region_set_enabled(&s->wrong_geometry[bank], false);
+                memory_region_add_subregion_overlap(
+                    &s->decoded_ram, 0, &s->wrong_geometry[bank],
+                    SGI_CRIME_BANK_COUNT - bank);
                 s->bank_control[bank] = bank;
             }
             target = &s->decoded_ram;
