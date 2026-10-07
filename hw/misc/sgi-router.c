@@ -105,9 +105,9 @@
 #define RR_RESET_PORT_MASK         (UINT64_C(0x3f) << 1)
 #define RR_RESET_WARM              (UINT64_C(1) << 7)
 
-#define RR_BIST_TARGET_LOGIC       1
-#define RR_BIST_TARGET_ARRAY       2
-#define RR_BIST_TARGET_CLOCK       3
+#define RR_BIST_CHAIN_LOGIC        1
+#define RR_BIST_CHAIN_ARRAY        2
+#define RR_BIST_CHAIN_CLOCK_CONTROL 3
 #define RR_BIST_LOGIC_INPUT_BITS   191
 #define RR_BIST_ARRAY_INPUT_BITS   110
 #define RR_BIST_CLOCK_INPUT_BITS   1
@@ -725,11 +725,11 @@ static void sgi_router_reset_complete(SGIRouterState *s)
 static unsigned int sgi_router_bist_input_bits(unsigned int target)
 {
     switch (target) {
-    case RR_BIST_TARGET_LOGIC:
+    case RR_BIST_CHAIN_LOGIC:
         return RR_BIST_LOGIC_INPUT_BITS;
-    case RR_BIST_TARGET_ARRAY:
+    case RR_BIST_CHAIN_ARRAY:
         return RR_BIST_ARRAY_INPUT_BITS;
-    case RR_BIST_TARGET_CLOCK:
+    case RR_BIST_CHAIN_CLOCK_CONTROL:
         return RR_BIST_CLOCK_INPUT_BITS;
     default:
         return 0;
@@ -739,9 +739,9 @@ static unsigned int sgi_router_bist_input_bits(unsigned int target)
 static unsigned int sgi_router_bist_result_bits(unsigned int target)
 {
     switch (target) {
-    case RR_BIST_TARGET_LOGIC:
+    case RR_BIST_CHAIN_LOGIC:
         return RR_BIST_LOGIC_UNLOAD_BITS;
-    case RR_BIST_TARGET_ARRAY:
+    case RR_BIST_CHAIN_ARRAY:
         return RR_BIST_ARRAY_UNLOAD_BITS;
     default:
         return 0;
@@ -779,7 +779,7 @@ static bool sgi_router_bist_shift_load(SGIRouterState *s)
         return false;
     }
     s->bist_loaded[s->bist_target] += s->bist_count;
-    if (s->bist_target != RR_BIST_TARGET_CLOCK) {
+    if (s->bist_target != RR_BIST_CHAIN_CLOCK_CONTROL) {
         s->bist_run_target = s->bist_target;
     }
     return true;
@@ -817,11 +817,11 @@ static bool sgi_router_bist_shift_unload(SGIRouterState *s)
 static void sgi_router_bist_run(SGIRouterState *s)
 {
     unsigned int target = s->bist_run_target;
-    bool complete = s->bist_loaded[RR_BIST_TARGET_CLOCK] ==
+    bool complete = s->bist_loaded[RR_BIST_CHAIN_CLOCK_CONTROL] ==
                     RR_BIST_CLOCK_INPUT_BITS &&
-                    ((target == RR_BIST_TARGET_LOGIC &&
+                    ((target == RR_BIST_CHAIN_LOGIC &&
                       s->bist_loaded[target] == RR_BIST_LOGIC_INPUT_BITS) ||
-                     (target == RR_BIST_TARGET_ARRAY &&
+                     (target == RR_BIST_CHAIN_ARRAY &&
                       s->bist_loaded[target] == RR_BIST_ARRAY_INPUT_BITS));
 
     /* Like a register reset, the run keeps a bus operation already due. */
@@ -1342,16 +1342,16 @@ static bool sgi_router_bist_state_valid(SGIRouterState *s)
     unsigned int result_bits =
         sgi_router_bist_result_bits(s->bist_completed_target);
 
-    return s->bist_target <= RR_BIST_TARGET_CLOCK &&
-           s->bist_run_target <= RR_BIST_TARGET_ARRAY &&
-           s->bist_completed_target <= RR_BIST_TARGET_ARRAY &&
+    return s->bist_target <= RR_BIST_CHAIN_CLOCK_CONTROL &&
+           s->bist_run_target <= RR_BIST_CHAIN_ARRAY &&
+           s->bist_completed_target <= RR_BIST_CHAIN_ARRAY &&
            s->bist_count <= 64 &&
            s->bist_loaded[0] == 0 &&
-           s->bist_loaded[RR_BIST_TARGET_LOGIC] <=
+           s->bist_loaded[RR_BIST_CHAIN_LOGIC] <=
                RR_BIST_LOGIC_INPUT_BITS &&
-           s->bist_loaded[RR_BIST_TARGET_ARRAY] <=
+           s->bist_loaded[RR_BIST_CHAIN_ARRAY] <=
                RR_BIST_ARRAY_INPUT_BITS &&
-           s->bist_loaded[RR_BIST_TARGET_CLOCK] <=
+           s->bist_loaded[RR_BIST_CHAIN_CLOCK_CONTROL] <=
                RR_BIST_CLOCK_INPUT_BITS &&
            (!s->bist_completed_target ||
             (s->bist_ready && result_bits &&
