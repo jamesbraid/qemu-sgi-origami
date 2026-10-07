@@ -281,7 +281,8 @@ static void sgi_gl_draw_result(SGIGLContext *c, const SGIGLSink *sink,
     }
     if (sink->draw_checked) {
         result = sink->draw_checked(sink->opaque, d);
-    } else if (!c->polygon.enabled && !c->standalone_stipple && sink->draw) {
+    } else if (!sink->result && !c->polygon.enabled &&
+               !c->standalone_stipple && sink->draw) {
         sink->draw(sink->opaque, d);
         return;
     } else {
