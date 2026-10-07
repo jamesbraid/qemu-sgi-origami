@@ -185,6 +185,64 @@ static void test_ip35(void)
     g_assert_cmphex(flash[IP35_LABEL_BACKUP + 0x10], ==, 0xff);
 }
 
+/* The SHA-256 of position one, which no payload byte reaches. */
+static char *ip35_position_one_digest(const uint8_t *flash)
+{
+    return g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                       flash + IP35_FLASH_SIZE / 2,
+                                       IP35_FLASH_SIZE / 2);
+}
+
+/*
+ * The two-processor Origin 300 fits slots A and C. Its new flash carries
+ * an active DisableB record, then DisableD, after the label: type 0x10,
+ * the name, the value PROM 6.210 records, zero padding. Position one's
+ * digest pins every other byte as erased.
+ */
+static void test_ip35_disable_two_cpus(void)
+{
+    static const uint8_t records[128] = {
+        0x10, 'D', 'i', 's', 'a', 'b', 'l', 'e', 'B', 0, 0, 0, 0, 0, 0, 0,
+        '3', '2', ':', ' ', 'C', 'P', 'U', ' ', 'f', 'a', 'i', 'l', 'e', 'd',
+        ' ', 'e', 'a', 'r', 'l', 'y', ' ', 'i', 'n', 'i', 't', '.',
+        [64] = 0x10, 'D', 'i', 's', 'a', 'b', 'l', 'e', 'D', 0, 0, 0, 0, 0,
+        0, 0,
+        '3', '2', ':', ' ', 'C', 'P', 'U', ' ', 'f', 'a', 'i', 'l', 'e', 'd',
+        ' ', 'e', 'a', 'r', 'l', 'y', ' ', 'i', 'n', 'i', 't', '.',
+    };
+    const size_t size = 0x1000;
+    g_autofree uint8_t *payload = make_payload(size);
+    g_autofree uint8_t *flash = g_malloc0(IP35_FLASH_SIZE);
+    g_autofree char *digest = NULL;
+
+    sgi_ip35_initial_flash(flash, IP35_FLASH_SIZE, payload, size);
+    sgi_ip35_disable_empty_cpu_slots(flash, IP35_FLASH_SIZE, 0x5);
+
+    g_assert_cmpmem(flash + IP35_LABEL + 0x100, sizeof(records),
+                    records, sizeof(records));
+    g_assert_cmphex(flash[IP35_LABEL + 0x180], ==, 0xff);
+    g_assert_cmpmem(flash, size, payload, size);
+    digest = ip35_position_one_digest(flash);
+    g_assert_cmpstr(digest, ==, "02edb171d1c047b7ff5053ac64c3e5b5"
+                    "6848fd30a2d1023f0e839d61c7a10747");
+}
+
+/* Four processors fill every slot: no record, position one just labelled. */
+static void test_ip35_disable_four_cpus(void)
+{
+    g_autofree uint8_t *flash = g_malloc0(IP35_FLASH_SIZE);
+    g_autofree char *blank = NULL;
+    g_autofree char *digest = NULL;
+
+    sgi_ip35_initial_flash(flash, IP35_FLASH_SIZE, NULL, 0);
+    blank = ip35_position_one_digest(flash);
+    sgi_ip35_disable_empty_cpu_slots(flash, IP35_FLASH_SIZE, 0xf);
+    digest = ip35_position_one_digest(flash);
+    g_assert_cmpstr(digest, ==, blank);
+    g_assert_cmpstr(digest, ==, "43c4f084dba77a98430155b2a168a759"
+                    "dbf029f9e831abe156c989c1ea2c17a3");
+}
+
 /* An IP30 flash holds the payload, then erased bytes, and nothing else. */
 static void test_ip30(void)
 {
@@ -273,6 +331,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-initial-flash/ip27-no-magic", test_ip27_no_magic);
     g_test_add_func("/sgi-initial-flash/ip30", test_ip30);
     g_test_add_func("/sgi-initial-flash/ip35", test_ip35);
+    g_test_add_func("/sgi-initial-flash/ip35-disable-two-cpus",
+                    test_ip35_disable_two_cpus);
+    g_test_add_func("/sgi-initial-flash/ip35-disable-four-cpus",
+                    test_ip35_disable_four_cpus);
     g_test_add_func("/sgi-initial-flash/ip35-configure", test_ip35_configure);
     g_test_add_func("/sgi-initial-flash/io6", test_io6);
     return g_test_run();

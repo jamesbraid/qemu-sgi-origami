@@ -186,3 +186,32 @@ void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
     stl_be_p(label + 0x14, SGI_IP35_LABEL_FORMAT);
     stl_be_p(label + 0x18, SGI_IP35_LABEL_GENERATION);
 }
+
+void sgi_ip35_disable_empty_cpu_slots(uint8_t *flash, size_t flash_size,
+                                      unsigned int fitted)
+{
+    /* The value PROM 6.210 records when it gives up on a slot. */
+    static const char value[] = "32: CPU failed early init.";
+    size_t position = flash_size / SGI_IP35_FLASH_POSITIONS;
+    uint8_t *record = flash + position + SGI_IP35_ENV_OFFSET;
+    unsigned int slot;
+
+    g_assert(fitted < (1U << SGI_IP35_CPU_SLOTS));
+    g_assert(SGI_IP35_ENV_OFFSET +
+             SGI_IP35_CPU_SLOTS * SGI_IP35_ENV_RECORD_SIZE <= position);
+    for (slot = 0; slot < SGI_IP35_CPU_SLOTS; slot++) {
+        if (fitted & (1U << slot)) {
+            continue;
+        }
+        /*
+         * Unused bytes are zero, where the PROM's own writer leaves
+         * whatever its buffer held before.
+         */
+        memset(record, 0, SGI_IP35_ENV_RECORD_SIZE);
+        record[0] = SGI_IP35_ENV_RECORD_ACTIVE;
+        snprintf((char *)record + 1, SGI_IP35_ENV_NAME_SIZE - 1, "Disable%c",
+                 'A' + slot);
+        memcpy(record + SGI_IP35_ENV_NAME_SIZE, value, sizeof(value));
+        record += SGI_IP35_ENV_RECORD_SIZE;
+    }
+}

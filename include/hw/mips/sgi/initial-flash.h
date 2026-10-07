@@ -46,6 +46,18 @@
 #define SGI_IP35_LABEL_GENERATION       1
 
 /*
+ * The PROM's environment records follow the label in position one, 64
+ * bytes each: a type byte, a NUL-terminated name in bytes 1-15 and a
+ * NUL-terminated value in bytes 16-63.
+ */
+#define SGI_IP35_ENV_OFFSET             0x1e0100
+#define SGI_IP35_ENV_RECORD_SIZE        64
+#define SGI_IP35_ENV_RECORD_ACTIVE      0x10
+#define SGI_IP35_ENV_NAME_SIZE          16
+/* A Bedrock's four processor slots, A to D. */
+#define SGI_IP35_CPU_SLOTS              4
+
+/*
  * What a product and its processor put into the IP27 configuration block.
  * The processor values only reach the default template; a supplied PROM
  * image keeps its own.
@@ -94,6 +106,24 @@ void sgi_ip35_flash_configure(uint8_t *flash,
  */
 void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size);
+
+/*
+ * Add to the IP35 boot flash at @flash, as sgi_ip35_initial_flash()
+ * left it, an active Disable<slot> environment record for each processor
+ * slot whose bit in @fitted is clear (bit 0 for A, up to bit 3 for D),
+ * one after another in slot order from the first record position. An
+ * Origin 300's PROM reaches that state itself only after its failed-start
+ * recovery has power-cycled the module three times for each empty slot.
+ * The records are an initialization approximation, not a factory image:
+ * no factory flash or cold-boot environment listing is available.
+ *
+ * Only the two-record layout, DisableB then DisableD for a node fitting
+ * A and C, is specified and observed. A population leaving three slots
+ * empty would put a third record at +0x180; no catalogue topology offers
+ * one, and no evidence says the PROM would order its records that way.
+ */
+void sgi_ip35_disable_empty_cpu_slots(uint8_t *flash, size_t flash_size,
+                                      unsigned int fitted);
 
 /*
  * Fill @flash_size bytes at @flash as a new IP30 boot flash: @payload at
