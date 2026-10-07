@@ -180,6 +180,9 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         }
         return SGI_NET_PACKET_OK;
     }
+    if (address == 0x8 && write && s->synthetic_diagnostics && !packet->data) {
+        return SGI_NET_PACKET_OK;
+    }
     if (address == 0x8 || address == 0x18 || address == 0x30) {
         if (write) {
             return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
