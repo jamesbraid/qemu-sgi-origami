@@ -3393,6 +3393,234 @@ static void test_controller_timers_survive_migration(const void *data)
 }
 
 /*
+ * Read exactly the bytes the controller should print on its serial line,
+ * stepping the virtual clock so a waiting command runs, and fail on any
+ * difference.
+ */
+static void aux_expect(QTestState *qts, int fd, const char *want, size_t len)
+{
+    g_autofree char *got = g_malloc0(len + 1);
+    size_t have = 0;
+    int i;
+
+    for (i = 0; i < 20000 && have < len; i++) {
+        ssize_t n = recv(fd, got + have, len - have, MSG_DONTWAIT);
+
+        if (n > 0) {
+            have += n;
+            continue;
+        }
+        qtest_clock_step(qts, 100 * SCALE_US);
+        g_usleep(500);
+    }
+    g_assert_cmpmem(got, have, want, len);
+}
+
+#define AUX_EXPECT(qts, fd, lit) aux_expect(qts, fd, lit, sizeof(lit) - 1)
+
+/* Discard what the line has printed so far, the start banner included. */
+static void aux_drain(QTestState *qts, int fd)
+{
+    char buf[256];
+    int i;
+
+    for (i = 0; i < 50; i++) {
+        qtest_clock_step(qts, 100 * SCALE_US);
+        g_usleep(1000);
+        while (recv(fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
+            continue;
+        }
+    }
+}
+
+/* One serial command line: Ctrl+T, the text and the reply it prints. */
+static void serial_command(QTestState *qts, int fd, const char *line,
+                           const char *reply)
+{
+    g_autofree char *typed = g_strdup_printf("\x14%s\r", line);
+    g_autofree char *want = g_strdup_printf("\r\nMSC> %s\r\n\x14%s\r\n",
+                                            line, reply);
+
+    aux_write(fd, typed);
+    aux_expect(qts, fd, want, strlen(want));
+}
+
+static QTestState *serial_machine(const char *machine, int *lfd, int *fd)
+{
+    uint16_t port;
+    g_autofree char *args = NULL;
+    QTestState *qts;
+
+    *lfd = aux_listen(&port);
+    args = g_strdup_printf(
+        "-M %s " ELSC_AUX_LEADING_SERIALS
+        "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
+        "-serial chardev:aux", machine, port);
+    qts = qtest_init(args);
+    *fd = aux_accept(*lfd);
+    aux_drain(qts, *fd);
+    return qts;
+}
+
+/*
+ * The operator's command line: the prompt, echo, editing, the reply
+ * framing, the terminators, and the I2C-only commands.
+ */
+static void test_serial_command_line(const void *data)
+{
+    int lfd, fd;
+    QTestState *qts = serial_machine("origin200", &lfd, &fd);
+    g_autofree char *info = NULL;
+
+    serial_command(qts, fd, "ver", "ok V 3.1S  ");
+    /* Delete and backspace remove the last character. */
+    aux_write(fd, "\x14verx\x7f\r");
+    AUX_EXPECT(qts, fd, "\r\nMSC> verx\b \b\r\n\x14ok V 3.1S  \r\n");
+    /* Enter alone answers "ok" with echo on. */
+    serial_command(qts, fd, "", "ok");
+    /* Only a carriage return separates a bare mnemonic. */
+    aux_write(fd, "\x14ver\n");
+    AUX_EXPECT(qts, fd, "\r\nMSC> ver\n\x14" "err cmd\r\n");
+    aux_write(fd, "\x14pwr q\n");
+    AUX_EXPECT(qts, fd, "\r\nMSC> pwr q\n\x14ok 1\r\n");
+    serial_command(qts, fd, "acp 0 x", "err cmd");
+    serial_command(qts, fd, "get", "err cmd");
+    /* The serial "fsc" keeps the digit the I2C reply loses. */
+    serial_command(qts, fd, "fsc", "ok0");
+    serial_command(qts, fd, "fsc 1", "ok");
+    serial_command(qts, fd, "fsc x", "ok1");
+
+    /* A second Ctrl+T abandons the line, keeps it and passes one on. */
+    aux_write(fd, "\x14ve\x14");
+    AUX_EXPECT(qts, fd, "\r\nMSC> ve\b\b \b\b \b\b \b\b \b");
+    aux_write(fd, "\x14r\r");
+    AUX_EXPECT(qts, fd, "\r\nMSC> r\r\n\x14ok V 3.1S  \r\n");
+    /* A terminal's line feed after the return goes to the processors. */
+    aux_write(fd, "\x14tmp\r\n");
+    AUX_EXPECT(qts, fd, "\r\nMSC> tmp\r\n\x14ok n\r\n");
+    aux_wait_for_queued(qts, 2);
+    info = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(info, "input: \"\\x14\\x0a\""));
+
+    /* Processor output arriving while a line is typed is lost. */
+    aux_write(fd, "\x14v");
+    AUX_EXPECT(qts, fd, "\r\nMSC> v");
+    assert_reply(qts, "acp 0 hi", "ok 2");
+    aux_write(fd, "er\r");
+    AUX_EXPECT(qts, fd, "er\r\n\x14ok V 3.1S  \r\n");
+    assert_reply(qts, "acp 0 yo", "ok 2");
+    AUX_EXPECT(qts, fd, "yo");
+
+    /* "cfg" prints the NVRAM raw, here its first byte, a zero. */
+    aux_write(fd, "\x14" "cfg\r");
+    aux_expect(qts, fd, "\r\nMSC> cfg\r\n\0\r\n", 15);
+
+    /* Echo off: no prompt, no echo, and Enter alone is "err cmd". */
+    serial_command(qts, fd, "ech 0", "ok");
+    aux_write(fd, "\x14\r");
+    AUX_EXPECT(qts, fd, "\x14" "err cmd\r\n");
+    aux_write(fd, "\x14" "ech\r");
+    AUX_EXPECT(qts, fd, "\x14ok\r\n");
+    serial_command(qts, fd, "ech 2", "err arg");
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
+ * The supervisor gate on the serial line: protected commands answer
+ * "err perm" until "pas" with the password at offsets 1 to 4 of the
+ * NVRAM page, "pas s" sets a new one, and "clr" ends supervisor mode.
+ * The NVRAM commands reach the same page the PROM reads.
+ */
+static void test_serial_supervisor(const void *data)
+{
+    int lfd, fd;
+    QTestState *qts = serial_machine("origin200", &lfd, &fd);
+
+    serial_command(qts, fd, "hbt 0", "err perm");
+    serial_command(qts, fd, "fan h", "err perm");
+    serial_command(qts, fd, "pwr d 8", "err perm");
+    serial_command(qts, fd, "pwr q", "ok 1");
+    serial_command(qts, fd, "mod 7", "err perm");
+    serial_command(qts, fd, "mod", "ok 0");
+    serial_command(qts, fd, "pas abc", "err arg");
+    serial_command(qts, fd, "pas nope", "err arg");
+    serial_command(qts, fd, "pas s abcd", "err perm");
+    serial_command(qts, fd, "pas none", "ok");
+    serial_command(qts, fd, "hbt 0", "ok");
+    serial_command(qts, fd, "mod 7", "ok");
+    serial_command(qts, fd, "mod", "ok 7");
+    serial_command(qts, fd, "nvm 708", "ok 7");
+    serial_command(qts, fd, "nvm 705 3", "ok");
+    serial_command(qts, fd, "dbg", "ok 3 0");
+    serial_command(qts, fd, "dbg 1 2", "ok");
+    serial_command(qts, fd, "dbg", "ok 1 2");
+    serial_command(qts, fd, "fre", "err cmd");
+
+    /* On the serial line the fan request is kept in the NVRAM too. */
+    serial_command(qts, fd, "fan h", "ok");
+    serial_command(qts, fd, "nvm 707", "ok 3");
+
+    serial_command(qts, fd, "pwr d 258", "ok");
+
+    serial_command(qts, fd, "pas s ab", "err arg");
+    serial_command(qts, fd, "pas s  abcd", "err arg");
+    serial_command(qts, fd, "pas s wxyz12", "ok");
+    serial_command(qts, fd, "nvm 701", "ok 77");
+    serial_command(qts, fd, "pas", "ok");
+    serial_command(qts, fd, "hbt 0", "err perm");
+    serial_command(qts, fd, "pas none", "err arg");
+    serial_command(qts, fd, "pas wxyz", "ok");
+    /* A host's "clr" over I2C ends the session. */
+    assert_reply(qts, "clr", "ok ");
+    serial_command(qts, fd, "hbt 0", "err perm");
+    serial_command(qts, fd, "rst", "err perm");
+
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
+ * A full input queue keeps accepting bytes, overwriting the oldest, and
+ * typed input waits for the first processor to write before it is
+ * announced to anyone.
+ */
+static void test_serial_input_queue(const void *data)
+{
+    int lfd, fd;
+    QTestState *qts = serial_machine("origin200", &lfd, &fd);
+    g_autofree char *line = g_strnfill(300, 'a');
+    g_autofree char *info = NULL;
+
+    /* The first byte of the overflow is the one that must be lost. */
+    line[0] = 'b';
+    arb_enable_observer(qts);
+    aux_write(fd, "x");
+    aux_wait_for_queued(qts, 1);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+    assert_reply(qts, "acp 0 ", "ok 0");
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+
+    aux_write(fd, line);
+    aux_wait_for_queued(qts, 256);
+    aux_write(fd, "z");
+    qtest_clock_step(qts, SCALE_MS);
+    g_usleep(100000);
+    qtest_clock_step(qts, SCALE_MS);
+    info = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(info, "rx queue: 256 byte(s)"));
+    g_assert_nonnull(strstr(info, "input: \"aaaa"));
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
  * A two-module Origin 200's slave controller powers off only its own
  * module: its processors stop while the master's machine runs on, and the
  * machine powers down only once the master's module is off too.
@@ -3697,6 +3925,12 @@ int main(int argc, char **argv)
                         test_console_selection_announcement);
     qtest_add_data_func("sn0/elsc/nmi-pulses-after-one-second", NULL,
                         test_nmi_pulses_after_one_second);
+    qtest_add_data_func("sn0/elsc/serial-command-line", NULL,
+                        test_serial_command_line);
+    qtest_add_data_func("sn0/elsc/serial-supervisor", NULL,
+                        test_serial_supervisor);
+    qtest_add_data_func("sn0/elsc/serial-input-queue", NULL,
+                        test_serial_input_queue);
     qtest_add_data_func("sn0/elsc/nmi-reaches-processor", NULL,
                         test_nmi_reaches_processor);
     qtest_add_data_func("sn0/elsc/controller-timers-survive-migration",

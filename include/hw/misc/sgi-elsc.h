@@ -148,6 +148,12 @@ typedef struct SGIElscModuleOps {
      * announcement; never true while input selection is disabled.
      */
     void (*console_input)(void *opaque, bool pending);
+    /*
+     * A serial command asks for its turn on the module's bus (true once
+     * granted, with grant publication stopped), and hands it back.
+     */
+    bool (*serial_turn)(void *opaque);
+    void (*serial_done)(void *opaque);
     /* One bit slot on the module-owned midplane identity line. */
     bool (*onewire_slot)(void *opaque, uint32_t pulse, uint32_t sample);
     /*
@@ -300,7 +306,34 @@ struct SGIElscState {
     CharFrontend chr;
     uint8_t rx_queue[SGI_ELSC_RX_QUEUE_SIZE];
     uint32_t rx_queue_len;
-    bool in_escape;   /* discarding a controller command typed on the line */
+
+    /*
+     * The operator's side of the serial line: whether a command line is
+     * being typed (after Ctrl+T), that line and the byte that ended it,
+     * whether a completed line waits to run, echo, and the supervisor
+     * flag the serial gate checks. slave_addressed is this controller's
+     * own I2C slave being in a transaction, which a serial command waits
+     * out; serial_timer polls for the moment a waiting line may run.
+     */
+    bool serial_command;
+    uint8_t serial_line[SGI_ELSC_MAX_TEXT];
+    uint32_t serial_line_len;
+    uint8_t serial_term;
+    bool serial_pending;
+    bool serial_echo;
+    bool supervisor;
+    bool slave_addressed;
+    QEMUTimer *serial_timer;
+    /*
+     * While a serial command runs: its reply text, whether the reply is
+     * printed raw ("cfg"), and a power or reset action it asked for. Not
+     * migrated: a command runs to completion in one call.
+     */
+    bool serial_running;
+    bool serial_raw;
+    char serial_reply[SGI_ELSC_MAX_TEXT];
+    uint32_t serial_reply_len;
+    uint8_t serial_action;
 
     /*
      * Cold power-on latch, read once by "pwr q". Set when the controller
