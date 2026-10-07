@@ -141,7 +141,7 @@
       "kind": "one-wire",
       "master": "hub-md",
       "name": "Hub one-wire line",
-      "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The current model implements an empty bus. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
+      "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The model stores the fitted PIMM's record there. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
       "provenance": "datasheet",
       "sources": [
         "qemu:docs/specs/sgi-hub.rst"
