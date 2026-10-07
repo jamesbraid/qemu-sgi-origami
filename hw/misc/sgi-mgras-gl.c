@@ -2736,7 +2736,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
                                         p->payload_count) ||
             s->gl_context[i].client_read_bracket > 1 ||
             s->gl_context[i].client_read_kicked > 1 ||
-            s->gl_context[i].client_read_bank > 2 ||
+            s->gl_context[i].client_read_bank >
+                MGRAS_CLIENT_READ_DEEP_BACK ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
@@ -5102,12 +5103,25 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_READ_BUFFER:
         if (payload[0] == 0 && payload[2] == 0x404 &&
             payload[1] <= 1) {
-            s->gl_context[s->gl_current].client_read_bank = 0;
+            s->gl_context[s->gl_current].client_read_bank =
+                MGRAS_CLIENT_READ_FRONT;
         } else if (payload[0] == 1 && payload[1] == 0 &&
                    payload[2] == 0x405) {
-            s->gl_context[s->gl_current].client_read_bank = 1;
+            s->gl_context[s->gl_current].client_read_bank =
+                MGRAS_CLIENT_READ_BACK;
+        } else if (!strcmp(s->board->name, "ssi") && s->slot[0] &&
+                   payload[0] == 0 && payload[1] == 2 &&
+                   payload[2] == 0x404) {
+            s->gl_context[s->gl_current].client_read_bank =
+                MGRAS_CLIENT_READ_DEEP_FRONT;
+        } else if (!strcmp(s->board->name, "ssi") && s->slot[0] &&
+                   payload[0] == 2 && payload[1] == 0 &&
+                   payload[2] == 0x405) {
+            s->gl_context[s->gl_current].client_read_bank =
+                MGRAS_CLIENT_READ_DEEP_BACK;
         } else {
-            s->gl_context[s->gl_current].client_read_bank = 2;
+            s->gl_context[s->gl_current].client_read_bank =
+                MGRAS_CLIENT_READ_UNSUPPORTED;
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported client read "
                           "buffer tuple %u, %u, 0x%x\n", payload[0],
                           payload[1], payload[2]);

@@ -458,6 +458,14 @@ typedef struct SGIMgrasTexture {
  * GL state. SGIGLContext is the GL state machine's; the parser position is
  * MGRAS framing and stays out of it.
  */
+typedef enum SGIMgrasClientReadBank {
+    MGRAS_CLIENT_READ_FRONT = 0,
+    MGRAS_CLIENT_READ_BACK = 1,
+    MGRAS_CLIENT_READ_UNSUPPORTED = 2,
+    MGRAS_CLIENT_READ_DEEP_FRONT = 3,
+    MGRAS_CLIENT_READ_DEEP_BACK = 4,
+} SGIMgrasClientReadBank;
+
 typedef struct SGIMgrasGLContext {
     /* The parser's position while this context is not loaded. */
     SGIMgrasCmdParser parser;

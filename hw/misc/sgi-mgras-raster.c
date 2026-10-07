@@ -2205,7 +2205,10 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
                                             uint32_t width,
                                             uint32_t height)
 {
-    bool back = s->gl_context[s->gl_current].client_read_bank == 1;
+    uint32_t selector = s->gl_context[s->gl_current].client_read_bank;
+    bool deep = selector >= MGRAS_CLIENT_READ_DEEP_FRONT;
+    bool back = selector == MGRAS_CLIENT_READ_BACK ||
+                selector == MGRAS_CLIENT_READ_DEEP_BACK;
     unsigned int bank = s->gl_banks[0] & 1;
     const uint32_t *color_plane;
     const uint8_t *alpha_plane;
@@ -2216,8 +2219,9 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
 
     /* The selector names logical front/back; the bank token places them. */
     bank ^= !back;
-    color_plane = bank ? s->back : s->front;
-    alpha_plane = bank ? s->back_alpha : s->front_alpha;
+    color_plane = bank ? (deep ? s->slot[0] : s->back) : s->front;
+    alpha_plane = bank ? (deep ? s->slot_alpha[0] : s->back_alpha) :
+                         s->front_alpha;
 
     for (uint32_t row = 0; row < height; row++) {
         for (uint32_t col = 0; col < width; col++) {
@@ -2443,6 +2447,8 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     bool client_read_active;
     uint32_t signature_word3 =
         s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3];
+    uint32_t selector = s->gl_context[s->gl_current].client_read_bank;
+    bool deep = selector >= MGRAS_CLIENT_READ_DEEP_FRONT;
 
     client_read_active = sgi_mgras_gl_client_read_active(s);
     xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
@@ -2468,7 +2474,16 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     }
 
     s->gl_context[s->gl_current].client_read_kicked = 1;
-    if (s->gl_context[s->gl_current].client_read_bank > 1) {
+
+    if (selector == MGRAS_CLIENT_READ_UNSUPPORTED) {
+        goto rejected;
+    }
+    if (deep && (slot != 3 || !s->slot[0] ||
+                 mgras_raster_dma_src_offset(s) != 0xcd0 ||
+                 signature_format != 0x00400080 ||
+                 mode != 0x00400080 ||
+                 !((signature_width == 1 && signature_height == 1) ||
+                   (signature_width == 2 && signature_height == 2)))) {
         goto rejected;
     }
     captured_split =
@@ -2532,7 +2547,8 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
                      bpr == image_bytes;
     per_row_descriptors = rows == height && bpr == row_bytes &&
                           (pitch == row_bytes || captured_split);
-    if (!one_descriptor && !per_row_descriptors) {
+    if ((!one_descriptor && !per_row_descriptors) ||
+        (deep && !one_descriptor)) {
         goto rejected;
     }
 
