@@ -105,7 +105,8 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         if (res->component[c].channel != SGI_RENDER_R + c ||
             res->component[c].numeric != SGI_RENDER_UNORM ||
             !res->component[c].storage_bits ||
-            res->component[c].storage_bits > 16) {
+            res->component[c].storage_bits > 16 ||
+            (st->blend && res->component[c].storage_bits != 8)) {
             return false;
         }
     }
