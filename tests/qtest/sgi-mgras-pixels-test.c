@@ -4351,6 +4351,212 @@ static void gl_read_selected_pixel(QTestState *qts, uint32_t first,
     qtest_memread(qts, 0x30000, got, 16);
 }
 
+/* The deep client sends the other member of its pair in word one. */
+static void gl_ssi_draw_buffer(QTestState *s, uint32_t mask)
+{
+    g_assert_true(mask == 1 || mask == 4);
+    gl_word(s, GL_DRAW_BUFFER_HDR);
+    gl_word(s, mask);
+    gl_word(s, mask == 1 ? 4 : 1);
+    gl_word(s, 0);
+}
+
+static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
+                                        uint32_t height, uint32_t pitch,
+                                        const uint8_t *want)
+{
+    static const uint8_t poison[32] = { [0 ... 31] = 0xa5 };
+    uint8_t got[32];
+    size_t bytes = 4 * width * height;
+
+    g_assert_cmpuint(bytes, <=, 16);
+    qtest_memwrite(s, 0x30cc8, poison, sizeof(poison));
+    gl_word(s, GL_READ_OPEN);
+    gl_read_registers(s, 1, 1, height, width, height, 0x00400080, false);
+    gl_read_dma_class_a_signature_format(s, width, height, 0x00400080);
+    gl_read_dma_descriptor_at(s, pitch, 0xcd0, 1, bytes, 0xbf);
+    gl_word(s, 0x0000da00);
+    gl_word(s, GL_READ_CLOSE);
+    qtest_memread(s, 0x30cc8, got, sizeof(got));
+
+    if (!want) {
+        g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+        return;
+    }
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, bytes, want, bytes);
+    g_assert_cmpmem(got + 8 + bytes, sizeof(got) - 8 - bytes,
+                    poison + 8 + bytes, sizeof(poison) - 8 - bytes);
+}
+
+static void gl_ssi_expect_read(QTestState *s, uint32_t first,
+                               uint32_t second, uint32_t selector,
+                               uint32_t width, uint32_t height,
+                               uint32_t pitch, const uint8_t *want)
+{
+    g_test_message("read tuple %u,%u,0x%x size %ux%u pitch %u",
+                   first, second, selector, width, height, pitch);
+    gl_client_read_buffer(s, first, second, selector);
+    gl_ssi_expect_selected_read(s, width, height, pitch, want);
+}
+
+/* Bank 1 is a sentinel: deep front/back reads must choose bank 0 or slot 2. */
+static void test_gl_readpixels_dma_ssi_deep_buffers(void)
+{
+    static const uint32_t front[] = {
+        0x10203040, 0x50607080, 0x90a0b0c0, 0xd0e0f010,
+    };
+    static const uint32_t wrong_bank[] = {
+        0x11aa22bb, 0x33cc44dd, 0x55ee66ff, 0x77118822,
+    };
+    static const uint32_t slot2[] = {
+        0x20406080, 0x40a060c0, 0x60c080e0, 0x80102030,
+    };
+    static const uint32_t new_back[] = {
+        0xe0304050, 0xc0506070, 0xa0708090, 0x8090a0b0,
+    };
+    static const uint8_t want_front[] = {
+        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+        0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x10,
+    };
+    static const uint8_t want_slot2[] = {
+        0x20, 0x40, 0x60, 0x80, 0x40, 0xa0, 0x60, 0xc0,
+        0x60, 0xc0, 0x80, 0xe0, 0x80, 0x10, 0x20, 0x30,
+    };
+    static const uint8_t want_new_back[] = {
+        0xe0, 0x30, 0x40, 0x50, 0xc0, 0x50, 0x60, 0x70,
+        0xa0, 0x70, 0x80, 0x90, 0x80, 0x90, 0xa0, 0xb0,
+    };
+    QTestState *s;
+    g_autofree char *log = NULL;
+    char *log_path = gl_eviction_log_start(&s, MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    gl_pixels_context(s, 0);
+    qtest_writel(s, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_tag_wid(s, 256, 256, 383, 383, 14);
+    gl_word(s, GL_BANKS_HDR);
+    gl_word(s, 1);
+    gl_word(s, 1);
+    gl_draw_buffer(s, 2);
+    gl_draw_rgba_row(s, 1, 1, wrong_bank, 2);
+    gl_draw_rgba_row(s, 1, 2, wrong_bank + 2, 2);
+    gl_ssi_draw_buffer(s, 1);
+    gl_draw_rgba_row(s, 1, 1, front, 2);
+    gl_draw_rgba_row(s, 1, 2, front + 2, 2);
+    gl_ssi_draw_buffer(s, 4);
+    gl_draw_rgba_row(s, 1, 1, slot2, 2);
+    gl_draw_rgba_row(s, 1, 2, slot2 + 2, 2);
+    g_assert_cmphex(gl_window_pixel(s, 1, 1), ==, 0x102030);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-back-pixel"), ==,
+                    0x11aa22);
+    g_assert_cmphex(mgras_test_slot_pixel(s, 0, 257, 382), ==, 0x204060);
+    gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
+
+    /* A shallow control proves that slot 3 and kick 0xbf work. */
+    gl_ssi_expect_read(s, 0, 0, 0x404, 1, 1, 4, want_front);
+    gl_ssi_expect_read(s, 0, 0, 0x404, 2, 2, 16, want_front);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, want_front);
+    gl_ssi_expect_read(s, 2, 0, 0x405, 1, 1, 4, want_slot2);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 16, want_front);
+    gl_ssi_expect_read(s, 2, 0, 0x405, 2, 2, 16, want_slot2);
+
+    gl_swap_buffers(s, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(s, 257, 382), ==, 0x204060);
+    gl_ssi_draw_buffer(s, 4);
+    gl_draw_rgba_row(s, 1, 1, new_back, 2);
+    gl_draw_rgba_row(s, 1, 2, new_back + 2, 2);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 16, want_slot2);
+    gl_ssi_expect_read(s, 2, 0, 0x405, 2, 2, 16, want_new_back);
+    gl_swap_buffers(s, 1, 0);
+    g_assert_cmphex(mgras_test_display_pixel(s, 257, 382), ==, 0xe03040);
+
+    gl_ssi_expect_read(s, 2, 2, 0x404, 1, 1, 4, NULL);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 8, NULL);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    log = gl_eviction_log_end(s, log_path);
+    g_assert_null(strstr(log, "unsupported client read buffer tuple 0, 2"));
+    g_assert_null(strstr(log, "unsupported client read buffer tuple 2, 0"));
+    g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 2, 2"));
+    g_assert_nonnull(strstr(log, "captured OpenGL client DMA read has "
+                                 "unsupported bounds"));
+}
+
+/* One RE has no deep slot even when a guest sends the captured tuple. */
+static void test_gl_readpixels_dma_deep_one_re_unsupported(void)
+{
+    static const uint32_t red = 0xff0000ff;
+    QTestState *s;
+    g_autofree char *log = NULL;
+    char *log_path = gl_eviction_log_start(&s, MACHINE_ARGS);
+
+    gl_pixels_context(s, 0);
+    gl_draw_buffer(s, 1);
+    gl_draw_rgba_row(s, 1, 1, &red, 1);
+    gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, NULL);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    log = gl_eviction_log_end(s, log_path);
+    g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 0, 2"));
+}
+
+static void test_gl_readpixels_dma_ssi_deep_reset(void)
+{
+    static const uint32_t front = 0x12345678;
+    static const uint8_t want[] = { 0x12, 0x34, 0x56, 0x78 };
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    gl_pixels_context(s, 0);
+    gl_client_read_buffer(s, 2, 0, 0x405);
+    gl_pixels_context(s, 0);
+    gl_draw_buffer(s, 1);
+    gl_draw_rgba_row(s, 1, 1, &front, 1);
+    gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
+    gl_ssi_expect_selected_read(s, 1, 1, 4, want);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_gl_readpixels_dma_ssi_deep_migration(void)
+{
+    static const uint32_t front = 0x12345678;
+    static const uint32_t slot2 = 0xabcdef99;
+    static const uint8_t want_front[] = { 0x12, 0x34, 0x56, 0x78 };
+    static const uint8_t want_slot2[] = { 0xab, 0xcd, 0xef, 0x99 };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-ssi-read-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
+    from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
+                                   " -incoming %s", uri);
+    gl_pixels_context(from, 0);
+    gl_ssi_draw_buffer(from, 1);
+    gl_draw_rgba_row(from, 1, 1, &front, 1);
+    gl_ssi_draw_buffer(from, 4);
+    gl_draw_rgba_row(from, 1, 1, &slot2, 1);
+    gl_read_dma_map_pages_slot(from, 1, 3, 9u << 16);
+    gl_client_read_buffer(from, 2, 0, 0x405);
+    gl_swap_buffers(from, 0, 1u << 14);
+    gl_ssi_expect_selected_read(from, 1, 1, 4, want_front);
+
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
+    gl_ssi_expect_selected_read(to, 1, 1, 4, want_front);
+    gl_swap_buffers(to, 1, 0);
+    gl_ssi_expect_selected_read(to, 1, 1, 4, want_slot2);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    g_remove(uri + sizeof("file:") - 1);
+    g_rmdir(tmpfs);
+}
+
 /* The captured selectors read the front and back buffers independently. */
 static void test_gl_readpixels_dma_client_buffer_selection(void)
 {
@@ -5810,6 +6016,18 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-readpixels-dma-client-buffer-selection",
         test_gl_readpixels_dma_client_buffer_selection, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-buffers",
+        test_gl_readpixels_dma_ssi_deep_buffers, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-deep-one-re-unsupported",
+        test_gl_readpixels_dma_deep_one_re_unsupported, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-reset",
+        test_gl_readpixels_dma_ssi_deep_reset, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-migration",
+        test_gl_readpixels_dma_ssi_deep_migration, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-short-pixel",
         test_gl_readpixels_dma_rejects_short_one_pixel_descriptor, true);
