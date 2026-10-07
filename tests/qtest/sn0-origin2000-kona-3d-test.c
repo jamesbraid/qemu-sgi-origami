@@ -6320,19 +6320,22 @@ static char *renderer_expected_tags(void)
 
 static void test_renderer_fixture(gconstpointer opaque)
 {
-    bool gpu = GPOINTER_TO_UINT(opaque);
+    bool render_node = GPOINTER_TO_UINT(opaque);
+    bool require_gpu = render_node ||
+                       g_getenv("QEMU_TEST_SGI_REQUIRE_MESA") != NULL;
+    bool using_gpu;
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
     QTestState *s;
     uint32_t depth, stencil;
     g_autofree char *depth_digest = NULL, *stencil_digest = NULL;
     g_autofree char *tag_digest = NULL, *after = NULL;
 
-    if (gpu && !node) {
+    if (render_node && !node) {
         qtest_prereq_missing("SGI_RENDER_NODE",
                              "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
-    if (gpu) {
+    if (render_node) {
         s = qtest_initf(MACHINE_ARGS " -global sgi-kona.host-gpu=on"
                         " -display egl-headless,rendernode=%s", node);
     } else {
@@ -6347,9 +6350,14 @@ static void test_renderer_fixture(gconstpointer opaque)
     tag_digest = renderer_expected_tags();
     renderer_triangle(s);
     renderer_assert_image(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, gpu ? 1 : 0);
+    using_gpu = renderer_counter(s, "x-test-gpu-draws") == 1;
+    if (require_gpu) {
+        g_assert_true(using_gpu);
+    }
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     using_gpu ? 1 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
-                     gpu ? 0 : 1);
+                     using_gpu ? 0 : 1);
     g_assert_cmpuint(stencil_colour_or_depth(s, 5), ==, depth);
     g_assert_cmpuint(stencil_colour_or_depth(s, 6), ==, stencil);
     after = renderer_plane_digest(s, 5);
@@ -6361,21 +6369,24 @@ static void test_renderer_fixture(gconstpointer opaque)
     after = renderer_plane_digest(s, 2);
     g_assert_cmpstr(after, ==, tag_digest);
     renderer_triangle(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, gpu ? 2 : 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     using_gpu ? 2 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
-                     gpu ? 0 : 2);
+                     using_gpu ? 0 : 2);
     /* An explicitly excluded dither state executes only through the CPU. */
     kona_command(s, 0x24, (uint32_t[]){ 0xbd0 }, 1);
     renderer_triangle(s);
     renderer_assert_image(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, gpu ? 2 : 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     using_gpu ? 2 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
-                     gpu ? 1 : 3);
+                     using_gpu ? 1 : 3);
     qtest_system_reset(s);
     renderer_fixture(s);
     renderer_triangle(s);
     renderer_assert_image(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, gpu ? 3 : 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     using_gpu ? 3 : 0);
     qtest_quit(s);
 }
 
@@ -7013,7 +7024,7 @@ int main(int argc, char **argv)
                    test_texture_8x8_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/refused",
                    test_texture_8x8_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/missing-provider",
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/no-render-node",
                         GUINT_TO_POINTER(0), test_renderer_fixture);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
                         GUINT_TO_POINTER(1), test_renderer_fixture);
