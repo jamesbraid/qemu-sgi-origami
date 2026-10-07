@@ -1753,7 +1753,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
-#define ODSY_REG_DID_COMPARE 0x0840     /* unsupported command */
+#define ODSY_REG_DID_COMPARE 0x0840     /* 2 operands: zero pair only */
 #define ODSY_REG_WINDOW_CLIP 0x204b     /* 8 operands: four rectangles */
 #define ODSY_ORIGIN_BITS 13
 #define ODSY_CLIP_FIELD_MASK 0xfff
@@ -8591,6 +8591,14 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
                    sizeof(s->win_origin));
         }
         break;
+    case ODSY_REG_DID_COMPARE:
+        /* Active comparison is unknown; only the neutral pair is accepted. */
+        if (s->cmd_operand[0] || s->cmd_operand[1]) {
+            s->did_compare = 1;
+            odyssey_query_cancel(s);
+            odyssey_cmd_unimplemented(s, ODSY_CMD_REGISTER_TAG | tag);
+        }
+        break;
     case ODSY_REG_WINDOW_CLIP:
         memcpy(s->clip_words, s->cmd_operand, sizeof(s->clip_words));
         if (s->cmd_from_kernel) {
@@ -8905,12 +8913,6 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
             s->cmd_operand_index = 0;
             s->pattern_load_offset =
                 reg == ODSY_REG_PATTERN_HIGH ? ODSY_PATTERN_WORDS : 0;
-            return;
-        }
-        if (reg == ODSY_REG_DID_COMPARE) {
-            s->did_compare = 1;
-            odyssey_query_cancel(s);
-            odyssey_cmd_unimplemented(s, word);
             return;
         }
         odyssey_cmd_start(s, reg, operands);
