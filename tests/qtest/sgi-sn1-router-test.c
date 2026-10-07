@@ -3,6 +3,8 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
+#include "qemu/units.h"
+#include "sgi-test.h"
 #include "sgi-migrate.h"
 #include "sgi-l1-test.h"
 
@@ -50,6 +52,195 @@ static void expect_ordinary_vector_refusal(QTestState *s, uint64_t address,
     g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
                     (UINT64_C(1) << 63) | params | 4);
     g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
+}
+
+static uint64_t experimental_status_vector(QTestState *s, uint64_t address,
+                                           uint64_t route, bool write,
+                                           uint64_t data, bool accepted)
+{
+    const uint64_t lb = SPACE_IO + UINT64_C(0x01000000) + 0x600000;
+    const uint64_t params = address | (UINT64_C(0x5a) << 40);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    uint64_t response;
+
+    qtest_readq(s, lb + 0xc038);
+    qtest_writeq(s, lb + 0xc030, sentinel);
+    qtest_writeq(s, lb + 0xc008, route);
+    qtest_writeq(s, lb + 0xc010, data);
+    qtest_writeq(s, lb + 0xc000, params | write);
+    response = qtest_readq(s, lb + 0xc020);
+    g_assert_cmphex(response, ==, (UINT64_C(1) << 63) | params |
+                    (accepted ? write : 4));
+    response = qtest_readq(s, lb + 0xc030);
+    if (write || !accepted) {
+        g_assert_cmphex(response, ==, sentinel);
+    }
+    return response;
+}
+
+static size_t experimental_router_l1_reply(QTestState *s, uint8_t reply[131])
+{
+    const uint8_t request[] = { 19, 0x00, 0x04, 0x10, 6, 0, 3, 0 };
+
+    sgi_l1_test_send(s, BASE + 0x240, request, sizeof(request), false);
+    return sgi_l1_test_receive(s, BASE + 0x240, reply, 131);
+}
+
+static void test_experimental_status_write(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *to_image = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *s, *to;
+    int fd;
+    const uint64_t values[] = { 0, UINT64_MAX,
+        UINT64_C(0x123456789abcdef0) };
+    uint64_t status;
+    uint64_t vector_status;
+    uint64_t port_before[8][3];
+    uint64_t global_before[4];
+    uint64_t route_before;
+    uint8_t l1_before[131], l1_after[131];
+    size_t l1_size;
+
+    fd = g_file_open_tmp("sn1-router-status-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-router-status-prom-XXXXXX", &prom, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    s = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router", prom, image);
+    qtest_writeq(s, BASE + 0x20, 0x12345678);
+    qtest_writeq(s, BASE + 0x28, 0x87654321);
+    qtest_writeq(s, BASE + 0x100, 0xaabbccdd);
+    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    set(s, "destination", 5);
+    set(s, "turn", 3);
+    for (unsigned p = 0; p < 8; p++) {
+        qtest_writeq(s, BASE + bank[p], 0x1200 + p);
+        port_before[p][0] = qtest_readq(s, BASE + bank[p]);
+        port_before[p][1] = qtest_readq(s, BASE + bank[p] + 8);
+        port_before[p][2] = qtest_readq(s, BASE + bank[p] + 0x10);
+    }
+    global_before[0] = qtest_readq(s, BASE + 0x20);
+    global_before[1] = qtest_readq(s, BASE + 0x28);
+    global_before[2] = qtest_readq(s, BASE + 0x50);
+    global_before[3] = qtest_readq(s, BASE + 0x100);
+    route_before = get(s, "route");
+    g_assert_cmphex(route_before, ==, 4 | (2 << 8));
+    l1_size = experimental_router_l1_reply(s, l1_before);
+    status = experimental_status_vector(s, 0, 0, false, 0, true);
+    vector_status = status;
+    g_assert_true(status & (UINT64_C(1) << 37));
+    g_assert_true(status & (UINT64_C(1) << 47));
+    g_assert_false(status & (UINT64_C(1) << 39));
+    for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+        experimental_status_vector(s, 0, 0, true, values[i], true);
+        g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
+                        ==, status);
+        g_assert_cmphex(get(s, "route"), ==, route_before);
+        for (unsigned p = 0; p < 8; p++) {
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==,
+                            port_before[p][0]);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 8), ==,
+                            port_before[p][1]);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x10), ==,
+                            port_before[p][2]);
+        }
+        g_assert_cmphex(qtest_readq(s, BASE + 0x20), ==, global_before[0]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, global_before[1]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, global_before[2]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, global_before[3]);
+    }
+    g_assert_cmpuint(experimental_router_l1_reply(s, l1_after), ==,
+                     l1_size);
+    g_assert_cmpmem(l1_after, l1_size, l1_before, l1_size);
+    experimental_status_vector(s, 0x600000, 0, true, 0, false);
+    experimental_status_vector(s, 0, 9, true, 0, false);
+    for (unsigned ingress = 1; ingress <= 8; ingress += 7) {
+        set(s, "ingress", ingress);
+        status = qtest_readq(s, BASE);
+        for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+            qtest_writeq(s, BASE, values[i]);
+            g_assert_cmpuint(get(s, "result"), ==, 2);
+            g_assert_cmpuint(get(s, "failure"), ==, 0);
+            g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+        }
+    }
+    set(s, "ingress", 0);
+    qtest_writeq(s, BASE, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    set(s, "ingress", 9);
+    qtest_writeq(s, BASE, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    set(s, "ingress", 1);
+    qtest_writeq(s, BASE + 1, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writel(s, BASE, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writew(s, BASE, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writeb(s, BASE, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
+                    ==, vector_status);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
+    status = experimental_status_vector(s, 0, 0, false, 0, true);
+    g_assert_true(status & (UINT64_C(1) << 37));
+    g_assert_true(status & (UINT64_C(1) << 47));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
+    fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
+                         &to_image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    dir = g_dir_make_tmp("sn1-router-status-migrate-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "socket", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    to = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router -incoming defer", prom, to_image);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(s,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(s, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
+                    ==, status);
+    experimental_status_vector(to, 0, 0, true,
+                               UINT64_C(0x123456789abcdef0), true);
+    g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
+                    ==, status);
+    experimental_status_vector(to, 0x600000, 0, true, 0, false);
+    qtest_quit(to);
+    qtest_quit(s);
+    g_assert_cmpint(g_unlink(to_image), ==, 0);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
 static void test_registers(void)
@@ -177,6 +368,7 @@ static void test_error_clear_vector(void)
     qtest_sysbus_mmio_map(s, "/machine/peripheral/a", 0, 0x20000000);
     status = qtest_readq(s, BASE);
     g_assert_true(status & (UINT64_C(1) << 37));
+    expect_ordinary_vector_refusal(s, 0, true);
     for (unsigned p = 0; p < 8; p++) {
         uint64_t params = (bank[p] + 0x88) | (UINT64_C(0x5a) << 40);
 
@@ -889,6 +1081,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
+    qtest_add_func("/sgi/sn1-router/experimental-status-write",
+                   test_experimental_status_write);
     qtest_add_func("/sgi/sn1-router/error-clear", test_error_clear);
     qtest_add_func("/sgi/sn1-router/error-clear-vector",
                    test_error_clear_vector);
