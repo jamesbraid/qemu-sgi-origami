@@ -146,6 +146,7 @@ if config_all_devices.has_key('CONFIG_MEMORY_BUFFER_TESTDEV')
 endif
 
 qtests_pci = \
+  (config_all_devices.has_key('CONFIG_AIC7880_SCSI_PCI') ? ['aic7880-test'] : []) +        \
   (config_all_devices.has_key('CONFIG_VGA') ? ['display-vga-test'] : []) +                  \
   (config_all_devices.has_key('CONFIG_IVSHMEM_DEVICE') ? ['ivshmem-test'] : [])
 
