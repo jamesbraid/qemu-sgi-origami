@@ -11,8 +11,10 @@ static bool odyssey_plane_view_valid(const OdysseyPlaneView *view,
     if (!view->bytes || !view->width || !view->height ||
         view->format != ODYSSEY_PLANE_SYNTH_RGBA8 ||
         view->role != SGI_RENDER_COLOUR ||
-        view->buffer != SGI_RENDER_FRONT || view->eye != SGI_RENDER_LEFT ||
-        !view->bottom_origin || !view->backing_id || !view->view_id ||
+        (view->buffer != SGI_RENDER_FRONT &&
+         view->buffer != SGI_RENDER_BACK) ||
+        (view->eye != SGI_RENDER_LEFT && view->eye != SGI_RENDER_RIGHT) ||
+        !view->backing_id || !view->view_id ||
         !view->backing_generation || !view->view_generation ||
         view->channel_mask & ~0xf || !view->is_written ||
         !view->owns_pixel || !view->mark_written) {
@@ -71,9 +73,18 @@ bool odyssey_planes_refresh(OdysseyPlanes *planes,
         }
         for (size_t j = 0; j < i; j++) {
             OdysseyPlaneView *other = &planes->views[j];
+            bool same_position = view->buffer == other->buffer &&
+                                 view->eye == other->eye;
+            bool same_backing = view->backing_id == other->backing_id;
+            uintptr_t a = (uintptr_t)view->bytes;
+            uintptr_t b = (uintptr_t)other->bytes;
+            bool overlapping = a <= b ? b - a < view->capacity_bytes :
+                                        a - b < other->capacity_bytes;
 
             if (view->view_id == other->view_id ||
-                (view->backing_id == other->backing_id &&
+                view->target == other->target ||
+                same_position != same_backing ||
+                (same_backing &&
                  (view->backing_generation != other->backing_generation ||
                   view->bytes != other->bytes ||
                   view->capacity_bytes != other->capacity_bytes ||
@@ -81,7 +92,8 @@ bool odyssey_planes_refresh(OdysseyPlanes *planes,
                   view->width != other->width ||
                   view->height != other->height ||
                   view->format != other->format ||
-                  view->bottom_origin != other->bottom_origin))) {
+                  view->bottom_origin != other->bottom_origin)) ||
+                (!same_backing && overlapping)) {
                 error_setg(errp, "Inconsistent synthetic Odyssey plane alias");
                 return false;
             }
@@ -152,6 +164,98 @@ void odyssey_planes_end_submission(OdysseyPlanes *planes)
     if (planes) {
         planes->active = false;
     }
+}
+
+bool odyssey_planes_swap_bindings(OdysseyPlanes *planes, Error **errp)
+{
+    static const SGIRenderChannel channel[4] = {
+        SGI_RENDER_R, SGI_RENDER_G, SGI_RENDER_B, SGI_RENDER_A,
+    };
+    size_t position[2][2] = {
+        { SIZE_MAX, SIZE_MAX }, { SIZE_MAX, SIZE_MAX },
+    };
+
+    if (!planes || !planes->initialized || planes->active ||
+        planes->count != 4) {
+        error_setg(errp, "Synthetic Odyssey swap needs four idle views");
+        return false;
+    }
+    for (size_t i = 0; i < 4; i++) {
+        OdysseyPlaneView *view = &planes->views[i];
+        const SGIRenderResource *published = &planes->resources[i];
+        unsigned buffer, eye;
+
+        if (!odyssey_plane_view_valid(view, errp)) {
+            return false;
+        }
+        if (view->bytes != view->submitted_bytes ||
+            view->backing_generation != view->expected_backing_generation ||
+            view->view_generation != view->expected_view_generation ||
+            view->backing_id != published->backing_id ||
+            view->view_id != published->view_id ||
+            view->role != published->role ||
+            view->target != published->target ||
+            view->buffer != published->buffer ||
+            view->eye != published->eye ||
+            view->width != published->width ||
+            view->height != published->height ||
+            view->bottom_origin != published->bottom_origin ||
+            published->backing_generation !=
+                view->submitted_backing_generation ||
+            published->view_generation != view->submitted_view_generation ||
+            published->depth != 1 || published->component_count != 4 ||
+            published->auxiliary_index || published->texture_level ||
+            published->border[0] || published->border[1] ||
+            published->border[2] ||
+            view->view_generation == UINT64_MAX) {
+            error_setg(errp, "Stale synthetic Odyssey swap view");
+            return false;
+        }
+        for (unsigned c = 0; c < 4; c++) {
+            if (published->component[c].channel != channel[c] ||
+                published->component[c].numeric != SGI_RENDER_UNORM ||
+                published->component[c].storage_bits != 8) {
+                error_setg(errp, "Changed synthetic Odyssey swap format");
+                return false;
+            }
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (view->target == planes->views[j].target) {
+                error_setg(errp, "Duplicate synthetic Odyssey swap target");
+                return false;
+            }
+        }
+        buffer = view->buffer == SGI_RENDER_FRONT ? 0 : 1;
+        eye = view->eye == SGI_RENDER_LEFT ? 0 : 1;
+        if (position[buffer][eye] != SIZE_MAX) {
+            error_setg(errp, "Duplicate synthetic Odyssey swap view");
+            return false;
+        }
+        position[buffer][eye] = i;
+    }
+    for (unsigned eye = 0; eye < 2; eye++) {
+        if (position[0][eye] == SIZE_MAX || position[1][eye] == SIZE_MAX) {
+            error_setg(errp, "Missing synthetic Odyssey swap view");
+            return false;
+        }
+    }
+    for (unsigned eye = 0; eye < 2; eye++) {
+        OdysseyPlaneView *front, *back;
+        SGIColourTarget target;
+
+        front = &planes->views[position[0][eye]];
+        back = &planes->views[position[1][eye]];
+        target = front->target;
+        front->target = back->target;
+        back->target = target;
+        front->buffer = SGI_RENDER_BACK;
+        back->buffer = SGI_RENDER_FRONT;
+        front->view_generation++;
+        back->view_generation++;
+        front->dirty = true;
+        back->dirty = true;
+    }
+    return true;
 }
 
 static OdysseyPlaneView *odyssey_plane_lookup(OdysseyPlanes *planes,

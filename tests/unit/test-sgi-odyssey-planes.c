@@ -555,6 +555,328 @@ static void test_reinit_does_not_retarget_snapshot(void)
     error_free(err);
 }
 
+static void plane_four_eyes(PlaneFixture fixtures[4],
+                            OdysseyPlaneView views[4])
+{
+    for (unsigned i = 0; i < 4; i++) {
+        plane_fixture_init(&fixtures[i]);
+        fixtures[i].bytes[0] = (i + 1) * 10;
+        views[i] = plane_view(&fixtures[i], i + 1);
+        views[i].backing_id = 100 + i;
+        views[i].target = 11 + i;
+        views[i].buffer = i < 2 ? SGI_RENDER_FRONT : SGI_RENDER_BACK;
+        views[i].eye = i % 2 ? SGI_RENDER_RIGHT : SGI_RENDER_LEFT;
+    }
+}
+
+static void test_four_eye_isolation(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 0 };
+    uint32_t slots[4], changed[4] = { 91, 92, 93, 94 };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    target = plane_target(&planes, resources);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpint(sgi_render_resource_snapshot(&target, &resources[i],
+                        0, &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                        SGI_RENDER_OK);
+        g_assert_cmpuint(slots[0], ==, (i + 1) * 10);
+    }
+    result = sgi_render_resource_commit(&target, &resources[3], 0, &rect,
+                                        changed, 4, ARRAY_SIZE(changed), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(fixtures[0].bytes[0], ==, 10);
+    g_assert_cmpuint(fixtures[1].bytes[0], ==, 20);
+    g_assert_cmpuint(fixtures[2].bytes[0], ==, 30);
+    g_assert_cmpuint(fixtures[3].bytes[0], ==, 91);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(views[i].dirty);
+        g_assert_cmpuint(views[i].backing_generation, ==, 1);
+    }
+    g_assert_true(views[3].dirty);
+    g_assert_cmpuint(views[3].backing_generation, ==, 2);
+}
+
+static void test_top_origin_uses_plane_rows(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 3, 1 };
+    uint32_t slots[40];
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.bottom_origin = false;
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    g_assert_false(resource.bottom_origin);
+    target = plane_target(&planes, &resource);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 20, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[0], ==, 0);
+    g_assert_cmpuint(slots[20], ==, 4);
+    slots[20] = 201;
+    result = sgi_render_resource_commit(&target, &resource, 0, &rect,
+                                        slots, 20, ARRAY_SIZE(slots), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.bytes[0], ==, 0);
+    g_assert_cmpuint(f.bytes[20], ==, 201);
+    g_assert_cmpuint(f.bytes[16], ==, 0xa5);
+    g_assert_cmpuint(f.bytes[36], ==, 0xa5);
+}
+
+static void test_origin_mismatch_rejected(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 0 };
+    uint32_t slots[4] = { 0xdead };
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.bottom_origin = false;
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    target = plane_target(&planes, &resource);
+    resource.bottom_origin = true;
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmphex(slots[0], ==, 0xdead);
+}
+
+static void test_four_eye_alias_generations(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[5];
+    SGIRenderResource resources[5];
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 0 };
+    uint32_t slots[4] = { 81, 82, 83, 84 };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    views[4] = plane_view(&fixtures[0], 5);
+    views[4].backing_id = 100;
+    views[4].target = 15;
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 5, &err));
+    target = plane_target(&planes, resources);
+    result = sgi_render_resource_commit(&target, &resources[0], 0, &rect,
+                                        slots, 4, ARRAY_SIZE(slots), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_true(views[0].dirty);
+    g_assert_true(views[4].dirty);
+    g_assert_cmpuint(views[0].backing_generation, ==, 2);
+    g_assert_cmpuint(views[4].backing_generation, ==, 2);
+    for (unsigned i = 1; i < 4; i++) {
+        g_assert_false(views[i].dirty);
+        g_assert_cmpuint(views[i].backing_generation, ==, 1);
+    }
+}
+
+static void test_duplicate_eye_or_target_rejected(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    views[1].eye = SGI_RENDER_LEFT;
+    g_assert_false(odyssey_planes_init(&planes, views, resources, 4, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+
+    err = NULL;
+    plane_four_eyes(fixtures, views);
+    views[1].target = views[0].target;
+    g_assert_false(odyssey_planes_init(&planes, views, resources, 4, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+
+    err = NULL;
+    plane_four_eyes(fixtures, views);
+    views[1].bytes = views[0].bytes;
+    g_assert_false(odyssey_planes_init(&planes, views, resources, 4, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+}
+
+static void test_four_eye_swap_changes_bindings(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4], next_resources[4];
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 0 };
+    uint32_t slots[4];
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    target = plane_target(&planes, resources);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpint(sgi_render_resource_snapshot(&target, &resources[i],
+                        0, &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                        SGI_RENDER_OK);
+        g_assert_cmpuint(slots[0], ==, (i + 1) * 10);
+    }
+    odyssey_planes_end_submission(&planes);
+    g_assert_true(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_null(err);
+    g_assert_cmpint(views[0].buffer, ==, SGI_RENDER_BACK);
+    g_assert_cmpint(views[1].buffer, ==, SGI_RENDER_BACK);
+    g_assert_cmpint(views[2].buffer, ==, SGI_RENDER_FRONT);
+    g_assert_cmpint(views[3].buffer, ==, SGI_RENDER_FRONT);
+    g_assert_cmpuint(views[0].target, ==, 13);
+    g_assert_cmpuint(views[2].target, ==, 11);
+    g_assert_cmpuint(views[1].target, ==, 14);
+    g_assert_cmpuint(views[3].target, ==, 12);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_true(views[i].dirty);
+        g_assert_cmpuint(views[i].backing_generation, ==, 1);
+        g_assert_cmpuint(views[i].view_generation, ==, 2);
+        g_assert_true(views[i].bytes == fixtures[i].bytes);
+        g_assert_cmpuint(fixtures[i].bytes[0], ==, (i + 1) * 10);
+    }
+    g_assert_true(odyssey_planes_refresh(&planes, next_resources, &err));
+    target = plane_target(&planes, next_resources);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target,
+                    &next_resources[2], 0, &rect, slots, 4,
+                    ARRAY_SIZE(slots), &err), ==, SGI_RENDER_OK);
+    g_assert_cmpuint(next_resources[2].target, ==, 11);
+    g_assert_cmpuint(slots[0], ==, 30);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target,
+                    &next_resources[3], 0, &rect, slots, 4,
+                    ARRAY_SIZE(slots), &err), ==, SGI_RENDER_OK);
+    g_assert_cmpuint(next_resources[3].target, ==, 12);
+    g_assert_cmpuint(slots[0], ==, 40);
+}
+
+static void test_swap_requires_four_views(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[3];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 3, &err));
+    odyssey_planes_end_submission(&planes);
+    g_assert_false(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(views[i].dirty);
+        g_assert_cmpuint(views[i].view_generation, ==, 1);
+        g_assert_cmpuint(views[i].target, ==, 11 + i);
+    }
+}
+
+static void test_swap_uses_declared_positions(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView ordered[4], views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, ordered);
+    views[0] = ordered[3];
+    views[1] = ordered[0];
+    views[2] = ordered[2];
+    views[3] = ordered[1];
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    odyssey_planes_end_submission(&planes);
+    g_assert_true(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_null(err);
+    g_assert_cmpint(views[0].buffer, ==, SGI_RENDER_FRONT);
+    g_assert_cmpint(views[0].eye, ==, SGI_RENDER_RIGHT);
+    g_assert_cmpuint(views[0].target, ==, 12);
+    g_assert_cmpint(views[1].buffer, ==, SGI_RENDER_BACK);
+    g_assert_cmpint(views[1].eye, ==, SGI_RENDER_LEFT);
+    g_assert_cmpuint(views[1].target, ==, 13);
+    g_assert_cmpint(views[2].buffer, ==, SGI_RENDER_FRONT);
+    g_assert_cmpuint(views[2].target, ==, 11);
+    g_assert_cmpint(views[3].buffer, ==, SGI_RENDER_BACK);
+    g_assert_cmpuint(views[3].target, ==, 14);
+}
+
+static void test_swap_rejects_changed_bindings_atomically(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    odyssey_planes_end_submission(&planes);
+    views[0].target = views[1].target;
+    g_assert_false(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(views[i].target, ==,
+                         i == 0 ? 12 : 11 + i);
+        g_assert_cmpint(views[i].buffer, ==,
+                        i < 2 ? SGI_RENDER_FRONT : SGI_RENDER_BACK);
+        g_assert_cmpint(views[i].eye, ==,
+                        i % 2 ? SGI_RENDER_RIGHT : SGI_RENDER_LEFT);
+        g_assert_cmpuint(views[i].view_generation, ==, 1);
+        g_assert_false(views[i].dirty);
+    }
+
+    err = NULL;
+    planes = (OdysseyPlanes) { 0 };
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    odyssey_planes_end_submission(&planes);
+    views[0].eye = SGI_RENDER_RIGHT;
+    views[1].eye = SGI_RENDER_LEFT;
+    g_assert_false(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(views[i].target, ==, 11 + i);
+        g_assert_cmpint(views[i].buffer, ==,
+                        i < 2 ? SGI_RENDER_FRONT : SGI_RENDER_BACK);
+        g_assert_cmpint(views[i].eye, ==,
+                        i == 0 ? SGI_RENDER_RIGHT :
+                        i == 1 ? SGI_RENDER_LEFT :
+                        i == 2 ? SGI_RENDER_LEFT : SGI_RENDER_RIGHT);
+        g_assert_cmpuint(views[i].view_generation, ==, 1);
+        g_assert_false(views[i].dirty);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -584,5 +906,23 @@ int main(int argc, char **argv)
                     test_refresh_does_not_retarget_snapshot);
     g_test_add_func("/sgi-odyssey-planes/reinit-stales-snapshot",
                     test_reinit_does_not_retarget_snapshot);
+    g_test_add_func("/sgi-odyssey-planes/four-eye-isolation",
+                    test_four_eye_isolation);
+    g_test_add_func("/sgi-odyssey-planes/top-origin-rows",
+                    test_top_origin_uses_plane_rows);
+    g_test_add_func("/sgi-odyssey-planes/origin-mismatch",
+                    test_origin_mismatch_rejected);
+    g_test_add_func("/sgi-odyssey-planes/four-eye-alias",
+                    test_four_eye_alias_generations);
+    g_test_add_func("/sgi-odyssey-planes/duplicate-eye-target",
+                    test_duplicate_eye_or_target_rejected);
+    g_test_add_func("/sgi-odyssey-planes/four-eye-swap",
+                    test_four_eye_swap_changes_bindings);
+    g_test_add_func("/sgi-odyssey-planes/swap-requires-four",
+                    test_swap_requires_four_views);
+    g_test_add_func("/sgi-odyssey-planes/swap-declared-positions",
+                    test_swap_uses_declared_positions);
+    g_test_add_func("/sgi-odyssey-planes/swap-changed-bindings",
+                    test_swap_rejects_changed_bindings_atomically);
     return g_test_run();
 }
