@@ -95,6 +95,10 @@ sgi_bridge_dma_xlate_direct(uint64_t addr, uint64_t translated, unsigned widget)
 sgi_dma_placement_access(const char *target, const char *op, uint64_t addr, uint64_t host, unsigned size) "%s %s addr 0x%" PRIx64 " host 0x%" PRIx64 " size %u"
 sgi_dma_placement_buffer(const char *target, const char *op, uint64_t addr, uint64_t len) "%s %s addr 0x%" PRIx64 " len %" PRIu64
 
+# sgi-pic.c: Handled head-register and PCI config accesses; short windows are excluded.
+sgi_pic_head_reg_read(unsigned head, uint64_t offset, unsigned width, uint64_t value) "head %u offset 0x%" PRIx64 " width %u value 0x%" PRIx64
+sgi_pic_head_reg_write(unsigned head, uint64_t offset, unsigned width, uint64_t value) "head %u offset 0x%" PRIx64 " width %u value 0x%" PRIx64
+
 # sgi-xbridge.c
 sgi_xbridge_pci_irq(int64_t vtime, unsigned widget, unsigned device, unsigned pin, int level) "vtime %" PRId64 " source_widget %u device %u PCI_pin %u level %d"
 sgi_xbridge_irq_pin(int64_t vtime, unsigned widget, int pin, bool was, bool level, uint32_t status, uint32_t enable, uint32_t mode) "vtime %" PRId64 " source_widget %u pin %d %d->%d status 0x%08x enable 0x%08x mode 0x%08x"
