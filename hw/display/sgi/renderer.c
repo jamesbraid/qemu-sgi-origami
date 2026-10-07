@@ -237,6 +237,39 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     return committed.status;
 }
 
+static void sgi_render_clear_coverage_row(const SGIRendererClear *clear,
+                                          uint32_t width, uint32_t y,
+                                          uint8_t *covered)
+{
+    memset(covered, 0, width);
+    for (unsigned j = 0; j < clear->rect_count; j++) {
+        const SGIRendererClearRect *r = &clear->rects[j];
+
+        if (y >= r->y0 && y <= r->y1) {
+            memset(covered + r->x0, 1, r->x1 - r->x0 + 1);
+        }
+    }
+}
+
+static bool sgi_render_clear_covers_plane(const SGIRendererClear *clear,
+                                          const SGIRenderResource *res,
+                                          uint8_t *covered)
+{
+    if (clear->rect_count == 1) {
+        const SGIRendererClearRect *r = &clear->rects[0];
+
+        return !r->x0 && !r->y0 && r->x1 == res->width - 1 &&
+               r->y1 == res->height - 1;
+    }
+    for (uint32_t y = 0; y < res->height; y++) {
+        sgi_render_clear_coverage_row(clear, res->width, y, covered);
+        if (memchr(covered, 0, res->width)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterRules *rules,
                                           const SGIRasterTarget *target,
@@ -435,17 +468,23 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         if (!clear->rect_count) {
             continue;
         }
+        if (sgi_render_clear_covers_plane(clear, res, covered)) {
+            SGIRenderRect rect = { .x1 = res->width - 1,
+                                   .y1 = res->height - 1 };
+            SGIRenderCommitResult committed = sgi_render_resource_commit(
+                target, res, 0, &rect, slots[i],
+                res->width * res->component_count, nslots[i], errp);
+
+            if (committed.status != SGI_RENDER_OK) {
+                status = committed.status;
+                goto out;
+            }
+            continue;
+        }
         for (uint32_t y = 0; y < res->height; y++) {
             uint32_t x = 0;
 
-            memset(covered, 0, res->width);
-            for (unsigned j = 0; j < clear->rect_count; j++) {
-                const SGIRendererClearRect *r = &clear->rects[j];
-
-                if (y >= r->y0 && y <= r->y1) {
-                    memset(covered + r->x0, 1, r->x1 - r->x0 + 1);
-                }
-            }
+            sgi_render_clear_coverage_row(clear, res->width, y, covered);
             while (x < res->width) {
                 SGIRenderRect rect;
                 SGIRenderCommitResult committed;

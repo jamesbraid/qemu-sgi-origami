@@ -1408,6 +1408,73 @@ static void test_decoded_clear_native_commit(void)
     sgi_renderer_free(renderer);
 }
 
+static void test_decoded_clear_full_screen_commit(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    NativeClearFixture f = { 0 };
+    SGIRenderResource resource = {
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .width = 4, .height = 4,
+        .depth = 1, .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 12 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 12 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
+        },
+    };
+    const SGIRenderResourceOps ops = {
+        .snapshot = native_clear_snapshot,
+        .commit = native_clear_commit,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_CLEAR, .targets = { 7 }, .ntargets = 1,
+        .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
+        .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+        .clear_rgba = { 1, 0, 0, 1 },
+        .clear_colour_mask = SGI_GL_COLOUR_MASK_ALL,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmpuint(f.writes[0][y][x], ==, 1);
+            g_assert_cmpuint(f.colour[0][y][x][0], ==, 4095);
+        }
+    }
+    memset(f.writes, 0, sizeof(f.writes));
+    op.clip.n = 2;
+    op.clip.r[0] = (SGIClipRect) { 0, 0, 2, 3 };
+    op.clip.r[1] = (SGIClipRect) { 2, 0, 3, 3 };
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.commits, ==, 2);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmpuint(f.writes[0][y][x], ==, 1);
+        }
+    }
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1424,6 +1491,8 @@ int main(int argc, char **argv)
                     test_frame_coverage_capacity);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
                     test_decoded_clear_native_commit);
+    g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",
+                    test_decoded_clear_full_screen_commit);
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     }
