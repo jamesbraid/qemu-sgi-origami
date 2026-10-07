@@ -3,6 +3,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
+#include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
@@ -54,28 +55,54 @@ static void expect_ordinary_vector_refusal(QTestState *s, uint64_t address,
     g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
 }
 
-static uint64_t experimental_status_vector(QTestState *s, uint64_t address,
-                                           uint64_t route, bool write,
-                                           uint64_t data, bool accepted)
+static uint64_t experimental_readq(QTestState *s, unsigned cpu, uint64_t addr)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(s, cpu, addr, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void experimental_writeq(QTestState *s, unsigned cpu, uint64_t addr,
+                                uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(s, cpu, addr, bytes, sizeof(bytes)));
+}
+
+static uint64_t experimental_status_vector_from(QTestState *s, unsigned cpu,
+                                                 uint64_t address,
+                                                 uint64_t route, bool write,
+                                                 uint64_t data, bool accepted)
 {
     const uint64_t lb = SPACE_IO + UINT64_C(0x01000000) + 0x600000;
     const uint64_t params = address | (UINT64_C(0x5a) << 40);
     const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
     uint64_t response;
 
-    qtest_readq(s, lb + 0xc038);
-    qtest_writeq(s, lb + 0xc030, sentinel);
-    qtest_writeq(s, lb + 0xc008, route);
-    qtest_writeq(s, lb + 0xc010, data);
-    qtest_writeq(s, lb + 0xc000, params | write);
-    response = qtest_readq(s, lb + 0xc020);
+    experimental_readq(s, cpu, lb + 0xc038);
+    experimental_writeq(s, cpu, lb + 0xc030, sentinel);
+    experimental_writeq(s, cpu, lb + 0xc008, route);
+    experimental_writeq(s, cpu, lb + 0xc010, data);
+    experimental_writeq(s, cpu, lb + 0xc000, params | write);
+    response = experimental_readq(s, cpu, lb + 0xc020);
     g_assert_cmphex(response, ==, (UINT64_C(1) << 63) | params |
                     (accepted ? write : 4));
-    response = qtest_readq(s, lb + 0xc030);
+    response = experimental_readq(s, cpu, lb + 0xc030);
     if (write || !accepted) {
         g_assert_cmphex(response, ==, sentinel);
     }
     return response;
+}
+
+static uint64_t experimental_status_vector(QTestState *s, uint64_t address,
+                                           uint64_t route, bool write,
+                                           uint64_t data, bool accepted)
+{
+    return experimental_status_vector_from(s, 0, address, route, write, data,
+                                           accepted);
 }
 
 static void assert_experimental_status(uint64_t status, unsigned ingress,
@@ -166,6 +193,11 @@ static void test_experimental_status_write(void)
     assert_experimental_status(status, 1, 0);
     assert_experimental_status(
         experimental_status_vector(s, 0x600000, 0, false, 0, true), 1, 0);
+    assert_experimental_status(
+        experimental_status_vector_from(s, 2, 0, 0, false, 0, true), 6, 0);
+    assert_experimental_status(
+        experimental_status_vector_from(s, 2, 0x600000, 0, false, 0, true),
+        6, 0);
     qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
         "'path':'/machine/slave-route','property':'down','value':true}}");
     assert_experimental_status(
@@ -199,7 +231,7 @@ static void test_experimental_status_write(void)
     g_assert_cmpmem(l1_after, l1_size, l1_before, l1_size);
     experimental_status_vector(s, 0x600000, 0, true, 0, false);
     experimental_status_vector(s, 0, 9, true, 0, false);
-    for (unsigned ingress = 1; ingress <= 8; ingress += 7) {
+    for (unsigned ingress = 1; ingress <= 6; ingress += 5) {
         set(s, "ingress", ingress);
         status = qtest_readq(s, BASE);
         assert_experimental_status(status, ingress, 0);
@@ -232,6 +264,11 @@ static void test_experimental_status_write(void)
     experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     assert_experimental_status(status, 1, 0);
+    assert_experimental_status(
+        experimental_status_vector_from(s, 2, 0, 0, false, 0, true), 6, 0);
+    assert_experimental_status(
+        experimental_status_vector_from(s, 2, 0x600000, 0, false, 0, true),
+        6, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
     fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
                          &to_image, &error);
@@ -261,6 +298,11 @@ static void test_experimental_status_write(void)
     assert_experimental_status(status, 1, 0);
     g_assert_cmphex(experimental_status_vector(to, 0x600000, 0, false, 0,
                                               true), ==, status);
+    assert_experimental_status(
+        experimental_status_vector_from(to, 2, 0, 0, false, 0, true), 6, 0);
+    assert_experimental_status(
+        experimental_status_vector_from(to, 2, 0x600000, 0, false, 0, true),
+        6, 0);
     experimental_status_vector(to, 0, 0, true,
                                UINT64_C(0x123456789abcdef0), true);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
