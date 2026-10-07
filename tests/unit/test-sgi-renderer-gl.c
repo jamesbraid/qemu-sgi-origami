@@ -1244,7 +1244,8 @@ static void test_decoded_clear_native_commit(void)
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
                 for (unsigned c = 0; c < 4; c++) {
-                    f.colour[bank][y][x][c] = 17;
+                    f.colour[bank][y][x][c] =
+                        17 + bank * 3 + y * 19 + x * 7 + c * 31;
                 }
             }
         }
@@ -1262,14 +1263,16 @@ static void test_decoded_clear_native_commit(void)
             for (unsigned x = 0; x < 4; x++) {
                 bool covered = (x >= 1 && x <= 2 && y >= 1 && y <= 2) ||
                                (x == 3 && y <= 1);
+                uint32_t original = 17 + bank * 3 + y * 19 + x * 7;
 
                 g_assert_cmpuint(f.colour[bank][y][x][0], ==,
-                                 covered ? 4095 : 17);
-                g_assert_cmpuint(f.colour[bank][y][x][1], ==, 17);
+                                 covered ? 4095 : original);
+                g_assert_cmpuint(f.colour[bank][y][x][1], ==, original + 31);
                 g_assert_cmpuint(f.colour[bank][y][x][2], ==,
-                                 covered ? 2048 : 17);
+                                 covered ? 2048 : original + 62);
                 if (bank) {
-                    g_assert_cmpuint(f.colour[bank][y][x][3], ==, 17);
+                    g_assert_cmpuint(f.colour[bank][y][x][3], ==,
+                                     original + 93);
                 }
             }
         }
