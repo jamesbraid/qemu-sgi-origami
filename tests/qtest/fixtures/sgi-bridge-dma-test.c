@@ -489,9 +489,20 @@ static const MemoryRegionOps sgi_bridge_dma_test_io_ops = {
     .impl.max_access_size = 8,
 };
 
+static void sgi_bridge_dma_test_irq_in(void *opaque, int n, int level)
+{
+    SGIBridgeDMATestState *s = opaque;
+
+    s->interrupt = !!level;
+    pci_set_irq(PCI_DEVICE(s), s->interrupt);
+}
+
 static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
+
+    qdev_init_gpio_in_named(DEVICE(dev), sgi_bridge_dma_test_irq_in,
+                            "test-irq", 1);
 
     if (s->dma_memory) {
         address_space_init(&s->linked_dma_as, s->dma_memory,

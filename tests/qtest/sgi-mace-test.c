@@ -479,6 +479,19 @@ static void test_pci_bar_decode_refused(void)
     qtest_quit(s);
 }
 
+static void test_pci_bridge_rom_refused(void)
+{
+    QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
+        "-device sgi-mace,id=mace "
+        "-device pci-bridge,bus=mace.0,addr=3,chassis_nr=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/mace", 0, MACE_BASE);
+    qtest_writel(s, MACE_PCI_CFGADDR, (3u << 11) | 0x38);
+    g_assert_cmpuint(memtx_writel(s, MACE_PCI_CFGDATA, 0x80000000), ==,
+                     MEMTX_ERROR);
+    qtest_quit(s);
+}
+
 static void test_pci_absent_device(void)
 {
     QTestState *s = mace_start();
@@ -487,8 +500,8 @@ static void test_pci_absent_device(void)
     qtest_writel(s, MACE_PCI_CFGADDR, 5u << 11);
     g_assert_cmphex(qtest_readl(s, MACE_PCI_CFGDATA), ==, 0xffffffff);
     flags = qtest_readl(s, MACE_PCI_ERROR_FLAGS);
-    g_assert_cmphex(flags & ((1u << 31) | (1u << 20) | (1u << 19)), ==,
-                    (1u << 31) | (1u << 20) | (1u << 19));
+    g_assert_cmphex(flags & ((1u << 31) | (1u << 19)), ==,
+                    (1u << 31) | (1u << 19));
     qtest_writel(s, MACE_PCI_ERROR_FLAGS, 0);
     flags = qtest_readl(s, MACE_PCI_ERROR_FLAGS);
     g_assert_false(flags & ((1u << 31) | (1u << 19)));
@@ -515,6 +528,28 @@ static void test_pci_interrupt_inputs(void)
     qtest_set_irq_in(s, path, "pci", 1, 0);
     g_assert_false(qtest_get_irq(s, 9));
     qtest_quit(s);
+}
+
+static void test_pci_expansion_interrupt_pins(void)
+{
+    for (unsigned pin = 1; pin <= 4; pin++) {
+        QTestState *s = qtest_initf(
+            "-M none -cpu R10000 "
+            "-device sgi-mace,id=mace "
+            "-device sgi-bridge-dma-test,id=card,bus=mace.0,addr=3,"
+            "interrupt-pin=%u", pin);
+
+        qtest_sysbus_mmio_map(s, "/machine/peripheral/mace", 0, MACE_BASE);
+        qtest_irq_intercept_out_named(s, "/machine/peripheral/mace", "crime");
+        qtest_writel(s, MACE_PCI_CONTROL, 0xff);
+        qtest_set_irq_in(s, "card", "test-irq", 0, 1);
+        for (unsigned input = 0; input < 8; input++) {
+            g_assert_cmpint(qtest_get_irq(s, 8 + input), ==,
+                            pin == 1 && input == 2);
+        }
+        qtest_set_irq_in(s, "card", "test-irq", 0, 0);
+        qtest_quit(s);
+    }
 }
 
 static void test_pci_state_migration(void)
@@ -588,9 +623,13 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace/pci-config-lanes", test_pci_config_lanes);
     qtest_add_func("/sgi/mace/pci-bar-decode-refused",
                    test_pci_bar_decode_refused);
+    qtest_add_func("/sgi/mace/pci-bridge-rom-refused",
+                   test_pci_bridge_rom_refused);
     qtest_add_func("/sgi/mace/pci-absent-device", test_pci_absent_device);
     qtest_add_func("/sgi/mace/pci-interrupt-inputs",
                    test_pci_interrupt_inputs);
+    qtest_add_func("/sgi/mace/pci-expansion-interrupt-pins",
+                   test_pci_expansion_interrupt_pins);
     qtest_add_func("/sgi/mace/pci-state-migration",
                    test_pci_state_migration);
     return g_test_run();
