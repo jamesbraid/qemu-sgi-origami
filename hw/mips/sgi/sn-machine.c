@@ -2962,7 +2962,6 @@ static void sgi_machine_build_routers(SGIMachineState *s,
 
         object_property_add_child(OBJECT(s), name, OBJECT(dev));
         qdev_prop_set_uint8(dev, "chip-inputs", router->chip_inputs);
-        qdev_prop_set_uint32(dev, "slot", router->slot);
         qdev_prop_set_uint64(dev, "nic-clock-hz",
                             SN0_HUB_CLOCK_HZ);
         qdev_prop_set_uint64(dev, "nic-serial", router->serial);

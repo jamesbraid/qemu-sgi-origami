@@ -1014,26 +1014,6 @@ static void test_nic_calibration(void)
     }
 }
 
-/*
- * An unmarked nic-serial prints the slot into the record's ten-character
- * serial text, "EMUR" and six digits, so a slot past that is refused rather
- * than overflowing the field.
- */
-static void test_nic_slot_text_limit(void)
-{
-    DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
-    Error *err = NULL;
-
-    qdev_prop_set_uint64(dev, "nic-serial", 1);
-    qdev_prop_set_uint32(dev, "slot", 1000000);
-    g_assert_false(qdev_realize(dev, NULL, &err));
-    g_assert_nonnull(err);
-    g_assert_nonnull(strstr(error_get_pretty(err), "slot"));
-    error_free(err);
-    object_unparent(OBJECT(dev));
-    object_unref(OBJECT(dev));
-}
-
 static void test_nic_serial_limit(void)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
@@ -1517,8 +1497,6 @@ int main(int argc, char **argv)
                fixture_setup, fn, fixture_teardown)
     g_test_add_func("/sgi-router/nic-calibration", test_nic_calibration);
     g_test_add_func("/sgi-router/nic-serial-limit", test_nic_serial_limit);
-    g_test_add_func("/sgi-router/nic-slot-text-limit",
-                    test_nic_slot_text_limit);
     ADD_TEST("nic-delayed-callback", test_nic_delayed_callback);
     ADD_TEST("nic-deadline-without-dispatch",
              test_nic_deadline_without_dispatch);
