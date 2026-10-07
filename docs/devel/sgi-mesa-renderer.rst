@@ -28,9 +28,10 @@ Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
 
-The decoded CLEAR path is separate dependent work in held QEMU PR #1147. It
-is not part of the implementation described here. The shared type declarations
-also cover more roles and numeric formats than this Mesa draw path supports.
+Decoded CLEAR is outside the triangle path described here. QEMU PR #1147
+contains a separate colour CLEAR implementation with its own clipping and
+native commit rules. The shared type declarations cover more roles and numeric
+formats than this Mesa draw path supports.
 
 Renderer lifetime and ownership
 -------------------------------
