@@ -1027,7 +1027,7 @@ static void test_origin200_accepts_its_cpu_populations(const void *data)
 
 static void test_origin200_accepts_its_memory_populations(const void *data)
 {
-    static const unsigned int mib[] = { 512, 256, 128, 64 };
+    static const unsigned int mib[] = { 1664, 512, 256, 192, 128, 64 };
     unsigned int i;
 
     for (i = 0; i < ARRAY_SIZE(mib); i++) {
@@ -1052,7 +1052,7 @@ static void test_origin200_dual_accepts_its_populations(const void *data)
  * be named explicitly here: left out, it would divide across this topology's
  * two real nodes and fail, not fall back to a value this topology accepts.
  */
-    static const unsigned int mib_per_node[] = { 512, 256, 128, 64 };
+    static const unsigned int mib_per_node[] = { 1664, 512, 256, 192, 128, 64 };
     unsigned int i;
 
     for (i = 0; i < ARRAY_SIZE(mib_per_node); i++) {
@@ -3951,16 +3951,16 @@ static void test_unbuildable_rows_rejected(const void *data)
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
- * Origin 200 accepts 512, 256, 128, and 64 MiB per node. -m 768M (single
- * node, default topology) is not in the accepted list.
+ * -m 1024M (single node, default topology) needs a 512 MiB bank 0, which
+ * QEMU does not build, so it is not in the accepted list.
  */
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "768M",
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "1024M",
         "-display", "none", NULL
     };
 
     assert_qemu_rejects(args,
-                        "topology 'origin200' does not accept 768 "
+                        "topology 'origin200' does not accept 1024 "
                         "MiB per node");
 }
 

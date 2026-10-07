@@ -37,7 +37,11 @@ layer:
         profile: dual-module
         lifecycle: implemented
         emulator_constraints:
-          accepted_bank_sizes_mib: [512, 256, 128, 64]
+          # Per-node totals -m may select: every sum QEMU lays out as a 64 or
+          # 128 MiB bank 0 and up to three more banks of 64, 128 or 512 MiB.
+          # 256 MB banks are left out because the stock PROM disables them at
+          # 180 and 195 MHz, and QEMU builds no 512 MB bank 0.
+          accepted_bank_sizes_mib: [64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 1088, 1152, 1216, 1280, 1600, 1664]
         synthetic_identities:
           - component: node0-hub
             serial: "0x51454d554e00"

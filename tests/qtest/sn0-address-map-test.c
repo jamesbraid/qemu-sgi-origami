@@ -723,64 +723,106 @@ static void test_128m_memory(const void *data)
 #define MEM_BANK_SIZE   0x20000000ULL
 #define MEM_SLOT_SIZE   0x08000000ULL
 
-/* A 256 MiB bank is four 64 MiB runs, not one contiguous run. */
-static void test_256m_memory(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200 -m 256M");
-    unsigned int slot;
-
-    for (slot = 0; slot < 4; slot++) {
-        check_ram(qts, NODE0 + slot * MEM_SLOT_SIZE,
-                  0x2560000000000000ULL + slot);
-        check_ram(qts, NODE0 + slot * MEM_SLOT_SIZE + 64 * MiB - 8,
-                  0x256fffffffffff00ULL + slot);
-        check_not_ram(qts, NODE0 + slot * MEM_SLOT_SIZE + 64 * MiB);
-    }
-
-    qtest_quit(qts);
-}
-
 /*
- * An IP27 node board has no 256 MB bank: its DIMMs give 64 or 128 MB banks,
- * or 512 MB ones, and the stock PROM disables a 256 MB bank on this board.
- * So 256 MiB on the one-node Origin 2000 is two 128 MiB banks, each wholly
- * in its bank's first slot, where the Origin 200 rule above would build one
- * bank split over four 64 MiB runs.
+ * Check that banks 0 to @count - 1 each hold 128 MiB wholly in their first
+ * slot, and that the bank after them, if the board has one, is empty.
  */
-static void test_origin2000_256m_memory(const void *data)
+static void check_128m_banks(QTestState *qts, unsigned int count)
 {
-    QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 256M");
     unsigned int bank;
 
-    for (bank = 0; bank < 2; bank++) {
+    for (bank = 0; bank < count; bank++) {
         uint64_t base = NODE0 + bank * MEM_BANK_SIZE;
 
         check_ram(qts, base, 0x1280000000000000ULL + bank);
         check_ram(qts, base + 128 * MiB - 8, 0x128fffffffffff00ULL + bank);
         check_not_ram(qts, base + 128 * MiB);
     }
+    if (count < 4) {
+        check_not_ram(qts, NODE0 + count * MEM_BANK_SIZE);
+    }
+}
+
+/*
+ * The IP27 PROM disables a 256 MB bank on a node whose processors run at
+ * 180 or 195 MHz, the only SN0 clocks QEMU offers, and with bank 0 gone it
+ * finds no usable memory. So 256 MiB on an Origin 200 is two 128 MiB banks,
+ * not one bank split over four 64 MiB runs: bank 0's second slot is empty.
+ */
+static void test_256m_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 256M");
+
+    check_128m_banks(qts, 2);
+    check_not_ram(qts, NODE0 + MEM_SLOT_SIZE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * An IP27 node board has no 256 MB bank either: its DIMMs give 64 or 128 MB
+ * banks, or 512 MB ones (SGI 007-3439-002, page 35). So 256 MiB on the
+ * one-node Origin 2000 is two 128 MiB banks too.
+ */
+static void test_origin2000_256m_memory(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 256M");
+
+    check_128m_banks(qts, 2);
+
+    qtest_quit(qts);
+}
+
+/* Banks may differ in size: 192 MiB is a 128 MiB bank 0 and a 64 MiB bank 1. */
+static void test_192m_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 192M");
+
+    check_ram(qts, NODE0 + 128 * MiB - 8, 0x1920000000000000ULL);
+    check_not_ram(qts, NODE0 + 128 * MiB);
+    check_ram(qts, NODE0 + MEM_BANK_SIZE + 64 * MiB - 8,
+              0x1920000000000001ULL);
+    check_not_ram(qts, NODE0 + MEM_BANK_SIZE + 64 * MiB);
     check_not_ram(qts, NODE0 + 2 * MEM_BANK_SIZE);
 
     qtest_quit(qts);
 }
 
 /*
- * The explicit 512 MiB configuration is two 256 MiB banks, with the boot
- * flash's own addresses left out of the RAM map.
+ * The largest total the model lays out: a 128 MiB bank 0 and three 512 MiB
+ * banks, each interleaved over all four of its 128 MiB slots.
+ */
+static void test_1664m_memory(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 1664M");
+    unsigned int bank, slot;
+
+    check_ram(qts, NODE0 + 128 * MiB - 8, 0x1664000000000000ULL);
+    check_not_ram(qts, NODE0 + 128 * MiB);
+    for (bank = 1; bank < 4; bank++) {
+        for (slot = 0; slot < 4; slot++) {
+            uint64_t base = NODE0 + bank * MEM_BANK_SIZE +
+                            slot * MEM_SLOT_SIZE;
+
+            check_ram(qts, base, 0x1664000000000000ULL + bank * 4 + slot);
+            check_ram(qts, base + MEM_SLOT_SIZE - 8,
+                      0x1664ffffffffff00ULL + bank * 4 + slot);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * 512 MiB is four 128 MiB banks, with the boot flash's own addresses left
+ * out of the RAM map.
  */
 static void test_512m_memory(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200 -m 512M");
-    unsigned int bank, slot;
 
-    for (bank = 0; bank < 2; bank++) {
-        for (slot = 0; slot < 4; slot++) {
-            check_ram(qts, NODE0 + bank * MEM_BANK_SIZE +
-                      slot * MEM_SLOT_SIZE,
-                      0x5120000000000000ULL + bank * 4 + slot);
-        }
-    }
+    check_128m_banks(qts, 4);
 
     check_not_ram(qts, NODE0 + 0x1f800000);
     check_not_ram(qts, NODE0 + 0x1fc00000);
@@ -806,20 +848,19 @@ static void test_hub_local_memory_alias(const void *data)
                     0xfedcba9876543210ULL);
     qtest_quit(qts);
 
-    qts = qtest_init("-M origin200 -m 256M");
+    qts = qtest_init("-M origin200 -m 192M");
     check_ram(qts, SPACE_HUB + 0x1000, 0x1000000000000001ULL);
-    check_not_ram(qts, SPACE_HUB + 64 * MiB);
-    check_ram(qts, SPACE_HUB + 128 * MiB + 0x1000,
-              0x1000000000000002ULL);
+    check_ram(qts, SPACE_HUB + 64 * MiB, 0x1000000000000002ULL);
+    check_not_ram(qts, SPACE_HUB + 128 * MiB);
     check_not_ram(qts, SPACE_HUB + 192 * MiB);
     qtest_quit(qts);
 }
 
 /*
- * 96 MiB is not one of origin200's accepted per-node populations (512, 256,
- * 128, 64): sgi_machine_validate_memory_population() now catches it before
- * node construction ever reaches the IP29 bank-fitting check this test used
- * to name, so the accepted-population message is what a real user sees.
+ * 96 MiB is not one of origin200's accepted per-node populations: it needs a
+ * 32 MB bank, which QEMU does not build. The accepted-population check
+ * catches it before node construction ever reaches the IP29 bank-fitting
+ * check, so the accepted-population message is what a real user sees.
  */
 static void test_invalid_memory_size(const void *data)
 {
@@ -1085,25 +1126,14 @@ static void test_backdoor_tracks_bank_size(const void *data)
     check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 32 * MiB);
     qtest_quit(qts);
 
+    /* Bank 0's span is unaffected by a populated bank 1 alongside it. */
     qts = qtest_init("-M origin200 -m 256M");
-    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
-    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 32 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 32 * MiB);
     qtest_quit(qts);
 
     /*
- * 512 MiB is origin200's largest accepted population, and IP29's first-bank
- * cap (256 MiB) forces it into two banks (256 + 256): bank 0's span is
- * unaffected by a populated bank 1 alongside it.
- */
-    qts = qtest_init("-M origin200 -m 512M");
-    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
-    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
-    qtest_quit(qts);
-
-    /*
- * No product's accepted list reaches a bank 1 larger than bank 0
- * (origin200's 512 MiB maximum splits into two equal 256 MiB banks, as
- * above): sn-builder-bank-test ships 256 MiB in bank 0 and 512 MiB in bank
+ * sn-builder-bank-test ships 128 MiB in bank 0 and 512 MiB in bank
  * 1, the largest single bank IP29 supports, whose span (128 MiB) exactly
  * fills its architectural slot with one fold and no smaller repeat,
  * check_backdoor_bank_distinct is what proves that fold is real, distinct
@@ -1111,8 +1141,8 @@ static void test_backdoor_tracks_bank_size(const void *data)
  */
     qts = qtest_init(
         "-M sn-builder-bank-test,activate=on -cpu R10000 -m 768M");
-    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
-    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 32 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 32 * MiB);
     check_backdoor_bank_distinct(qts, BACKDOOR_DIR, 1, 64 * MiB);
     check_backdoor_bank_distinct(qts, BACKDOOR_ECC, 1, 64 * MiB);
     qtest_quit(qts);
@@ -1169,11 +1199,8 @@ static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 
 static void test_backdoor_tracks_populated_banks(const void *data)
 {
-    /*
- * 512 MiB is the accepted population that reaches two banks; see
- * test_backdoor_tracks_bank_size.
- */
-    QTestState *qts = qtest_init("-M origin200 -m 512M");
+    /* 256 MiB is two 128 MiB banks; see test_256m_memory. */
+    QTestState *qts = qtest_init("-M origin200 -m 256M");
 
     check_backdoor_multi_bank(qts, BACKDOOR_DIR);
     check_backdoor_multi_bank(qts, BACKDOOR_ECC);
@@ -1738,8 +1765,12 @@ int main(int argc, char **argv)
                         test_128m_memory);
     qtest_add_data_func("sn0/address-map/memory-256m", NULL,
                         test_256m_memory);
+    qtest_add_data_func("sn0/address-map/memory-192m", NULL,
+                        test_192m_memory);
     qtest_add_data_func("sn0/address-map/memory-512m", NULL,
                         test_512m_memory);
+    qtest_add_data_func("sn0/address-map/memory-1664m", NULL,
+                        test_1664m_memory);
     qtest_add_data_func("sn0/address-map/origin2000-memory-256m", NULL,
                         test_origin2000_256m_memory);
     qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,

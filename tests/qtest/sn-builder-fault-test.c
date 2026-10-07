@@ -525,14 +525,12 @@ static const TypeInfo console_test_type = {
 };
 
 /*
- * Bank test fixture: one HUB node shipping 256 MiB in bank 0 and 512 MiB in
- * bank 1 (768 MiB total), a population no product's accepted memory list
- * carries. origin200's largest accepted total is 512 MiB, so a real
- * product can never populate a bank past IP29's 256 MiB first- bank cap. The
+ * Bank test fixture: one HUB node of 768 MiB, which the IP29 bank rule lays
+ * out as 128 MiB in bank 0, 512 MiB in bank 1 and 128 MiB in bank 2. The
  * IP29 backdoor window's quarter-size aliasing scales with each bank's own
  * size (tests/qtest/sn0-address-map-test.c's check_backdoor_bank_span), so
  * proving bank 1 aliases at ITS size's own quarter (128 MiB), not bank 0's
- * (64 MiB), needs a bank 1 this large. That is generic sgi_sn0_hub_hardware
+ * (32 MiB), needs a bank 1 this large. That is generic sgi_sn0_hub_hardware
  * decode behavior, identical for every SN0 node regardless of product, so
  * exercising it here over a fixture-only population is as hardware-accurate
  * as exercising it over a real product would be. It is the product
@@ -548,7 +546,7 @@ static SGIModelCpuSlot bank_test_cpu_slots[] = {
     { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
 };
 
-static uint64_t bank_test_bank_mib[] = { 256, 512, 0, 0, 0, 0, 0, 0 };
+static uint64_t bank_test_bank_mib[] = { 128, 512, 128, 0, 0, 0, 0, 0 };
 
 /* The fixture tests memory-bank placement, so revision values stay zero. */
 static SGIModelAsicIdentity bank_test_identity = {
@@ -589,9 +587,8 @@ static SGIModelCpuPopulation bank_test_populations[] = {
 static SGIModelTopology bank_test_topology = {
     .name = (char *)"sn-builder-bank-test",
     .generation = SGI_MODEL_GENERATION_SN0,
-    .description = (char *)"one node shipping two banks (256+512 MiB) past any "
-                   "product's accepted total, for the IP29 backdoor's "
-                   "per-bank aliasing",
+    .description = (char *)"one node shipping three banks (128+512+128 MiB), "
+                   "for the IP29 backdoor's per-bank aliasing",
     .console = 0,
     .junk_uart = -1,
     .ip27_firmware = &console_test_firmware,
