@@ -52,6 +52,12 @@ const SGIRenderResource *sgi_kona_mesa_resources(
     const SGIKonaMesaProvider *provider, size_t *count);
 const SGIRenderResourceOps *sgi_kona_mesa_resource_ops(void);
 
+/*
+ * Call under BQL before each checked submission. Advance the six board
+ * backings and their views for a fresh snapshot; native bytes stay unchanged.
+ */
+void sgi_kona_mesa_refresh_board_views(SGIKonaMesaProvider *provider);
+
 bool sgi_kona_mesa_bind_texture(SGIKonaMesaProvider *provider,
                                 const SGIKonaMesaTextureView *view,
                                 Error **errp);
