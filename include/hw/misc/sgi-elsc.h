@@ -71,6 +71,21 @@ typedef enum SGIElscSelect {
     SGI_ELSC_SELECT_COUNT,
 } SGIElscSelect;
 
+/*
+ * The status messages an Origin 2000 module controller writes to its
+ * display. Their eight-character texts are not known.
+ */
+typedef enum SGIElscStatus {
+    SGI_ELSC_STATUS_NONE = 0,
+    SGI_ELSC_STATUS_PD_REMOTE,
+    SGI_ELSC_STATUS_POWER_OFF,
+    SGI_ELSC_STATUS_POWER_UP,
+    SGI_ELSC_STATUS_RESET,
+    SGI_ELSC_STATUS_NMI,
+    SGI_ELSC_STATUS_HEARTBEAT,
+    SGI_ELSC_STATUS_COUNT,
+} SGIElscStatus;
+
 /* How far an unanswered heartbeat watchdog has gone. */
 typedef enum SGIElscHeartbeat {
     SGI_ELSC_HEARTBEAT_IDLE = 0,
@@ -232,6 +247,13 @@ struct SGIElscState {
     bool power_sequence;
     uint16_t cycle_seconds;
     QEMUTimer *power_up_timer;
+
+    /*
+     * The Origin 2000 build's last status message on its display (an
+     * SGIElscStatus), which overwrites what a host wrote there.
+     */
+    uint8_t status;
+
     /*
      * Power came back and the reset that starts the module's processors
      * has been asked for but not yet run. Migrated, unlike the request
@@ -239,6 +261,7 @@ struct SGIElscState {
      */
     bool power_up_reset_owed;
     VMChangeStateEntry *vm_state;
+
     /*
      * The power-down countdown "pwr d <sec>" arms, on the virtual clock in
      * milliseconds. Each timed request reloads it; expiry shuts down.

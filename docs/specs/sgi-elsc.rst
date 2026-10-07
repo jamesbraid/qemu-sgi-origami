@@ -474,7 +474,9 @@ it had queued for the Hubs, and keeps everything else: module power and
 its power-up countdown, a power-down countdown (which a power-off ends),
 the waits of an accepted ``rst`` or ``nmi``, the heartbeat watchdog, the
 console selection and output sender, the fan request, the ``fsc`` and
-``tst`` flags, the margins and the display. Any other
+``tst`` flags and the margins. The Origin 2000 build's display keeps
+what was last shown there, though the controller's own status messages
+replace whatever a host wrote (see `Alphanumeric display`_). Any other
 QEMU reset, such as ``system_reset`` from the monitor, is taken as the
 controller's own start and clears all of it. A reset the controller
 asked for that turns into a shutdown (``-no-reboot``) or is not carried
@@ -649,9 +651,19 @@ positions 2s-1 and 2s for slot s, and the IO6 PROM and the kernel
 write short messages with ``dsp``. They send the same commands on an
 Origin 200, whose controller build has no display and answers ``err
 cmd``; every sender ignores the reply and none retries, so the
-refusal costs nothing. The power-on content is unstated, and the
-model blanks it to spaces. ``info elsc`` shows the current content
-of an Origin 2000 build's display.
+refusal costs nothing. The controller starts with its version
+string, ``VER 3.2`` and a space, on the display.
+
+The controller also writes its own eight-character status messages
+there, which replace whatever a host wrote: a remote power-down
+message for a timed or soft ``pwr d``, a reset message for ``rst``, an
+NMI message for ``nmi``, a heartbeat-timeout message when the watchdog
+starts its warning, and messages as module power goes and returns.
+The texts of these messages are not known, so the model does not
+invent characters for them: ``info elsc`` shows the last text a host
+wrote and, when a status message has replaced it, names that message.
+A later ``dsp`` or ``dsc`` replaces the message in turn, and ``clr``
+blanks the display.
 
 .. _sgi-elsc-arbitration:
 
