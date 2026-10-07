@@ -187,13 +187,9 @@ struct SGIElscState {
     bool deferred_scheduled;
 
     /*
-     * The "tas" test-and-set lock cell. tas_held is the occupancy; tas_lock
-     * is the owner byte, meaningful only while held. Occupancy is kept
-     * separate from the owner byte because any byte is a legal owner,
-     * including NUL (0x00), so the owner value alone cannot signal "free". A
+     * The "tas" test-and-set lock cell: one byte, ASCII '0' when free. A
      * distinct service carried over the bus, not the arbitration.
      */
-    bool tas_held;
     uint8_t tas_lock;
 
     /* The alphanumeric display, written by "dsp" and "dsc". */

@@ -120,6 +120,9 @@ static void elsc_module_console_input(SGIElscState *s, bool pending)
     }
 }
 
+/* The "tas" cell's free value. */
+#define ELSC_TAS_FREE '0'
+
 /*
  * One request as the controller parses it. The firmware keeps the text and
  * puts a carriage return where the checksum byte was, so every command ends
@@ -493,66 +496,35 @@ static void elsc_handle_hbt(SGIElscState *s, ElscRequest *r)
 }
 
 /*
- * "tas <ch>" / "tas 0": the test-and-set lock cell. A distinct service
- * carried over the bus; not the arbitration, which every command passes
- * through, this one included. "tas <ch>" takes the lock if it is free;
- * "tas 0" releases it.
+ * "tas [<ch>]": the test-and-set lock cell. A distinct service carried over
+ * the bus; not the arbitration, which every command passes through, this
+ * one included.
  *
- * <ch> is a LITERAL character, not a hex value: the client stores the owner
- * and compares it byte for byte, so "tas A" acquires with owner 'A' and a
- * retry reads back "ok A", not "ok a". Any non-'0' byte is a valid
- * channel, with nothing to reject as a bad argument. Classic test-and-set:
- * "ok <held>" reports the byte the cell held BEFORE this request, so an
- * acquire of a free cell reads back "ok 0" and a caller polls until it reads
- * 0 (was free) or its own <ch> (already holds it). ASCII '0' is reserved as
- * the release channel, so it is never an owner and the free cell is
- * unambiguous.
+ * The cell is one byte, free when it holds ASCII '0'. The argument is the
+ * next non-space character, a LITERAL byte rather than a hex value, so "tas
+ * A" and "tas  A" both offer 'A' and a space can never be an owner. "tas 0"
+ * frees the cell; any other byte, NUL included, takes it only if it is free
+ * and otherwise leaves the holder in place. With no argument the command
+ * only reports. Every reply is "ok " and the byte the cell held before the
+ * request, so a caller polls until it reads '0' (it was free and is now
+ * taken) or its own byte (it already held it).
  *
- * Occupancy (tas_held) is tracked apart from the owner byte (tas_lock): any
- * byte is a legal owner, NUL (0x00) included, so the owner value alone cannot
- * mean "free". A NUL owner must round-trip in the response, so the reply is
- * framed with an explicit length rather than as a C string, whose strlen
- * would truncate "ok \0" back to "ok ".
- *
- * The literal-byte round-trip is the test-and-set semantic the client's byte
- * comparison needs. The 6.5.7 lock wrappers are dead code; this behavior is
- * unconfirmed for 6.5.30.
+ * The reply is framed with an explicit length because a NUL owner must
+ * round-trip; strlen would cut "ok \0" back to "ok ". No IRIX 6.5.30 binary
+ * is known to send "tas".
  */
 static void elsc_handle_tas(SGIElscState *s, ElscRequest *r)
 {
-    uint8_t ch;
-    bool was_held;
-    uint8_t held;
-    char buf[4];
+    char ch;
+    char buf[4] = { 'o', 'k', ' ', (char)s->tas_lock };
 
-    if (r->len != 6) {
-        /* "tas" takes exactly one channel character. */
-        elsc_frame_response_str(s, "err arg");
-        return;
+    if (elsc_read_char(r, &ch)) {
+        if (ch == ELSC_TAS_FREE) {
+            s->tas_lock = ELSC_TAS_FREE;
+        } else if (s->tas_lock == ELSC_TAS_FREE) {
+            s->tas_lock = (uint8_t)ch;
+        }
     }
-    ch = (uint8_t)r->text[4];
-
-    was_held = s->tas_held;             /* occupancy before this request */
-    /* owner before this request, if held */
-    held = s->tas_lock;
-    if (ch == '0') {
-        s->tas_held = false;            /* release */
-        s->tas_lock = 0;
-    } else if (!s->tas_held) {
-        s->tas_held = true;             /* free: this caller takes it */
-        s->tas_lock = ch;
-    }
-    /*
-     * else: already held (by this caller or another); the cell is unchanged.
-     */
-
-    /*
-     * "ok <held>": the owner byte before this request, or '0' if it was free.
-     */
-    buf[0] = 'o';
-    buf[1] = 'k';
-    buf[2] = ' ';
-    buf[3] = was_held ? held : '0';
     elsc_frame_response(s, buf, sizeof(buf));
 }
 
@@ -1247,8 +1219,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_committed = false;
     s->deferred_scheduled = false;
     timer_del(s->pwr_down_timer);
-    s->tas_held = false;
-    s->tas_lock = 0;
+    s->tas_lock = ELSC_TAS_FREE;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
 
@@ -1324,6 +1295,7 @@ static void elsc_realize(DeviceState *dev, Error **errp)
      * realize models. A migrated stream overwrites it on load.
      */
     s->cold_power_on = true;
+    s->tas_lock = ELSC_TAS_FREE;
     /*
      * The timer exists either way so that unrealize and the migration stream
      * keep one shape; only starting it makes the rotation run, which the
@@ -1437,13 +1409,8 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8(deferred_action, SGIElscState),
         VMSTATE_BOOL(deferred_committed, SGIElscState),
         VMSTATE_BOOL(deferred_scheduled, SGIElscState),
-        /*
-         * The lock cell. tas_held is the occupancy and tas_lock the owner
-         * byte; both are needed because any byte (NUL included) is a
-         * legal owner, so the owner value alone cannot mean "free".
-         */
+        /* The lock cell, '0' when free. */
         VMSTATE_UINT8(tas_lock, SGIElscState),
-        VMSTATE_BOOL(tas_held, SGIElscState),
         VMSTATE_TIMER_PTR(pwr_down_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
