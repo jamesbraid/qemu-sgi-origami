@@ -2478,7 +2478,8 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     if (selector == MGRAS_CLIENT_READ_UNSUPPORTED) {
         goto rejected;
     }
-    if (deep && (slot != 3 || !s->slot[0] ||
+    if (deep && (strcmp(s->board->name, "ssi") ||
+                 slot != 3 || !s->slot[0] ||
                  mgras_raster_dma_src_offset(s) != 0xcd0 ||
                  signature_format != 0x00400080 ||
                  mode != 0x00400080 ||

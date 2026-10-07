@@ -2738,6 +2738,9 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             s->gl_context[i].client_read_kicked > 1 ||
             s->gl_context[i].client_read_bank >
                 MGRAS_CLIENT_READ_DEEP_BACK ||
+            (s->gl_context[i].client_read_bank >=
+                 MGRAS_CLIENT_READ_DEEP_FRONT &&
+             (strcmp(s->board->name, "ssi") || !s->slot[0])) ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {

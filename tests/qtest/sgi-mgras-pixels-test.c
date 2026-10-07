@@ -4361,9 +4361,10 @@ static void gl_ssi_draw_buffer(QTestState *s, uint32_t mask)
     gl_word(s, 0);
 }
 
-static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
-                                        uint32_t height, uint32_t pitch,
-                                        const uint8_t *want)
+static void gl_ssi_expect_selected_shape(QTestState *s, uint32_t width,
+                                         uint32_t height, uint32_t pitch,
+                                         uint32_t rows, uint32_t bpr,
+                                         const uint8_t *want)
 {
     static const uint8_t poison[32] = { [0 ... 31] = 0xa5 };
     uint8_t got[32];
@@ -4374,7 +4375,7 @@ static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
     gl_word(s, GL_READ_OPEN);
     gl_read_registers(s, 1, 1, height, width, height, 0x00400080, false);
     gl_read_dma_class_a_signature_format(s, width, height, 0x00400080);
-    gl_read_dma_descriptor_at(s, pitch, 0xcd0, 1, bytes, 0xbf);
+    gl_read_dma_descriptor_at(s, pitch, 0xcd0, rows, bpr, 0xbf);
     gl_word(s, 0x0000da00);
     gl_word(s, GL_READ_CLOSE);
     qtest_memread(s, 0x30cc8, got, sizeof(got));
@@ -4387,6 +4388,14 @@ static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
     g_assert_cmpmem(got + 8, bytes, want, bytes);
     g_assert_cmpmem(got + 8 + bytes, sizeof(got) - 8 - bytes,
                     poison + 8 + bytes, sizeof(poison) - 8 - bytes);
+}
+
+static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
+                                        uint32_t height, uint32_t pitch,
+                                        const uint8_t *want)
+{
+    gl_ssi_expect_selected_shape(s, width, height, pitch, 1,
+                                 4 * width * height, want);
 }
 
 static void gl_ssi_expect_read(QTestState *s, uint32_t first,
@@ -4472,6 +4481,9 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
 
     gl_ssi_expect_read(s, 2, 2, 0x404, 1, 1, 4, NULL);
     gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 8, NULL);
+    gl_client_read_buffer(s, 0, 2, 0x404);
+    gl_ssi_expect_selected_shape(s, 2, 2, 8, 2, 8, NULL);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 1, 8, NULL);
     g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     log = gl_eviction_log_end(s, log_path);
     g_assert_null(strstr(log, "unsupported client read buffer tuple 0, 2"));
@@ -4491,6 +4503,24 @@ static void test_gl_readpixels_dma_deep_one_re_unsupported(void)
 
     gl_pixels_context(s, 0);
     gl_draw_buffer(s, 1);
+    gl_draw_rgba_row(s, 1, 1, &red, 1);
+    gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, NULL);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    log = gl_eviction_log_end(s, log_path);
+    g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 0, 2"));
+}
+
+static void test_gl_readpixels_dma_deep_essi_unsupported(void)
+{
+    static const uint32_t red = 0xff0000ff;
+    QTestState *s;
+    g_autofree char *log = NULL;
+    char *log_path = gl_eviction_log_start(
+        &s, MACHINE_ARGS " -global sgi-mgras.board=essi");
+
+    gl_pixels_context(s, 0);
+    gl_ssi_draw_buffer(s, 1);
     gl_draw_rgba_row(s, 1, 1, &red, 1);
     gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
     gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, NULL);
@@ -6022,6 +6052,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-deep-one-re-unsupported",
         test_gl_readpixels_dma_deep_one_re_unsupported, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-deep-essi-unsupported",
+        test_gl_readpixels_dma_deep_essi_unsupported, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-reset",
         test_gl_readpixels_dma_ssi_deep_reset, false);
