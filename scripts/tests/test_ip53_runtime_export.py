@@ -17,7 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model.model_composition import validate_initialization_policy
-from sgi_model.model_compile import CompileError
+from sgi_model.model_compile import CompileError, compile_model
 from sgi_model.model_emit import (
     _is_ip53_runtime_profile,
     _validate_export_profiles,
@@ -177,6 +177,64 @@ class IP53RuntimeExportTests(unittest.TestCase):
                     ROOT / "hw/mips/sgi/models" / filename,
                     model_schema=model_schema)
                 self.assertEqual(model["composition"]["product"], product)
+
+    def test_tezro_tower_and_rack_base_compile_as_explicit_ip53_profiles(self):
+        model_schema = schema(ROOT / "hw/mips/sgi/models")
+        expected = {
+            "tezro-tower-one": {"populations": [[1]], "pics": 1},
+            "tezro-tower-multi": {"populations": [[2], [4]], "pics": 2},
+            "tezro-rack-base": {"populations": [[1], [2], [4]], "pics": 1},
+        }
+        models = []
+        for name, facts in expected.items():
+            with self.subTest(name=name):
+                model = load_checked_system_model(
+                    ROOT / "hw/mips/sgi/models" / f"{name}.yaml",
+                    model_schema=model_schema)
+                self.assertEqual(model["machine"]["model_role"],
+                                 "emulation-target")
+                topology = compile_model(model)
+                self.assertEqual(topology["name"], name)
+                self.assertEqual(topology["generation"], "SN1")
+                self.assertEqual(topology["supported_cpu_populations"],
+                                 facts["populations"])
+                self.assertEqual(len(topology["nodes"]), 1)
+                self.assertTrue(all(
+                    node["board_kind"] == "ip53" for node in topology["nodes"]
+                ))
+                self.assertEqual(len(topology["pci_host_bridges"]), facts["pics"])
+                self.assertEqual(len(topology["io_boards"]), 1)
+                if name in {"tezro-tower-one", "tezro-rack-base"}:
+                    self.assertEqual(model["composition"]["population"]["cpus_per_node"], [1])
+                    # These profiles author cpu0 as fitted. Rack-base also
+                    # advertises two/four-CPU populations; its remaining
+                    # compiled slots describe selectable capacity.
+                    self.assertEqual(
+                        [component["id"] for component in model["components"]
+                         if component["kind"] == "cpu"], ["cpu0"])
+                if name == "tezro-tower-one":
+                    self.assertEqual(sum(
+                        slot["assembly"] is not None
+                        for slot in topology["nodes"][0]["cpu_slots"]), 1)
+                models.append(model)
+
+        product_models = {
+            product: load_checked_system_model(
+                ROOT / "hw/mips/sgi/models" / f"{filename}.yaml",
+                model_schema=model_schema)
+            for product, filename in PRODUCT_MODELS.items()
+        }
+        catalogue = json.loads(render_catalogue_json(
+            models, product_models=product_models))
+        offerings = [item for item in catalogue["offerings"]
+                     if item["topology"] in expected]
+        self.assertEqual(
+            {(item["topology"], tuple(item["cpus-per-node"]))
+             for item in offerings},
+            {(name, tuple(population))
+             for name, facts in expected.items()
+             for population in facts["populations"]},
+        )
 
     def test_ip53_board_identity_projects_without_changing_origin300(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")

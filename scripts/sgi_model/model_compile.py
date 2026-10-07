@@ -982,6 +982,15 @@ def _processor(model: dict, cpu: dict) -> dict:
                 "tezro-deskside-700mhz-4mib-serial-trial"),
             "tezro-deskside-compat": ("tezro", 700, None,
                                       "ip53-tezro-deskside-compat"),
+            "tezro-tower-one": (
+                "tezro", 700, 0x009bad85,
+                "tezro-tower-one-serial-compat"),
+            "tezro-tower-multi": (
+                "tezro", 700, 0x009bad85,
+                "tezro-tower-multi-serial-compat"),
+            "tezro-rack-base": (
+                "tezro", 700, 0x009bad85,
+                "tezro-rack-base-serial-compat"),
         }.get(product)
         reference_projection = (
             product == "tezro-deskside-compat"
@@ -1029,8 +1038,10 @@ def _processor(model: dict, cpu: dict) -> dict:
             "r16000-experimental", "r16000-reset-mode",
             "r16000-scache-bytes",
         ]
-        expected_cache_mib = (4 if product ==
-                              "tezro-deskside-700mhz-4mib-serial-trial" else 8)
+        expected_cache_mib = (4 if product in {
+            "tezro-deskside-700mhz-4mib-serial-trial",
+            "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
+        } else 8)
         expected_scache_bytes = expected_cache_mib * 1024 * 1024
         if (clock_mhz != profile[1] or cache_mib != expected_cache_mib or
                 reset_mode != profile[2] or
@@ -3136,6 +3147,7 @@ def _compile_ip35_firmware(model: dict) -> dict:
     ip53_products = {
         "origin350", "onyx350-compat",
         "tezro-deskside-700mhz-4mib-serial-trial",
+        "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
     }
     if (firmware is None and
             model.get("composition", {}).get("product") in ip53_products):

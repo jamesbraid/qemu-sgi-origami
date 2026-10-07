@@ -990,10 +990,15 @@
 # @pic-rev3-bedrock-experimental:
 #     Experimental IP53 software policy; hardware remains unknown.
 #
+# @pic-rev3-bedrock-tezro-experimental:
+#     Tezro serial compatibility policy; PIC behavior uses the IP53
+#     experimental policy and is not a measured Tezro chip revision.
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPicCompatibilityProfile',
-  'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-experimental'] }
+  'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-experimental',
+           'pic-rev3-bedrock-tezro-experimental'] }
 
 ##
 # @SGIModelPciHostBridge:

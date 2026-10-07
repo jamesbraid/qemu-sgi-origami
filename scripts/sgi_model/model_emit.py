@@ -943,6 +943,12 @@ def _is_ip53_runtime_profile(model: dict) -> bool:
             "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
         "tezro-deskside-compat": (
             "tezro", "ip53-tezro-deskside-compat"),
+        "tezro-tower-one": (
+            "tezro", "tezro-tower-one-serial-compat"),
+        "tezro-tower-multi": (
+            "tezro", "tezro-tower-multi-serial-compat"),
+        "tezro-rack-base": (
+            "tezro", "tezro-rack-base-serial-compat"),
     }.get(product)
     return (expected is not None
             and emulation.get("machine_name") == expected[0]
@@ -990,12 +996,20 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
     experimental = any(
         host.get("compatibility_profile") == "pic-rev3-bedrock-experimental"
         for host in hosts)
+    tezro_experimental = any(
+        host.get("compatibility_profile") ==
+        "pic-rev3-bedrock-tezro-experimental" for host in hosts)
     if experimental and not _is_ip53_runtime_profile(model):
         raise CompileError(
             "experimental PIC profile requires a registered IP53 profile")
+    if tezro_experimental and not _is_ip53_runtime_profile(model):
+        raise CompileError(
+            "Tezro experimental PIC profile requires a registered IP53 profile")
     if any("compatibility_profile" in host
-           and host.get("compatibility_profile") != "pic-rev3-bedrock-experimental"
-           for host in hosts):
+           and host.get("compatibility_profile") not in {
+               "pic-rev3-bedrock-experimental",
+               "pic-rev3-bedrock-tezro-experimental",
+           } for host in hosts):
         raise CompileError("qtest-only PIC profile cannot be exported as a product")
 
 

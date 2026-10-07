@@ -914,6 +914,12 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
             "tezro-deskside-compat": (
                 "tezro", "ip53-tezro-deskside-compat"),
+            "tezro-tower-one": (
+                "tezro", "tezro-tower-one-serial-compat"),
+            "tezro-tower-multi": (
+                "tezro", "tezro-tower-multi-serial-compat"),
+            "tezro-rack-base": (
+                "tezro", "tezro-rack-base-serial-compat"),
         }.get(product)
         experiment = (
             expected is not None
@@ -923,9 +929,15 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "launch_recipe") == "ip53-discovery"
         )
         tezro_experiment = (
-            product == "tezro-deskside-compat"
+            product in {"tezro-deskside-compat", "tezro-tower-one",
+                        "tezro-tower-multi", "tezro-rack-base"}
             and emulation.get("machine_name") == "tezro"
-            and emulation.get("profile") == "ip53-tezro-deskside-compat"
+            and emulation.get("profile") in {
+                "ip53-tezro-deskside-compat",
+                "tezro-tower-one-serial-compat",
+                "tezro-tower-multi-serial-compat",
+                "tezro-rack-base-serial-compat",
+            }
         )
         if profile != "pic-rev3-bedrock" and not (
                 profile == "pic-rev3-bedrock-experimental" and experiment):
@@ -1025,7 +1037,11 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
-                if product == "tezro-deskside-700mhz-4mib-serial-trial":
+                if product in {
+                    "tezro-deskside-700mhz-4mib-serial-trial",
+                    "tezro-tower-one", "tezro-tower-multi",
+                    "tezro-rack-base",
+                }:
                     if "hardware_revision" in identity:
                         integer(identity["hardware_revision"], 15,
                                 f"'{cid}' hardware_revision")

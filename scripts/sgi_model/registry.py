@@ -28,6 +28,9 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin350",
     "onyx350-compat",
     "tezro-deskside-700mhz-4mib-serial-trial",
+    "tezro-tower-one",
+    "tezro-tower-multi",
+    "tezro-rack-base",
 )
 
 # Authored reference compositions are useful for comparing product topology,
@@ -38,11 +41,8 @@ REFERENCE_TOPOLOGIES = (
     "origin350-reference",
     "onyx350-base",
     "onyx350-observed-module",
-    "tezro-tower-one",
-    "tezro-tower-multi",
     "tezro-tower-four",
     "tezro-deskside-compat",
-    "tezro-rack-base",
     "tezro-rack-two-enclosure",
     "onyx4-host-g2",
     "onyx4-host-g2n",

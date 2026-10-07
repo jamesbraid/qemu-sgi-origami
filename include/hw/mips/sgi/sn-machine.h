@@ -72,6 +72,7 @@ void sgi_machine_class_add_storage(ObjectClass *oc);
  */
 unsigned int sgi_machine_topology_default_cpus(const SGIModelTopology *t);
 unsigned int sgi_machine_product_max_cpus(const char *product);
+unsigned int sgi_machine_product_min_cpus(const char *product);
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
 
 /*
