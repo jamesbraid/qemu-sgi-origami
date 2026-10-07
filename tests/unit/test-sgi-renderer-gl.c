@@ -768,6 +768,32 @@ static SGIRenderCommitResult native_draw_commit_covered(
     };
 }
 
+static SGIRenderCommitResult native_blend_clear_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots, Error **errp)
+{
+    NativeDrawFixture *f = opaque;
+    uint64_t complete = 0;
+
+    f->dense_commits++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                f->colour[y][x][c] =
+                    slots[(y - rect->y0) * stride_slots +
+                          (x - rect->x0) * 3 + c];
+            }
+            complete++;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
 static void test_decoded_triangle_native_commit(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -1293,6 +1319,179 @@ static void test_flat_triangle_alpha_blend(void)
     g_assert_cmpuint(f.colour[0][0][0], ==, 0x40);
     g_assert_cmpuint(f.colour[0][0][2], ==, 0xbf);
     g_assert_cmpuint(f.tag[0][0], ==, 9);
+    sgi_renderer_free(renderer);
+}
+
+static void test_blend_without_native_alpha(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        uint32_t src, dst;
+        float alpha;
+        uint32_t rgb;
+    } cases[] = {
+        { SGI_GL_DST_ALPHA, 0, 0.25f, 0xff0000 },
+        { 0, SGI_GL_ONE_MINUS_DST_ALPHA, 0.75f, 0x000000 },
+        { SGI_GL_SRC_ALPHA_SATURATE, 1, 0.25f, 0x0000ff },
+        { SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA, 0, 0x0000ff },
+        { SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA, 1, 0xff0000 },
+    };
+    static const float xy[3][2] = {
+        { -1, -1 }, { 1, -1 }, { -1, 1 },
+    };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = 4, .height = 4, .depth = 1,
+        .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit = native_blend_clear_commit,
+        .commit_covered = native_draw_commit_covered,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .blend = 1,
+        .blend_src = SGI_GL_SRC_ALPHA,
+        .blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA,
+        .blend_equation = SGI_GL_FUNC_ADD,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+            .front = 7,
+        },
+        .viewport = { 0, 0, 4, 4 },
+    };
+    SGIRasterOp clear = {
+        .kind = SGI_RASTER_CLEAR,
+        .targets = { 7 }, .ntargets = 1,
+        .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
+        .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+        .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+        .clear_rgba = { 0, 0, 1, 0 },
+        .clear_colour_mask = SGI_GL_COLOUR_MASK_ALL,
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned clear_alpha = 0; clear_alpha < 2; clear_alpha++) {
+            unsigned commits = f.commits;
+
+            g_test_message("factor case %u, clear alpha %u", i, clear_alpha);
+            clear.clear_rgba[3] = clear_alpha;
+            g_assert_cmpint(sgi_render_raster_checked(renderer, &rules,
+                                                       &target, &clear, &err),
+                            ==, SGI_RENDER_OK);
+            g_assert_null(err);
+            g_assert_cmpuint(f.commits, ==, commits);
+            g_assert_cmpuint(f.colour[0][0][2], ==, 0xff);
+            g_assert_cmpuint(f.colour[3][3][2], ==, 0xff);
+            memset(f.written, 0, sizeof(f.written));
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    f.tag[y][x] = 1;
+                }
+            }
+            state.blend_src = cases[i].src;
+            state.blend_dst = cases[i].dst;
+            for (unsigned v = 0; v < 3; v++) {
+                vertices[v][SGI_GL_V_COLOR + 3] = cases[i].alpha;
+            }
+            g_assert_cmpint(sgi_render_draw_checked(renderer, &rules,
+                                                     &target, &draw, &err),
+                            ==, SGI_RENDER_OK);
+            g_assert_null(err);
+            g_assert_cmphex((f.colour[0][0][0] << 16) |
+                            (f.colour[0][0][1] << 8) |
+                             f.colour[0][0][2], ==, cases[i].rgb);
+            g_assert_cmphex((f.colour[3][3][0] << 16) |
+                            (f.colour[3][3][1] << 8) |
+                             f.colour[3][3][2], ==, 0x0000ff);
+            g_assert_cmpuint(f.written[0][0], ==, 1);
+            g_assert_cmpuint(f.written[3][3], ==, 0);
+            g_assert_cmpuint(f.tag[0][0], ==, 9);
+            g_assert_cmpuint(f.tag[3][3], ==, 1);
+            g_assert_cmpuint(f.commits, ==, commits + 1);
+        }
+    }
+    {
+        unsigned snapshots = f.snapshots;
+        unsigned commits = f.commits;
+        unsigned dense_commits = f.dense_commits;
+
+        state.blend_src = SGI_GL_DST_ALPHA;
+        state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_UNSUPPORTED);
+        g_assert_nonnull(err);
+        error_free(err);
+        err = NULL;
+        g_assert_cmpuint(f.snapshots, ==, snapshots);
+        g_assert_cmpuint(f.commits, ==, commits);
+        g_assert_cmpuint(f.dense_commits, ==, dense_commits);
+        g_assert_cmpuint(f.colour[0][0][0], ==, 0xff);
+        g_assert_cmpuint(f.tag[0][0], ==, 9);
+
+        state.blend_src = SGI_GL_DST_ALPHA;
+        state.blend_dst = 0;
+        for (unsigned v = 0; v < 3; v++) {
+            vertices[v][SGI_GL_V_COLOR + 3] = 0.25f;
+        }
+        saved_read_pixels = epoxy_glReadPixels;
+        epoxy_glReadPixels = fail_colour_read_pixels;
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_HOST_ERROR);
+        epoxy_glReadPixels = saved_read_pixels;
+        g_assert_nonnull(err);
+        error_free(err);
+        g_assert_cmpuint(f.snapshots, ==, snapshots + 1);
+        g_assert_cmpuint(f.commits, ==, commits);
+        g_assert_cmpuint(f.dense_commits, ==, dense_commits);
+        g_assert_cmpuint(f.colour[0][0][0], ==, 0xff);
+        g_assert_cmpuint(f.colour[3][3][2], ==, 0xff);
+        g_assert_cmpuint(f.tag[0][0], ==, 9);
+    }
     sgi_renderer_free(renderer);
 }
 
@@ -1982,6 +2181,8 @@ int main(int argc, char **argv)
                     test_decoded_triangle_native_commit);
     g_test_add_func("/sgi-renderer-gl/flat-triangle-alpha-blend",
                     test_flat_triangle_alpha_blend);
+    g_test_add_func("/sgi-renderer-gl/blend-without-native-alpha",
+                    test_blend_without_native_alpha);
     g_test_add_func("/sgi-renderer-gl/frame-coverage-capacity",
                     test_frame_coverage_capacity);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
