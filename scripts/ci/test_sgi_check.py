@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -150,6 +151,176 @@ class QtestDurations(unittest.TestCase):
         logs.append('1/2 s / qtest-mips64/b   OK   7s\n')
         self.assertEqual(sgi_check.median_durations(logs),
                          {'qtest-mips64/a': 12, 'qtest-mips64/b': 7})
+
+
+class RunConcurrently(unittest.TestCase):
+    def test_commands_overlap_up_to_the_worker_count(self):
+        # Each command waits until the other has started, so this passes
+        # only if two run at once, and times out if they ran one by one.
+        script = ('import pathlib, sys, time\n'
+                  'me, other = map(pathlib.Path, sys.argv[1:3])\n'
+                  'me.touch()\n'
+                  'end = time.time() + 20\n'
+                  'while not other.exists():\n'
+                  '    assert time.time() < end, "never overlapped"\n'
+                  '    time.sleep(0.01)\n')
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(io.StringIO()):
+            a, b = Path(tmp, 'a'), Path(tmp, 'b')
+            codes = sgi_check.run_concurrently(
+                [('one', [sys.executable, '-c', script, a, b]),
+                 ('two', [sys.executable, '-c', script, b, a])], 2, tmp)
+        self.assertEqual(codes, {'one': 0, 'two': 0})
+
+    def test_one_worker_runs_one_at_a_time(self):
+        script = ('import pathlib, sys, time\n'
+                  'lock = pathlib.Path(sys.argv[1])\n'
+                  'assert not lock.exists(), "overlapped"\n'
+                  'lock.touch(); time.sleep(0.2); lock.unlink()\n')
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(io.StringIO()):
+            lock = Path(tmp, 'lock')
+            codes = sgi_check.run_concurrently(
+                [(name, [sys.executable, '-c', script, lock])
+                 for name in 'abc'], 1, tmp)
+        self.assertEqual(codes, {'a': 0, 'b': 0, 'c': 0})
+
+    def test_every_exit_status_and_output_is_kept(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(out):
+            codes = sgi_check.run_concurrently(
+                [('ok', [sys.executable, '-c', 'print("fine")']),
+                 ('bad', [sys.executable, '-c',
+                          'import sys; print("broke"); sys.exit(3)'])],
+                2, tmp)
+        self.assertEqual(codes, {'ok': 0, 'bad': 3})
+        self.assertIn('fine\n', out.getvalue())
+        self.assertIn('broke\n', out.getvalue())
+        self.assertIn('finish bad: exit 3', out.getvalue())
+
+
+class FakeBuild(sgi_check.Build):
+    """A Build whose Meson runs are Python one-liners."""
+
+    def __init__(self, path, exits):
+        super().__init__(path)
+        self.exits = exits
+        self.checked = []
+        self.built = []
+
+    def meson_command(self, logbase, args, *a, **kw):
+        return [sys.executable, '-c',
+                f'import sys; sys.exit({self.exits[logbase]})']
+
+    def check_report(self, logbase, expect):
+        self.checked.append((logbase, expect))
+        if logbase in self.exits and self.exits[logbase] == 'report':
+            sys.exit('bad report')
+
+    def test_prerequisites(self, names=(), suites=()):
+        return ['tool']
+
+    def ninja(self, *targets):
+        self.built.append(targets)
+
+
+class MesonTestsConcurrently(unittest.TestCase):
+    JOBS = [('a', ['x'], 'a.expected'), ('b', ['y'], 'b.expected'),
+            ('c', ['z'], 'c.expected')]
+
+    def run_jobs(self, exits):
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(io.StringIO()):
+            build = FakeBuild(Path(tmp), exits)
+            try:
+                build.meson_tests_concurrently(self.JOBS, 3)
+                error = None
+            except SystemExit as exc:
+                error = str(exc)
+        return build, error
+
+    def test_all_pass(self):
+        build, error = self.run_jobs({'a': 0, 'b': 0, 'c': 0})
+        self.assertIsNone(error)
+        self.assertEqual(build.built, [('tool',)])
+        self.assertEqual(sorted(build.checked),
+                         [('a', 'a.expected'), ('b', 'b.expected'),
+                          ('c', 'c.expected')])
+
+    def test_every_failure_is_reported_and_every_report_checked(self):
+        build, error = self.run_jobs({'a': 1, 'b': 0, 'c': 2})
+        self.assertEqual(error, 'failed: a, c')
+        self.assertEqual(len(build.checked), 3)
+
+    def test_a_bad_report_fails_a_passing_run(self):
+        build, error = self.run_jobs({'a': 0, 'b': 'report', 'c': 0})
+        self.assertEqual(error, 'failed: b')
+        self.assertEqual(len(build.checked), 3)
+
+
+class FullFunctional(unittest.TestCase):
+    """The parallel functional part keeps every run and its expectations."""
+
+    def jobs(self):
+        captured = {}
+
+        def concurrently(build, jobs, workers, names=(), suites=()):
+            captured.update(jobs=jobs, workers=workers, names=names,
+                            suites=suites)
+
+        def required(build, module, test_class, dest, selected=None):
+            dest.write_text(f'{test_class}\n', encoding='utf-8')
+            return ['--test-args', 'sel'] if selected else []
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sgi_check.Build, 'ninja'), \
+                mock.patch.object(sgi_check, 'run'), \
+                mock.patch.object(sgi_check, 'required_cases', required), \
+                mock.patch.object(sgi_check.Build, 'list_meson_tests'), \
+                mock.patch.object(sgi_check.Build,
+                                  'meson_tests_concurrently', concurrently):
+            sgi_check.full_functional(sgi_check.Build(Path(tmp)))
+        return captured
+
+    def test_every_invocation_is_kept_with_its_expectation(self):
+        got = self.jobs()
+        by_logbase = {logbase: (args, Path(expected).name)
+                      for logbase, args, expected in got['jobs']}
+        want = {logbase: ([*(['--test-args', 'sel'] if selected else []),
+                           target], f'{logbase}.expected')
+                for target, logbase, _, _, selected
+                in sgi_check.FULL_FUNCTIONAL}
+        want['full-rom'] = (['func-mips64-sgi_roms'], 'full-rom.expected')
+        want['full-unit'] = (['--suite', 'qemu:sgi-unit'],
+                             'full-unit.expected')
+        self.assertEqual(by_logbase, want)
+        self.assertEqual(len(got['jobs']), len(want))
+
+    def test_the_longest_start_first_and_workers_are_bounded(self):
+        got = self.jobs()
+        self.assertEqual([logbase for logbase, *_ in got['jobs']][:4],
+                         list(sgi_check.LONGEST_FUNCTIONAL_FIRST))
+        self.assertEqual(got['workers'], sgi_check.FUNCTIONAL_PROCESSES)
+        self.assertIn('func-mips64-sgi_roms', got['names'])
+        self.assertEqual(got['suites'], ['sgi-unit'])
+
+
+class TestPrerequisites(unittest.TestCase):
+    def test_selected_tests_name_their_dependencies_only(self):
+        tests = [{'name': 'func-a', 'suite': ['qemu:func'], 'depends': ['t1']},
+                 {'name': 'func-b', 'suite': ['qemu:func'], 'depends': ['t2']},
+                 {'name': 'unit-1', 'suite': ['qemu:sgi-unit'],
+                  'depends': ['t3', 't1']}]
+        targets = [{'id': 't1', 'filename': ['/b/one']},
+                   {'id': 't2', 'filename': ['/b/two']},
+                   {'id': 't3', 'filename': ['/b/sub/three']}]
+        answers = iter([json.dumps(tests), json.dumps(targets)])
+        build = sgi_check.Build(Path('/b'))
+        with mock.patch.object(sgi_check, 'output',
+                               lambda *a, **kw: next(answers)):
+            got = build.test_prerequisites(['func-a'], ['sgi-unit'])
+        self.assertEqual(got, ['one', 'sub/three'])
 
 
 class SmokeQtestSetup(unittest.TestCase):

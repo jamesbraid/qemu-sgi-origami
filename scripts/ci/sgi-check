@@ -17,6 +17,7 @@ a pass.
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -25,6 +26,8 @@ import statistics
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 
@@ -74,6 +77,12 @@ BUILD_SCRIPT_SUITES = [
 # timing assertions failed at eight.
 QTEST_PROCESSES = 4
 
+# How many functional Meson invocations the full run's functional part runs
+# at once. Each boots a guest that mostly uses one CPU, and the longest
+# takes about three minutes, so four fit the eight-CPU builders without the
+# boots slowing one another enough to trip their timing assertions.
+FUNCTIONAL_PROCESSES = 4
+
 # The most measured qtest time a pull request's check spends. A change that
 # edits more tests than fit runs the cheapest that do and leaves the rest to
 # the full run, which runs every qtest before a land. This, not the job's
@@ -99,6 +108,37 @@ def output(cmd, **kwargs):
                                    **kwargs)
 
 
+def run_concurrently(commands, workers, logdir):
+    """Run (label, command) pairs, at most workers at a time.
+
+    Each command's output goes to a file in logdir and is printed once it
+    finishes, whole, so concurrent output does not interleave. Start the
+    commands in the order given, so list the longest first. Return each
+    label's exit status.
+    """
+    lock = threading.Lock()
+
+    def one(label, cmd):
+        console = Path(logdir) / f'{label}.console'
+        print(f'start {label}: ' + shlex.join(str(a) for a in cmd),
+              flush=True)
+        began = time.monotonic()
+        with open(console, 'w', encoding='utf-8') as out:
+            code = subprocess.run([str(a) for a in cmd], stdout=out,
+                                  stderr=subprocess.STDOUT).returncode
+        print(f'finish {label}: exit {code} after '
+              f'{time.monotonic() - began:.0f} s', flush=True)
+        text = console.read_text(encoding='utf-8', errors='replace')
+        with lock:
+            print(text, end='', flush=True)
+        return code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {label: pool.submit(one, label, cmd)
+                   for label, cmd in commands}
+        return {label: future.result() for label, future in futures.items()}
+
+
 class Build:
     def __init__(self, path):
         self.path = path
@@ -108,22 +148,77 @@ class Build:
     def ninja(self, *targets):
         run(['ninja', '-C', self.path, *targets])
 
-    def meson_test(self, logbase, args, expect, processes=None,
-                   setup='qemu:thorough'):
-        """Run one Meson test invocation and check its JUnit report."""
+    def meson_command(self, logbase, args, processes=None,
+                      setup='qemu:thorough', rebuild=True):
         cmd = [self.meson, 'test', '-C', self.path, '--setup', setup,
                '--logbase', logbase, '--print-errorlogs']
         if processes:
             cmd += ['--num-processes', str(processes)]
-        run(cmd + list(args))
+        if not rebuild:
+            cmd.append('--no-rebuild')
+        return cmd + [str(arg) for arg in args]
+
+    def check_report(self, logbase, expect):
+        """Check the JUnit report of a finished Meson test invocation."""
         reports = sorted((self.path / 'meson-logs').glob(
             f'{logbase}-*.junit.xml'))
         if len(reports) != 1:
             sys.exit(f'expected one JUnit report for {logbase}, '
                      f'found {len(reports)}')
-        check = [sys.executable, CHECKER, '--junit', reports[0],
-                 '--expect', expect]
-        run(check)
+        run([sys.executable, CHECKER, '--junit', reports[0],
+             '--expect', expect])
+
+    def meson_test(self, logbase, args, expect, processes=None,
+                   setup='qemu:thorough'):
+        """Run one Meson test invocation and check its JUnit report."""
+        run(self.meson_command(logbase, args, processes, setup))
+        self.check_report(logbase, expect)
+
+    def test_prerequisites(self, names=(), suites=()):
+        """Name the build outputs the selected tests depend on.
+
+        Meson test builds them itself, but two invocations doing that in
+        one build directory at once would run ninja twice at once.
+        """
+        tests = json.loads(output([self.meson, 'introspect', '--tests',
+                                   self.path]))
+        targets = json.loads(output([self.meson, 'introspect', '--targets',
+                                     self.path]))
+        files = {target['id']: target['filename'] for target in targets}
+        wanted = set()
+        for test in tests:
+            suites_of_test = {entry.split(':', 1)[-1]
+                              for entry in test['suite']}
+            if test['name'] in names or suites_of_test & set(suites):
+                wanted.update(test.get('depends', []))
+        return sorted({os.path.relpath(name, self.path)
+                       for target in wanted for name in files[target]})
+
+    def meson_tests_concurrently(self, jobs, workers, names=(), suites=()):
+        """Run Meson test invocations at once, then check every report.
+
+        Each job is (logbase, meson args, expected cases file). Build
+        everything the jobs depend on first, in one ninja run, then start
+        the jobs without a rebuild. Every job's report is checked even when
+        another failed, so one run shows every failure.
+        """
+        prerequisites = self.test_prerequisites(names, suites)
+        if prerequisites:
+            self.ninja(*prerequisites)
+        commands = [(logbase, self.meson_command(logbase, args,
+                                                 rebuild=False))
+                    for logbase, args, _ in jobs]
+        codes = run_concurrently(commands, workers, self.path)
+        failed = [logbase for logbase, code in codes.items() if code]
+        for logbase, _, expect in jobs:
+            try:
+                self.check_report(logbase, expect)
+            except (SystemExit, subprocess.CalledProcessError) as exc:
+                print(f'{logbase}: report check failed: {exc}', flush=True)
+                if logbase not in failed:
+                    failed.append(logbase)
+        if failed:
+            sys.exit('failed: ' + ', '.join(sorted(failed)))
 
     def list_meson_tests(self, dest, *selection):
         with open(dest, 'w', encoding='utf-8') as out:
@@ -156,14 +251,20 @@ def build(args):
     run(['ninja', '-C', path])
 
 
-def rom_suite(build, logbase):
-    """Run the ROMs built from tests/functional/mips64/roms/suite."""
+def rom_expected(build, logbase):
+    """Write the ROM identities the suite must run, and return the file."""
     expected = build.path / f'{logbase}.expected'
     with open(expected, 'w', encoding='utf-8') as out:
         run([sys.executable, CHECKER, '--list-rom-identities',
              SOURCE / 'tests/functional/mips64/roms/suite',
              '--require-rom-target', build.path], stdout=out)
-    build.meson_test(logbase, ['func-mips64-sgi_roms'], expected)
+    return expected
+
+
+def rom_suite(build, logbase):
+    """Run the ROMs built from tests/functional/mips64/roms/suite."""
+    build.meson_test(logbase, ['func-mips64-sgi_roms'],
+                     rom_expected(build, logbase))
 
 
 def script_suites(suites, python):
@@ -426,24 +527,43 @@ def required_cases(build, module, test_class, dest, selected=None):
     return ['--test-args', ' '.join(selected)]
 
 
+# The functional jobs that take longest, in the order they start, so the
+# short ones fill in behind them instead of one starting last and running
+# alone. About 175 s for the Linux boot, 118 s for the ROM suite, 98 s for
+# the PROM matrix and 48 s for the IRIX boot.
+LONGEST_FUNCTIONAL_FIRST = ('full-linux', 'full-rom', 'full-prom',
+                            'full-irix')
+
+
 def full_functional(build):
-    """Run the boots, the ROM suite and the unit tests."""
+    """Run the boots, the ROM suite and the unit tests, at once.
+
+    Each is its own Meson invocation, because the cases to run are a
+    per-invocation argument, with its own report and expected cases, so
+    every check the one-at-a-time run made still applies. They share the
+    build, so the jobs start only after everything they need is built.
+    """
     build.ninja(*(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
                   '.tstamp' for target, *_ in FULL_FUNCTIONAL))
-    runs = []
+    jobs, names = [], ['func-mips64-sgi_roms']
     for target, logbase, module, test_class, selected in FULL_FUNCTIONAL:
         expected = build.path / f'{logbase}.expected'
-        runs.append((logbase, required_cases(build, module, test_class,
+        jobs.append((logbase, required_cases(build, module, test_class,
                                              expected, selected) + [target],
                      expected))
-    for logbase, meson_args, expected in runs:
-        build.meson_test(logbase, meson_args, expected)
-
-    rom_suite(build, 'full-rom')
+        names.append(target)
+    jobs.append(('full-rom', ['func-mips64-sgi_roms'],
+                 rom_expected(build, 'full-rom')))
 
     expected = build.path / 'full-unit.expected'
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
-    build.meson_test('full-unit', ['--suite', 'qemu:sgi-unit'], expected)
+    jobs.append(('full-unit', ['--suite', 'qemu:sgi-unit'], expected))
+
+    order = {logbase: place
+             for place, logbase in enumerate(LONGEST_FUNCTIONAL_FIRST)}
+    jobs.sort(key=lambda job: order.get(job[0], len(order)))
+    build.meson_tests_concurrently(jobs, FUNCTIONAL_PROCESSES, names,
+                                   ['sgi-unit'])
 
 
 def read_durations(path):
