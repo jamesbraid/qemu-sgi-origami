@@ -374,7 +374,8 @@ across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 3328 MiB, while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
-size.
+size. A refused size is reported with the per-node sizes that are
+accepted.
 
 An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
 largest first, starting at bank 0 with no empty bank between two

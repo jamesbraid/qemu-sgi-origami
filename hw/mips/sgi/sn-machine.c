@@ -1355,14 +1355,36 @@ static char *sgi_machine_accepted_totals(const SGIModelTopology *t)
 }
 
 /*
- * Validate that the per-node memory size (-m split evenly across every
- * node) matches this node's accepted population, per
+ * The per-node memory sizes this node accepts, per
  * SGIModelNode.accepted-memory-mib: a present list is the DIMM kit
  * sizes the node accepts, and an absent one means the node's own
  * shipped bank-mib total is the only accepted size, not an open
  * fitting rule.
  */
-static bool sgi_machine_validate_memory_population(
+static uint64_t *sgi_machine_node_accepted_mib(const SGIModelNode *node,
+                                               size_t *count)
+{
+    g_autofree uint64_t *bank_mib = NULL;
+    uint64_t *shipped;
+    size_t bank_count, bank;
+
+    if (node->accepted_memory_mib) {
+        return sgi_model_array_uint64(node->accepted_memory_mib, count);
+    }
+    bank_mib = sgi_model_array_uint64(node->bank_mib, &bank_count);
+    shipped = g_new0(uint64_t, 1);
+    for (bank = 0; bank < bank_count; bank++) {
+        *shipped += bank_mib[bank];
+    }
+    *count = 1;
+    return shipped;
+}
+
+/*
+ * The first node that does not accept the per-node memory size (-m split
+ * evenly across every node), or NULL when every node accepts it.
+ */
+static const SGIModelNode *sgi_machine_refuse_memory_population(
     const SGIModelTopology *t, uint64_t per_node_mib)
 {
     g_autofree const SGIModelNode **nodes = NULL;
@@ -1370,39 +1392,38 @@ static bool sgi_machine_validate_memory_population(
 
     nodes = sgi_model_node_array(t->nodes, &node_count);
     for (node_index = 0; node_index < node_count; node_index++) {
-        const SGIModelNode *node = nodes[node_index];
+        size_t accepted_count, i;
+        g_autofree uint64_t *accepted =
+            sgi_machine_node_accepted_mib(nodes[node_index], &accepted_count);
+        bool found = false;
 
-        if (!node->accepted_memory_mib) {
-            g_autofree uint64_t *bank_mib = NULL;
-            uint64_t shipped_mib = 0;
-            size_t bank_count, bank;
-
-            bank_mib = sgi_model_array_uint64(node->bank_mib, &bank_count);
-            for (bank = 0; bank < bank_count; bank++) {
-                shipped_mib += bank_mib[bank];
-            }
-            if (per_node_mib != shipped_mib) {
-                return false;
-            }
-        } else {
-            g_autofree uint64_t *accepted = NULL;
-            size_t accepted_count, i;
-            bool found = false;
-
-            accepted = sgi_model_array_uint64(node->accepted_memory_mib,
-                                              &accepted_count);
-            for (i = 0; i < accepted_count; i++) {
-                if (accepted[i] == per_node_mib) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                return false;
+        for (i = 0; i < accepted_count; i++) {
+            if (accepted[i] == per_node_mib) {
+                found = true;
+                break;
             }
         }
+        if (!found) {
+            return nodes[node_index];
+        }
     }
-    return true;
+    return NULL;
+}
+
+/* "64, 128 or 256": a node's accepted memory sizes, for a refusal message. */
+static char *sgi_machine_accepted_memory(const SGIModelNode *node)
+{
+    GString *out = g_string_new(NULL);
+    size_t count, i;
+    g_autofree uint64_t *accepted =
+        sgi_machine_node_accepted_mib(node, &count);
+
+    for (i = 0; i < count; i++) {
+        g_string_append_printf(out, "%s%" PRIu64,
+                               i == 0 ? "" : i + 1 == count ? " or " : ", ",
+                               accepted[i]);
+    }
+    return g_string_free(out, false);
 }
 
 /* ---- possible_cpu_arch_ids and friends ---- */
@@ -4109,6 +4130,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     g_autofree BlockBackend **flash_drives = NULL;
     g_autofree const char **flash_nodes = NULL;
     g_autofree const SGIModelNode **nodes = NULL;
+    const SGIModelNode *refused;
     unsigned int flash_count = 0;
     unsigned int node_count, node_index, board_index;
     unsigned int cpu_index = 0, cpu_base = 0;
@@ -4255,11 +4277,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
-    if (!sgi_machine_validate_memory_population(
-            t, machine->ram_size / node_count / MiB)) {
+    refused = sgi_machine_refuse_memory_population(
+        t, machine->ram_size / node_count / MiB);
+    if (refused) {
+        g_autofree char *accepted = sgi_machine_accepted_memory(refused);
+
         error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
-                  " MiB per node%s", mc->name, t->name,
-                  machine->ram_size / node_count / MiB,
+                  " MiB per node, only %s MiB%s", mc->name, t->name,
+                  machine->ram_size / node_count / MiB, accepted,
                   sgi_machine_nodes_hint(machine));
         return false;
     }
