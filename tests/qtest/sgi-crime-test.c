@@ -26,6 +26,8 @@
 #define CRIME_HIGH_RAM 0x20000000ULL
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
+#define CRIME_CARRIER_BASE 0x100000000ULL
+#define CRIME_CARRIER_PATH "/machine/unattached/system[0]"
 
 static QTestState *crime_start(const char *extra)
 {
@@ -62,6 +64,49 @@ static QTestState *crime_start_populated(void)
 
     qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
     return s;
+}
+
+static QTestState *crime_start_with_carrier(void)
+{
+    QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
+        "-S -object memory-backend-ram,id=fit,size=1G "
+        "-device sgi-crime,id=crime,interface-revision=1,"
+        "ram=/objects/fit/fit[0],eight-128m-banks=on,"
+        "decoded-carrier=" CRIME_CARRIER_PATH ",decoded-base=0x100000000");
+
+    qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
+    return s;
+}
+
+static void crime_assert_carrier_properties(QTestState *s)
+{
+    QDict *reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'decoded-carrier'}}", CRIME_PATH);
+
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, CRIME_CARRIER_PATH);
+    qobject_unref(reply);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'decoded-base'}}", CRIME_PATH);
+    g_assert_cmphex(qdict_get_uint(reply, "return"), ==, CRIME_CARRIER_BASE);
+    qobject_unref(reply);
+}
+
+static void crime_assert_carrier_properties_locked(QTestState *s)
+{
+    QDict *reply = qtest_qmp(s,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'decoded-base','value':8589934592}}", CRIME_PATH);
+
+    g_assert_nonnull(qdict_get_qdict(reply, "error"));
+    qobject_unref(reply);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'decoded-carrier','value':null}}", CRIME_PATH);
+    g_assert_nonnull(qdict_get_qdict(reply, "error"));
+    qobject_unref(reply);
+    crime_assert_carrier_properties(s);
 }
 
 static void crime_program_banks(QTestState *s)
@@ -568,6 +613,53 @@ static void test_populated_reset_geometry_and_migration(void)
     qtest_quit(s);
 }
 
+static void test_populated_carrier_lifecycle(void)
+{
+    QTestState *s = crime_start_with_carrier();
+    const uint64_t low = 0x91234abcde567f08ULL;
+    const uint64_t high = 0x61de2345ab7890fcULL;
+    uint64_t value;
+
+    crime_assert_carrier_properties_locked(s);
+    qtest_writeq(s, CRIME_BANK(0), 0x100);
+    qtest_writeq(s, CRIME_BANK(4), 0x110);
+    qtest_writeq(s, CRIME_FULL_RAM + 0x100, low);
+    qtest_writeq(s, CRIME_FULL_RAM + 4 * CRIME_BANK_SIZE + 0x100, high);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE + 0x100), ==, low);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE +
+                                   CRIME_FULL_RAM + 0x100), ==, low);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE +
+                                   CRIME_NO_ECC_RAM + 0x100), ==, low);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE +
+                                   CRIME_HIGH_RAM + 0x100), ==, high);
+
+    qtest_writeq(s, CRIME_BANK(0), 0x104);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE + CRIME_FULL_RAM +
+                                   CRIME_BANK_SIZE + 0x100), ==, low);
+    /* The carrier must retain the decoder's unmatched-address handling. */
+    g_assert_cmpuint(memtx_writeq(s, CRIME_CARRIER_BASE + CRIME_FULL_RAM +
+                                     0x01000000, 0xbad0bad1bad2bad3ULL),
+                     !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS) & BIT64(26),
+                    ==, BIT64(26));
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_ADDRESS), ==,
+                    0x01000000);
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'realized','value':false}}", CRIME_PATH);
+    g_assert_cmpuint(memtx_readq(s, CRIME_CARRIER_BASE + CRIME_FULL_RAM +
+                                    CRIME_BANK_SIZE + 0x100, &value),
+                     !=, MEMTX_OK);
+    crime_assert_carrier_properties_locked(s);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'realized','value':true}}", CRIME_PATH);
+    g_assert_cmphex(qtest_readq(s, CRIME_CARRIER_BASE + CRIME_FULL_RAM +
+                                   CRIME_BANK_SIZE + 0x100), ==, low);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -599,5 +691,7 @@ int main(int argc, char **argv)
                    test_populated_unmatched_write);
     qtest_add_func("/sgi/crime/populated-reset-geometry-migration",
                    test_populated_reset_geometry_and_migration);
+    qtest_add_func("/sgi/crime/populated-carrier-lifecycle",
+                   test_populated_carrier_lifecycle);
     return g_test_run();
 }

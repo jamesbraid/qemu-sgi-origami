@@ -13,6 +13,7 @@
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
@@ -33,6 +34,7 @@
 #define CRIME_ERROR_WRITE (1U << 26)
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
+#define CRIME_CARRIER_SPAN (CRIME_NO_ECC_RAM + CRIME_BANKED_RAM)
 #define CRIME_MACE_MASK 0xffffU
 #define CRIME_SOFTWARE_MASK 0x30000000U
 #define CRIME_ENABLE_MASK (CRIME_MACE_MASK | CRIME_SOFTWARE_MASK)
@@ -344,6 +346,15 @@ static void crime_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "sgi-crime supports only interface revision 1");
         return;
     }
+    if (s->decoded_carrier && !s->eight_128m_banks) {
+        error_setg(errp, "sgi-crime decoded carrier requires eight "
+                   "128 MiB banks");
+        return;
+    }
+    if (!s->decoded_carrier && s->decoded_base) {
+        error_setg(errp, "sgi-crime decoded base requires a carrier");
+        return;
+    }
     if (!s->ram) {
         if (s->eight_128m_banks) {
             error_setg(errp, "sgi-crime eight 128 MiB banks require RAM");
@@ -368,11 +379,28 @@ static void crime_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "sgi-crime requires writable RAM");
         return;
     }
+    if (s->decoded_carrier) {
+        if (s->decoded_carrier->alias ||
+            s->decoded_carrier->terminates) {
+            error_setg(errp, "sgi-crime decoded carrier must be a "
+                       "memory container");
+            return;
+        }
+        if (s->decoded_base > UINT64_MAX - CRIME_CARRIER_SPAN ||
+            memory_region_size(s->decoded_carrier) <
+            s->decoded_base + CRIME_CARRIER_SPAN) {
+            error_setg(errp, "sgi-crime decoded carrier does not cover "
+                       "all RAM views");
+            return;
+        }
+    }
     if (s->ram_aliases_initialized &&
         (s->ram != s->alias_target ||
-         s->eight_128m_banks != s->alias_profile)) {
-        error_setg(errp, "sgi-crime RAM backing or bank profile cannot "
-                   "change after realize");
+         s->eight_128m_banks != s->alias_profile ||
+         s->decoded_carrier != s->alias_carrier ||
+         s->decoded_base != s->alias_base)) {
+        error_setg(errp, "sgi-crime RAM backing, bank profile or decoded "
+                   "carrier cannot change after realize");
         return;
     }
     if (s->eight_128m_banks) {
@@ -425,6 +453,22 @@ static void crime_realize(DeviceState *dev, Error **errp)
                                      "sgi-crime.high-ram", target,
                                      CRIME_HIGH_RAM_SIZE,
                                      CRIME_HIGH_RAM_SIZE);
+            if (s->decoded_carrier) {
+                memory_region_init_alias(&s->carrier_low_ram, OBJECT(dev),
+                                         "sgi-crime.carrier-low-ram",
+                                         target, 0, CRIME_LOW_RAM_SIZE);
+                memory_region_init_alias(&s->carrier_high_ram, OBJECT(dev),
+                                         "sgi-crime.carrier-high-ram",
+                                         target, CRIME_HIGH_RAM_SIZE,
+                                         CRIME_HIGH_RAM_SIZE);
+                memory_region_init_alias(&s->carrier_full_ram, OBJECT(dev),
+                                         "sgi-crime.carrier-full-ram",
+                                         target, 0, CRIME_BANKED_RAM);
+                memory_region_init_alias(&s->carrier_no_ecc_ram, OBJECT(dev),
+                                         "sgi-crime.carrier-no-ecc-ram",
+                                         target, 0, CRIME_BANKED_RAM);
+                s->carrier_aliases_initialized = true;
+            }
         }
         memory_region_init_alias(&s->low_ram, OBJECT(dev),
                                  "sgi-crime.low-ram", target, 0,
@@ -436,6 +480,8 @@ static void crime_realize(DeviceState *dev, Error **errp)
                                  "sgi-crime.no-ecc-ram", target, 0, size);
         s->alias_target = s->ram;
         s->alias_profile = s->eight_128m_banks;
+        s->alias_carrier = s->decoded_carrier;
+        s->alias_base = s->decoded_base;
         s->ram_aliases_initialized = true;
     }
     memory_region_add_subregion(get_system_memory(), 0, &s->low_ram);
@@ -447,6 +493,19 @@ static void crime_realize(DeviceState *dev, Error **errp)
                                 &s->full_ram);
     memory_region_add_subregion(get_system_memory(), CRIME_NO_ECC_RAM,
                                 &s->no_ecc_ram);
+    if (s->decoded_carrier) {
+        memory_region_add_subregion(s->decoded_carrier, s->decoded_base,
+                                    &s->carrier_low_ram);
+        memory_region_add_subregion(s->decoded_carrier,
+                                    s->decoded_base + CRIME_HIGH_RAM,
+                                    &s->carrier_high_ram);
+        memory_region_add_subregion(s->decoded_carrier,
+                                    s->decoded_base + CRIME_FULL_RAM,
+                                    &s->carrier_full_ram);
+        memory_region_add_subregion(s->decoded_carrier,
+                                    s->decoded_base + CRIME_NO_ECC_RAM,
+                                    &s->carrier_no_ecc_ram);
+    }
     s->ram_aliases_mapped = true;
 }
 
@@ -454,6 +513,24 @@ static void crime_unrealize(DeviceState *dev)
 {
     SGICrimeState *s = SGI_CRIME(dev);
 
+    if (s->carrier_aliases_initialized) {
+        if (s->carrier_no_ecc_ram.container) {
+            memory_region_del_subregion(s->carrier_no_ecc_ram.container,
+                                        &s->carrier_no_ecc_ram);
+        }
+        if (s->carrier_full_ram.container) {
+            memory_region_del_subregion(s->carrier_full_ram.container,
+                                        &s->carrier_full_ram);
+        }
+        if (s->carrier_high_ram.container) {
+            memory_region_del_subregion(s->carrier_high_ram.container,
+                                        &s->carrier_high_ram);
+        }
+        if (s->carrier_low_ram.container) {
+            memory_region_del_subregion(s->carrier_low_ram.container,
+                                        &s->carrier_low_ram);
+        }
+    }
     if (s->ram_aliases_mapped) {
         memory_region_del_subregion(get_system_memory(), &s->no_ecc_ram);
         memory_region_del_subregion(get_system_memory(), &s->full_ram);
@@ -477,6 +554,43 @@ MemoryRegion *sgi_crime_get_decoded_ram(DeviceState *dev)
     return &s->decoded_ram;
 }
 
+static void crime_check_decoded_carrier(const Object *obj,
+                                        const char *name, Object *value,
+                                        Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME((Object *)obj);
+
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime %s cannot change after initial "
+                   "realization", name);
+    }
+}
+
+static void crime_get_decoded_base(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    uint64_t value = SGI_CRIME(obj)->decoded_base;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void crime_set_decoded_base(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME(obj);
+    uint64_t value;
+
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime %s cannot change after initial "
+                   "realization", name);
+        return;
+    }
+    s->decoded_base = value;
+}
+
 static void crime_init(Object *obj)
 {
     SGICrimeState *s = SGI_CRIME(obj);
@@ -486,6 +600,13 @@ static void crime_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->registers);
     qdev_init_gpio_in_named(DEVICE(obj), crime_mace_input, "mace", 16);
     qdev_init_gpio_out_named(DEVICE(obj), s->cpu_ip, "cpu-ip", 5);
+    object_property_add_link(obj, "decoded-carrier", TYPE_MEMORY_REGION,
+                             (Object **)&s->decoded_carrier,
+                             crime_check_decoded_carrier,
+                             OBJ_PROP_LINK_STRONG);
+    object_property_add(obj, "decoded-base", "uint64",
+                        crime_get_decoded_base, crime_set_decoded_base,
+                        NULL, NULL);
 }
 
 static const Property crime_properties[] = {
