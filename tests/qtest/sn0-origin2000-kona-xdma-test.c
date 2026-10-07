@@ -92,18 +92,102 @@ static void kona_qom_set_uint(QTestState *s, const char *property,
         "'property': %s, 'value': %u}}", KONA_QOM_PATH, property, value);
 }
 
+static void kona_qom_send_set(QTestState *s, const char *property,
+                              uint32_t value)
+{
+    qtest_qmp_send(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': %s, 'value': %u}}", KONA_QOM_PATH, property, value);
+}
+
+static void kona_qom_send_get(QTestState *s, const char *property)
+{
+    qtest_qmp_send(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': %s}}", KONA_QOM_PATH, property);
+}
+
+/* The reply to the oldest command sent and not yet received. */
+static uint64_t kona_qom_receive(QTestState *s)
+{
+    QDict *resp = qtest_qmp_receive(s);
+    uint64_t value = 0;
+
+    if (!qdict_haskey(resp, "return")) {
+        g_autoptr(GString) str = qobject_to_json(QOBJECT(resp));
+        g_error("qom command failed: %s", str->str);
+    }
+    if (qobject_type(qdict_get(resp, "return")) == QTYPE_QNUM) {
+        value = qdict_get_int(resp, "return");
+    }
+    qobject_unref(resp);
+    return value;
+}
+
+/*
+ * The words of one plane at X coordinates (x[i], y[i]), y down from the top
+ * line. The commands go out in batches and the replies are read afterwards,
+ * so probing costs one wait for QEMU per batch rather than one per
+ * property, and the plane and unchanged coordinates are set once.
+ */
+#define PROBE_BATCH 64
+
+static void plane_words(QTestState *s, uint32_t plane, unsigned n,
+                        const uint32_t *x, const uint32_t *y, uint32_t *word)
+{
+    unsigned i, j;
+
+    for (i = 0; i < n; i += PROBE_BATCH) {
+        unsigned end = MIN(n, i + PROBE_BATCH);
+        uint32_t last_y = UINT32_MAX;
+
+        kona_qom_send_set(s, "x-test-plane", plane);
+        for (j = i; j < end; j++) {
+            kona_qom_send_set(s, "x-test-pixel-x", x[j]);
+            if (y[j] != last_y) {
+                kona_qom_send_set(s, "x-test-pixel-y", FB_HEIGHT - 1 - y[j]);
+                last_y = y[j];
+            }
+            kona_qom_send_get(s, "x-test-plane-word");
+        }
+        kona_qom_receive(s);
+        last_y = UINT32_MAX;
+        for (j = i; j < end; j++) {
+            kona_qom_receive(s);
+            if (y[j] != last_y) {
+                kona_qom_receive(s);
+                last_y = y[j];
+            }
+            word[j] = kona_qom_receive(s);
+        }
+    }
+}
+
+/* The front plane's words, each read as the pixel its tag plane says. */
+static void front_words(QTestState *s, unsigned n, const uint32_t *x,
+                        const uint32_t *y, uint32_t *word)
+{
+    g_autofree uint32_t *tag = g_new(uint32_t, n);
+
+    plane_words(s, PLANE_FRONT_TAG, n, x, y, tag);
+    plane_words(s, PLANE_FRONT, n, x, y, word);
+    for (unsigned i = 0; i < n; i++) {
+        if (tag[i] == TAG_X_INDEX) {
+            word[i] >>= 8;
+        }
+    }
+}
+
 /* A plane's word at X coordinates (x, y), y down from the top line. */
 static uint32_t plane_at(QTestState *s, uint32_t plane, uint32_t x,
                          uint32_t y)
 {
-    kona_qom_set_uint(s, "x-test-plane", plane);
-    kona_qom_set_uint(s, "x-test-pixel-x", x);
-    kona_qom_set_uint(s, "x-test-pixel-y", FB_HEIGHT - 1 - y);
-    uint32_t word = kona_qom_get_uint(s, "x-test-plane-word");
+    uint32_t word;
 
-    if (plane == PLANE_FRONT &&
-        plane_at(s, PLANE_FRONT_TAG, x, y) == TAG_X_INDEX) {
-        return word >> 8;
+    if (plane == PLANE_FRONT) {
+        front_words(s, 1, &x, &y, &word);
+    } else {
+        plane_words(s, plane, 1, &x, &y, &word);
     }
     return word;
 }
@@ -457,6 +541,8 @@ static void test_whole_line_64k(void)
     uint32_t done = 0;
     /* The line crosses a page in rows 6, 70, 134 and 198. */
     unsigned rows[] = { 0, 6, 70, 134, 198, 255 };
+    uint32_t px[1600], py[1600], expect[1600], got[1600];
+    unsigned points = 0;
 
     for (unsigned k = 0; k < 0x10000; k++) {
         image[k] = (k * 7 + k / 256) & 0xff;
@@ -477,13 +563,19 @@ static void test_whole_line_64k(void)
     kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
     for (unsigned j = 0; j < ARRAY_SIZE(rows); j++) {
         for (unsigned x = 0; x < 256; x++) {
-            g_assert_cmphex(plane_at(s, PLANE_FRONT, x, rows[j]), ==,
-                            image[rows[j] * 256 + x]);
+            px[points] = x;
+            py[points] = rows[j];
+            expect[points++] = image[rows[j] * 256 + x];
         }
     }
     for (unsigned d = 0; d < 256; d += 5) {
-        g_assert_cmphex(plane_at(s, PLANE_FRONT, d, d), ==,
-                        image[d * 256 + d]);
+        px[points] = py[points] = d;
+        expect[points++] = image[d * 256 + d];
+    }
+    g_assert_cmpuint(points, <=, ARRAY_SIZE(px));
+    front_words(s, points, px, py, got);
+    for (unsigned i = 0; i < points; i++) {
+        g_assert_cmphex(got[i], ==, expect[i]);
     }
     qtest_quit(s);
 
