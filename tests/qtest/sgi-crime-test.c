@@ -17,11 +17,25 @@
 #define CRIME_CPU_ERROR_STATUS (CRIME_BASE + 0x4048)
 #define CRIME_BANK(i) (CRIME_BASE + 0x208 + 8 * (i))
 #define BIT64(n) (1ULL << (n))
+#define CRIME_FITTED_RAM (64ULL * 1024 * 1024)
+#define CRIME_FULL_RAM 0x40000000ULL
+#define CRIME_NO_ECC_RAM 0x80000000ULL
 
 static QTestState *crime_start(const char *extra)
 {
     QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
         "-S -device sgi-crime,id=crime,interface-revision=1 %s", extra);
+
+    qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
+    return s;
+}
+
+static QTestState *crime_start_with_ram(const char *extra)
+{
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
+        "-S -object memory-backend-ram,id=fit,size=64M "
+        "-device sgi-crime,id=crime,interface-revision=1,"
+        "ram=/objects/fit/fit[0] %s", extra);
 
     qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
     return s;
@@ -209,6 +223,98 @@ static void test_pending_irq_migration(void)
     g_rmdir(directory);
 }
 
+static void test_ram_aliases_and_holes(void)
+{
+    QTestState *s = crime_start_with_ram("");
+    const uint64_t bases[] = { 0, CRIME_FULL_RAM, CRIME_NO_ECC_RAM };
+    const uint64_t pattern[] = {
+        0x8e1a2b3c4d5e6f70ULL,
+        0x1534a5c6d7e8f901ULL,
+        0xfedcba9876543210ULL,
+    };
+    uint8_t byte;
+
+    /* No-ECC is a data alias here; ECC checking is not modeled. */
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        qtest_writeq(s, bases[source] + 0x100, pattern[source]);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmphex(qtest_readq(s, bases[view] + 0x100), ==,
+                            pattern[source]);
+        }
+    }
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        qtest_writeb(s, bases[source] + CRIME_FITTED_RAM - 1,
+                     0xa0 + source);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmphex(qtest_readb(s, bases[view] +
+                                            CRIME_FITTED_RAM - 1), ==,
+                            0xa0 + source);
+        }
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+        g_assert_cmpuint(memtx_readb(s, bases[view] + CRIME_FITTED_RAM,
+                                      &byte), !=, MEMTX_OK);
+        g_assert_cmpuint(memtx_writeb(s, bases[view] + CRIME_FITTED_RAM,
+                                       0xff), !=, MEMTX_OK);
+    }
+    g_assert_cmpuint(memtx_readb(s, 0x20000000, &byte), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(s, CRIME_FITTED_RAM - 1), ==, 0xa2);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==, bank);
+        g_assert_cmpuint(memtx_writeq(s, CRIME_BANK(bank), 0x100 | bank),
+                         !=, MEMTX_OK);
+    }
+    qtest_quit(s);
+}
+
+static void test_ram_alias_mapping_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("crime-ram-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    uint8_t byte;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = crime_start_with_ram("");
+    to = crime_start_with_ram("-incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    /* -M none does not register the backing RAM for content migration. */
+    qtest_writeq(to, CRIME_FULL_RAM + 0x200, 0x9264af731d0be5c8ULL);
+    g_assert_cmphex(qtest_readq(to, 0x200), ==,
+                    0x9264af731d0be5c8ULL);
+    g_assert_cmphex(qtest_readq(to, CRIME_NO_ECC_RAM + 0x200), ==,
+                    0x9264af731d0be5c8ULL);
+    g_assert_cmpuint(memtx_readb(to, CRIME_FULL_RAM + CRIME_FITTED_RAM,
+                                  &byte), !=, MEMTX_OK);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_rmdir(directory);
+}
+
+static void test_ram_unsupported_fit(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*requires a 64 MiB RAM region*");
+        return;
+    }
+    s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -S "
+                   "-object memory-backend-ram,id=fit,size=128M "
+                   "-device sgi-crime,id=crime,interface-revision=1,"
+                   "ram=/objects/fit/fit[0]");
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -218,5 +324,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/crime/reset-pending-irq", test_reset_pending_irq);
     qtest_add_func("/sgi/crime/migrate-pending-irq",
                    test_pending_irq_migration);
+    qtest_add_func("/sgi/crime/ram-aliases-holes",
+                   test_ram_aliases_and_holes);
+    qtest_add_func("/sgi/crime/ram-alias-migration",
+                   test_ram_alias_mapping_migration);
+    qtest_add_func("/sgi/crime/ram-unsupported-fit",
+                   test_ram_unsupported_fit);
     return g_test_run();
 }

@@ -13,8 +13,13 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/units.h"
+#include "system/address-spaces.h"
 
 #define CRIME_REGISTER_SIZE 0x2000000
+#define CRIME_FITTED_RAM (64 * MiB)
+#define CRIME_FULL_RAM 0x40000000ULL
+#define CRIME_NO_ECC_RAM 0x80000000ULL
 #define CRIME_MACE_MASK 0xffffU
 #define CRIME_SOFTWARE_MASK 0x30000000U
 #define CRIME_ENABLE_MASK (CRIME_MACE_MASK | CRIME_SOFTWARE_MASK)
@@ -187,6 +192,51 @@ static void crime_realize(DeviceState *dev, Error **errp)
 
     if (s->interface_revision != 1) {
         error_setg(errp, "sgi-crime supports only interface revision 1");
+        return;
+    }
+    if (!s->ram) {
+        return;
+    }
+    if (!memory_region_is_ram(s->ram) ||
+        memory_region_size(s->ram) != CRIME_FITTED_RAM) {
+        error_setg(errp, "sgi-crime requires a 64 MiB RAM region for the "
+                   "synthetic fit");
+        return;
+    }
+    if (s->ram_aliases_initialized && s->ram != s->alias_target) {
+        error_setg(errp, "sgi-crime RAM backing cannot change after realize");
+        return;
+    }
+    if (!s->ram_aliases_initialized) {
+        memory_region_init_alias(&s->low_ram, OBJECT(dev),
+                                 "sgi-crime.low-ram", s->ram, 0,
+                                 CRIME_FITTED_RAM);
+        memory_region_init_alias(&s->full_ram, OBJECT(dev),
+                                 "sgi-crime.full-ram", s->ram, 0,
+                                 CRIME_FITTED_RAM);
+        memory_region_init_alias(&s->no_ecc_ram, OBJECT(dev),
+                                 "sgi-crime.no-ecc-ram", s->ram, 0,
+                                 CRIME_FITTED_RAM);
+        s->alias_target = s->ram;
+        s->ram_aliases_initialized = true;
+    }
+    memory_region_add_subregion(get_system_memory(), 0, &s->low_ram);
+    memory_region_add_subregion(get_system_memory(), CRIME_FULL_RAM,
+                                &s->full_ram);
+    memory_region_add_subregion(get_system_memory(), CRIME_NO_ECC_RAM,
+                                &s->no_ecc_ram);
+    s->ram_aliases_mapped = true;
+}
+
+static void crime_unrealize(DeviceState *dev)
+{
+    SGICrimeState *s = SGI_CRIME(dev);
+
+    if (s->ram_aliases_mapped) {
+        memory_region_del_subregion(get_system_memory(), &s->no_ecc_ram);
+        memory_region_del_subregion(get_system_memory(), &s->full_ram);
+        memory_region_del_subregion(get_system_memory(), &s->low_ram);
+        s->ram_aliases_mapped = false;
     }
 }
 
@@ -204,6 +254,8 @@ static void crime_init(Object *obj)
 static const Property crime_properties[] = {
     DEFINE_PROP_UINT8("interface-revision", SGICrimeState,
                       interface_revision, 1),
+    DEFINE_PROP_LINK("ram", SGICrimeState, ram, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
 };
 
 static void crime_class_init(ObjectClass *klass, const void *data)
@@ -213,6 +265,7 @@ static void crime_class_init(ObjectClass *klass, const void *data)
 
     dc->desc = "SGI CRIME 1.5 revision-1 processor interface";
     dc->realize = crime_realize;
+    dc->unrealize = crime_unrealize;
     dc->vmsd = &vmstate_crime;
     dc->user_creatable = true;
     device_class_set_props(dc, crime_properties);
