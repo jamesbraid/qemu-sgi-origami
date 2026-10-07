@@ -2797,6 +2797,47 @@ static void test_aut_reads_and_writes_nvram(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A timed or soft "pwr d" queues "pd remote" for the Hubs. It is announced
+ * with signal 2, "get" returns its bare text once per processor, and the
+ * announcement lapses after about a second. A refused delay and an
+ * immediate power-down queue nothing.
+ */
+static void test_pwr_down_posts_pd_remote(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+    g_autofree char *before = NULL;
+    g_autofree char *soft = NULL;
+
+    arb_enable_observer(qts);
+    assert_reply(qts, "pwr d 259", "err arg");
+    before = qtest_hmp(qts, "info elsc");
+    g_assert_null(strstr(before, "controller message"));
+
+    assert_reply(qts, "pwr d 8", "ok ");
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
+    assert_reply(qts, "get", "pd remote");
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+    assert_reply(qts, "get", "acp 0 ");
+
+    /* Unfetched, it lapses after a second. */
+    assert_reply(qts, "pwr d 8", "ok ");
+    qtest_clock_step(qts, 1000 * (int64_t)SCALE_MS);
+    arb_wait_for_absence(qts);
+    g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
+    assert_reply(qts, "get", "acp 0 ");
+
+    /* The soft power-down tells the Hubs too. */
+    assert_reply(qts, "clr", "ok ");
+    assert_reply(qts, "pwr d", "ok ");
+    soft = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(soft, "controller message: \"pd remote\""));
+    assert_reply(qts, "clr", "ok ");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2899,6 +2940,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/pwr-down-posts-pd-remote", NULL,
+                        test_pwr_down_posts_pd_remote);
     qtest_add_data_func("sn0/elsc/aut-reads-and-writes-nvram", NULL,
                         test_aut_reads_and_writes_nvram);
     qtest_add_data_func("sn0/elsc/stored-flag-commands", NULL,

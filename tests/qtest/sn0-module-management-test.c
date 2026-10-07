@@ -540,9 +540,10 @@ static void test_windows_share_one_wire(void)
     qtest_quit(qts);
 }
 
-static void wait_for_global_grant(QTestState *qts, uint8_t expected)
+static void wait_for_global_grant_within(QTestState *qts, uint8_t expected,
+                                         unsigned steps)
 {
-    for (unsigned step = 0; step < 2 * POLL_STEPS; step++) {
+    for (unsigned step = 0; step < steps; step++) {
         bool seen = true;
 
         for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
@@ -560,6 +561,11 @@ static void wait_for_global_grant(QTestState *qts, uint8_t expected)
         qtest_clock_step(qts, POLL_STEP_NS);
     }
     g_assert_not_reached();
+}
+
+static void wait_for_global_grant(QTestState *qts, uint8_t expected)
+{
+    wait_for_global_grant_within(qts, expected, 2 * POLL_STEPS);
 }
 
 /*
@@ -1403,6 +1409,48 @@ static void test_origin2000_build_commands(void)
     qtest_quit(qts);
 }
 
+/*
+ * A module controller's message is announced in every processor code's
+ * grant, and a processor that fetches it stops seeing it.
+ */
+static void test_module_message_reaches_every_code(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+
+    assert_exact(qts, 0, "pwr d 8", "ok ");
+    /* A whole eight-code ring is about eight milliseconds. */
+    wait_for_global_grant_within(qts, GRANT_BASE | 0x08 | 3, 20 * POLL_STEPS);
+    assert_exact(qts, 0, "get", "pd remote");
+    assert_exact(qts, 0, "get", "acp 0 ");
+    wait_for_global_grant_within(qts, GRANT_BASE | 0x08 | 5, 20 * POLL_STEPS);
+    wait_for_global_grant_within(qts, GRANT_BASE | 0, 20 * POLL_STEPS);
+    assert_exact(qts, 0, "clr", "ok ");
+    qtest_quit(qts);
+}
+
+/*
+ * A controller message the module announces lasts its second there and
+ * in the controller alike.
+ */
+static void test_module_message_expires(void)
+{
+    QTestState *qts = start_module();
+    g_autofree char *posted = NULL;
+    g_autofree char *before = NULL;
+    g_autofree char *after = NULL;
+
+    assert_exact(qts, 0, "pwr d 30", "ok ");
+    posted = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(posted, "controller message: \"pd remote\""));
+    qtest_clock_step(qts, 900 * (int64_t)SCALE_MS);
+    before = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(before, "controller message: \"pd remote\""));
+    qtest_clock_step(qts, 100 * (int64_t)SCALE_MS);
+    after = qtest_hmp(qts, "info elsc");
+    g_assert_null(strstr(after, "controller message"));
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -1791,6 +1839,10 @@ int main(int argc, char **argv)
                    test_origin2000_display);
     qtest_add_func("/sn0/o2000-module-management/origin2000-build-commands",
                    test_origin2000_build_commands);
+    qtest_add_func("/sn0/o2000-module-management/message-every-code",
+                   test_module_message_reaches_every_code);
+    qtest_add_func("/sn0/o2000-module-management/message-expires",
+                   test_module_message_expires);
     qtest_add_func("/sn0/o2000-module-management/module-reset",
                    test_module_reset_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-down",

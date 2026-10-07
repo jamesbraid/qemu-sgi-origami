@@ -99,6 +99,10 @@ Command vocabulary
     six, so the shape must be exact. The model reaches only
     processor 0, so the selector is always ``0``.
 
+    When the controller has a message for the Hubs, ``get`` returns
+    that message's text instead, with no ``ok`` in front; see
+    `Controller messages`_.
+
 ``acp <selector> <characters>``
     The console-output flush, at most 86 characters per transaction.
     Always answered in the ``ok <count>`` form with the count in
@@ -164,14 +168,14 @@ Command vocabulary
     immediate ``pwr d`` and ``pwr c`` act, like ``rst``,
     once the caller has read the ``ok``: ``pwr d`` shuts the machine
     down, ``pwr c`` resets it (a power-cycle). A countdown shuts the
-    machine down when it expires, on the virtual clock. Five
-    approximations remain. A system reset cancels a pending countdown,
+    machine down when it expires, on the virtual clock. A timed or soft
+    request also queues ``pd remote`` for the Hubs (see `Controller
+    messages`_). Four approximations remain. A system reset cancels a pending countdown,
     although the controller keeps running through a reset on hardware,
     so a countdown followed by ``rst`` never powers down. The countdown
     is the nominal number of seconds, although the datasheet infers that
-    the firmware's 16-bit millisecond count wraps above 0x41; the ``pd
-    remote`` message the controller queues for the Hub on each timed
-    request is not sent; and expiry shuts down the whole machine, where
+    the firmware's 16-bit millisecond count wraps above 0x41; and
+    expiry shuts down the whole machine, where
     a two-module Origin 200's slave controller would power off only its
     own module. The controller does not track module power, so it never
     gives the firmware's bare ``ok`` to a ``pwr d`` sent while its
@@ -323,6 +327,26 @@ no other effect. Some commands the controller firmware answers over I2C
 are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
 ``sel`` in both builds, and ``pwr u``.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
+
+Controller messages
+-------------------
+
+Some commands make the controller queue a message for the Hubs: a
+timed or soft ``pwr d`` queues ``pd remote``, ``pwr c`` queues ``pd
+cycle`` and ``rst`` queues ``rst``. A message is announced with signal
+2 in every processor code's slot, and ``get`` from a processor returns
+its text, with no ``ok``, and stops announcing it to that processor.
+The announcement lapses about a second after the message is queued, and
+a later message replaces an earlier one. On an Origin 2000 module the
+module's grant scheduler announces it. The IRIX 6.5.30 kernel starts its
+controller-initiated shutdown when it reads ``pd remote``; it sends
+``pwr d`` only while shutting down or powering off, so a normal boot
+never sees one. ``pwr c`` and ``rst`` queue their message once the
+caller has read the ``ok``, and the restart that follows clears it, so
+no Hub reads ``pd cycle``; real Hubs lose power before they could
+either. The model has no thermal, fan, supply or key events, so the
+controller's other messages never arise. The firmware also has an
+interrupt line to the Hub, which the model does not drive.
 
 Deferred destructive actions
 ----------------------------

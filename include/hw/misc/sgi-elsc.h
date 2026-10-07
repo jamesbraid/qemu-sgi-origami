@@ -49,6 +49,18 @@ typedef enum SGIElscAction {
     SGI_ELSC_ACTION_SHUTDOWN,
 } SGIElscAction;
 
+/*
+ * The messages a command makes the controller queue for the Hubs, which
+ * "get" returns in place of console input.
+ */
+typedef enum SGIElscMessage {
+    SGI_ELSC_MESSAGE_NONE = 0,
+    SGI_ELSC_MESSAGE_PD_REMOTE,
+    SGI_ELSC_MESSAGE_PD_CYCLE,
+    SGI_ELSC_MESSAGE_RST,
+    SGI_ELSC_MESSAGE_COUNT,
+} SGIElscMessage;
+
 /* Unprefixed spellings used by the model and its migration state. */
 #define ELSC_ACTION_NONE     SGI_ELSC_ACTION_NONE
 #define ELSC_ACTION_RESET    SGI_ELSC_ACTION_RESET
@@ -77,6 +89,16 @@ typedef struct SGIElscModuleOps {
     void (*console_input)(void *opaque, bool pending);
     /* One bit slot on the module-owned midplane identity line. */
     bool (*onewire_slot)(void *opaque, uint32_t pulse, uint32_t sample);
+    /*
+     * A controller message for the Hubs: announce it to every processor
+     * code for its lifetime.
+     */
+    void (*post_message)(void *opaque);
+    /*
+     * Whether the message is still announced to this processor; if so, it
+     * stops being announced to it.
+     */
+    bool (*take_message)(void *opaque, unsigned processor);
 } SGIElscModuleOps;
 
 struct SGIElscState {
@@ -217,6 +239,15 @@ struct SGIElscState {
     bool slave_link;
     uint8_t slave_temp;
     uint8_t slave_report;
+
+    /*
+     * The controller message waiting for the Hubs (an SGIElscMessage) and,
+     * with no module owner to announce it, the processor codes it is still
+     * announced to and its one-second lifetime.
+     */
+    uint8_t message;
+    uint8_t message_mask;
+    QEMUTimer *message_timer;
 
     /* Warn once per dark-console boot, not once per dropped flush. */
     bool aux_no_backend_warned;

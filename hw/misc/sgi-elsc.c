@@ -189,9 +189,63 @@ static bool elsc_read_hex(ElscRequest *r, uint32_t *value)
     return digits > 0;
 }
 
+/* Each message's text as "get" returns it, with no "ok" in front. */
+static const char *const elsc_message_text[SGI_ELSC_MESSAGE_COUNT] = {
+    [SGI_ELSC_MESSAGE_PD_REMOTE] = "pd remote",
+    [SGI_ELSC_MESSAGE_PD_CYCLE] = "pd cycle",
+    [SGI_ELSC_MESSAGE_RST] = "rst",
+};
+
+/* A message stays announced for about a second. */
+#define ELSC_MESSAGE_LIFETIME_MS 1000
+
 /*
- * "get": firmware checks four of the six header bytes and copies from byte
- * six, so the shape must be exact; the selector is always "0".
+ * Queue a message for the Hubs. It is announced to every processor code
+ * until that processor fetches it with "get" or the second runs out; a
+ * later message replaces it. A module owner announces it on its own grant
+ * schedule.
+ */
+static void elsc_post_message(SGIElscState *s, SGIElscMessage message)
+{
+    s->message = message;
+    trace_sgi_elsc_message(elsc_message_text[message]);
+    timer_mod(s->message_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              ELSC_MESSAGE_LIFETIME_MS);
+    if (s->module_ops && s->module_ops->post_message) {
+        s->module_ops->post_message(s->module_opaque);
+        return;
+    }
+    s->message_mask = 0xff;
+}
+
+static void elsc_message_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    s->message = SGI_ELSC_MESSAGE_NONE;
+    s->message_mask = 0;
+}
+
+/* Whether the message is announced to a processor, which then has it. */
+static bool elsc_take_message(SGIElscState *s, unsigned processor)
+{
+    if (s->message == SGI_ELSC_MESSAGE_NONE || processor >= 8) {
+        return false;
+    }
+    if (s->module_ops && s->module_ops->take_message) {
+        return s->module_ops->take_message(s->module_opaque, processor);
+    }
+    if (!(s->message_mask & (1u << processor))) {
+        return false;
+    }
+    s->message_mask &= ~(1u << processor);
+    return true;
+}
+
+/*
+ * "get": a pending controller message comes first, as its bare text. Then
+ * console input: firmware checks four of the six header bytes and copies
+ * from byte six, so the shape must be exact; the selector is always "0".
  */
 static void elsc_handle_get(SGIElscState *s, ElscRequest *r)
 {
@@ -199,6 +253,11 @@ static void elsc_handle_get(SGIElscState *s, ElscRequest *r)
     unsigned payload_max = SGI_ELSC_MAX_TEXT - 6;
     unsigned n = s->rx_queue_len < payload_max ? s->rx_queue_len : payload_max;
     uint32_t before = s->rx_queue_len;
+
+    if (s->resp_owner >= 0 && elsc_take_message(s, s->resp_owner)) {
+        elsc_frame_response_str(s, elsc_message_text[s->message]);
+        return;
+    }
 
     memcpy(buf, "acp 0 ", 6);
     memcpy(&buf[6], s->rx_queue, n);
@@ -375,9 +434,14 @@ static void elsc_handle_pwr_down(SGIElscState *s, ElscRequest *r)
 
     immediate = has_delay ? sec == 0 : timer_pending(s->pwr_down_timer);
     if (!immediate) {
+        /*
+         * A timed request and the soft power-down both tell the Hubs: IRIX
+         * starts its controller-initiated shutdown on "pd remote".
+         */
         timer_mod(s->pwr_down_timer,
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)(has_delay ? sec : 3) * 1000);
+        elsc_post_message(s, SGI_ELSC_MESSAGE_PD_REMOTE);
         return;
     }
     /*
@@ -1011,11 +1075,16 @@ static void elsc_deferred_action_bh(void *opaque)
          * A power-cycle is a cold restart, so re-arm the cold-power latch for
          * the post-reset "pwr q". elsc_reset_hold leaves the latch alone (a
          * warm "rst" must not re-arm it), so setting it here, before the
-         * action fires, carries it through whoever carries it out.
+         * action fires, carries it through whoever carries it out. The
+         * Hubs hear "pd cycle" first, though they lose power before they
+         * could read it.
          */
         s->cold_power_on = true;
+        elsc_post_message(s, SGI_ELSC_MESSAGE_PD_CYCLE);
         break;
     case ELSC_ACTION_RESET:
+        elsc_post_message(s, SGI_ELSC_MESSAGE_RST);
+        break;
     case ELSC_ACTION_SHUTDOWN:
         break;
     default:
@@ -1344,7 +1413,9 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
  */
 static bool elsc_arb_signal2(SGIElscState *s, uint32_t ring_position)
 {
-    return (ring_position == 0 && s->rx_queue_len > 0) ||
+    return (ring_position < 8 &&
+            (s->message_mask & (1u << ring_position))) ||
+           (ring_position == 0 && s->rx_queue_len > 0) ||
            (s->resp_owner >= 0 &&
             ring_position == (uint32_t)s->resp_owner &&
             s->txpos < s->txlen);
@@ -1485,6 +1556,9 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_committed = false;
     s->deferred_scheduled = false;
     timer_del(s->pwr_down_timer);
+    timer_del(s->message_timer);
+    s->message = SGI_ELSC_MESSAGE_NONE;
+    s->message_mask = 0;
     s->tas_lock = ELSC_TAS_FREE;
     s->fan_high = false;
     s->fsc_present = false;
@@ -1577,6 +1651,8 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
     s->pwr_down_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                      elsc_pwr_down_expired, s);
+    s->message_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                    elsc_message_expired, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -1591,6 +1667,8 @@ static void elsc_unrealize(DeviceState *dev)
     s->arb_timer = NULL;
     timer_free(s->pwr_down_timer);
     s->pwr_down_timer = NULL;
+    timer_free(s->message_timer);
+    s->message_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
 }
@@ -1639,6 +1717,10 @@ static int elsc_post_load(void *opaque, int version_id)
     if (s->deferred_action > ELSC_ACTION_SHUTDOWN ||
         (s->deferred_committed && s->deferred_action == ELSC_ACTION_NONE) ||
         (s->deferred_scheduled && !s->deferred_committed)) {
+        return -EINVAL;
+    }
+
+    if (s->message >= SGI_ELSC_MESSAGE_COUNT) {
         return -EINVAL;
     }
 
@@ -1692,6 +1774,9 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(slave_link, SGIElscState),
         VMSTATE_UINT8(slave_temp, SGIElscState),
         VMSTATE_UINT8(slave_report, SGIElscState),
+        VMSTATE_UINT8(message, SGIElscState),
+        VMSTATE_UINT8(message_mask, SGIElscState),
+        VMSTATE_TIMER_PTR(message_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
@@ -1782,6 +1867,10 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
             }
         }
         g_string_append(buf, "\"\n");
+    }
+    if (s->message != SGI_ELSC_MESSAGE_NONE) {
+        g_string_append_printf(buf, "  controller message: \"%s\"\n",
+                               elsc_message_text[s->message]);
     }
     if (resp_pending) {
         g_string_append_printf(buf,
