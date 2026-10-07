@@ -1356,6 +1356,53 @@ static void test_origin2000_display(void)
     qtest_quit(qts);
 }
 
+/* A whole reply, not only its prefix. */
+static void assert_exact(QTestState *qts, unsigned node, const char *text,
+                         const char *expected)
+{
+    uint8_t response[RESP_CAP];
+
+    msc_command(qts, node, text, response, sizeof(response));
+    g_assert_cmpuint(response[0], ==, strlen(expected));
+    g_assert_cmpmem(&response[1], strlen(expected), expected,
+                    strlen(expected));
+}
+
+/*
+ * The Origin 2000 build's own commands: a key in the on position, and
+ * margins that are stored and answered. "aut" belongs to the Origin 200
+ * build, and "sla" is in this build's table with no handler. "clr" blanks
+ * the display.
+ */
+static void test_origin2000_build_commands(void)
+{
+    QTestState *qts = start_module();
+    g_autofree char *after_clr = NULL;
+
+    assert_exact(qts, 0, "key", "ok on");
+    assert_exact(qts, 1, "vlm 5", "ok n");
+    assert_exact(qts, 1, "vlm 5h", "ok ");
+    assert_exact(qts, 2, "vlm 5", "ok h");
+    assert_exact(qts, 0, "vlm 3 l", "ok ");
+    assert_exact(qts, 0, "vlm 3", "ok l");
+    assert_exact(qts, 0, "vlm v", "ok n");
+    assert_exact(qts, 0, "vlm", "err arg");
+    assert_exact(qts, 0, "vlm x", "err arg");
+    assert_exact(qts, 0, "vlm 5 q", "err arg");
+    assert_exact(qts, 0, "aut", "err cmd");
+    assert_exact(qts, 0, "mod", "err cmd");
+    assert_exact(qts, 0, "pas none", "err cmd");
+    assert_exact(qts, 0, "sla o", "ok ");
+    assert_exact(qts, 0, "tmp", "ok n");
+
+    assert_exact(qts, 0, "dsp abc", "ok ");
+    assert_exact(qts, 0, "clr", "ok ");
+    after_clr = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_clr, "display: \"        \""));
+    assert_exact(qts, 3, "vlm 5", "ok h");
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -1742,6 +1789,8 @@ int main(int argc, char **argv)
                    test_identity_survives_reset);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display",
                    test_origin2000_display);
+    qtest_add_func("/sn0/o2000-module-management/origin2000-build-commands",
+                   test_origin2000_build_commands);
     qtest_add_func("/sn0/o2000-module-management/module-reset",
                    test_module_reset_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-down",

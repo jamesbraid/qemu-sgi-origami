@@ -586,6 +586,172 @@ static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
     elsc_arm_action(s, ELSC_ACTION_RESET, "rst");
 }
 
+/*
+ * "clr": cancel a pending power-down countdown and the fan-high request,
+ * and on the Origin 2000 build blank the display. Accepted with the module
+ * on or off. It leaves the power-up countdown, the "tas" byte, the console
+ * selection, the margins, the "fsc" and "tst" flags, the NVRAM and module
+ * power alone. Serial echo and supervisor mode, which it also resets, belong
+ * to the operator's serial line, which is not modelled.
+ */
+static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
+{
+    timer_del(s->pwr_down_timer);
+    s->fan_high = false;
+    if (s->origin2000) {
+        memset(s->display, ' ', sizeof(s->display));
+    }
+    elsc_frame_ok(s);
+}
+
+/*
+ * "fan [h|n]": the fan-high request. A query answers "ok h" while the fans
+ * are driven high and "ok n" otherwise. Nothing here models temperature or
+ * fan failure, so the request alone drives them and the firmware's
+ * failed-fan reply never arises. Over I2C neither form writes the NVRAM, so
+ * a request does not outlive the controller's own restart.
+ */
+static void elsc_handle_fan(SGIElscState *s, ElscRequest *r)
+{
+    char c;
+
+    if (!elsc_read_char(r, &c)) {
+        elsc_frame_response_str(s, s->fan_high ? "ok h" : "ok n");
+        return;
+    }
+    if (c != 'h' && c != 'n') {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    s->fan_high = c == 'h';
+    elsc_frame_ok(s);
+}
+
+/*
+ * "fsc [1|0]": declare a multimodule controller present or absent. Any
+ * other argument, or none, is the query, and the query loses its answer
+ * over I2C: the firmware writes the flag where
+ * the reply's separator then goes, so the reply is a bare "ok ". The flag
+ * changes what an Origin 2000 module controller does with its display and
+ * its key switch, neither of which the model drives, so it is only stored.
+ */
+static void elsc_handle_fsc(SGIElscState *s, ElscRequest *r)
+{
+    char c;
+
+    if (elsc_read_char(r, &c) && (c == '1' || c == '0')) {
+        s->fsc_present = c == '1';
+    }
+    elsc_frame_ok(s);
+}
+
+/*
+ * "tst <c>": the factory's short timeouts, set by "1" and cleared by any
+ * other character. They shorten power-up and fan-check waits the model does
+ * not have, so the flag is only stored.
+ */
+static void elsc_handle_tst(SGIElscState *s, ElscRequest *r)
+{
+    char c;
+
+    if (!elsc_read_char(r, &c)) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    s->short_timeouts = c == '1';
+    elsc_frame_ok(s);
+}
+
+/*
+ * "tmp": "ok n" while neither temperature input is active, which in a model
+ * with no thermal sensors is always. A master that has heard from its slave
+ * appends the slave's last reported letter.
+ */
+static void elsc_handle_tmp(SGIElscState *s, ElscRequest *r)
+{
+    char resp[] = "ok n  ";
+
+    if (s->slave_link) {
+        resp[5] = s->slave_temp;
+    } else {
+        resp[4] = '\0';
+    }
+    elsc_frame_response_str(s, resp);
+}
+
+/*
+ * "key", Origin 2000 build: the key-switch position. The model has a key in
+ * the on position.
+ */
+static void elsc_handle_key(SGIElscState *s, ElscRequest *r)
+{
+    elsc_frame_response_str(s, "ok on");
+}
+
+/*
+ * "vlm <supply> [h|l|n]", Origin 2000 build: query or set a supply's margin.
+ * The supply is "3", "5" or "v"; a second character sets high, low or
+ * normal. The margins are stored and answered; nothing electrical follows.
+ */
+static void elsc_handle_vlm(SGIElscState *s, ElscRequest *r)
+{
+    static const char supplies[] = "35v";
+    unsigned supply;
+    char c, m;
+
+    if (!elsc_read_char(r, &c) || c == '\0' || !strchr(supplies, c)) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    supply = strchr(supplies, c) - supplies;
+    if (!elsc_read_char(r, &m)) {
+        char resp[] = "ok n";
+
+        resp[3] = s->margins[supply];
+        elsc_frame_response_str(s, resp);
+        return;
+    }
+    if (m != 'h' && m != 'l' && m != 'n') {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    s->margins[supply] = m;
+    elsc_frame_ok(s);
+}
+
+/*
+ * "sla <c>": the report a slave controller sends its master over the
+ * controller-to-controller link. The Origin 2000 build has the mnemonic with
+ * no handler, so it answers "ok " and does nothing. In the Origin 200 build
+ * the controller believes whoever sends it. A master takes "n", "h" and "o"
+ * as its slave's temperature and 0x07 as the slave announcing itself, after
+ * which "tmp" reports the slave too. The shutdowns and fan reports a master
+ * starts on "o", 0x04, 0x05 and 0x06, and a slave's forwarding of the report
+ * to its master, need the controller-to-controller link, which the model
+ * does not have; a slave stores the report and nothing more.
+ */
+static void elsc_handle_sla(SGIElscState *s, ElscRequest *r)
+{
+    char c;
+
+    if (!s->origin2000 && elsc_read_char(r, &c)) {
+        if (!s->arbitration) {
+            s->slave_report = c;
+        } else if (c == 'n' || c == 'h' || c == 'o') {
+            s->slave_temp = c;
+        } else if (c == 0x07) {
+            s->slave_link = true;
+        }
+        if (s->arbitration && (c == 'o' || (c >= 0x04 && c <= 0x06))) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-elsc: \"sla\" report 0x%02x from a slave "
+                          "controller; the shutdown or fan report it starts "
+                          "is not modelled\n", (uint8_t)c);
+        }
+    }
+    elsc_frame_ok(s);
+}
+
 /* Which builds have a command in their table. */
 #define ELSC_BUILD_ORIGIN200    (1u << 0)
 #define ELSC_BUILD_ORIGIN2000   (1u << 1)
@@ -604,16 +770,24 @@ typedef struct ElscCommand {
  */
 static const ElscCommand elsc_commands[] = {
     { "acp", ELSC_BUILD_BOTH,       elsc_handle_acp },
+    { "clr", ELSC_BUILD_BOTH,       elsc_handle_clr },
     { "dsc", ELSC_BUILD_ORIGIN2000, elsc_handle_dsc },
     { "dsp", ELSC_BUILD_ORIGIN2000, elsc_handle_dsp },
+    { "fan", ELSC_BUILD_BOTH,       elsc_handle_fan },
+    { "fsc", ELSC_BUILD_BOTH,       elsc_handle_fsc },
     { "get", ELSC_BUILD_BOTH,       elsc_handle_get },
     { "hbt", ELSC_BUILD_BOTH,       elsc_handle_hbt },
+    { "key", ELSC_BUILD_ORIGIN2000, elsc_handle_key },
     { "nic", ELSC_BUILD_BOTH,       elsc_handle_nic },
     { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr },
     { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst },
     { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw },
+    { "sla", ELSC_BUILD_BOTH,       elsc_handle_sla },
     { "tas", ELSC_BUILD_BOTH,       elsc_handle_tas },
+    { "tmp", ELSC_BUILD_BOTH,       elsc_handle_tmp },
+    { "tst", ELSC_BUILD_BOTH,       elsc_handle_tst },
     { "ver", ELSC_BUILD_BOTH,       elsc_handle_ver },
+    { "vlm", ELSC_BUILD_ORIGIN2000, elsc_handle_vlm },
 };
 
 /*
@@ -1220,6 +1394,13 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_scheduled = false;
     timer_del(s->pwr_down_timer);
     s->tas_lock = ELSC_TAS_FREE;
+    s->fan_high = false;
+    s->fsc_present = false;
+    s->short_timeouts = false;
+    memset(s->margins, 'n', sizeof(s->margins));
+    s->slave_link = false;
+    s->slave_temp = 'n';
+    s->slave_report = 0;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
 
@@ -1412,6 +1593,13 @@ static const VMStateDescription vmstate_sgi_elsc = {
         /* The lock cell, '0' when free. */
         VMSTATE_UINT8(tas_lock, SGIElscState),
         VMSTATE_TIMER_PTR(pwr_down_timer, SGIElscState),
+        VMSTATE_BOOL(fan_high, SGIElscState),
+        VMSTATE_BOOL(fsc_present, SGIElscState),
+        VMSTATE_BOOL(short_timeouts, SGIElscState),
+        VMSTATE_UINT8_ARRAY(margins, SGIElscState, SGI_ELSC_SUPPLIES),
+        VMSTATE_BOOL(slave_link, SGIElscState),
+        VMSTATE_UINT8(slave_temp, SGIElscState),
+        VMSTATE_UINT8(slave_report, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

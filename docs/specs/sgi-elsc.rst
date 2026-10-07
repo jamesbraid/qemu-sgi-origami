@@ -242,16 +242,71 @@ Command vocabulary
     value. The three values come from the hex reader, and any of them
     missing is ``err arg``.
 
+``clr``
+    Answers ``ok`` with the module on or off. It cancels a pending
+    power-down countdown and the fan-high request, and on the Origin
+    2000 build blanks the display. It leaves the ``tas`` byte, the
+    margins, the ``fsc`` and ``tst`` flags and the NVRAM alone. The
+    serial echo and supervisor mode it also resets belong to the
+    operator's serial line, which the model does not have.
+
+``fan [h|n]``
+    ``fan h`` and ``fan n`` set and clear the fan-high request and
+    answer ``ok``; any other letter, uppercase included, is ``err
+    arg``. The query answers ``ok h`` while the request stands and
+    ``ok n`` otherwise. The model has no temperature inputs and no fan
+    monitor, so the request alone decides, and the firmware's failed-fan
+    reply never arises. Over I2C neither form writes the NVRAM.
+
+``fsc [1|0]``
+    Declares a multimodule controller present or absent and answers
+    ``ok``. The query form loses its answer over I2C, as the firmware's
+    does, and answers a bare ``ok``; any other argument is that query
+    too and leaves the flag alone. The flag's effects belong to an
+    Origin 2000 module's key switch and display mirroring, neither of
+    which the model drives, so it is only stored.
+
+``tst <c>``
+    The factory's short timeouts: ``1`` sets them and any other
+    character clears them, answering ``ok``; no character is ``err
+    arg``. They shorten waits the model does not have, so the flag is
+    only stored.
+
+``tmp``
+    ``ok n``: the model has no temperature inputs. A master controller
+    that has heard ``sla`` 0x07 from a slave appends a space and the
+    slave's last temperature letter.
+
+``key``
+    Origin 2000 build only. ``ok on``: the model's key switch is on.
+
+``vlm <supply> [h|l|n]``
+    Origin 2000 build only. The supply is ``3``, ``5`` or ``v``; with no
+    second character the reply is that supply's margin, ``ok h``, ``ok
+    l`` or ``ok n``, and a second character sets it. ``vlm 5h`` and
+    ``vlm 5 h`` are the same request. Anything else is ``err arg``. The
+    margins are stored; nothing electrical follows.
+
+``sla <c>``
+    The report a slave controller sends its master. The Origin 2000
+    build answers ``ok`` and does nothing. In the Origin 200 build a
+    master takes ``n``, ``h`` and ``o`` as its slave's temperature and
+    0x07 as the slave announcing itself, and a slave stores the
+    character. The model has no controller-to-controller link, so a
+    slave never forwards its report, and a master logs rather than
+    carries out the shutdowns and fan reports that ``o``, 0x04, 0x05
+    and 0x06 start.
+
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
 before it ever probes the controller as a console, and it tolerates
 a negative reply but not a stalled bus.
 
-Some commands the controller firmware answers over I2C are not
-modelled and get that ``err cmd`` too: ``clr``, ``fan``, ``fsc``,
-``nmi``, ``see``, ``sel``, ``tmp`` and ``tst`` in both builds, and
-``pwr u``; ``aut`` in the Origin 200 build; ``key`` and ``vlm`` in the
-Origin 2000 build, whose ``sla`` would answer ``ok`` and do nothing.
+The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
+``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
+no other effect. Some commands the controller firmware answers over I2C
+are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
+``sel`` in both builds, and ``pwr u``; ``aut`` in the Origin 200 build.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
 
 Deferred destructive actions

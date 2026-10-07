@@ -2707,6 +2707,63 @@ static void test_request_grammar(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The commands that only keep a flag: "fan", "fsc", "tst", "tmp", "sla"
+ * and "clr", byte for byte, with what each leaves for the next query.
+ */
+static void test_stored_flag_commands(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -no-shutdown");
+
+    /* A healthy machine answers "ok n" until the host asks for high. */
+    assert_reply(qts, "fan", "ok n");
+    assert_reply(qts, "fan h", "ok ");
+    assert_reply(qts, "fan", "ok h");
+    assert_reply(qts, "fan H", "err arg");
+    assert_reply(qts, "fan x", "err arg");
+    assert_reply(qts, "fan", "ok h");
+    assert_reply(qts, "fan  n junk", "ok ");
+    assert_reply(qts, "fan", "ok n");
+
+    /* The "fsc" query loses its answer over I2C. */
+    assert_reply(qts, "fsc", "ok ");
+    assert_reply(qts, "fsc 1", "ok ");
+    assert_reply(qts, "fsc", "ok ");
+    assert_reply(qts, "fsc 0", "ok ");
+    /* Any other argument is the query: a bare "ok ", flag unchanged. */
+    assert_reply(qts, "fsc x", "ok ");
+
+    /* "tst" needs a character; "1" sets and anything else clears. */
+    assert_reply(qts, "tst", "err arg");
+    assert_reply(qts, "tst 1", "ok ");
+    assert_reply(qts, "tst x", "ok ");
+
+    /* No thermal model: normal, and the slave's letter once it reports. */
+    assert_reply(qts, "tmp", "ok n");
+    assert_reply(qts, "tmp junk", "ok n");
+    assert_reply(qts, "sla h", "ok ");
+    assert_reply(qts, "tmp", "ok n");
+    assert_reply(qts, "sla \x07", "ok ");
+    assert_reply(qts, "tmp", "ok n h");
+    assert_reply(qts, "sla n", "ok ");
+    assert_reply(qts, "tmp", "ok n n");
+
+    /* The Origin 2000 build's own commands are not in this one's table. */
+    assert_reply(qts, "key", "err cmd");
+    assert_reply(qts, "vlm 5", "err cmd");
+    assert_reply(qts, "mod", "err cmd");
+    assert_reply(qts, "fre", "err cmd");
+
+    /* "clr" drops the fan request and a pending power-down countdown. */
+    assert_reply(qts, "fan h", "ok ");
+    assert_reply(qts, "pwr d 2", "ok ");
+    assert_reply(qts, "clr", "ok ");
+    assert_reply(qts, "fan", "ok n");
+    qtest_clock_step(qts, 3 * NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2809,6 +2866,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/stored-flag-commands", NULL,
+                        test_stored_flag_commands);
     qtest_add_data_func("sn0/elsc/request-grammar", NULL,
                         test_request_grammar);
     qtest_add_data_func("sn0/elsc/nic-onewire-identity", NULL,
