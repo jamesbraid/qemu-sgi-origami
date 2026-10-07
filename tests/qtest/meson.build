@@ -83,7 +83,24 @@ slow_qtests = {
   'sn1-io8-scsi-test': 160,
   'sn1-l1-test': 110,
   'sn1-odyssey-query-test': 100,
+  # The whole binary, which only a named run uses: its groups below are
+  # what the qtest suites run.
   'sn1-odyssey-test': 3400,
+  # sn1-odyssey-test's groups: three times the longest of two four-process
+  # thorough runs of all eleven on a 32-thread workstation at load average
+  # 155 to 290 and one full run on the builders (actions run 11999),
+  # 2026-10-07.
+  'sn1-odyssey-test-board': 230,
+  'sn1-odyssey-test-context': 320,
+  'sn1-odyssey-test-fifo': 510,
+  'sn1-odyssey-test-gl': 500,
+  'sn1-odyssey-test-texture': 430,
+  'sn1-odyssey-test-texture-1d-clamp': 640,
+  'sn1-odyssey-test-texture-1d-stored': 570,
+  'sn1-odyssey-test-texture-1d-wide': 710,
+  'sn1-odyssey-test-texture-2d-clamp': 620,
+  'sn1-odyssey-test-texture-2d-stored': 630,
+  'sn1-odyssey-test-texture-3d': 690,
   'sn1-xbridge-chip-test': 190,
   'xframe-test': 70,
   # Not yet re-measured: both run several times slower under meson's
@@ -862,6 +879,38 @@ foreach dir : target_dirs
     # the slow suite, which the quick setup leaves out, but not an SGI one:
     # those stay in the quick setup and register their exhaustive cases
     # only under g_test_slow().
+    test_suites = ['qtest', 'qtest-' + target_base] + \
+                  (slow_qtests.has_key(test) and test not in sgi_qtests ?
+                    ['slow'] : []) + \
+                  (target_base == 'mips64' and test in sgi_qtests ?
+                    ['sgi', 'sgi-qtest'] : [])
+
+    # A test with a TEST-groups.txt file beside its source runs as one test
+    # per group, TEST-GROUP, which passes the binary the group's GLib paths
+    # with --group-path, so its groups run at once. The binary's own name
+    # then runs every case, outside the qtest suites, for a named run.
+    groups = {}
+    if fs.is_file(test + '-groups.txt')
+      foreach line : fs.read(test + '-groups.txt').split('\n')
+        words = line.split()
+        if words.length() == 2 and not words[0].startswith('#')
+          groups += {words[0]: groups.get(words[0], []) +
+                               ['--group-path', words[1]]}
+        endif
+      endforeach
+    endif
+    foreach group, paths : groups
+      test('qtest-@0@/@1@-@2@'.format(target_base, test, group),
+           qtest_executables[test],
+           depends: [test_deps, qtest_emulator, emulator_modules],
+           env: qtest_env,
+           args: test_args + paths,
+           protocol: 'tap',
+           timeout: slow_qtests.get(test + '-' + group, 60),
+           priority: slow_qtests.get(test + '-' + group, 60),
+           suite: test_suites)
+    endforeach
+
     test('qtest-@0@/@1@'.format(target_base, test),
          qtest_executables[test],
          depends: [test_deps, qtest_emulator, emulator_modules],
@@ -870,10 +919,6 @@ foreach dir : target_dirs
          protocol: 'tap',
          timeout: slow_qtests.get(test, 60),
          priority: slow_qtests.get(test, 60),
-         suite: ['qtest', 'qtest-' + target_base] +
-                (slow_qtests.has_key(test) and test not in sgi_qtests ?
-                  ['slow'] : []) +
-                (target_base == 'mips64' and test in sgi_qtests ?
-                  ['sgi', 'sgi-qtest'] : []))
+         suite: groups.keys().length() > 0 ? [] : test_suites)
   endforeach
 endforeach

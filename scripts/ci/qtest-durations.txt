@@ -138,7 +138,20 @@ qtest-mips64/sn1-fuel-vpro-test 2
 qtest-mips64/sn1-io8-scsi-test 17
 qtest-mips64/sn1-l1-test 30
 qtest-mips64/sn1-odyssey-query-test 22
-qtest-mips64/sn1-odyssey-test 669
+# The sn1-odyssey-test groups come from one full run, actions run 11999
+# (a merge-queue batch, 2026-10-07), not several; the next refresh
+# replaces them.
+qtest-mips64/sn1-odyssey-test-board 50
+qtest-mips64/sn1-odyssey-test-context 68
+qtest-mips64/sn1-odyssey-test-fifo 168
+qtest-mips64/sn1-odyssey-test-gl 164
+qtest-mips64/sn1-odyssey-test-texture 143
+qtest-mips64/sn1-odyssey-test-texture-1d-clamp 212
+qtest-mips64/sn1-odyssey-test-texture-1d-stored 187
+qtest-mips64/sn1-odyssey-test-texture-1d-wide 234
+qtest-mips64/sn1-odyssey-test-texture-2d-clamp 204
+qtest-mips64/sn1-odyssey-test-texture-2d-stored 210
+qtest-mips64/sn1-odyssey-test-texture-3d 227
 qtest-mips64/sn1-pci-expansion-module-test 3
 qtest-mips64/sn1-pi-gfx-test 2
 qtest-mips64/sn1-xbridge-chip-test 12
