@@ -2,6 +2,7 @@
 /* Copyright (c) 2026 James Braid */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "memtx.h"
 #include "sgi-migrate.h"
 
@@ -15,10 +16,14 @@
 #define CRIME_HARDWARE (CRIME_BASE + 0x28)
 #define CRIME_MEMORY_CONTROL (CRIME_BASE + 0x200)
 #define CRIME_CPU_ERROR_STATUS (CRIME_BASE + 0x4048)
+#define CRIME_MEMORY_ERROR_STATUS (CRIME_BASE + 0x250)
+#define CRIME_MEMORY_ERROR_ADDRESS (CRIME_BASE + 0x258)
 #define CRIME_BANK(i) (CRIME_BASE + 0x208 + 8 * (i))
 #define BIT64(n) (1ULL << (n))
 #define CRIME_FITTED_RAM (64ULL * 1024 * 1024)
 #define CRIME_LARGE_FIT (128ULL * 1024 * 1024)
+#define CRIME_BANK_SIZE (128ULL * 1024 * 1024)
+#define CRIME_HIGH_RAM 0x20000000ULL
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
 
@@ -46,6 +51,24 @@ static QTestState *crime_start_with_ram_size(const char *size,
 static QTestState *crime_start_with_ram(const char *extra)
 {
     return crime_start_with_ram_size("64M", extra);
+}
+
+static QTestState *crime_start_populated(void)
+{
+    QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
+        "-S -object memory-backend-ram,id=fit,size=1G "
+        "-device sgi-crime,id=crime,interface-revision=1,"
+        "ram=/objects/fit/fit[0],eight-128m-banks=on");
+
+    qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
+    return s;
+}
+
+static void crime_program_banks(QTestState *s)
+{
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME_BANK(bank), 0x100 | (bank << 2));
+    }
 }
 
 static void mace(QTestState *s, unsigned source, bool level)
@@ -397,6 +420,143 @@ static void test_ram_readonly_fit(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+static void test_populated_reset_controls(void)
+{
+    QTestState *s = crime_start_populated();
+    uint64_t value;
+    uint32_t narrow;
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==, bank);
+    }
+    g_assert_cmpuint(memtx_readl(s, CRIME_BANK(0), &narrow), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, CRIME_BANK(0) + 4, &value),
+                     !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeq(s, CRIME_BANK(0), 0x120), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, CRIME_BANK(0)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_populated_banks_and_views(void)
+{
+    QTestState *s = crime_start_populated();
+
+    crime_program_banks(s);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        uint64_t offset = bank * CRIME_BANK_SIZE;
+        uint8_t first = 0x10 + bank;
+        uint8_t last = 0xe0 + bank;
+
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==,
+                        0x100 | (bank << 2));
+        qtest_writeb(s, CRIME_FULL_RAM + offset, first);
+        qtest_writeb(s, CRIME_FULL_RAM + offset + CRIME_BANK_SIZE - 1,
+                     last);
+        g_assert_cmphex(qtest_readb(s, CRIME_NO_ECC_RAM + offset), ==,
+                        first);
+        g_assert_cmphex(qtest_readb(s, CRIME_NO_ECC_RAM + offset +
+                                       CRIME_BANK_SIZE - 1), ==, last);
+        if (bank < 2) {
+            g_assert_cmphex(qtest_readb(s, offset), ==, first);
+            g_assert_cmphex(qtest_readb(s, offset + CRIME_BANK_SIZE - 1),
+                            ==, last);
+        }
+        if (bank >= 4) {
+            uint64_t high = CRIME_HIGH_RAM +
+                            (bank - 4) * CRIME_BANK_SIZE;
+
+            g_assert_cmphex(qtest_readb(s, high), ==, first);
+            g_assert_cmphex(qtest_readb(s, high + CRIME_BANK_SIZE - 1),
+                            ==, last);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_populated_priority_and_remap(void)
+{
+    QTestState *s = crime_start_populated();
+
+    qtest_writeq(s, CRIME_BANK(0), 0x100);
+    qtest_writeq(s, CRIME_BANK(1), 0x104);
+    qtest_writeb(s, CRIME_FULL_RAM, 0x31);
+    qtest_writeb(s, CRIME_FULL_RAM + CRIME_BANK_SIZE, 0x72);
+    qtest_writeq(s, CRIME_BANK(1), 0x100);
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM), ==, 0x31);
+    qtest_writeq(s, CRIME_BANK(0), 0x104);
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM), ==, 0x72);
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM + CRIME_BANK_SIZE),
+                    ==, 0x31);
+    qtest_writeq(s, CRIME_BANK(0), 0x107);
+    g_assert_cmphex(qtest_readq(s, CRIME_BANK(0)), ==, 0x107);
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM + CRIME_BANK_SIZE),
+                    ==, 0x31);
+    qtest_quit(s);
+}
+
+static void test_populated_all_controls_at_zero(void)
+{
+    QTestState *s = crime_start_populated();
+    const uint64_t last = 0x91a2b3c4d5e6f708ULL;
+
+    qtest_writeq(s, CRIME_BANK(0), 0x104);
+    qtest_writeq(s, CRIME_FULL_RAM + 2 * CRIME_BANK_SIZE - 8, last);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME_BANK(bank), 0x100);
+    }
+    g_assert_cmphex(qtest_readq(s, CRIME_FULL_RAM + CRIME_BANK_SIZE - 8),
+                    ==, last);
+    g_assert_cmphex(qtest_readq(s, CRIME_BANK_SIZE - 8), ==, last);
+    g_assert_cmphex(qtest_readq(s, CRIME_NO_ECC_RAM + CRIME_BANK_SIZE - 8),
+                    ==, last);
+    qtest_quit(s);
+}
+
+static void test_populated_unmatched_write(void)
+{
+    QTestState *s = crime_start_populated();
+
+    qtest_writeq(s, CRIME_BANK(0), 0x100);
+    qtest_writeq(s, CRIME_FULL_RAM + 0x100, 0x3654aabbccdd9021ULL);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME_BANK(bank), 0x104);
+    }
+    memtx_writeq(s, CRIME_FULL_RAM + 0x01000000, 0x123456789abcdef0ULL);
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS) & BIT64(26),
+                    ==, BIT64(26));
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_ADDRESS), ==,
+                    0x01000000);
+    g_assert_cmphex(qtest_readq(s, CRIME_FULL_RAM + CRIME_BANK_SIZE + 0x100),
+                    ==, 0x3654aabbccdd9021ULL);
+    qtest_quit(s);
+}
+
+static void test_populated_reset_geometry_and_migration(void)
+{
+    QTestState *s = crime_start_populated();
+    QDict *response;
+    uint64_t value;
+
+    qtest_writeq(s, CRIME_BANK(0), 0x100);
+    qtest_writeq(s, CRIME_FULL_RAM, 0x9fe1a62430bb7c5dULL);
+    g_assert_cmphex(qtest_readq(s, CRIME_FULL_RAM), ==,
+                    0x9fe1a62430bb7c5dULL);
+    qtest_system_reset(s);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==, bank);
+    }
+    g_assert_cmpuint(memtx_readq(s, CRIME_FULL_RAM, &value), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS) & BIT64(25),
+                    ==, 0);
+    response = qtest_qmp(s, "{'execute':'migrate',"
+                        "'arguments':{'uri':'unix:/no-crime-migration'}}");
+    g_assert_nonnull(qdict_get_qdict(response, "error"));
+    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(response, "error"),
+                                          "desc"), "CRIME"));
+    qobject_unref(response);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -416,5 +576,17 @@ int main(int argc, char **argv)
                    test_ram_unsupported_fit);
     qtest_add_func("/sgi/crime/ram-readonly-fit",
                    test_ram_readonly_fit);
+    qtest_add_func("/sgi/crime/populated-reset-controls",
+                   test_populated_reset_controls);
+    qtest_add_func("/sgi/crime/populated-banks-views",
+                   test_populated_banks_and_views);
+    qtest_add_func("/sgi/crime/populated-priority-remap",
+                   test_populated_priority_and_remap);
+    qtest_add_func("/sgi/crime/populated-all-zero",
+                   test_populated_all_controls_at_zero);
+    qtest_add_func("/sgi/crime/populated-unmatched-write",
+                   test_populated_unmatched_write);
+    qtest_add_func("/sgi/crime/populated-reset-geometry-migration",
+                   test_populated_reset_geometry_and_migration);
     return g_test_run();
 }

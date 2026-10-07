@@ -4,8 +4,10 @@
 #define HW_MIPS_SGI_CRIME_H
 
 #include "hw/core/sysbus.h"
+#include "qapi/error.h"
 
 #define TYPE_SGI_CRIME "sgi-crime"
+#define SGI_CRIME_BANK_COUNT 8
 OBJECT_DECLARE_SIMPLE_TYPE(SGICrimeState, SGI_CRIME)
 
 struct SGICrimeState {
@@ -16,11 +18,21 @@ struct SGICrimeState {
     MemoryRegion low_ram;
     MemoryRegion full_ram;
     MemoryRegion no_ecc_ram;
+    MemoryRegion high_ram;
+    MemoryRegion decoded_ram;
+    MemoryRegion invalid_ram;
+    MemoryRegion bank_ram[SGI_CRIME_BANK_COUNT];
     qemu_irq cpu_ip[5];
     uint32_t hardware;
     uint32_t enable;
     uint32_t software;
+    uint32_t memory_error_status;
+    uint32_t memory_error_address;
+    uint16_t bank_control[SGI_CRIME_BANK_COUNT];
+    Error *migration_blocker;
     uint8_t interface_revision;
+    bool eight_128m_banks;
+    bool alias_profile;
     bool ram_aliases_initialized;
     bool ram_aliases_mapped;
 };
