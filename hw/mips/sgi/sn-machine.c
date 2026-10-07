@@ -4528,8 +4528,10 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
                 return false;
             }
         }
-        sn1_memory_mappings_add_cable(s->sn1_memory_mappings,
-                                      SGI_NET_CABLE(dev));
+        if (s->sn1_memory_mappings) {
+            sn1_memory_mappings_add_cable(s->sn1_memory_mappings,
+                                          SGI_NET_CABLE(dev));
+        }
         object_unref(OBJECT(dev));
         if (ends[0]->kind == SGI_MODEL_LINK_END_KIND_NODE &&
             ends[1]->kind == SGI_MODEL_LINK_END_KIND_NODE) {
@@ -6941,8 +6943,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
          * Bedrock while it realizes, and a Bedrock's cable reference may be
          * set afterwards. Then every node derives which numbers it reaches.
          */
-        s->sn1_memory_mappings = sn1_memory_mappings_new(s->bedrock_nodes,
-            s->num_nodes, s->sn1_routers, s->router_count);
+        if (t->routers) {
+            s->sn1_memory_mappings = sn1_memory_mappings_new(s->bedrock_nodes,
+                s->num_nodes, s->sn1_routers, s->router_count);
+        }
         if (!sgi_machine_build_bedrock_links(s, t, errp)) {
             return false;
         }
