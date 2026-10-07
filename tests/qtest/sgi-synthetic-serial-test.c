@@ -292,6 +292,33 @@ static void test_machine_serials(const void *data)
     }
 }
 
+/*
+ * A machine property that cannot be read answers with an error, and a
+ * property dump skips it. The "routes" diagnostic once dereferenced the
+ * Hub array a Bedrock topology does not have and killed the emulator, so
+ * dumping a two-node Origin 300's properties crashed it.
+ */
+static void test_routes_unavailable_on_bedrock(void)
+{
+    g_autofree char *prom = NULL;
+    g_autoptr(QDict) response = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_machine("origin300")) {
+        g_test_skip("machine not built in");
+        return;
+    }
+    prom = blank_image(IP35_PROM_SIZE);
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis,nodes=2 "
+                      "-cpu R14000 -smp 8 -m 1024M -bios %s -display none -S",
+                      prom);
+    response = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': '/machine', 'property': 'routes'}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 static const TopologyExtra *topology_extra(const char *topology)
 {
     for (size_t i = 0; i < G_N_ELEMENTS(topology_extras); i++) {
@@ -414,5 +441,7 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, c, test_machine_serials);
     }
+    qtest_add_func("sgi/synthetic-serial/routes-unavailable-on-bedrock",
+                   test_routes_unavailable_on_bedrock);
     return g_test_run();
 }
