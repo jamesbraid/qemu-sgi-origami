@@ -30,6 +30,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 /* The front-panel eight-character alphanumeric display. */
 #define SGI_ELSC_DISPLAY_CHARS 8
 
+/* The supplies "vlm" margins: 3.45 V, 5 V and a third output. */
+#define SGI_ELSC_SUPPLIES 3
+
 /* The longest "pwr d" delay or "hbt" interval, in seconds: 600. */
 #define SGI_ELSC_DELAY_MAX 0x258
 
@@ -194,6 +197,26 @@ struct SGIElscState {
 
     /* The alphanumeric display, written by "dsp" and "dsc". */
     uint8_t display[SGI_ELSC_DISPLAY_CHARS];
+
+    /*
+     * Flags the controller keeps for its commands: the fan-high request
+     * ("fan"), a declared multimodule controller ("fsc"), the factory's
+     * short timeouts ("tst") and each supply's margin ("vlm", 'n', 'h' or
+     * 'l' for the 3.45 V, 5 V and third outputs in that order).
+     */
+    bool fan_high;
+    bool fsc_present;
+    bool short_timeouts;
+    uint8_t margins[SGI_ELSC_SUPPLIES];
+
+    /*
+     * What "sla" reports leave behind: on a master, whether its slave has
+     * announced itself and the slave's last temperature letter; on a slave,
+     * the report it would forward to its master.
+     */
+    bool slave_link;
+    uint8_t slave_temp;
+    uint8_t slave_report;
 
     /* Warn once per dark-console boot, not once per dropped flush. */
     bool aux_no_backend_warned;
