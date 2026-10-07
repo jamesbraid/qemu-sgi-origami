@@ -10402,8 +10402,13 @@ static void test_line_stipple_error_clone(gconstpointer closed)
     }
     sgi_gl_init(&legacy, 7);
     saved = legacy;
-    g_assert_false(sgi_gl_clone(&legacy, &src.c));
-    g_assert_cmpmem(&legacy, sizeof(legacy), &saved, sizeof(saved));
+    if (closed) {
+        g_assert_true(sgi_gl_clone(&legacy, &src.c));
+        g_assert_cmphex(legacy.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    } else {
+        g_assert_false(sgi_gl_clone(&legacy, &src.c));
+        g_assert_cmpmem(&legacy, sizeof(legacy), &saved, sizeof(saved));
+    }
     g_assert_true(sgi_gl_clone(&dst.c, &src.c));
     g_assert_false(dst.c.polygon.enabled);
     g_assert_true(dst.c.standalone_stipple);

@@ -1440,7 +1440,13 @@ static void test_line_phase_error_restore(gconstpointer closed)
         sgi_gl_command(&src.gl[0], &source_sink, &end);
     }
     stream = save_head(&src);
-    g_assert_cmpint(load_head(stream, &legacy, NULL), !=, 0);
+    if (closed) {
+        g_assert_cmpint(load_head(stream, &legacy, NULL), ==, 0);
+        g_assert_true(sgi_gl_consume_error(&legacy.gl[0], &error));
+        g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    } else {
+        g_assert_cmpint(load_head(stream, &legacy, NULL), !=, 0);
+    }
     g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
     g_byte_array_unref(stream);
     g_assert_false(dst.gl[0].polygon.enabled);
@@ -1479,7 +1485,7 @@ static void test_draw_error_activation_matrix(void)
                     PolygonDraw r = { .result = SGI_GL_DRAW_OUT_OF_MEMORY };
                     bool open_line = !closed && modes[m] != SGI_GL_LINES;
                     bool compatible =
-                        (source & 1 ? destination & 1 : destination != 0) &&
+                        (!(source & 1) || (destination & 1)) &&
                         (!open_line || (source & 2) == (destination & 2));
                     GByteArray *stream;
 
@@ -1520,6 +1526,65 @@ static void test_draw_error_activation_matrix(void)
             }
         }
     }
+}
+
+static void test_ordinary_checked_oom_restore(gconstpointer closed)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    SGIGLContext clone;
+    PolygonDraw draw = { .result = SGI_GL_DRAW_OUT_OF_MEMORY };
+    SGIGLSink sink = { .draw_checked = polygon_draw, .opaque = &draw };
+    uint32_t mode = SGI_GL_TRIANGLES, error = 123;
+    SGIGLCmd begin = { .op = SGI_GL_OP_BEGIN, .nargs = 1, .args = &mode };
+    SGIGLCmd end = { .op = SGI_GL_OP_END };
+    GByteArray *stream;
+
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src.gl[i], i);
+        sgi_gl_init(&dst.gl[i], i);
+    }
+    g_assert_false(src.gl[0].polygon.enabled);
+    g_assert_false(src.gl[0].standalone_stipple);
+    g_assert_cmpint(sgi_gl_command_checked(&src.gl[0], &sink, &begin), ==,
+                    SGI_GL_DRAW_OK);
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t args[] = { float_bits(i / 64.0f), float_bits(0.25f) };
+        SGIGLCmd vertex = {
+            .op = SGI_GL_OP_VERTEX2F, .nargs = 2, .args = args,
+        };
+
+        g_assert_cmpint(sgi_gl_command_checked(&src.gl[0], &sink, &vertex),
+                        ==, i == 2 ? SGI_GL_DRAW_OUT_OF_MEMORY :
+                                      SGI_GL_DRAW_OK);
+    }
+    g_assert_cmpuint(draw.calls, ==, 1);
+    if (closed) {
+        g_assert_cmpint(sgi_gl_command_checked(&src.gl[0], &sink, &end), ==,
+                        SGI_GL_DRAW_OK);
+    }
+    g_assert_cmphex(src.gl[0].polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+
+    sgi_gl_init(&clone, 0);
+    g_assert_true(sgi_gl_clone(&clone, &src.gl[0]));
+    g_assert_cmphex(clone.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_assert_false(dst.gl[0].polygon.enabled);
+    g_assert_false(dst.gl[0].standalone_stipple);
+    g_assert_cmpint(dst.gl[0].in_begin, ==, !closed);
+    g_assert_cmphex(dst.gl[0].polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    if (!closed) {
+        g_assert_false(sgi_gl_consume_error(&dst.gl[0], &error));
+        g_assert_cmpuint(error, ==, 123);
+        g_assert_cmpint(sgi_gl_command_checked(&dst.gl[0], &sink, &end), ==,
+                        SGI_GL_DRAW_OK);
+    }
+    g_assert_true(sgi_gl_consume_error(&dst.gl[0], &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_true(sgi_gl_consume_error(&dst.gl[0], &error));
+    g_assert_cmpuint(error, ==, 0);
+    g_byte_array_unref(stream);
+    sgi_gl_cleanup(&clone);
 }
 
 static size_t draw_error_marker(GByteArray *stream)
@@ -1726,6 +1791,11 @@ int main(int argc, char **argv)
                          GINT_TO_POINTER(1), test_line_phase_error_restore);
     g_test_add_func("/sgi-gl-vmstate/draw-error-activation-matrix",
                     test_draw_error_activation_matrix);
+    g_test_add_data_func("/sgi-gl-vmstate/ordinary-checked-oom-restore-open",
+                         NULL, test_ordinary_checked_oom_restore);
+    g_test_add_data_func("/sgi-gl-vmstate/ordinary-checked-oom-restore-closed",
+                         GINT_TO_POINTER(1),
+                         test_ordinary_checked_oom_restore);
     g_test_add_func("/sgi-gl-vmstate/draw-error-marker-validation",
                     test_draw_error_marker_validation);
     g_test_add_func("/sgi-gl-vmstate/line-phase-lifecycle",
