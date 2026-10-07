@@ -213,10 +213,158 @@ static void test_worker_fault(gconstpointer opaque)
     }
 }
 
+static GLuint compile_probe_shader(GLenum kind, const char *source)
+{
+    GLuint shader = glCreateShader(kind);
+    GLint compiled;
+
+    glShaderSource(shader, 1, &source, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        char log[512];
+
+        glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+        g_error("Mesa probe shader: %s", log);
+    }
+    return shader;
+}
+
+static void test_surfaceless_llvmpipe_pixels(void)
+{
+    static const char *vertex_source =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p[3] = vec2[3](vec2(-1, -1), vec2(3, -1), vec2(-1, 3));\n"
+        "  gl_Position = vec4(p[gl_VertexID], 0, 1);\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 330 core\n"
+        "uniform usampler2D source_image;\n"
+        "layout(location = 0) out uvec4 pixel;\n"
+        "void main() { pixel = texelFetch(source_image,\n"
+        "                             ivec2(gl_FragCoord.xy), 0); }\n";
+    const EGLint config_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE,
+    };
+    const EGLint context_attrs[] = {
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
+    };
+    PFNEGLGETPLATFORMDISPLAYEXTPROC platform_display;
+    EGLDisplay display;
+    EGLConfig config;
+    EGLint nconfigs;
+    g_autofree uint16_t *input = g_new(uint16_t, 4096 * 4);
+    g_autofree uint16_t *output = g_new(uint16_t, 4096 * 4);
+
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    platform_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+        eglGetProcAddress("eglGetPlatformDisplayEXT");
+    g_assert_nonnull(platform_display);
+    display = platform_display(EGL_PLATFORM_SURFACELESS_MESA,
+                               EGL_DEFAULT_DISPLAY, NULL);
+    g_assert_true(display != EGL_NO_DISPLAY);
+    g_assert_true(eglInitialize(display, NULL, NULL));
+    g_assert_true(eglBindAPI(EGL_OPENGL_API));
+    g_test_message("EGL vendor=%s version=%s APIs=%s",
+                   eglQueryString(display, EGL_VENDOR),
+                   eglQueryString(display, EGL_VERSION),
+                   eglQueryString(display, EGL_CLIENT_APIS));
+    g_assert_true(eglChooseConfig(display, config_attrs, &config, 1,
+                                   &nconfigs));
+    g_assert_cmpint(nconfigs, ==, 1);
+
+    for (unsigned i = 0; i < 4096; i++) {
+        input[i * 4] = i;
+        input[i * 4 + 1] = 4095 - i;
+        input[i * 4 + 2] = (i * 37) & 4095;
+        input[i * 4 + 3] = (i * 251) & 4095;
+    }
+
+    for (unsigned iteration = 0; iteration < 3; iteration++) {
+        EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT,
+                                              context_attrs);
+        GLuint source_image, target_image, framebuffer, vao, program;
+        GLuint vertex, fragment;
+        GLint linked;
+        const char *renderer;
+
+        g_assert_true(context != EGL_NO_CONTEXT);
+        g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                     context));
+        renderer = (const char *)glGetString(GL_RENDERER);
+        g_assert_nonnull(renderer);
+        g_test_message("GL vendor=%s renderer=%s version=%s",
+                       glGetString(GL_VENDOR), renderer,
+                       glGetString(GL_VERSION));
+        g_assert_nonnull(strstr(renderer, "llvmpipe"));
+
+        vertex = compile_probe_shader(GL_VERTEX_SHADER, vertex_source);
+        fragment = compile_probe_shader(GL_FRAGMENT_SHADER, fragment_source);
+        program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        g_assert_cmpint(linked, ==, GL_TRUE);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        glUseProgram(program);
+        glUniform1i(glGetUniformLocation(program, "source_image"), 0);
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+
+        glGenTextures(1, &source_image);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, source_image);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16UI, 4096, 1, 0,
+                     GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, input);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        glGenTextures(1, &target_image);
+        glBindTexture(GL_TEXTURE_2D, target_image);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16UI, 4096, 1, 0,
+                     GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, NULL);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, target_image, 0);
+        g_assert_cmpint(glCheckFramebufferStatus(GL_FRAMEBUFFER), ==,
+                        GL_FRAMEBUFFER_COMPLETE);
+        glViewport(0, 0, 4096, 1);
+        glBindTexture(GL_TEXTURE_2D, source_image);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, 4096, 1, GL_RGBA_INTEGER,
+                     GL_UNSIGNED_SHORT, output);
+        g_assert_cmpint(glGetError(), ==, GL_NO_ERROR);
+        g_assert_cmpmem(output, 4096 * 4 * sizeof(*output),
+                        input, 4096 * 4 * sizeof(*input));
+
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &target_image);
+        glDeleteTextures(1, &source_image);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteProgram(program);
+        g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                     EGL_NO_CONTEXT));
+        g_assert_true(eglDestroyContext(display, context));
+    }
+    g_assert_true(eglTerminate(display));
+    g_assert_true(eglReleaseThread());
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
+    g_test_add_func("/sgi-renderer-gl/surfaceless-llvmpipe-pixels",
+                    test_surfaceless_llvmpipe_pixels);
     g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);
