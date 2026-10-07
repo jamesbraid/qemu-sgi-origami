@@ -517,6 +517,43 @@ static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
 }
 
 /*
+ * A reset pulse that ends while the controller's own grant is on the wire
+ * reinitialises its PCF8584 mid-byte. Clearing ESO lets go of both lines, so
+ * the controller must neither keep contending nor leave the bus busy with
+ * nobody left to end the transfer: the next tick publishes code 0. The pulse
+ * end walks the whole grant a quarter clock period at a time, so it lands on
+ * both halves of every bit, on zero bits and one bits, and on the
+ * acknowledge and the STOP.
+ */
+static void test_reinitialize_mid_grant(Fixture *f, gconstpointer unused)
+{
+    SN0ModuleManagementState *m = f->module;
+    I2CBus *bus = sgi_sn0_module_management_get_bus(m);
+    int64_t offset;
+
+    run_tick(f);
+    /*
+     * From the grant's staged START, a nanosecond after its tick; a pulse
+     * ending on the tick itself reinitialises before that tick publishes.
+     */
+    for (offset = 1; offset < 24 * 5556; offset += 2778) {
+        /* The pulse ends this far into the grant published at its tick. */
+        advance_to(m->service_deadline + offset);
+        g_assert_true(sgi_sn0_module_management_pulse_reset(m));
+        advance_to(m->pulse_deadline);
+        g_assert_false(m->pulse_active);
+        g_assert_false(i2c_bus_busy(bus));
+        g_assert_cmphex(i2c_wire_contenders(bus), ==, 0);
+
+        run_tick(f);
+        g_assert_cmpuint(m->processor_code, ==, 0);
+        g_assert_false(m->grant_active);
+        g_assert_false(i2c_bus_busy(bus));
+        g_assert_cmphex(f->adapter[0]->data, ==, GRANT_BASE);
+    }
+}
+
+/*
  * One shared complex: four adapters, one controller endpoint and one logical
  * NVRAM space, all on the same wire. Package count is not asserted; the
  * guest-visible logical space is what the contract establishes.
@@ -1307,6 +1344,8 @@ int main(int argc, char **argv)
     g_test_add("/sgi-sn0-module-management/shared/destructive-refused",
                Fixture, NULL, setup, test_destructive_command_refused,
                teardown);
+    g_test_add("/sgi-sn0-module-management/shared/reinitialize-mid-grant",
+               Fixture, NULL, setup, test_reinitialize_mid_grant, teardown);
     g_test_add("/sgi-sn0-module-management/shared/closing-resync",
                Fixture, NULL, setup, test_closing_resync_is_terminal,
                teardown);

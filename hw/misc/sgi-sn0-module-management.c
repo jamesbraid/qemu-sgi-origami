@@ -87,17 +87,21 @@ static void mgmt_reset_state(SN0ModuleManagementState *s)
  * acknowledged and then tried to STOP: the controller goes on to the next
  * byte and holds SDA at its first bit, so the node's STOP cannot form. Once
  * the endpoint lets go, that STOP completes and the bus is free again.
+ *
+ * Its master half lets go the same way. A reset or NMI pulse can end while
+ * the controller's own grant is on the wire; the grant is abandoned, the bus
+ * comes free and the next eligible tick publishes code zero.
  */
 static void mgmt_reinitialize(SN0ModuleManagementState *s)
 {
     mgmt_reset_state(s);
-    if (i2c_wire_reset_master(s->bus, GRANT_MASTER) == -ENOTSUP) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-sn0-module-management: reinitialised while "
-                      "driving the shared wire\n");
-    }
+    /*
+     * The slave side lets go first, so that a master release that follows
+     * sees SCL free and can form a STOP or end the transfer.
+     */
     sgi_elsc_reinitialize(s->msc);
     i2c_wire_release_slave(I2C_SLAVE(s->msc));
+    i2c_wire_reset_master(s->bus, GRANT_MASTER);
 }
 
 static void mgmt_recovery_tick(SN0ModuleManagementState *s)
