@@ -131,6 +131,34 @@ static void elsc_module_console_input(SGIElscState *s, bool pending)
     }
 }
 
+/*
+ * The processor queued console input is announced to, or -1 with input
+ * selection disabled.
+ */
+static int elsc_console_target(SGIElscState *s)
+{
+    switch (s->sel_mode) {
+    case SGI_ELSC_SELECT_EXPLICIT:
+        return s->sel_processor;
+    case SGI_ELSC_SELECT_NONE:
+        return -1;
+    default:
+        return s->console_sender >= 0 &&
+               s->console_sender < SGI_ELSC_PROCESSORS ? s->console_sender : -1;
+    }
+}
+
+/* Tell a module owner where queued console input is announced now. */
+static void elsc_console_update(SGIElscState *s)
+{
+    int target = elsc_console_target(s);
+
+    if (target >= 0) {
+        elsc_module_console_owner(s, target);
+    }
+    elsc_module_console_input(s, target >= 0 && s->rx_queue_len > 0);
+}
+
 /* The "tas" cell's free value. */
 #define ELSC_TAS_FREE '0'
 
@@ -263,7 +291,10 @@ static bool elsc_take_message(SGIElscState *s, unsigned processor)
 /*
  * "get": a pending controller message comes first, as its bare text. Then
  * console input: firmware checks four of the six header bytes and copies
- * from byte six, so the shape must be exact; the selector is always "0".
+ * from byte six, so the shape must be exact. The fifth byte names the
+ * input selection mode, not who is reading: the selected processor's
+ * digit, "." for automatic selection and "/" with selection disabled.
+ * The model, like the firmware, hands queued input to whoever asks.
  */
 static void elsc_handle_get(SGIElscState *s, ElscRequest *r)
 {
@@ -278,13 +309,15 @@ static void elsc_handle_get(SGIElscState *s, ElscRequest *r)
     }
 
     memcpy(buf, "acp 0 ", 6);
+    buf[4] = s->sel_mode == SGI_ELSC_SELECT_EXPLICIT ? '0' + s->sel_processor :
+             s->sel_mode == SGI_ELSC_SELECT_NONE ? '/' : '.';
     memcpy(&buf[6], s->rx_queue, n);
     elsc_frame_response(s, buf, 6 + n);
 
     memmove(s->rx_queue, &s->rx_queue[n], s->rx_queue_len - n);
     s->rx_queue_len -= n;
     if (before && !s->rx_queue_len) {
-        elsc_module_console_input(s, false);
+        elsc_console_update(s);
     }
     trace_sgi_elsc_get(before, s->rx_queue_len, n);
     if (n) {
@@ -327,18 +360,144 @@ static void elsc_handle_acp(SGIElscState *s, ElscRequest *r)
                       "serial A (serial_hd(0)), not this port.\n");
         s->aux_no_backend_warned = true;
     }
-    qemu_chr_fe_write_all(&s->chr, (const uint8_t *)&text[6], n);
+    /*
+     * Output from a processor the "see" filter excludes is accepted and
+     * counted but not copied to the serial port. The processor is the
+     * frame's own selector (elsc_record_console_sender).
+     */
+    if (s->see_processor == SGI_ELSC_SEE_ALL ||
+        s->see_processor == s->console_sender) {
+        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)&text[6], n);
+    }
 
     snprintf(resp, sizeof(resp), "ok %x", n);
     elsc_frame_response_str(s, resp);
-    /*
-     * Writing console output claims the module's one alternate console: the
-     * module's automatic input selection follows the processor that most
-     * recently sent output to it.
-     */
-    if (n > 0 && s->resp_owner >= 0) {
-        elsc_module_console_owner(s, (unsigned)s->resp_owner);
+}
+
+/*
+ * A processor name as the console commands write it: the slot digit 1 to 4
+ * and a lowercase "a" or "b", for processor numbers 0 to 7.
+ */
+static void elsc_processor_name(unsigned processor, char name[3])
+{
+    name[0] = '1' + processor / 2;
+    name[1] = processor & 1 ? 'b' : 'a';
+    name[2] = '\0';
+}
+
+/*
+ * Read the two characters "sel" and "see" take, folded to uppercase. Answers
+ * false with no first character; *second is '\0' when there is none.
+ */
+static bool elsc_read_selection(ElscRequest *r, char *first, char *second)
+{
+    if (!elsc_read_char(r, first)) {
+        return false;
     }
+    *first = g_ascii_toupper(*first);
+    if (elsc_read_char(r, second)) {
+        *second = g_ascii_toupper(*second);
+    } else {
+        *second = '\0';
+    }
+    return true;
+}
+
+/* A slot digit and "A" or "B" name one processor; -1 for anything else. */
+static int elsc_selection_processor(char first, char second)
+{
+    if (first < '1' || first > '4' || (second != 'A' && second != 'B')) {
+        return -1;
+    }
+    return (first - '1') * 2 + (second == 'B');
+}
+
+/*
+ * A new input selection discards queued serial input not yet fetched and
+ * the console-input announcement with it.
+ */
+static void elsc_select_input(SGIElscState *s, uint8_t mode, int processor)
+{
+    s->sel_mode = mode;
+    if (mode == SGI_ELSC_SELECT_EXPLICIT) {
+        s->sel_processor = processor;
+    }
+    s->rx_queue_len = 0;
+    s->in_escape = false;
+    elsc_console_update(s);
+}
+
+/*
+ * "sel [<slot><a|b>|all|none|auto]": the console input selection. With no
+ * argument it reports "ok auto", "ok none" or "ok " and a processor name.
+ * "all" and "none" (the first two letters are what count) disable input
+ * selection, and "auto" makes it follow console output.
+ */
+static void elsc_handle_sel(SGIElscState *s, ElscRequest *r)
+{
+    char first, second;
+    int processor;
+
+    if (!elsc_read_selection(r, &first, &second)) {
+        char resp[8] = "ok ";
+
+        if (s->sel_mode == SGI_ELSC_SELECT_AUTO) {
+            strcpy(&resp[3], "auto");
+        } else if (s->sel_mode == SGI_ELSC_SELECT_NONE) {
+            strcpy(&resp[3], "none");
+        } else {
+            elsc_processor_name(s->sel_processor, &resp[3]);
+        }
+        elsc_frame_response_str(s, resp);
+        return;
+    }
+    processor = elsc_selection_processor(first, second);
+    if (processor >= 0) {
+        elsc_select_input(s, SGI_ELSC_SELECT_EXPLICIT, processor);
+    } else if ((first == 'A' && second == 'L') ||
+               (first == 'N' && second == 'O')) {
+        elsc_select_input(s, SGI_ELSC_SELECT_NONE, 0);
+    } else if (first == 'A' && second == 'U') {
+        elsc_select_input(s, SGI_ELSC_SELECT_AUTO, 0);
+    } else {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    elsc_frame_ok(s);
+}
+
+/*
+ * "see [<slot><a|b>|all|none]": the console output filter. With no argument
+ * it reports "ok all" or "ok " and a processor name. "all" and "none" copy
+ * every processor's output to the serial port; a processor name copies only
+ * that processor's and also selects it for input.
+ */
+static void elsc_handle_see(SGIElscState *s, ElscRequest *r)
+{
+    char first, second;
+    int processor;
+
+    if (!elsc_read_selection(r, &first, &second)) {
+        char resp[8] = "ok all";
+
+        if (s->see_processor != SGI_ELSC_SEE_ALL) {
+            elsc_processor_name(s->see_processor, &resp[3]);
+        }
+        elsc_frame_response_str(s, resp);
+        return;
+    }
+    processor = elsc_selection_processor(first, second);
+    if (processor >= 0) {
+        s->see_processor = processor;
+        elsc_select_input(s, SGI_ELSC_SELECT_EXPLICIT, processor);
+    } else if ((first == 'A' && second == 'L') ||
+               (first == 'N' && second == 'O')) {
+        s->see_processor = SGI_ELSC_SEE_ALL;
+    } else {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    elsc_frame_ok(s);
 }
 
 static void elsc_handle_ver(SGIElscState *s, ElscRequest *r)
@@ -1041,6 +1200,8 @@ static const ElscCommand elsc_commands[] = {
     { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr },
     { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst },
     { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw },
+    { "see", ELSC_BUILD_BOTH,       elsc_handle_see },
+    { "sel", ELSC_BUILD_BOTH,       elsc_handle_sel },
     { "sla", ELSC_BUILD_BOTH,       elsc_handle_sla },
     { "tas", ELSC_BUILD_BOTH,       elsc_handle_tas },
     { "tmp", ELSC_BUILD_BOTH,       elsc_handle_tmp },
@@ -1087,6 +1248,24 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, "err cmd");
 }
 
+/*
+ * Console output names its sender in the character after "acp ", which
+ * the controller turns into a number by subtracting the code of '0', with
+ * no range check: '0' to '7' are processors 0 to 7, and anything else is a
+ * number no processor has. It is recorded as the request is parsed, before
+ * the checksum is looked at, so a corrupted request still records it.
+ * Automatic input selection follows the record, and the "see" filter
+ * compares output with it.
+ */
+static void elsc_record_console_sender(SGIElscState *s)
+{
+    if (s->rxlen >= 7 && s->rxbuf[0] >= 5 &&
+        memcmp(&s->rxbuf[1], "acp ", 4) == 0) {
+        s->console_sender = (int)s->rxbuf[5] - '0';
+        elsc_console_update(s);
+    }
+}
+
 /* The direction switch to read marks the request complete. */
 static void elsc_request_complete(SGIElscState *s)
 {
@@ -1116,6 +1295,7 @@ static void elsc_request_complete(SGIElscState *s)
      * to slice A of this controller's module.
      */
     s->resp_owner = current_cpu ? current_cpu->cpu_index : s->cpu_base;
+    elsc_record_console_sender(s);
 
     if (s->rxlen < 2 || s->rxlen != (uint32_t)s->rxbuf[0] + 2 ||
         elsc_checksum(s->rxbuf, s->rxlen) != 0) {
@@ -1577,7 +1757,8 @@ static bool elsc_arb_signal2(SGIElscState *s, uint32_t ring_position)
 {
     return (ring_position < 8 &&
             (s->message_mask & (1u << ring_position))) ||
-           (ring_position == 0 && s->rx_queue_len > 0) ||
+           (s->rx_queue_len > 0 &&
+            elsc_console_target(s) == (int)ring_position) ||
            (s->resp_owner >= 0 &&
             ring_position == (uint32_t)s->resp_owner &&
             s->txpos < s->txlen);
@@ -1662,7 +1843,7 @@ static void elsc_receive(void *opaque, const uint8_t *buf, int size)
     }
 
     if (!was_pending && s->rx_queue_len) {
-        elsc_module_console_input(s, true);
+        elsc_console_update(s);
     }
 }
 
@@ -1683,12 +1864,11 @@ static int elsc_can_receive(void *opaque)
  * request is abandoned. An action already acknowledged to a guest still
  * happens.
  *
- * Two of the fields cleared here are a model choice rather than a contract.
  * Queued alternate-console input goes with the framing, and so does the
- * message indication that announces it, but nothing establishes that a
- * five-second I2C recovery drops characters a terminal already sent.
- * Retaining them would be as defensible. They are named here because a test
- * now asserts that they go.
+ * announcement of it: the controller discards both at every
+ * reinitialisation. The input selection and the most recent console output
+ * sender stay, and a module owner whose own reinitialisation forgot where
+ * input is announced is told again.
  */
 void sgi_elsc_reinitialize(SGIElscState *s)
 {
@@ -1699,7 +1879,7 @@ void sgi_elsc_reinitialize(SGIElscState *s)
     s->rx_queue_len = 0;
     s->in_escape = false;
     elsc_module_slave_active(s, false);
-    elsc_module_console_input(s, false);
+    elsc_console_update(s);
 }
 
 /*
@@ -1732,9 +1912,16 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->message_mask = 0;
     s->tas_lock = ELSC_TAS_FREE;
 
+    if (!keep) {
+        s->sel_mode = SGI_ELSC_SELECT_AUTO;
+        s->see_processor = SGI_ELSC_SEE_ALL;
+        /* No processor has sent console output since the start. */
+        s->console_sender = -1;
+    }
+
     /* Tell the module what reset just made true of this controller. */
     elsc_module_slave_active(s, false);
-    elsc_module_console_input(s, false);
+    elsc_console_update(s);
     if (keep) {
         return;
     }
@@ -1840,6 +2027,8 @@ static void elsc_realize(DeviceState *dev, Error **errp)
      */
     s->cold_power_on = true;
     s->tas_lock = ELSC_TAS_FREE;
+    s->see_processor = SGI_ELSC_SEE_ALL;
+    s->console_sender = -1;
     /*
      * The timer exists either way so that unrealize and the migration stream
      * keep one shape; only starting it makes the rotation run, which the
@@ -1932,7 +2121,11 @@ static int elsc_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
 
-    if (s->message >= SGI_ELSC_MESSAGE_COUNT) {
+    if (s->message >= SGI_ELSC_MESSAGE_COUNT ||
+        s->sel_mode >= SGI_ELSC_SELECT_COUNT ||
+        s->sel_processor >= SGI_ELSC_PROCESSORS ||
+        (s->see_processor >= SGI_ELSC_PROCESSORS &&
+         s->see_processor != SGI_ELSC_SEE_ALL)) {
         return -EINVAL;
     }
 
@@ -1993,6 +2186,10 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_TIMER_PTR(nmi_timer, SGIElscState),
         VMSTATE_TIMER_PTR(nmi_pulse_timer, SGIElscState),
         VMSTATE_BOOL(nmi_pulse_active, SGIElscState),
+        VMSTATE_UINT8(sel_mode, SGIElscState),
+        VMSTATE_UINT8(sel_processor, SGIElscState),
+        VMSTATE_UINT8(see_processor, SGIElscState),
+        VMSTATE_INT16(console_sender, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
@@ -2059,7 +2256,8 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
 {
     bool console_input = s->rx_queue_len > 0;
     bool resp_pending = s->resp_owner >= 0 && s->txpos < s->txlen;
-    bool code0_signal2 = console_input ||
+    bool code0_signal2 = (console_input && elsc_console_target(s) == 0) ||
+                         (s->message_mask & 1) ||
                          (resp_pending && s->resp_owner == 0);
     uint8_t console_signal = elsc_signal_byte(0, code0_signal2);
     g_autofree char *path = object_get_canonical_path(OBJECT(s));
@@ -2107,6 +2305,21 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
                                s->txlen - s->txpos, s->resp_owner);
     } else {
         g_string_append(buf, "  pending response: none\n");
+    }
+    if (s->sel_mode == SGI_ELSC_SELECT_EXPLICIT) {
+        g_string_append_printf(buf, "  console input: processor %u",
+                               s->sel_processor);
+    } else if (s->sel_mode == SGI_ELSC_SELECT_NONE) {
+        g_string_append(buf, "  console input: disabled");
+    } else {
+        g_string_append_printf(buf, "  console input: automatic, last "
+                               "output from processor %d", s->console_sender);
+    }
+    if (s->see_processor == SGI_ELSC_SEE_ALL) {
+        g_string_append(buf, "; output: all\n");
+    } else {
+        g_string_append_printf(buf, "; output: processor %u\n",
+                               s->see_processor);
     }
     g_string_append_printf(buf,
                            "  arbitration rotation: next position %u of %u\n",

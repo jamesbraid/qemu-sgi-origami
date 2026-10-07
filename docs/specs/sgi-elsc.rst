@@ -96,8 +96,11 @@ Command vocabulary
     The console-input poll. The response payload begins with a fixed
     six-byte ``acp <selector> `` header; the firmware checks only
     the first four bytes and copies the payload starting at byte
-    six, so the shape must be exact. The model reaches only
-    processor 0, so the selector is always ``0``.
+    six, so the shape must be exact. The fifth byte names the input
+    selection mode, not the reader: the selected processor's digit,
+    ``.`` for automatic selection and ``/`` with selection disabled.
+    Like the firmware, the model hands queued input to whoever asks;
+    the announcement, not the reply, follows the selection.
 
     When the controller has a message for the Hubs, ``get`` returns
     that message's text instead, with no ``ok`` in front; see
@@ -267,6 +270,36 @@ Command vocabulary
     build's display message and an Origin 200 master's forwarding to
     its slave are not modelled.
 
+``sel [<name>|all|none|auto]`` / ``see [<name>|all|none]``
+    The console input selection and output filter. Each takes two
+    characters from the character reader, folded to uppercase. A
+    processor name is a slot digit ``1`` to ``4`` and ``a`` or ``b``,
+    for processor numbers 0 to 7 (``1a`` is 0, ``4b`` is 7). With no
+    argument ``sel`` reports ``ok auto``, ``ok none`` or ``ok`` and a
+    name, and ``see`` reports ``ok all`` or ``ok`` and a name. ``sel``
+    with a name selects that processor for console input; ``all`` and
+    ``none`` (only the first two letters count) disable input
+    selection, and ``auto`` makes it follow console output. ``see``
+    with a name copies only that processor's ``acp`` output to the
+    serial port -- other output is still accepted and counted -- and
+    also selects it for input; ``all`` and ``none`` copy everything.
+    Anything else is ``err arg`` and changes nothing; a successful
+    setting answers ``ok``. Every input selection, even of the
+    processor already selected, discards queued input not yet fetched;
+    ``see all`` touches neither the input selection nor the queue. Queued input is announced with signal 2 to
+    the selected processor, to the processor that most recently sent
+    console output under automatic selection, and to nobody with
+    selection disabled. The controller starts on ``auto`` and ``all``
+    with no previous output sender, so queued input is announced to
+    nobody until a processor sends output. The sender of an ``acp`` is
+    its selector character less the code of ``0``, with no range check,
+    whichever processor carried the request; it is recorded as the
+    request is parsed, so a frame with a bad checksum still records it,
+    and a selector outside ``0`` to ``7`` leaves automatic selection
+    announcing to nobody. ``see`` with a name compares that sender with
+    the named processor. Neither ``clr``, ``rst``, ``nmi`` nor a bus
+    reinitialisation changes the selection or the sender.
+
 ``nic <p> <s> <d>``
     One-wire identity passthrough, an interactive-monitor command, not
     boot-driven. Its wire contract takes three hex arguments (pulse,
@@ -357,10 +390,8 @@ a negative reply but not a stalled bus.
 
 The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 ``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
-no other effect. Some commands the controller firmware answers over I2C
-are not modelled yet and get that ``err cmd`` too: ``see`` and ``sel``
-in both builds.
-Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
+no other effect. Every other command either build answers over I2C is
+modelled.
 
 Controller state across resets
 ------------------------------
