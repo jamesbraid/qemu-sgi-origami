@@ -1126,6 +1126,7 @@ static void test_frame_coverage_capacity(void)
 
 typedef struct NativeClearFixture {
     uint32_t colour[2][4][4][4];
+    unsigned writes[2][4][4];
     unsigned snapshots, commits;
     uint32_t fail_snapshot_target;
     uint32_t fail_commit_target;
@@ -1182,6 +1183,7 @@ static SGIRenderCommitResult native_clear_commit(
                     .extent_known = true,
                 };
             }
+            f->writes[bank][y][x]++;
             for (unsigned c = 0; c < resource->component_count; c++) {
                 f->colour[bank][y][x][c] =
                     slots[(y - rect->y0) * stride_slots +
@@ -1222,8 +1224,9 @@ static void test_decoded_clear_native_commit(void)
         .targets = { 7, 8 }, .ntargets = 2,
         .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
         .clip = {
-            .n = 2,
-            .r = { { 1, 1, 2, 2 }, { 3, 0, 3, 1 } },
+            .n = 3,
+            .r = { { 1, 1, 2, 2 }, { 3, 0, 3, 1 },
+                   { 2, 1, 3, 2 } },
         },
         .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
         .clear_rgba = { 1.0f, 0.0f, 0.5f, 1.0f },
@@ -1270,14 +1273,15 @@ static void test_decoded_clear_native_commit(void)
                                                &op, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
     g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 6);
     for (unsigned bank = 0; bank < 2; bank++) {
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
-                bool covered = (x >= 1 && x <= 2 && y >= 1 && y <= 2) ||
-                               (x == 3 && y <= 1);
+                bool covered = (x >= 1 && x <= 3 && y >= 1 && y <= 2) ||
+                               (x == 3 && y == 0);
                 uint32_t original = 17 + bank * 3 + y * 19 + x * 7;
 
+                g_assert_cmpuint(f.writes[bank][y][x], ==, covered ? 1 : 0);
                 g_assert_cmpuint(f.colour[bank][y][x][0], ==,
                                  covered ? 4095 : original);
                 g_assert_cmpuint(f.colour[bank][y][x][1], ==, original + 31);
@@ -1307,7 +1311,7 @@ static void test_decoded_clear_native_commit(void)
     error_free(err);
     err = NULL;
     g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 6);
     resources[1].width = 4;
     resources[1].height = 4;
 
@@ -1317,7 +1321,7 @@ static void test_decoded_clear_native_commit(void)
                                                &op, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
     g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 6);
 
     op.clip.empty = 0;
     op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
@@ -1328,9 +1332,10 @@ static void test_decoded_clear_native_commit(void)
     error_free(err);
     err = NULL;
     g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 6);
 
     op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+    op.clip.n = 3;
     for (unsigned bank = 0; bank < 2; bank++) {
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
@@ -1348,7 +1353,7 @@ static void test_decoded_clear_native_commit(void)
     error_free(err);
     err = NULL;
     g_assert_cmpuint(f.snapshots, ==, 4);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 6);
     g_assert_cmpuint(f.colour[0][0][0][0], ==, 17);
     g_assert_cmpuint(f.colour[1][0][0][0], ==, 17);
     f.fail_snapshot_target = 0;
@@ -1368,11 +1373,14 @@ static void test_decoded_clear_native_commit(void)
     g_assert_nonnull(err);
     error_free(err);
     g_assert_cmpuint(f.snapshots, ==, 6);
-    g_assert_cmpuint(f.commits, ==, 4);
-    g_assert_cmpuint(f.colour[0][0][0][0], ==, 4095);
-    g_assert_cmpuint(f.colour[0][3][3][0], ==, 4095);
-    g_assert_cmpuint(f.colour[1][0][0][0], ==, 4095);
-    g_assert_cmpuint(f.colour[1][0][1][0], ==, 17);
+    g_assert_cmpuint(f.commits, ==, 11);
+    g_assert_cmpuint(f.colour[0][0][0][0], ==, 17);
+    g_assert_cmpuint(f.colour[0][0][3][0], ==, 4095);
+    g_assert_cmpuint(f.colour[0][3][3][0], ==, 17);
+    g_assert_cmpuint(f.colour[1][0][0][0], ==, 17);
+    g_assert_cmpuint(f.colour[1][0][3][0], ==, 4095);
+    g_assert_cmpuint(f.colour[1][1][1][0], ==, 4095);
+    g_assert_cmpuint(f.colour[1][1][2][0], ==, 17);
     err = NULL;
     f.fail_commit_target = 0;
     for (unsigned bank = 0; bank < 2; bank++) {
@@ -1394,7 +1402,7 @@ static void test_decoded_clear_native_commit(void)
     error_free(err);
     g_assert_cmpuint(clear_readback_count, ==, 2);
     g_assert_cmpuint(f.snapshots, ==, 8);
-    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 11);
     g_assert_cmpuint(f.colour[0][0][0][0], ==, 17);
     g_assert_cmpuint(f.colour[1][0][0][0], ==, 17);
     sgi_renderer_free(renderer);
