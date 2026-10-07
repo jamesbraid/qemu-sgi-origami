@@ -24,6 +24,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define AIC_REG_SPACE 0x100
 #define AIC_SEQ_INSNS 512
 #define AIC_SEQ_BYTES (AIC_SEQ_INSNS * 4)
+#define AIC_SCB_PAGES 16
+#define AIC_SCB_PAGE_BYTES 32
 
 #define REG_SCSISEQ  0x00
 #define REG_SXFRCTL0 0x01
@@ -41,6 +43,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define REG_ALLONES  0x69
 #define REG_ALLZEROS 0x6a
 #define REG_HCNTRL   0x87
+#define REG_SCBPTR   0x90
+#define REG_SCB_BASE 0xa0
 #define REG_INTSTAT  0x91
 #define REG_CLRINT   0x92
 #define REG_ERROR    0x92
@@ -64,6 +68,7 @@ struct AIC7880State {
     SCSIBus bus;
     uint8_t regs[AIC_REG_SPACE];
     uint8_t seqram[AIC_SEQ_BYTES];
+    uint8_t scb_ram[AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES];
     uint16_t seqaddr;
     uint8_t seqbyte;
     uint8_t error;
@@ -91,6 +96,17 @@ static void aic7880_update_irq(AIC7880State *s)
     pci_set_irq(PCI_DEVICE(s), enabled && pending &&
                 !(s->regs[REG_HCNTRL] & HOST_POWRDN) &&
                 (PCI_DEVICE(s)->config[PCI_COMMAND] & PCI_COMMAND_MASTER));
+}
+
+static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
+                                  uint32_t val, int len)
+{
+    uint16_t before = pci_get_word(pci->config + PCI_COMMAND);
+
+    pci_default_write_config(pci, addr, val, len);
+    if (pci_get_word(pci->config + PCI_COMMAND) != before) {
+        aic7880_update_irq(AIC7880(pci));
+    }
 }
 
 static uint32_t aic7880_count(AIC7880State *s, unsigned offset)
@@ -156,6 +172,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     PCIDevice *pci = PCI_DEVICE(s);
     uint8_t *data = scsi_req_get_buf(req);
     uint32_t haddr = ldl_le_p(&s->regs[0x88]);
+    uint32_t shaddr = ldl_le_p(&s->regs[REG_SHADDR]);
     uint32_t hcnt = aic7880_count(s, 0x8c);
     uint32_t stcnt = aic7880_count(s, REG_STCNT);
     bool from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
@@ -190,8 +207,9 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
         done += chunk;
     }
     haddr += len;
+    shaddr += len;
     stl_le_p(&s->regs[0x88], haddr);
-    stl_le_p(&s->regs[REG_SHADDR], haddr);
+    stl_le_p(&s->regs[REG_SHADDR], shaddr);
     aic7880_set_count(s, 0x8c, hcnt - len);
     aic7880_set_count(s, REG_STCNT, stcnt - len);
     if (hcnt == len) {
@@ -224,6 +242,10 @@ static void aic7880_start_request(AIC7880State *s)
 
 static void aic7880_select(AIC7880State *s)
 {
+    if (s->selected || s->req) {
+        aic7880_error(s, "selection while command is active");
+        return;
+    }
     s->target = (s->regs[REG_SCSIID] >> 4) & 0x0f;
     s->cdb_len = s->cdb_need = 0;
     s->selected = scsi_device_find(&s->bus, 0, s->target, 0) != NULL;
@@ -262,6 +284,7 @@ static void aic7880_reset_hold(Object *obj, ResetType type)
     AIC7880State *s = AIC7880(obj);
 
     memset(s->seqram, 0, sizeof(s->seqram));
+    memset(s->scb_ram, 0, sizeof(s->scb_ram));
     aic7880_chip_reset(s);
 }
 
@@ -271,6 +294,15 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
 
     if (addr >= AIC_REG_SPACE) {
         return 0xff;
+    }
+    if (addr >= REG_SCB_BASE &&
+        addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
+        if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
+            qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
+            return 0xff;
+        }
+        return s->scb_ram[s->regs[REG_SCBPTR] * AIC_SCB_PAGE_BYTES +
+                          addr - REG_SCB_BASE];
     }
     if ((addr <= 0x11) ||
         (addr >= REG_SHADDR && addr < REG_SHADDR + 4) ||
@@ -282,6 +314,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     switch (addr) {
     case REG_SEQCTL:
     case REG_HCNTRL:
+    case REG_SCBPTR:
     case REG_INTSTAT:
         return s->regs[addr];
     case REG_SEQRAM:
@@ -328,7 +361,18 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
     if (addr >= AIC_REG_SPACE) {
         return;
     }
+    if (addr >= REG_SCB_BASE &&
+        addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
+        if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
+            qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
+            return;
+        }
+        s->scb_ram[s->regs[REG_SCBPTR] * AIC_SCB_PAGE_BYTES +
+                   addr - REG_SCB_BASE] = val;
+        return;
+    }
     if ((addr >= 0x20 && addr <= 0x5f) ||
+        (addr >= REG_SHADDR && addr < REG_SHADDR + 4) ||
         (addr >= 0x88 && addr <= 0x8e) ||
         (addr >= REG_STCNT && addr < REG_STCNT + 3)) {
         s->regs[addr] = val;
@@ -349,6 +393,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case REG_SXFRCTL0:
     case REG_SCSIID:
+    case REG_SCBPTR:
     case REG_DFCNTRL:
         s->regs[addr] = val;
         break;
@@ -359,6 +404,11 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case REG_SCSIDATL:
+        if (s->req ||
+            (s->cdb_need && s->cdb_len == s->cdb_need)) {
+            aic7880_error(s, "CDB byte while command is active");
+            break;
+        }
         if (!s->selected || s->cdb_len >= sizeof(s->cdb)) {
             aic7880_error(s, "CDB byte without selected target");
             break;
@@ -420,16 +470,10 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             }
         }
         break;
-    case REG_CLRINT: {
-        uint8_t clear = val & 0x0f;
-
-        if (s->error & 0x04) {
-            clear &= ~0x08;
-        }
-        s->regs[REG_INTSTAT] &= ~clear;
+    case REG_CLRINT:
+        s->regs[REG_INTSTAT] &= ~(val & 0x0f);
         aic7880_update_irq(s);
         break;
-    }
     default:
         qemu_log_mask(LOG_UNIMP, "aic7880: write to unsupported register "
                       "0x%02" HWADDR_PRIx "\n", addr);
@@ -538,6 +582,7 @@ static int aic7880_post_load(void *opaque, int version_id)
     AIC7880State *s = opaque;
 
     if (s->seqaddr > AIC_SEQ_INSNS ||
+        s->seqbyte >= 4 ||
         s->cdb_len > sizeof(s->cdb) ||
         s->cdb_need > sizeof(s->cdb) ||
         s->qout_count > ARRAY_SIZE(s->qout) ||
@@ -561,6 +606,8 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_PCI_DEVICE(parent_obj, AIC7880State),
         VMSTATE_UINT8_ARRAY(regs, AIC7880State, AIC_REG_SPACE),
         VMSTATE_UINT8_ARRAY(seqram, AIC7880State, AIC_SEQ_BYTES),
+        VMSTATE_UINT8_ARRAY(scb_ram, AIC7880State,
+                            AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES),
         VMSTATE_UINT16(seqaddr, AIC7880State),
         VMSTATE_UINT8(seqbyte, AIC7880State),
         VMSTATE_UINT8(error, AIC7880State),
@@ -607,6 +654,7 @@ static void aic7880_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     pc->realize = aic7880_realize;
+    pc->config_write = aic7880_write_config;
     pc->vendor_id = 0x9004;
     pc->device_id = 0x8078;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
