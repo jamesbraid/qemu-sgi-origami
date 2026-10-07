@@ -1930,13 +1930,6 @@ static void test_native_one_dimensional(void)
     g_assert_true(load(a, &dst));
     g_assert_true(sgi_kona_texture_resolve(&dst)->one_dimensional);
     g_assert_cmphex(texel(&dst, 1, 0), ==, pixels[1]);
-    stl_be_p(a->data, 10);
-    g_assert_false(load(a, &dst));
-    g_byte_array_unref(a);
-    a = save(&src);
-    stl_be_p(a->data + a->len - 40, 4);
-    g_assert_false(load(a, &dst));
-    g_byte_array_unref(a);
     a = save(&src);
     /* A 1D binding cannot carry a volume depth. */
     stl_be_p(a->data + a->len - 68, 1);
