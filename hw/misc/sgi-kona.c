@@ -11962,26 +11962,6 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 {
     SGIKonaGLPixelTransfer *t = opaque;
 
-    if (version_id < 7) {
-        memset(&t->index_map, 0, sizeof(t->index_map));
-    }
-    if (version_id < 6) {
-        t->map_colour = 0;
-        memset(t->colour_rgba, 0, sizeof(t->colour_rgba));
-    }
-    if (version_id < 5) {
-        memset(t->index_rgba, 0, sizeof(t->index_rgba));
-    }
-    if (version_id < 4) {
-        memset(&t->stencil_map, 0, sizeof(t->stencil_map));
-    }
-    if (version_id < 3) {
-        t->index_shift = t->index_offset = t->map_stencil = 0;
-    }
-    if (version_id < 2) {
-        t->depth_scale = 0x3f800000;
-        t->depth_bias = 0;
-    }
     if (t->map_colour > 1 ||
         !sgi_kona_gl_pixel_map_valid(&t->index_map, false, true) ||
         !sgi_kona_gl_pixel_map_valid(&t->stencil_map, false, true)) {
@@ -11998,28 +11978,28 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
     .name = TYPE_SGI_KONA "/gl-transfer",
-    .version_id = 7,
+    .version_id = 1,
     .minimum_version_id = 1,
     .post_load = sgi_kona_gl_transfer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(scale, SGIKonaGLPixelTransfer, 4),
         VMSTATE_UINT32_ARRAY(bias, SGIKonaGLPixelTransfer, 4),
-        VMSTATE_UINT32_V(depth_scale, SGIKonaGLPixelTransfer, 2),
-        VMSTATE_UINT32_V(depth_bias, SGIKonaGLPixelTransfer, 2),
-        VMSTATE_UINT32_V(index_shift, SGIKonaGLPixelTransfer, 3),
-        VMSTATE_UINT32_V(index_offset, SGIKonaGLPixelTransfer, 3),
-        VMSTATE_UINT32_V(map_stencil, SGIKonaGLPixelTransfer, 3),
-        VMSTATE_UINT32_V(stencil_map.count, SGIKonaGLPixelTransfer, 4),
-        VMSTATE_UINT32_ARRAY_V(stencil_map.values, SGIKonaGLPixelTransfer,
-                               SGI_KONA_GL_PIXEL_MAP_MAX, 4),
-        VMSTATE_STRUCT_ARRAY(index_rgba, SGIKonaGLPixelTransfer, 4, 5,
+        VMSTATE_UINT32(depth_scale, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32(depth_bias, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32(index_shift, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32(index_offset, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32(map_stencil, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32(stencil_map.count, SGIKonaGLPixelTransfer),
+        VMSTATE_UINT32_ARRAY(stencil_map.values, SGIKonaGLPixelTransfer,
+                             SGI_KONA_GL_PIXEL_MAP_MAX),
+        VMSTATE_STRUCT_ARRAY(index_rgba, SGIKonaGLPixelTransfer, 4, 0,
                              vmstate_sgi_kona_gl_pixel_map_table,
                              SGIKonaGLPixelMap),
-        VMSTATE_STRUCT(index_map, SGIKonaGLPixelTransfer, 7,
+        VMSTATE_STRUCT(index_map, SGIKonaGLPixelTransfer, 0,
                            vmstate_sgi_kona_gl_pixel_map_table,
                            SGIKonaGLPixelMap),
-        VMSTATE_UINT32_V(map_colour, SGIKonaGLPixelTransfer, 6),
-        VMSTATE_STRUCT_ARRAY(colour_rgba, SGIKonaGLPixelTransfer, 4, 6,
+        VMSTATE_UINT32(map_colour, SGIKonaGLPixelTransfer),
+        VMSTATE_STRUCT_ARRAY(colour_rgba, SGIKonaGLPixelTransfer, 4, 0,
                              vmstate_sgi_kona_gl_pixel_map_table,
                              SGIKonaGLPixelMap),
         VMSTATE_END_OF_LIST()
@@ -12477,24 +12457,9 @@ static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
             SGIKonaGLPixelZoom *z =
                 &s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
 
-            if (version_id < 4) {
-                SGIKonaGLPixelTransfer *t =
-                    &s->gl_transfer_attrib[
-                        i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
-
-                memset(t, 0, sizeof(*t));
-                for (unsigned channel = 0; channel < 4; channel++) {
-                    t->scale[channel] = 0x3f800000;
-                }
-                t->depth_scale = 0x3f800000;
-            }
-            if (version_id < 3) {
-                /* Older snapshots did not retain the captured zoom. */
-                z->factors[0] = z->factors[1] = 0x3f800000;
-                z->unsupported = true;
-            } else if (!z->unsupported &&
-                       (!isfinite(sgi_kona_gl_float(z->factors[0])) ||
-                        !isfinite(sgi_kona_gl_float(z->factors[1])))) {
+            if (!z->unsupported &&
+                (!isfinite(sgi_kona_gl_float(z->factors[0])) ||
+                 !isfinite(sgi_kona_gl_float(z->factors[1])))) {
                 return -EINVAL;
             }
         }
@@ -12504,8 +12469,8 @@ static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
     .name = TYPE_SGI_KONA "/gl-attrib",
-    .version_id = 4,
-    .minimum_version_id = 2,
+    .version_id = 1,
+    .minimum_version_id = 1,
     .needed = sgi_kona_gl_attrib_needed,
     .post_load = sgi_kona_gl_attrib_post_load,
     .fields = (const VMStateField[]) {
