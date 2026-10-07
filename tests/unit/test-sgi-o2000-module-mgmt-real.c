@@ -1183,7 +1183,7 @@ static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
 {
     SGIElscState *s = f->module->msc;
 
-    expect_response(f, "rst", "ok");
+    expect_response(f, "rst", "ok ");
     g_assert_true(s->deferred_committed);
     g_assert_true(s->deferred_scheduled);
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
@@ -1209,7 +1209,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     msc_begin_response(f, 0, "rst");
     if (partial) {
         /* Stop before the wire prefetch reaches the acknowledgement end. */
-        g_assert_cmpuint(take_byte(f, 0, false), ==, 2);
+        g_assert_cmpuint(take_byte(f, 0, false), ==, 3);
     }
     g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_RESET);
     g_assert_false(s->deferred_committed);
@@ -1227,7 +1227,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_NONE);
     /* Another action is accepted. */
-    expect_response(f, "rst", "ok");
+    expect_response(f, "rst", "ok ");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     advance_to(f->module->pulse_deadline);
@@ -1239,7 +1239,7 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     static const uint8_t input[] = { 's', 't', 'a', 'l', 'e', 0x14, 'x' };
     static const uint8_t fresh[] = { 'N' };
 
-    expect_response(f, "dsp RETAINED", "ok");
+    expect_response(f, "dsp RETAINED", "ok ");
     expect_response(f, "tas A", "ok 0");
     qemu_chr_be_write(f->chr, input, sizeof(input));
     g_assert_cmpuint(s->rx_queue_len, ==, 5);
@@ -1271,9 +1271,9 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     expect_response(f, "get", "acp 0 N");
     expect_response(f, "tas B", "ok A");
     g_assert_cmpmem(s->display, sizeof(s->display), "RETAINED", 8);
-    expect_response(f, "dsc 1 X", "ok");
+    expect_response(f, "dsc 1 X", "ok ");
     g_assert_cmpmem(s->display, sizeof(s->display), "XETAINED", 8);
-    expect_response(f, "rst", "ok");
+    expect_response(f, "rst", "ok ");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     advance_to(f->module->pulse_deadline);

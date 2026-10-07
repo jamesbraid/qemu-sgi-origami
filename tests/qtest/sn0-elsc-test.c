@@ -1451,7 +1451,7 @@ static void test_no_supervisor_on_i2c(const void *data)
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
     qtest_qmp_eventwait(qts, "RESET");
 }
@@ -1749,7 +1749,7 @@ static void test_hbt_watchdog_control(const void *data)
         req_len = build_request(req, ok_forms[i]);
         resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-        g_assert_cmpuint(resp[0], ==, 2);
+        g_assert_cmpuint(resp[0], ==, 3);
         assert_response_begins(resp, "ok");
     }
 
@@ -1793,7 +1793,7 @@ static void test_rst_performs_machine_reset(const void *data)
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
     /* The reset actually happened, not just an "ok". */
@@ -1827,7 +1827,7 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
     /* The ack survives to be fetched in a separate read transaction. */
     resp_len = elsc_read_response(qts, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
     /* Only now, once the ack has been read, does the reset fire. */
@@ -1926,8 +1926,9 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
 
     /*
      * Read the ack up to and including the last text byte, NACKing it. The
-     * frame is len,'o','k',checksum: 'k' is the last text byte, and the read
-     * that returns it advances txpos to txlen. The checksum is left unread.
+     * frame is len,'o','k',' ',checksum: the space is the last text byte, and
+     * the read that returns it advances txpos to txlen. The checksum is left
+     * unread.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
@@ -1935,10 +1936,11 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
     (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);       /* discard stale */
     resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* length */
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     resp[1] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'o' */
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK next byte */
     resp[2] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'k' */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK next byte */
+    resp[3] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* ' ' */
     /* The whole ack was delivered, though the checksum stays unread. */
     assert_response_begins(resp, "ok");
 
@@ -2074,7 +2076,7 @@ static void test_rst_reset_survives_migration(const void *data)
      */
     resp_len = elsc_read_response(to, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(to, "RESET");
@@ -2108,8 +2110,8 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     from = qtest_init("-M origin200");
 
     /*
-     * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' (the
-     * last text byte, whose fetch commits the reset). The
+     * Accept "rst" (ARMED), then open a read and take len, 'o', 'k', ' '
+     * (the last text byte, whose fetch commits the reset). The
      * checksum is prefetched into the chip but left unread; no STOP, so the
      * frame stays open (txlen != 0) and the bottom half is not yet scheduled.
      */
@@ -2120,10 +2122,10 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     g_assert_cmphex(read_status(from) & I2C_PCF_LRB, ==, 0);
     (void)qtest_readq(from, HUB_LOCAL + I2C_DATA);       /* discard stale */
     resp[0] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* length */
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     resp[1] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'o' */
-    resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k' commits
-     * the seam */
+    resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k' */
+    resp[3] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* ' ', commits */
     assert_response_begins(resp, "ok");
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
@@ -2135,9 +2137,9 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
      * its migrated value (post_load did not reset the chip out from under
      * it), and the whole frame still sums to zero.
      */
-    resp[3] = qtest_readq(to, HUB_LOCAL + I2C_DATA);     /* checksum */
+    resp[4] = qtest_readq(to, HUB_LOCAL + I2C_DATA);     /* checksum */
     qtest_writeq(to, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
-    g_assert_cmphex(frame_checksum(resp, 4), ==, 0);
+    g_assert_cmphex(frame_checksum(resp, 5), ==, 0);
 
     /* The closing STOP is the boundary that carries out the committed
      * reset. */
@@ -2364,7 +2366,7 @@ static void test_pwr_down_shuts_down(const void *data)
     req_len = build_request(req, "pwr d 0");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(qts, "SHUTDOWN");
@@ -2386,7 +2388,7 @@ static void test_pwr_cycle_resets(const void *data)
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(qts, "RESET");
@@ -2411,7 +2413,7 @@ static void pwr_down_request(QTestState *qts, const char *text)
     req_len = build_request(req, text);
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 2);
+    g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
 }
 

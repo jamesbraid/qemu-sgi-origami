@@ -62,6 +62,15 @@ static void elsc_frame_response_str(SGIElscState *s, const char *text)
     elsc_frame_response(s, text, strlen(text));
 }
 
+/*
+ * A success with no value: the firmware's three bytes "ok ", trailing space
+ * included. IRIX accepts "ok" followed by a space or the end of the text.
+ */
+static void elsc_frame_ok(SGIElscState *s)
+{
+    elsc_frame_response_str(s, "ok ");
+}
+
 /* Name a committed deferred action for a guest-error log. */
 static const char *elsc_action_name(uint8_t action)
 {
@@ -201,7 +210,7 @@ static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     memcpy(s->display, &text[4], n);
-    elsc_frame_response_str(s, "ok");
+    elsc_frame_ok(s);
 }
 
 /*
@@ -227,7 +236,7 @@ static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     s->display[pos - '1'] = text[i];
-    elsc_frame_response_str(s, "ok");
+    elsc_frame_ok(s);
 }
 
 /*
@@ -336,7 +345,7 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, "err cmd");
             return;
         }
-        elsc_frame_response_str(s, "ok");
+        elsc_frame_ok(s);
 
         immediate = digits ? sec == 0 : timer_pending(s->pwr_down_timer);
         if (!immediate) {
@@ -381,7 +390,7 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, "err cmd");
             return;
         }
-        elsc_frame_response_str(s, "ok");
+        elsc_frame_ok(s);
         /*
          * Clearing deferred_committed would demote an acknowledged action to
          * ARMED and lose the commit after the last text byte is fetched. The
@@ -442,7 +451,7 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
     unsigned first;
 
     if (len == 3) {
-        elsc_frame_response_str(s, "ok");   /* a single heartbeat */
+        elsc_frame_ok(s);   /* a single heartbeat */
         return;
     }
     if (text[3] != ' ') {
@@ -460,7 +469,7 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
         return;
     }
     if (interval == 0) {
-        elsc_frame_response_str(s, "ok");   /* monitoring disabled */
+        elsc_frame_ok(s);   /* monitoring disabled */
         return;
     }
     if (interval < 5 || interval > SGI_ELSC_DELAY_MAX) {
@@ -470,7 +479,7 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
     qemu_log_mask(LOG_UNIMP,
                   "sgi-elsc: heartbeat/NMI watchdog enable is not "
                   "modelled; answering ok without arming it\n");
-    elsc_frame_response_str(s, "ok");
+    elsc_frame_ok(s);
 }
 
 /*
@@ -678,7 +687,7 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
             elsc_frame_response_str(s, "err cmd");
             return;
         }
-        elsc_frame_response_str(s, "ok");
+        elsc_frame_ok(s);
         /*
          * Clearing deferred_committed would demote an acknowledged action to
          * ARMED and lose the commit after the last text byte is fetched. The

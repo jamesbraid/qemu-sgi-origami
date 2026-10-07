@@ -39,6 +39,10 @@ transfer-length tracking is unclamped, so a longer frame makes it
 read past its own buffer before any check runs; the model asserts
 the bound on everything it emits.
 
+A success with no value is framed as the firmware sends it, the three
+bytes ``ok`` and a space; "a plain ``ok``" below means that reply. IRIX
+reads ``ok`` followed by a space or the end of the text the same way.
+
 A malformed packet -- short, long, or failing the checksum -- is
 answered ``err csum``. The protocol names no separate framing error:
 a malformed packet fails the same sums-to-zero test a corrupted
@@ -239,8 +243,6 @@ modelled and get that ``err cmd`` too: ``clr``, ``fan``, ``fsc``,
 ``pwr u``; ``aut`` in the Origin 200 build; ``key`` and ``vlm`` in the
 Origin 2000 build, whose ``sla`` would answer ``ok`` and do nothing.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
-Replies with no value are framed ``ok`` here, where the firmware sends
-``ok`` and a trailing space; every IRIX parser accepts both.
 
 Deferred destructive actions
 ----------------------------
