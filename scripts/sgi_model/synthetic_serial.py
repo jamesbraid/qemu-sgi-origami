@@ -28,6 +28,8 @@ LETTERS = {
     "U": "processor module",
     "I": "I/O board",
     "F": "frontplane",
+    "L": "midplane",
+    "Y": "module-identity part",
     "S": "power supply",
     "B": "Bridge one-wire part",
     "X": "XBridge one-wire part",
