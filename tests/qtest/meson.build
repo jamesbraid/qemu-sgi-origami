@@ -488,6 +488,7 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test'] + \
+  (config_all_devices.has_key('CONFIG_SGI_O2_ROM') ? ['sgi-o2-rom-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['sgi-heart-test'] : []) + \

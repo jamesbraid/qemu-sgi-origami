@@ -49,6 +49,11 @@ config SGI_CATALOGUE
 config SGI_PROM_IMAGE
     bool
 
+config SGI_O2_ROM
+    bool
+    default y
+    depends on MIPS64 && TARGET_BIG_ENDIAN
+
 config SGI_OCTANE
     bool
     select PFLASH_CFI01
