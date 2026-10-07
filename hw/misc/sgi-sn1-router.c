@@ -133,7 +133,7 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         packet->value = router_status(s, ingress);
         return SGI_NET_PACKET_OK;
     }
-    if (address == 0x8) {
+    if (address == 0x8 || address == 0x18) {
         if (write) {
             return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
         }
