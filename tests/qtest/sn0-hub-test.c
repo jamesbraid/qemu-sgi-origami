@@ -1471,13 +1471,13 @@ static void test_a_status_read_past_the_redirection_bytes(const void *data)
 }
 
 /*
- * An extended read of page 0 on a blank part: the redirection byte
- * (0xff, no redirection), its request-covering CRC16, the 32-byte
- * page of 0xff, and the page's own CRC16.
+ * An extended read of page 2, past the PIMM record and never programmed:
+ * the redirection byte (0xff, no redirection), its request-covering
+ * CRC16, the 32-byte page of 0xff, and the page's own CRC16.
  */
 static void test_an_extended_read_serves_a_blank_page(const void *data)
 {
-    uint8_t request[4] = { ONEWIRE_CMD_READ_EXT, 0x00, 0x00, 0 };
+    uint8_t request[4] = { ONEWIRE_CMD_READ_EXT, 0x40, 0x00, 0 };
     uint8_t page[32];
     unsigned int i;
 
@@ -1531,6 +1531,91 @@ static void test_a_memory_read_ends_with_its_crc(const void *data)
 
     /* Past the CRC the part has left the bus and the line reads one. */
     g_assert_cmphex(onewire_read_byte(qts, HUB_LOCAL), ==, 0xff);
+}
+
+/*
+ * The PIMM record an Origin 200 node's Hub part holds, built here from the
+ * record layout rather than by the model's own routine: format byte 0x01,
+ * the barcode, the part split around page 0's check value, the revision,
+ * group, capability and variety left 0xff as every real record has them,
+ * the name, and each page's complemented CRC16.
+ */
+static void ip29_pimm_record(uint8_t record[64], const char *barcode,
+                             const char *part, const char *revision,
+                             const char *name)
+{
+    memset(record, ' ', 64);
+    record[0] = 0x01;
+    memcpy(&record[1], barcode, strlen(barcode));
+    memcpy(&record[21], part, 9);
+    memcpy(&record[35], part + 9, 3);
+    memcpy(&record[38], revision, strlen(revision));
+    memset(&record[42], 0xff, 6);
+    memcpy(&record[48], name, strlen(name));
+    for (unsigned int page = 0; page < 2; page++) {
+        uint16_t crc = ~onewire_crc16(0, &record[page * 32], 30);
+
+        record[page * 32 + 30] = crc;
+        record[page * 32 + 31] = crc >> 8;
+    }
+}
+
+static void assert_pimm_record(QTestState *qts, uint64_t hub,
+                               const uint8_t expected[64])
+{
+    uint8_t actual[64];
+
+    onewire_select(qts, hub);
+    onewire_write_byte(qts, hub, ONEWIRE_CMD_READ_MEM);
+    onewire_write_byte(qts, hub, 0);
+    onewire_write_byte(qts, hub, 0);
+    for (unsigned int i = 0; i < sizeof(actual); i++) {
+        actual[i] = onewire_read_byte(qts, hub);
+    }
+    g_assert_cmpmem(actual, sizeof(actual), expected, 64);
+    g_assert_cmphex(onewire_crc16(0, actual, 32), ==, 0xb001);
+    g_assert_cmphex(onewire_crc16(0, &actual[32], 32), ==, 0xb001);
+}
+
+/*
+ * An Origin 200's Hub part holds the fitted PIMM's record, so IRIX has
+ * page data to print. A one-processor module and a two-processor module
+ * are different parts.
+ */
+static void test_origin200_hub_holds_the_pimm_record(const void *data)
+{
+    uint8_t expected[64];
+    QTestState *qts;
+
+    ip29_pimm_record(expected, "EMUU00", "013-1895-001", "C",
+                     "PIMM_1XT5_1MB");
+    qts = qtest_init("-M origin200");
+    assert_pimm_record(qts, HUB_LOCAL, expected);
+    qtest_quit(qts);
+
+    ip29_pimm_record(expected, "EMUU00", "013-1896-001", "D",
+                     "PIMM_2XT5_1MB");
+    qts = qtest_init("-M origin200 -smp 2");
+    assert_pimm_record(qts, HUB_LOCAL, expected);
+    qtest_quit(qts);
+}
+
+/* Each module of a dual-module Origin 200 carries its own PIMM's record. */
+static void test_dual_origin200_pimm_records_are_per_node(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,topology=origin200-dual -m 128M -smp 4");
+    uint8_t expected[64];
+
+    sn0_program_nasid(qts, 1);
+    ip29_pimm_record(expected, "EMUU00", "013-1896-001", "D",
+                     "PIMM_2XT5_1MB");
+    assert_pimm_record(qts, HUB_BY_NODE, expected);
+    ip29_pimm_record(expected, "EMUU01", "013-1896-001", "D",
+                     "PIMM_2XT5_1MB");
+    assert_pimm_record(qts, HUB_BY_NODE + NODE_STRIDE, expected);
+
+    qtest_quit(qts);
 }
 
 static void test_reset_values(const void *data)
@@ -6608,6 +6693,10 @@ int main(int argc, char **argv)
                         NULL, test_an_extended_read_serves_a_blank_page);
     qtest_add_data_func("sn0/hub/one-wire-memory-read-ends-with-crc",
                         NULL, test_a_memory_read_ends_with_its_crc);
+    qtest_add_data_func("sn0/hub/origin200-pimm-record", NULL,
+                        test_origin200_hub_holds_the_pimm_record);
+    qtest_add_data_func("sn0/hub/origin200-dual-pimm-records", NULL,
+                        test_dual_origin200_pimm_records_are_per_node);
     qtest_add_data_func("sn0/hub/origin2000-rack-identity-present",
                         NULL, test_origin2000_hubs_carry_module_identity);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,

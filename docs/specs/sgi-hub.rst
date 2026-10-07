@@ -314,20 +314,29 @@ The memory reads -- plain, status and extended, with the public part
 specification's geometry and CRC16 framing, 2 KB in sixty-four
 32-byte data pages, and a status field addressed at that same width
 whose implemented regions are scattered below 0x13f with gaps
-between them, everything above it to 0x7ff unimplemented -- serve an
-unprogrammed part: every byte reads 0xff behind a correct check
-pair, implemented or not, and
+between them, everything above it to 0x7ff unimplemented -- serve the
+record below and otherwise an unprogrammed part: every other byte
+reads 0xff behind a correct check pair, implemented or not, and
 a redirection byte of 0xff means no redirection by the part's own
-definition. Origin 2000 compositions attach a synthetic two-page
+definition. An Origin 200 node's part holds the fitted PIMM's
+two-page board record, in the fixed-offset layout the Bridge's board
+records use: format byte 0x01, a marked synthetic barcode (``EMUU``
+and the part's instance), the PIMM's real part number, revision and
+name, and group, capability and variety bytes of 0xff, as every real
+record carries them. The one-processor 180 MHz, 1 MiB module is
+``PIMM_1XT5_1MB``, part 013-1895-001 revision C; the two-processor
+one is ``PIMM_2XT5_1MB``, part 013-1896-001 revision D. IRIX formats
+page data only when page A's first byte is 0x01 and otherwise
+reports it missing, which is what a population with no known record
+still shows. Origin 2000 compositions attach a synthetic two-page
 record to this responder so the stock PROM can identify each node:
 page A starts with format byte 0x01, carries a ten-byte synthetic
 serial and a padded part string; page B carries the continuation,
 revision, zeroed binary fields and ``IP27`` in its board-name field.
 Each page stores the complemented CRC16 of its first 30 bytes in the
 last two bytes, low byte first. These values are emulator-owned
-fixtures, not copied manufacturing data, and the generic Origin 200
-composition remains erased. The programming commands are not
-answered.
+fixtures, not copied manufacturing data. The programming commands
+are not answered.
 
 The PCF8584 is mapped as a subregion of the Hub's own register region
 at higher priority, so both of the machine's mappings of the window
