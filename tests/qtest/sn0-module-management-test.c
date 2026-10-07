@@ -16,6 +16,10 @@
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
 #define HUB_BASE        UINT64_C(0x20001000000)
 #define MD_ONEWIRE      0x2000a8
 #define I2C_DATA        0x220000
@@ -1573,6 +1577,117 @@ static void test_module_nmi_reaches_processor(void)
     qtest_quit(qts);
 }
 
+/* A module whose third serial port is a socket the test holds. */
+static QTestState *start_module_serial(int *lfd, int *fd)
+{
+    struct sockaddr_in addr = { 0 };
+    socklen_t addrlen = sizeof(addr);
+    g_autofree char *args = NULL;
+    struct timeval tv = { .tv_sec = 120 };
+    fd_set readfds;
+    QTestState *qts;
+    char buf[256];
+    int i;
+
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    *lfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_assert_cmpint(bind(*lfd, (struct sockaddr *)&addr, sizeof(addr)), ==, 0);
+    g_assert_cmpint(getsockname(*lfd, (struct sockaddr *)&addr, &addrlen),
+                    ==, 0);
+    g_assert_cmpint(listen(*lfd, 1), ==, 0);
+    args = g_strdup_printf(
+        " -serial none -serial none -chardev socket,id=aux,host=127.0.0.1,"
+        "port=%u,reconnect-ms=10000 -serial chardev:aux",
+        ntohs(addr.sin_port));
+    qts = start_module_with(args);
+    FD_ZERO(&readfds);
+    FD_SET(*lfd, &readfds);
+    g_assert_cmpint(select(*lfd + 1, &readfds, NULL, NULL, &tv), ==, 1);
+    *fd = accept(*lfd, NULL, 0);
+    g_assert_cmpint(*fd, >=, 0);
+    /* Discard the start banner. */
+    for (i = 0; i < 50; i++) {
+        qtest_clock_step(qts, 100 * SCALE_US);
+        g_usleep(1000);
+        while (recv(*fd, buf, sizeof(buf), MSG_DONTWAIT) > 0) {
+            continue;
+        }
+    }
+    return qts;
+}
+
+/*
+ * Type one serial command line and read back exactly the echo and reply
+ * the controller prints, stepping the virtual clock while it waits for
+ * its turn.
+ */
+static void module_serial_command(QTestState *qts, int fd, const char *line,
+                                  const char *reply)
+{
+    g_autofree char *typed = g_strdup_printf("\x14%s\r", line);
+    g_autofree char *want = g_strdup_printf("\r\nMSC> %s\r\n\x14%s\r\n",
+                                            line, reply);
+    size_t len = strlen(want);
+    g_autofree char *got = g_malloc0(len + 1);
+    size_t have = 0;
+    int i;
+
+    g_assert_cmpint(write(fd, typed, strlen(typed)), ==, strlen(typed));
+    for (i = 0; i < 20000 && have < len; i++) {
+        ssize_t n = recv(fd, got + have, len - have, MSG_DONTWAIT);
+
+        if (n > 0) {
+            have += n;
+            continue;
+        }
+        qtest_clock_step(qts, 100 * SCALE_US);
+        g_usleep(500);
+    }
+    g_assert_cmpmem(got, have, want, len);
+}
+
+/*
+ * An Origin 2000 module controller's serial command takes its turn from
+ * the grant scheduler: the operator's line reaches the controller and its
+ * reply comes back framed, with the module's own version.
+ */
+static void test_module_serial_command(void)
+{
+    int lfd, fd;
+    QTestState *qts = start_module_serial(&lfd, &fd);
+
+    module_serial_command(qts, fd, "ver", "ok VER 3.2 ");
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
+/*
+ * An unpowered module publishes no grants, but its controller still takes
+ * the operator's commands: "pwr u" on the serial line ends a power cycle's
+ * off interval early.
+ */
+static void test_module_serial_power_up(void)
+{
+    int lfd, fd;
+    QTestState *qts = start_module_serial(&lfd, &fd);
+    int64_t t0;
+
+    assert_exact(qts, 0, "pwr c 258", "ok ");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    module_serial_command(qts, fd, "pas none", "ok");
+    module_serial_command(qts, fd, "pwr", "ok d");
+    module_serial_command(qts, fd, "pwr u", "ok");
+    t0 = qtest_clock_step(qts, 1);
+    qtest_clock_set(qts, t0 + 5 * NANOSECONDS_PER_SECOND);
+    qtest_qmp_eventwait(qts, "RESET");
+    module_serial_command(qts, fd, "pwr", "ok u");
+    close(fd);
+    close(lfd);
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -1971,6 +2086,10 @@ int main(int argc, char **argv)
                    test_module_message_expires);
     qtest_add_func("/sn0/o2000-module-management/nmi-reaches-output",
                    test_module_nmi_reaches_output);
+    qtest_add_func("/sn0/o2000-module-management/serial-command",
+                   test_module_serial_command);
+    qtest_add_func("/sn0/o2000-module-management/serial-power-up-unpowered",
+                   test_module_serial_power_up);
     qtest_add_func("/sn0/o2000-module-management/nmi-reaches-processor",
                    test_module_nmi_reaches_processor);
     qtest_add_func("/sn0/o2000-module-management/module-reset",

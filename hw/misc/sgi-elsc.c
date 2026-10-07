@@ -50,6 +50,13 @@ static void elsc_frame_response(SGIElscState *s, const char *text,
 {
     g_assert(text_len <= SGI_ELSC_MAX_TEXT);
 
+    /* A serial command's reply goes to the serial line instead. */
+    if (s->serial_running) {
+        memcpy(s->serial_reply, text, text_len);
+        s->serial_reply_len = text_len;
+        return;
+    }
+
     s->txbuf[0] = text_len;
     memcpy(&s->txbuf[1], text, text_len);
     s->txbuf[text_len + 1] =
@@ -70,6 +77,22 @@ static void elsc_frame_response_str(SGIElscState *s, const char *text)
 static void elsc_frame_ok(SGIElscState *s)
 {
     elsc_frame_response_str(s, "ok ");
+}
+
+/* The serial line. The cable carries no flow control, so it never stalls. */
+#define ELSC_CTRL_T 0x14
+
+/* A completed serial line waits for the bus; poll for it each millisecond. */
+#define ELSC_SERIAL_POLL_MS 1
+
+static void elsc_serial_write(SGIElscState *s, const void *buf, size_t len)
+{
+    qemu_chr_fe_write_all(&s->chr, buf, len);
+}
+
+static void elsc_serial_puts(SGIElscState *s, const char *text)
+{
+    elsc_serial_write(s, text, strlen(text));
 }
 
 /* Name a committed deferred action for a guest-error log. */
@@ -391,10 +414,12 @@ static void elsc_handle_acp(SGIElscState *s, ElscRequest *r)
     /*
      * Output from a processor the "see" filter excludes is accepted and
      * counted but not copied to the serial port. The processor is the
-     * frame's own selector (elsc_record_console_sender).
+     * frame's own selector (elsc_record_console_sender). While an operator
+     * types a command line, all output is accepted and lost.
      */
-    if (s->see_processor == SGI_ELSC_SEE_ALL ||
-        s->see_processor == s->console_sender) {
+    if (!s->serial_command &&
+        (s->see_processor == SGI_ELSC_SEE_ALL ||
+         s->see_processor == s->console_sender)) {
         qemu_chr_fe_write_all(&s->chr, (const uint8_t *)&text[6], n);
     }
 
@@ -451,7 +476,6 @@ static void elsc_select_input(SGIElscState *s, uint8_t mode, int processor)
         s->sel_processor = processor;
     }
     s->rx_queue_len = 0;
-    s->in_escape = false;
     elsc_console_update(s);
 }
 
@@ -614,6 +638,11 @@ static void elsc_handle_dsc(SGIElscState *s, ElscRequest *r)
 static void elsc_arm_action(SGIElscState *s, SGIElscAction action,
                             const char *command)
 {
+    /* A serial command's action runs once its reply is printed. */
+    if (s->serial_running) {
+        s->serial_action = action;
+        return;
+    }
     if (!s->deferred_committed) {
         s->deferred_action = action;
     } else {
@@ -927,6 +956,7 @@ static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
 #define ELSC_NVRAM_ADDRESS      0x57
 #define ELSC_NVRAM_CONFIG       7
 #define ELSC_CONFIG_AUTO_POWER  0x02
+#define ELSC_CONFIG_FAN_HIGH    0x01
 
 /*
  * The controller reaches its NVRAM page as another master on the same bus.
@@ -935,8 +965,8 @@ static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
  * rather than nest a second transfer inside the first. The part's address
  * counter moves exactly as a real access moves it.
  */
-static bool elsc_nvram_access(SGIElscState *s, uint8_t offset, uint8_t *value,
-                              bool write)
+static bool elsc_i2c_access(SGIElscState *s, uint8_t address, uint8_t offset,
+                            uint8_t *value, bool write)
 {
     BusChild *kid;
 
@@ -951,7 +981,7 @@ static bool elsc_nvram_access(SGIElscState *s, uint8_t offset, uint8_t *value,
          * one part can answer several addresses.
          */
         if (part == I2C_SLAVE(s) ||
-            !sc->match_and_add(part, ELSC_NVRAM_ADDRESS, false, &found)) {
+            !sc->match_and_add(part, address, false, &found)) {
             continue;
         }
         while ((node = QLIST_FIRST(&found))) {
@@ -969,6 +999,29 @@ static bool elsc_nvram_access(SGIElscState *s, uint8_t offset, uint8_t *value,
         sc->event(part, I2C_FINISH);
         return true;
     }
+    return false;
+}
+
+static bool elsc_nvram_access(SGIElscState *s, uint8_t offset, uint8_t *value,
+                              bool write)
+{
+    return elsc_i2c_access(s, ELSC_NVRAM_ADDRESS, offset, value, write);
+}
+
+/*
+ * The NVRAM page for a serial command. Every machine that builds this
+ * controller gives it the page; without one a read gives zero and a write
+ * is lost, the command answering as it would with the page, and that is
+ * logged.
+ */
+static bool elsc_command_nvram(SGIElscState *s, const char *cmd,
+                               uint8_t offset, uint8_t *value, bool write)
+{
+    if (elsc_nvram_access(s, offset, value, write)) {
+        return true;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-elsc: \"%s\" with no NVRAM page at 0x%02x\n",
+                  cmd, ELSC_NVRAM_ADDRESS);
     return false;
 }
 
@@ -1014,9 +1067,9 @@ static void elsc_handle_aut(SGIElscState *s, ElscRequest *r)
  * the fan-high request, and on the Origin 2000 build blank the display.
  * Accepted with the module on or off. It leaves the power-up countdown, the
  * "tas" byte, the console selection, the margins, the "fsc" and "tst" flags,
- * the NVRAM and module power alone. Serial echo and supervisor mode, which
- * it also resets, belong to the operator's serial line, which is not
- * modelled.
+ * the NVRAM and module power alone. It turns serial echo on and clears
+ * supervisor mode, which the key's diagnostic position would keep set on an
+ * Origin 2000 module; the model's key is on.
  */
 static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
 {
@@ -1028,6 +1081,8 @@ static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
     s->hbt_interval = 0;
     timer_del(s->hbt_timer);
     s->fan_high = false;
+    s->serial_echo = true;
+    s->supervisor = false;
     if (s->origin2000) {
         memset(s->display, ' ', sizeof(s->display));
         s->status = SGI_ELSC_STATUS_NONE;
@@ -1055,6 +1110,16 @@ static void elsc_handle_fan(SGIElscState *s, ElscRequest *r)
         return;
     }
     s->fan_high = c == 'h';
+    /* On the serial line the request is also kept in the NVRAM. */
+    if (s->serial_running) {
+        uint8_t config = 0;
+
+        if (elsc_nvram_access(s, ELSC_NVRAM_CONFIG, &config, false)) {
+            config = s->fan_high ? config | ELSC_CONFIG_FAN_HIGH :
+                                   config & ~ELSC_CONFIG_FAN_HIGH;
+            elsc_nvram_access(s, ELSC_NVRAM_CONFIG, &config, true);
+        }
+    }
     elsc_frame_ok(s);
 }
 
@@ -1072,6 +1137,10 @@ static void elsc_handle_fsc(SGIElscState *s, ElscRequest *r)
 
     if (elsc_read_char(r, &c) && (c == '1' || c == '0')) {
         s->fsc_present = c == '1';
+    } else if (s->serial_running) {
+        /* The serial reply keeps the digit the I2C reply loses. */
+        elsc_frame_response_str(s, s->fsc_present ? "ok1" : "ok0");
+        return;
     }
     elsc_frame_ok(s);
 }
@@ -1440,41 +1509,71 @@ static void elsc_hbt_expired(void *opaque)
 #define ELSC_BUILD_ORIGIN2000   (1u << 1)
 #define ELSC_BUILD_BOTH         (ELSC_BUILD_ORIGIN200 | ELSC_BUILD_ORIGIN2000)
 
+/* The channels a command is taken on: the Hubs' I2C bus, the serial line. */
+#define ELSC_ON_I2C     (1u << 2)
+#define ELSC_ON_SERIAL  (1u << 3)
+#define ELSC_ON_BOTH    (ELSC_ON_I2C | ELSC_ON_SERIAL)
+
 typedef struct ElscCommand {
     char mnemonic[4];
     unsigned builds;
     void (*handler)(SGIElscState *s, ElscRequest *r);
+    unsigned channels;
 } ElscCommand;
 
 /*
- * What each build answers over I2C. A mnemonic a build lacks answers
- * "err cmd" with no other effect, and so do the serial-only commands
- * ("cfg", "dbg", "ech", "fre", "mod", "nvm", "pas"), which never appear here.
+ * What each build answers, and on which channel. A mnemonic a build lacks
+ * answers "err cmd" with no other effect, and so does a command on a
+ * channel that does not take it: "acp" and "get" belong to the Hubs, and
+ * the commands in elsc_serial_commands to the operator.
  */
 static const ElscCommand elsc_commands[] = {
-    { "acp", ELSC_BUILD_BOTH,       elsc_handle_acp },
-    { "aut", ELSC_BUILD_ORIGIN200,  elsc_handle_aut },
-    { "clr", ELSC_BUILD_BOTH,       elsc_handle_clr },
-    { "dsc", ELSC_BUILD_ORIGIN2000, elsc_handle_dsc },
-    { "dsp", ELSC_BUILD_ORIGIN2000, elsc_handle_dsp },
-    { "fan", ELSC_BUILD_BOTH,       elsc_handle_fan },
-    { "fsc", ELSC_BUILD_BOTH,       elsc_handle_fsc },
-    { "get", ELSC_BUILD_BOTH,       elsc_handle_get },
-    { "hbt", ELSC_BUILD_BOTH,       elsc_handle_hbt },
-    { "key", ELSC_BUILD_ORIGIN2000, elsc_handle_key },
-    { "nic", ELSC_BUILD_BOTH,       elsc_handle_nic },
-    { "nmi", ELSC_BUILD_BOTH,       elsc_handle_nmi },
-    { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr },
-    { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst },
-    { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw },
-    { "see", ELSC_BUILD_BOTH,       elsc_handle_see },
-    { "sel", ELSC_BUILD_BOTH,       elsc_handle_sel },
-    { "sla", ELSC_BUILD_BOTH,       elsc_handle_sla },
-    { "tas", ELSC_BUILD_BOTH,       elsc_handle_tas },
-    { "tmp", ELSC_BUILD_BOTH,       elsc_handle_tmp },
-    { "tst", ELSC_BUILD_BOTH,       elsc_handle_tst },
-    { "ver", ELSC_BUILD_BOTH,       elsc_handle_ver },
-    { "vlm", ELSC_BUILD_ORIGIN2000, elsc_handle_vlm },
+    { "acp", ELSC_BUILD_BOTH,       elsc_handle_acp,
+      ELSC_ON_I2C },
+    { "aut", ELSC_BUILD_ORIGIN200,  elsc_handle_aut,
+      ELSC_ON_BOTH },
+    { "clr", ELSC_BUILD_BOTH,       elsc_handle_clr,
+      ELSC_ON_BOTH },
+    { "dsc", ELSC_BUILD_ORIGIN2000, elsc_handle_dsc,
+      ELSC_ON_BOTH },
+    { "dsp", ELSC_BUILD_ORIGIN2000, elsc_handle_dsp,
+      ELSC_ON_BOTH },
+    { "fan", ELSC_BUILD_BOTH,       elsc_handle_fan,
+      ELSC_ON_BOTH },
+    { "fsc", ELSC_BUILD_BOTH,       elsc_handle_fsc,
+      ELSC_ON_BOTH },
+    { "get", ELSC_BUILD_BOTH,       elsc_handle_get,
+      ELSC_ON_I2C },
+    { "hbt", ELSC_BUILD_BOTH,       elsc_handle_hbt,
+      ELSC_ON_BOTH },
+    { "key", ELSC_BUILD_ORIGIN2000, elsc_handle_key,
+      ELSC_ON_BOTH },
+    { "nic", ELSC_BUILD_BOTH,       elsc_handle_nic,
+      ELSC_ON_BOTH },
+    { "nmi", ELSC_BUILD_BOTH,       elsc_handle_nmi,
+      ELSC_ON_BOTH },
+    { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr,
+      ELSC_ON_BOTH },
+    { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst,
+      ELSC_ON_BOTH },
+    { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw,
+      ELSC_ON_BOTH },
+    { "see", ELSC_BUILD_BOTH,       elsc_handle_see,
+      ELSC_ON_BOTH },
+    { "sel", ELSC_BUILD_BOTH,       elsc_handle_sel,
+      ELSC_ON_BOTH },
+    { "sla", ELSC_BUILD_BOTH,       elsc_handle_sla,
+      ELSC_ON_BOTH },
+    { "tas", ELSC_BUILD_BOTH,       elsc_handle_tas,
+      ELSC_ON_BOTH },
+    { "tmp", ELSC_BUILD_BOTH,       elsc_handle_tmp,
+      ELSC_ON_BOTH },
+    { "tst", ELSC_BUILD_BOTH,       elsc_handle_tst,
+      ELSC_ON_BOTH },
+    { "ver", ELSC_BUILD_BOTH,       elsc_handle_ver,
+      ELSC_ON_BOTH },
+    { "vlm", ELSC_BUILD_ORIGIN2000, elsc_handle_vlm,
+      ELSC_ON_BOTH },
 };
 
 /*
@@ -1507,13 +1606,466 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     for (i = 0; i < ARRAY_SIZE(elsc_commands); i++) {
         const ElscCommand *c = &elsc_commands[i];
 
-        if (memcmp(line, c->mnemonic, 3) == 0 && (c->builds & build)) {
+        if (memcmp(line, c->mnemonic, 3) == 0 && (c->builds & build) &&
+            (c->channels & ELSC_ON_I2C)) {
             c->handler(s, &r);
             return;
         }
     }
     elsc_frame_response_str(s, "err cmd");
 }
+
+static bool elsc_run_action(SGIElscState *s, uint8_t action);
+
+/*
+ * The serial line's own commands. "ech" sets echo: "1" on, "0" off, and
+ * with no argument it toggles.
+ */
+static void elsc_handle_ech(SGIElscState *s, ElscRequest *r)
+{
+    char c;
+
+    if (!elsc_read_char(r, &c)) {
+        s->serial_echo = !s->serial_echo;
+    } else if (c == '1' || c == '0') {
+        s->serial_echo = c == '1';
+    } else {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    elsc_frame_ok(s);
+}
+
+/* A run of non-space characters, up to the end of the line. */
+static unsigned elsc_read_word(ElscRequest *r, const char **word)
+{
+    unsigned n = 0;
+
+    while (elsc_peek(r) == ' ') {
+        elsc_skip(r);
+    }
+    *word = &r->text[r->pos];
+    while (r->pos + n < r->len) {
+        char c = r->text[r->pos + n];
+
+        if (c == ' ' || c == '\r' || c == '\n' || c == '\0') {
+            break;
+        }
+        n++;
+    }
+    r->pos += n;
+    return n;
+}
+
+#define ELSC_NVRAM_PASSWORD 1
+#define ELSC_PASSWORD_LEN   4
+
+/*
+ * "pas": with no argument, leave supervisor mode. "pas <word>" enters it
+ * when the word is exactly four characters and matches the password at
+ * offsets 1 to 4 of the NVRAM page. "pas s <word>", in supervisor mode
+ * already, stores the first four characters of a word at least that long,
+ * which must follow exactly one space.
+ */
+static void elsc_handle_pas(SGIElscState *s, ElscRequest *r)
+{
+    const char *word;
+    unsigned n = elsc_read_word(r, &word);
+    unsigned i;
+
+    if (n == 0) {
+        s->supervisor = false;
+        elsc_frame_ok(s);
+        return;
+    }
+    if (n == 1 && word[0] == 's' && elsc_peek(r) == ' ') {
+        if (!s->supervisor) {
+            elsc_frame_response_str(s, "err perm");
+            return;
+        }
+        elsc_skip(r);
+        word = &r->text[r->pos];
+        for (n = 0; r->pos + n < r->len; n++) {
+            char c = word[n];
+
+            if (c == ' ' || c == '\r' || c == '\n' || c == '\0') {
+                break;
+            }
+        }
+        if (n < ELSC_PASSWORD_LEN) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+        for (i = 0; i < ELSC_PASSWORD_LEN; i++) {
+            uint8_t b = word[i];
+
+            if (!elsc_command_nvram(s, "pas", ELSC_NVRAM_PASSWORD + i, &b,
+                                    true)) {
+                break;
+            }
+        }
+        s->supervisor = true;
+        elsc_frame_ok(s);
+        return;
+    }
+    if (n != ELSC_PASSWORD_LEN) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    for (i = 0; i < ELSC_PASSWORD_LEN; i++) {
+        uint8_t b = 0;
+
+        if (!elsc_command_nvram(s, "pas", ELSC_NVRAM_PASSWORD + i, &b,
+                                false) ||
+            b != (uint8_t)word[i]) {
+            elsc_frame_response_str(s, "err arg");
+            return;
+        }
+    }
+    s->supervisor = true;
+    elsc_frame_ok(s);
+}
+
+/*
+ * The controller page's bytes the serial commands read and write: the
+ * debug switches at 5 and 6, the module number at 8 and the clock-select
+ * byte at 11.
+ */
+#define ELSC_NVRAM_DEBUG    5
+#define ELSC_NVRAM_MODULE   8
+#define ELSC_NVRAM_CLOCK    11
+
+static void elsc_reply_nvram_byte(SGIElscState *s, const char *cmd,
+                                  uint8_t offset)
+{
+    uint8_t v = 0;
+    char resp[8];
+
+    elsc_command_nvram(s, cmd, offset, &v, false);
+    snprintf(resp, sizeof(resp), "ok %x", v);
+    elsc_frame_response_str(s, resp);
+}
+
+/* "mod [<hex>]": the module number. A non-hex argument is the query. */
+static void elsc_handle_mod(SGIElscState *s, ElscRequest *r)
+{
+    uint32_t v;
+
+    if (!elsc_read_hex(r, &v)) {
+        elsc_reply_nvram_byte(s, "mod", ELSC_NVRAM_MODULE);
+        return;
+    }
+    {
+        uint8_t b = v;
+
+        elsc_command_nvram(s, "mod", ELSC_NVRAM_MODULE, &b, true);
+    }
+    elsc_frame_ok(s);
+}
+
+/* "dbg [<a> [<b>]]": the two debug-switch bytes. */
+static void elsc_handle_dbg(SGIElscState *s, ElscRequest *r)
+{
+    uint32_t a, b;
+
+    if (!elsc_read_hex(r, &a)) {
+        uint8_t v5 = 0, v6 = 0;
+        char resp[12];
+
+        if (elsc_command_nvram(s, "dbg", ELSC_NVRAM_DEBUG, &v5, false)) {
+            elsc_nvram_access(s, ELSC_NVRAM_DEBUG + 1, &v6, false);
+        }
+        snprintf(resp, sizeof(resp), "ok %x %x", v5, v6);
+        elsc_frame_response_str(s, resp);
+        return;
+    }
+    {
+        uint8_t v = a;
+
+        if (!elsc_command_nvram(s, "dbg", ELSC_NVRAM_DEBUG, &v, true)) {
+            elsc_frame_ok(s);
+            return;
+        }
+    }
+    if (elsc_read_hex(r, &b)) {
+        uint8_t v = b;
+
+        elsc_nvram_access(s, ELSC_NVRAM_DEBUG + 1, &v, true);
+    }
+    elsc_frame_ok(s);
+}
+
+/*
+ * "fre [<hex>]", Origin 2000 build: the clock-select byte. Writing it also
+ * reprograms the midplane clock chip, which the model does not have.
+ */
+static void elsc_handle_fre(SGIElscState *s, ElscRequest *r)
+{
+    uint32_t v;
+
+    if (!elsc_read_hex(r, &v)) {
+        elsc_reply_nvram_byte(s, "fre", ELSC_NVRAM_CLOCK);
+        return;
+    }
+    {
+        uint8_t b = v;
+
+        elsc_command_nvram(s, "fre", ELSC_NVRAM_CLOCK, &b, true);
+    }
+    elsc_frame_ok(s);
+}
+
+/*
+ * "nvm <addr> [<data>]": one byte of the management NVRAM. The address's
+ * low byte is the offset and its high byte picks the device, the
+ * firmware forming the device address byte as 0xa0 ORed with twice the
+ * high byte: 000 to 7ff reach 0x50 to 0x57, and higher addresses reach
+ * other devices or alias back onto those. A device that does not answer
+ * gives a bare "err ".
+ */
+static void elsc_handle_nvm(SGIElscState *s, ElscRequest *r)
+{
+    uint32_t addr, data;
+    uint8_t device, v = 0;
+    bool write;
+
+    if (!elsc_read_hex(r, &addr)) {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    device = (uint8_t)(0xa0 | ((addr >> 8) << 1)) >> 1;
+    write = elsc_read_hex(r, &data);
+    v = data;
+    if (!elsc_i2c_access(s, device, addr & 0xff, &v, write)) {
+        elsc_frame_response_str(s, "err ");
+        return;
+    }
+    if (write) {
+        elsc_frame_ok(s);
+    } else {
+        char resp[8];
+
+        snprintf(resp, sizeof(resp), "ok %x", v);
+        elsc_frame_response_str(s, resp);
+    }
+}
+
+/*
+ * "cfg": the management NVRAM's raw bytes from device 0x50 offset 0, in
+ * eight-byte reads, up to and including the first zero byte or 0x700
+ * bytes, then a line end. No Ctrl+T and no "ok".
+ */
+#define ELSC_CFG_LIMIT 0x700
+
+static void elsc_handle_cfg(SGIElscState *s, ElscRequest *r)
+{
+    unsigned offset, i;
+
+    s->serial_raw = true;
+    for (offset = 0; offset < ELSC_CFG_LIMIT; offset += 8) {
+        uint8_t chunk[8] = { 0 };
+
+        for (i = 0; i < 8; i++) {
+            if (!elsc_i2c_access(s, 0x50 + ((offset + i) >> 8),
+                                 (offset + i) & 0xff, &chunk[i], false) &&
+                offset + i == 0) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-elsc: \"cfg\" with no NVRAM at 0x50\n");
+            }
+        }
+        for (i = 0; i < 8; i++) {
+            elsc_serial_write(s, &chunk[i], 1);
+            if (!chunk[i]) {
+                elsc_serial_puts(s, "\r\n");
+                return;
+            }
+        }
+    }
+    elsc_serial_puts(s, "\r\n");
+}
+
+/* Commands only the serial line takes; over I2C they are "err cmd". */
+static const ElscCommand elsc_serial_commands[] = {
+    { "cfg", ELSC_BUILD_BOTH,       elsc_handle_cfg, ELSC_ON_SERIAL },
+    { "dbg", ELSC_BUILD_BOTH,       elsc_handle_dbg, ELSC_ON_SERIAL },
+    { "ech", ELSC_BUILD_BOTH,       elsc_handle_ech, ELSC_ON_SERIAL },
+    { "fre", ELSC_BUILD_ORIGIN2000, elsc_handle_fre, ELSC_ON_SERIAL },
+    { "mod", ELSC_BUILD_BOTH,       elsc_handle_mod, ELSC_ON_SERIAL },
+    { "nvm", ELSC_BUILD_BOTH,       elsc_handle_nvm, ELSC_ON_SERIAL },
+    { "pas", ELSC_BUILD_BOTH,       elsc_handle_pas, ELSC_ON_SERIAL },
+};
+
+/*
+ * Whether a serial command needs supervisor mode. "pas s" checks for
+ * itself; "nmi" and "rst" check module power before this.
+ */
+static bool elsc_serial_gated(const char *m, const ElscRequest *r)
+{
+    ElscRequest probe = *r;
+    uint32_t v;
+    char c;
+
+    if (!strcmp(m, "clr") || !strcmp(m, "hbt") || !strcmp(m, "nmi") ||
+        !strcmp(m, "rst")) {
+        return true;
+    }
+    if (!strcmp(m, "pwr")) {
+        return elsc_read_char(&probe, &c) &&
+               (c == 'u' || c == 'd' || c == 'c');
+    }
+    if (!strcmp(m, "fan") || !strcmp(m, "aut")) {
+        return elsc_read_char(&probe, &c);
+    }
+    if (!strcmp(m, "vlm")) {
+        return elsc_read_char(&probe, &c) && elsc_read_char(&probe, &c);
+    }
+    if (!strcmp(m, "fre") || !strcmp(m, "mod") || !strcmp(m, "dbg")) {
+        return elsc_read_hex(&probe, &v);
+    }
+    if (!strcmp(m, "nvm")) {
+        return elsc_read_hex(&probe, &v) && elsc_read_hex(&probe, &v);
+    }
+    return false;
+}
+
+static const ElscCommand *elsc_find_command(const ElscCommand *table,
+                                            size_t n, const char *line,
+                                            unsigned build)
+{
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        if (memcmp(line, table[i].mnemonic, 3) == 0 &&
+            (table[i].builds & build)) {
+            return &table[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Run one serial line. It is parsed as an I2C request is, with the byte
+ * that ended it in place of the I2C carriage return, so only a carriage
+ * return separates a bare mnemonic; then the supervisor gate.
+ */
+static void elsc_serial_dispatch(SGIElscState *s, char *line, unsigned len)
+{
+    unsigned build = s->origin2000 ? ELSC_BUILD_ORIGIN2000 :
+                                     ELSC_BUILD_ORIGIN200;
+    const ElscCommand *c;
+    ElscRequest r = { .text = line, .len = len, .pos = 4 };
+    char mnemonic[4];
+
+    /* Ctrl+T and Enter alone. */
+    if (len == 1 && line[0] == '\r') {
+        elsc_frame_response_str(s, s->serial_echo ? "ok " : "err cmd");
+        return;
+    }
+    if (len < 4 || (line[3] != ' ' && line[3] != '\r')) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    if (line[3] == '\r') {
+        r.pos = 3;
+    }
+    c = elsc_find_command(elsc_commands, ARRAY_SIZE(elsc_commands), line,
+                          build);
+    if (!c) {
+        c = elsc_find_command(elsc_serial_commands,
+                              ARRAY_SIZE(elsc_serial_commands), line, build);
+    }
+    if (!c || !(c->channels & ELSC_ON_SERIAL)) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    memcpy(mnemonic, c->mnemonic, sizeof(mnemonic));
+    if ((!strcmp(mnemonic, "nmi") || !strcmp(mnemonic, "rst")) &&
+        !elsc_module_powered(s)) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    if (!s->supervisor && elsc_serial_gated(mnemonic, &r)) {
+        elsc_frame_response_str(s, "err perm");
+        return;
+    }
+    c->handler(s, &r);
+}
+
+/*
+ * Run the waiting serial line and print its reply: Ctrl+T, the reply as
+ * the I2C contract gives it but with no separator space after a bare "ok",
+ * and a line end. No prompt follows. An action the command asked for runs
+ * once the reply is out.
+ */
+static void elsc_serial_run(SGIElscState *s)
+{
+    char line[SGI_ELSC_MAX_TEXT + 1];
+    unsigned len = s->serial_line_len;
+    uint8_t action;
+
+    memcpy(line, s->serial_line, len);
+    line[len] = s->serial_term;
+    s->serial_pending = false;
+    s->serial_line_len = 0;
+
+    s->serial_running = true;
+    s->serial_raw = false;
+    s->serial_reply_len = 0;
+    s->serial_action = ELSC_ACTION_NONE;
+    elsc_serial_dispatch(s, line, len + 1);
+    s->serial_running = false;
+
+    if (!s->serial_raw) {
+        unsigned n = s->serial_reply_len;
+
+        if (n == 3 && !memcmp(s->serial_reply, "ok ", 3)) {
+            n = 2;
+        }
+        elsc_serial_puts(s, "\x14");
+        elsc_serial_write(s, s->serial_reply, n);
+        elsc_serial_puts(s, "\r\n");
+    }
+    action = s->serial_action;
+    s->serial_action = ELSC_ACTION_NONE;
+    if (action != ELSC_ACTION_NONE) {
+        elsc_run_action(s, action);
+    }
+}
+
+/*
+ * A completed line runs once the bus is free, this controller's own I2C
+ * slave is idle and no Hub message is pending; an I2C command arriving at
+ * the same moment goes first. On an Origin 2000 module the grant
+ * scheduler decides that turn, and stops publishing grants once it is
+ * given; the Origin 200 controller stops its own grants while the line
+ * waits on anything but a Hub message.
+ */
+static void elsc_serial_poll(void *opaque)
+{
+    SGIElscState *s = opaque;
+    bool turn;
+
+    if (!s->serial_pending) {
+        return;
+    }
+    if (s->module_ops && s->module_ops->serial_turn) {
+        turn = !s->slave_addressed &&
+               s->module_ops->serial_turn(s->module_opaque);
+    } else {
+        turn = !s->message_mask && !s->slave_addressed &&
+               !i2c_bus_busy(s->bus);
+    }
+    if (!turn) {
+        timer_mod(s->serial_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  ELSC_SERIAL_POLL_MS);
+        return;
+    }
+    elsc_serial_run(s);
+    if (s->module_ops && s->module_ops->serial_done) {
+        s->module_ops->serial_done(s->module_opaque);
+    }
+}
+
 
 /*
  * Console output names its sender in the character after "acp ", which
@@ -1594,17 +2146,8 @@ static void elsc_request_complete(SGIElscState *s)
  * Answers whether it asked the machine itself for a reset or shutdown just
  * now, which is when the requesting processor stops its peers.
  */
-static bool elsc_run_committed_action(SGIElscState *s)
+static bool elsc_run_action(SGIElscState *s, uint8_t action)
 {
-    uint8_t action = s->deferred_action;
-
-    if (!s->deferred_committed) {
-        return false;
-    }
-    s->deferred_action = ELSC_ACTION_NONE;
-    s->deferred_committed = false;
-    s->deferred_scheduled = false;
-
     /*
      * Release the bus for every destructive action, before it fires. All
      * three leave this controller matched (the NACK-without-STOP path never
@@ -1655,6 +2198,19 @@ static bool elsc_run_committed_action(SGIElscState *s)
          */
         g_assert_not_reached();
     }
+}
+
+static bool elsc_run_committed_action(SGIElscState *s)
+{
+    uint8_t action = s->deferred_action;
+
+    if (!s->deferred_committed) {
+        return false;
+    }
+    s->deferred_action = ELSC_ACTION_NONE;
+    s->deferred_committed = false;
+    s->deferred_scheduled = false;
+    return elsc_run_action(s, action);
 }
 
 static void elsc_deferred_action_bh(void *opaque)
@@ -1828,12 +2384,14 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
      */
     switch (event) {
     case I2C_START_SEND:
+        s->slave_addressed = true;
         elsc_module_slave_active(s, true);
         /* A new request is arriving; its START is one such boundary. */
         elsc_fire_committed_action(s);
         s->rxlen = 0;
         break;
     case I2C_START_RECV:
+        s->slave_addressed = true;
         elsc_module_slave_active(s, true);
         /*
          * Direction switch: the request just written is complete. A committed
@@ -1853,6 +2411,7 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
          * out a committed action here or the closing resync to the invalid
          * address would swallow one whose "ok" the guest already has.
          */
+        s->slave_addressed = false;
         elsc_module_slave_active(s, false);
         elsc_fire_committed_action(s);
         break;
@@ -1868,6 +2427,7 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         elsc_fire_committed_action(s);
         break;
     case I2C_FINISH:
+        s->slave_addressed = false;
         elsc_module_slave_active(s, false);
         s->rxlen = 0;
         /*
@@ -2039,7 +2599,9 @@ static void elsc_arb_step(void *opaque)
     timer_mod(s->arb_timer, now + ELSC_ARB_TICK_US);
 
     if (i2c_bus_busy(s->bus) ||
-        (s->arb_peer && i2c_bus_busy(s->arb_peer->bus))) {
+        (s->arb_peer && i2c_bus_busy(s->arb_peer->bus)) ||
+        (s->serial_pending && !s->message_mask)) {
+        /* A serial command waiting for the bus also stops the grants. */
         return;
     }
 
@@ -2052,49 +2614,124 @@ static void elsc_arb_step(void *opaque)
 }
 
 /*
- * Bytes after 0x14 are the controller's own command (Owner's Guide p.132);
- * discarding to the line terminator is a model choice.
+ * Queue one byte of console input for the processors. A full queue wraps:
+ * the firmware keeps accepting bytes and overwrites the oldest.
  */
+static void elsc_queue_input(SGIElscState *s, uint8_t c)
+{
+    bool was_pending = s->rx_queue_len > 0;
+
+    if (s->rx_queue_len == sizeof(s->rx_queue)) {
+        memmove(s->rx_queue, &s->rx_queue[1], sizeof(s->rx_queue) - 1);
+        s->rx_queue_len--;
+    }
+    s->rx_queue[s->rx_queue_len++] = c;
+    trace_sgi_elsc_rx_enqueue(c, s->rx_queue_len);
+    if (!was_pending) {
+        elsc_console_update(s);
+    }
+}
+
+static void elsc_serial_schedule(SGIElscState *s)
+{
+    s->serial_pending = true;
+    timer_mod(s->serial_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              ELSC_SERIAL_POLL_MS);
+}
+
+/* Ctrl+T in pass-through: the prompt, or "Slave!" from an Origin 200 slave. */
+static void elsc_serial_enter_command(SGIElscState *s)
+{
+    bool slave = !s->origin2000 && !s->arbitration;
+
+    if (s->serial_echo) {
+        elsc_serial_puts(s, "\r\nMSC> ");
+        if (slave) {
+            elsc_serial_puts(s, "Slave!\r\n");
+            return;
+        }
+    }
+    s->serial_command = true;
+}
+
+/*
+ * One byte from the operator. In pass-through everything but Ctrl+T is
+ * console input. In command mode bytes build the line; a carriage return,
+ * line feed or NUL ends it, and a second Ctrl+T abandons it, keeping what
+ * was typed for the next line and passing one Ctrl+T on as input.
+ */
+static void elsc_serial_input(SGIElscState *s, uint8_t c)
+{
+    if (!s->serial_command) {
+        if (c == ELSC_CTRL_T) {
+            elsc_serial_enter_command(s);
+        } else {
+            elsc_queue_input(s, c);
+        }
+        return;
+    }
+
+    switch (c) {
+    case 0x08:
+    case 0x7f:
+        if (s->serial_line_len) {
+            s->serial_line_len--;
+            if (s->serial_echo) {
+                elsc_serial_puts(s, "\b \b");
+            }
+        }
+        return;
+    case '\r':
+    case '\n':
+    case '\0':
+        s->serial_term = c;
+        if (s->serial_echo) {
+            if (c == '\r') {
+                elsc_serial_puts(s, "\r\n");
+            } else {
+                elsc_serial_write(s, &c, 1);
+            }
+        }
+        s->serial_command = false;
+        if (!s->origin2000 && !s->arbitration) {
+            /* A slave never runs serial commands. */
+            s->serial_line_len = 0;
+            return;
+        }
+        elsc_serial_schedule(s);
+        return;
+    case ELSC_CTRL_T:
+        s->serial_command = false;
+        elsc_queue_input(s, ELSC_CTRL_T);
+        if (s->serial_echo) {
+            elsc_serial_puts(s, "\b\b \b\b \b\b \b\b \b");
+        }
+        return;
+    default:
+        if (s->serial_line_len < sizeof(s->serial_line)) {
+            s->serial_line[s->serial_line_len++] = c;
+        }
+        if (s->serial_echo) {
+            elsc_serial_write(s, &c, 1);
+        }
+        return;
+    }
+}
+
 static void elsc_receive(void *opaque, const uint8_t *buf, int size)
 {
     SGIElscState *s = opaque;
-    bool was_pending = s->rx_queue_len > 0;
     int i;
 
     for (i = 0; i < size; i++) {
-        uint8_t c = buf[i];
-
-        if (s->in_escape) {
-            if (c == '\r' || c == '\n') {
-                s->in_escape = false;
-            }
-            continue;
-        }
-        if (c == 0x14) {
-            s->in_escape = true;
-            continue;
-        }
-        if (s->rx_queue_len < sizeof(s->rx_queue)) {
-            s->rx_queue[s->rx_queue_len++] = c;
-            trace_sgi_elsc_rx_enqueue(c, s->rx_queue_len);
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-elsc: console input queue full, byte "
-                          "dropped\n");
-        }
-    }
-
-    if (!was_pending && s->rx_queue_len) {
-        elsc_console_update(s);
+        elsc_serial_input(s, buf[i]);
     }
 }
 
 static int elsc_can_receive(void *opaque)
 {
-    SGIElscState *s = opaque;
-    uint32_t room = sizeof(s->rx_queue) - s->rx_queue_len;
-
-    return room < 32 ? (int)room : 32;
+    /* No flow control: the controller always takes the next bytes. */
+    return 32;
 }
 
 /*
@@ -2119,7 +2756,7 @@ void sgi_elsc_reinitialize(SGIElscState *s)
     s->txpos = 0;
     s->resp_owner = -1;
     s->rx_queue_len = 0;
-    s->in_escape = false;
+    s->slave_addressed = false;
     elsc_module_slave_active(s, false);
     elsc_console_update(s);
 }
@@ -2147,7 +2784,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->arb_code = 0;
     s->arb_signal = 0;
     s->rx_queue_len = 0;
-    s->in_escape = false;
+    s->slave_addressed = false;
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
@@ -2171,6 +2808,12 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     }
 
     timer_del(s->pwr_down_timer);
+    timer_del(s->serial_timer);
+    s->serial_command = false;
+    s->serial_line_len = 0;
+    s->serial_pending = false;
+    s->serial_echo = true;
+    s->supervisor = false;
     timer_del(s->power_up_timer);
     s->module_off = false;
     s->power_sequence = false;
@@ -2325,6 +2968,8 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->hbt_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_hbt_expired, s);
     s->power_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                      elsc_power_up_expired, s);
+    s->serial_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_serial_poll, s);
+    s->serial_echo = true;
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -2354,6 +2999,8 @@ static void elsc_unrealize(DeviceState *dev)
     s->hbt_timer = NULL;
     timer_free(s->power_up_timer);
     s->power_up_timer = NULL;
+    timer_free(s->serial_timer);
+    s->serial_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
     notifier_remove(&s->shutdown_notifier);
@@ -2385,6 +3032,9 @@ static int elsc_post_load(void *opaque, int version_id)
         s->txpos > s->txlen) {
         return -EINVAL;
     }
+    if (s->rx_queue_len > SGI_ELSC_RX_QUEUE_SIZE) {
+        return -EINVAL;
+    }
     if (s->arb_code >= ELSC_RING_POSITION_COUNT) {
         return -EINVAL;
     }
@@ -2411,6 +3061,7 @@ static int elsc_post_load(void *opaque, int version_id)
         s->sel_mode >= SGI_ELSC_SELECT_COUNT ||
         s->hbt_stage >= SGI_ELSC_HEARTBEAT_COUNT ||
         s->status >= SGI_ELSC_STATUS_COUNT ||
+        s->serial_line_len > SGI_ELSC_MAX_TEXT ||
         s->sel_processor >= SGI_ELSC_PROCESSORS ||
         (s->see_processor >= SGI_ELSC_PROCESSORS &&
          s->see_processor != SGI_ELSC_SEE_ALL)) {
@@ -2448,7 +3099,6 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(power_up_reset_owed, SGIElscState),
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
-        VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_UINT8(dip_switches, SGIElscState),
         VMSTATE_UINT8(arb_signal, SGIElscState),
         VMSTATE_INT32(resp_owner, SGIElscState),
@@ -2496,6 +3146,15 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT16(cycle_seconds, SGIElscState),
         VMSTATE_TIMER_PTR(power_up_timer, SGIElscState),
         VMSTATE_UINT8(status, SGIElscState),
+        VMSTATE_BOOL(serial_command, SGIElscState),
+        VMSTATE_UINT8_ARRAY(serial_line, SGIElscState, SGI_ELSC_MAX_TEXT),
+        VMSTATE_UINT32(serial_line_len, SGIElscState),
+        VMSTATE_UINT8(serial_term, SGIElscState),
+        VMSTATE_BOOL(serial_pending, SGIElscState),
+        VMSTATE_BOOL(serial_echo, SGIElscState),
+        VMSTATE_BOOL(supervisor, SGIElscState),
+        VMSTATE_BOOL(slave_addressed, SGIElscState),
+        VMSTATE_TIMER_PTR(serial_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

@@ -116,12 +116,12 @@ Command vocabulary
     and livelocks the firmware's output queue.
 
 ``pas``
-    Not a command on this channel: answered ``err cmd``. The controller
-    has a supervisor mode, entered with ``pas`` and a password, but it
-    exists only on the operator's serial line and gates nothing that
-    arrives over I2C. The controller datasheet records this from the
-    controller firmware; IRIX sends ``pwr d`` and ``rst`` without ever
-    sending ``pas``.
+    Not a command on this channel: answered ``err cmd``, as are the
+    other serial-only commands. The controller's supervisor mode, entered
+    with ``pas`` and a password, belongs to the operator's serial line
+    (see `The operator's command line`_) and gates nothing that arrives
+    over I2C; IRIX sends ``pwr d`` and ``rst`` without ever sending
+    ``pas``.
 
 ``dsp <message>``
     Origin 2000 build only; the Origin 200 build answers ``err cmd``.
@@ -354,9 +354,9 @@ Command vocabulary
     power-down countdown, the heartbeat watchdog and the fan-high
     request, and on the Origin
     2000 build blanks the display. It leaves the ``tas`` byte, the
-    margins, the ``fsc`` and ``tst`` flags and the NVRAM alone. The
-    serial echo and supervisor mode it also resets belong to the
-    operator's serial line.
+    margins, the ``fsc`` and ``tst`` flags and the NVRAM alone. It also
+    turns serial echo back on and ends serial supervisor mode, whichever
+    channel it comes from.
 
 ``fan [h|n]``
     ``fan h`` and ``fan n`` set and clear the fan-high request and
@@ -372,8 +372,8 @@ Command vocabulary
     does, and answers a bare ``ok``; any other argument is that query
     too and leaves the flag alone. In the Origin 2000 build the flag
     stops the controller powering the module up on its own when the key
-    moves, which the model's key never does; its display mirroring
-    belongs to the serial line.
+    moves, which the model's key never does, and it mirrors host display
+    text to the serial line (see `The operator's command line`_).
 
 ``tst <c>``
     The factory's short timeouts: ``1`` sets them and any other
@@ -444,7 +444,7 @@ unpowered the controller keeps running and answering: ``pwr`` gives
 ``ok d``, ``rst`` and ``nmi`` give ``err cmd``, an ``nmi`` or heartbeat
 pulse already under way reaches no processor, and an Origin 2000
 module stops publishing grants while an Origin 200 controller keeps
-publishing them.
+publishing them. Serial commands still run on both.
 
 Removing power stops the processors of that module at once: each is
 reset, which loses its state as a powered-down part does, and halted
@@ -784,12 +784,72 @@ to the master, node 0 at index 2. A backend provisioned at the slave's
 nominal index 6 remains unattached. Node 0's index 3 is the bring-up UART,
 which exists on node 0 only.
 
-The external AUX port's one multiplexing rule (Origin 200 Owner's Guide,
-page 132) is that a byte sequence beginning 0x14 is a command to the
-controller itself and is never queued for ``get``. Every other byte is
-console input. Nothing read for the datasheet states what ends an escaped
-command. The model discards through the next line terminator as a model
-choice.
+The operator's command line
+---------------------------
+
+Everything the operator types is console input for the processors
+except Ctrl+T (0x14), which starts a command line for the controller.
+Console input is queued for ``get``, unchanged, and announced as the
+``sel`` entry describes; a full queue keeps taking bytes and
+overwrites its oldest. The line has no flow control, so the controller
+always takes input and its output never stalls.
+
+* After Ctrl+T, with echo on, the controller prints a line end and
+  ``MSC>`` with a space. Typed characters are stored and echoed;
+  backspace or delete removes the last one and prints backspace, space,
+  backspace. A carriage return, line feed or NUL ends the line (a return
+  echoes as return and line feed) and the line waits to run. A second
+  Ctrl+T abandons the line, erases the prompt and passes one Ctrl+T on as
+  console input; what was typed stays and starts the next line. A line
+  feed after the return arrives once the line has ended, so it goes to
+  the processors.
+* Console output (``acp``) that arrives while a line is being typed is
+  acknowledged over I2C and lost.
+* A waiting line runs once the bus is free, the controller's own I2C
+  slave is idle and no Hub message is pending; an I2C command arriving
+  at the same moment goes first. On an Origin 2000 module the grant
+  scheduler gives that turn, unpowered or not, and publishes no grants
+  until the line has run; an Origin 200 master stops its own grants while the line waits on
+  anything but a Hub message.
+* The line is parsed as an I2C request, with the byte that ended it in
+  place of the carriage return, so only a return separates a bare
+  mnemonic. The reply is Ctrl+T, the reply text of the I2C contract but
+  ``ok`` with no trailing space when it carries no value, and a return
+  and line feed; no prompt follows. Errors include ``err perm``. ``fsc``
+  with no setting prints ``ok1`` or ``ok0``. Ctrl+T and Enter alone print
+  ``ok`` with echo on and ``err cmd`` with it off.
+* ``ech`` sets echo (``1`` on, ``0`` off, none toggles); echo governs the
+  prompt, its erasure and the echo of typed characters. ``clr`` turns it
+  back on.
+* Supervisor mode starts off. ``pas <word>`` with exactly four
+  characters matching the password at offsets 1 to 4 of the
+  controller's NVRAM page sets it, and anything else is ``err arg``;
+  ``pas`` alone clears it; ``pas s <word>``, in supervisor mode, stores
+  the first four characters of a word at least that long that follows
+  exactly one space. ``clr`` from either channel clears it. Without it,
+  ``clr``, ``hbt``, ``nmi``, ``rst``, ``pwr u``/``d``/``c``, the setting
+  forms of ``fan``, ``aut``, ``vlm``, ``fre``, ``mod`` and ``dbg`` and
+  ``nvm`` writes print ``err perm``; ``nmi`` and ``rst`` first print
+  ``err cmd`` on an unpowered module.
+* ``acp`` and ``get`` print ``err cmd``. ``fan h``/``fan n`` also set or
+  clear bit 0x01 of the NVRAM configuration byte. The serial-only
+  commands reach the controller's NVRAM page: ``mod`` the module number
+  at offset 8, ``dbg`` the debug-switch bytes at 5 and 6, ``fre``
+  (Origin 2000 build) the clock-select byte at 11 -- its midplane clock
+  chip is not modelled -- and ``nvm <addr> [<data>]`` any byte of the
+  management NVRAM, the address's high byte choosing the device as the
+  firmware forms it, so addresses above 7ff alias or reach other
+  devices; a device that does not answer prints a bare ``err``.
+  ``cfg`` prints the NVRAM's raw bytes from offset 0 through the first
+  zero byte, with no Ctrl+T and no ``ok``. Every machine that builds
+  the controller gives it its NVRAM. Without it these commands, ``pas``
+  and ``aut`` answer as they would with every byte zero and lose what
+  they write, and the model logs the missing part as unimplemented.
+* A command's power or reset action runs once its reply is printed.
+* An Origin 200 slave answers Ctrl+T with the prompt and ``Slave!`` when
+  echo is on and takes no command; with echo off it takes the line
+  silently and never runs it. The slave's line is not attached to a
+  backend in this machine.
 
 QEMU continues to model the slave controller and its internal I2C command
 path. That preserves existing model behavior. It is not a hardware claim,

@@ -1262,7 +1262,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
 static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
 {
     SGIElscState *s = f->module->msc;
-    static const uint8_t input[] = { 's', 't', 'a', 'l', 'e', 0x14, 'x' };
+    static const uint8_t input[] = { 's', 't', 'a', 'l', 'e' };
     static const uint8_t fresh[] = { 'N' };
 
     expect_response(f, "dsp RETAINED", "ok ");
@@ -1271,7 +1271,6 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     expect_response(f, "acp 0 ", "ok 0");
     qemu_chr_be_write(f->chr, input, sizeof(input));
     g_assert_cmpuint(s->rx_queue_len, ==, 5);
-    g_assert_true(s->in_escape);
     g_assert_true(f->module->console_input_pending);
 
     msc_begin_response(f, 0, "ver");

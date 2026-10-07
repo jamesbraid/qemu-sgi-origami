@@ -263,7 +263,20 @@ static void mgmt_service(SN0ModuleManagementState *s)
      * A serial command owning the protocol path, or publication switched off,
      * leaves the recovery counter alone.
      */
-    if (!s->publication_enabled || s->serial_granted) {
+    if (s->serial_granted) {
+        return;
+    }
+    if (!s->publication_enabled) {
+        /*
+         * An unpowered module publishes no grants, but the controller keeps
+         * running and takes serial commands once its bus is free.
+         */
+        if (s->serial_request && !s->pending_messages && !s->slave_active &&
+            !mgmt_adapter_active(s) && !i2c_bus_busy(s->bus) &&
+            !i2c_wire_contenders(s->bus)) {
+            s->serial_request = false;
+            s->serial_granted = true;
+        }
         return;
     }
     if (s->controller_granted || s->slave_active || s->grant_active ||
@@ -663,6 +676,26 @@ static bool mgmt_elsc_take_message(void *opaque, unsigned processor)
     return true;
 }
 
+/*
+ * A serial command's turn on the bus comes from the scheduler, which stops
+ * publishing grants once it has given it.
+ */
+static bool mgmt_elsc_serial_turn(void *opaque)
+{
+    SN0ModuleManagementState *s = opaque;
+
+    if (s->serial_granted) {
+        return true;
+    }
+    sgi_sn0_module_management_set_serial_request(s, true);
+    return false;
+}
+
+static void mgmt_elsc_serial_done(void *opaque)
+{
+    sgi_sn0_module_management_release_serial(opaque);
+}
+
 static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
                                    uint32_t sample)
 {
@@ -681,6 +714,8 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .console_owner = mgmt_elsc_console_owner,
     .console_input = mgmt_elsc_console_input,
     .onewire_slot = mgmt_elsc_onewire_slot,
+    .serial_turn = mgmt_elsc_serial_turn,
+    .serial_done = mgmt_elsc_serial_done,
     .post_message = mgmt_elsc_post_message,
     .take_message = mgmt_elsc_take_message,
 };
