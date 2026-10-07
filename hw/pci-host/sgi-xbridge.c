@@ -624,9 +624,15 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     dev = REG(s, 0x200 + slot * 8);
     width = dev & (1U << 22) ? 8 : 4;
+    /*
+     * A doubleword to a 32-bit device is two word cycles, lower address
+     * first, carrying the more significant half (Bridge Tables 68 and 76).
+     * @bytes holds the access least significant byte first, so that half
+     * is its upper four bytes.
+     */
     if (size > width) {
-        result = xbridge_pio(s, addr, bytes, 4, write);
-        return result | xbridge_pio(s, addr + 4, bytes + 4, 4, write);
+        result = xbridge_pio(s, addr, bytes + 4, 4, write);
+        return result | xbridge_pio(s, addr + 4, bytes, 4, write);
     }
     base = dev & (dev & (1U << 12) ? 0x3ff : 0xfff);
     if (slot < 2) {

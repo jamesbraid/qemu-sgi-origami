@@ -148,6 +148,101 @@ static void test_config_pio(void)
     qtest_quit(qts);
 }
 
+/*
+ * Device-window placement, one row per configuration of the specification's
+ * swap tables (the XBridge appendix is the Bridge's, table for table): host
+ * byte k lands on PCI byte k ^ 3 for a 32-bit device with bit 13 clear, k
+ * with it set, and 7 - k for a 64-bit device (bit 22) with it clear. A
+ * doubleword to a 32-bit device is two word cycles, lower address first.
+ * The test card's 64-bit register holds eight distinct PCI bytes.
+ */
+#define PIO_WIDE_PCI    0x01000000u
+#define PIO_DEV_SWAP    (1U << 13)
+#define PIO_DEV_64BIT   (1U << 22)
+
+static const uint8_t pio_wide_pci[8] = {
+    0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+};
+
+static unsigned int pio_pci_byte(uint32_t bits, unsigned int k)
+{
+    if (bits & PIO_DEV_SWAP) {
+        return k;
+    }
+    return bits & PIO_DEV_64BIT ? 7 - k : k ^ 3;
+}
+
+static void test_pio_placement(void)
+{
+    QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-xbridge-head,id=head "
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0");
+    static const uint32_t rows[] = {
+        0, PIO_DEV_SWAP, PIO_DEV_64BIT, PIO_DEV_64BIT | PIO_DEV_SWAP,
+    };
+    static const unsigned int sizes[] = { 1, 2, 4, 8 };
+    uint64_t fixed = BASE + 0x200000;
+    uint64_t scratch = fixed + 8;
+
+    qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
+    qtest_writel(qts, BASE + 0x20010, 0x02000000);
+    qtest_writel(qts, BASE + 0x20014, PIO_WIDE_PCI);
+    qtest_writel(qts, BASE + 0x20004, 6);
+
+    for (unsigned int r = 0; r < ARRAY_SIZE(rows); r++) {
+        for (unsigned int s = 0; s < ARRAY_SIZE(sizes); s++) {
+            unsigned int size = sizes[s];
+
+            for (unsigned int o = 0; o < 8; o += size) {
+                uint8_t want[8] = { 0 };
+                uint64_t expect = 0, val = 0, got;
+
+                for (unsigned int i = 0; i < size; i++) {
+                    unsigned int pci = pio_pci_byte(rows[r], o + i);
+
+                    expect = (expect << 8) | pio_wide_pci[pci];
+                    val = (val << 8) | (0x11 * (i + 1));
+                    want[pci] = 0x11 * (i + 1);
+                }
+                reg_write(qts, 0x200, rows[r] | 0x1000 | (PIO_WIDE_PCI >> 20));
+                g_test_message("row %x: %u bytes at %u", rows[r], size, o);
+                switch (size) {
+                case 1:
+                    got = qtest_readb(qts, fixed + o);
+                    qtest_writeq(qts, scratch, 0);
+                    qtest_writeb(qts, scratch + o, val);
+                    break;
+                case 2:
+                    got = qtest_readw(qts, fixed + o);
+                    qtest_writeq(qts, scratch, 0);
+                    qtest_writew(qts, scratch + o, val);
+                    break;
+                case 4:
+                    got = qtest_readl(qts, fixed + o);
+                    qtest_writeq(qts, scratch, 0);
+                    qtest_writel(qts, scratch + o, val);
+                    break;
+                default:
+                    got = qtest_readq(qts, fixed + o);
+                    qtest_writeq(qts, scratch, 0);
+                    qtest_writeq(qts, scratch + o, val);
+                    break;
+                }
+                g_assert_cmphex(got, ==, expect);
+
+                /* The 64-bit stream row reads PCI byte k at offset k. */
+                reg_write(qts, 0x200, PIO_DEV_64BIT | PIO_DEV_SWAP | 0x1000 |
+                          (PIO_WIDE_PCI >> 20));
+                for (unsigned int k = 0; k < 8; k++) {
+                    g_assert_cmphex(qtest_readb(qts, scratch + k), ==,
+                                    want[k]);
+                }
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_config_doubleword(void)
 {
     QTestState *qts = qtest_init("-M none -cpu R10000 -S "
@@ -1986,6 +2081,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/ate", test_ate);
     qtest_add_func("/sn1/xbridge/config-pio", test_config_pio);
     qtest_add_func("/sn1/xbridge/config-doubleword", test_config_doubleword);
+    qtest_add_func("/sn1/xbridge/pio-placement", test_pio_placement);
     qtest_add_func("/sn1/xbridge/config-type1", test_config_type1);
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
     qtest_add_func("/sn1/xbridge/dma-conversion", test_dma_conversion);
