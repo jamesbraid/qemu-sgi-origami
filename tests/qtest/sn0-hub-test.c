@@ -1534,15 +1534,15 @@ static void test_a_memory_read_ends_with_its_crc(const void *data)
 }
 
 /*
- * The PIMM record an Origin 200 node's Hub part holds, built here from the
- * record layout rather than by the model's own routine: format byte 0x01,
+ * The board record a node's Hub part holds, built here from the record
+ * layout rather than by the model's own routine: format byte 0x01,
  * the barcode, the part split around page 0's check value, the revision,
  * group, capability and variety left 0xff as every real record has them,
  * the name, and each page's complemented CRC16.
  */
-static void ip29_pimm_record(uint8_t record[64], const char *barcode,
-                             const char *part, const char *revision,
-                             const char *name)
+static void node_board_record(uint8_t record[64], const char *barcode,
+                              const char *part, const char *revision,
+                              const char *name)
 {
     memset(record, ' ', 64);
     record[0] = 0x01;
@@ -1587,14 +1587,14 @@ static void test_origin200_hub_holds_the_pimm_record(const void *data)
     uint8_t expected[64];
     QTestState *qts;
 
-    ip29_pimm_record(expected, "EMUU00", "013-1895-001", "C",
-                     "PIMM_1XT5_1MB");
+    node_board_record(expected, "EMUU00", "013-1895-001", "C",
+                      "PIMM_1XT5_1MB");
     qts = qtest_init("-M origin200");
     assert_pimm_record(qts, HUB_LOCAL, expected);
     qtest_quit(qts);
 
-    ip29_pimm_record(expected, "EMUU00", "013-1896-001", "D",
-                     "PIMM_2XT5_1MB");
+    node_board_record(expected, "EMUU00", "013-1896-001", "D",
+                      "PIMM_2XT5_1MB");
     qts = qtest_init("-M origin200 -smp 2");
     assert_pimm_record(qts, HUB_LOCAL, expected);
     qtest_quit(qts);
@@ -1608,11 +1608,11 @@ static void test_dual_origin200_pimm_records_are_per_node(const void *data)
     uint8_t expected[64];
 
     sn0_program_nasid(qts, 1);
-    ip29_pimm_record(expected, "EMUU00", "013-1896-001", "D",
-                     "PIMM_2XT5_1MB");
+    node_board_record(expected, "EMUU00", "013-1896-001", "D",
+                      "PIMM_2XT5_1MB");
     assert_pimm_record(qts, HUB_BY_NODE, expected);
-    ip29_pimm_record(expected, "EMUU01", "013-1896-001", "D",
-                     "PIMM_2XT5_1MB");
+    node_board_record(expected, "EMUU01", "013-1896-001", "D",
+                      "PIMM_2XT5_1MB");
     assert_pimm_record(qts, HUB_BY_NODE + NODE_STRIDE, expected);
 
     qtest_quit(qts);
@@ -3511,50 +3511,30 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         }
     }
 
-    /* Origin 2000's family-0x0b PIMM record is populated and page CRCs
-     * close. */
+    /*
+     * Each Origin 2000 node's family-0x0b part holds its IP27 node board's
+     * record, with group, capability and variety 0xff as real records
+     * carry them, not the zeroes the earlier placeholder stored.
+     */
     for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
         unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
-        uint64_t pimm_rom = onewire_expected_identity(
+        uint64_t node_rom = onewire_expected_identity(
             0x51454d554e00ULL + node);
-        uint8_t expected[32];
-        uint8_t page[32];
-        uint16_t crc;
+        g_autofree char *barcode = g_strdup_printf("EMUN%02u", node);
+        uint8_t expected[64];
+        uint8_t record[64];
 
-        memset(expected, ' ', sizeof(expected));
-        expected[0] = 0x01;
-        /* The marked serial prints as its own text: "EMUN", the node. */
-        g_snprintf((char *)&expected[1], 11, "EMUN%06u", node);
-        memcpy(&expected[11], "SGI-IP27-PIMM", 13);
-        crc = ~onewire_crc16(0, expected, 30);
-        expected[30] = crc;
-        expected[31] = crc >> 8;
-        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
+        node_board_record(expected, barcode, "030-0733-003", "G", "IP27");
+        onewire_cpu_search_for_identity(qts, cpu, node_rom);
         onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_READ_MEM);
         onewire_cpu_write_byte(qts, cpu, 0);
         onewire_cpu_write_byte(qts, cpu, 0);
-        for (unsigned int i = 0; i < sizeof(page); i++) {
-            page[i] = onewire_cpu_read_byte(qts, cpu);
+        for (unsigned int i = 0; i < sizeof(record); i++) {
+            record[i] = onewire_cpu_read_byte(qts, cpu);
         }
-        g_assert_cmpmem(page, sizeof(page), expected, sizeof(expected));
-        g_assert_cmphex(onewire_crc16(0, page, sizeof(page)), ==, 0xb001);
-
-        memset(expected, ' ', sizeof(expected));
-        memset(&expected[10], 0, 6);
-        memcpy(&expected[6], "1.0 ", 4);
-        memcpy(&expected[16], "IP27", 4);
-        crc = ~onewire_crc16(0, expected, 30);
-        expected[30] = crc;
-        expected[31] = crc >> 8;
-        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
-        onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_READ_MEM);
-        onewire_cpu_write_byte(qts, cpu, 32);
-        onewire_cpu_write_byte(qts, cpu, 0);
-        for (unsigned int i = 0; i < sizeof(page); i++) {
-            page[i] = onewire_cpu_read_byte(qts, cpu);
-        }
-        g_assert_cmpmem(page, sizeof(page), expected, sizeof(expected));
-        g_assert_cmphex(onewire_crc16(0, page, sizeof(page)), ==, 0xb001);
+        g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+        g_assert_cmphex(onewire_crc16(0, record, 32), ==, 0xb001);
+        g_assert_cmphex(onewire_crc16(0, &record[32], 32), ==, 0xb001);
     }
 
     qtest_quit(qts);

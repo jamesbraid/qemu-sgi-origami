@@ -548,10 +548,27 @@ static void sgi_machine_attach_ip29_pimm(SN0NodeState *node,
             };
 
             sgi_synthetic_barcode(barcode, 'U', part_serial);
-            sgi_hub_attach_pimm_record(&node->hub, &record, &error_fatal);
+            sgi_hub_attach_board_record(&node->hub, &record, &error_fatal);
             return;
         }
     }
+}
+
+/*
+ * Store an Origin 2000 or Onyx2 node's record in its Hub's one-wire part.
+ * An IP27 node lists only its node board there, which real inventories
+ * print as IP27, 030-0733-003 revision G; its processors carry no record
+ * of their own. The barcode is marked synthetic: the node-board letter and
+ * the instance of the Hub part holding the record.
+ */
+static void sgi_machine_attach_ip27_node(SN0NodeState *node,
+                                         uint64_t part_serial)
+{
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+    SGIBoardRecord record = { barcode, "030-0733-003", "G", "IP27" };
+
+    sgi_synthetic_barcode(barcode, 'N', part_serial);
+    sgi_hub_attach_board_record(&node->hub, &record, &error_fatal);
 }
 
 /*
@@ -4600,6 +4617,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         if (sgi_machine_topology_is_ip29(t)) {
             sgi_machine_attach_ip29_pimm(node, requested[node_index],
                                          model_node->identity->serial);
+        } else {
+            sgi_machine_attach_ip27_node(node, model_node->identity->serial);
         }
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
                                  &error_abort);

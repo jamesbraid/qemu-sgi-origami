@@ -485,15 +485,15 @@ struct SGIHubState {
      * The wire itself, and the responder on it: the PIMM manufacturing-record
      * part, DS2505-compatible. The serial is a synthetic per-unit property
      * the machine wires, from which the part derives its ROM identity at
-     * realize. The machine stores the fitted PIMM's record in it where that
+     * realize. The machine stores the node's board record in it where that
      * record is known; otherwise the part is left unprogrammed.
      */
     OneWireBus *onewire_bus;
     uint64_t onewire_serial;
     SGIHubModuleIdentity module_identity;
     bool has_module_identity;
-    uint8_t pimm_record[SGI_BOARD_RECORD_SIZE];
-    bool has_pimm_record;
+    uint8_t board_record[SGI_BOARD_RECORD_SIZE];
+    bool has_board_record;
     bool onewire_level;    /* what the wire sampled in the slot underway */
 
     /* Bring-up UART, off by default: firmware probes it as first console. */
@@ -529,11 +529,12 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
                                     const SGIHubModuleIdentity *identity,
                                     Error **errp);
 /*
- * Store the fitted PIMM's manufacturing record in the Hub's family-0x0b
- * part. Must run before this Hub realizes.
+ * Store the node's board record in the Hub's family-0x0b part: the fitted
+ * PIMM's on an Origin 200, the IP27 node board's on an Origin 2000. Must
+ * run before this Hub realizes.
  */
-bool sgi_hub_attach_pimm_record(SGIHubState *s, const SGIBoardRecord *record,
-                                Error **errp);
+bool sgi_hub_attach_board_record(SGIHubState *s, const SGIBoardRecord *record,
+                                 Error **errp);
 
 /*
  * Every Hub in the machine, in canonical stride order (this Hub's own
