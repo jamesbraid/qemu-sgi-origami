@@ -6179,10 +6179,11 @@ int main(int argc, char **argv)
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
 #endif
         for (unsigned mode = 0; mode < 8; mode++) {
-            g_autofree char *path = g_strdup_printf("/sgi-renderer-gl/texture/%u",
-                                                    mode);
+            g_autofree char *path = g_strdup_printf(
+                "/sgi-renderer-gl/texture/%u", mode);
 
-            g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_shader_texture);
+            g_test_add_data_func(path, GUINT_TO_POINTER(mode),
+                                 test_shader_texture);
         }
     }
     for (unsigned plane = 0; plane < SGI_RENDERER_CLIP_PLANES; plane++) {
