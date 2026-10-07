@@ -528,7 +528,8 @@ sgi_qtests = \
     ['sgi-kona-read-defense-test'] : [])
 
 qtests_mips64 = qtests_mips + sgi_qtests + \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['o2-r10k-cache-test'] : [])
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['o2-r10k-cache-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_MACE') ? ['sgi-mace-test'] : [])
 
 qtests_mips64el = qtests_mips
 

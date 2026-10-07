@@ -1000,6 +1000,39 @@ static void ds1685_data_write(void *opaque, hwaddr addr, uint64_t val,
  * access lands at offset 3. A model decoding one exact byte answers one
  * guest and returns zero to the other.
  */
+static uint64_t ds1685_direct_read(void *opaque, hwaddr addr, unsigned size)
+{
+    DS1685State *s = opaque;
+    uint8_t saved_index = s->index;
+    uint64_t value;
+
+    s->index = addr >> 8;
+    value = ds1685_data_read(s, 0, size);
+    s->index = saved_index;
+    return value;
+}
+
+static void ds1685_direct_write(void *opaque, hwaddr addr, uint64_t value,
+                                unsigned size)
+{
+    DS1685State *s = opaque;
+    uint8_t saved_index = s->index;
+
+    s->index = addr >> 8;
+    ds1685_data_write(s, 0, value, size);
+    s->index = saved_index;
+}
+
+static const MemoryRegionOps ds1685_direct_ops = {
+    .read = ds1685_direct_read,
+    .write = ds1685_direct_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
 static const MemoryRegionOps ds1685_index_ops = {
     .read = ds1685_index_read,
     .write = ds1685_index_write,
@@ -1100,6 +1133,9 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
                           "ds1685.data", DS1685_PORT_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->index_port);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->data_port);
+    memory_region_init_io(&s->direct_port, OBJECT(dev), &ds1685_direct_ops,
+                          s, "ds1685-direct", 0x8000);
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->direct_port);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 }
 
