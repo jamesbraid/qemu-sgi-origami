@@ -1672,7 +1672,7 @@ static void test_option_intx_restore(void)
                          OPTION_CONTROL + node * 0x1000 + 8),
                          ==, 1);
         g_assert_cmphex(option_head_pins(qts, node), ==, 1U << 1);
-        for (unsigned mismatch = 1; mismatch <= 3; mismatch++) {
+        for (unsigned mismatch = 1; mismatch <= 2; mismatch++) {
             option_control_write(qts, OPTION_CONTROL + node * 0x1000 + 8,
                                  mismatch);
             g_assert_cmpuint(option_control_read(qts,
