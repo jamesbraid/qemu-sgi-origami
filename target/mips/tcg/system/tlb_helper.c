@@ -17,6 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qemu/bitops.h"
 #include "qemu/main-loop.h"
 #include "qemu/plugin.h"
@@ -1203,6 +1204,18 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     /* XXX: put correct access by using cpu_restore_state() correctly */
     ret = get_physical_address(env, &physical, &prot, address,
                                access_type, mmu_idx, &attrs);
+#if defined(TARGET_MIPS64)
+    /* The first cache view uses xkphys, whose low index bits equal PA. */
+    if (ret == TLBRET_MATCH && MIPS_CPU(cs)->cache_data_visibility &&
+        attrs.mips_cca == 3 &&
+        (address & UINT64_C(0xf800000000000000)) !=
+        UINT64_C(0x9800000000000000)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "R10000 cached virtual index unsupported at 0x%"
+                      VADDR_PRIx "\n", address);
+        ret = TLBRET_BADADDR;
+    }
+#endif
     switch (ret) {
     case TLBRET_MATCH:
         qemu_log_mask(CPU_LOG_MMU,

@@ -1575,6 +1575,12 @@ struct ArchCPU {
      * RAM. Unlinked, every reference resolves in the one space as before.
      */
     MemoryRegion *uncached_memory;
+    bool cache_data_visibility;
+#ifndef CONFIG_USER_ONLY
+    MemoryRegion cache_memory;
+    AddressSpace cache_backing_as;
+    bool cache_memory_initialized;
+#endif
 };
 
 /* Address-space indices: cached references first, uncached ones second. */

@@ -12,6 +12,11 @@ static int cpu_pre_save(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
+    if (cpu->cache_data_visibility) {
+        error_report("R10000 cache-data-visibility migration is unsupported");
+        return -EINVAL;
+    }
+
     if (cpu->env.timer_adjacent_pending) {
         uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -41,6 +46,11 @@ static void cpu_post_save(void *opaque)
 static int cpu_pre_load(void *opaque)
 {
     MIPSCPU *cpu = opaque;
+
+    if (cpu->cache_data_visibility) {
+        error_report("R10000 cache-data-visibility migration is unsupported");
+        return -EINVAL;
+    }
 
     cpu->env.timer_adjacent_pending = false;
     mips_r10k_profile_pre_load(opaque);
