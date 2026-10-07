@@ -18,6 +18,7 @@
 #define CRIME_BANK(i) (CRIME_BASE + 0x208 + 8 * (i))
 #define BIT64(n) (1ULL << (n))
 #define CRIME_FITTED_RAM (64ULL * 1024 * 1024)
+#define CRIME_LARGE_FIT (128ULL * 1024 * 1024)
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
 
@@ -30,15 +31,21 @@ static QTestState *crime_start(const char *extra)
     return s;
 }
 
-static QTestState *crime_start_with_ram(const char *extra)
+static QTestState *crime_start_with_ram_size(const char *size,
+                                             const char *extra)
 {
     QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
-        "-S -object memory-backend-ram,id=fit,size=64M "
+        "-S -object memory-backend-ram,id=fit,size=%s "
         "-device sgi-crime,id=crime,interface-revision=1,"
-        "ram=/objects/fit/fit[0] %s", extra);
+        "ram=/objects/fit/fit[0] %s", size, extra);
 
     qtest_sysbus_mmio_map(s, CRIME_PATH, 0, CRIME_BASE);
     return s;
+}
+
+static QTestState *crime_start_with_ram(const char *extra)
+{
+    return crime_start_with_ram_size("64M", extra);
 }
 
 static void mace(QTestState *s, unsigned source, bool level)
@@ -298,6 +305,50 @@ static void test_ram_alias_mapping_migration(void)
     g_rmdir(directory);
 }
 
+static void test_ram_128m_aliases_and_holes(void)
+{
+    QTestState *s = crime_start_with_ram_size("128M", "");
+    const uint64_t bases[] = { 0, CRIME_FULL_RAM, CRIME_NO_ECC_RAM };
+    uint8_t byte;
+
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        qtest_writeq(s, bases[source] + CRIME_LARGE_FIT - 8,
+                     0x0123456789abcdefULL + source);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmphex(qtest_readq(s, bases[view] +
+                                        CRIME_LARGE_FIT - 8), ==,
+                            0x0123456789abcdefULL + source);
+        }
+    }
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        qtest_writeb(s, bases[source] + CRIME_LARGE_FIT - 1,
+                     0xa0 + source);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmphex(qtest_readb(s, bases[view] +
+                                            CRIME_LARGE_FIT - 1), ==,
+                            0xa0 + source);
+        }
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+        g_assert_cmpuint(memtx_readb(s, bases[view] + CRIME_LARGE_FIT,
+                                      &byte), !=, MEMTX_OK);
+        g_assert_cmpuint(memtx_writeb(s, bases[view] + CRIME_LARGE_FIT,
+                                       0xff), !=, MEMTX_OK);
+    }
+    g_assert_cmpuint(memtx_readb(s, 0x20000000, &byte), !=, MEMTX_OK);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==, bank);
+        g_assert_cmpuint(memtx_writeq(s, CRIME_BANK(bank), 0x100),
+                         !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, CRIME_BANK(bank)), ==, bank);
+    }
+    g_assert_cmphex(qtest_readb(s, CRIME_FULL_RAM + CRIME_LARGE_FIT - 1),
+                    ==, 0xa2);
+    g_assert_cmpuint(memtx_readb(s, CRIME_FULL_RAM + CRIME_LARGE_FIT,
+                                  &byte), !=, MEMTX_OK);
+    qtest_quit(s);
+}
+
 static void test_ram_unsupported_fit(void)
 {
     QTestState *s;
@@ -305,11 +356,11 @@ static void test_ram_unsupported_fit(void)
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*requires a 64 MiB RAM region*");
+        g_test_trap_assert_stderr("*requires a 64 or 128 MiB RAM region*");
         return;
     }
     s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -S "
-                   "-object memory-backend-ram,id=fit,size=128M "
+                   "-object memory-backend-ram,id=fit,size=32M "
                    "-device sgi-crime,id=crime,interface-revision=1,"
                    "ram=/objects/fit/fit[0]");
     qtest_quit(s);
@@ -357,6 +408,8 @@ int main(int argc, char **argv)
                    test_pending_irq_migration);
     qtest_add_func("/sgi/crime/ram-aliases-holes",
                    test_ram_aliases_and_holes);
+    qtest_add_func("/sgi/crime/ram-128m-aliases-holes",
+                   test_ram_128m_aliases_and_holes);
     qtest_add_func("/sgi/crime/ram-alias-migration",
                    test_ram_alias_mapping_migration);
     qtest_add_func("/sgi/crime/ram-unsupported-fit",

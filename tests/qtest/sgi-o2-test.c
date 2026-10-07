@@ -16,6 +16,7 @@
 #define RAM_FULL 0x40000000ULL
 #define RAM_NO_ECC 0x80000000ULL
 #define RAM_SIZE (64 * MiB)
+#define RAM_LARGE_FIT (128 * MiB)
 #define CRIME 0x14000000ULL
 #define MACE_PCI 0x1f080000ULL
 #define MACE_PERIPH 0x1f310000ULL
@@ -60,6 +61,57 @@ static void test_ram_aliases(void)
 
         g_assert_cmpint(memtx_readb(qts, 0x1fc00000ULL, &byte), !=, MEMTX_OK);
     }
+    qtest_quit(qts);
+}
+
+static void test_ram_128m_aliases(void)
+{
+    QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
+        "-M o2-test -cpu R10000 -m 128M -nodefaults "
+        "-accel tcg,thread=single -S");
+    const uint64_t bases[] = { 0, RAM_FULL, RAM_NO_ECC };
+    uint64_t value;
+    uint8_t byte;
+
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        g_assert_cmpint(memtx_writeq(qts, bases[source] + RAM_LARGE_FIT - 8,
+                                     0x0123456789abcdefULL + source),
+                        ==, MEMTX_OK);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmpint(memtx_readq(qts, bases[view] +
+                                            RAM_LARGE_FIT - 8, &value),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(value, ==, 0x0123456789abcdefULL + source);
+        }
+    }
+    for (unsigned source = 0; source < ARRAY_SIZE(bases); source++) {
+        qtest_writeb(qts, bases[source] + RAM_LARGE_FIT - 1,
+                     0xa0 + source);
+        for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+            g_assert_cmphex(qtest_readb(qts, bases[view] +
+                                            RAM_LARGE_FIT - 1), ==,
+                            0xa0 + source);
+        }
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(bases); view++) {
+        g_assert_cmpint(memtx_readb(qts, bases[view] + RAM_LARGE_FIT,
+                                    &byte), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_writeb(qts, bases[view] + RAM_LARGE_FIT,
+                                     0xff), !=, MEMTX_OK);
+    }
+    g_assert_cmpint(memtx_readb(qts, 0x20000000, &byte), !=, MEMTX_OK);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(qts, CRIME + 0x208 + 8 * bank),
+                        ==, bank);
+        g_assert_cmpint(memtx_writeq(qts, CRIME + 0x208 + 8 * bank,
+                                     0x100), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, CRIME + 0x208 + 8 * bank),
+                        ==, bank);
+    }
+    g_assert_cmphex(qtest_readb(qts, RAM_FULL + RAM_LARGE_FIT - 1),
+                    ==, 0xa2);
+    g_assert_cmpint(memtx_readb(qts, RAM_FULL + RAM_LARGE_FIT, &byte),
+                    !=, MEMTX_OK);
     qtest_quit(qts);
 }
 
@@ -316,6 +368,75 @@ static void test_uncached_window(void)
     qtest_quit(qts);
 }
 
+static void test_uncached_128m_boundary(void)
+{
+    const uint64_t entry = RAM_FULL + 0x2000;
+    const uint64_t target = RAM_FULL + 0x80;
+    const uint64_t done = RAM_FULL + 0x3000;
+    SN0Image trampoline = { 0 };
+    const uint32_t program[] = {
+        mips_lui(8, 0x0040), mips_daddiu(8, 8, 0x1ffc),
+        mips_lui(10, 0x5a5a), mips_ori(10, 10, 0x3c3c),
+        mips_sw(10, 8, 0), mips_lw(11, 8, 0),
+        mips_lui(16, 0xa000), mips_daddiu(16, 16, 0x3000),
+        mips_sw(11, 16, 4),
+        mips_ori(13, 0, 1), mips_sw(13, 16, 0),
+        mips_branch(MIPS_OPC_BEQ, 0, 0, -1), 0,
+    };
+    uint8_t target_bytes[sizeof(program)];
+    int64_t deadline;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+                      "-M o2-test -cpu R10000 -m 128M -nodefaults "
+                      "-accel tcg,thread=single -S "
+                      "-device loader,addr=0xffffffffa0002000,cpu-num=0");
+    sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_INDEX);
+    sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_PAGEMASK);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x00400000);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYHI);
+    /* UC=0 uses a separate processor view of the last fitted page. */
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x01000017);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYLO0);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x011fffd7);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYLO1);
+    sn0_emit_tlbwi(&trampoline);
+    sn0_emit_li(&trampoline, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x00400080);
+    sn0_emit(&trampoline, mips_rtype(SN0_R_T0, 0, 0, 0, 0x08));
+    sn0_emit_nop(&trampoline);
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        stl_be_p(target_bytes + 4 * i, program[i]);
+    }
+    qtest_memwrite(qts, entry, trampoline.bytes, trampoline.pos);
+    qtest_memwrite(qts, target, target_bytes, sizeof(target_bytes));
+    qtest_writel(qts, done, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_readl(qts, done) != 1) {
+        if (g_get_monotonic_time() >= deadline) {
+            g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+            g_error("O2 UC=0 RAM boundary access did not complete: %s",
+                    registers ?: "(registers unavailable)");
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, done + 4), ==, 0x5a5a3c3c);
+    g_assert_cmphex(qtest_readl(qts, RAM_FULL + RAM_LARGE_FIT - 4),
+                    ==, 0x5a5a3c3c);
+    g_assert_cmphex(qtest_readl(qts, RAM_LARGE_FIT - 4), ==, 0x5a5a3c3c);
+    g_assert_cmphex(qtest_readl(qts, RAM_NO_ECC + RAM_LARGE_FIT - 4),
+                    ==, 0x5a5a3c3c);
+    qtest_quit(qts);
+}
+
 static void assert_module_profile(QTestState *qts)
 {
     g_autoptr(QDict) reply = qtest_qmp(qts,
@@ -447,7 +568,8 @@ static void test_configuration(void)
         NULL,
     };
 
-    assert_o2_rejected("-m", "128M", "o2-test requires 64 MiB");
+    assert_o2_rejected("-m", "32M", "o2-test requires 64 or 128 MiB");
+    assert_o2_rejected("-m", "256M", "o2-test requires 64 or 128 MiB");
     assert_o2_rejected("-m", "64M,slots=1,maxmem=128M",
                        "o2-test does not support memory slots");
     assert_o2_rejected("-cpu", "R12000", "Invalid CPU model: R12000");
@@ -470,11 +592,14 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/o2/ram-aliases", test_ram_aliases);
+    qtest_add_func("/o2/ram-128m-aliases", test_ram_128m_aliases);
     qtest_add_func("/o2/reset-registers", test_reset_registers);
     qtest_add_func("/o2/interrupt-chain", test_interrupt_chain);
     qtest_add_func("/o2/rom-aliases", test_rom_aliases);
     qtest_add_func("/o2/coherent-ram", test_coherent_ram);
     qtest_add_func("/o2/uncached-window", test_uncached_window);
+    qtest_add_func("/o2/uncached-128m-boundary",
+                   test_uncached_128m_boundary);
     qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/serial-a", test_serial_a);
     qtest_add_func("/o2/configuration", test_configuration);

@@ -3,8 +3,8 @@
 /*
  * Synthetic O2 (IP32) register and wiring test profile.
  * This machine pairs catalogued O2 module 030-1247-001 (195 MHz R10000)
- * with a synthetic 64 MiB fit. Reset straps and the DIMM-to-bank-register
- * map are unknown.
+ * with a synthetic 64 or 128 MiB fit. Reset straps and the
+ * DIMM-to-bank-register map are unknown.
  * It has no fitted flash, PCI storage or product catalogue offering.
  * Serial A accepts an explicit host backend; flash write control is
  * unavailable, and migration has not been qualified for this profile.
@@ -31,6 +31,7 @@
 #include "target/mips/cpu.h"
 
 #define O2_RAM_SIZE (64 * MiB)
+#define O2_RAM_OPTIONAL_SIZE (128 * MiB)
 #define O2_CRIME_BASE 0x14000000ULL
 #define O2_MACE_BASE 0x1f000000ULL
 #define O2_ROM_BASE 0x1fc00000ULL
@@ -120,8 +121,9 @@ static void o2_init(MachineState *machine)
     DeviceState *rom;
     Error *err = NULL;
 
-    if (machine->ram_size != O2_RAM_SIZE) {
-        error_report("o2-test requires 64 MiB of RAM");
+    if (machine->ram_size != O2_RAM_SIZE &&
+        machine->ram_size != O2_RAM_OPTIONAL_SIZE) {
+        error_report("o2-test requires 64 or 128 MiB of RAM");
         exit(1);
     }
     if (machine->ram_slots || machine->maxram_size != machine->ram_size) {
@@ -181,20 +183,20 @@ static void o2_init(MachineState *machine)
     /* UC=0 selects the same fitted RAM through the processor's 1 TiB view. */
     memory_region_init_alias(&s->cpu_uncached_low_ram, OBJECT(machine),
                              "o2.cpu-uncached.low-ram", machine->ram,
-                             0, O2_RAM_SIZE);
+                             0, machine->ram_size);
     memory_region_add_subregion(&s->cpu_uncached,
                                 1ULL << MIPS_UNCACHED_WINDOW_SHIFT,
                                 &s->cpu_uncached_low_ram);
     memory_region_init_alias(&s->cpu_uncached_full_ram, OBJECT(machine),
                              "o2.cpu-uncached.full-ram", machine->ram,
-                             0, O2_RAM_SIZE);
+                             0, machine->ram_size);
     memory_region_add_subregion(&s->cpu_uncached,
                                 (1ULL << MIPS_UNCACHED_WINDOW_SHIFT) +
                                 0x40000000ULL,
                                 &s->cpu_uncached_full_ram);
     memory_region_init_alias(&s->cpu_uncached_no_ecc_ram, OBJECT(machine),
                              "o2.cpu-uncached.no-ecc-ram", machine->ram,
-                             0, O2_RAM_SIZE);
+                             0, machine->ram_size);
     memory_region_add_subregion(&s->cpu_uncached,
                                 (1ULL << MIPS_UNCACHED_WINDOW_SHIFT) +
                                 0x80000000ULL,
