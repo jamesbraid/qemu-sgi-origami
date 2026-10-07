@@ -241,6 +241,11 @@ typedef struct R10KState {
     uint16_t *scache_ecc;
 } R10KState;
 
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+void r10k_cache_memory_init(MIPSCPU *cpu);
+void r10k_cache_memory_destroy(MIPSCPU *cpu);
+#endif
+
 void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
                               R10KBusSystemRequestFn handler,
                               void *opaque);
