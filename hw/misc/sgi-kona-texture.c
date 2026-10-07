@@ -1181,7 +1181,6 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
             .d = o->params.lod_scale_r,
         };
         qemu_put_be64(f, scale_r.u);
-        /* Version eleven adds dimensionality to the layout flags word. */
         qemu_put_be32(f, o->native_layout_valid |
                          (o->native_one_dimensional << 1));
         qemu_put_be32(f, o->native_layout);
