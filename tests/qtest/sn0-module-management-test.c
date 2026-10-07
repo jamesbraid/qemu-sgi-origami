@@ -1547,6 +1547,32 @@ static void test_origin2000_display_status(void)
     qtest_quit(qts);
 }
 
+/* The module's NMI reaches the last processor of its last node. */
+static void test_module_nmi_reaches_processor(void)
+{
+    QTestState *qts = start_module();
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QListEntry *entry;
+    g_autofree char *path = NULL;
+    unsigned count = 0;
+
+    QLIST_FOREACH_ENTRY(cpus, entry) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+
+        g_free(path);
+        path = g_strdup(qdict_get_str(cpu, "qom-path"));
+        count++;
+    }
+    qobject_unref(response);
+    g_assert_cmpuint(count, ==, 8);
+    qtest_irq_intercept_in(qts, path);
+    assert_exact(qts, 0, "nmi", "ok ");
+    qtest_clock_step(qts, 1010 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -1945,6 +1971,8 @@ int main(int argc, char **argv)
                    test_module_message_expires);
     qtest_add_func("/sn0/o2000-module-management/nmi-reaches-output",
                    test_module_nmi_reaches_output);
+    qtest_add_func("/sn0/o2000-module-management/nmi-reaches-processor",
+                   test_module_nmi_reaches_processor);
     qtest_add_func("/sn0/o2000-module-management/module-reset",
                    test_module_reset_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-down",

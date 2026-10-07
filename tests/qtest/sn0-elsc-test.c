@@ -3275,6 +3275,123 @@ static void test_pwr_cycle_holds_power_off(const void *data)
     qtest_quit(qts);
 }
 
+/* The QOM path of the machine's last processor. */
+static char *last_cpu_path(QTestState *qts)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QListEntry *entry;
+    char *path = NULL;
+
+    QLIST_FOREACH_ENTRY(cpus, entry) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+
+        g_free(path);
+        path = g_strdup(qdict_get_str(cpu, "qom-path"));
+    }
+    qobject_unref(response);
+    return path;
+}
+
+/*
+ * The controller's NMI reaches the processors' own NMI inputs, the second
+ * slice included, not only the controller's output.
+ */
+static void test_nmi_reaches_processor(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+    g_autofree char *cpu = last_cpu_path(qts);
+
+    g_assert_nonnull(strstr(cpu, "1"));
+    qtest_irq_intercept_in(qts, cpu);
+    assert_reply(qts, "nmi", "ok ");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_quit(qts);
+}
+
+/* Migrate a running source to a fresh destination and return it. */
+static QTestState *migrate_to_new(QTestState *from, const char *tmpfs,
+                                  unsigned hop)
+{
+    g_autofree gchar *uri = g_strdup_printf("unix:%s/migrate%u.sock",
+                                            tmpfs, hop);
+    g_autofree gchar *cmdline = g_strdup_printf("-M origin200 -incoming %s",
+                                                uri);
+    QTestState *to = qtest_init(cmdline);
+    int64_t now = qtest_clock_step(from, 1);
+
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    /*
+     * qtest drives each instance's virtual clock itself, and a fresh
+     * instance starts from zero; carry the time across so the migrated
+     * deadlines keep their distance.
+     */
+    qtest_clock_set(to, now);
+    return to;
+}
+
+/*
+ * Every wait the controller keeps survives a migration in its middle: the
+ * Hub message and its one-second lifetime, the "nmi" wait and its pulse,
+ * the heartbeat watchdog and the "rst" wait.
+ */
+static void test_controller_timers_survive_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree char *before = NULL;
+    g_autofree char *after = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+
+    tmpfs = g_dir_make_tmp("sn0-elsc-timers-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+
+    qts = qtest_init("-M origin200");
+    assert_reply(qts, "tas A", "ok 0");
+    assert_reply(qts, "pwr d 8", "ok ");
+    assert_reply(qts, "hbt 5 0", "ok ");
+    assert_reply(qts, "nmi", "ok ");
+    qtest_clock_step(qts, 300 * (int64_t)SCALE_MS);
+
+    /* Mid "nmi" wait, with the Hub message still standing. */
+    qts = migrate_to_new(qts, tmpfs, 0);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub/elsc", "nmi");
+    before = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(before, "controller message: \"pd remote\""));
+    qtest_clock_step(qts, 750 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    after = qtest_hmp(qts, "info elsc");
+    g_assert_null(strstr(after, "controller message"));
+
+    /* Mid pulse: the line stays up and drops on time, freeing the lock. */
+    assert_reply(qts, "clr", "ok ");
+    assert_reply(qts, "hbt 5 0", "ok ");
+    qts = migrate_to_new(qts, tmpfs, 1);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub/elsc", "nmi");
+    assert_reply(qts, "tas", "ok A");
+    qtest_clock_step(qts, 100 * (int64_t)SCALE_MS);
+    assert_reply(qts, "tas", "ok 0");
+
+    /* The watchdog, armed before this hop, reaches its NMI on time. */
+    qts = migrate_to_new(qts, tmpfs, 2);
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub/elsc", "nmi");
+    qtest_clock_step(qts, 9800 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, 300 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    assert_reply(qts, "hbt 0", "ok ");
+
+    /* Mid "rst" wait. */
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
+    qts = migrate_to_new(qts, tmpfs, 3);
+    qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    qtest_quit(qts);
+}
+
 /*
  * A two-module Origin 200's slave controller powers off only its own
  * module: its processors stop while the master's machine runs on, and the
@@ -3580,6 +3697,10 @@ int main(int argc, char **argv)
                         test_console_selection_announcement);
     qtest_add_data_func("sn0/elsc/nmi-pulses-after-one-second", NULL,
                         test_nmi_pulses_after_one_second);
+    qtest_add_data_func("sn0/elsc/nmi-reaches-processor", NULL,
+                        test_nmi_reaches_processor);
+    qtest_add_data_func("sn0/elsc/controller-timers-survive-migration",
+                        NULL, test_controller_timers_survive_migration);
     qtest_add_data_func("sn0/elsc/two-towers-slave-power-off", NULL,
                         test_two_towers_slave_power_off);
     qtest_add_data_func("sn0/elsc/power-off-survives-migration", NULL,
