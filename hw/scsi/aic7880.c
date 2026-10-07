@@ -181,7 +181,11 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
 
     s->regs[REG_SCSIDATL] = req->status;
     s->regs[REG_SCSISIGI] = SCSI_SIG_STATUS;
-    s->regs[REG_SSTAT0] |= 0x02;
+    if (s->regs[REG_SXFRCTL0] & 0x08) {
+        s->regs[REG_SSTAT0] |= 0x02;
+    } else {
+        s->regs[REG_SSTAT0] &= ~0x02;
+    }
     s->phase = AIC_PHASE_STATUS;
     aic7880_update_scsi_irq(s);
     s->req = NULL;
@@ -356,10 +360,16 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == REG_SCSIDATL) {
         uint8_t data = s->regs[REG_SCSIDATL];
 
-        if ((s->phase == AIC_PHASE_STATUS ||
-             s->phase == AIC_PHASE_MSG_IN) && !s->running) {
-            aic7880_error(s, "manual status PIO is unsupported");
-            return 0xff;
+        if (s->phase == AIC_PHASE_STATUS ||
+            s->phase == AIC_PHASE_MSG_IN) {
+            if (!s->running) {
+                aic7880_error(s, "manual status PIO is unsupported");
+                return 0xff;
+            }
+            if (!(s->regs[REG_SXFRCTL0] & 0x08)) {
+                aic7880_error(s, "automatic SCSI PIO is disabled");
+                return 0xff;
+            }
         }
         if (s->phase == AIC_PHASE_STATUS) {
             s->phase = AIC_PHASE_MSG_IN;
@@ -508,6 +518,14 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         s->regs[addr] = val;
+        if (!(val & 0x08)) {
+            s->regs[REG_SSTAT0] &= ~0x02;
+        } else if (s->phase == AIC_PHASE_COMMAND ||
+                   s->phase == AIC_PHASE_STATUS ||
+                   s->phase == AIC_PHASE_MSG_IN) {
+            s->regs[REG_SSTAT0] |= 0x02;
+        }
+        aic7880_update_scsi_irq(s);
         break;
     case REG_SXFRCTL1:
         if (val & ~0x04) {
@@ -520,6 +538,10 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         if (val & ~0x3c) {
             aic7880_error(s, "unsupported DFCNTRL control");
             break;
+        }
+        /* AIC-7870 DIRECTIONACK changes only with all enables clear. */
+        if (s->regs[addr] & 0x38) {
+            val = (val & ~0x04) | (s->regs[addr] & 0x04);
         }
         s->regs[addr] = val;
         break;
