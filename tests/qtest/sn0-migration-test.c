@@ -84,8 +84,8 @@
     (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE + \
      4 + 4 + 8)
 #define ELSC_RXLEN_VMSTATE_OFFSET   (1 + ELSC_RXBUF_VMSTATE_SIZE)
-#define ELSC_RESET_OWED_VMSTATE_OFFSET (ELSC_ARB_CODE_VMSTATE_OFFSET + 4)
 #define PI_CPU_ENABLE_A         0x000050
+#define HUB_NI_SCRATCH_0        0x600100
 #define ELSC_TXLEN_VMSTATE_OFFSET \
     (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE)
 #define QEMU_VM_SECTION_FULL      4
@@ -370,6 +370,39 @@ static void patch_master_elsc_bytes(const char *path, unsigned offset,
         datap = versionp + 4;
         g_assert_cmpuint(ldl_be_p(versionp), ==, ELSC_VMSTATE_VERSION);
         memcpy(datap + offset, bytes, n);
+        found = true;
+        break;
+    }
+    g_assert_true(found);
+    g_assert_true(g_file_set_contents(path, contents, length, &err));
+    g_assert_no_error(err);
+}
+
+/*
+ * Overwrite bytes of the machine's module-start section, the debt of a
+ * module cold start that has not run.
+ */
+static void patch_module_start_bytes(const char *path, unsigned offset,
+                                     const void *bytes, size_t n)
+{
+    static const char name[] = "sgi-machine/module-starts";
+    g_autofree gchar *contents = NULL;
+    GError *err = NULL;
+    gsize length, i;
+    bool found = false;
+
+    g_assert_true(g_file_get_contents(path, &contents, &length, &err));
+    g_assert_no_error(err);
+
+    for (i = 6; i + sizeof(name) - 1 + 8 + offset + n < length; i++) {
+        uint8_t *p = (uint8_t *)contents + i;
+
+        if (p[-6] != QEMU_VM_SECTION_FULL || p[-1] != sizeof(name) - 1 ||
+            memcmp(p, name, sizeof(name) - 1)) {
+            continue;
+        }
+        /* Past the name: instance id (4), version id (4), then the data. */
+        memcpy(p + sizeof(name) - 1 + 8 + offset, bytes, n);
         found = true;
         break;
     }
@@ -789,13 +822,15 @@ static void test_elsc_framing_lengths_checked(const void *data)
 }
 
 /*
- * A power-up asks for the reset that starts the module's processors; a
- * stream taken before that reset ran carries the debt, and the destination
- * asks for the reset itself once it runs, not while it loads. The stream
- * here is a source whose processor enable is clear, as it is between power
- * returning and that reset.
+ * A module's power-up cold-starts that module from the main loop, and the
+ * bottom half that does it is not in the stream. A stream taken while the
+ * start was still owed carries the debt, and the destination makes the
+ * start itself once it runs, not while it loads. The stream here is a
+ * source whose processor enable is clear and whose Hub holds a mark, as
+ * between power returning and that start. The start is the module's, not a
+ * machine reset.
  */
-static void test_elsc_power_up_reset_survives_migration(const void *data)
+static void test_module_start_owed_survives_migration(const void *data)
 {
     static const uint8_t owed = 1;
     g_autofree gchar *tmpfs = NULL;
@@ -811,12 +846,12 @@ static void test_elsc_power_up_reset_survives_migration(const void *data)
     uri = g_strdup_printf("file:%s", stream);
 
     from = qtest_init(MACHINE);
+    qtest_writeq(from, HUB_LOCAL + HUB_NI_SCRATCH_0, 0x600d);
     qtest_writeq(from, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
     g_assert_cmphex(qtest_readq(from, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 0);
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
-    patch_master_elsc_bytes(stream, ELSC_RESET_OWED_VMSTATE_OFFSET, &owed,
-                            sizeof(owed));
+    patch_module_start_bytes(stream, 0, &owed, sizeof(owed));
 
     to = qtest_init(MACHINE " -S -incoming defer");
     qtest_qmp_assert_success(
@@ -824,20 +859,21 @@ static void test_elsc_power_up_reset_survives_migration(const void *data)
         uri);
     sgi_wait_migration(to, "completed");
 
-    /* Nothing is reset while the destination is still paused. */
+    /* Nothing restarts while the destination is still paused. */
     g_usleep(200 * 1000);
     qtest_qmp_assert_success(to, "{ 'execute': 'query-status' }");
-    g_assert_null(qtest_qmp_event_ref(to, "RESET"));
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 0);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + HUB_NI_SCRATCH_0), ==, 0x600d);
 
     qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
-    sgi_wait_start(&w, "processor enable after the owed reset");
+    sgi_wait_start(&w, "processor enable after the owed start");
     while (!(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1) &&
            sgi_wait_continue(&w, 1000)) {
         continue;
     }
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_CPU_ENABLE_A) & 1, ==, 1);
-    qtest_qmp_eventwait(to, "RESET");
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + HUB_NI_SCRATCH_0), ==, 0);
+    g_assert_null(qtest_qmp_event_ref(to, "RESET"));
     qtest_quit(to);
 
     g_assert_cmpint(g_unlink(stream), ==, 0);
@@ -1419,8 +1455,8 @@ int main(int argc, char **argv)
                         NULL, test_staged_i2c_start_survives_migration);
     qtest_add_data_func("sn0/migration/elsc-framing-lengths-checked", NULL,
                         test_elsc_framing_lengths_checked);
-    qtest_add_data_func("sn0/migration/elsc-power-up-reset-owed", NULL,
-                        test_elsc_power_up_reset_survives_migration);
+    qtest_add_data_func("sn0/migration/module-start-owed", NULL,
+                        test_module_start_owed_survives_migration);
     qtest_add_data_func("sn0/migration/elsc-rotation-position",
                         NULL,
                         test_elsc_rotation_position_patched);

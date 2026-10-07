@@ -106,6 +106,12 @@ struct SN0ModuleManagementState {
     bool power_on;
     bool pulse_active;
     bool pulse_nmi;
+    /*
+     * The device is driving its output lines to what a migration load left
+     * it, which tells the machine where they stand and is no event: a rise
+     * then is not a power return or a reset. Not migrated.
+     */
+    bool resyncing;
 };
 
 I2CBus *sgi_sn0_module_management_get_bus(SN0ModuleManagementState *s);

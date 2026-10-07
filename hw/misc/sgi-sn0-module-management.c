@@ -593,9 +593,13 @@ static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
         done = sgi_sn0_module_management_pulse_reset(s);
         break;
     case SGI_ELSC_ACTION_CYCLE:
-        done = sgi_sn0_module_management_set_power(s, false) &&
-               sgi_sn0_module_management_set_power(s, true);
-        break;
+        /*
+         * The controller carries a cycle out as a power-off and, after its
+         * own off interval and power-up sequence, a power-up. A cycle that
+         * took no time here would put the module's power back before the
+         * interval began.
+         */
+        g_assert_not_reached();
     case SGI_ELSC_ACTION_SHUTDOWN:
         done = sgi_sn0_module_management_set_power(s, false);
         break;
@@ -992,14 +996,12 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
     mgmt_drive_pulse_lines(s, false, false);
     mgmt_reset_state(s);
     /*
-     * A reset the module's controller asked for (a module reset or power
-     * cycle) leaves module power as the controller has it; any other is the
-     * cabinet's start, which powers the module up. The controller is on
-     * this device's bus, so its reset phase has already run.
+     * Only the cabinet's own start resets this device: a module's reset or
+     * power cycle leaves the controller alone. The start powers the module
+     * up, which stands for the controller's start-up power-up (the model
+     * does not run its few-second delay).
      */
-    if (!sgi_elsc_resetting_itself(s->msc)) {
-        s->power_on = true;
-    }
+    s->power_on = true;
     s->publication_enabled = s->power_on;
     mgmt_drive_power(s);
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -1025,6 +1027,7 @@ static int mgmt_post_load(void *opaque, int version_id)
     } else {
         timer_del(s->message_timer);
     }
+    s->resyncing = true;
     if (s->pulse_active) {
         mgmt_drive_pulse_lines(s, !s->pulse_nmi, s->pulse_nmi);
         timer_mod_ns(s->pulse_timer, s->pulse_deadline);
@@ -1033,6 +1036,7 @@ static int mgmt_post_load(void *opaque, int version_id)
         timer_del(s->pulse_timer);
     }
     mgmt_drive_power(s);
+    s->resyncing = false;
     return 0;
 }
 

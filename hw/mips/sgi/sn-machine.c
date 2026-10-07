@@ -213,6 +213,17 @@ typedef struct SGIMachinePeerNotifier {
     SN1FabricEndpoint *endpoint;
 } SGIMachinePeerNotifier;
 
+/*
+ * A cold start owed to one module (sgi_machine_module_start()). The start
+ * itself runs from a bottom half that migration does not carry, so the debt
+ * is what migrates.
+ */
+typedef struct SGIMachineModuleStart {
+    SGIMachineState *machine;
+    unsigned int module;
+    bool pending;
+} SGIMachineModuleStart;
+
 typedef struct SGIMachineAssemblyOwnership {
     uint32_t peer;
     uint32_t module;
@@ -295,13 +306,26 @@ struct SGIMachineState {
 
     /*
      * Each Origin 2000 module controller's power output, by controller
-     * index; which have fallen since the bottom half that acts on a fall
-     * last ran; and whether it is scheduled.
+     * index, and whether the bottom half that decides if the machine powers
+     * down is scheduled.
      */
     bool *module_powered;
-    bool *module_power_fell;
     unsigned int module_power_count;
     bool module_power_bh_pending;
+    /*
+     * The power domains. A module is the unit that loses power or is
+     * reset, so each event acts on the devices and processors of one
+     * topology module (sgi_machine_module_start). node_module maps a node
+     * to its module and controller_module a module controller to its own;
+     * module_start says whether a cold start of the module is scheduled.
+     */
+    unsigned int module_count;
+    unsigned int *node_module;
+    unsigned int *controller_module;
+    SGIMachineModuleStart *module_start;
+    /* The machine's reset is under way: an AC cycle starts every module. */
+    bool ac_cycle;
+    VMChangeStateEntry *module_start_vm_state;
     /*
      * Each controller's module-management device, and the controller each
      * node's module belongs to (-1 for a node with none).
@@ -2877,7 +2901,6 @@ static void sgi_machine_module_power_bh(void *opaque)
     for (i = 0; i < s->module_power_count; i++) {
         SGIElscState *msc = s->module_mgmt[i]->msc;
 
-        s->module_power_fell[i] = false;
         total++;
         if (!s->module_powered[i] && !sgi_elsc_power_return_pending(msc)) {
             gone++;
@@ -2928,17 +2951,6 @@ static void sgi_machine_hold_node(SGIMachineState *s, unsigned int node)
     }
 }
 
-/* An Origin 200 node's own controller removed or restored its power. */
-static void sgi_machine_elsc_power(void *opaque, int n, int level)
-{
-    SGIMachineState *s = opaque;
-
-    if (!level) {
-        sgi_machine_hold_node(s, n);
-        sgi_machine_schedule_power_bh(s);
-    }
-}
-
 /* Whether the module a node belongs to has power. */
 static bool sgi_machine_node_powered(SGIMachineState *s, unsigned int node)
 {
@@ -2954,12 +2966,319 @@ static bool sgi_machine_node_powered(SGIMachineState *s, unsigned int node)
 }
 
 /*
- * A fall is carried out by the bottom half, after the controller's own
- * sequence has finished. Power returning to a module whose fall has not
- * been carried out yet is "pwr c", a cold restart, so the machine resets
- * there and then: the bottom half is not migrated, and the restart must not
- * depend on it. Power rising at any other time, as a reset or a migration
- * load drives the line, is no event.
+ * The topology module's own parts: the objects a module's power feeds and
+ * its reset reaches, derived from the topology the machine built. The node
+ * boards, the Routers, the Crossbows and the I/O boards the topology puts
+ * in the module bring their whole QOM subtrees (a Hub's adapter and
+ * identity parts, a Bridge and the PCI devices behind it), as does a board
+ * a user plugged into one of the module's XIO slots.
+ *
+ * The module's controller runs on standby power and is in none of it.
+ * Processors are not devices to reset from here; their power-up is
+ * sgi_machine_module_start()'s.
+ */
+static bool sgi_machine_under_controller(Object *obj)
+{
+    for (; obj; obj = obj->parent) {
+        if (object_dynamic_cast(obj, TYPE_SGI_ELSC) ||
+            object_dynamic_cast(obj, TYPE_SGI_SN0_MODULE_MANAGEMENT)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int sgi_machine_collect_child(Object *obj, void *opaque)
+{
+    GPtrArray *devices = opaque;
+
+    if (object_dynamic_cast(obj, TYPE_DEVICE) &&
+        !object_dynamic_cast(obj, TYPE_CPU) &&
+        !sgi_machine_under_controller(obj)) {
+        g_ptr_array_add(devices, obj);
+    }
+    return 0;
+}
+
+static void sgi_machine_collect_part(GPtrArray *devices, Object *part)
+{
+    if (!part) {
+        return;
+    }
+    sgi_machine_collect_child(part, devices);
+    object_child_foreach_recursive(part, sgi_machine_collect_child, devices);
+}
+
+/*
+ * The module's parts, as devices to cold-reset. A part sitting on a bus
+ * of another part in the list is reset with that part's bus, so only the
+ * roots stay.
+ */
+static GPtrArray *sgi_machine_module_parts(SGIMachineState *s,
+                                           unsigned int module)
+{
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    GPtrArray *all = g_ptr_array_new();
+    GPtrArray *roots = g_ptr_array_new();
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelRouter **routers = NULL;
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree const SGIModelXioSlot **slots = NULL;
+    g_autofree uint32_t *module_nodes = NULL;
+    size_t count, node_count, i;
+
+    modules = sgi_model_module_array(t->modules, &count);
+    g_assert(module < count);
+    module_nodes = sgi_model_array_uint32(modules[module]->nodes, &node_count);
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[module_nodes[i]];
+        unsigned int adapter;
+
+        sgi_machine_collect_part(all, OBJECT(node));
+        if (s->module_mgmt && s->node_controller[module_nodes[i]] >= 0) {
+            SN0ModuleManagementState *mgmt =
+                s->module_mgmt[s->node_controller[module_nodes[i]]];
+
+            /* The shared controller's adapters are the nodes' own. */
+            for (adapter = 0; adapter < SGI_O2000_ADAPTER_COUNT; adapter++) {
+                DeviceState *dev =
+                    sgi_sn0_module_management_get_adapter(mgmt, adapter);
+
+                if (dev && !g_ptr_array_find(all, dev, NULL)) {
+                    g_ptr_array_add(all, dev);
+                }
+            }
+        }
+    }
+
+    crossbars = sgi_model_crossbar_array(t->crossbars, &count);
+    for (i = 0; i < count; i++) {
+        if (crossbars[i]->module_index == module && s->crossbars[i]) {
+            sgi_machine_collect_part(all, OBJECT(s->crossbars[i]));
+        }
+    }
+    routers = sgi_model_router_array(t->routers, &count);
+    for (i = 0; i < count; i++) {
+        if (routers[i]->module_index == module && s->routers[i]) {
+            sgi_machine_collect_part(all, OBJECT(s->routers[i]));
+        }
+    }
+    boards = sgi_model_io_board_array(t->io_boards, &count);
+    for (i = 0; i < count; i++) {
+        if (boards[i]->module_index == module && s->io_boards[i]) {
+            sgi_machine_collect_part(all, OBJECT(s->io_boards[i]));
+        }
+    }
+    slots = sgi_model_xio_slot_array(t->xio_slots, &count);
+    for (i = 0; i < count; i++) {
+        if (sgi_machine_xio_slot_module(t, slots[i]) == module &&
+            s->slot_claimed[i]) {
+            sgi_machine_collect_part(all, s->slot_links[i].end[1].port);
+        }
+    }
+
+    for (i = 0; i < all->len; i++) {
+        DeviceState *dev = g_ptr_array_index(all, i);
+        BusState *bus = qdev_get_parent_bus(dev);
+
+        if (bus && bus->parent && g_ptr_array_find(all, bus->parent, NULL)) {
+            continue;
+        }
+        g_ptr_array_add(roots, dev);
+    }
+    g_ptr_array_free(all, true);
+    return roots;
+}
+
+/*
+ * Queued work behind a processor's power-off has run once this returns:
+ * its queue is in order.
+ */
+static void sgi_machine_cpu_settled(CPUState *cs, run_on_cpu_data data)
+{
+}
+
+/*
+ * Cold-start one module: its processors take their reset, every part of
+ * the module resets, and the processors run again if the module has power
+ * when the start gets here. Nothing outside the module is touched, and the
+ * controller, which runs on standby power, is reset by nothing that this
+ * does (the Origin 200 controller sits on its Hub's adapter bus and rides
+ * through that adapter's reset).
+ *
+ * This is the main loop's, never a processor's: it waits for the module's
+ * processors to stop, which a processor's own thread cannot do.
+ */
+static void sgi_machine_module_start_bh(void *opaque)
+{
+    SGIMachineModuleStart *start = opaque;
+    SGIMachineState *s = start->machine;
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree uint32_t *module_nodes = NULL;
+    g_autoptr(GPtrArray) parts = NULL;
+    size_t count, node_count, i;
+    unsigned int slice;
+
+    /* A start owed twice, as a resumed machine may ask, runs once. */
+    if (!start->pending) {
+        return;
+    }
+    start->pending = false;
+    modules = sgi_model_module_array(t->modules, &count);
+    module_nodes = sgi_model_array_uint32(modules[start->module]->nodes,
+                                          &node_count);
+
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[module_nodes[i]];
+
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            sgi_hub_power_off_cpu(&node->hub, slice);
+        }
+    }
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[module_nodes[i]];
+
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            run_on_cpu(CPU(node->cpu[slice]), sgi_machine_cpu_settled,
+                       RUN_ON_CPU_NULL);
+        }
+        if (node->hub.elsc) {
+            sgi_elsc_ride_through_reset(node->hub.elsc, true);
+        }
+    }
+
+    parts = sgi_machine_module_parts(s, start->module);
+    for (i = 0; i < parts->len; i++) {
+        device_cold_reset(g_ptr_array_index(parts, i));
+    }
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[module_nodes[i]];
+
+        if (node->hub.elsc) {
+            sgi_elsc_ride_through_reset(node->hub.elsc, false);
+        }
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            sn_promdata_reset(&node->promdata[slice]);
+        }
+    }
+
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[module_nodes[i]];
+
+        if (!sgi_machine_node_powered(s, module_nodes[i])) {
+            continue;
+        }
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            sgi_hub_set_cpu_enable(&node->hub, slice, true, true);
+        }
+    }
+}
+
+/*
+ * A module starts from its cold state: it came back from a power-off, or
+ * its controller reset it. The start is the main loop's (above); the
+ * machine's own reset, an AC cycle, starts every module already.
+ */
+static void sgi_machine_module_start(SGIMachineState *s, unsigned int module)
+{
+    SGIMachineModuleStart *start = &s->module_start[module];
+
+    if (s->ac_cycle || start->pending) {
+        return;
+    }
+    start->pending = true;
+    replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                     sgi_machine_module_start_bh, start);
+}
+
+static const VMStateDescription vmstate_sgi_machine_module_start = {
+    .name = "sgi-machine/module-start",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(pending, SGIMachineModuleStart),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_machine_module_starts = {
+    .name = "sgi-machine/module-starts",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_VARRAY_POINTER_UINT32(module_start, SGIMachineState,
+                                             module_count,
+                                             vmstate_sgi_machine_module_start,
+                                             SGIMachineModuleStart),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/*
+ * A start owed when the stream was taken has not run. The destination asks
+ * for it once it runs, not while it loads, where it would reset devices
+ * that later sections load over.
+ */
+static void sgi_machine_module_start_vm_state(void *opaque, bool running,
+                                              RunState state)
+{
+    SGIMachineState *s = opaque;
+    unsigned int module;
+
+    if (!running) {
+        return;
+    }
+    for (module = 0; module < s->module_count; module++) {
+        if (s->module_start[module].pending) {
+            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                             sgi_machine_module_start_bh,
+                                             &s->module_start[module]);
+        }
+    }
+}
+
+/* An Origin 200 node's own controller removed or restored its power. */
+static void sgi_machine_elsc_power(void *opaque, int n, int level)
+{
+    SGIMachineState *s = opaque;
+
+    if (!level) {
+        sgi_machine_hold_node(s, n);
+        sgi_machine_schedule_power_bh(s);
+    } else {
+        sgi_machine_module_start(s, s->node_module[n]);
+    }
+}
+
+/*
+ * An Origin 2000 controller says again that its module is off, as a
+ * cancelled power-up leaves nothing to bring it back: only the machine's
+ * decision to end is wanted.
+ */
+static void sgi_machine_module_recheck(void *opaque, int n, int level)
+{
+    if (!level) {
+        sgi_machine_schedule_power_bh(opaque);
+    }
+}
+
+/* An Origin 200 node's controller reset its module. */
+static void sgi_machine_elsc_reset(void *opaque, int n, int level)
+{
+    SGIMachineState *s = opaque;
+
+    if (level) {
+        sgi_machine_module_start(s, s->node_module[n]);
+    }
+}
+
+/*
+ * An Origin 2000 module controller's power output moved. A fall holds the
+ * module's processors and may power the machine down (the bottom half). A
+ * return is a cold start of that module, whatever the machine's other
+ * modules are doing.
  */
 static void sgi_machine_module_power(void *opaque, int n, int level)
 {
@@ -2975,25 +3294,29 @@ static void sgi_machine_module_power(void *opaque, int n, int level)
                 sgi_machine_hold_node(s, node);
             }
         }
-    }
-    if (was && !level) {
-        s->module_power_fell[n] = true;
-        sgi_machine_schedule_power_bh(s);
-    } else if (!was && level && s->module_power_fell[n]) {
-        s->module_power_fell[n] = false;
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        if (was) {
+            sgi_machine_schedule_power_bh(s);
+        }
+    } else if (!was && !s->module_mgmt[n]->resyncing) {
+        /*
+         * A load that finds the module on drives the line high again: the
+         * stream holds the module's state, which a start would wipe.
+         */
+        sgi_machine_module_start(s, s->controller_module[n]);
     }
 }
 
 /*
- * A module reset holds every node in the module in reset. QEMU resets the
- * whole machine, which is the module on a one-module Origin 2000; a rack
- * of several modules resets them all.
+ * A module reset holds every node in the module in reset, and nothing
+ * else: a rack of several modules resets only the one whose controller
+ * pulsed it.
  */
 static void sgi_machine_module_reset(void *opaque, int n, int level)
 {
-    if (level) {
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    SGIMachineState *s = opaque;
+
+    if (level && !s->module_mgmt[n]->resyncing) {
+        sgi_machine_module_start(s, s->controller_module[n]);
     }
 }
 
@@ -3041,22 +3364,39 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
 {
     g_autofree const SGIModelController **controllers = NULL;
     g_autofree const SGIModelModule **modules = NULL;
-    size_t controller_count, module_count, controller_index, n;
+    g_autofree const SGIModelNode **nodes = NULL;
+    size_t controller_count, module_count, controller_index, n, node_count;
 
     controllers = sgi_model_controller_array(t->controllers, &controller_count);
     modules = sgi_model_module_array(t->modules, &module_count);
     s->module_power_count = controller_count;
     s->module_powered = g_new(bool, controller_count);
-    s->module_power_fell = g_new0(bool, controller_count);
     s->module_mgmt = g_new0(SN0ModuleManagementState *, controller_count);
     s->node_controller = g_new(int, s->num_nodes);
+    s->module_count = module_count;
+    s->node_module = g_new0(unsigned int, s->num_nodes);
+    s->controller_module = g_new0(unsigned int, controller_count);
+    s->module_start = g_new0(SGIMachineModuleStart, module_count);
+    for (n = 0; n < module_count; n++) {
+        s->module_start[n].machine = s;
+        s->module_start[n].module = n;
+    }
+    vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
+    s->module_start_vm_state = qemu_add_vm_change_state_handler(
+        sgi_machine_module_start_vm_state, s);
+    nodes = sgi_model_node_array(t->nodes, &node_count);
     for (n = 0; n < s->num_nodes; n++) {
+        g_assert(n < node_count);
+        s->node_module[n] = nodes[n]->module_index;
         s->node_controller[n] = -1;
         /* An Origin 200 node's own controller holds its module's power. */
         if (s->nodes[n]->hub.elsc) {
             qdev_connect_gpio_out_named(
                 DEVICE(s->nodes[n]->hub.elsc), "power", 0,
                 qemu_allocate_irq(sgi_machine_elsc_power, s, n));
+            qdev_connect_gpio_out_named(
+                DEVICE(s->nodes[n]->hub.elsc), "reset", 0,
+                qemu_allocate_irq(sgi_machine_elsc_reset, s, n));
         }
     }
     for (controller_index = 0; controller_index < controller_count;
@@ -3079,6 +3419,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                       t->name, controller_index);
             return false;
         }
+        s->controller_module[controller_index] = i;
         if (controller->kind != SGI_MODEL_CONTROLLER_KIND_MSC) {
             error_setg(errp, "topology '%s' controller %zu names an unknown "
                       "controller kind", t->name, controller_index);
@@ -3125,6 +3466,10 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         sgi_machine_attach_module_parts(s, t, module,
                                         SGI_SN0_MODULE_MANAGEMENT(dev));
         s->module_mgmt[controller_index] = SGI_SN0_MODULE_MANAGEMENT(dev);
+        qdev_connect_gpio_out_named(
+            DEVICE(s->module_mgmt[controller_index]->msc), "power", 0,
+            qemu_allocate_irq(sgi_machine_module_recheck, s,
+                              controller_index));
 
         for (i = 0; i < module_node_count; i++) {
             unsigned int node_index = module_nodes[i];
@@ -5287,7 +5632,18 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
         return;
     }
 
+    /*
+     * The machine's own reset stands for an AC cycle: every module and
+     * every controller starts over, so no module start is wanted of the
+     * power lines it moves.
+     */
+    s->ac_cycle = true;
     qemu_devices_reset(type);
+    s->ac_cycle = false;
+    /* A start scheduled before the reset has been made by it. */
+    for (unsigned int i = 0; i < s->module_count; i++) {
+        s->module_start[i].pending = false;
+    }
     CPU_FOREACH(cs) {
         cpu_reset(cs);
     }
@@ -5774,6 +6130,13 @@ static void sgi_machine_instance_finalize(Object *obj)
     if (s->management_registered) {
         vmstate_unregister(NULL, &vmstate_sgi_machine_management, s);
     }
+    if (s->module_start) {
+        vmstate_unregister(NULL, &vmstate_sgi_machine_module_starts, s);
+        qemu_del_vm_change_state_handler(s->module_start_vm_state);
+    }
+    g_free(s->node_module);
+    g_free(s->controller_module);
+    g_free(s->module_start);
     sgi_l1_query_router_destroy(&s->query_router);
     for (i = 0; i < s->controller_count; i++) {
         if (s->controller_reset_registered[i]) {

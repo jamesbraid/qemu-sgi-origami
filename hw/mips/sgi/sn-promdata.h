@@ -179,6 +179,13 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
  */
 void sn_promdata_apply_load(SNPromDataState *s);
 
+/*
+ * Back to the power-on state: the overlay returns and the RAM block empties.
+ * The machine's reset does this for every node; a node whose module restarts
+ * alone does it for that node.
+ */
+void sn_promdata_reset(void *opaque);
+
 extern const VMStateDescription vmstate_sn_promdata_slice;
 
 #endif /* HW_MIPS_SGI_SN_PROMDATA_H */
