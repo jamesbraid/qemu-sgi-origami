@@ -1105,29 +1105,12 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
     }
 }
 
-#define ELSC_ARB_RETRY_US 20
-
 /*
- * A held grant occupies a slot of at least ten milliseconds, its length a
- * fixed function of the code and the revolution counter, from ten to eleven
- * point six milliseconds in fifths of a millisecond.
+ * The controller attempts one grant per one-millisecond periodic tick, so each
+ * position stands for one tick and a ring of n positions turns in n
+ * milliseconds.
  */
-#define ELSC_ARB_SLOT_BASE_US 10000
-#define ELSC_ARB_SLOT_STEP_US   200
-#define ELSC_ARB_SLOT_SPREAD      9
-
-/*
- * The held-slot length for a code on a given revolution. Varying it by both
- * the code and the revolution keeps the ring's period from repeating turn to
- * turn. No fixed polling cadence stays commensurate with it. This caused
- * a cold start to lose a processor intermittently on its first pass.
- */
-static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
-{
-    uint32_t phase = (code * 7 + rev * 5) % ELSC_ARB_SLOT_SPREAD;
-
-    return ELSC_ARB_SLOT_BASE_US + (int64_t)phase * ELSC_ARB_SLOT_STEP_US;
-}
+#define ELSC_ARB_TICK_US 1000
 
 /*
  * Whether something waits for the given code's processor: console input for
@@ -1154,25 +1137,27 @@ static bool elsc_shared_arb_signal2(SGIElscState *s,
 }
 
 /*
- * One address-only ring position is published, then held for its slot. A flat
- * per-tick metronome let a poll whose cadence is commensurate with the ring
- * read one code at the same phase on every revolution, so a processor whose
- * grant never landed under its poll was lost on a cold start's first pass; a
- * slot length that varies with the code and the revolution leaves no such
- * cadence.
+ * One periodic tick: publish the next position's grant, which stays readable
+ * until the next tick replaces it. A tick that finds either bus busy publishes
+ * nothing and does not advance, and the controller waits for its next tick
+ * rather than publishing as soon as the bus frees.
  */
 static void elsc_arb_step(void *opaque)
 {
     SGIElscState *s = opaque;
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
     uint32_t code = s->arb_code;
-    uint32_t rev = s->arb_rev;
     bool signal2;
+
+    /*
+     * Arm from now rather than from the missed deadline: a tick the host runs
+     * late must not be followed at once by another that cuts the processor's
+     * hold short.
+     */
+    timer_mod(s->arb_timer, now + ELSC_ARB_TICK_US);
 
     if (i2c_bus_busy(s->bus) ||
         (s->arb_peer && i2c_bus_busy(s->arb_peer->bus))) {
-        /* Never advance or publish in the middle of a guest transaction. */
-        timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
     }
 
@@ -1182,10 +1167,6 @@ static void elsc_arb_step(void *opaque)
     elsc_publish_grant(s, s->arb_signal);
 
     s->arb_code = (code + 1) % s->arb_positions;
-    if (s->arb_code == 0) {
-        s->arb_rev++;
-    }
-    timer_mod(s->arb_timer, now + elsc_arb_slot_us(code, rev));
 }
 
 /*
@@ -1271,7 +1252,6 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->txpos = 0;
     s->resp_owner = -1;
     s->arb_code = 0;
-    s->arb_rev = 0;
     s->arb_signal = 0;
     s->rx_queue_len = 0;
     s->in_escape = false;
@@ -1433,8 +1413,8 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 15,
-    .minimum_version_id = 15,
+    .version_id = 16,
+    .minimum_version_id = 16,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
         VMSTATE_UINT8_ARRAY(rxbuf, SGIElscState, SGI_ELSC_MAX_FRAME + 1),
@@ -1449,11 +1429,6 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_UINT8(dip_switches, SGIElscState),
         VMSTATE_UINT8(arb_signal, SGIElscState),
-        /*
-         * The revolution counter varies the held-slot schedule
-         * (elsc_arb_step).
-         */
-        VMSTATE_UINT32(arb_rev, SGIElscState),
         VMSTATE_INT32(resp_owner, SGIElscState),
         VMSTATE_UINT8_ARRAY(display, SGIElscState, SGI_ELSC_DISPLAY_CHARS),
         VMSTATE_BOOL(cold_power_on, SGIElscState),
