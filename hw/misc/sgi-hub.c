@@ -1247,14 +1247,14 @@ static void sgi_hub_kick_polled_peer(CPUState *peer, const char *reason)
 static void sgi_hub_rt_alive_update(SGIHubState *s);
 
 /* Slice B's PEND1 credit is about to be set or spent; was it held? */
-static void sgi_hub_trace_pend1_credit(SGIHubState *s, const char *what)
+static void sgi_hub_trace_pend1_credit(SGIHubState *s, const char *what,
+                                       bool held)
 {
     if (trace_event_get_state_backends(TRACE_SGI_HUB_PEND1_CREDIT)) {
         CPUState *cpu = current_cpu;
 
         trace_sgi_hub_pend1_credit(cpu ? cpu->cpu_index : -1, s->cpu_base,
-                                   sgi_hub_programmed_nasid(s), what,
-                                   s->pi_int_pend1_primary_credit,
+                                   sgi_hub_programmed_nasid(s), what, held,
                                    cpu ? cpu->cc->get_pc(cpu) : 0);
     }
 }
@@ -1267,20 +1267,28 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     CPUState *primary = sgi_hub_cpu(s, 0);
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
     uint64_t before = s->pi_int_pend[bank];
-
-    if (val & PI_INT_MODIFY_SET) {
-        s->pi_int_pend[bank] |= bit;
-    } else {
-        s->pi_int_pend[bank] &= ~bit;
-    }
-    sgi_hub_update_irq(s);
-
+    uint64_t after = val & PI_INT_MODIFY_SET ? before | bit : before & ~bit;
     /*
      * Credit slice B a PEND1 snapshot before kicking it: the PROM's bit 113.
      */
-    if (bank == 1 && number == 113 && primary && current_cpu == primary) {
-        sgi_hub_trace_pend1_credit(s, "set");
-        s->pi_int_pend1_primary_credit = true;
+    bool credit = bank == 1 && number == 113 && primary &&
+                  current_cpu == primary;
+
+    /*
+     * Only this function changes a pending bank while the machine runs, and
+     * it runs under the BQL. Readers can be on another processor's thread
+     * without it, so the bank is published with release order: the PROM uses
+     * these bits as mailboxes, and a processor that sees a bit must also see
+     * the memory its sender wrote before setting it. The credit goes first so
+     * a reader that sees bit 113 also sees its credit.
+     */
+    if (credit) {
+        sgi_hub_trace_pend1_credit(
+            s, "set", qatomic_xchg(&s->pi_int_pend1_primary_credit, true));
+    }
+    qatomic_store_release(&s->pi_int_pend[bank], after);
+    sgi_hub_update_irq(s);
+    if (credit) {
         sgi_hub_rt_alive_update(s);
     }
 
@@ -1294,7 +1302,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
      * running on its own thread, so the kick costs it a run-loop exit and
      * buys a poll it was about to make anyway.
     */
-    if (s->pi_int_pend[bank] != before || sgi_hub_polled_kicks_land()) {
+    if (after != before || sgi_hub_polled_kicks_land()) {
         for (i = 0; i < s->cpus; i++) {
             sgi_hub_kick_peer(sgi_hub_cpu(s, i), "int-modify");
         }
@@ -1307,13 +1315,13 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
 {
     CPUState *primary = sgi_hub_cpu(s, 0);
     CPUState *secondary = sgi_hub_cpu(s, 1);
-    uint64_t value = s->pi_int_pend[1];
+    uint64_t value = qatomic_load_acquire(&s->pi_int_pend[1]);
 
     if (s->cpus >= 2 && primary && secondary && current_cpu == secondary &&
         (value & (1ULL << (113 - SGI_HUB_BANK_BITS)))) {
-        if (s->pi_int_pend1_primary_credit) {
-            sgi_hub_trace_pend1_credit(s, "consumed");
-            s->pi_int_pend1_primary_credit = false;
+        /* One exchange, so a credit set meanwhile is not lost. */
+        if (qatomic_xchg(&s->pi_int_pend1_primary_credit, false)) {
+            sgi_hub_trace_pend1_credit(s, "consumed", true);
         } else {
             sgi_hub_kick_polled_peer(primary, "pend1-poll");
         }
@@ -1348,7 +1356,7 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
 */
 static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
 {
-    uint64_t value = s->pi_int_pend[bank];
+    uint64_t value = qatomic_load_acquire(&s->pi_int_pend[bank]);
     unsigned int i;
 
     if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
@@ -1599,19 +1607,23 @@ static __attribute__((noinline)) void
 sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
 {
     uint64_t ns_per_tick = period >> 32;
+    uint64_t reciprocal = 0;
+    uint64_t limit = 0;
     uint64_t excess;
 
-    s->rt_period = period;
-    s->rt_reciprocal = 0;
-    s->rt_reciprocal_limit_ns = 0;
-    if ((uint32_t)period != 0 || ns_per_tick < 2) {
-        return;
+    if ((uint32_t)period == 0 && ns_per_tick >= 2) {
+        reciprocal = UINT64_MAX / ns_per_tick + 1;
+        /* Truncation is the point: this is m * k - 2^64. */
+        excess = reciprocal * ns_per_tick;
+        limit = excess ? UINT64_MAX / excess : UINT64_MAX;
     }
 
-    s->rt_reciprocal = UINT64_MAX / ns_per_tick + 1;
-    /* Truncation is the point: this is m * k - 2^64. */
-    excess = s->rt_reciprocal * ns_per_tick;
-    s->rt_reciprocal_limit_ns = excess ? UINT64_MAX / excess : UINT64_MAX;
+    BQL_LOCK_GUARD();
+    seqlock_write_begin(&s->rt_seq);
+    s->rt_period = period;
+    s->rt_reciprocal = reciprocal;
+    s->rt_reciprocal_limit_ns = limit;
+    seqlock_write_end(&s->rt_seq);
 }
 
 /*
@@ -1628,21 +1640,38 @@ sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
 */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
-    int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->pi_rt_origin_ns;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t period = clock_get(s->rt_clk);
+    uint64_t rt_period, reciprocal, limit;
+    int64_t origin, delta;
     uint64_t low;
     uint64_t ticks;
+    unsigned int start;
 
+    /*
+     * A consistent copy of what the writers change under the BQL, so a
+     * reader without it never pairs one origin or period with another's
+     * reciprocal.
+     */
+    do {
+        start = seqlock_read_begin(&s->rt_seq);
+        origin = s->pi_rt_origin_ns;
+        rt_period = s->rt_period;
+        reciprocal = s->rt_reciprocal;
+        limit = s->rt_reciprocal_limit_ns;
+    } while (seqlock_read_retry(&s->rt_seq, start));
+
+    delta = now - origin;
     if (delta < 0) {
         return 0;
     }
     /* This clock carries no change callback, so notice the period here. */
-    if (unlikely(period != s->rt_period)) {
+    if (unlikely(period != rt_period)) {
         sgi_hub_rt_reciprocal_build(s, period);
+        return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
     }
-    if (likely(s->rt_reciprocal &&
-               (uint64_t)delta <= s->rt_reciprocal_limit_ns)) {
-        mulu64(&low, &ticks, (uint64_t)delta, s->rt_reciprocal);
+    if (likely(reciprocal && (uint64_t)delta <= limit)) {
+        mulu64(&low, &ticks, (uint64_t)delta, reciprocal);
         return ticks & PI_RT_MASK;
     }
     return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
@@ -2094,9 +2123,14 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
 /* Move the origin so the counter reads what was written, and keep running. */
 static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
 {
+    int64_t origin;
+
     val &= PI_RT_MASK;
-    s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
-                         clock_ticks_to_ns(s->rt_clk, val);
+    origin = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+             clock_ticks_to_ns(s->rt_clk, val);
+    seqlock_write_begin(&s->rt_seq);
+    s->pi_rt_origin_ns = origin;
+    seqlock_write_end(&s->rt_seq);
 }
 
 static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
@@ -4265,7 +4299,9 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
     /* The error-spool addresses survive reset: firmware's reset marker. */
+    seqlock_write_begin(&s->rt_seq);
     s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    seqlock_write_end(&s->rt_seq);
     memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
     memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
@@ -5511,6 +5547,7 @@ static void sgi_hub_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), sgi_hub_link_reset, "link-reset", 1);
 
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
+    seqlock_init(&s->rt_seq);
     s->rt_clk = qdev_init_clock_in(DEVICE(obj), "rt-clk", NULL, NULL, 0);
     clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
 
