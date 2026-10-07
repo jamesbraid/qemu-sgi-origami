@@ -189,6 +189,7 @@ static PFNEGLCREATECONTEXTPROC saved_create;
 static PFNGLGETSHADERIVPROC saved_shader_status;
 static PFNGLCHECKFRAMEBUFFERSTATUSPROC saved_framebuffer_status;
 static PFNGLREADPIXELSPROC saved_read_pixels;
+static PFNGLRENDERBUFFERSTORAGEPROC saved_renderbuffer_storage;
 static PFNEGLMAKECURRENTPROC saved_make_current;
 static PFNEGLDESTROYCONTEXTPROC saved_destroy;
 static PFNEGLRELEASETHREADPROC saved_release;
@@ -216,6 +217,30 @@ static void fail_read_pixels(GLint x, GLint y, GLsizei width, GLsizei height,
                               GLenum format, GLenum type, void *pixels)
 {
     memset(pixels, 0, SGI_RENDERER_BYTES);
+}
+
+static void fail_stencil_storage(GLenum target, GLenum internalformat,
+                                 GLsizei width, GLsizei height)
+{
+    saved_renderbuffer_storage(target, GL_NONE, width, height);
+}
+
+static void fail_stencil_read_pixels(GLint x, GLint y, GLsizei width,
+                                     GLsizei height, GLenum format,
+                                     GLenum type, void *pixels)
+{
+    saved_read_pixels(x, y, width, height,
+                      format == GL_STENCIL_INDEX ? GL_NONE : format,
+                      type, pixels);
+}
+
+static void fail_colour_read_pixels(GLint x, GLint y, GLsizei width,
+                                    GLsizei height, GLenum format,
+                                    GLenum type, void *pixels)
+{
+    saved_read_pixels(x, y, width, height,
+                      format == GL_RGBA ? GL_NONE : format,
+                      type, pixels);
 }
 
 static EGLBoolean fail_unbind(EGLDisplay display, EGLSurface draw,
@@ -609,7 +634,9 @@ static void test_headless_display_accepts_ui_context(void)
 
 typedef struct NativeDrawFixture {
     uint32_t colour[4][4][3];
-    unsigned snapshots, commits;
+    uint32_t tag[4][4];
+    uint8_t written[4][4];
+    unsigned snapshots, commits, dense_commits;
     bool fail_snapshot, fail_commit;
 } NativeDrawFixture;
 
@@ -651,30 +678,60 @@ static SGIRenderCommitResult native_draw_commit(void *opaque,
 {
     NativeDrawFixture *f = opaque;
 
+    f->dense_commits++;
+    error_setg(errp, "dense commit cannot preserve native tags");
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_RESOURCE_ERROR,
+        .extent_known = true,
+    };
+}
+
+static SGIRenderCommitResult native_draw_commit_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    NativeDrawFixture *f = opaque;
+    uint64_t scanned = 0;
+
     f->commits++;
-    if (f->fail_commit) {
-        for (unsigned c = 0; c < 3; c++) {
-            f->colour[rect->y0][rect->x0][c] = slots[c];
-        }
-        error_setg(errp, "native commit failed after one pixel");
-        return (SGIRenderCommitResult) {
-            .status = SGI_RENDER_RESOURCE_ERROR,
-            .complete_pixels = 1,
-            .extent_known = true,
-        };
-    }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            uint8_t written = writes->pixel[(y - rect->y0) *
+                                            writes->stride_bytes +
+                                            x - rect->x0];
+
+            f->written[y][x] = written;
+            if (!written) {
+                scanned++;
+                continue;
+            }
+            if (f->fail_commit && scanned == 1) {
+                f->colour[y][x][0] =
+                    slots[(y - rect->y0) * stride_slots +
+                          (x - rect->x0) * 3];
+                error_setg(errp, "paired native write failed at pixel %" PRIu64,
+                           scanned);
+                return (SGIRenderCommitResult) {
+                    .status = SGI_RENDER_RESOURCE_ERROR,
+                    .complete_pixels = scanned,
+                    .partial_pixel = true,
+                    .extent_known = true,
+                };
+            }
             for (unsigned c = 0; c < 3; c++) {
                 f->colour[y][x][c] =
                     slots[(y - rect->y0) * stride_slots +
                           (x - rect->x0) * 3 + c];
             }
+            f->tag[y][x] = 9;
+            scanned++;
         }
     }
     return (SGIRenderCommitResult) {
         .status = SGI_RENDER_OK,
-        .complete_pixels = 16,
+        .complete_pixels = scanned,
         .extent_known = true,
     };
 }
@@ -685,6 +742,12 @@ static void test_decoded_triangle_native_commit(void)
     static const float xy[3][2] = {
         { -1, -1 }, { 1, -1 }, { -1, 1 },
     };
+    static const float probe_vertices[3][4] = {
+        { 16.25f, 16.25f, 0, 1 },
+        { 111.25f, 16.25f, 0, 1 },
+        { 16.25f, 111.25f, 0, 1 },
+    };
+    g_autofree SGIRendererRequest *probe = g_new0(SGIRendererRequest, 1);
     NativeDrawFixture f = { 0 };
     SGIRenderResource resource = {
         .backing_id = 1, .backing_generation = 1,
@@ -699,9 +762,10 @@ static void test_decoded_triangle_native_commit(void)
             { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
         },
     };
-    const SGIRenderResourceOps ops = {
+    SGIRenderResourceOps ops = {
         .snapshot = native_draw_snapshot,
         .commit = native_draw_commit,
+        .commit_covered = native_draw_commit_covered,
     };
     SGIRasterTarget target = {
         .opaque = &f, .resources = &resource, .resource_count = 1,
@@ -744,28 +808,55 @@ static void test_decoded_triangle_native_commit(void)
     }
     for (unsigned y = 0; y < 4; y++) {
         for (unsigned x = 0; x < 4; x++) {
+            f.tag[y][x] = 1;
             for (unsigned c = 0; c < 3; c++) {
                 f.colour[y][x][c] = 17;
             }
         }
     }
+    f.colour[0][0][0] = 4095;
+    f.colour[0][0][1] = 0;
+    f.colour[0][0][2] = 0;
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
+    ops.commit_covered = NULL;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 0);
+    g_assert_cmpuint(f.commits, ==, 0);
+    g_assert_cmpuint(f.dense_commits, ==, 0);
+    ops.commit_covered = native_draw_commit_covered;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
     g_assert_cmpuint(f.snapshots, ==, 1);
     g_assert_cmpuint(f.commits, ==, 1);
+    g_assert_cmpuint(f.dense_commits, ==, 0);
+    g_assert_cmpuint(f.written[0][0], ==, 1);
+    g_assert_cmpuint(f.written[3][3], ==, 0);
     g_assert_cmpuint(f.colour[0][0][0], ==, 4095);
     g_assert_cmpuint(f.colour[0][0][1], ==, 0);
     g_assert_cmpuint(f.colour[0][0][2], ==, 0);
     g_assert_cmpuint(f.colour[3][3][0], ==, 17);
     g_assert_cmpuint(f.colour[3][3][1], ==, 17);
     g_assert_cmpuint(f.colour[3][3][2], ==, 17);
+    g_assert_cmpuint(f.tag[0][0], ==, 9);
+    g_assert_cmpuint(f.tag[3][3], ==, 1);
+    memcpy(probe->vertices, probe_vertices, sizeof(probe_vertices));
+    probe->clip[2] = probe->clip[3] = 127;
+    probe->rgb[1] = 255;
+    g_assert_true(sgi_renderer_draw(renderer, probe, &err));
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_staging_valid(probe));
 
     for (unsigned y = 0; y < 4; y++) {
         for (unsigned x = 0; x < 4; x++) {
+            f.tag[y][x] = 1;
             for (unsigned c = 0; c < 3; c++) {
                 f.colour[y][x][c] = 17;
             }
@@ -779,6 +870,8 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 2);
     g_assert_cmpuint(f.colour[0][0][0], ==, 17);
     g_assert_cmpuint(f.colour[0][1][0], ==, 4095);
+    g_assert_cmpuint(f.tag[0][0], ==, 1);
+    g_assert_cmpuint(f.tag[0][1], ==, 9);
 
     f.fail_snapshot = true;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -792,6 +885,7 @@ static void test_decoded_triangle_native_commit(void)
     f.fail_snapshot = false;
     for (unsigned y = 0; y < 4; y++) {
         for (unsigned x = 0; x < 4; x++) {
+            f.tag[y][x] = 1;
             for (unsigned c = 0; c < 3; c++) {
                 f.colour[y][x][c] = 17;
             }
@@ -808,7 +902,10 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.snapshots, ==, 4);
     g_assert_cmpuint(f.commits, ==, 3);
     g_assert_cmpuint(f.colour[0][0][0], ==, 4095);
-    g_assert_cmpuint(f.colour[0][1][0], ==, 17);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 4095);
+    g_assert_cmpuint(f.colour[0][1][1], ==, 17);
+    g_assert_cmpuint(f.tag[0][0], ==, 9);
+    g_assert_cmpuint(f.tag[0][1], ==, 1);
 
     state.blend = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -834,6 +931,39 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 3);
 
     state.clip_planes = 0;
+    state.depth_test = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    state.depth_test = 0;
+    state.stencil_test = 1;
+    for (unsigned mask = 0; mask <= 0xff; mask += 0xff) {
+        state.stencil_write_mask = mask;
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_UNSUPPORTED);
+        g_assert_nonnull(err);
+        error_free(err);
+        err = NULL;
+        if (mask == 0xff) {
+            break;
+        }
+    }
+    state.stencil_test = 0;
+    state.alpha_test = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    state.alpha_test = 0;
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
     state.drawable.clip.n = 0;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
@@ -869,8 +999,103 @@ static void test_decoded_triangle_native_commit(void)
                     SGI_RENDER_UNSUPPORTED);
     g_assert_nonnull(err);
     error_free(err);
+    err = NULL;
     g_assert_cmpuint(f.snapshots, ==, 4);
     g_assert_cmpuint(f.commits, ==, 3);
+    state.dither = 0;
+    rules.dither = SGI_DITHER_NONE;
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] += 3;
+    }
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 5);
+    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.dense_commits, ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] -= 3;
+    }
+    sgi_renderer_free(renderer);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    saved_renderbuffer_storage = epoxy_glRenderbufferStorage;
+    epoxy_glRenderbufferStorage = fail_stencil_storage;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_HOST_ERROR);
+    epoxy_glRenderbufferStorage = saved_renderbuffer_storage;
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 3);
+    sgi_renderer_free(renderer);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    saved_read_pixels = epoxy_glReadPixels;
+    epoxy_glReadPixels = fail_stencil_read_pixels;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_HOST_ERROR);
+    epoxy_glReadPixels = saved_read_pixels;
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 7);
+    g_assert_cmpuint(f.commits, ==, 3);
+    sgi_renderer_free(renderer);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    saved_read_pixels = epoxy_glReadPixels;
+    epoxy_glReadPixels = fail_colour_read_pixels;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_HOST_ERROR);
+    epoxy_glReadPixels = saved_read_pixels;
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.snapshots, ==, 8);
+    g_assert_cmpuint(f.commits, ==, 3);
+    sgi_renderer_free(renderer);
+}
+
+static void test_frame_coverage_capacity(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    float vertices[3 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = { 0 };
+    uint16_t rgba[4 * 4 * 4] = { 0 };
+    uint8_t written[4 * 4] = { 0 };
+    SGIRendererFrame frame = {
+        .width = 4, .height = 4, .count = 3,
+        .vertices = vertices, .rgba = rgba,
+        .written = written, .written_capacity = sizeof(written) - 1,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    frame.written_capacity = sizeof(written);
+    frame.written = NULL;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    error_free(err);
     sgi_renderer_free(renderer);
 }
 
@@ -886,6 +1111,8 @@ int main(int argc, char **argv)
                     test_headless_display_accepts_ui_context);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-native-commit",
                     test_decoded_triangle_native_commit);
+    g_test_add_func("/sgi-renderer-gl/frame-coverage-capacity",
+                    test_frame_coverage_capacity);
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     }

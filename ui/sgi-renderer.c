@@ -140,10 +140,12 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp)
 {
     if (!renderer || !frame || !frame->vertices || !frame->rgba ||
+        !frame->written ||
         !frame->width || !frame->height || frame->width > INT_MAX ||
         frame->height > INT_MAX || frame->count != 3 ||
         frame->width > SIZE_MAX / frame->height / 4 /
-                       sizeof(*frame->rgba)) {
+                       sizeof(*frame->rgba) ||
+        frame->written_capacity < (size_t)frame->width * frame->height) {
         error_setg(errp, "Invalid SGI OpenGL frame request");
         return false;
     }

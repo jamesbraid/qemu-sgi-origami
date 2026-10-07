@@ -102,8 +102,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     SGIRendererFrame frame = { 0 };
     g_autofree uint32_t *slots = NULL;
     g_autofree uint16_t *rgba = NULL;
+    g_autofree uint8_t *written = NULL;
     float vertices[3][SGI_RENDERER_FRAME_VERTEX_FLOATS];
     size_t pixels, nslots, nrgba;
+    bool any_written = false;
     SGIRenderCommitResult committed;
     SGIRenderResult status;
 
@@ -128,6 +130,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "Unsupported SGI Mesa draw state or resource");
         return SGI_RENDER_UNSUPPORTED;
     }
+    if (!target->resource_ops || !target->resource_ops->commit_covered) {
+        error_setg(errp, "SGI Mesa draw needs a covered commit provider");
+        return SGI_RENDER_UNSUPPORTED;
+    }
     if (resource->width > SIZE_MAX / resource->height ||
         (uint64_t)resource->width * resource->height >
             SIZE_MAX / 4 / sizeof(*rgba)) {
@@ -143,7 +149,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     nrgba = pixels * 4;
     slots = g_try_new(uint32_t, nslots);
     rgba = g_try_new(uint16_t, nrgba);
-    if (!slots || !rgba) {
+    written = g_try_new(uint8_t, pixels);
+    if (!slots || !rgba || !written) {
         error_setg(errp, "Cannot allocate SGI Mesa draw buffers");
         return SGI_RENDER_OOM;
     }
@@ -184,6 +191,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     frame.count = 3;
     frame.vertices = &vertices[0][0];
     frame.rgba = rgba;
+    frame.written = written;
+    frame.written_capacity = pixels;
     memcpy(frame.modelview, draw->state->modelview,
            sizeof(frame.modelview));
     memcpy(frame.projection, draw->state->projection,
@@ -192,6 +201,19 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         return SGI_RENDER_HOST_ERROR;
     }
     for (size_t i = 0; i < pixels; i++) {
+        if (written[i] > 1) {
+            error_setg(errp, "SGI Mesa draw returned invalid write coverage");
+            return SGI_RENDER_HOST_ERROR;
+        }
+        any_written |= written[i] != 0;
+    }
+    if (!any_written) {
+        return SGI_RENDER_OK;
+    }
+    for (size_t i = 0; i < pixels; i++) {
+        if (!written[i]) {
+            continue;
+        }
         for (unsigned c = 0; c < resource->component_count; c++) {
             unsigned bits = resource->component[c].storage_bits;
             uint32_t max = (1u << bits) - 1;
@@ -200,10 +222,16 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                 ((uint64_t)rgba[i * 4 + c] * max + 32767) / 65535;
         }
     }
-    committed = sgi_render_resource_commit(target, resource, 0, &rect,
-                                           slots,
-                                           resource->width *
-                                           resource->component_count,
-                                           nslots, errp);
+    SGIRenderWriteCoverage writes = {
+        .pixel = written,
+        .stride_bytes = resource->width,
+        .capacity_bytes = pixels,
+    };
+
+    committed = sgi_render_resource_commit_covered(target, resource, 0,
+                                                   &rect, slots,
+                                                   resource->width *
+                                                   resource->component_count,
+                                                   nslots, &writes, errp);
     return committed.status;
 }
