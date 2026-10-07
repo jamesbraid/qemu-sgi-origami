@@ -72,16 +72,19 @@ slow_qtests = {
   'sn0-qlogic-isp-test': 80,
   'sn0-qtest-cpu-test': 240,
   'sn0-r10k-perf-migration-test': 110,
-  'sn0-router-test': 350,
+  # Router and L1 start a machine per case; bedrock-flash programs a flash
+  # part word by word. Their time follows the builder. 3x the longest of
+  # the 15 merge-queue full-suite runs 44454 to 45080: 243 s, 75 s and 58 s.
+  'sn0-router-test': 730,
   'sn0-tigon-test': 320,
   'sn1-address-map-test': 340,
-  'sn1-bedrock-flash-test': 110,
+  'sn1-bedrock-flash-test': 175,
   'sn1-bedrock-md-test': 160,
   'sn1-cross-node-test': 70,
   'sn1-directory-state-test': 160,
   'sn1-fuel-test': 250,
   'sn1-io8-scsi-test': 160,
-  'sn1-l1-test': 110,
+  'sn1-l1-test': 225,
   'sn1-odyssey-query-test': 100,
   # The whole binary, which only a named run uses: its groups below are
   # what the qtest suites run.
