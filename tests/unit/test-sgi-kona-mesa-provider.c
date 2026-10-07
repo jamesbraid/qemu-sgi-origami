@@ -81,6 +81,7 @@ static void fixture_init(Fixture *f, bool pages)
                                 SGI_PACK_LE_RED_LOW, 4);
     f->planes.stencil = add_plane(f, &base, SGI_PLANE_S8,
                                   SGI_PACK_LE_RED_LOW, 1);
+    f->planes.direct_tag = 0;
     f->provider = sgi_kona_mesa_provider_new(&f->memory, &f->planes,
                                               &dirty_ops, f, &error_abort);
     g_assert_nonnull(f->provider);
@@ -250,6 +251,165 @@ static void test_later_attachment_failure_keeps_colour(void)
     fixture_clear(&f);
 }
 
+static void test_covered_colour_preserves_index(void)
+{
+    Fixture f;
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 1, 0 };
+    uint32_t slots[6] = { 0x11, 0x22, 0x33, 0xaa, 0xbb, 0xcc };
+    uint8_t written[2] = { 1, 0 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = written,
+        .stride_bytes = 2,
+        .capacity_bytes = sizeof(written),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    fixture_init(&f, false);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front), 0, 0, 0x112233);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front), 1, 0, 0x00abcd);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front_tag), 0, 0, 3);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front_tag), 1, 0, 3);
+    target = fixture_target(&f);
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[0], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 2);
+    g_assert_false(result.partial_pixel);
+    g_assert_true(result.extent_known);
+    g_assert_null(err);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    0, 0), ==, 0x112233);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front_tag),
+                    0, 0), ==, 0);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    1, 0), ==, 0x00abcd);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front_tag),
+                    1, 0), ==, 3);
+    g_assert_cmpuint(f.dirty_planes, ==, 2);
+
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.back), 0, 0, 0x112233);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.back), 1, 0, 0x00abcd);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.back_tag), 0, 0, 3);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.back_tag), 1, 0, 3);
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[2], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.back_tag),
+                    0, 0), ==, 0);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.back),
+                    1, 0), ==, 0x00abcd);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.back_tag),
+                    1, 0), ==, 3);
+    g_assert_cmpuint(f.dirty_planes, ==, 4);
+    g_assert_cmpuint(f.dirty_plane, ==, f.planes.back_tag);
+    fixture_clear(&f);
+}
+
+static void test_covered_rejected_fragment(void)
+{
+    Fixture f;
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 1, 0 };
+    uint32_t slots[6] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };
+    uint8_t written[2] = { 0, 0 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = written,
+        .stride_bytes = 2,
+        .capacity_bytes = sizeof(written),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    fixture_init(&f, false);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front), 0, 0, 0x00abcd);
+    sgi_plane_store(&f.memory, sgi_board_memory_plane(&f.memory,
+                    f.planes.front_tag), 0, 0, 3);
+    target = fixture_target(&f);
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[0], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 2);
+    g_assert_cmpuint(f.dirty_planes, ==, 0);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    0, 0), ==, 0x00abcd);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front_tag),
+                    0, 0), ==, 3);
+    written[0] = 2;
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[0], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.dirty_planes, ==, 0);
+    fixture_clear(&f);
+}
+
+static void test_covered_tag_failure_is_partial_pixel(void)
+{
+    Fixture f;
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 1, 0 };
+    uint32_t slots[6] = { 0, 0, 0, 0x31, 0x72, 0xb4 };
+    uint8_t written[2] = { 0, 1 };
+    uint8_t colour_pages[4][8] = { 0 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = written,
+        .stride_bytes = 2,
+        .capacity_bytes = sizeof(written),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    fixture_init(&f, true);
+    for (unsigned i = 0; i < 4; i++) {
+        sgi_board_memory_set_page(&f.memory, i, i * 8,
+                                  colour_pages[i]);
+    }
+    target = fixture_target(&f);
+    result = sgi_render_resource_commit_covered(&target,
+                    &target.resources[0], 0, &rect, slots, 6,
+                    ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(result.complete_pixels, ==, 1);
+    g_assert_true(result.partial_pixel);
+    g_assert_true(result.extent_known);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    0, 0), ==, 0);
+    g_assert_cmphex(sgi_plane_load(&f.memory,
+                    sgi_board_memory_plane(&f.memory, f.planes.front),
+                    1, 0), ==, 0x3172b4);
+    g_assert_cmpuint(f.dirty_planes, ==, 1);
+    g_assert_cmpuint(f.dirty_plane, ==, f.planes.front);
+    fixture_clear(&f);
+}
+
 static void test_texture_view_and_invalidation(void)
 {
     Fixture f;
@@ -341,6 +501,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-mesa/partial-commit", test_partial_commit);
     g_test_add_func("/sgi-kona-mesa/later-attachment-failure",
                     test_later_attachment_failure_keeps_colour);
+    g_test_add_func("/sgi-kona-mesa/covered-preserves-index",
+                    test_covered_colour_preserves_index);
+    g_test_add_func("/sgi-kona-mesa/covered-rejected-fragment",
+                    test_covered_rejected_fragment);
+    g_test_add_func("/sgi-kona-mesa/covered-tag-partial-pixel",
+                    test_covered_tag_failure_is_partial_pixel);
     g_test_add_func("/sgi-kona-mesa/texture-view",
                     test_texture_view_and_invalidation);
     return g_test_run();

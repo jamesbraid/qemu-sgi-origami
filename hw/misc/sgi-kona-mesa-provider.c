@@ -36,6 +36,7 @@ struct SGIKonaMesaProvider {
     SGIKonaMesaDirtyOps dirty;
     void *dirty_opaque;
     uint32_t planes[6];
+    uint8_t direct_tag;
     SGIRenderResource resources[KONA_MESA_RESOURCES];
     SGIKonaMesaTextureView texture;
     SGIKonaMesaView *texture_view;
@@ -182,6 +183,7 @@ SGIKonaMesaProvider *sgi_kona_mesa_provider_new(
     p->planes[3] = planes->back_tag;
     p->planes[4] = planes->depth;
     p->planes[5] = planes->stencil;
+    p->direct_tag = planes->direct_tag;
     p->next_id = KONA_MESA_RESOURCES + 1;
     p->backings = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, g_free);
@@ -593,11 +595,78 @@ static SGIRenderCommitResult kona_mesa_commit(void *opaque,
     return result;
 }
 
+static SGIRenderCommitResult kona_mesa_commit_covered(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    SGIKonaMesaProvider *p = opaque;
+    SGIRenderCommitResult result = {
+        .status = SGI_RENDER_RESOURCE_ERROR,
+        .extent_known = true,
+    };
+    int i = resource_index(p, resource);
+    uint32_t tag_plane, colour_last_y = 0, tag_last_y = 0;
+    bool colour_changed = false, tag_changed = false;
+
+    if (i != KONA_MESA_FRONT_COLOUR && i != KONA_MESA_BACK_COLOUR) {
+        error_setg(errp, "KONA Mesa covered commit needs a colour bank");
+        result.status = SGI_RENDER_UNSUPPORTED;
+        return result;
+    }
+    tag_plane = p->planes[i == KONA_MESA_FRONT_COLOUR ? 2 : 3];
+    for (uint64_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint64_t x = rect->x0; x <= rect->x1; x++) {
+            size_t row = y - rect->y0;
+            size_t col = x - rect->x0;
+            size_t at = row * stride_slots + col * resource->component_count;
+
+            if (!writes->pixel[row * writes->stride_bytes + col]) {
+                result.complete_pixels++;
+                continue;
+            }
+            if (!board_store(p, i, x, y, pack_slots(i, &slots[at]))) {
+                error_setg(errp, "KONA Mesa colour commit failed at "
+                           "(%" PRIu64 ", %" PRIu64 ")", x, y);
+                goto failed;
+            }
+            colour_changed = true;
+            colour_last_y = y;
+            if (!board_store(p, i == KONA_MESA_FRONT_COLOUR ?
+                             KONA_MESA_FRONT_TAG : KONA_MESA_BACK_TAG,
+                             x, y, p->direct_tag)) {
+                result.partial_pixel = true;
+                error_setg(errp, "KONA Mesa tag commit failed at "
+                           "(%" PRIu64 ", %" PRIu64 ")", x, y);
+                goto failed;
+            }
+            tag_changed = true;
+            tag_last_y = y;
+            result.complete_pixels++;
+        }
+    }
+    result.status = SGI_RENDER_OK;
+
+failed:
+    if (colour_changed) {
+        sgi_kona_mesa_touch_plane(p, p->planes[board_backing(i)],
+                                   rect->y0, colour_last_y);
+    }
+    if (tag_changed) {
+        sgi_kona_mesa_touch_plane(p, tag_plane, rect->y0, tag_last_y);
+    }
+    (void)slice;
+    (void)capacity_slots;
+    return result;
+}
+
 const SGIRenderResourceOps *sgi_kona_mesa_resource_ops(void)
 {
     static const SGIRenderResourceOps ops = {
         .snapshot = kona_mesa_snapshot,
         .commit = kona_mesa_commit,
+        .commit_covered = kona_mesa_commit_covered,
     };
 
     return &ops;

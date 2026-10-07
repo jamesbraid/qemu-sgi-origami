@@ -10,6 +10,7 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 /* The six current board plane IDs, in their model-defined order. */
 typedef struct SGIKonaMesaPlanes {
     uint32_t front, back, front_tag, back_tag, depth, stencil;
+    uint8_t direct_tag; /* Pass SGI_KONA_TAG_DIRECT from the device. */
 } SGIKonaMesaPlanes;
 
 typedef struct SGIKonaMesaDirtyOps {
@@ -42,7 +43,11 @@ SGIKonaMesaProvider *sgi_kona_mesa_provider_new(
     const SGIKonaMesaDirtyOps *dirty, void *dirty_opaque, Error **errp);
 void sgi_kona_mesa_provider_free(SGIKonaMesaProvider *provider);
 
-/* Attach these to a typed-only SGIRasterTarget whose opaque is provider. */
+/*
+ * Attach these to a typed-only SGIRasterTarget whose opaque is provider.
+ * Covered RGB commits write each selected bank's direct tag only where the
+ * Mesa write set says a fragment survived.
+ */
 const SGIRenderResource *sgi_kona_mesa_resources(
     const SGIKonaMesaProvider *provider, size_t *count);
 const SGIRenderResourceOps *sgi_kona_mesa_resource_ops(void);
