@@ -575,24 +575,49 @@ def read_durations(path):
     return durations
 
 
-def qtest_shards(tests, durations, count):
+# What the functional part costs the job that runs it, in the units of the
+# qtest durations, so that job takes a smaller share of the qtests and the
+# full run's jobs finish together. Estimated, not measured. In full run 44198
+# a qtest job spent 14.7 minutes of test time on 2929 s of qtest durations,
+# so one duration second costs about 0.3 s. The functional job's boots, ROMs
+# and unit tests took 8.4 minutes one at a time and should take three to four
+# when run at once, and its setup (assets, script suites) runs about two
+# minutes longer than a qtest job's: about six minutes, or 1200 duration
+# seconds. Refresh it from the next full run's job times.
+FUNCTIONAL_LOAD_S = 1200
+
+
+def qtest_shards(tests, durations, count, preload=None):
     """Split tests into count lists of roughly equal measured duration.
 
     Take the longest test first and give each to the least-loaded shard,
     breaking ties by name and shard number, so every job that computes
     the split from the same tests gets the same answer. A test with no
-    measurement counts as the median of those that have one.
+    measurement counts as the median of those that have one. Preload
+    gives each shard the load it already carries, in the same units.
+
+    The shards are disjoint and together hold every test once.
     """
     known = [durations[test] for test in tests if test in durations]
     default = statistics.median(known) if known else 1.0
     weight = {test: durations.get(test, default) for test in tests}
     shards = [[] for _ in range(count)]
-    loads = [0.0] * count
+    loads = [float(load) for load in (preload or [0] * count)]
     for test in sorted(tests, key=lambda test: (-weight[test], test)):
         shard = min(range(count), key=lambda k: (loads[k], k))
         shards[shard].append(test)
         loads[shard] += weight[test]
     return [sorted(shard) for shard in shards], loads
+
+
+def functional_preload(count):
+    """The load each of count qtest shares starts with.
+
+    Share 1 goes to the job that also runs the functional part. A run
+    that is one share has no other job to balance against.
+    """
+    return [FUNCTIONAL_LOAD_S if count > 1 and index == 0 else 0
+            for index in range(count)]
 
 
 def full_qtest(build, index, count):
@@ -601,7 +626,7 @@ def full_qtest(build, index, count):
     build.list_meson_tests(every, '--suite', 'qemu:qtest-mips64')
     tests = every.read_text(encoding='utf-8').split()
     shards, loads = qtest_shards(tests, read_durations(QTEST_DURATIONS),
-                                 count)
+                                 count, functional_preload(count))
     share = shards[index - 1]
     if not share:
         sys.exit(f'qtest shard {index} of {count} has no tests')
@@ -615,28 +640,57 @@ def full_qtest(build, index, count):
                      processes=QTEST_PROCESSES)
 
 
-FULL_PART = re.compile(r'functional|qtest-(?P<index>[1-9]\d*)-of-'
-                       r'(?P<count>[1-9]\d*)')
+# A part is the functional tests, a share of the qtests, or both: the job
+# that runs the functional tests also takes qtest share 1, which
+# functional_preload makes smaller to pay for it.
+QTEST_PART = re.compile(r'qtest-(?P<index>[1-9]\d*)-of-(?P<count>[1-9]\d*)')
+
+
+def parse_part(text):
+    """Return (functional, index, count) for a part; index is None for none.
+
+    Raise ValueError for anything that is not functional, qtest-K-of-N
+    with K <= N, or functional+qtest-1-of-N.
+    """
+    pieces = text.split('+')
+    functional = pieces[0] == 'functional'
+    rest = pieces[1:] if functional else pieces
+    if len(rest) > 1 or (functional and len(pieces) > 2):
+        raise ValueError(text)
+    if not rest:
+        if not functional:
+            raise ValueError(text)
+        return True, None, None
+    match = QTEST_PART.fullmatch(rest[0])
+    if not match or int(match['index']) > int(match['count']):
+        raise ValueError(text)
+    index, count = int(match['index']), int(match['count'])
+    if functional and index != 1:
+        raise ValueError(text)
+    return functional, index, count
 
 
 def full_part(text):
-    match = FULL_PART.fullmatch(text)
-    if not match or (match['index'] and
-                     int(match['index']) > int(match['count'])):
+    try:
+        parse_part(text)
+    except ValueError:
         raise argparse.ArgumentTypeError(
-            f'{text!r} is not functional or qtest-K-of-N with K <= N')
+            f'{text!r} is not functional, qtest-K-of-N or '
+            'functional+qtest-1-of-N, with K <= N') from None
     return text
 
 
 def full(args):
     build = Build(args.build)
-    if args.part in (None, 'functional'):
-        full_functional(build)
     if args.part is None:
+        full_functional(build)
         full_qtest(build, 1, 1)
-    elif args.part != 'functional':
-        match = FULL_PART.fullmatch(args.part)
-        full_qtest(build, int(match['index']), int(match['count']))
+        return
+    functional, index, count = parse_part(args.part)
+    if functional:
+        full_functional(build)
+    if index:
+        full_qtest(build, index, count)
 
 
 def needs_passed(args):
@@ -785,9 +839,12 @@ def main(argv=None):
                      'one-CPU Linux and IRIX boots, and every ROM')
     mode.add_argument('--part', type=full_part,
                       help='run one part, as each full-run job does: '
-                           'functional (the boots, ROMs and unit tests) '
-                           'or qtest-K-of-N (share K of the qtests split '
-                           'N ways by measured duration); default all')
+                           'functional (the boots, ROMs and unit tests), '
+                           'qtest-K-of-N (share K of the qtests split N '
+                           'ways by measured duration) or '
+                           'functional+qtest-1-of-N (both, with a smaller '
+                           'share 1 to pay for the functional tests); '
+                           'default all')
     mode.set_defaults(func=full)
 
     mode = modes.add_parser(
