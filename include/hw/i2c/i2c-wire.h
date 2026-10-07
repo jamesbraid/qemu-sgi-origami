@@ -201,6 +201,15 @@ int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
                          bool sda, bool clock);
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
 int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold);
+/*
+ * A master whose interface is reset stops driving the bus: its staged
+ * transition and clock go, and it lets go of SCL and then SDA at the present
+ * instant. One that was holding both low leaves a STOP. It leaves the
+ * contenders, so any master still contending carries the transfer on. If
+ * none is left and nothing else drives either line, the transfer ends
+ * there, as though at a STOP. Called from an observer, it lets go of both
+ * lines together once publication ends.
+ */
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
 /*
  * A slave whose interface is switched off stops driving the bus: its clock

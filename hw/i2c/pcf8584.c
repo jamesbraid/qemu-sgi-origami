@@ -256,10 +256,7 @@ static void pcf8584_wire_bus_error(PCF8584State *s)
     s->wire_phase = PCF8584_WIRE_IDLE;
     s->start_pending = false;
     s->wire_stop_pending = false;
-    if (i2c_wire_reset_master(s->bus, s->wire_master) == -ENOTSUP) {
-        qemu_log_mask(LOG_UNIMP, "pcf8584: recovery from a misplaced START or "
-                      "STOP while driving is unmodelled\n");
-    }
+    i2c_wire_reset_master(s->bus, s->wire_master);
     pcf8584_update_irq(s);
 }
 
@@ -1099,14 +1096,12 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->wire_scl = s->wire_sda = true;
     if (pcf8584_on_wire(s) && s->bus) {
         /*
-         * Reset reaches this adapter alone. An owning adapter's reset
-         * waveform is unestablished, and a losing or reset non-owner must
-         * not end the winner's transfer, so the peer transfer is left alone.
+         * Reset reaches this adapter alone, and it lets go of both lines.
+         * An owning adapter's reset waveform is unestablished; the wire's
+         * release is an approximation. A peer still contending carries its
+         * transfer on, so a reset non-owner does not end the winner's.
          */
-        if (i2c_wire_reset_master(s->bus, s->wire_master) == -ENOTSUP) {
-            qemu_log_mask(LOG_UNIMP, "pcf8584: reset while this adapter owns "
-                          "the shared bus is unsupported\n");
-        }
+        i2c_wire_reset_master(s->bus, s->wire_master);
         s->wire_scl = i2c_wire_scl(s->bus);
         s->wire_sda = i2c_wire_sda(s->bus);
     }

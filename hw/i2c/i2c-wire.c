@@ -55,6 +55,12 @@ struct I2CWire {
      * event first. Neither field outlives the tick that set it.
      */
     bool ticking, retick;
+    /*
+     * A reset master let go of a transfer. If that left no contender and
+     * nothing driving either line, the tick settling the release ends the
+     * transfer. Like retick, it never outlives the tick that consumes it.
+     */
+    bool withdrawn;
     bool scl, sda, occupied, start_hold;
     bool address_byte, ack, read_valid, read_prepare_pending;
     uint8_t bits, byte;
@@ -831,7 +837,9 @@ static void i2c_wire_tick(I2CWire *wire, int64_t now)
         wire->ack = wire->read_valid = false;
         wire->read_prepare_pending = false;
         wire->read_prepare_phase = 0;
-    } else if (old_scl && scl && !old_sda && sda) {
+    } else if ((old_scl && scl && !old_sda && sda) ||
+               (wire->withdrawn && wire->occupied && !wire->contenders &&
+                scl && sda)) {
         wire->occupied = false;
         wire->start_hold = false;
         wire->contenders = 0;
@@ -965,6 +973,7 @@ static void i2c_wire_tick(I2CWire *wire, int64_t now)
         }
     }
 publish:
+    wire->withdrawn = false;
     /* Target ACK is a separate line drive, never a master arbitration bit. */
     sda = i2c_wire_slave_sda(wire, scl);
     for (unsigned i = 0; i < bus->master_count; i++) {
@@ -1297,21 +1306,64 @@ int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold)
 int i2c_wire_reset_master(I2CBus *base, uint32_t master)
 {
     I2cWire *bus = I2C_WIRE(base);
+    I2CWire *wire;
     I2CWireMaster *m;
+    uint64_t bit = 1ULL << master;
 
     if (!bus->wire || master >= bus->master_count) {
         return -EINVAL;
     }
-    m = &bus->wire->masters[master];
-    if ((bus->wire->contenders & (1ULL << master)) || m->clock) {
-        return -ENOTSUP;
+    wire = bus->wire;
+    m = &wire->masters[master];
+    if (!(wire->contenders & bit) && !m->clock) {
+        m->pending = false;
+        m->paused = false;
+        m->sda = true;
+        m->scl_low = false;
+        m->deadline = -1;
+        i2c_wire_schedule(wire);
+        return 0;
     }
+    if (wire->error) {
+        return wire->error;
+    }
+    /* Everything already due happens before the master lets go. */
+    if (!wire->advancing && !wire->ticking) {
+        i2c_wire_advance_to(wire, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+
+    /*
+     * Approximation: nothing published orders the two lines when a
+     * controller's serial output is switched off mid-transfer. SCL goes
+     * first here, then SDA, so a master that was holding both low leaves
+     * the STOP that releasing them in that order forms. A tick already
+     * publishing cannot be split, so a release from an observer lets go
+     * of both at once.
+     */
     m->pending = false;
     m->paused = false;
-    m->sda = true;
+    m->clock = false;
     m->scl_low = false;
     m->deadline = -1;
-    i2c_wire_schedule(bus->wire);
+    if (!wire->ticking && (wire->contenders & bit) && !m->sda) {
+        i2c_wire_tick(wire, i2c_wire_instant(wire));
+    }
+    m->sda = true;
+    /*
+     * Approximation: with no contender left and both lines high, nobody
+     * remains to end the transfer with a STOP. The wire ends it rather than
+     * leave every adapter seeing a busy bus for good; on hardware a busy
+     * flag waits for whichever master next drives a START and STOP.
+     */
+    if (wire->contenders & bit) {
+        wire->contenders &= ~bit;
+        wire->withdrawn = true;
+    }
+    if (wire->ticking) {
+        wire->retick = true;
+    } else {
+        i2c_wire_tick(wire, i2c_wire_instant(wire));
+    }
     return 0;
 }
 

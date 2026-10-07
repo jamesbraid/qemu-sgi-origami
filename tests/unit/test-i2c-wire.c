@@ -623,7 +623,6 @@ static void test_inactive_reset(Fixture *f, gconstpointer unused)
     g_assert_cmpint(i2c_wire_reset_master(f->bus, 1), ==, 0);
     g_assert_true(i2c_bus_busy(f->bus));
     g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 1);
-    g_assert_cmpint(i2c_wire_reset_master(f->bus, 0), ==, -ENOTSUP);
     g_assert_true(write_byte(f, 0xa5, 0xff, false));
     g_assert_cmpuint(a->writes, ==, 1);
     g_assert_cmphex(a->value, ==, 0xa5);
@@ -722,6 +721,85 @@ static void stop_bytes(Fixture *f)
         }
     }
     advance_to(low + 7);
+}
+
+/*
+ * A sole master reset with SCL low lets go of SCL, then SDA. Holding SDA low
+ * for a zero bit, it leaves a STOP; with SDA already released, as for the
+ * acknowledgement, no STOP can form and the wire ends the abandoned
+ * transfer itself. Either way the bus is free and the receiver finished.
+ */
+static void test_driving_reset(Fixture *f, gconstpointer zero_bit)
+{
+    TestSlave *a = (TestSlave *)f->a;
+    const I2CWireEvent *event;
+    int64_t low;
+    unsigned seen;
+
+    g_assert_cmpint(i2c_wire_configure(f->bus, 0, 5, 5, false), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, virtual_time + 10,
+                                  false, false), ==, 0);
+    advance_to(virtual_time + 10);
+    g_assert_true(write_byte(f, 0x40, 0xff, true));
+    g_assert_cmpuint(a->starts, ==, 1);
+    low = virtual_time;
+    if (zero_bit) {
+        g_assert_cmpint(i2c_wire_stage(f->bus, 0, low + 1, false, true),
+                        ==, 0);
+    }
+    advance_to(low + 3);
+    g_assert_false(i2c_wire_scl(f->bus));
+    g_assert_cmpint(i2c_wire_sda(f->bus), ==, !zero_bit);
+    seen = f->events->len;
+
+    g_assert_cmpint(i2c_wire_reset_master(f->bus, 0), ==, 0);
+    g_assert_false(i2c_bus_busy(f->bus));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 0);
+    g_assert_true(i2c_wire_scl(f->bus));
+    g_assert_true(i2c_wire_sda(f->bus));
+    g_assert_cmpuint(a->stops, ==, 1);
+    g_assert_cmpuint(a->writes, ==, 0);
+    g_assert_cmpuint(f->events->len, ==, seen + (zero_bit ? 2 : 1));
+    if (zero_bit) {
+        event = &g_array_index(f->events, I2CWireEvent, seen);
+        g_assert_cmpint(event->time, ==, low + 3);
+        g_assert_true(event->scl);
+        g_assert_false(event->sda);
+        g_assert_cmphex(event->contenders, ==, 1);
+    }
+    event = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_cmpint(event->time, ==, low + 3);
+    g_assert_cmphex(event->contenders, ==, 0);
+    g_assert_cmpint(event->error, ==, 0);
+
+    /* Nothing is left scheduled, and a new transfer starts cleanly. */
+    advance_to(low + 100);
+    g_assert_cmpuint(f->events->len, ==, seen + (zero_bit ? 2 : 1));
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, virtual_time + 10,
+                                  false, false), ==, 0);
+    advance_to(virtual_time + 10);
+    g_assert_true(write_byte(f, 0x40, 0xff, true));
+    g_assert_cmpuint(a->starts, ==, 2);
+}
+
+/* A reset contender leaves the transfer to the master it was agreeing with. */
+static void test_contender_reset(Fixture *f, gconstpointer unused)
+{
+    TestSlave *a = (TestSlave *)f->a;
+
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x40, 0x40, true));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 3);
+    g_assert_cmpint(i2c_wire_reset_master(f->bus, 1), ==, 0);
+    g_assert_true(i2c_bus_busy(f->bus));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 1);
+    g_assert_cmpuint(a->stops, ==, 0);
+    g_assert_true(write_byte(f, 0xa5, 0xff, false));
+    g_assert_cmpuint(a->writes, ==, 1);
+    g_assert_cmphex(a->value, ==, 0xa5);
+    stop_bytes(f);
+    g_assert_cmpuint(a->stops, ==, 1);
+    g_assert_false(i2c_bus_busy(f->bus));
 }
 
 static void test_endpoint_write(Fixture *f, gconstpointer differing)
@@ -1867,6 +1945,12 @@ int main(int argc, char **argv)
                test_contender_clock_admission_preserves_error, teardown);
     g_test_add("/i2c-wire/inactive-reset", Fixture, NULL,
                setup, test_inactive_reset, teardown);
+    g_test_add("/i2c-wire/driving-reset-zero-bit", Fixture, GINT_TO_POINTER(1),
+               setup, test_driving_reset, teardown);
+    g_test_add("/i2c-wire/driving-reset-released", Fixture, NULL,
+               setup, test_driving_reset, teardown);
+    g_test_add("/i2c-wire/contender-reset", Fixture, NULL,
+               setup, test_contender_reset, teardown);
     g_test_add("/i2c-wire/migration-low", Fixture, NULL,
                setup, test_migration, teardown);
     g_test_add("/i2c-wire/migration-hold", Fixture, GINT_TO_POINTER(1),
