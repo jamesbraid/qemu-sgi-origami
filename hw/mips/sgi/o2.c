@@ -6,10 +6,12 @@
  * with a synthetic 64 MiB fit. Reset straps and the DIMM-to-bank-register
  * map are unknown.
  * It has no fitted flash, PCI storage or product catalogue offering.
+ * Host serial, flash write control and migration are unavailable here.
  */
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
@@ -19,8 +21,12 @@
 #include "hw/mips/mips.h"
 #include "hw/mips/sgi/crime.h"
 #include "hw/mips/sgi/o2-rom.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_host.h"
 #include "qemu/module.h"
+#include "qemu/notify.h"
 #include "system/address-spaces.h"
+#include "system/system.h"
 #include "target/mips/cpu.h"
 
 #define O2_RAM_SIZE (64 * MiB)
@@ -37,7 +43,37 @@ typedef struct O2MachineState {
     MemoryRegion cpu_uncached;
     MemoryRegion cpu_uncached_base;
     MemoryRegion cpu_uncached_attr0;
+    Clock *cpuclk;
+    PCIBus *pci_bus;
+    Notifier machine_done;
+    bool machine_done_registered;
 } O2MachineState;
+
+static void o2_get_cpu_clock_hz(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+    uint64_t hz = s->cpuclk ? clock_get_hz(s->cpuclk) : 0;
+
+    visit_type_uint64(v, name, &hz, errp);
+}
+
+static void o2_note_pci_device(PCIBus *bus, PCIDevice *dev, void *opaque)
+{
+    *(bool *)opaque = true;
+}
+
+static void o2_machine_init_done(Notifier *notifier, void *data)
+{
+    O2MachineState *s = container_of(notifier, O2MachineState, machine_done);
+    bool attached = false;
+
+    pci_for_each_device_under_bus(s->pci_bus, o2_note_pci_device, &attached);
+    if (attached) {
+        error_report("o2-test does not support attached PCI devices");
+        exit(1);
+    }
+}
 
 static char *o2_get_rom_image(Object *obj, Error **errp)
 {
@@ -62,7 +98,12 @@ static void o2_instance_init(Object *obj)
 
 static void o2_instance_finalize(Object *obj)
 {
-    g_free(((O2MachineState *)obj)->rom_image);
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (s->machine_done_registered) {
+        qemu_remove_machine_init_done_notifier(&s->machine_done);
+    }
+    g_free(s->rom_image);
 }
 
 static void o2_init(MachineState *machine)
@@ -123,6 +164,7 @@ static void o2_init(MachineState *machine)
     /* Catalogued speed; external SysClk and reset straps are unknown. */
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(cpuclk, 195 * 1000 * 1000);
+    s->cpuclk = cpuclk;
     memory_region_init(&s->cpu_uncached, OBJECT(machine),
                        "o2.cpu-uncached", UINT64_MAX);
     memory_region_init_alias(&s->cpu_uncached_base, OBJECT(machine),
@@ -144,7 +186,7 @@ static void o2_init(MachineState *machine)
     object_property_set_link(OBJECT(cpu_dev), "uncached-memory",
                              OBJECT(&s->cpu_uncached), &error_fatal);
     qdev_prop_set_bit(cpu_dev, "cache-data-visibility", true);
-    if (!qdev_realize(cpu_dev, NULL, &err)) {
+    if (!qdev_realize_and_unref(cpu_dev, NULL, &err)) {
         error_report_err(err);
         exit(1);
     }
@@ -157,7 +199,7 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_uint8(crime, "interface-revision", 1);
     object_property_set_link(OBJECT(crime), "ram", OBJECT(machine->ram),
                              &error_fatal);
-    if (!sysbus_realize(SYS_BUS_DEVICE(crime), &err)) {
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(crime), &err)) {
         error_report_err(err);
         exit(1);
     }
@@ -169,7 +211,7 @@ static void o2_init(MachineState *machine)
 
     mace = qdev_new("sgi-mace");
     object_property_add_child(OBJECT(machine), "mace", OBJECT(mace));
-    if (!sysbus_realize(SYS_BUS_DEVICE(mace), &err)) {
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(mace), &err)) {
         error_report_err(err);
         exit(1);
     }
@@ -179,6 +221,10 @@ static void o2_init(MachineState *machine)
                                     qdev_get_gpio_in_named(crime, "mace",
                                                            cause));
     }
+    s->pci_bus = PCI_HOST_BRIDGE(mace)->bus;
+    s->machine_done.notify = o2_machine_init_done;
+    qemu_add_machine_init_done_notifier(&s->machine_done);
+    s->machine_done_registered = true;
 
     if (s->rom_image) {
         rom = qdev_new(TYPE_SGI_O2_ROM);
@@ -187,7 +233,7 @@ static void o2_init(MachineState *machine)
         qdev_prop_set_uint32(rom, "flash-size", s->rom_size);
         qdev_prop_set_uint32(rom, "image-offset", s->rom_offset);
         qdev_prop_set_uint16(rom, "pad-byte", s->rom_pad_byte);
-        if (!sysbus_realize(SYS_BUS_DEVICE(rom), &err)) {
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(rom), &err)) {
             error_report_err(err);
             exit(1);
         }
@@ -204,6 +250,8 @@ static void o2_class_init(ObjectClass *oc, const void *data)
 
     object_class_property_add_str(oc, "rom-image", o2_get_rom_image,
                                   o2_set_rom_image);
+    object_class_property_add(oc, "cpu-clock-hz", "uint64",
+                              o2_get_cpu_clock_hz, NULL, NULL, NULL);
     object_class_property_add_uint32_ptr(oc, "rom-size",
         offsetof(O2MachineState, rom_size), OBJ_PROP_FLAG_READWRITE);
     object_class_property_add_uint32_ptr(oc, "rom-offset",
