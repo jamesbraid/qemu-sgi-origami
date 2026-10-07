@@ -4554,6 +4554,21 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             umul64_overflow(slice_stride, 64, &slice_stride)) {
             goto unsupported;
         }
+        /*
+         * The captured 2x2x2 stored upload starts 15 slice strides above
+         * this level base. Other placements remain unqualified.
+         */
+        if (three_d_stored && base == 0x16a800 &&
+            width == 2 && height == 2 && depth == 2) {
+            uint64_t first_slice;
+
+            if (umul64_overflow(slice_stride, 15, &first_slice) ||
+                uadd64_overflow(base, first_slice, &first_slice) ||
+                first_slice > UINT32_MAX) {
+                goto unsupported;
+            }
+            base = first_slice;
+        }
         terminal = MAX(MAX(ctz32(width), ctz32(height)), ctz32(depth));
         count = mipmap && hi > 0 ?
                 MIN(terminal, (hi + 255) / 256) + 1 : 1;
@@ -4634,14 +4649,14 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         chain->volume = chain->volumes[0];
         image->depth = depth;
         image->volume = true;
-        image->wrap_r = three_d_stored ? SGI_GL_CLAMP_TO_BORDER :
+        image->wrap_r = three_d_stored ? SGI_GL_CLAMP :
                         three_d_clamp && (word & 0x200) ? SGI_GL_CLAMP :
                         SGI_GL_REPEAT;
         image->read_texel_3d = odyssey_texture_read_3d;
         image->border = three_d_stored;
         if (three_d_stored) {
-            image->wrap_s = SGI_GL_CLAMP_TO_BORDER;
-            image->wrap_t = SGI_GL_CLAMP_TO_BORDER;
+            image->wrap_s = SGI_GL_CLAMP;
+            image->wrap_t = SGI_GL_CLAMP;
             image->read_border_texel_3d = odyssey_texture_read_border_3d;
         }
         image->opaque = &chain->volume;

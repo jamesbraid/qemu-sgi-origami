@@ -238,6 +238,7 @@ texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-2d-linear
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-2d-incomplete
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-3d
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-3d-migration
+texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-3d-reset
 texture /mips64/sn1/odyssey/texture-adapter/two-dimensional-border-upload
 texture /mips64/sn1/odyssey/texture-adapter/two-dimensional-missing-border-row
 texture /mips64/sn1/odyssey/texture-adapter/height-one
