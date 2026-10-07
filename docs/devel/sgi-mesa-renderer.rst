@@ -110,11 +110,13 @@ configured cache path on another host. The ``build`` flavor is the one used
 for tests. ``-j4`` limits compilation to four workers.
 
 The renderer test selects software llvmpipe and checks the reported GL
-renderer. ``QEMU_TEST_SGI_REQUIRE_MESA=1`` makes missing surfaceless Mesa a
-failure instead of a skip. The optional render-node case is registered only
-when ``QEMU_TEST_SGI_RENDER_NODE`` is set. The required SGI unit selection is
-documented in :doc:`testing/sgi`. These tests exercise Linux surfaceless EGL
-and GBM. They do not qualify macOS or Windows context creation.
+renderer. Origami's ``qtest`` wrapper forwards ``QEMU_TEST_SGI_REQUIRE_MESA``
+into the test container, so missing surfaceless Mesa fails instead of skipping.
+The optional render-node case needs ``QEMU_TEST_SGI_RENDER_NODE`` and device
+access inside that container. Setting the variable only on the host does not
+configure either. The required SGI unit selection is documented in
+:doc:`testing/sgi`. These named tests exercise Linux surfaceless EGL. They do
+not exercise a GBM render node or qualify macOS or Windows context creation.
 
 ``qemu-build`` compiles ``qemu-system-mips64`` from the selected QEMU worktree.
 ``qtest --suite unit`` rebuilds the named unit binaries but does not rebuild
