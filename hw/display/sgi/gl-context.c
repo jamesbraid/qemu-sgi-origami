@@ -13,6 +13,7 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "hw/display/sgi/gl-context.h"
 #include "migration/qemu-file.h"
 
@@ -273,14 +274,52 @@ bool sgi_gl_consume_error(SGIGLContext *c, uint32_t *error)
 static void sgi_gl_draw_result(SGIGLContext *c, const SGIGLSink *sink,
                                const SGIGLDraw *d)
 {
-    if (!c->polygon.enabled && !c->standalone_stipple) {
+    SGIGLDrawResult result;
+
+    if (sink->result && *sink->result != SGI_GL_DRAW_OK) {
+        return;
+    }
+    if (sink->draw_checked) {
+        result = sink->draw_checked(sink->opaque, d);
+    } else if (!c->polygon.enabled && !c->standalone_stipple && sink->draw) {
         sink->draw(sink->opaque, d);
-    } else if (!sink->draw_checked) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-gl: activated modes require checked draw callback\n");
-    } else if (sink->draw_checked(sink->opaque, d) ==
-               SGI_GL_DRAW_OUT_OF_MEMORY && !c->polygon.error) {
+        return;
+    } else {
+        error_report_once("sgi-gl: required checked draw callback is missing");
+        if (sink->result) {
+            *sink->result = SGI_GL_DRAW_RESOURCE_ERROR;
+        }
+        return;
+    }
+    if (result == SGI_GL_DRAW_OUT_OF_MEMORY && !c->polygon.error) {
         c->polygon.error = SGI_GL_OUT_OF_MEMORY;
+    }
+    if (result == SGI_GL_DRAW_OK) {
+        return;
+    }
+    if (sink->result) {
+        *sink->result = result;
+        return;
+    }
+    switch (result) {
+    case SGI_GL_DRAW_OUT_OF_MEMORY:
+        break;
+    case SGI_GL_DRAW_UNSUPPORTED:
+        warn_report_once("sgi-gl: unsupported checked draw has no result "
+                         "consumer");
+        break;
+    case SGI_GL_DRAW_RESOURCE_ERROR:
+        error_report_once("sgi-gl: checked draw resource failure has no "
+                          "result consumer");
+        break;
+    case SGI_GL_DRAW_HOST_ERROR:
+        error_report_once("sgi-gl: checked draw host failure has no "
+                          "result consumer");
+        break;
+    default:
+        error_report_once("sgi-gl: invalid checked draw result %u has no "
+                          "result consumer", result);
+        break;
     }
 }
 
@@ -2470,6 +2509,18 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
     default:
         g_assert_not_reached();
     }
+}
+
+SGIGLDrawResult sgi_gl_command_checked(SGIGLContext *c,
+                                       const SGIGLSink *sink,
+                                       const SGIGLCmd *cmd)
+{
+    SGIGLDrawResult result = SGI_GL_DRAW_OK;
+    SGIGLSink checked = *sink;
+
+    checked.result = &result;
+    sgi_gl_command(c, &checked, cmd);
+    return result;
 }
 
 static bool sgi_gl_get_floats(const float *v, unsigned count, uint32_t *out,
