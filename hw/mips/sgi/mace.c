@@ -29,7 +29,6 @@
 #define MACE_PCI_CFGDATA     0x0cfc
 #define MACE_PCI_MASTER_ABORT (1U << 31)
 #define MACE_PCI_ADDR_VALID   (1U << 19)
-#define MACE_PCI_CONFIG_ADDR  (1U << 20)
 #define MACE_PCI_SUPPORTED_CONTROL (0x800000ffU)
 #define MACE_PCI_NO_PIN 8
 #define MACE_UART_A        0x390000
@@ -154,14 +153,10 @@ static void mace_pci_set_irq(void *opaque, int n, int level)
 
 static int mace_pci_map_irq(PCIDevice *dev, int pin)
 {
-    static const int slot0[4] = { 2, 5, 6, 7 };
     unsigned slot = PCI_SLOT(dev->devfn);
 
-    if ((slot == 1 || slot == 2) && pin == 0) {
+    if (pin == 0 && slot >= 1 && slot <= 3) {
         return slot - 1;
-    }
-    if (slot == 3) {
-        return slot0[pin];
     }
     return MACE_PCI_NO_PIN;
 }
@@ -171,8 +166,7 @@ static void mace_pci_master_abort(SGIMACEState *s, uint32_t addr)
     if (!(s->pci_error_flags & MACE_PCI_ADDR_VALID)) {
         s->pci_error_addr = addr;
     }
-    s->pci_error_flags |= MACE_PCI_MASTER_ABORT | MACE_PCI_ADDR_VALID |
-                          MACE_PCI_CONFIG_ADDR;
+    s->pci_error_flags |= MACE_PCI_MASTER_ABORT | MACE_PCI_ADDR_VALID;
     mace_update_pci_irqs(s);
 }
 
@@ -288,7 +282,11 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
             }
         }
         if (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28) ||
-            (addr & 0xfc) == 0x30) {
+            (addr & 0xfc) == PCI_ROM_ADDRESS ||
+            ((addr & 0xfc) == PCI_ROM_ADDRESS1 &&
+             (pci_data_read(PCI_HOST_BRIDGE(s)->bus,
+                            (addr & ~0xffU) | PCI_HEADER_TYPE, 1) &
+              ~PCI_HEADER_TYPE_MULTI_FUNCTION) == PCI_HEADER_TYPE_BRIDGE)) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-mace: PCI BAR programming is unsupported\n");
             return MEMTX_ERROR;
