@@ -6,7 +6,8 @@
  * with a synthetic 64 MiB fit. Reset straps and the DIMM-to-bank-register
  * map are unknown.
  * It has no fitted flash, PCI storage or product catalogue offering.
- * Host serial, flash write control and migration are unavailable here.
+ * Serial A accepts an explicit host backend; flash write control and
+ * migration remain unavailable here.
  */
 #include "qemu/osdep.h"
 #include "qemu/units.h"
@@ -133,6 +134,10 @@ static void o2_init(MachineState *machine)
         error_report("o2-test does not support USB devices");
         exit(1);
     }
+    if (serial_hd(1)) {
+        error_report("o2-test supports only one host serial backend");
+        exit(1);
+    }
     if (machine->firmware) {
         error_report("o2-test does not support -bios");
         exit(1);
@@ -211,6 +216,9 @@ static void o2_init(MachineState *machine)
 
     mace = qdev_new("sgi-mace");
     object_property_add_child(OBJECT(machine), "mace", OBJECT(mace));
+    if (serial_hd(0)) {
+        qdev_prop_set_chr(mace, "chardev-a", serial_hd(0));
+    }
     if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(mace), &err)) {
         error_report_err(err);
         exit(1);
