@@ -507,12 +507,26 @@ static void elsc_handle_ver(SGIElscState *s, ElscRequest *r)
                             "ok " SGI_ELSC_VERSION_ORIGIN200);
 }
 
+/* The Origin 200 role bit in the raw switch byte "rsw" reports. */
+#define ELSC_RSW_MASTER 0x04
+
 /* The physical switches, active-low, as hex with no leading zero. */
 static void elsc_handle_rsw(SGIElscState *s, ElscRequest *r)
 {
     char resp[6];
+    uint8_t raw = 0xff ^ s->dip_switches;
 
-    snprintf(resp, sizeof(resp), "ok %x", 0xff ^ s->dip_switches);
+    /*
+     * The Origin 200 build reads its role from bit 0x04 of the same switch
+     * byte: set on the master, clear on a slave. The machine's topology
+     * decides the role (the controller that publishes the grant rotation
+     * is the master), so the bit follows it whatever the configured
+     * switches say.
+     */
+    if (!s->origin2000) {
+        raw = s->arbitration ? raw | ELSC_RSW_MASTER : raw & ~ELSC_RSW_MASTER;
+    }
+    snprintf(resp, sizeof(resp), "ok %x", raw);
     elsc_frame_response_str(s, resp);
 }
 
