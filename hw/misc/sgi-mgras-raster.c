@@ -2480,7 +2480,6 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     }
     if (deep && (strcmp(s->board->name, "ssi") ||
                  slot != 3 || !s->slot[0] ||
-                 mgras_raster_dma_src_offset(s) != 0xcd0 ||
                  signature_format != 0x00400080 ||
                  mode != 0x00400080 ||
                  !((signature_width == 1 && signature_height == 1) ||

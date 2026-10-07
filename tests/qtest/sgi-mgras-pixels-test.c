@@ -4363,22 +4363,24 @@ static void gl_ssi_draw_buffer(QTestState *s, uint32_t mask)
 
 static void gl_ssi_expect_selected_shape(QTestState *s, uint32_t width,
                                          uint32_t height, uint32_t pitch,
-                                         uint32_t rows, uint32_t bpr,
-                                         const uint8_t *want)
+                                         uint32_t offset, uint32_t rows,
+                                         uint32_t bpr, const uint8_t *want)
 {
     static const uint8_t poison[32] = { [0 ... 31] = 0xa5 };
     uint8_t got[32];
     size_t bytes = 4 * width * height;
+    uint64_t destination = 0x30000 + offset - 8;
 
     g_assert_cmpuint(bytes, <=, 16);
-    qtest_memwrite(s, 0x30cc8, poison, sizeof(poison));
+    g_assert_cmpuint(offset, >=, 8);
+    qtest_memwrite(s, destination, poison, sizeof(poison));
     gl_word(s, GL_READ_OPEN);
     gl_read_registers(s, 1, 1, height, width, height, 0x00400080, false);
     gl_read_dma_class_a_signature_format(s, width, height, 0x00400080);
-    gl_read_dma_descriptor_at(s, pitch, 0xcd0, rows, bpr, 0xbf);
+    gl_read_dma_descriptor_at(s, pitch, offset, rows, bpr, 0xbf);
     gl_word(s, 0x0000da00);
     gl_word(s, GL_READ_CLOSE);
-    qtest_memread(s, 0x30cc8, got, sizeof(got));
+    qtest_memread(s, destination, got, sizeof(got));
 
     if (!want) {
         g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
@@ -4394,7 +4396,7 @@ static void gl_ssi_expect_selected_read(QTestState *s, uint32_t width,
                                         uint32_t height, uint32_t pitch,
                                         const uint8_t *want)
 {
-    gl_ssi_expect_selected_shape(s, width, height, pitch, 1,
+    gl_ssi_expect_selected_shape(s, width, height, pitch, 0xcd0, 1,
                                  4 * width * height, want);
 }
 
@@ -4468,6 +4470,12 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
     gl_ssi_expect_read(s, 2, 0, 0x405, 1, 1, 4, want_slot2);
     gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 16, want_front);
     gl_ssi_expect_read(s, 2, 0, 0x405, 2, 2, 16, want_slot2);
+    gl_client_read_buffer(s, 0, 2, 0x404);
+    gl_ssi_expect_selected_shape(s, 1, 1, 4, 0xcc0, 1, 4, want_front);
+    gl_client_read_buffer(s, 2, 0, 0x405);
+    gl_ssi_expect_selected_shape(s, 2, 2, 16, 0xcc0, 1, 16, want_slot2);
+    gl_client_read_buffer(s, 0, 2, 0x404);
+    gl_ssi_expect_selected_shape(s, 2, 2, 16, 0x7f8, 1, 16, want_front);
 
     gl_swap_buffers(s, 0, 1u << 14);
     g_assert_cmphex(mgras_test_display_pixel(s, 257, 382), ==, 0x204060);
@@ -4482,8 +4490,13 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
     gl_ssi_expect_read(s, 2, 2, 0x404, 1, 1, 4, NULL);
     gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 8, NULL);
     gl_client_read_buffer(s, 0, 2, 0x404);
-    gl_ssi_expect_selected_shape(s, 2, 2, 8, 2, 8, NULL);
+    gl_ssi_expect_selected_shape(s, 2, 2, 8, 0xcd0, 2, 8, NULL);
     gl_ssi_expect_read(s, 0, 2, 0x404, 2, 1, 8, NULL);
+    gl_read_dma_map_pages_slot(s, 2, 3, 9u << 16);
+    gl_client_read_buffer(s, 0, 2, 0x404);
+    gl_ssi_expect_selected_shape(s, 2, 2, 16, 0xff8, 1, 16,
+                                 want_new_back);
+    gl_ssi_expect_selected_shape(s, 2, 2, 16, 0x1ff8, 1, 16, NULL);
     g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     log = gl_eviction_log_end(s, log_path);
     g_assert_null(strstr(log, "unsupported client read buffer tuple 0, 2"));
@@ -4491,6 +4504,7 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
     g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 2, 2"));
     g_assert_nonnull(strstr(log, "captured OpenGL client DMA read has "
                                  "unsupported bounds"));
+    g_assert_nonnull(strstr(log, "from 0x1ff8 do not fit a 2-page buffer"));
 }
 
 /* One RE has no deep slot even when a guest sends the captured tuple. */
