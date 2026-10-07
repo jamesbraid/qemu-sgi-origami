@@ -48,7 +48,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
                                  sgi_sn1_r14000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
-    mc->min_cpus = mc->default_cpus;
+    mc->min_cpus = sgi_machine_product_min_cpus(product);
     mc->max_cpus = sgi_machine_product_max_cpus(product);
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn1.ram";

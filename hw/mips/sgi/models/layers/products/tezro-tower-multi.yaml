@@ -1,49 +1,533 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Two-processor selection of the two/four-processor tower interface board.
 layer_version: 1
+sources:
+  tezro-deskside-trial: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/datasheets/tezro-deskside-compatibility-trial.md, SHA-256 10610817dce8ba94ead45e44fb0dc25faa6a389bc1df86ef8535570446354979: selected deskside software tuple'
+  tezro-deskside-trial-review: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-trial-evidence-review-20261006.md, SHA-256 6029aea835f7315f5f9ff357b2ae4a682582d41a3136a5001a43a1f0482b5715: clears only the deskside tuple as local software inputs'
+  tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
+  tezro-software-choice-limit: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-compatibility-review-20261006.md, SHA-256 64528fa4b1acad7d73e5cbaf0f195ec42f14dd360b6adbd86149fb08f9ba8fd7: selected tuple values cleared only as software choices; does not clear
+    tower or rack configuration'
 layer:
   kind: product
   id: tezro-tower-multi
-  requires: {assembly: ip53-tezro}
+  requires:
+    assembly: ip53-tezro
   topology:
     min_nodes: 1
     max_nodes: 1
-    supported_cpu_populations: [[2], [4]]
-    provenance: vendor-document
-    sources: ["007-4564-001 printed pages 27, 29, 38-39: two/four processors and eight PCI-X slots on four buses"]
+    supported_cpu_populations:
+    - - 2
+    - - 4
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
   population:
     nodes: 1
-    cpus_per_node: [2]
-    fitted_memory:
-      status: unknown
-      reason: The guide states a 1 GB minimum but no installed DIMM population for this reference.
-      provenance: derived
-      sources: ["007-4564-001 printed page 28: two/four-processor memory minimum"]
-    provenance: vendor-document
-    sources: ["007-4564-001 printed page 27: two-processor option"]
+    cpus_per_node:
+    - 2
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
+  memory_kits_per_node:
+  - kit-4096-at-banks-0-5-tezro-deskside
+  cpu_selection:
+    default:
+      clock_mhz: 700
+      cache_mib: 4
+    slots:
+    - cpu0
+    - cpu1
+    - cpu2
+    - cpu3
   data:
     machine:
-      name: Tezro tower, two or four processors
-      model_role: reference
-      notes: >-
-        This reference selects two R16000 processors from the documented
-        two- or four-processor tower family. The interface board has eight
-        PCI-X slots on four buses, with IO9 fixed at bus 1 slot 1. Bus 4
-        slot 2 shares an opening with the second XIO slot. The one-processor
-        tower has a different interface board. Bedrock and PIC revision,
-        widget placement, PCI device numbers, and fitted DIMMs are unknown.
-        The overview on printed page 29 says three PCI buses, but the
-        detailed bus list and slot figure on printed pages 38-39 enumerate
-        four; this reference follows the detailed list. Graphics hardware
-        is outside this reference.
+      name: Tezro tower, two/four-processor serial compatibility profile
+      model_role: emulation-target
+      notes: Software-only Tezro compatibility profile. The manual supports the selected processor population and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and interrupt
+        routes are emulator choices adapted from the separately reviewed deskside software inputs. They do not describe a measured tower or rack configuration. Graphics and the rack second enclosure are omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
+        slot layout shows four; this software profile selects two PICs and four buses.
+      firmware_config:
+        processor_reset_mode: 0x009bad85
+        machine_type: 1
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
+      emulation:
+        machine_name: tezro
+        display_description: SGI Tezro tower, two/four-processor serial compatibility profile
+        profile: tezro-tower-multi-serial-compat
+        synthetic_identities:
+        - component: bedrock
+          serial: '0x51454d554e00'
+          reason: Emulator-assigned identity for the software-only trial.
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 4096
+        pic_profiles:
+          pic-xio-b: pic-rev3-bedrock-tezro-experimental
+          pic-xio-f: pic-rev3-bedrock-tezro-experimental
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask:
+              mode: fitted-banks
+            provenance: derived
+            sources:
+            - tezro-deskside-trial
+            - tezro-deskside-trial-review
+            notes: Board word 0x2001 is a trial software input cleared for local use. It is not established as the physical Tezro board value.
+        l1_controllers:
+          l1:
+            reported_type: 55
+            provenance: derived
+            sources:
+            - tezro-deskside-trial
+            - tezro-deskside-trial-review
+            notes: L1 type 0x37 is a software compatibility input. The revision is deliberately omitted because the trial contract leaves it unspecified.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: '0x1686a8'
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+          - name: processor reset execution view
+            address: '0x1fc00000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: bounded high LBOOT execution alias
+            address: '0x100_1fc0_0000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          second_selection:
+            address: '0x100_1a000000'
+            size: '0x0080_0000'
+          provenance: derived
+          sources:
+          - tezro-deskside-trial
+          notes: Origami applies the Tezro row-17 seed to this selected base payload. The payload and seed are software inputs; their hashes do not establish installed Tezro firmware or flash wiring.
+      harness:
+        console: l1-uart
+        console_records:
+        - kind: console
+          node_id: bedrock
+          argument: -serial chardev:l1
+          launcher_name: l1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_0
+          launcher_name: ioc4-serial-0
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_1
+          launcher_name: ioc4-serial-1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_2
+          launcher_name: ioc4-serial-2
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_3
+          launcher_name: ioc4-serial-3
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: tezro-tower-multi
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
     evidence_policy: strict
     components:
-      - {id: chassis, name: Tezro tower, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
-      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: two-processor option"]}
-      - {id: cpu1, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: two-processor option"]}
-      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 27-28: eight DIMM slots"]}
-      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}
+    - id: chassis
+      name: Tezro deskside
+      kind: chassis
+      provenance: vendor-document
+      sources:
+      - tezro-deskside-trial
+    - id: ip53-board
+      name: IP53 board in selected compatibility model
+      kind: board
+      hardware_kind: ip53
+      parent: chassis
+      provenance: derived
+      sources:
+      - tezro-board-guide
+      - tezro-software-choice-limit
+    - id: bedrock
+      name: Bedrock
+      kind: node-asic
+      hardware_kind: bedrock
+      datasheet_contracts:
+      - docs/datasheets/bedrock-processor-interface.md
+      - docs/datasheets/bedrock-local-block.md
+      - docs/datasheets/bedrock-network-interface.md
+      - docs/datasheets/bedrock-io-interface.md
+      - docs/datasheets/bedrock-memory-directory.md
+      - docs/datasheets/bedrock-crossbar.md
+      parent: ip53-board
+      node_asic:
+        processor_interfaces: 2
+        cpus_per_interface: 2
+      identity:
+        ni_revision: 2
+        widget_revision: 2
+        clock_mhz: 200
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: cpu0
+      name: R16000
+      kind: cpu
+      hardware_kind: r16000
+      parent: bedrock
+      identity:
+        cache_clock_mhz: 350
+        r16000_reset_mode: 0x009bad85
+        r16000_scache_bytes: 4194304
+        required_properties:
+        - r16000-experimental
+        - r16000-reset-mode
+        - r16000-scache-bytes
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: cpu1
+      name: R16000
+      kind: cpu
+      hardware_kind: r16000
+      parent: bedrock
+      identity:
+        cache_clock_mhz: 350
+        r16000_reset_mode: 0x009bad85
+        r16000_scache_bytes: 4194304
+        required_properties:
+        - r16000-experimental
+        - r16000-reset-mode
+        - r16000-scache-bytes
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: cpu2
+      name: R16000
+      kind: cpu
+      hardware_kind: r16000
+      parent: bedrock
+      identity:
+        cache_clock_mhz: 350
+        r16000_reset_mode: 0x009bad85
+        r16000_scache_bytes: 4194304
+        required_properties:
+        - r16000-experimental
+        - r16000-reset-mode
+        - r16000-scache-bytes
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: cpu3
+      name: R16000
+      kind: cpu
+      hardware_kind: r16000
+      parent: bedrock
+      identity:
+        cache_clock_mhz: 350
+        r16000_reset_mode: 0x009bad85
+        r16000_scache_bytes: 4194304
+        required_properties:
+        - r16000-experimental
+        - r16000-reset-mode
+        - r16000-scache-bytes
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: memory
+      name: node memory
+      kind: memory
+      parent: bedrock
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: l1
+      name: L1 system controller
+      kind: system-controller
+      hardware_kind: l1
+      datasheet_contracts:
+      - docs/datasheets/l1-controller.md
+      system_controller:
+        kind: l1
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-board-b
+      name: PIC board at widget 11
+      kind: board
+      parent: chassis
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-board-f
+      name: PIC board at widget 15
+      kind: board
+      parent: chassis
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-xio-b
+      name: PIC at widget 11
+      kind: pci-host-bridge
+      hardware_kind: pic
+      datasheet_contracts:
+      - docs/datasheets/pic.md
+      - docs/datasheets/pic-direct64-dma.md
+      parent: pic-board-b
+      pci_host_bridge:
+        heads: 2
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-xio-f
+      name: PIC at widget 15
+      kind: pci-host-bridge
+      hardware_kind: pic
+      datasheet_contracts:
+      - docs/datasheets/pic.md
+      - docs/datasheets/pic-direct64-dma.md
+      parent: pic-board-f
+      pci_host_bridge:
+        heads: 2
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: io9
+      name: IO9 compatibility device
+      kind: board
+      hardware_kind: io9
+      parent: chassis
+      identity:
+        part: 030-1771-005-A
+      provenance: derived
+      sources:
+      - tezro-software-choice-limit
+      notes: The part identifies the selected deskside-compatible IO9 software input; tower fitment is unknown.
+    - id: ioc4
+      name: IOC4
+      kind: io-controller
+      hardware_kind: ioc4
+      datasheet_contracts:
+      - docs/datasheets/ioc4.md
+      - docs/datasheets/ioc4-serial-dma.md
+      parent: io9
+      identity:
+        pci_revision: 83
+      ioc4:
+        clock_hz: 66666667
+        serial_dma_experimental: true
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - id: ds1742
+      name: DS1742-compatible clock resource
+      kind: rtc
+      hardware_kind: ds1742
+      datasheet_contracts:
+      - docs/datasheets/ds1742.md
+      - docs/datasheets/ds1742-ioc4.md
+      parent: io9
+      ds1742_fresh_year_base: 1968
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+      notes: Software-selected persistent clock resource for this trial. IO9 fitted-part identity, byte address decode, and physical IOC4 clock wiring are not established for Tezro.
+    - id: isp12160
+      name: QLogic ISP12160
+      kind: subfunction
+      hardware_kind: isp12160
+      parent: io9
+      identity:
+        pci_revision: 6
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - id: bcm5701
+      name: Broadcom BCM5701
+      kind: subfunction
+      hardware_kind: bcm5701
+      parent: io9
+      identity:
+        pci_revision: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
     buses:
-      - {id: pci, name: PCI-X slots on four buses, kind: pci, provenance: vendor-document, sources: ["007-4564-001 printed pages 38-39: eight slots on four buses"]}
+    - id: sysad0
+      name: SysAD
+      kind: sysad
+      master: cpu0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: xio
+      name: XIO
+      kind: xio
+      master: bedrock
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: io9-pci
+      name: IO9 PCI bus
+      kind: pci
+      master: pic-xio-f
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
     connections:
-      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4564-001 printed page 38: IO9 at bus 1 slot 1"]}
+    - component: bedrock
+      bus: sysad0
+      role: endpoint
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: cpu0
+      bus: sysad0
+      role: master
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: cpu1
+      bus: sysad0
+      role: master
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: cpu2
+      bus: sysad0
+      role: master
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: cpu3
+      bus: sysad0
+      role: master
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: bedrock
+      bus: xio
+      role: master
+      widget: 10
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: pic-xio-b
+      bus: xio
+      role: bridge-upstream
+      widget: 11
+      controlled_by: bedrock
+      xio:
+        physical_attachment: direct-link
+        enumerated_widget: 11
+        discovery_widget: 11
+        decoded_widgets:
+        - 11
+        identity_aliases:
+        - widget: 11
+          roles:
+          - enumerated
+          - discovery
+          - decoded
+          - legacy
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: pic-xio-f
+      bus: xio
+      role: bridge-upstream
+      widget: 15
+      controlled_by: bedrock
+      xio:
+        physical_attachment: direct-link
+        enumerated_widget: 15
+        discovery_widget: 15
+        decoded_widgets:
+        - 15
+        identity_aliases:
+        - widget: 15
+          roles:
+          - enumerated
+          - discovery
+          - decoded
+          - legacy
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: pic-xio-f
+      bus: io9-pci
+      role: bridge-downstream
+      pci_head: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: ioc4
+      bus: io9-pci
+      role: endpoint
+      pci_device: 1
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - component: isp12160
+      bus: io9-pci
+      role: endpoint
+      pci_device: 3
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 2
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - component: bcm5701
+      bus: io9-pci
+      role: endpoint
+      pci_device: 4
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 3
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    links:
+    - kind: ioc4-clock
+      source: ds1742
+      target: ioc4

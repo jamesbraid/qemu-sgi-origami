@@ -1069,12 +1069,15 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 
 static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
-    bool allow_ip53_experiment, Error **errp);
+    bool allow_ip53_experiment, bool tezro, Error **errp);
 
 static SGIModelPicCompatibilityProfile sgi_machine_ip53_pic_profile(
-    bool runtime_experiment)
+    bool runtime_experiment, bool tezro)
 {
     if (runtime_experiment) {
+        if (tezro) {
+            return SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
+        }
         return
             SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
     }
@@ -1090,11 +1093,24 @@ static bool sgi_machine_ip53_experiment_policy(
     bool tezro = g_strcmp0(smc->product, "tezro") == 0;
     bool origin350_topology = g_strcmp0(t->name, "origin350") == 0;
     bool onyx350_topology = g_strcmp0(t->name, "onyx350-compat") == 0;
-    bool tezro_trial_topology = g_strcmp0(
+    const SGIModelPciHostBridgeList *host_entry;
+    bool tezro_runtime_profile = g_strcmp0(
         t->name, "tezro-deskside-700mhz-4mib-serial-trial") == 0;
+
+    for (host_entry = t->pci_host_bridges; host_entry;
+         host_entry = host_entry->next) {
+        const SGIModelPciHostBridge *host = host_entry->value;
+
+        if (host->has_compatibility_profile &&
+            host->compatibility_profile ==
+                SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL) {
+            tezro_runtime_profile = true;
+            break;
+        }
+    }
     bool registered_ip53_product =
         (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
-        (tezro && tezro_trial_topology);
+        (tezro && tezro_runtime_profile);
 
     if (onyx350 && !s->topology_name) {
         error_setg(errp, "Onyx 350 runtime trial requires explicit "
@@ -1102,8 +1118,7 @@ static bool sgi_machine_ip53_experiment_policy(
         return false;
     }
     if (tezro && !s->topology_name) {
-        error_setg(errp, "Tezro runtime trial requires explicit topology="
-                   "tezro-deskside-700mhz-4mib-serial-trial selection");
+        error_setg(errp, "Tezro runtime profile requires explicit topology selection");
         return false;
     }
 
@@ -1158,7 +1173,8 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
                                                errp);
     }
     if (!s->view || !sgi_machine_preflight_io_descriptors(
-            s->view, allow_ip53_fixture, allow_ip53_experiment, errp)) {
+            s->view, allow_ip53_fixture, allow_ip53_experiment,
+            g_strcmp0(smc->product, "tezro") == 0, errp)) {
         s->view = NULL;
         return NULL;
     }
@@ -1235,6 +1251,34 @@ unsigned int sgi_machine_product_max_cpus(const char *product)
         }
     }
     return max_cpus;
+}
+
+unsigned int sgi_machine_product_min_cpus(const char *product)
+{
+    unsigned int min_cpus = UINT_MAX;
+    const SGIModelTopologyList *entry;
+
+    for (entry = sgi_machines()->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+        const SGIModelNodePopulationList *row;
+
+        if (!sgi_model_topology_matches_product(t, product)) {
+            continue;
+        }
+        for (row = t->node_populations; row; row = row->next) {
+            const SGIModelCpuPopulationList *population;
+
+            for (population = row->value->supported_cpu_populations;
+                 population; population = population->next) {
+                unsigned int total =
+                    sgi_machine_population_total(population->value);
+
+                min_cpus = MIN(min_cpus, total);
+            }
+        }
+    }
+    g_assert(min_cpus != UINT_MAX);
+    return min_cpus;
 }
 
 /*
@@ -5470,7 +5514,7 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
 /* Validate optional XIO and PCI board references before config resolution. */
 static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
-    bool allow_ip53_experiment, Error **errp)
+    bool allow_ip53_experiment, bool tezro, Error **errp)
 {
     g_autofree const SGIModelIoBoard **boards = NULL;
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
@@ -5487,9 +5531,10 @@ static bool sgi_machine_preflight_io_descriptors(
     bool has_io9 = false;
     bool has_ip53 = false;
     bool all_ip53 = true;
-    bool tezro_serial_trial = allow_ip53_experiment &&
-        g_str_equal(t->name, "tezro-deskside-700mhz-4mib-serial-trial");
-    size_t expected_host_count = tezro_serial_trial ? 2 : 1;
+    bool tezro_new_profile = tezro &&
+        !g_str_equal(t->name,
+                     "tezro-deskside-700mhz-4mib-serial-trial");
+    size_t expected_host_count = tezro ? 0 : 1;
     const SGIModelNodeList *node_entry;
 
     for (node_entry = t->nodes; node_entry; node_entry = node_entry->next) {
@@ -5503,6 +5548,13 @@ static bool sgi_machine_preflight_io_descriptors(
 
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    if (tezro && allow_ip53_experiment) {
+        if (host_count == 0 || host_count > 2) {
+            error_setg(errp, "Tezro runtime profile requires one or two PIC hosts");
+            return false;
+        }
+        expected_host_count = host_count;
+    }
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
@@ -5529,10 +5581,12 @@ static bool sgi_machine_preflight_io_descriptors(
         }
         if (host->has_compatibility_profile &&
             host->compatibility_profile !=
-                sgi_machine_ip53_pic_profile(allow_ip53_experiment)) {
+                sgi_machine_ip53_pic_profile(
+                    allow_ip53_experiment,
+                    tezro_new_profile)) {
             if (allow_ip53_experiment) {
                 error_setg(errp, "topology '%s' PCI host '%s' must select "
-                           "pic-rev3-bedrock-experimental", t->name,
+                           "its authored runtime PIC profile", t->name,
                            host->id);
             } else {
                 error_setg(errp, "topology '%s' PCI host '%s' has unsupported "
@@ -5790,7 +5844,9 @@ static bool sgi_machine_preflight_io_descriptors(
         for (i = 0; i < host_count; i++) {
             if (!hosts[i]->has_compatibility_profile ||
                 hosts[i]->compatibility_profile !=
-                    sgi_machine_ip53_pic_profile(allow_ip53_experiment)) {
+                    sgi_machine_ip53_pic_profile(
+                        allow_ip53_experiment,
+                        tezro_new_profile)) {
                 error_setg(errp, "topology '%s' PCI host '%s' has no "
                            "compatibility profile", t->name, hosts[i]->id);
                 return false;

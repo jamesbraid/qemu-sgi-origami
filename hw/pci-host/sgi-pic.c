@@ -183,7 +183,9 @@ struct SGIPICState {
 static bool pic_uses_runtime_profile(const SGIPICState *s)
 {
     return s->compatibility_profile ==
-        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
+               SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL ||
+           s->compatibility_profile ==
+               SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
 }
 
 static bool pic_uses_linked_transport(const SGIPICState *s)

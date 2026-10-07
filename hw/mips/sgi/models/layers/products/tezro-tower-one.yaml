@@ -1,44 +1,172 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# One-processor tower Tezro has a distinct interface board.
 layer_version: 1
+sources:
+  tezro-deskside-trial: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/datasheets/tezro-deskside-compatibility-trial.md,
+    SHA-256 10610817dce8ba94ead45e44fb0dc25faa6a389bc1df86ef8535570446354979: selected deskside software
+    tuple'
+  tezro-deskside-trial-review: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-trial-evidence-review-20261006.md,
+    SHA-256 6029aea835f7315f5f9ff357b2ae4a682582d41a3136a5001a43a1f0482b5715: clears only the deskside
+    tuple as local software inputs'
+  tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
+    processor populations and PCI/IO9 location'
+  tezro-software-choice-limit: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-compatibility-review-20261006.md,
+    SHA-256 64528fa4b1acad7d73e5cbaf0f195ec42f14dd360b6adbd86149fb08f9ba8fd7: selected tuple values cleared
+    only as software choices; does not clear tower or rack configuration'
 layer:
   kind: product
   id: tezro-tower-one
-  requires: {assembly: ip53-tezro}
+  requires:
+    assembly: ip53-tezro
+    module: tezro-serial-compat-module
   topology:
     min_nodes: 1
     max_nodes: 1
-    supported_cpu_populations: [[1]]
-    provenance: vendor-document
-    sources: ["007-4564-001 printed pages 26-29, 38, 43: IP53 node board, one-processor interface and its upgrade limit, four PCI-X slots on two buses"]
+    supported_cpu_populations:
+    - - 1
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
   population:
     nodes: 1
-    cpus_per_node: [1]
-    fitted_memory:
-      status: unknown
-      reason: The guide states a 512 MB minimum but no installed DIMM population for this reference.
-      provenance: derived
-      sources: ["007-4564-001 printed pages 27-28: memory capacity and one-processor minimum"]
-    provenance: vendor-document
-    sources: ["007-4564-001 printed pages 27-29: one R16000 and one-processor interface board"]
+    cpus_per_node:
+    - 1
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
+  memory_kits_per_node:
+  - kit-4096-at-banks-0-5-tezro-deskside
+  cpu_selection:
+    default:
+      clock_mhz: 700
+      cache_mib: 4
+    slots:
+    - cpu0
   data:
     machine:
-      name: Tezro tower, one processor
-      model_role: reference
-      notes: >-
-        The IP53 node board carries one R16000. Its interface board has four
-        PCI-X slots on two buses and one XIO slot; IO9 occupies PCI bus 1,
-        slot 1. The guide rules out fitting a two- or four-processor board as
-        an upgrade to this one-processor workstation. Bedrock and PIC revision,
-        widget placement, PCI device numbers, and fitted DIMMs are unknown.
-        Graphics hardware is outside this reference.
+      name: Tezro tower, one-processor serial compatibility profile
+      model_role: emulation-target
+      notes: Software-only Tezro compatibility profile. The manual supports the selected processor population
+        and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical
+        memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and
+        interrupt routes are emulator choices adapted from the separately reviewed deskside software inputs.
+        They do not describe a measured tower or rack configuration. Graphics and the rack second enclosure
+        are omitted.
+      firmware_config:
+        processor_reset_mode: 0x009bad85
+        machine_type: 1
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
+      emulation:
+        machine_name: tezro
+        display_description: SGI Tezro tower, one-processor serial compatibility profile
+        profile: tezro-tower-one-serial-compat
+        synthetic_identities:
+        - component: bedrock
+          serial: '0x51454d554e00'
+          reason: Emulator-assigned identity for the software-only trial.
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 4096
+        pic_profiles:
+          pic-xio-f: pic-rev3-bedrock-tezro-experimental
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask:
+              mode: fitted-banks
+            provenance: derived
+            sources:
+            - tezro-deskside-trial
+            - tezro-deskside-trial-review
+            notes: Board word 0x2001 is a trial software input cleared for local use. It is not established
+              as the physical Tezro board value.
+        l1_controllers:
+          l1:
+            reported_type: 55
+            provenance: derived
+            sources:
+            - tezro-deskside-trial
+            - tezro-deskside-trial-review
+            notes: L1 type 0x37 is a software compatibility input. The revision is deliberately omitted
+              because the trial contract leaves it unspecified.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: '0x1686a8'
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+          - name: processor reset execution view
+            address: '0x1fc00000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: bounded high LBOOT execution alias
+            address: '0x100_1fc0_0000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          second_selection:
+            address: '0x100_1a000000'
+            size: '0x0080_0000'
+          provenance: derived
+          sources:
+          - tezro-deskside-trial
+          notes: Origami applies the Tezro row-17 seed to this selected base payload. The payload and
+            seed are software inputs; their hashes do not establish installed Tezro firmware or flash
+            wiring.
+      harness:
+        console: l1-uart
+        console_records:
+        - kind: console
+          node_id: bedrock
+          argument: -serial chardev:l1
+          launcher_name: l1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_0
+          launcher_name: ioc4-serial-0
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_1
+          launcher_name: ioc4-serial-1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_2
+          launcher_name: ioc4-serial-2
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_3
+          launcher_name: ioc4-serial-3
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: tezro-tower-one
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
     evidence_policy: strict
-    components:
-      - {id: chassis, name: Tezro tower, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
-      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: one-processor option"]}
-      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 27-28: eight DIMM slots and 512 MB one-processor minimum"]}
-      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}
-    buses:
-      - {id: pci, name: PCI-X slots on two buses, kind: pci, provenance: vendor-document, sources: ["007-4564-001 printed pages 29 and 38: four slots on two buses"]}
-    connections:
-      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}
