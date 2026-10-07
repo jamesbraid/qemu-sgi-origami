@@ -373,7 +373,7 @@ static void test_experimental_zero_reset_restore(void)
     QTestState *s;
     uint8_t l1_before[131], l1_after[131];
     size_t l1_size;
-    uint64_t status, route, diagnostic;
+    uint64_t status, route, diagnostic, port_status, port_error;
     int fd;
 
     fd = g_file_open_tmp("sn1-router-reset-storage-XXXXXX", &image, &error);
@@ -409,11 +409,15 @@ static void test_experimental_zero_reset_restore(void)
     g_assert_cmphex(route, ==, 4 | (2 << 8));
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     diagnostic = qtest_readq(s, BASE + 0x38);
+    port_status = qtest_readq(s, BASE + bank[0] + 8);
+    port_error = qtest_readq(s, BASE + bank[0] + 0x88);
     l1_size = experimental_router_l1_reply(s, l1_before);
 
     experimental_status_vector(s, 8, 0, true, 0, true);
     g_assert_cmphex(experimental_status_vector(s, 8, 0, false, 0, true),
                     ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 8), ==, port_status);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x88), ==, port_error);
     for (unsigned bit = 0; bit <= 9; bit++) {
         experimental_status_vector(s, 8, 0, true, UINT64_C(1) << bit,
                                    false);
@@ -431,6 +435,8 @@ static void test_experimental_zero_reset_restore(void)
     g_assert_cmphex(qtest_readq(s, BASE + bank[0]), ==, 0x123);
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x10), ==, 0xff);
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x18), ==, 0xa5);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 8), ==, port_status);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x88), ==, port_error);
     g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
                     ==, 0xbeef);
     g_assert_cmphex(qtest_readq(s, BASE + bank[3] + 0x200 + 5 * 8), ==, 2);
