@@ -38,7 +38,8 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
     if (draw->mode != SGI_GL_TRIANGLES || draw->count != 3 ||
         draw->back_colors || draw->polygon_modes ||
         draw->polygon_stipple_enabled || draw->point_smooth ||
-        draw->line_smooth || draw->line_stipple_enabled ||
+        draw->line_smooth || draw->polygon_smooth ||
+        draw->line_stipple_enabled ||
         st->shade_model != SGI_GL_SMOOTH || st->index_bits ||
         st->draw_buffers != SGI_GL_DRAW_FRONT ||
         st->colour_mask != SGI_GL_COLOUR_MASK_ALL ||
