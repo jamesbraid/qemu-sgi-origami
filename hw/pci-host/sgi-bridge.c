@@ -879,10 +879,11 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
 /*
  * The inbound PIO translated window: PCI memory from address zero, the
  * alias for 32-bit device targets (specification printed page 52), so a
- * doubleword is two word cycles, placed as a swap-clear device window's.
- * No slot selects the cycle, so a failure records device number zero:
- * which number the chip records for a cycle this window issues is not
- * stated.
+ * doubleword is two word cycles. Placement follows the control register's
+ * memory swap, the swap for PCI memory not reached through a device window
+ * (section 4.2.3, Table 11). No slot selects the cycle, so a failure
+ * records device number zero: which number the chip records for a cycle
+ * this window issues is not stated.
  */
 static SGIBridgePio sgi_bridge_pio_xlate_pio(SGIBridgeState *s)
 {
@@ -892,7 +893,7 @@ static SGIBridgePio sgi_bridge_pio_xlate_pio(SGIBridgeState *s)
         .base = 0,
         .device = 0,
         .width = 4,
-        .swap = false,
+        .swap = s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_MEM_SWAP,
     };
 }
 

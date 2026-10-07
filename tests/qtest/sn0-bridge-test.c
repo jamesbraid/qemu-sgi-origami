@@ -4907,6 +4907,9 @@ static uint64_t piox_read(QTestState *qts, uint64_t addr, unsigned int size)
     }
 }
 
+/* The set case's data; the clear case passes none. */
+static const bool piox_mem_swap_set = true;
+
 static void test_pio_xlate_placement(const void *data)
 {
     bool mem_swap = data != NULL;
@@ -5145,6 +5148,8 @@ int main(int argc, char **argv)
                     test_pio_xlate_stops_at_its_declared_size);
     qtest_add_data_func("sn0/bridge/pio-xlate/placement/mem-swap-clear", NULL,
                         test_pio_xlate_placement);
+    qtest_add_data_func("sn0/bridge/pio-xlate/placement/mem-swap-set",
+                        &piox_mem_swap_set, test_pio_xlate_placement);
     for (unsigned int r = 0; r < ARRAY_SIZE(pio_rows); r++) {
         g_autofree char *read = g_strdup_printf(
             "sn0/bridge/pio-placement/read/%s", pio_rows[r].name);
