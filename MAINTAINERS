@@ -1489,6 +1489,7 @@ F: docs/specs/sgi-*
 F: docs/tools/qemu-sgi-machine-init.rst
 F: hw/mips/sn0*
 F: hw/mips/sgi/
+F: hw/mips/sgi/mace-timer.h
 F: include/hw/mips/sn0*
 F: include/hw/mips/sgi-*.h
 F: include/hw/mips/sgi/

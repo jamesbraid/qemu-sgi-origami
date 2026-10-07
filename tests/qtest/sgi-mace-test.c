@@ -3,6 +3,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "hw/mips/sgi/mace-timer.h"
 #include "sgi-migrate.h"
 
 #define MACE_BASE       0x1f000000ULL
@@ -60,7 +61,26 @@ static void test_compare_mask_and_ack(void)
     g_assert_cmphex(qtest_readq(s, MACE_COMPARE0), ==, (uint32_t)(now + 100));
     g_assert_false(qtest_readq(s, MACE_ISTAT) & MACE_TIMER0);
     g_assert_false(qtest_get_irq(s, 5));
+    qtest_clock_step(s, 10 * 960);
+    g_assert_false(qtest_readq(s, MACE_ISTAT) & MACE_TIMER0);
     qtest_quit(s);
+}
+
+static void test_late_compare_predicate(void)
+{
+    g_assert_false(sgi_mace_compare_reached(3, 2));
+    g_assert_true(sgi_mace_compare_reached(3, 10));
+    g_assert_false(sgi_mace_compare_reached(0x100000001ULL,
+                                            0x100000000ULL));
+    g_assert_true(sgi_mace_compare_reached(0x100000001ULL,
+                                           0x100000005ULL));
+    g_assert_false(sgi_mace_compare_reached(UINT64_MAX, UINT64_MAX));
+    g_assert_cmpuint(sgi_mace_compare_due_tick(0xfffffffeULL, 1), ==,
+                     0x100000001ULL);
+    g_assert_cmpuint(sgi_mace_compare_due_tick(10, 100), ==, 100);
+    g_assert_false(sgi_mace_compare_reached(
+        sgi_mace_compare_due_tick(10, 100), 10));
+    g_assert_cmpuint(sgi_mace_compare_due_tick(10, 10), ==, UINT64_MAX);
 }
 
 static void test_compare_overshoot(void)
@@ -220,6 +240,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/mace/compare-mask-ack", test_compare_mask_and_ack);
+    qtest_add_func("/sgi/mace/compare-late-callback",
+                   test_late_compare_predicate);
     qtest_add_func("/sgi/mace/compare-overshoot", test_compare_overshoot);
     qtest_add_func("/sgi/mace/external-reset", test_external_reset_control);
     qtest_add_func("/sgi/mace/rtc-direct-stride", test_rtc_direct_stride);
