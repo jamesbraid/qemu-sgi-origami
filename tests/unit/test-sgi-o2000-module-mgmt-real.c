@@ -70,7 +70,7 @@ static DeviceState *module_new(void)
 }
 
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
-enum { TEST_PARTIAL = 1, TEST_CONSOLE };
+enum { TEST_PARTIAL = 1, TEST_CONSOLE, TEST_NO_POWER };
 
 typedef struct Fixture {
     SN0ModuleManagementState *module;
@@ -143,6 +143,9 @@ static void setup(Fixture *f, gconstpointer options)
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
 
+        if (i == LINE_POWER && options == GINT_TO_POINTER(TEST_NO_POWER)) {
+            continue;
+        }
         qdev_prop_set_bit(dev, capability, true);
         qdev_connect_gpio_out_named(dev, names[i], 0,
                                     qemu_allocate_irq(line_handler, f, i));
@@ -1331,9 +1334,18 @@ static void test_module_power_commands(Fixture *f, gconstpointer unused)
     expect_response(f, "pwr d 259", "ok ");
     expect_response(f, "tas", "ok A");
 
+    /*
+     * "pwr u" starts the power-up sequence, which frees the lock at once
+     * and holds reset for 4.4 seconds before the module runs.
+     */
     expect_response(f, "pwr u", "ok ");
     g_assert_false(f->module->power_on);
     drain_actions();
+    expect_response(f, "tas", "ok 0");
+    expect_response(f, "pwr", "ok d");
+    advance_to(virtual_time + 4300 * (int64_t)SCALE_MS);
+    g_assert_false(f->module->power_on);
+    advance_to(virtual_time + 200 * (int64_t)SCALE_MS);
     g_assert_true(f->module->power_on);
     g_assert_cmpuint(f->raises[LINE_POWER], ==, 2);
     expect_response(f, "pwr", "ok u");
@@ -1354,12 +1366,60 @@ static void test_heartbeat_restores_power(Fixture *f, gconstpointer unused)
     advance_to(virtual_time + 9 * NANOSECONDS_PER_SECOND);
     g_assert_cmpuint(f->raises[LINE_NMI], ==, 0);
     advance_to(virtual_time + NANOSECONDS_PER_SECOND);
-    g_assert_cmpuint(f->raises[LINE_NMI], ==, 1);
+    g_assert_cmpuint(f->raises[LINE_NMI], ==, 0);
     g_assert_false(f->module->power_on);
+    /*
+     * The NMI reached no processor of the unpowered module. A second on,
+     * the cycle starts its five seconds off and 4.4 of power-up.
+     */
     advance_to(virtual_time + NANOSECONDS_PER_SECOND);
+    advance_to(virtual_time + 9300 * (int64_t)SCALE_MS);
+    g_assert_false(f->module->power_on);
+    advance_to(virtual_time + 200 * (int64_t)SCALE_MS);
     g_assert_true(f->module->power_on);
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
     expect_response(f, "pwr q", "ok 1");
+}
+
+/*
+ * A heartbeat power cycle that falls due during a reset pulse waits for
+ * the pulse to end instead of being dropped.
+ */
+static void test_heartbeat_cycle_waits_out_a_pulse(Fixture *f,
+                                                   gconstpointer unused)
+{
+    expect_response(f, "hbt 5 1", "ok ");
+    advance_to(virtual_time + 10950 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(f->raises[LINE_NMI], ==, 1);
+    g_assert_true(f->module->power_on);
+    g_assert_true(sgi_sn0_module_management_pulse_reset(f->module));
+    advance_to(virtual_time + 100 * (int64_t)SCALE_MS);
+    g_assert_true(f->module->power_on);
+    advance_to(virtual_time + 200 * (int64_t)SCALE_MS);
+    g_assert_false(f->module->power_on);
+    advance_to(virtual_time + 9500 * (int64_t)SCALE_MS);
+    g_assert_true(f->module->power_on);
+}
+
+/*
+ * On a module with no power path the watchdog's cycle can never run. The
+ * watchdog stops after its NMI rather than retrying for ever, so it no
+ * longer counts as a power-up to come.
+ */
+static void test_heartbeat_cycle_without_power_path(Fixture *f,
+                                                    gconstpointer unused)
+{
+    SGIElscState *s = f->module->msc;
+
+    expect_response(f, "hbt 5 1", "ok ");
+    advance_to(virtual_time + 10950 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(f->raises[LINE_NMI], ==, 1);
+    g_assert_true(sgi_elsc_power_return_pending(s));
+    advance_to(virtual_time + 1200 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(s->hbt_stage, ==, SGI_ELSC_HEARTBEAT_IDLE);
+    g_assert_false(timer_pending(s->hbt_timer));
+    g_assert_false(sgi_elsc_power_return_pending(s));
+    g_assert_true(f->module->power_on);
 }
 
 int main(int argc, char **argv)
@@ -1445,6 +1505,12 @@ int main(int argc, char **argv)
                NULL, setup, test_module_power_commands, teardown);
     g_test_add("/sgi-sn0-module-management/msc/heartbeat-restores-power",
                Fixture, NULL, setup, test_heartbeat_restores_power, teardown);
+    g_test_add("/sgi-sn0-module-management/msc/heartbeat-cycle-after-pulse",
+               Fixture, NULL, setup, test_heartbeat_cycle_waits_out_a_pulse,
+               teardown);
+    g_test_add("/sgi-sn0-module-management/msc/heartbeat-no-power-path",
+               Fixture, GINT_TO_POINTER(TEST_NO_POWER), setup,
+               test_heartbeat_cycle_without_power_path, teardown);
     g_test_add("/sgi-sn0-module-management/reinitialize/queues", Fixture,
                GINT_TO_POINTER(TEST_CONSOLE), setup, test_reinitialize_queues,
                teardown);

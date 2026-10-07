@@ -1272,8 +1272,11 @@ static void msc_command_then_reset(QTestState *qts, const char *text)
     for (i = 0; i < POLL_STEPS; i++) {
         qtest_clock_step(qts, POLL_STEP_NS);
     }
-    /* A "rst" waits a second before the reset; "pwr c" does not. */
-    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    /*
+     * A "rst" resets a second later; a "pwr c" when power returns, after
+     * its five-second interval and the 4.4-second power-up hold.
+     */
+    qtest_clock_step(qts, 10 * NANOSECONDS_PER_SECOND);
     qtest_qmp_eventwait(qts, "RESET");
 }
 
@@ -1310,6 +1313,7 @@ static void test_module_power_cycle_reaches_machine(void)
     g_assert_false(powered_down(qts));
     qtest_quit(qts);
 }
+
 
 /*
  * The Origin 2000 build drives the module's eight-character display. A
@@ -1469,6 +1473,56 @@ static void test_module_nmi_reaches_output(void)
     assert_exact(qts, 0, "ver", "ok VER 3.2 ");
     qtest_quit(qts);
 }
+
+#define PI_CPU_ENABLE_A 0x000050
+
+/* Whether a node's Hub lets its first processor run. */
+static bool node_cpu_enabled(QTestState *qts, unsigned node)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 2 * node,
+                                    HUB_BASE + PI_CPU_ENABLE_A, bytes,
+                                    sizeof(bytes)));
+    return ldq_be_p(bytes) & 1;
+}
+
+/*
+ * During a module power cycle every node of the module is held, the
+ * controller still answers, and power returns after the interval and the
+ * 4.4-second power-up hold.
+ */
+static void test_module_power_cycle_holds_nodes(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+    unsigned node;
+    int64_t t0;
+
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_true(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr c 5", "ok ");
+    t0 = qtest_clock_step(qts, 1);
+    assert_exact(qts, 1, "pwr", "ok d");
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_false(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 2, "rst", "err cmd");
+    assert_exact(qts, 3, "clr", "ok ");
+
+    qtest_clock_set(qts, t0 + 8 * NANOSECONDS_PER_SECOND);
+    assert_exact(qts, 0, "pwr", "ok d");
+    qtest_clock_set(qts, t0 + 10 * NANOSECONDS_PER_SECOND);
+    qtest_qmp_eventwait(qts, "RESET");
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+        g_assert_true(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr", "ok u");
+    assert_exact(qts, 0, "pwr q", "ok 1");
+    qtest_quit(qts);
+}
+
 
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
@@ -1854,6 +1908,8 @@ int main(int argc, char **argv)
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",
                    test_identity_survives_reset);
+    qtest_add_func("/sn0/o2000-module-management/power-cycle-holds-nodes",
+                   test_module_power_cycle_holds_nodes);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display",
                    test_origin2000_display);
     qtest_add_func("/sn0/o2000-module-management/origin2000-build-commands",

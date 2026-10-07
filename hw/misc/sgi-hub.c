@@ -28,6 +28,7 @@
 #include "chardev/char.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
+#include "exec/cpu-common.h"
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
@@ -1189,6 +1190,36 @@ void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
 {
     s->pi_cpu_enable[cpu] = enabled;
     sgi_hub_queue_cpu_enable(s, cpu, enabled, synchronous);
+}
+
+/*
+ * A processor whose module lost power keeps nothing, so it is reset as it
+ * stops and halted, as QEMU's power controllers turn a processor off. A
+ * plain halt would end at the first enabled interrupt the Hub still
+ * raises; after reset Status.ERL masks every one, and the module's
+ * controller sends no NMI to an unpowered module. The work runs on the
+ * processor's own thread, so the reset never races its execution, and
+ * only while the disable still stands.
+ */
+static void sgi_hub_cpu_power_off(CPUState *cs, run_on_cpu_data data)
+{
+    if (sgi_hub_cpu_enable_stands(cs, data, false)) {
+        cpu_reset(cs);
+        cs->halted = 1;
+        cs->exception_index = EXCP_HLT;
+    }
+}
+
+void sgi_hub_power_off_cpu(SGIHubState *s, unsigned int cpu)
+{
+    CPUState *cs = sgi_hub_cpu(s, cpu);
+
+    s->pi_cpu_enable[cpu] = false;
+    if (!cs) {
+        return;
+    }
+    sgi_hub_trace_kick(cs, "power-off");
+    async_run_on_cpu(cs, sgi_hub_cpu_power_off, RUN_ON_CPU_HOST_PTR(s));
 }
 
 static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,

@@ -302,6 +302,12 @@ struct SGIMachineState {
     bool *module_power_fell;
     unsigned int module_power_count;
     bool module_power_bh_pending;
+    /*
+     * Each controller's module-management device, and the controller each
+     * node's module belongs to (-1 for a node with none).
+     */
+    SN0ModuleManagementState **module_mgmt;
+    int *node_controller;
 
     /*
      * The Bedrock nodes, for a topology whose node kind is Bedrock: one
@@ -2856,30 +2862,95 @@ static void sgi_machine_attach_module_parts(SGIMachineState *s,
 }
 
 /*
- * A module controller removed power. "pwr c" restores it at once, and the
- * power line handler resets the machine for that cold restart before this
- * runs. What is still off here was powered down: with every module off the
- * machine powers down. One module off while others run is not modelled:
- * QEMU has no per-module power, so the machine keeps running and the event
- * is logged.
+ * A module controller removed power, and the module's processors are
+ * already stopped (sgi_machine_hold_node). Once every module is off with
+ * no power-up to come -- no power-cycle countdown and no heartbeat
+ * watchdog that will cycle it -- the machine powers down. A module off
+ * while others run stays stopped.
  */
 static void sgi_machine_module_power_bh(void *opaque)
 {
     SGIMachineState *s = opaque;
-    unsigned int i, off = 0;
+    unsigned int i, total = 0, gone = 0;
 
     s->module_power_bh_pending = false;
     for (i = 0; i < s->module_power_count; i++) {
+        SGIElscState *msc = s->module_mgmt[i]->msc;
+
         s->module_power_fell[i] = false;
-        off += !s->module_powered[i];
+        total++;
+        if (!s->module_powered[i] && !sgi_elsc_power_return_pending(msc)) {
+            gone++;
+        }
     }
-    if (off == s->module_power_count) {
+    for (i = 0; s->nodes && i < s->num_nodes; i++) {
+        SGIElscState *elsc = s->nodes[i]->hub.elsc;
+
+        if (!elsc) {
+            continue;
+        }
+        total++;
+        if (!sgi_elsc_module_powered(elsc) &&
+            !sgi_elsc_power_return_pending(elsc)) {
+            gone++;
+        }
+    }
+    if (total && gone == total) {
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-    } else if (off) {
-        qemu_log_mask(LOG_UNIMP, "sgi-sn: %u of %u modules powered off; "
-                      "powering off one module of several is not "
-                      "modelled\n", off, s->module_power_count);
     }
+}
+
+static void sgi_machine_schedule_power_bh(SGIMachineState *s)
+{
+    if (!s->module_power_bh_pending) {
+        s->module_power_bh_pending = true;
+        replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                         sgi_machine_module_power_bh, s);
+    }
+}
+
+/*
+ * Stop a node's processors as its module loses power: each is reset and
+ * halted with its Hub enable clear (sgi_hub_power_off_cpu). The enables
+ * and the processors' state are migrated, and a controller that is off
+ * says so again after a load, which holds the node again in case the
+ * reset was still queued when the source stopped. The machine's reset
+ * keeps the enables clear while the module stays unpowered
+ * (sgi_machine_reset).
+ */
+static void sgi_machine_hold_node(SGIMachineState *s, unsigned int node)
+{
+    SN0NodeState *node_state = s->nodes[node];
+    unsigned int slice;
+
+    for (slice = 0; slice < node_state->nr_cpus; slice++) {
+        sgi_hub_power_off_cpu(&node_state->hub, slice);
+    }
+}
+
+/* An Origin 200 node's own controller removed or restored its power. */
+static void sgi_machine_elsc_power(void *opaque, int n, int level)
+{
+    SGIMachineState *s = opaque;
+
+    if (!level) {
+        sgi_machine_hold_node(s, n);
+        sgi_machine_schedule_power_bh(s);
+    }
+}
+
+/* Whether the module a node belongs to has power. */
+static bool sgi_machine_node_powered(SGIMachineState *s, unsigned int node)
+{
+    SN0NodeState *node_state = s->nodes[node];
+
+    if (node_state->hub.elsc) {
+        return sgi_elsc_module_powered(node_state->hub.elsc);
+    }
+    if (s->node_controller && s->node_controller[node] >= 0) {
+        return s->module_mgmt[s->node_controller[node]]->power_on;
+    }
+    return true;
 }
 
 /*
@@ -2896,13 +2967,18 @@ static void sgi_machine_module_power(void *opaque, int n, int level)
     bool was = s->module_powered[n];
 
     s->module_powered[n] = level;
+    if (!level) {
+        unsigned int node;
+
+        for (node = 0; node < s->num_nodes; node++) {
+            if (s->node_controller[node] == n) {
+                sgi_machine_hold_node(s, node);
+            }
+        }
+    }
     if (was && !level) {
         s->module_power_fell[n] = true;
-        if (!s->module_power_bh_pending) {
-            s->module_power_bh_pending = true;
-            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
-                                             sgi_machine_module_power_bh, s);
-        }
+        sgi_machine_schedule_power_bh(s);
     } else if (!was && level && s->module_power_fell[n]) {
         s->module_power_fell[n] = false;
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
@@ -2965,13 +3041,24 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
 {
     g_autofree const SGIModelController **controllers = NULL;
     g_autofree const SGIModelModule **modules = NULL;
-    size_t controller_count, module_count, controller_index;
+    size_t controller_count, module_count, controller_index, n;
 
     controllers = sgi_model_controller_array(t->controllers, &controller_count);
     modules = sgi_model_module_array(t->modules, &module_count);
     s->module_power_count = controller_count;
     s->module_powered = g_new(bool, controller_count);
     s->module_power_fell = g_new0(bool, controller_count);
+    s->module_mgmt = g_new0(SN0ModuleManagementState *, controller_count);
+    s->node_controller = g_new(int, s->num_nodes);
+    for (n = 0; n < s->num_nodes; n++) {
+        s->node_controller[n] = -1;
+        /* An Origin 200 node's own controller holds its module's power. */
+        if (s->nodes[n]->hub.elsc) {
+            qdev_connect_gpio_out_named(
+                DEVICE(s->nodes[n]->hub.elsc), "power", 0,
+                qemu_allocate_irq(sgi_machine_elsc_power, s, n));
+        }
+    }
     for (controller_index = 0; controller_index < controller_count;
          controller_index++) {
         const SGIModelController *controller = controllers[controller_index];
@@ -3037,6 +3124,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         qdev_realize_and_unref(dev, NULL, &error_fatal);
         sgi_machine_attach_module_parts(s, t, module,
                                         SGI_SN0_MODULE_MANAGEMENT(dev));
+        s->module_mgmt[controller_index] = SGI_SN0_MODULE_MANAGEMENT(dev);
 
         for (i = 0; i < module_node_count; i++) {
             unsigned int node_index = module_nodes[i];
@@ -3045,6 +3133,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                 sgi_sn0_module_management_get_adapter(
                     SGI_SN0_MODULE_MANAGEMENT(dev), i));
 
+            s->node_controller[node_index] = controller_index;
             memory_region_add_subregion_overlap(
                 &hub->regs, SN0_HUB_MODULE_ADAPTER_OFFSET,
                 sysbus_mmio_get_region(adapter, 0), 1);
@@ -5202,11 +5291,17 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     CPU_FOREACH(cs) {
         cpu_reset(cs);
     }
+    /*
+     * The processors of a module whose controller has its power off stay
+     * stopped, through the Hub's processor enable, while the rest of the
+     * machine and the clock run on.
+     */
     for (node = 0; node < s->num_nodes; node++) {
         SN0NodeState *node_state = s->nodes[node];
+        bool powered = sgi_machine_node_powered(s, node);
 
         for (slice = 0; slice < node_state->nr_cpus; slice++) {
-            sgi_hub_set_cpu_enable(&node_state->hub, slice, true, true);
+            sgi_hub_set_cpu_enable(&node_state->hub, slice, powered, true);
         }
     }
 }

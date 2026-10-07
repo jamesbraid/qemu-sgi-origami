@@ -111,6 +111,11 @@ typedef struct SGIElscModuleOps {
     /* Carry it out. Only called after can_execute() returned true. */
     void (*execute)(void *opaque, SGIElscAction action);
     /*
+     * A reset or NMI pulse is running on the module's outputs, which
+     * refuses a destructive action only until it ends.
+     */
+    bool (*pulsing)(void *opaque);
+    /*
      * Pulse the module's NMI output for 100 ms; false when the module has
      * no NMI path or a pulse is already running.
      */
@@ -192,6 +197,8 @@ struct SGIElscState {
     QEMUTimer *nmi_pulse_timer;
     bool nmi_pulse_active;
     qemu_irq nmi_out;
+    /* Module power, with no module owner: the machine holds what is off. */
+    qemu_irq power_out;
 
     /*
      * The heartbeat watchdog ("hbt"): its interval and the delay from its
@@ -210,6 +217,28 @@ struct SGIElscState {
      */
     bool self_reset;
     Notifier shutdown_notifier;
+    /* The reset in progress is one self_reset marked (until its exit). */
+    bool resetting_itself;
+
+    /*
+     * Module power as this controller drives it. With no module owner the
+     * controller holds it itself: module_off while the module is unpowered.
+     * The power-up timer runs the off interval of a power cycle and then,
+     * with power_sequence set, the power-up sequence's reset hold; the
+     * module runs again when it expires. cycle_seconds is the interval an
+     * accepted "pwr c" asked for.
+     */
+    bool module_off;
+    bool power_sequence;
+    uint16_t cycle_seconds;
+    QEMUTimer *power_up_timer;
+    /*
+     * Power came back and the reset that starts the module's processors
+     * has been asked for but not yet run. Migrated, unlike the request
+     * itself, so the destination asks again once it runs (vm_state).
+     */
+    bool power_up_reset_owed;
+    VMChangeStateEntry *vm_state;
     /*
      * The power-down countdown "pwr d <sec>" arms, on the virtual clock in
      * milliseconds. Each timed request reloads it; expiry shuts down.
@@ -348,6 +377,20 @@ void sgi_elsc_reinitialize(SGIElscState *s);
 
 void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque);
+
+/* Whether the controller's module is powered. */
+bool sgi_elsc_module_powered(SGIElscState *s);
+/*
+ * Whether module power is due back without anyone asking: a power-up
+ * countdown, or a heartbeat watchdog that will power-cycle the module.
+ */
+bool sgi_elsc_power_return_pending(SGIElscState *s);
+/*
+ * Whether the machine reset under way is one the controller asked for, a
+ * module reset or power cycle it keeps running through. True from the
+ * hold phase of that reset to its exit phase.
+ */
+bool sgi_elsc_resetting_itself(SGIElscState *s);
 
 /* Join a realized slave to its master's arbitration ring. */
 void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,

@@ -157,14 +157,16 @@ Command vocabulary
 
 ``pwr`` / ``pwr u``
     ``pwr`` with no letter reports the module's power, ``ok u`` or ``ok
-    d``. ``pwr u`` answers ``ok`` and, on an unpowered module, powers it
-    up once the caller has read the ``ok``; every power-up sets the
-    cold-power latch and frees the ``tas`` byte. A powered module ignores
-    it. An Origin 200 module is powered whenever the machine runs, so
-    only an Origin 2000 module, whose module-management device owns its
-    power, is ever reported off. The firmware's power-up sequence holds
-    the controller for about four seconds while it checks the supplies;
-    the model's supplies are healthy and it answers at once.
+    d``. ``pwr u`` answers ``ok`` and, on an unpowered module, starts
+    the power-up sequence once the caller has read the ``ok``, cutting
+    short any power-cycle countdown. The sequence enables the supplies,
+    frees the ``tas`` byte, discards queued serial input and holds the
+    module's reset for 4 seconds (Origin 200 build) or 4.4 (Origin 2000
+    build); then the module runs again and the cold-power latch is set.
+    A powered module ignores ``pwr u``. The firmware does not answer
+    other commands during the sequence; the model's supplies are
+    healthy, the checks always pass, and it keeps answering. See
+    `Module power`_.
 
 ``pwr d <sec>`` / ``pwr c [<sec>]``
     The remaining power control, none boot-driven. ``pwr d <sec>``
@@ -189,17 +191,19 @@ Command vocabulary
     supply report on an error.
 
     An immediate ``pwr d`` and ``pwr c`` act, like ``rst``, once the
-    caller has read the ``ok``: ``pwr d`` shuts the machine down,
-    ``pwr c`` resets it (a power-cycle). A countdown shuts the machine
-    down when it expires, on the virtual clock. A countdown survives a
-    ``rst``, which the controller runs through. Three approximations
-    remain. The countdown is the nominal
-    number of seconds, although the datasheet infers that the firmware's
-    16-bit millisecond count wraps above 0x41. The power cycle restarts
-    at once, whatever its interval: QEMU cannot hold a machine unpowered
-    and keep its clock running. And expiry shuts down the whole machine,
-    where a two-module Origin 200's slave controller would power off
-    only its own module.
+    caller has read the ``ok``. ``pwr d`` removes module power, and
+    ``pwr c`` queues ``pd cycle`` for the Hubs, removes module power and
+    starts the power-up countdown, which a ``clr`` leaves running; after
+    the interval the power-up sequence runs as for ``pwr u``. On a module
+    already off, ``pwr c`` only restarts the countdown. A ``pwr d``
+    countdown removes power when it expires, on the virtual clock, and
+    survives a ``rst``, which the controller runs through. What module
+    power means for the machine is in `Module power`_. Two
+    approximations remain. The countdown is the nominal number of
+    seconds, although the controller's 16-bit millisecond count is
+    inferred to wrap above 0x41. And the roughly 100 ms the firmware
+    takes to remove power is not modelled: power goes as the action
+    fires.
 
 ``hbt [<interval> [<delay>]]``
     The heartbeat watchdog. Both values come from the hex reader.
@@ -218,9 +222,9 @@ Command vocabulary
     one after the NMI postpones the power cycle; a delay of zero never
     power-cycles. ``clr`` and ``hbt 0`` stop it; ``rst``, ``nmi`` and
     power-off do not, and an armed watchdog brings back a module ``pwr
-    d`` turned off. The power cycle sets the cold-power latch. The
-    firmware powers up five seconds after the power-off; the model
-    restarts at once, as for ``pwr c``. The timer is the nominal number
+    d`` turned off. The power cycle is ``pwr c``'s with a five-second
+    interval, and its power-up sets the cold-power latch. The timer is
+    the nominal number
     of seconds, with the same caveat as the ``pwr d`` countdown above
     0x41 seconds. IRIX 6.5.30 sends ``hbt 30 20``
     only when its heartbeat tunable is set, which it is not by default,
@@ -248,15 +252,10 @@ Command vocabulary
     per-module reset -- QEMU provides no per-module reset and the model
     keeps the whole-machine reset rather than refuse.
 
-    ``pwr c`` performs that same whole-machine reset, and inherits one
-    further multi-node limitation. A power-cycle is a cold restart, so the
-    initiating controller re-arms its cold-power latch and its own post-cycle
-    ``pwr q`` then answers ``ok 1``. On a two-chassis machine the reset
-    re-arms only the initiating controller's latch, so the non-initiating
-    module's post-reset ``pwr q`` answers ``ok 0`` -- warm, not cold.
-    Single-module (the default) is correct; a machine-wide cold-latch re-arm
-    needs cross-device machinery and is a follow-up for the multi-node
-    machine model.
+        A power cycle's restart re-arms only the initiating controller's
+    cold-power latch: on a two-chassis machine the other module's
+    ``pwr q`` answers ``ok 0`` after the machine reset it also went
+    through.
 
 ``tas [<ch>]``
     The test-and-set lock cell: one byte, ``0`` when free. The argument
@@ -413,21 +412,75 @@ The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 no other effect. Every other command either build answers over I2C is
 modelled.
 
+Module power
+------------
+
+The controller decides whether its module is powered: the Origin 200
+controller holds that itself, and an Origin 2000 module's controller
+drives its module-management device's power output. While a module is
+unpowered the controller keeps running and answering: ``pwr`` gives
+``ok d``, ``rst`` and ``nmi`` give ``err cmd``, an ``nmi`` or heartbeat
+pulse already under way reaches no processor, and an Origin 2000
+module stops publishing grants while an Origin 200 controller keeps
+publishing them.
+
+Removing power stops the processors of that module at once: each is
+reset, which loses its state as a powered-down part does, and halted
+with its Hub's processor enable clear, while the virtual clock and the
+rest of the machine run on. After the reset Status.ERL masks every
+interrupt, so an interrupt the Hub still raises cannot end the halt, and
+the controller sends no NMI to an unpowered module. The machine's resets
+keep the processors stopped while the module stays unpowered. When power
+returns the controller resets the machine, a reset it asked for (below),
+and the processors start from reset.
+
+The state that holds them is the controller's power state, the Hub's
+processor enables and the processors' own state, all migrated, and the
+timers that end the hold are on the virtual clock, so a migration or a
+record and replay reproduces the off interval. A controller whose module
+is off says so again after a load, which holds the module's processors
+again in case their reset was still queued when the source stopped. A
+power-up reset asked for but not yet run when the source stopped is
+asked for again when the destination starts running
+(``power_up_reset_owed``), not during the load, where it could run
+before later sections load over it.
+
+When a module loses power and every module of the machine is then off
+with no power-up to come -- no power-cycle countdown and no heartbeat
+watchdog that will cycle a module -- the machine powers down, which is
+what IRIX's ``shutdown -p`` relies on; a migration taken after that
+point makes the destination power down too. The machine decides this
+only as a module loses power: a module that went off with a power-up to
+come, whose power-up then goes away (``clr`` or ``hbt 0`` stopping the
+watchdog), stays off with its processors stopped and QEMU running, as
+the hardware would, until an operator's ``pwr u`` on the serial line
+brings it back. A module off while others run stays stopped, so a
+two-module Origin 200's slave powers off only its own tower.
+
+Two approximations remain. The Hub's processor enables are registers a
+guest could write: the stopped processors cannot, but on a machine of
+several modules a running module's processors can reach an unpowered
+module's Hub and restart its processors from reset. And QEMU resets the
+whole machine, so a module's power-up restarts the other modules too.
+
 Controller state across resets
 ------------------------------
 
 The controller is powered from the cabinet, not the module, so it keeps
-running through the module resets and power cycles it causes itself:
-``rst``, ``pwr c`` and the heartbeat watchdog's power cycle.
-Through those it reinitialises its bus interface and its queues, frees
-the ``tas`` byte and drops any message it had queued for the Hubs, and
-keeps everything else: a power-down countdown (which a power cycle's
-power-off ends), the heartbeat watchdog, the console selection, the fan
-request, the ``fsc`` and ``tst`` flags, the
-margins and the display. Any other QEMU reset, such as ``system_reset``
-from the monitor, is taken as the controller's own start and clears all
-of it. On a two-module Origin 200 the machine reset also reaches the
-other module's controller, which takes it as its own start.
+running through the module resets and power changes it causes itself:
+``rst``, power-off and power-up. Through those it reinitialises its bus
+interface and its queues, frees the ``tas`` byte and drops any message
+it had queued for the Hubs, and keeps everything else: module power and
+its power-up countdown, a power-down countdown (which a power-off ends),
+the waits of an accepted ``rst`` or ``nmi``, the heartbeat watchdog, the
+console selection and output sender, the fan request, the ``fsc`` and
+``tst`` flags, the margins and the display. Any other
+QEMU reset, such as ``system_reset`` from the monitor, is taken as the
+controller's own start and clears all of it. A reset the controller
+asked for that turns into a shutdown (``-no-reboot``) or is not carried
+across a migration leaves no mark that a later reset could be mistaken
+for. On a two-module Origin 200 the machine reset also reaches the other
+module's controller, which takes it as its own start.
 
 Controller messages
 -------------------
