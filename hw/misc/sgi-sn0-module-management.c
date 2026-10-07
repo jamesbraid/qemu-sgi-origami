@@ -533,6 +533,7 @@ bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
         break;
     case SGI_ELSC_ACTION_CYCLE:
     case SGI_ELSC_ACTION_SHUTDOWN:
+    case SGI_ELSC_ACTION_POWER_UP:
         declared = s->can_power;
         break;
     default:
@@ -552,6 +553,11 @@ bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
         return false;
     }
     return true;
+}
+
+static bool mgmt_elsc_powered(void *opaque)
+{
+    return ((SN0ModuleManagementState *)opaque)->power_on;
 }
 
 static bool mgmt_elsc_can_execute(void *opaque, SGIElscAction action)
@@ -574,6 +580,9 @@ static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
         break;
     case SGI_ELSC_ACTION_SHUTDOWN:
         done = sgi_sn0_module_management_set_power(s, false);
+        break;
+    case SGI_ELSC_ACTION_POWER_UP:
+        done = sgi_sn0_module_management_set_power(s, true);
         break;
     default:
         g_assert_not_reached();
@@ -653,6 +662,7 @@ static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
 }
 
 static const SGIElscModuleOps mgmt_elsc_ops = {
+    .powered = mgmt_elsc_powered,
     .can_execute = mgmt_elsc_can_execute,
     .execute = mgmt_elsc_execute,
     .slave_active = mgmt_elsc_slave_active,
