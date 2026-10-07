@@ -3415,6 +3415,84 @@ static void test_ip53_static_bcm5701_network_backend(void)
     close(sockets[0]);
 }
 
+static void test_ip53_bcm5701_direct64_tx(const void *opaque)
+{
+    const uint32_t mode = *(const uint32_t *)opaque;
+    static const uint64_t direct64 = UINT64_C(0xa000000000000000);
+    uint8_t tx_frame[IP53_BCM_FRAME_SIZE];
+    uint8_t tx_descriptor[16] = { 0 };
+    uint8_t status[4];
+    uint8_t received[IP53_BCM_FRAME_SIZE];
+    struct timeval timeout = { .tv_usec = 100000 };
+    IP53RuntimeTestFixture *fixture;
+    g_autofree char *nic = NULL;
+    int sockets[2];
+    unsigned int i;
+    size_t received_length;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), ==, 0);
+    g_assert_cmpint(setsockopt(sockets[0], SOL_SOCKET, SO_RCVTIMEO,
+                               &timeout, sizeof(timeout)), ==, 0);
+    nic = g_strdup_printf("-nic socket,fd=%d,mac=52:54:00:bc:57:01",
+                          sockets[1]);
+    fixture = ip53_runtime_test_start(
+        "origin350,topology=origin350,ip53-experimental=on", nic);
+    close(sockets[1]);
+    qtest_system_reset(fixture->qts);
+    g_assert_cmphex(qtest_readl(fixture->qts, IP53_BCM_CFG + 0x70) & 0x10,
+                    ==, 0);
+    qtest_qmp_assert_success(fixture->qts, "{ 'execute': 'cont' }");
+    qtest_writeq(fixture->qts, IP53_BCM_RUNTIME_PIC_HEAD0 + 0x20, 9);
+    qtest_writeq(fixture->qts, IP53_BCM_RUNTIME_PIC_HEAD0 + 0x80,
+                 UINT64_C(15) << 20);
+    qtest_writeq(fixture->qts, IP53_IO_SPACE + 0x1400000 + 0x160,
+                 (UINT64_C(15) << 8) | 2);
+    qtest_writeq(fixture->qts, IP53_IO_SPACE + 0x1000000 + 0x780008,
+                 UINT64_C(0x53));
+    qtest_writel(fixture->qts, IP53_BCM_CFG + 4,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(fixture->qts, IP53_BCM_CFG + 0x10, 0x01000000);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x6800, 0x20000 | mode);
+
+    for (i = 0; i < sizeof(tx_frame); i++) {
+        tx_frame[i] = i * 7 + 1;
+    }
+    stq_be_p(tx_descriptor, direct64 | IP53_BCM_TX_BUFFER_RAM);
+    ip53_bcm_put16(tx_descriptor, 8, 4);
+    ip53_bcm_put16(tx_descriptor, 10, sizeof(tx_frame));
+    qtest_memwrite(fixture->qts, IP53_BCM_TX_RING_RAM, tx_descriptor,
+                   sizeof(tx_descriptor));
+    qtest_memwrite(fixture->qts, IP53_BCM_TX_BUFFER_RAM, tx_frame,
+                   sizeof(tx_frame));
+    qtest_memset(fixture->qts, IP53_BCM_STATUS_RAM, 0, 0x50);
+    ip53_bcm_sram_write(fixture->qts, 0x100,
+                        (direct64 | IP53_BCM_TX_RING_RAM) >> 32);
+    ip53_bcm_sram_write(fixture->qts, 0x104,
+                        (direct64 | IP53_BCM_TX_RING_RAM) & 0xffffffff);
+    ip53_bcm_sram_write(fixture->qts, 0x108, 4 << 16);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x3c38,
+                 (direct64 | IP53_BCM_STATUS_RAM) >> 32);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x3c3c,
+                 (direct64 | IP53_BCM_STATUS_RAM) & 0xffffffff);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x3c14, 1);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x3c00, 2);
+    qtest_writel(fixture->qts, IP53_BCM_BAR + 0x0304, 1);
+
+    qtest_memread(fixture->qts, IP53_BCM_STATUS_RAM + 16, status,
+                  sizeof(status));
+    g_assert_cmphex(ip53_bcm_get16(status + 2), ==, mode ? 0 : 1);
+    if (!mode) {
+        received_length = ip53_bcm_receive_frame(sockets[0], received,
+                                                 sizeof(received));
+        g_assert_cmpuint(received_length, ==, sizeof(tx_frame));
+        g_assert_cmpmem(received, received_length, tx_frame,
+                        sizeof(tx_frame));
+    }
+
+    ip53_runtime_test_stop(fixture);
+    close(sockets[0]);
+}
+
 #define IP53_RUNTIME_PI_LEVEL_IOC4 0x34
 #define IP53_RUNTIME_PI_LEVEL_ISP  0x35
 #define IP53_RUNTIME_PI_LEVEL_BCM  0x36
@@ -7338,6 +7416,9 @@ static const DeviceRenders ni_fixture_renders = {
 
 int main(int argc, char **argv)
 {
+    static const uint32_t ip53_bcm_direct64_no_swap;
+    static const uint32_t ip53_bcm_direct64_swap_control = 0x24;
+
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn/builder/numa-refused", NULL,
@@ -7505,6 +7586,12 @@ int main(int argc, char **argv)
                    test_ip53_integrated_bte_reset_overlap);
     qtest_add_func("sn/builder/ip53-static-bcm5701-network-backend",
                    test_ip53_static_bcm5701_network_backend);
+    qtest_add_data_func("sn/builder/ip53-bcm5701-direct64-tx-no-swap",
+                        &ip53_bcm_direct64_no_swap,
+                        test_ip53_bcm5701_direct64_tx);
+    qtest_add_data_func("sn/builder/ip53-bcm5701-direct64-tx-swap-control",
+                        &ip53_bcm_direct64_swap_control,
+                        test_ip53_bcm5701_direct64_tx);
     qtest_add_func("sn/builder/ip53-static-bcm5701-nic-none",
                    test_ip53_static_bcm5701_nic_none);
     qtest_add_func("sn/builder/ip53-io9-endpoint-interrupt-routes",
