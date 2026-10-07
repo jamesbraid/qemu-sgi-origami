@@ -1072,11 +1072,6 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                           Error **errp)
 {
     uint64_t prom_size = node->model_node->flash->size;
-    uint64_t execution_size = node->ip53_assembly_validated ?
-                             SN1_IP53_PROM_PAYLOAD_SIZE : prom_size;
-    bool reset_view = node->ip53_assembly_validated &&
-        sgi_machine_ip53_experiment_authorized(
-            MACHINE(qdev_get_machine()));
     MemoryRegion *system = get_system_memory();
     g_autofree char *prom_name = NULL;
     MemoryRegion *stored;
@@ -1116,12 +1111,10 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
             g_strdup("sn1.prom.local-high");
         if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
                                 node->prom_view_names[0], stored,
-                                execution_size,
-                                errp) ||
+                                prom_size, errp) ||
             !sn1_init_prom_view(&node->prom_view_local_high, OBJECT(node),
                                 node->prom_view_names[1], stored,
-                                execution_size,
-                                errp)) {
+                                prom_size, errp)) {
             return false;
         }
         SGI_BEDROCK_FLASH(node->boot_flash)->programmed =
@@ -1161,15 +1154,13 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     sn1_apply_cpu_config(node, memory_region_get_ram_ptr(&node->prom));
     memory_region_set_dirty(&node->prom, 0, prom_size);
 
-    if (reset_view) {
-        node->prom_view_names[0] = node->nasid ?
-            g_strdup_printf("sn1.node%u.prom.reset", node->nasid) :
-            g_strdup("sn1.prom.reset");
-        if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
-                                node->prom_view_names[0], &node->prom,
-                                execution_size, errp)) {
-            return false;
-        }
+    node->prom_view_names[0] = node->nasid ?
+        g_strdup_printf("sn1.node%u.prom.reset", node->nasid) :
+        g_strdup("sn1.prom.reset");
+    if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
+                            node->prom_view_names[0], &node->prom,
+                            prom_size, errp)) {
+        return false;
     }
 
     /*
@@ -1180,7 +1171,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
      * instead of reading a list the compiled catalogue no longer carries.
      */
     node->prom_views = g_new0(MemoryRegion, ARRAY_SIZE(sn1_prom_view_names));
-    for (i = 0; i < ARRAY_SIZE(sn1_prom_view_names); i++) {
+    for (i = 1; i < ARRAY_SIZE(sn1_prom_view_names); i++) {
         const char *name = sn1_prom_view_names[i];
         uint64_t address;
 
@@ -1189,22 +1180,13 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                        MACHINE_GET_CLASS(qdev_get_machine())->name, name);
             return false;
         }
-        if (reset_view && i == 0) {
-            continue;
-        }
         memory_region_init_alias(&node->prom_views[i], OBJECT(node),
                                  name, &node->prom, 0, prom_size);
-        if (i == 0) {
-            sn1_node_map_reset(node, &node->prom_views[i]);
-        } else {
-            memory_region_add_subregion_overlap(
-                system, sn1_node_address(node, address),
-                &node->prom_views[i], 1);
-        }
+        memory_region_add_subregion_overlap(
+            system, sn1_node_address(node, address),
+            &node->prom_views[i], 1);
     }
-    if (reset_view) {
-        sn1_node_map_reset(node, &node->prom_view_reset.rom);
-    }
+    sn1_node_map_reset(node, &node->prom_view_reset.rom);
 
     /* An empty second position answers erased through both boot spaces. */
     memory_region_init_io(&node->prom_flash, OBJECT(node),

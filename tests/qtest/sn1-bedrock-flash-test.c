@@ -1340,9 +1340,9 @@ static void test_ip53_execution_views(void)
 
     image_erase_sector(image, 0);
     image_erase_sector(image, PART_SIZE);
-    image_write_be64(image, IP53_EXECUTION_SIZE - 8,
+    image_write_be64(image, IP53_PROM_SIZE - 8,
                      0x1122334455667788ULL);
-    image_write_be64(image, IP53_EXECUTION_SIZE,
+    image_write_be64(image, IP53_PROM_SIZE,
                      0xaabbccddeeff0011ULL);
     extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write,"
                             "trace:pflash_data_write,"
@@ -1350,12 +1350,12 @@ static void test_ip53_execution_views(void)
                             "-qtest-log /dev/stderr", log);
     s = ip53_flash_start(image, data, clock, extra);
 
-    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_EXECUTION_SIZE - 8), ==,
+    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_PROM_SIZE - 8), ==,
                     0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE - 8),
+    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_PROM_SIZE - 8),
                     ==, 0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_EXECUTION_SIZE), ==, 0);
-    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE),
+    g_assert_cmphex(qtest_readq(s, IP53_RESET + IP53_PROM_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IP53_LOCAL_HIGH + IP53_PROM_SIZE),
                     ==, 0);
 
     /* Keep CFI waiting for its program word across refused execution writes. */
@@ -1364,8 +1364,8 @@ static void test_ip53_execution_views(void)
     qtest_writeq(s, LOCAL + UNLOCK0, 0xa0);
     qtest_writeq(s, IP53_RESET + 0x204, 0);
     qtest_writeq(s, IP53_LOCAL_HIGH + 0x204, 0);
-    qtest_writeq(s, IP53_RESET + IP53_EXECUTION_SIZE, 0);
-    qtest_writeq(s, IP53_LOCAL_HIGH + IP53_EXECUTION_SIZE, 0);
+    qtest_writeq(s, IP53_RESET + IP53_PROM_SIZE, 0);
+    qtest_writeq(s, IP53_LOCAL_HIGH + IP53_PROM_SIZE, 0);
     qtest_writeq(s, LOCAL + BYTE(0x204), 0x5a5a);
     g_assert_cmphex(qtest_readw(s, IP53_RESET + 0x204), ==, 0x5a5a);
     g_assert_cmphex(qtest_readw(s, IP53_LOCAL_HIGH + 0x204), ==, 0x5a5a);
@@ -1393,7 +1393,7 @@ static void test_ip53_execution_views(void)
     image_read(image, PART_SIZE + 0x204, stored, 2);
     g_assert_cmphex(stored[0], ==, 0x0f);
     g_assert_cmphex(stored[1], ==, 0x0f);
-    image_read(image, IP53_EXECUTION_SIZE, stored, sizeof(stored));
+    image_read(image, IP53_PROM_SIZE, stored, sizeof(stored));
     g_assert_cmphex(ldq_be_p(stored), ==, 0xaabbccddeeff0011ULL);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));

@@ -4554,7 +4554,7 @@ static bool sgi_machine_ip53_fingerprint(
                 sgi_machine_fingerprint_u32(checksum, processor->cache_mib);
                 sgi_machine_fingerprint_u64(checksum, SN1_PROM_RESET);
                 sgi_machine_fingerprint_u64(checksum,
-                                            SN1_IP53_PROM_PAYLOAD_SIZE);
+                                            node->flash->size);
             }
             for (bank = node->bank_mib; bank; bank = bank->next) {
                 bank_count++;
