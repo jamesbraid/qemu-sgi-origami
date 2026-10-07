@@ -195,22 +195,18 @@ static void test_rom_aliases(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
-static void test_cached_data(void)
+static void test_coherent_ram(void)
 {
     const uint64_t data = RAM_FULL + 0x1000;
     const uint64_t code = RAM_FULL + 0x2000;
     const uint64_t result = RAM_FULL + 0x3000;
     const uint32_t instructions[] = {
-        mips_mfc0(8, 12), mips_ori(8, 8, 0x80), mips_mtc0(8, 12),
-        0, 0, 0, 0,
-        mips_lui(8, 0x9800), mips_dsll32(8, 8),
-        mips_lui(9, 0x4000), mips_daddu(8, 8, 9),
+        mips_lui(8, 0x8000),
         mips_daddiu(8, 8, 0x1000),
         mips_lw(10, 8, 0),
         mips_lui(11, 0x5566), mips_ori(11, 11, 0x7788),
         mips_sw(11, 8, 0), mips_lw(12, 8, 0),
-        mips_lui(16, 0x9000), mips_dsll32(16, 16),
-        mips_daddu(16, 16, 9), mips_daddiu(16, 16, 0x3000),
+        mips_lui(16, 0xa000), mips_daddiu(16, 16, 0x3000),
         mips_sw(10, 16, 0), mips_sw(12, 16, 4),
         mips_ori(13, 0, 1), mips_sw(13, 16, 8),
         mips_branch(MIPS_OPC_BEQ, 0, 0, -1), 0,
@@ -235,14 +231,14 @@ static void test_cached_data(void)
     qtest_memwrite(qts, data, data_bytes, sizeof(data_bytes));
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
-    sgi_wait_start(&wait, "O2 R10000 cached store");
+    sgi_wait_start(&wait, "O2 R10000 coherent store");
     while (qtest_readl(qts, result + 8) != 1) {
         sgi_wait_pause(&wait, 1000);
     }
     g_assert_cmphex(qtest_readl(qts, result), ==, 0x11223344);
     g_assert_cmphex(qtest_readl(qts, result + 4), ==, 0x55667788);
     qtest_memread(qts, data, data_bytes, sizeof(data_bytes));
-    g_assert_cmphex(ldl_be_p(data_bytes), ==, 0x11223344);
+    g_assert_cmphex(ldl_be_p(data_bytes), ==, 0x55667788);
     qtest_quit(qts);
 }
 
@@ -403,7 +399,7 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/reset-registers", test_reset_registers);
     qtest_add_func("/o2/interrupt-chain", test_interrupt_chain);
     qtest_add_func("/o2/rom-aliases", test_rom_aliases);
-    qtest_add_func("/o2/cached-data", test_cached_data);
+    qtest_add_func("/o2/coherent-ram", test_coherent_ram);
     qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/serial-a", test_serial_a);
     qtest_add_func("/o2/configuration", test_configuration);
