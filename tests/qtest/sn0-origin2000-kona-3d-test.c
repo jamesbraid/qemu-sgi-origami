@@ -12637,6 +12637,124 @@ static char *renderer_plane_digest(QTestState *s, unsigned plane)
     return digest;
 }
 
+static void renderer_typed_setup(QTestState *s)
+{
+    gl_make_current(s);
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ 0, 0, 0x05670080, 0x05670080,
+                                      0, 0, FB_WIDTH, FB_HEIGHT, 0, 0xd, 0 },
+                        11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ 0, 0, 0 }, 3);
+    kona_command(s, 0xe3, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(s, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+    kona_command(s, 0xc0, (uint32_t[]){ 0x1d01 }, 1);
+}
+
+static uint32_t renderer_plane_at(QTestState *s, unsigned plane,
+                                  unsigned x, unsigned y)
+{
+    QDict *reply;
+    uint32_t value;
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane','value':%u}}", plane);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-x','value':%u}}", x);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-y','value':%u}}", y);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane-word'}}");
+    value = qdict_get_int(reply, "return");
+    qobject_unref(reply);
+    return value;
+}
+
+/* An indexed pixel with the same RGB still needs a direct-colour tag. */
+static void test_renderer_typed_coverage(gconstpointer opaque)
+{
+    bool same_rgb = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    uint64_t before, generation;
+
+    renderer_typed_setup(s);
+    x_read_fixture_command(s, 0x129,
+                           (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0,
+                                         0x180c, 0x40001, 1, 6, 5, 1, 1 },
+                           13);
+    x_read_fixture_command(s, 0x136,
+                           (uint32_t[]){ 0, 0, 1, 8, 1, 1, 0 }, 7);
+    x_read_fixture_command(s, 0x139,
+                           (uint32_t[]){ 640, FB_HEIGHT - 1 - 512 }, 2);
+    qtest_writel(s, KONA_REG(0xc1000c), 0);
+    x_read_fixture_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    x_read_fixture_command(s, 0x139,
+                           (uint32_t[]){ 900, FB_HEIGHT - 1 - 700 }, 2);
+    qtest_writel(s, KONA_REG(0xc1000c), 0);
+    x_read_fixture_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 3);
+    g_assert_cmphex(renderer_plane_at(s, 2, 900, 700), ==, 3);
+
+    kona_command_f(s, 0x63,
+                   same_rgb ? (float[]){ 0, 0, 0 } :
+                              (float[]){ 1, 0, 0 }, 3);
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    before = renderer_counter(s, "x-test-gpu-requests");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests") - before,
+                     ==, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     >, generation);
+    g_assert_cmphex(renderer_plane_at(s, 0, 640, 512), ==,
+                    same_rgb ? 0 : 0xff0000);
+    g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 0, 900, 700), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 2, 900, 700), ==, 3);
+
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    x_read_fixture_command(s, 0x139,
+                           (uint32_t[]){ 640, FB_HEIGHT - 1 - 512 }, 2);
+    qtest_writel(s, KONA_REG(0xc1000c), 0);
+    x_read_fixture_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(renderer_plane_at(s, 0, 640, 512), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 3);
+    before = renderer_counter(s, "x-test-gpu-requests");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests") - before,
+                     ==, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     >, generation);
+    g_assert_cmphex(renderer_plane_at(s, 0, 640, 512), ==,
+                    same_rgb ? 0 : 0xff0000);
+    g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 2, 900, 700), ==, 3);
+
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    before = renderer_counter(s, "x-test-gpu-requests");
+    kona_command(s, 0x24, (uint32_t[]){ 0xde1 }, 1);
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     before);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"), ==,
+                     generation);
+    qtest_quit(s);
+}
+
 static void renderer_fixture(QTestState *s)
 {
     gl_make_current_depth(s, 24);
@@ -12666,6 +12784,71 @@ static void renderer_triangle(QTestState *s)
     gl_vertex2f(s, 111.25, 16.25);
     gl_vertex2f(s, 16.25, 111.25);
     gl_end(s);
+}
+
+static void test_renderer_typed_ortho_excluded(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    uint64_t generation;
+
+    renderer_typed_setup(s);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1701 }, 1);
+    kona_command_d(s, 0xd7,
+                   (double[]){ 0, FB_WIDTH, 0, FB_HEIGHT, -1, 1 }, 6);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1700 }, 1);
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    gl_begin(s, 4);
+    gl_vertex2f(s, 320, 256);
+    gl_vertex2f(s, 960, 256);
+    gl_vertex2f(s, 640, 768);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     ==, generation);
+    qtest_quit(s);
+}
+
+static void test_renderer_typed_failure_reset(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QDict *reply;
+    uint64_t before, generation;
+
+    renderer_typed_setup(s);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-mesa-failed','value':true}}");
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-mesa-failed'}}");
+    g_assert_true(qdict_get_bool(reply, "return"));
+    qobject_unref(reply);
+    before = renderer_counter(s, "x-test-gpu-requests");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, before);
+    qtest_system_reset(s);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-mesa-failed'}}");
+    g_assert_false(qdict_get_bool(reply, "return"));
+    qobject_unref(reply);
+
+    renderer_typed_setup(s);
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    before = renderer_counter(s, "x-test-gpu-requests");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests") - before,
+                     ==, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     >, generation);
+    qtest_quit(s);
 }
 
 static void renderer_assert_image(QTestState *s)
@@ -15017,6 +15200,14 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_texture_8x8_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/no-render-node",
                         GUINT_TO_POINTER(0), test_renderer_fixture);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/typed-coverage",
+                        GUINT_TO_POINTER(0), test_renderer_typed_coverage);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/typed-same-rgb",
+                        GUINT_TO_POINTER(1), test_renderer_typed_coverage);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-ortho-excluded",
+                   test_renderer_typed_ortho_excluded);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-failure-reset",
+                   test_renderer_typed_failure_reset);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
                         GUINT_TO_POINTER(1), test_renderer_fixture);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"

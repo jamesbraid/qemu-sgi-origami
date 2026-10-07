@@ -25,6 +25,7 @@
 #include "qapi/error.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
+#include "qemu/error-report.h"
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -39,6 +40,7 @@
 #include "hw/misc/sgi-kona.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
+#include "hw/misc/sgi-kona-mesa-provider.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -52,6 +54,7 @@
 #include "qapi/visitor.h"
 #include "qom/object.h"
 #include "system/dma.h"
+#include "system/runstate.h"
 #include "qemu/main-loop.h"
 #include "trace.h"
 
@@ -2335,6 +2338,35 @@ static void sgi_kona_renderer_stop(SGIKonaState *s)
     s->renderer_generation++;
 }
 
+static void sgi_kona_mesa_dirty_plane(void *opaque, uint32_t id,
+                                       uint32_t y0, uint32_t y1)
+{
+    SGIKonaState *s = opaque;
+    uint32_t colour = id == s->plane_front_tag ? s->plane_front :
+                      id == s->plane_back_tag ? s->plane_back : id;
+
+    if (colour == s->plane_front || colour == s->plane_back) {
+        sgi_scanout_invalidate_plane(&s->scanout,
+                                     sgi_kona_plane(s, colour), y0, y1);
+    }
+}
+
+static void sgi_kona_mesa_dirty_texture(void *opaque, uint32_t handle,
+                                         uint32_t level, uint32_t image_id)
+{
+    SGIKonaState *s = opaque;
+
+    sgi_kona_renderer_stop(s);
+    (void)handle;
+    (void)level;
+    (void)image_id;
+}
+
+static const SGIKonaMesaDirtyOps sgi_kona_mesa_dirty_ops = {
+    .plane = sgi_kona_mesa_dirty_plane,
+    .texture = sgi_kona_mesa_dirty_texture,
+};
+
 static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
                                     SGIPlaneFormat format, int64_t x, int64_t y,
                                     unsigned width, unsigned height)
@@ -2983,6 +3015,60 @@ out:
     return success;
 }
 
+static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
+                                          const SGIRasterRules *rules,
+                                          const SGIGLDraw *d, Error **errp)
+{
+    SGIRasterTarget target;
+    SGIRenderResult result;
+    const SGIRenderResource *resources;
+    size_t count;
+
+    if (!s->renderer) {
+        s->renderer = sgi_renderer_new(errp);
+        if (!s->renderer) {
+            return SGI_RENDER_HOST_ERROR;
+        }
+    }
+    resources = sgi_kona_mesa_resources(s->mesa_provider, &count);
+    target = (SGIRasterTarget) {
+        .opaque = s->mesa_provider,
+        .resources = resources,
+        .resource_count = count,
+        .resource_ops = sgi_kona_mesa_resource_ops(),
+    };
+    sgi_kona_mesa_refresh_board_views(s->mesa_provider);
+    result = sgi_render_draw_checked(s->renderer, rules, &target, d, errp);
+    if (result != SGI_RENDER_UNSUPPORTED) {
+        s->renderer_requests++;
+    }
+    return result;
+}
+
+static void sgi_kona_mesa_stop(SGIKonaState *s, Error *err)
+{
+    s->mesa_failed = true;
+    if (err) {
+        error_report_err(err);
+    } else {
+        error_report("sgi-kona: Mesa draw failed without a diagnostic");
+    }
+    assert(bql_locked());
+    qemu_system_vmstop_request_prepare();
+    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+}
+
+static bool sgi_kona_mesa_identity(const float matrix[16])
+{
+    /* Other transforms retain the established raster path until qualified. */
+    for (unsigned i = 0; i < 16; i++) {
+        if (matrix[i] != (i % 5 == 0 ? 1.0f : 0.0f)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
                                                 const SGIGLDraw *d)
 {
@@ -2994,6 +3080,11 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIGLDraw copy;
     SGIGLDrawResult ret;
     bool oom;
+    Error *err = NULL;
+
+    if (s->mesa_failed) {
+        return SGI_GL_DRAW_OK;
+    }
 
     if (d->state->stencil_test && stencil_bits < 0) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: stencil draw of context %" PRIu32
@@ -3008,6 +3099,43 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy = *d;
         copy.state = &st;
         d = &copy;
+    }
+    if (s->host_gpu && s->mesa_provider && !s->renderer_failed &&
+        d->mode == SGI_GL_TRIANGLES && d->count == 3 &&
+        d->state->shade_model == SGI_GL_SMOOTH &&
+        d->state->draw_buffers == SGI_GL_DRAW_FRONT &&
+        d->state->drawable.front == s->plane_front &&
+        sgi_kona_mesa_identity(d->state->modelview) &&
+        sgi_kona_mesa_identity(d->state->projection) &&
+        !d->state->texture_1d && !d->state->texture_2d &&
+        !d->state->texture_3d &&
+        (!d->polygon_modes ||
+         (d->polygon_modes[0] == SGI_GL_FILL &&
+          d->polygon_modes[1] == SGI_GL_FILL))) {
+        SGIGLDraw checked = *d;
+        SGIRenderResult result;
+
+        checked.polygon_modes = NULL;
+        result = sgi_kona_mesa_draw(s, &rules, &checked, &err);
+
+        switch (result) {
+        case SGI_RENDER_OK:
+            s->renderer_draws++;
+            error_free(err);
+            return SGI_GL_DRAW_OK;
+        case SGI_RENDER_OOM:
+            error_free(err);
+            return SGI_GL_DRAW_OUT_OF_MEMORY;
+        case SGI_RENDER_UNSUPPORTED:
+            error_free(err);
+            break;
+        case SGI_RENDER_RESOURCE_ERROR:
+        case SGI_RENDER_HOST_ERROR:
+            sgi_kona_mesa_stop(s, err);
+            return SGI_GL_DRAW_OK;
+        default:
+            g_assert_not_reached();
+        }
     }
     if (sgi_kona_renderer_draw(s, d, &rules, &t, &oom)) {
         return SGI_GL_DRAW_OK;
@@ -3087,7 +3215,11 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
  */
 static void sgi_kona_gl_fence(void *opaque, uint32_t context)
 {
-    sgi_kona_post_return(opaque, SGI_KONA_CMD_GL_FINISH, 0, NULL, 0);
+    SGIKonaState *s = opaque;
+
+    if (!s->mesa_failed) {
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_FINISH, 0, NULL, 0);
+    }
 }
 
 static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
@@ -3306,6 +3438,10 @@ static void sgi_kona_gl_buffer_config(SGIKonaState *s, const uint32_t *args)
 static void sgi_kona_gl_finish(SGIKonaState *s, uint32_t wait)
 {
     SGIGLSink sink;
+
+    if (s->mesa_failed) {
+        return;
+    }
 
     switch (wait) {
     case 0:
@@ -10799,6 +10935,7 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
 static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(board);
+    SGIKonaMesaPlanes planes;
     /*
      * Before anything this function sets up: finalize relies on a board
      * whose realize failed never having reached address_space_init().
@@ -10818,15 +10955,6 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
                           SGI_KONA_PORT_DOORBELL, sgi_kona_gl_tokens,
                           sgi_kona_gl_num_tokens);
 
-    /*
-     * fabric's own address space: this board's first feature needing
-     * dma_memory_read()/dma_memory_write() rather than the register
-     * file's MMIO dispatch. Destroyed in instance_finalize(), matching
-     * hw/misc/sgi-mgras.c's own fabric_as lifecycle.
-     */
-    address_space_init(&s->fabric_as, s->fabric, "sgi-kona.fabric");
-    sgi_kona_dma_init(&s->dma, s);
-
     s->map_ram = g_new0(uint32_t, SGI_KONA_MAPRAM_ENTRIES);
     s->map_ram_count = SGI_KONA_MAPRAM_ENTRIES;
 
@@ -10834,6 +10962,26 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->arm_high_count = SGI_KONA_ARM_HIGH_WORDS;
 
     sgi_kona_board_memory_init(s);
+    planes = (SGIKonaMesaPlanes) {
+        .front = s->plane_front,
+        .back = s->plane_back,
+        .front_tag = s->plane_front_tag,
+        .back_tag = s->plane_back_tag,
+        .depth = s->plane_depth,
+        .stencil = s->plane_stencil,
+        .direct_tag = SGI_KONA_TAG_DIRECT,
+    };
+    s->mesa_provider = sgi_kona_mesa_provider_new(
+        &s->mem, &planes, &sgi_kona_mesa_dirty_ops, s, errp);
+    if (!s->mesa_provider) {
+        return false;
+    }
+    /*
+     * The provider can fail construction; initialise the fabric address
+     * space only after that last fallible step. Finalize owns its teardown.
+     */
+    address_space_init(&s->fabric_as, s->fabric, "sgi-kona.fabric");
+    sgi_kona_dma_init(&s->dma, s);
     /* RAW32 is model storage for DID16, two overlay16 planes and popup2. */
     sgi_board_memory_init(&s->desktop_mem,
                           (uint64_t)SGI_KONA_FB_WIDTH *
@@ -11076,6 +11224,36 @@ static void sgi_kona_test_get_plane_digests(Object *obj, Visitor *v,
     visit_type_str(v, name, &out, errp);
 }
 
+static void sgi_kona_test_get_mesa_front_generation(Object *obj, Visitor *v,
+                                                     const char *name,
+                                                     void *opaque,
+                                                     Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    const SGIRenderResource *resources;
+    size_t count = 0;
+    uint64_t generation = 0;
+
+    if (s->mesa_provider) {
+        resources = sgi_kona_mesa_resources(s->mesa_provider, &count);
+        if (count) {
+            generation = resources[0].backing_generation;
+        }
+    }
+    visit_type_uint64(v, name, &generation, errp);
+}
+
+static bool sgi_kona_test_get_mesa_failed(Object *obj, Error **errp)
+{
+    return SGI_KONA(obj)->mesa_failed;
+}
+
+static void sgi_kona_test_set_mesa_failed(Object *obj, bool failed,
+                                          Error **errp)
+{
+    SGI_KONA(obj)->mesa_failed = failed;
+}
+
 /* Host-only access to the selected gamma-table entry. */
 static void sgi_kona_test_get_gamma(Object *obj, Visitor *v, const char *name,
                                     void *opaque, Error **errp)
@@ -11240,6 +11418,12 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-digests", "str",
                         sgi_kona_test_get_plane_digests, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-mesa-front-generation", "uint64",
+                        sgi_kona_test_get_mesa_front_generation,
+                        NULL, NULL, NULL);
+    object_property_add_bool(obj, "x-test-mesa-failed",
+                             sgi_kona_test_get_mesa_failed,
+                             sgi_kona_test_set_mesa_failed);
     object_property_add_uint32_ptr(obj, "x-test-gamma-addr",
                                    &s->test_gamma_addr,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -11280,6 +11464,7 @@ static void sgi_kona_instance_finalize(Object *obj)
     sgi_kona_gl_image_clear(s);
     sgi_kona_texture_upload_clear(s);
     sgi_kona_renderer_stop(s);
+    sgi_kona_mesa_provider_free(s->mesa_provider);
     if (s->scanout.con) {
         sgi_scanout_cleanup(&s->scanout);
     }
@@ -11349,6 +11534,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->texture_associate_slot = 0;
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
+    s->mesa_failed = false;
 
     s->widget_control = 0;
     s->onewire_reg = 0;
@@ -11692,6 +11878,7 @@ static int sgi_kona_post_load(void *opaque, int version_id)
 
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
+    s->mesa_failed = false;
 
     /*
      * An open video command can hold no more data words than it takes, or
