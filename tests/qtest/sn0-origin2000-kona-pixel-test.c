@@ -55,7 +55,9 @@
 #define KONA_FB_HEIGHT 1024
 
 #define PLANE_FRONT     0
+#define PLANE_BACK      1
 #define PLANE_FRONT_TAG 2
+#define PLANE_BACK_TAG  3
 #define TAG_DIRECT      0
 #define TAG_X_INDEX     3
 #define TAG_X_INDEX12   3
@@ -1994,6 +1996,145 @@ static void test_copy_setup_refusal(gconstpointer opaque)
     assert_in_step(qts);
 }
 
+/* The two observed window-copy GCs request separate model colour banks. */
+static void copy_window_gc(QTestState *s, bool back)
+{
+    const uint32_t gc[13] = {
+        0, 0, 0, 0, 0xffffff, 0xffffff,
+        back ? 0x3804 : 0x2804, back ? 0xbc002 : 0x7c001,
+        1, 6, 0x11, 0, 0,
+    };
+
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+}
+
+static void test_copy_window_banks(void)
+{
+    uint32_t front[3][4], front_tags[3][4];
+    uint32_t back, back_tag;
+    char *before[11] = { NULL };
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    back = kona_plane_word(qts, PLANE_BACK, 450, 300);
+    back_tag = kona_plane_word(qts, PLANE_BACK_TAG, 450, 300);
+    g_assert_cmphex(back, !=, 0);
+    read_write_pattern(qts, 450, 723, 4, 1);
+    read_write_pattern(qts, 700, 700, 4, 1);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_BACK, 700, 323), !=, back);
+    g_autofree char *back_before = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_BACK && plane != PLANE_BACK_TAG) {
+            before[plane] = digest_at(back_before, plane);
+        }
+    }
+    x_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 0, 0, 1, 1 }, 5);
+    x_command(qts, TOKEN_POSITION, (uint32_t[]){ 0, 0, 1280, 1024 }, 4);
+    copy_window_gc(qts, true);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, 3, 3, 0, 1, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 450, 723, 700, 700 }, 4);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_BACK, 700, 323), ==, back);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_BACK_TAG, 700, 323), ==,
+                    back_tag);
+    g_autofree char *back_after = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (before[plane]) {
+            g_autofree char *actual = digest_at(back_after, plane);
+
+            g_assert_cmpstr(actual, ==, before[plane]);
+            g_free(before[plane]);
+            before[plane] = NULL;
+        }
+    }
+
+    x_command(qts, TOKEN_CLIP,
+              (uint32_t[]){ 1, 0, 0, 1280, 1024 }, 5);
+    read_write_pattern(qts, 10, 20, 4, 3);
+    seed_rgb(qts, 11, 21, 0xabcdef);
+    seed_rgb(qts, 15, 23, 0xabcdef);
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            front[y][x] = front_native_at(qts, 10 + x, 20 + y);
+            front_tags[y][x] = front_tag_at(qts, 10 + x, 20 + y);
+        }
+    }
+    g_assert_cmphex(front_tags[1][1], ==, TAG_DIRECT);
+    g_assert_cmphex(front_tags[0][1], ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 15, 23), ==, TAG_DIRECT);
+    g_autofree char *front_before = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            before[plane] = digest_at(front_before, plane);
+        }
+    }
+    x_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 0, 0, 1, 1 }, 5);
+    x_command(qts, TOKEN_POSITION, (uint32_t[]){ 0, 0, 1280, 1024 }, 4);
+    copy_window_gc(qts, false);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, 3, 3, 0, 4, 3, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 12, 21 }, 4);
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(front_native_at(qts, 12 + x, 21 + y), ==,
+                            front[y][x]);
+            g_assert_cmphex(front_tag_at(qts, 12 + x, 21 + y), ==,
+                            front_tags[y][x]);
+        }
+    }
+    g_assert_cmphex(front_native_at(qts, 10, 20), ==, front[0][0]);
+    g_assert_cmphex(front_native_at(qts, 11, 20), ==, front[0][1]);
+    g_autofree char *front_after = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (before[plane]) {
+            g_autofree char *actual = digest_at(front_after, plane);
+
+            g_assert_cmpstr(actual, ==, before[plane]);
+            g_free(before[plane]);
+        }
+    }
+    assert_in_step(qts);
+}
+
+static void test_copy_window_refuses_nearby(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    uint32_t gc[13] = {
+        0, 0, 0, 0, 0xffffff, 0xffffff,
+        0x2804, 0x7c001, 1, 6, 0x11, 0, 0,
+    };
+    uint32_t setup[7] = { 1, 3, 3, 0, 1, 1, 0 };
+    char *before[11];
+
+    qtest_system_reset(qts);
+    read_write_pattern(qts, 10, 20, 4, 1);
+    if (kind == 0) {
+        gc[10] = 0x10;
+    } else if (kind == 1) {
+        gc[7] ^= 0x10000;
+    } else if (kind == 2) {
+        gc[6] = 0x3804;
+    } else {
+        setup[2] = 2;
+    }
+    g_autofree char *before_digests = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = digest_at(before_digests, plane);
+    }
+    x_command(qts, TOKEN_POSITION, (uint32_t[]){ 0, 0, 1280, 1024 }, 4);
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, TOKEN_PIXEL_SETUP, setup, ARRAY_SIZE(setup));
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 11, 20, 30, 40 }, 4);
+    g_autofree char *after_digests = copy_digests(qts, 0, ARRAY_SIZE(before));
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = digest_at(after_digests, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
 static void assert_staged_planes(QTestState *s, char *const *before)
 {
     g_autofree char *dg1985 = copy_digests(s, 0, 11);
@@ -3244,6 +3385,15 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, GUINT_TO_POINTER(test),
                             test_copy_setup_refusal);
+    }
+    qtest_add_func("sn0/origin2000/kona-pixel/copy-window-banks",
+                   test_copy_window_banks);
+    for (unsigned test = 0; test < 4; test++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/copy-window-refusal/%u", test);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(test),
+                            test_copy_window_refuses_nearby);
     }
 
     qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
