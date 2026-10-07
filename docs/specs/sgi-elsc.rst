@@ -248,6 +248,25 @@ Command vocabulary
     owner round-trips. This is a service carried over the bus, not the
     bus arbitration below. No IRIX 6.5.30 binary is known to send it.
 
+``nmi``
+    An unpowered module answers ``err cmd``. Otherwise ``ok``, and one
+    second later the module's processors get a 100 ms NMI pulse;
+    another ``nmi`` inside that second starts the wait again. After the
+    pulse the controller frees the ``tas`` byte and reinitialises its
+    bus interface. No message goes to the Hubs, and module power,
+    countdowns and console selection are untouched. With no module owner
+    (the Origin 200) the controller drives its own ``nmi`` output, which
+    the machine wires to the NMI input of every processor on the node;
+    an Origin 2000 module's controller has its module-management device
+    pulse the module's NMI output, which the machine wires to every
+    processor in the module, and the lock is freed as that pulse starts
+    rather than as it ends. What sits between the midplane line and a
+    processor's NMI pin is not modelled. The firmware starts the second
+    when it answers, and so does the model: unlike a reset, the pulse
+    disturbs nothing an unread ``ok`` would protect. The Origin 2000
+    build's display message and an Origin 200 master's forwarding to
+    its slave are not modelled.
+
 ``nic <p> <s> <d>``
     One-wire identity passthrough, an interactive-monitor command, not
     boot-driven. Its wire contract takes three hex arguments (pulse,
@@ -339,8 +358,8 @@ a negative reply but not a stalled bus.
 The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 ``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
 no other effect. Some commands the controller firmware answers over I2C
-are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
-``sel`` in both builds.
+are not modelled yet and get that ``err cmd`` too: ``see`` and ``sel``
+in both builds.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
 
 Controller state across resets

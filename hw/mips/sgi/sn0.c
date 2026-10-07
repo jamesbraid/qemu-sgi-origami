@@ -25,6 +25,7 @@
 #include "exec/cpu-common.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/split-irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/mips/sgi/baseio.h"
@@ -1214,6 +1215,27 @@ static void sn0_node_create_hub(SN0NodeState *node)
         memory_region_add_subregion_overlap(
             &node->cpu_uncached[slice], map->io.carrier_base,
             sgi_hub_processor_io(&node->hub, slice), 2);
+    }
+
+    /*
+     * An Origin 200 module controller's NMI output reaches every processor
+     * of its node. The path between the midplane line and the processor's
+     * NMI pin is not modelled; the line drives the pin directly.
+     */
+    if (node->hub.elsc && node->nr_cpus) {
+        DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
+
+        qdev_prop_set_uint32(split, "num-lines", node->nr_cpus);
+        object_property_add_child(OBJECT(node), "elsc-nmi-split",
+                                  OBJECT(split));
+        qdev_realize_and_unref(split, NULL, &error_fatal);
+        qdev_connect_gpio_out_named(DEVICE(node->hub.elsc), "nmi", 0,
+                                    qdev_get_gpio_in(split, 0));
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            qdev_connect_gpio_out(split, slice,
+                                  qdev_get_gpio_in_named(
+                                      DEVICE(node->cpu[slice]), "nmi", 0));
+        }
     }
 }
 

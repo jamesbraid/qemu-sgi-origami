@@ -87,6 +87,11 @@ typedef struct SGIElscModuleOps {
     bool (*can_execute)(void *opaque, SGIElscAction action);
     /* Carry it out. Only called after can_execute() returned true. */
     void (*execute)(void *opaque, SGIElscAction action);
+    /*
+     * Pulse the module's NMI output for 100 ms; false when the module has
+     * no NMI path or a pulse is already running.
+     */
+    bool (*nmi)(void *opaque);
     /* This controller is being addressed as a target, or has finished. */
     void (*slave_active)(void *opaque, bool active);
     /* The processor that most recently sent console output. */
@@ -148,6 +153,15 @@ struct SGIElscState {
      * asks for. Another "rst" inside the wait starts it again.
      */
     QEMUTimer *rst_timer;
+    /*
+     * The one-second wait between "nmi" and its pulse, and, with no module
+     * owner to drive the pulse, the 100 ms the controller holds its own
+     * NMI output.
+     */
+    QEMUTimer *nmi_timer;
+    QEMUTimer *nmi_pulse_timer;
+    bool nmi_pulse_active;
+    qemu_irq nmi_out;
     /*
      * The next machine reset is one this controller asked for, a module
      * reset or power cycle, rather than the controller's own start: the

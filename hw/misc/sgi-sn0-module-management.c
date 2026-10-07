@@ -598,6 +598,11 @@ static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
     }
 }
 
+static bool mgmt_elsc_nmi(void *opaque)
+{
+    return sgi_sn0_module_management_pulse_nmi(opaque);
+}
+
 static void mgmt_elsc_slave_active(void *opaque, bool active)
 {
     ((SN0ModuleManagementState *)opaque)->slave_active = active;
@@ -665,6 +670,7 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .powered = mgmt_elsc_powered,
     .can_execute = mgmt_elsc_can_execute,
     .execute = mgmt_elsc_execute,
+    .nmi = mgmt_elsc_nmi,
     .slave_active = mgmt_elsc_slave_active,
     .console_owner = mgmt_elsc_console_owner,
     .console_input = mgmt_elsc_console_input,

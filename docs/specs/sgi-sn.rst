@@ -814,8 +814,11 @@ whose power returns before that power-down is carried out went through
 the whole machine. QEMU has no per-module power or reset, so a rack of
 several modules approximates both: one module powering off alone is
 logged and does not stop the others, and one module's reset or power
-cycle resets them all. The module's NMI output is not connected; the
-controller model does not implement ``nmi`` and answers it ``err cmd``.
+cycle resets them all. The module's NMI output, which the controller
+pulses for ``nmi`` and for its heartbeat watchdog, reaches the NMI input
+of every processor in the module directly. On an Origin 200 each node's
+own controller drives an NMI output that the node wires the same way to
+its processors.
 
 .. _sgi-sn-launch-metadata:
 

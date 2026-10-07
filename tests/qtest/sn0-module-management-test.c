@@ -1453,6 +1453,23 @@ static void test_module_message_expires(void)
     qtest_quit(qts);
 }
 
+/* The module controller's "nmi" pulses the module's NMI output. */
+static void test_module_nmi_reaches_output(void)
+{
+    QTestState *qts = start_module();
+
+    qtest_irq_intercept_out_named(qts, "/machine/module-management", "nmi");
+    assert_exact(qts, 2, "nmi", "ok ");
+    qtest_clock_step(qts, 990 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, 20 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_clock_step(qts, 100 * (int64_t)SCALE_MS);
+    g_assert_false(qtest_get_irq(qts, 0));
+    assert_exact(qts, 0, "ver", "ok VER 3.2 ");
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -1845,6 +1862,8 @@ int main(int argc, char **argv)
                    test_module_message_reaches_every_code);
     qtest_add_func("/sn0/o2000-module-management/message-expires",
                    test_module_message_expires);
+    qtest_add_func("/sn0/o2000-module-management/nmi-reaches-output",
+                   test_module_nmi_reaches_output);
     qtest_add_func("/sn0/o2000-module-management/module-reset",
                    test_module_reset_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-down",

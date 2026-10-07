@@ -48,6 +48,7 @@
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-link.h"
+#include "hw/core/split-irq.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-bic-board-interface.h"
 #include "hw/misc/sgi-bedrock-flash.h"
@@ -2921,6 +2922,38 @@ static void sgi_machine_module_reset(void *opaque, int n, int level)
 }
 
 /*
+ * The module controller's NMI output reaches every processor on every node
+ * of its module, straight to each processor's NMI pin; nothing between the
+ * midplane line and the pin is modelled.
+ */
+static void sgi_machine_connect_module_nmi(SGIMachineState *s,
+                                           DeviceState *module,
+                                           const unsigned int *nodes,
+                                           size_t node_count)
+{
+    DeviceState *split = qdev_new(TYPE_SPLIT_IRQ);
+    unsigned int lines = 0, line = 0, slice;
+    size_t i;
+
+    for (i = 0; i < node_count; i++) {
+        lines += s->nodes[nodes[i]]->nr_cpus;
+    }
+    qdev_prop_set_uint32(split, "num-lines", MAX(lines, 1));
+    object_property_add_child(OBJECT(module), "nmi-split", OBJECT(split));
+    qdev_realize_and_unref(split, NULL, &error_fatal);
+    qdev_connect_gpio_out_named(module, "nmi", 0, qdev_get_gpio_in(split, 0));
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[nodes[i]];
+
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            qdev_connect_gpio_out(split, line++,
+                                  qdev_get_gpio_in_named(
+                                      DEVICE(node->cpu[slice]), "nmi", 0));
+        }
+    }
+}
+
+/*
  * One shared controller per module that names one: an MSC with one
  * PCF8584 adapter reflected into each of the module's nodes. The
  * adapter array is capacity SGI_O2000_ADAPTER_COUNT (every module
@@ -2985,6 +3018,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         }
         qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
         qdev_prop_set_bit(dev, "can-reset", true);
+        qdev_prop_set_bit(dev, "can-nmi", true);
         qdev_prop_set_bit(dev, "can-power", true);
         s->module_powered[controller_index] = true;
         qdev_connect_gpio_out_named(dev, "reset", 0,
@@ -2993,6 +3027,8 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         qdev_connect_gpio_out_named(dev, "power", 0,
                                     qemu_allocate_irq(sgi_machine_module_power,
                                                       s, controller_index));
+        sgi_machine_connect_module_nmi(s, dev, module_nodes,
+                                       module_node_count);
         aux = serial_hd(sgi_machine_compute_serial_line(
             t, module_nodes[0], SN0_ELSC_CHARDEV));
         if (aux) {
