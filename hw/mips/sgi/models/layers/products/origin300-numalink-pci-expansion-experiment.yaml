@@ -19,8 +19,7 @@ layer:
       - 4
     provenance: derived
     sources:
-    - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
-      uses ports 2-5'
+    - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - '007-4365-002: two or four processors per Origin 300 base module'
   population:
     nodes: 2
@@ -29,8 +28,7 @@ layer:
     - 2
     provenance: derived
     sources:
-    - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
-      uses ports 2-5'
+    - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - '007-4365-002: two or four processors per Origin 300 base module'
   cpu_selection:
     default:
@@ -60,7 +58,7 @@ layer:
           machine_type: 1
           cpu_mode_word: 0x549aa985
           provenance: derived
-          sources: ["docs/research/origin300-flash-cpu-identity.md: PROM 6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
           notes: Origin 300 values carried into the synthetic routed configuration.
         # Synthetic public default rule; physical riser wiring is unresolved.
         option_intx_maps:
@@ -77,6 +75,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-topology
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
           slave-bedrock:
@@ -89,6 +88,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-topology
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:
@@ -101,6 +101,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
           slave-l1:
@@ -112,6 +113,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         io_boards:
@@ -121,6 +123,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/baseio.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices
             notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
               field remains explicit.
           slave-xbridge-bridge-f:
@@ -129,6 +132,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/baseio.c
+            - qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices
             notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
               field remains explicit.
         system_timekeepers:
@@ -138,8 +142,7 @@ layer:
             initial_ip27_fixture: false
             provenance: derived
             sources:
-            - openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
-            - docs/reviews/fuel-rtc-refinement-review-20261001.md
+            - openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy.
               Existing compatibility part, capacity and mapping assumptions are unchanged.
           slave-xbridge-bridge-f:
@@ -148,8 +151,7 @@ layer:
             initial_ip27_fixture: false
             provenance: derived
             sources:
-            - openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
-            - docs/reviews/fuel-rtc-refinement-review-20261001.md
+            - openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy.
               Existing compatibility part, capacity and mapping assumptions are unchanged.
         machine_name: origin300
@@ -187,13 +189,9 @@ layer:
             size: '0x0080_0000'
           provenance: derived
           sources:
-          - 'docs/library/ip35-source-map.md: measured container, payload, load address, entry address
-            and ten trampolines'
-          - 'docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact
-            payload length'
-          - 'docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT
-            address and offset'
-          - 'D-0024: bounded emulator carrier with the physical decoder left unresolved'
+          - 'firmware:ip35-prom-6.210 payload SHA-256'
+          - 'qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier'
+          - 'qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views'
           notes: 'The one-chassis product''s payload and views, carried by each chassis''s own node: both
             servers run the same stock IP35 PROM, and each node''s flash answers at its own node''s window.
             Emulator compatibility policy, as on one chassis; no fitted flash part or physical reset decoder
@@ -362,16 +360,14 @@ layer:
       kind: chassis
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - id: master-module
       name: Origin 300 compute module one
       kind: module
       provenance: vendor-document
       sources:
       - '007-4365-002 printed page 38: designate one server master and one slave; console on the master'
-      - 'boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: IP35
-        Node Board, Module 001c01 and Module 001c02'
+      - 'web:marc-openbsd-sgi-139223952727384 lines 17 to 62: IP35 Node Board, Module 001c01 and Module 001c02'
       parent: rack
     - id: slave-module
       name: Origin 300 compute module two
@@ -379,17 +375,14 @@ layer:
       provenance: vendor-document
       sources:
       - '007-4365-002 printed page 38: brick slot 02 on the slave''s L1 before connecting the servers'
-      - 'boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a cabled pair,
-        modules 001c01 and 001c02 each with a node, four processors and IO-8 at xtalk 14 and 15; the 001c02
-        L1''s cfg v lists 001c01 as the attached C'
+      - 'web:nekonomicon-17314 IRIX hinv of a cabled pair: modules 001c01 and 001c02 each with a node, four processors and IO-8 at xtalk 14 and 15; the 001c02 L1''s cfg v lists 001c01 as the attached C'
       parent: rack
     - id: router-enclosure
       name: Experimental Origin 300 NUMAlink module
       kind: module
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
       notes: One logical SN1 router and independent L1 are selected for the experiment. The physical internal
         USB hub and rack L2 transport are unsupported.
       parent: rack
@@ -409,7 +402,9 @@ layer:
       - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
       provenance: derived
       sources:
-      - 'docs/datasheets/sn1-router.md: public chip identity and reviewed revision-one inference'
+      - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/bedrock.h lines 19-20: router chip identity 0x3017'
+      - 'web:nekonomicon-16727514 lines 390-409 and 1860-1869: software-reported router Revision 1'
+      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
       notes: Chip revision one is an inference from the software-reported revision, not a measurement
         of fitted silicon. Zero chip inputs are an emulator configuration policy.
     - id: router-l1
@@ -421,7 +416,8 @@ layer:
         kind: l1
       provenance: derived
       sources:
-      - 'docs/datasheets/sn1-router.md: reviewed generic L1 type 0x52 approximation'
+      - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/ksys/l1.h line 266: router type R (0x52)'
+      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
       notes: Explicit noncompute router controller profile through its own UART, with no firmware revision selected.
       datasheet_contracts:
       - qemu:docs/specs/sgi-l1.rst#sgi-l1-role
@@ -435,7 +431,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-2
       name: NUMAlink router port 2
       kind: connector
@@ -446,7 +442,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-3
       name: NUMAlink router port 3
       kind: connector
@@ -457,7 +453,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-4
       name: NUMAlink router port 4
       kind: connector
@@ -468,7 +464,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-5
       name: NUMAlink router port 5
       kind: connector
@@ -479,7 +475,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-6
       name: NUMAlink router port 6
       kind: connector
@@ -490,7 +486,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-7
       name: NUMAlink router port 7
       kind: connector
@@ -501,7 +497,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - id: router-port-8
       name: NUMAlink router port 8
       kind: connector
@@ -512,7 +508,7 @@ layer:
         occupancy: opaque
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     buses:
     - id: master-route
       name: Experimental NUMAlink cable at router port 1
@@ -522,8 +518,7 @@ layer:
         kind: cable
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - id: slave-route
       name: Experimental NUMAlink cable at router port 6
       kind: fabric
@@ -532,8 +527,7 @@ layer:
         kind: cable
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - id: expansion-cable
       name: Experimental NUMAlink cable at router port 4
       kind: fabric
@@ -542,43 +536,42 @@ layer:
         kind: cable
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - id: router-unconnected-port-2
       name: Unconnected NUMAlink port 2
       kind: fabric
       master: router-router
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - id: router-unconnected-port-3
       name: Unconnected NUMAlink port 3
       kind: fabric
       master: router-router
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - id: router-unconnected-port-5
       name: Unconnected NUMAlink port 5
       kind: fabric
       master: router-router
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - id: router-unconnected-port-7
       name: Unconnected NUMAlink port 7
       kind: fabric
       master: router-router
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - id: router-unconnected-port-8
       name: Unconnected NUMAlink port 8
       kind: fabric
       master: router-router
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     connections:
     - component: router-router
       bus: master-route
@@ -586,76 +579,71 @@ layer:
       fabric_port: 1
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - component: master-bedrock
       bus: master-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - component: router-router
       bus: slave-route
       role: master
       fabric_port: 6
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - component: slave-bedrock
       bus: slave-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - component: router-router
       bus: expansion-cable
       role: master
       fabric_port: 4
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
-        expansion uses ports 2-5'
+      - '007-4498-002 printed pages 4, 10-11, 16 and 93-98: minimum two base modules and eight numbered ports; ports 2-5 accept PCI expansion modules'
     - component: master-link-connector
       bus: master-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - component: router-port-1
       bus: master-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
       fabric_port: 1
     - component: slave-link-connector
       bus: slave-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - component: router-port-6
       bus: slave-route
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
       fabric_port: 6
     - component: expansion-link-port
       bus: expansion-cable
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
     - component: router-port-4
       bus: expansion-cable
       role: endpoint
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered module ports; cable selection is experimental'
       fabric_port: 4
     - component: router-port-2
       bus: router-unconnected-port-2
@@ -663,32 +651,32 @@ layer:
       fabric_port: 2
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - component: router-port-3
       bus: router-unconnected-port-3
       role: endpoint
       fabric_port: 3
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - component: router-port-5
       bus: router-unconnected-port-5
       role: endpoint
       fabric_port: 5
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - component: router-port-7
       bus: router-unconnected-port-7
       role: endpoint
       fabric_port: 7
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'
     - component: router-port-8
       bus: router-unconnected-port-8
       role: endpoint
       fabric_port: 8
       provenance: derived
       sources:
-      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+      - '007-4498-002 printed pages 10-11 and 93-98: numbered ports; which ports remain empty is experimental'

@@ -466,6 +466,15 @@ web:
     obtain:
       url: https://wiki.preterhuman.net/SGI_Origin_200
       sha256: 7e952adb35a1a913c08d8671192ac3f3ff7b7d8de27c1a86d87ba84913323fb4
+  nekonomicon-16727514:
+    title: "Nekochan forum archive thread 16727514, six-chassis Origin 300 inventory"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16727514/1.html
+      sha256: 96c4a18cc4e02a69904ec1175fe200957e9a28c5be974e2586ee85af8d27a02e
   nekonomicon-16727716:
     title: "Nekochan forum archive thread 16727716, \"Origin is sick\""
     publisher: "Nekochan forum archive"
