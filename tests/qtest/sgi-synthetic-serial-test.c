@@ -32,6 +32,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qnum.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
 
@@ -103,29 +104,29 @@ static bool text_serial_marked(const char *text)
     return true;
 }
 
-static QDict *qom_get(QTestState *qts, const char *path, const char *name)
+/*
+ * The value of a property that qom-list-get listed. It skips a property
+ * whose getter fails, so a missing value is an error here, as qom-get's
+ * would have been.
+ */
+static QObject *prop_value(QDict *prop, const char *path)
 {
-    QDict *response = qtest_qmp(qts,
-        "{'execute': 'qom-get', 'arguments': {'path': %s, 'property': %s}}",
-        path, name);
-
-    g_assert(qdict_haskey(response, "return"));
-    return response;
+    if (!qdict_haskey(prop, "value")) {
+        g_error("%s property %s cannot be read", path,
+                qdict_get_str(prop, "name"));
+    }
+    return qdict_get(prop, "value");
 }
 
-static uint64_t qom_get_uint(QTestState *qts, const char *path,
-                             const char *name)
+static uint64_t prop_uint(QDict *prop, const char *path)
 {
-    g_autoptr(QDict) response = qom_get(qts, path, name);
-
-    return qdict_get_int(response, "return");
+    return qnum_get_uint(qobject_to(QNum, prop_value(prop, path)));
 }
 
 /* NULL for a string property left unset. */
-static char *qom_get_str(QTestState *qts, const char *path, const char *name)
+static char *prop_str(QDict *prop, const char *path)
 {
-    g_autoptr(QDict) response = qom_get(qts, path, name);
-    QString *value = qobject_to(QString, qdict_get(response, "return"));
+    QString *value = qobject_to(QString, prop_value(prop, path));
 
     return value ? g_strdup(qstring_get_str(value)) : NULL;
 }
@@ -151,34 +152,43 @@ static void check_text(Inventory *inv, const char *path, const char *name,
     }
 }
 
-static void check_object(QTestState *qts, Inventory *inv, const char *path,
+static QDict *find_prop(QList *properties, const char *name)
+{
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(properties, entry) {
+        QDict *prop = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (!strcmp(qdict_get_str(prop, "name"), name)) {
+            return prop;
+        }
+    }
+    return NULL;
+}
+
+static void check_object(Inventory *inv, const char *path,
                          QList *properties)
 {
-    bool serial = false, family = false, l1 = false;
+    QDict *serial = find_prop(properties, "serial");
+    QDict *family = find_prop(properties, "family");
+    QDict *identity = find_prop(properties, "identity-index");
     const QListEntry *entry;
 
     QLIST_FOREACH_ENTRY(properties, entry) {
         QDict *prop = qobject_to(QDict, qlist_entry_obj(entry));
         const char *name = qdict_get_str(prop, "name");
 
-        if (!strcmp(name, "serial") &&
-            !strcmp(qdict_get_str(prop, "type"), "uint64")) {
-            serial = true;
-        } else if (!strcmp(name, "family")) {
-            family = true;
-        } else if (!strcmp(name, "identity-index")) {
-            l1 = true;
-        } else if (!strcmp(name, "board-barcode") ||
-                   !strcmp(name, "board-record-barcode")) {
-            check_text(inv, path, name, qom_get_str(qts, path, name), true);
-        } else if (!strcmp(name, "model-serial")) {
-            check_text(inv, path, name, qom_get_str(qts, path, name), true);
+        if (!strcmp(name, "board-barcode") ||
+            !strcmp(name, "board-record-barcode") ||
+            !strcmp(name, "model-serial")) {
+            check_text(inv, path, name, prop_str(prop, path), true);
         }
     }
 
-    if (serial && family) {
-        uint64_t value = qom_get_uint(qts, path, "serial");
-        uint64_t code = qom_get_uint(qts, path, "family");
+    if (serial && family && !strcmp(qdict_get_str(serial, "type"),
+                                    "uint64")) {
+        uint64_t value = prop_uint(serial, path);
+        uint64_t code = prop_uint(family, path);
         /*
          * Keyed on the serial alone, not family and serial: the scheme
          * gives no two parts one serial, whatever their family codes.
@@ -196,12 +206,14 @@ static void check_object(QTestState *qts, Inventory *inv, const char *path,
         inv->parts++;
     }
 
-    if (l1) {
-        g_autofree char *board = qom_get_str(qts, path, "node-board-name");
+    if (identity) {
+        QDict *board_prop = find_prop(properties, "node-board-name");
+        g_autofree char *board = board_prop ? prop_str(board_prop, path)
+                                            : NULL;
 
         if (board && *board) {
-            char *key = g_strdup_printf(
-                "%" PRIu64, qom_get_uint(qts, path, "identity-index"));
+            char *key = g_strdup_printf("%" PRIu64,
+                                        prop_uint(identity, path));
             const char *other = g_hash_table_lookup(inv->l1_instances, key);
 
             if (other) {
@@ -213,23 +225,53 @@ static void check_object(QTestState *qts, Inventory *inv, const char *path,
     }
 }
 
-static void walk(QTestState *qts, Inventory *inv, const char *path)
+/*
+ * Check the whole QOM tree, one level per request. Asking for every
+ * object's properties and values at once, instead of listing an object
+ * and then reading each property it carries, costs a few round trips a
+ * machine rather than thousands: each round trip waits for the emulator
+ * to be scheduled, so the walk's time followed the host's load.
+ */
+static void walk(QTestState *qts, Inventory *inv, const char *root)
 {
-    g_autoptr(QDict) response = qtest_qmp(qts,
-        "{'execute': 'qom-list', 'arguments': {'path': %s}}", path);
-    QList *properties = qdict_get_qlist(response, "return");
-    const QListEntry *entry;
+    g_autoptr(GPtrArray) level = g_ptr_array_new_with_free_func(g_free);
 
-    check_object(qts, inv, path, properties);
-    QLIST_FOREACH_ENTRY(properties, entry) {
-        QDict *prop = qobject_to(QDict, qlist_entry_obj(entry));
+    g_ptr_array_add(level, g_strdup(root));
+    while (level->len) {
+        g_autoptr(GPtrArray) next = g_ptr_array_new_with_free_func(g_free);
+        QList *paths = qlist_new();
+        g_autoptr(QDict) response = NULL;
+        QList *results;
+        const QListEntry *entry;
+        guint i = 0;
 
-        if (g_str_has_prefix(qdict_get_str(prop, "type"), "child<")) {
-            g_autofree char *child = g_strdup_printf(
-                "%s/%s", path, qdict_get_str(prop, "name"));
-
-            walk(qts, inv, child);
+        for (guint n = 0; n < level->len; n++) {
+            qlist_append_str(paths, g_ptr_array_index(level, n));
         }
+        response = qtest_qmp(qts, "{'execute': 'qom-list-get', "
+                             "'arguments': {'paths': %p}}", paths);
+        g_assert_true(qdict_haskey(response, "return"));
+        results = qdict_get_qlist(response, "return");
+        g_assert_cmpuint(qlist_size(results), ==, level->len);
+        QLIST_FOREACH_ENTRY(results, entry) {
+            const char *path = g_ptr_array_index(level, i++);
+            QList *properties = qdict_get_qlist(
+                qobject_to(QDict, qlist_entry_obj(entry)), "properties");
+            const QListEntry *p;
+
+            check_object(inv, path, properties);
+            QLIST_FOREACH_ENTRY(properties, p) {
+                QDict *prop = qobject_to(QDict, qlist_entry_obj(p));
+
+                if (g_str_has_prefix(qdict_get_str(prop, "type"),
+                                     "child<")) {
+                    g_ptr_array_add(next, g_strdup_printf(
+                        "%s/%s", path, qdict_get_str(prop, "name")));
+                }
+            }
+        }
+        g_ptr_array_free(level, TRUE);
+        level = g_steal_pointer(&next);
     }
 }
 
