@@ -627,35 +627,33 @@ static void router_nic_check_redirects(RouterNIC *nic)
     }
 }
 
-static void router_nic_check_record(RouterNIC *nic, const char serial[10])
+/*
+ * The Router board's record, built from the record layout rather than by
+ * the model: format byte 0x01, the barcode, ROUTER-IR1's part 030-0841-002
+ * split around page 0's check value, revision G, group, capability and
+ * variety 0xff as every real Router record carries them, the name, and
+ * each page's complemented CRC16.
+ */
+static void router_nic_check_record(RouterNIC *nic, const char *barcode)
 {
-    static const uint8_t page_a_template[30] = {
-        0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
-        'R', '-', 'T', 'E', 'S', 'T',
-    };
-    static const uint8_t page_b_template[30] = {
-        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
-        0, 0, 0, 0, 0, 0,
-        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
-    };
-    uint8_t expected[2][32] = { { 0 }, { 0 } };
+    uint8_t expected[2][32];
     uint8_t actual[2][32];
 
-    memcpy(expected[0], page_a_template, sizeof(page_a_template));
-    memcpy(&expected[0][1], serial, 10);
-    memcpy(expected[1], page_b_template, sizeof(page_b_template));
+    memset(expected, ' ', sizeof(expected));
+    expected[0][0] = 0x01;
+    memcpy(&expected[0][1], barcode, strlen(barcode));
+    memcpy(&expected[0][21], "030-0841-", 9);
+    memcpy(&expected[1][3], "002", 3);
+    expected[1][6] = 'G';
+    memset(&expected[1][10], 0xff, 6);
+    memcpy(&expected[1][16], "ROUTER-IR1", 10);
     for (unsigned int page = 0; page < 2; page++) {
+        uint16_t crc = ~router_nic_crc16(0, expected[page], 30);
+
+        expected[page][30] = crc;
+        expected[page][31] = crc >> 8;
         router_nic_read_page(nic, page, actual[page]);
-        g_assert_cmpmem(actual[page], 30, expected[page], 30);
-        for (unsigned int i = 1; i < 30; i++) {
-            if ((page == 1 && i >= 10 && i < 16)) {
-                continue;
-            }
-            g_assert_true(g_ascii_isprint(actual[page][i]));
-            g_assert_cmphex(actual[page][i], !=, ':');
-            g_assert_cmphex(actual[page][i], !=, ';');
-        }
+        g_assert_cmpmem(actual[page], 32, expected[page], 32);
         g_assert_cmphex(router_nic_crc16(0, actual[page], 32), ==, 0xb001);
     }
 }
@@ -1044,8 +1042,8 @@ static void test_router_nic_inventory(void)
         { 1, 0, 4 }, { 2, 6, 6 },
         { 3, 0, 4 }, { 0, 6, 6 },
     };
-    static const char record_serials[][11] = {
-        "EMUR000000", "EMUR000001",
+    static const char *const record_serials[] = {
+        "EMUR00", "EMUR01",
     };
     static const uint8_t rom_serials[][6] = {
         { 0x00, 0x52, 0x55, 0x4d, 0x45, 0x51 },
@@ -1774,8 +1772,8 @@ static void test_cached_alias_size(void)
 
 static void test_router_nic_inventory_migration(void)
 {
-    static const char record_serials[][11] = {
-        "EMUR000000", "EMUR000001",
+    static const char *const record_serials[] = {
+        "EMUR00", "EMUR01",
     };
     QTestState *from = start_module();
     QTestState *to = qtest_init("-M origin2000 -incoming defer");

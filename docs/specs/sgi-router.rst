@@ -190,3 +190,23 @@ does not justify inserting a Router there (007-3708-002 Figures 1-4 and
 1-5). A Star Router is a carrier with no Router ASIC; a Null Router is a
 passive Hub-to-Hub link (108-0170-001 section 6.2, printed pages 6-2 to
 6-6, PDF 96-100).
+
+.. _sgi-router-board-record:
+
+Board record
+============
+
+The Router board's one-wire part, a DS2505-class family-0x0b part,
+holds the board record SGI boards share: two 32-byte pages with format
+byte 0x01, a ten-byte barcode, the part number split around page 0's
+check value, a four-byte revision, group, capability and variety bytes,
+a fourteen-byte name, and each page's complemented CRC16 in its last two
+bytes. Real Router records carry 0xff in group, capability and
+variety. The parts catalogue HMM-408-B (page 29) names 030-0841-002 as
+the Router fitted with IP27 nodes, and an owner's inventory prints that
+board as ``ROUTER-IR1`` revision G; the later 030-0841-003 boards print
+``ROUTER_IR1``. The model stores that
+record with a marked synthetic barcode, ``EMUR`` and the part's
+instance. An unmarked ``nic-serial`` gives instance 0, so two Routers
+given unmarked serials would both read ``EMUR00``; the machine always
+supplies marked ones. A ``nic-image`` file replaces it.
