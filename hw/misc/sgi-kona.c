@@ -9096,15 +9096,45 @@ typedef struct SGIKonaXPreparedPixel {
     bool write;
 } SGIKonaXPreparedPixel;
 
+/* Model the observed pair as separate colour-bank copies. */
+static int sgi_kona_x_window_copy_bank(SGIKonaState *s)
+{
+    static const uint32_t bank_gc[2][SGI_KONA_X_GC_WORDS] = {
+        { 0, 0, 0, 0, 0xffffff, 0xffffff,
+          0x2804, 0x7c001, 1, 6, 0x11, 0, 0 },
+        { 0, 0, 0, 0, 0xffffff, 0xffffff,
+          0x3804, 0xbc002, 1, 6, 0x11, 0, 0 },
+    };
+    const uint32_t *setup = s->x_pixel_setup;
+    const uint32_t *position = s->x_position;
+
+    if (setup[SGI_KONA_X_SETUP_MODE] != 1 ||
+        setup[SGI_KONA_X_SETUP_SHIFT] ||
+        setup[SGI_KONA_X_SETUP_PAD] ||
+        !setup[SGI_KONA_X_SETUP_WIDTH] ||
+        !setup[SGI_KONA_X_SETUP_HEIGHT] ||
+        position[0] || position[1] ||
+        position[2] != SGI_KONA_FB_WIDTH ||
+        position[3] != SGI_KONA_FB_HEIGHT) {
+        return -1;
+    }
+    for (unsigned bank = 0; bank < ARRAY_SIZE(bank_gc); bank++) {
+        if (!memcmp(s->x_gc, bank_gc[bank], sizeof(bank_gc[bank]))) {
+            return bank;
+        }
+    }
+    return -1;
+}
+
 /*
- * Ordinary copies use bank zero under the reviewed X bank approximation.
- * Paired clipping bounds staging to the screen. Preparing every result
- * before stores preserves both original source and destination on overlap.
+ * Ordinary copies use bank zero and the loaded clip. The exact window-copy
+ * pair selects a bank and uses screen bounds. Preparing every result before
+ * stores preserves the original source on overlap.
  */
 static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
 {
-    const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
-    const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
+    const SGIPlane *front;
+    const SGIPlane *tag;
     const uint32_t *setup = s->x_pixel_setup;
     int64_t sx = (int32_t)args[0], sy = (int32_t)args[1];
     int64_t dx = (int32_t)args[2], dy = (int32_t)args[3];
@@ -9113,33 +9143,51 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     int64_t i0, i1, j0, j1;
     SGIKonaRect clip;
     SGIXGC gc;
-    bool rgb;
+    bool rgb = false;
+    bool window_copy = setup[SGI_KONA_X_SETUP_SRC_PACK] == 3 &&
+                       setup[SGI_KONA_X_SETUP_DST_PACK] == 3;
+    int bank = 0;
     uint8_t target_tag;
     size_t width, height;
     g_autofree SGIKonaXPreparedPixel *prepared = NULL;
 
     trace_sgi_kona_x_pixel_copy(sx, sy, dx, dy, w, h);
-    if (!sgi_kona_x_decode(s, &gc)) {
-        return;
+    if (window_copy) {
+        bank = sgi_kona_x_window_copy_bank(s);
+        if (bank < 0) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: unsupported X window copy 3,3 GC/setup\n");
+            return;
+        }
+    } else {
+        if (!sgi_kona_x_decode(s, &gc)) {
+            return;
+        }
+        rgb = gc.target == SGI_X_GC_MAIN_RGB8;
+        if ((!rgb && gc.target != SGI_X_GC_MAIN_INDEX16) ||
+            gc.raw[10] != (rgb ? 8 : 5) ||
+            setup[SGI_KONA_X_SETUP_MODE] != 1 ||
+            setup[SGI_KONA_X_SETUP_SRC_PACK] != (rgb ? 2 : 1) ||
+            setup[SGI_KONA_X_SETUP_DST_PACK] != (rgb ? 2 : 1) ||
+            setup[SGI_KONA_X_SETUP_SHIFT] || setup[SGI_KONA_X_SETUP_PAD]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported X copy target %u "
+                          "setup %08x %08x %08x %08x %08x %08x %08x\n",
+                          gc.target, setup[0], setup[1], setup[2], setup[3],
+                          setup[4], setup[5], setup[6]);
+            return;
+        }
+        if (sgi_x_gc_noop(&gc)) {
+            return;
+        }
     }
-    rgb = gc.target == SGI_X_GC_MAIN_RGB8;
-    if ((!rgb && gc.target != SGI_X_GC_MAIN_INDEX16) ||
-        gc.raw[10] != (rgb ? 8 : 5) ||
-        setup[SGI_KONA_X_SETUP_MODE] != 1 ||
-        setup[SGI_KONA_X_SETUP_SRC_PACK] != (rgb ? 2 : 1) ||
-        setup[SGI_KONA_X_SETUP_DST_PACK] != (rgb ? 2 : 1) ||
-        setup[SGI_KONA_X_SETUP_SHIFT] || setup[SGI_KONA_X_SETUP_PAD]) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported X copy target %u "
-                      "setup %08x %08x %08x %08x %08x %08x %08x\n",
-                      gc.target, setup[0], setup[1], setup[2], setup[3],
-                      setup[4], setup[5], setup[6]);
-        return;
-    }
-    if (sgi_x_gc_noop(&gc)) {
-        return;
-    }
+    front = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
+    tag = sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank));
     target_tag = rgb ? SGI_KONA_TAG_DIRECT : SGI_KONA_TAG_X_INDEX16;
-    sgi_kona_x_clip(s, &clip);
+    if (window_copy) {
+        clip = (SGIKonaRect) { 0, 0, SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT };
+    } else {
+        sgi_kona_x_clip(s, &clip);
+    }
     i0 = MAX(MAX(0, -sx), clip.x1 - dx);
     i1 = MIN(MIN(w, SGI_KONA_FB_WIDTH - sx), clip.x2 - dx);
     j0 = MAX(MAX(0, -sy), clip.y1 - dy);
@@ -9168,23 +9216,25 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
             SGIKonaXPreparedPixel *pixel = &prepared[row * width + col];
             uint32_t source, dest, source_tag, dest_tag;
 
-            if (!sgi_kona_x_clip_contains(s, dx + i, dy + j)) {
+            if (!window_copy && !sgi_kona_x_clip_contains(s, dx + i, dy + j)) {
                 continue;
             }
             source = sgi_plane_load(&s->mem, front, sx + i, src_row);
             source_tag = sgi_plane_load(&s->mem, tag, sx + i, src_row);
             dest = sgi_plane_load(&s->mem, front, dx + i, dst_row);
             dest_tag = sgi_plane_load(&s->mem, tag, dx + i, dst_row);
-            if (source_tag != target_tag || source > gc.width_mask ||
-                (sgi_x_gc_needs_destination(&gc) &&
-                 (dest_tag != target_tag || dest > gc.width_mask))) {
+            if (!window_copy &&
+                (source_tag != target_tag || source > gc.width_mask ||
+                 (sgi_x_gc_needs_destination(&gc) &&
+                  (dest_tag != target_tag || dest > gc.width_mask)))) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: X copy incompatible "
                               "pixel source (%" PRId64 ",%" PRId64 ") "
                               "destination (%" PRId64 ",%" PRId64 ")\n",
                               sx + i, sy + j, dx + i, dy + j);
                 return;
             }
-            pixel->value = sgi_x_gc_apply(&gc, source, dest);
+            pixel->value = window_copy ? source :
+                           sgi_x_gc_apply(&gc, source, dest);
             pixel->tag = source_tag;
             pixel->write = pixel->value != dest || pixel->tag != dest_tag;
         }
