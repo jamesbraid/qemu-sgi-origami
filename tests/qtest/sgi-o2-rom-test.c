@@ -2,6 +2,7 @@
 /* Synthetic MACE system ROM decode and diagnostic image selections. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "qobject/qdict.h"
 
 #define ROM_BASE UINT64_C(0x1fc00000)
@@ -168,6 +169,107 @@ static void test_write_protection(void)
     g_assert_nonnull(strstr(log, "unsupported multi-byte flash write"));
 }
 
+static void expect_startup_error(const char *device, const char *message)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-accel", "qtest",
+        "-cpu", "R10000", "-S", "-device", device,
+        "-display", "none", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    if (!strstr(error_output, message)) {
+        g_test_message("QEMU rejection: %s", error_output);
+    }
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+static void test_invalid_configuration(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *too_large_path = NULL;
+    g_free(make_image(512 * 1024, "config.bin", &path));
+    g_free(make_image(512 * 1024 + 1, "oversize.bin", &too_large_path));
+    g_autofree char *small = g_strdup_printf(
+        "sgi-o2-rom,id=rom,flash-size=262144,image=%s,image-offset=0,pad-byte=255",
+        path);
+    g_autofree char *missing_offset = g_strdup_printf(
+        "sgi-o2-rom,id=rom,flash-size=524288,image=%s,pad-byte=255", path);
+    g_autofree char *missing_pad = g_strdup_printf(
+        "sgi-o2-rom,id=rom,flash-size=524288,image=%s,image-offset=0", path);
+    g_autofree char *bad_offset = g_strdup_printf(
+        "sgi-o2-rom,id=rom,flash-size=524288,image=%s,image-offset=524289,"
+        "pad-byte=255", path);
+    g_autofree char *oversize = g_strdup_printf(
+        "sgi-o2-rom,id=rom,flash-size=524288,image=%s,image-offset=0,pad-byte=255",
+        too_large_path);
+
+    expect_startup_error("sgi-o2-rom,id=rom", "flash-size");
+    expect_startup_error(small, "flash-size");
+    expect_startup_error("sgi-o2-rom,id=rom,flash-size=524288,image-offset=0,"
+                         "pad-byte=255", "requires image");
+    expect_startup_error(missing_offset, "image-offset");
+    expect_startup_error(missing_pad, "pad-byte");
+    expect_startup_error(bad_offset, "image-offset exceeds flash-size");
+    expect_startup_error(oversize, "does not fit");
+}
+
+static void test_migration(void)
+{
+    g_autofree char *source_path = NULL;
+    g_autofree char *destination_path = NULL;
+    g_autofree char *socket =
+        g_build_filename(test_dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree uint8_t *source =
+        make_image(512 * 1024, "source.bin", &source_path);
+    g_autofree uint8_t *destination =
+        make_image(512 * 1024, "destination.bin", &destination_path);
+    QTestState *from, *to;
+    const uint32_t points[] = { 0, 0x12345, 512 * 1024 - 1 };
+
+    destination[0] ^= 0xff;
+    destination[0x12345] ^= 0xff;
+    destination[512 * 1024 - 1] ^= 0xff;
+    g_assert_true(g_file_set_contents(destination_path,
+                                      (const char *)destination,
+                                      512 * 1024, NULL));
+    from = start(512 * 1024, source_path, 0, 0xff, "");
+    to = start(512 * 1024, destination_path, 0, 0xff,
+               "-incoming defer");
+    g_assert_cmphex(qtest_readb(to, ROM_BASE), ==, destination[0]);
+    g_assert_false(write_enabled(to));
+    qtest_qmp_assert_success(from,
+        "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/rom',"
+        "'property':'write-enable','value':true}}");
+    g_assert_true(write_enabled(from));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_true(write_enabled(to));
+    for (unsigned alias = 0; alias < 8; alias++) {
+        for (unsigned i = 0; i < G_N_ELEMENTS(points); i++) {
+            uint32_t offset = points[i];
+
+            g_assert_cmphex(qtest_readb(to, ROM_BASE +
+                                        alias * 512 * 1024 + offset), ==,
+                            source[offset]);
+        }
+    }
+    qtest_system_reset(to);
+    g_assert_false(write_enabled(to));
+    g_assert_cmphex(qtest_readb(to, ROM_BASE), ==, source[0]);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+}
+
 int main(int argc, char **argv)
 {
     int result;
@@ -178,6 +280,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/o2-rom/aliases", test_aliases);
     g_test_add_func("/sgi/o2-rom/placements", test_placements);
     g_test_add_func("/sgi/o2-rom/write-protection", test_write_protection);
+    g_test_add_func("/sgi/o2-rom/invalid-configuration",
+                    test_invalid_configuration);
+    g_test_add_func("/sgi/o2-rom/migration", test_migration);
     result = g_test_run();
     g_free(test_dir);
     return result;
