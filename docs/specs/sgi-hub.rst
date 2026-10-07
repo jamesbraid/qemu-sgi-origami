@@ -328,15 +328,12 @@ record carries them. The one-processor 180 MHz, 1 MiB module is
 one is ``PIMM_2XT5_1MB``, part 013-1896-001 revision D. IRIX formats
 page data only when page A's first byte is 0x01 and otherwise
 reports it missing, which is what a population with no known record
-still shows. Origin 2000 compositions attach a synthetic two-page
-record to this responder so the stock PROM can identify each node:
-page A starts with format byte 0x01, carries a ten-byte synthetic
-serial and a padded part string; page B carries the continuation,
-revision, zeroed binary fields and ``IP27`` in its board-name field.
-Each page stores the complemented CRC16 of its first 30 bytes in the
-last two bytes, low byte first. These values are emulator-owned
-fixtures, not copied manufacturing data. The programming commands
-are not answered.
+still shows. An Origin 2000 or Onyx2 node's part holds its IP27 node
+board's record in the same layout: ``IP27``, part 030-0733-003
+revision G, a marked synthetic barcode (``EMUN`` and the part's
+instance), and group, capability and variety bytes of 0xff. An IP27
+node carries no separate processor-module record. The programming
+commands are not answered.
 
 The PCF8584 is mapped as a subregion of the Hub's own register region
 at higher priority, so both of the machine's mappings of the window
