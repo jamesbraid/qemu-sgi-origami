@@ -11854,7 +11854,6 @@ static const VMStateDescription vmstate_sgi_kona_gl_unpack = {
     },
 };
 
-/* Native errors do not belong to the older pipe or attribute layouts. */
 static const VMStateDescription vmstate_sgi_kona_gl_error = {
     .name = TYPE_SGI_KONA "/gl-error",
     .version_id = 1,
