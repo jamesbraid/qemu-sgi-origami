@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/module.h"
 #include "ui/egl-helpers.h"
 #include "ui/sgi-renderer.h"
+#include "hw/display/sgi/rasterizer.h"
 
 int display_opengl;
 
@@ -476,6 +478,257 @@ static void test_headless_display_accepts_ui_context(void)
     sgi_renderer_free(renderer);
 }
 
+typedef struct NativeDrawFixture {
+    uint32_t colour[4][4][3];
+    unsigned snapshots, commits;
+    bool fail_snapshot, fail_commit;
+} NativeDrawFixture;
+
+static SGIRenderResult native_draw_snapshot(void *opaque,
+                                             const SGIRenderResource *resource,
+                                             uint32_t slice,
+                                             const SGIRenderRect *rect,
+                                             uint32_t *slots,
+                                             size_t stride_slots,
+                                             size_t capacity_slots,
+                                             Error **errp)
+{
+    NativeDrawFixture *f = opaque;
+
+    f->snapshots++;
+    if (f->fail_snapshot) {
+        error_setg(errp, "native snapshot failed");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                slots[(y - rect->y0) * stride_slots +
+                      (x - rect->x0) * 3 + c] = f->colour[y][x][c];
+            }
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult native_draw_commit(void *opaque,
+                                                const SGIRenderResource *res,
+                                                uint32_t slice,
+                                                const SGIRenderRect *rect,
+                                                const uint32_t *slots,
+                                                size_t stride_slots,
+                                                size_t capacity_slots,
+                                                Error **errp)
+{
+    NativeDrawFixture *f = opaque;
+
+    f->commits++;
+    if (f->fail_commit) {
+        for (unsigned c = 0; c < 3; c++) {
+            f->colour[rect->y0][rect->x0][c] = slots[c];
+        }
+        error_setg(errp, "native commit failed after one pixel");
+        return (SGIRenderCommitResult) {
+            .status = SGI_RENDER_RESOURCE_ERROR,
+            .complete_pixels = 1,
+            .extent_known = true,
+        };
+    }
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                f->colour[y][x][c] =
+                    slots[(y - rect->y0) * stride_slots +
+                          (x - rect->x0) * 3 + c];
+            }
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = 16,
+        .extent_known = true,
+    };
+}
+
+static void test_decoded_triangle_native_commit(void)
+{
+    static const float xy[3][2] = {
+        { -1, -1 }, { 1, -1 }, { -1, 1 },
+    };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = 4, .height = 4, .depth = 1,
+        .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 12 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 12 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
+        },
+    };
+    const SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit = native_draw_commit,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_SMOOTH,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+            .front = 7,
+        },
+        .viewport = { 0, 0, 4, 4 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", TRUE);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", TRUE);
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                f.colour[y][x][c] = 17;
+            }
+        }
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 4095);
+    g_assert_cmpuint(f.colour[0][0][1], ==, 0);
+    g_assert_cmpuint(f.colour[0][0][2], ==, 0);
+    g_assert_cmpuint(f.colour[3][3][0], ==, 17);
+    g_assert_cmpuint(f.colour[3][3][1], ==, 17);
+    g_assert_cmpuint(f.colour[3][3][2], ==, 17);
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                f.colour[y][x][c] = 17;
+            }
+        }
+    }
+    state.modelview[12] = 0.5f;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 17);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 4095);
+
+    f.fail_snapshot = true;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 3);
+    g_assert_cmpuint(f.commits, ==, 2);
+    f.fail_snapshot = false;
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            for (unsigned c = 0; c < 3; c++) {
+                f.colour[y][x][c] = 17;
+            }
+        }
+    }
+    state.modelview[12] = 0;
+    f.fail_commit = true;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 4095);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 17);
+
+    state.blend = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
+    state.blend = 0;
+    state.drawable.clip.n = 0;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
+    state.drawable.bound = false;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
+    state.drawable.bound = true;
+    state.drawable.clip.n = 1;
+    f.fail_commit = false;
+    vertices[0][SGI_GL_V_COLOR] = NAN;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
+    vertices[0][SGI_GL_V_COLOR] = 1;
+    state.dither = 1;
+    rules.dither = SGI_DITHER_BAYER4_TOP_ROWS;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -486,6 +739,8 @@ int main(int argc, char **argv)
                     test_two_headless_renderers);
     g_test_add_func("/sgi-renderer-gl/headless-display-ui-context",
                     test_headless_display_accepts_ui_context);
+    g_test_add_func("/sgi-renderer-gl/decoded-triangle-native-commit",
+                    test_decoded_triangle_native_commit);
     g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);

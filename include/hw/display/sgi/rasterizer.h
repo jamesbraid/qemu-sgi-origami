@@ -419,6 +419,12 @@ SGIRenderCommitResult sgi_render_resource_commit(
     const SGIRasterTarget *target, const SGIRenderResource *resource,
     uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
     size_t stride_slots, size_t capacity_slots, Error **errp);
+typedef struct SGIRenderer SGIRenderer;
+
+SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
+                                        const SGIRasterRules *rules,
+                                        const SGIRasterTarget *target,
+                                        const SGIGLDraw *draw, Error **errp);
 
 /*
  * Rasterize a draw into the target, under the draw's state and the head's
