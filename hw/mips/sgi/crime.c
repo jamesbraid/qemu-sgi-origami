@@ -18,6 +18,7 @@
 
 #define CRIME_REGISTER_SIZE 0x2000000
 #define CRIME_FITTED_RAM (64 * MiB)
+#define CRIME_OPTIONAL_RAM (128 * MiB)
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
 #define CRIME_MACE_MASK 0xffffU
@@ -189,6 +190,7 @@ static const VMStateDescription vmstate_crime = {
 static void crime_realize(DeviceState *dev, Error **errp)
 {
     SGICrimeState *s = SGI_CRIME(dev);
+    uint64_t ram_size;
 
     if (s->interface_revision != 1) {
         error_setg(errp, "sgi-crime supports only interface revision 1");
@@ -197,10 +199,12 @@ static void crime_realize(DeviceState *dev, Error **errp)
     if (!s->ram) {
         return;
     }
+    ram_size = memory_region_size(s->ram);
     if (!memory_region_is_ram(s->ram) ||
-        memory_region_size(s->ram) != CRIME_FITTED_RAM) {
-        error_setg(errp, "sgi-crime requires a 64 MiB RAM region for the "
-                   "synthetic fit");
+        (ram_size != CRIME_FITTED_RAM &&
+         ram_size != CRIME_OPTIONAL_RAM)) {
+        error_setg(errp, "sgi-crime requires a 64 or 128 MiB RAM region "
+                   "for the synthetic fit");
         return;
     }
     if (memory_region_is_rom(s->ram)) {
@@ -215,13 +219,13 @@ static void crime_realize(DeviceState *dev, Error **errp)
     if (!s->ram_aliases_initialized) {
         memory_region_init_alias(&s->low_ram, OBJECT(dev),
                                  "sgi-crime.low-ram", s->ram, 0,
-                                 CRIME_FITTED_RAM);
+                                 ram_size);
         memory_region_init_alias(&s->full_ram, OBJECT(dev),
                                  "sgi-crime.full-ram", s->ram, 0,
-                                 CRIME_FITTED_RAM);
+                                 ram_size);
         memory_region_init_alias(&s->no_ecc_ram, OBJECT(dev),
                                  "sgi-crime.no-ecc-ram", s->ram, 0,
-                                 CRIME_FITTED_RAM);
+                                 ram_size);
         s->alias_target = s->ram;
         s->ram_aliases_initialized = true;
     }
