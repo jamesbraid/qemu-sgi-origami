@@ -243,6 +243,18 @@ static void fail_colour_read_pixels(GLint x, GLint y, GLsizei width,
                       type, pixels);
 }
 
+static unsigned clear_readback_count;
+
+static void fail_second_clear_read_pixels(GLint x, GLint y, GLsizei width,
+                                           GLsizei height, GLenum format,
+                                           GLenum type, void *pixels)
+{
+    clear_readback_count++;
+    saved_read_pixels(x, y, width, height,
+                      clear_readback_count == 2 ? GL_NONE : format,
+                      type, pixels);
+}
+
 static EGLBoolean fail_unbind(EGLDisplay display, EGLSurface draw,
                                EGLSurface read, EGLContext context)
 {
@@ -1115,7 +1127,7 @@ static void test_frame_coverage_capacity(void)
 typedef struct NativeClearFixture {
     uint32_t colour[2][4][4][4];
     unsigned snapshots, commits;
-    bool fail_snapshot;
+    uint32_t fail_snapshot_target;
     uint32_t fail_commit_target;
 } NativeClearFixture;
 
@@ -1133,7 +1145,7 @@ static SGIRenderResult native_clear_snapshot(void *opaque,
 
     g_assert_cmpuint(bank, <, 2);
     f->snapshots++;
-    if (f->fail_snapshot) {
+    if (resource->target == f->fail_snapshot_target) {
         error_setg(errp, "native clear snapshot failed");
         return SGI_RENDER_RESOURCE_ERROR;
     }
@@ -1219,6 +1231,7 @@ static void test_decoded_clear_native_commit(void)
                              SGI_GL_COLOUR_MASK_BLUE,
     };
     SGIRenderer *renderer;
+    SGIRenderResult result;
     Error *err = NULL;
 
     mesa_test_env_set(&mesa_env);
@@ -1318,16 +1331,27 @@ static void test_decoded_clear_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 2);
 
     op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
-    f.fail_snapshot = true;
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                for (unsigned c = 0; c < 4; c++) {
+                    f.colour[bank][y][x][c] = 17;
+                }
+            }
+        }
+    }
+    f.fail_snapshot_target = 8;
     g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
                                                &op, &err), ==,
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
     error_free(err);
     err = NULL;
-    g_assert_cmpuint(f.snapshots, ==, 3);
+    g_assert_cmpuint(f.snapshots, ==, 4);
     g_assert_cmpuint(f.commits, ==, 2);
-    f.fail_snapshot = false;
+    g_assert_cmpuint(f.colour[0][0][0][0], ==, 17);
+    g_assert_cmpuint(f.colour[1][0][0][0], ==, 17);
+    f.fail_snapshot_target = 0;
     for (unsigned bank = 0; bank < 2; bank++) {
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
@@ -1343,12 +1367,36 @@ static void test_decoded_clear_native_commit(void)
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
     error_free(err);
-    g_assert_cmpuint(f.snapshots, ==, 5);
+    g_assert_cmpuint(f.snapshots, ==, 6);
     g_assert_cmpuint(f.commits, ==, 4);
     g_assert_cmpuint(f.colour[0][0][0][0], ==, 4095);
     g_assert_cmpuint(f.colour[0][3][3][0], ==, 4095);
     g_assert_cmpuint(f.colour[1][0][0][0], ==, 4095);
     g_assert_cmpuint(f.colour[1][0][1][0], ==, 17);
+    err = NULL;
+    f.fail_commit_target = 0;
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                for (unsigned c = 0; c < 4; c++) {
+                    f.colour[bank][y][x][c] = 17;
+                }
+            }
+        }
+    }
+    clear_readback_count = 0;
+    saved_read_pixels = epoxy_glReadPixels;
+    epoxy_glReadPixels = fail_second_clear_read_pixels;
+    result = sgi_render_raster_checked(renderer, &rules, &target, &op, &err);
+    epoxy_glReadPixels = saved_read_pixels;
+    g_assert_cmpint(result, ==, SGI_RENDER_HOST_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(clear_readback_count, ==, 2);
+    g_assert_cmpuint(f.snapshots, ==, 8);
+    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.colour[0][0][0][0], ==, 17);
+    g_assert_cmpuint(f.colour[1][0][0][0], ==, 17);
     sgi_renderer_free(renderer);
 }
 
