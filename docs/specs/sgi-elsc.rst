@@ -90,7 +90,10 @@ Command vocabulary
 
 ``rsw``
     The front-panel DIP switches, reported active-low, as
-    ``ok <hex>`` with no leading zero.
+    ``ok <hex>`` with no leading zero. In the Origin 200 build bit 0x04
+    of that byte is the controller's role, set on a master and clear on
+    a slave; the model takes the role from the topology, so the
+    ``elsc-dip-switches`` value of that bit has no effect there.
 
 ``get``
     The console-input poll. The response payload begins with a fixed

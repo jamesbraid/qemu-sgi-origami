@@ -266,6 +266,12 @@ static void test_read_switches_command(const void *data)
     g_assert_cmpuint(resp[0], ==, 5);
     assert_response_begins(resp, "ok fe");
     qtest_quit(qts);
+
+    /* Bit 0x04 is the role, and a lone tower's controller is the master. */
+    qts = qtest_init("-M origin200,elsc-dip-switches=4");
+    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
+    assert_response_begins(resp, "ok ff");
+    qtest_quit(qts);
 }
 
 /*
@@ -308,11 +314,12 @@ static void test_read_switches_roundtrip(const void *data)
     /* Node 1's own Hub must know its number before anything can name it. */
     sn0_program_nasid(qts, 1);
 
+    /* The slave tower's controller reads the role bit 0x04 clear. */
     resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
                                 resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    assert_response_begins(resp, "ok ef");
+    assert_response_begins(resp, "ok eb");
 
     qtest_quit(qts);
 }
