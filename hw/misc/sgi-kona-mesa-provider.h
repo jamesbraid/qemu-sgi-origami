@@ -52,7 +52,7 @@ bool sgi_kona_mesa_bind_texture(SGIKonaMesaProvider *provider,
                                 Error **errp);
 void sgi_kona_mesa_unbind_texture(SGIKonaMesaProvider *provider);
 
-/* Call after native writes, uploads, subimages, rebinding, and deletion. */
+/* Call after native writes, texture uploads, subimages, and deletion. */
 void sgi_kona_mesa_touch_plane(SGIKonaMesaProvider *provider,
                                uint32_t plane_id, uint32_t y0, uint32_t y1);
 void sgi_kona_mesa_touch_texture(SGIKonaMesaProvider *provider,

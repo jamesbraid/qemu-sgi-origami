@@ -268,6 +268,7 @@ static void test_texture_view_and_invalidation(void)
     uint64_t before;
     uint64_t view_id;
     uint64_t backing_id;
+    uint64_t view_generation;
     Error *err = NULL;
     SGIRenderCommitResult result;
 
@@ -318,6 +319,11 @@ static void test_texture_view_and_invalidation(void)
     target = fixture_target(&f);
     g_assert_cmpuint(target.resources[8].backing_id, ==, backing_id);
     g_assert_cmpuint(target.resources[8].view_id, !=, view_id);
+    view_generation = target.resources[8].view_generation;
+    g_assert_true(sgi_kona_mesa_bind_texture(f.provider, &view, &err));
+    target = fixture_target(&f);
+    g_assert_cmpuint(target.resources[8].view_generation, >,
+                     view_generation);
     before = target.resources[8].backing_generation;
     sgi_kona_mesa_touch_texture(f.provider, 41, 2);
     target = fixture_target(&f);
