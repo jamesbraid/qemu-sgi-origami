@@ -237,8 +237,7 @@ bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
         (open && dst->polygon.enabled != src->polygon.enabled) ||
         (!dst->polygon.enabled &&
          (src->polygon.count || src->polygon.failed ||
-          (sgi_gl_polygon_owned(src) &&
-           (src->polygon.enabled || !dst->standalone_stipple))))) {
+          (src->polygon.enabled && sgi_gl_polygon_owned(src))))) {
         return false;
     }
     copy = *src; /* Ownership is replaced before the copy becomes visible. */
@@ -3317,9 +3316,8 @@ static bool sgi_gl_context_post_load(void *opaque, int version_id,
     }
     valid = sgi_gl_context_valid(c, errp);
     if (valid && c->draw_error_loaded &&
-        ((!c->standalone_stipple && !c->polygon.enabled) || c->polygon.loaded ||
-         c->polygon.error != SGI_GL_OUT_OF_MEMORY)) {
-        error_setg(errp, "sgi-gl: incompatible standalone draw error");
+        (c->polygon.loaded || c->polygon.error != SGI_GL_OUT_OF_MEMORY)) {
+        error_setg(errp, "sgi-gl: incompatible draw error");
         valid = false;
     }
     c->draw_error_loaded = false;
