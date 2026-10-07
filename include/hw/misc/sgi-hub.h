@@ -8,7 +8,6 @@
 #define HW_MISC_SGI_HUB_H
 
 #include "qemu/units.h"
-#include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/core/clock.h"
 #include "hw/core/cpu.h"
@@ -35,11 +34,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
  * keeps its reset pattern.
  */
 #define SGI_HUB_SLOT_BITS_UNDRIVEN 0xff
-
-typedef struct SGIHubModuleIdentity {
-    uint8_t rom[8];
-    uint8_t page[2][DS2502_PAGE_SIZE];
-} SGIHubModuleIdentity;
 
 /*
  * The whole -serial assignment in one place: an index collision between two
@@ -506,9 +500,13 @@ struct SGIHubState {
      * record is known; otherwise the part is left unprogrammed.
      */
     OneWireBus *onewire_bus;
+    /*
+     * The module's midplane net, when this Hub's slot is wired to it: the
+     * module controller owns the parts on it, and this Hub's line reaches
+     * them as well as its own.
+     */
+    OneWireBus *midplane_bus;
     uint64_t onewire_serial;
-    SGIHubModuleIdentity module_identity;
-    bool has_module_identity;
     uint8_t board_record[SGI_BOARD_RECORD_SIZE];
     bool has_board_record;
     bool onewire_level;    /* what the wire sampled in the slot underway */
@@ -542,9 +540,13 @@ bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
 MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
-bool sgi_hub_attach_module_identity(SGIHubState *s,
-                                    const SGIHubModuleIdentity *identity,
-                                    Error **errp);
+/*
+ * Wire this Hub's one-wire line to a module's midplane net, whose parts the
+ * module controller owns: an Origin 2000 module's n1 node reaches its
+ * MODULEID and midplane parts this way.
+ */
+bool sgi_hub_attach_midplane_onewire(SGIHubState *s, OneWireBus *bus,
+                                     Error **errp);
 /*
  * Store the node's board record in the Hub's family-0x0b part: the fitted
  * PIMM's on an Origin 200, the IP27 node board's on an Origin 2000. Must

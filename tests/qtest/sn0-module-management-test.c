@@ -334,16 +334,21 @@ static uint8_t onewire_read_byte(QTestState *qts, unsigned node)
     return value;
 }
 
-static void onewire_select(QTestState *qts, unsigned node)
+/* Address one part: the midplane line carries more than one. */
+static void onewire_select(QTestState *qts, unsigned node, const uint8_t rom[8])
 {
     g_assert_true(onewire_reset(qts, node));
-    onewire_write_byte(qts, node, 0xcc);
+    onewire_write_byte(qts, node, 0x55);
+    for (unsigned i = 0; i < 8; i++) {
+        onewire_write_byte(qts, node, rom[i]);
+    }
 }
 
-static void onewire_start_read(QTestState *qts, unsigned node, uint8_t command,
+static void onewire_start_read(QTestState *qts, unsigned node,
+                               const uint8_t rom[8], uint8_t command,
                                uint16_t address)
 {
-    onewire_select(qts, node);
+    onewire_select(qts, node, rom);
     onewire_write_byte(qts, node, command);
     onewire_write_byte(qts, node, address);
     onewire_write_byte(qts, node, address >> 8);
@@ -1331,39 +1336,110 @@ static void test_origin2000_display(void)
     qtest_quit(qts);
 }
 
+/* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
-    0x09, 0x01, 0x4d, 0x55, 0x4d, 0x45, 0x51, 0x67,
+    0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
+};
+
+/* Its 8P12_MPLN midplane part, letter L at index 0. */
+static const uint8_t midplane_rom[8] = {
+    0x0b, 0x00, 0x4c, 0x55, 0x4d, 0x45, 0x51, 0xe7,
 };
 
 static const uint8_t module_pages[64] = {
     0x01, 0x45, 0x4d, 0x55, 0x4d, 0x30, 0x30, 0x30,
-    0x30, 0x30, 0x31, 0x53, 0x47, 0x49, 0x2d, 0x4f,
-    0x32, 0x30, 0x30, 0x30, 0x2d, 0x4d, 0x4f, 0x44,
-    0x55, 0x4c, 0x45, 0x2d, 0x53, 0x4e, 0xca, 0x3d,
-    0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x30, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x8b, 0x40,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x4b, 0x59,
 };
 
-static void read_rom(QTestState *qts, unsigned node, uint8_t rom[8])
+static const uint8_t midplane_pages[64] = {
+    0x01, 0x45, 0x4d, 0x55, 0x4c, 0x30, 0x30, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x30, 0x37, 0x36, 0x32, 0x2d, 0xd8, 0x16,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x36, 0x48, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x38, 0x50, 0x31, 0x32, 0x5f, 0x4d, 0x50, 0x4c,
+    0x4e, 0x20, 0x20, 0x20, 0x20, 0x20, 0x78, 0x3e,
+};
+
+/* Every ROM on the controller's midplane line, lowest first. */
+static unsigned search_all(QTestState *qts, unsigned node,
+                           uint8_t roms[][8], unsigned max)
 {
-    g_assert_true(onewire_reset(qts, node));
-    onewire_write_byte(qts, node, 0x33);
-    for (unsigned i = 0; i < 8; i++) {
-        rom[i] = onewire_read_byte(qts, node);
-    }
+    uint8_t rom[8] = { 0 };
+    int last_conflict = -1;
+    unsigned found = 0;
+
+    do {
+        int conflict = -1;
+
+        g_assert_true(onewire_reset(qts, node));
+        onewire_write_byte(qts, node, 0xf0);
+        for (int i = 0; i < 64; i++) {
+            bool bit = onewire_read_bit(qts, node);
+            bool complement = onewire_read_bit(qts, node);
+            bool direction;
+
+            g_assert_false(bit && complement);
+            if (bit != complement) {
+                direction = bit;
+            } else {
+                direction = i < last_conflict ?
+                            (rom[i / 8] >> (i % 8)) & 1 : i == last_conflict;
+                if (!direction) {
+                    conflict = i;
+                }
+            }
+            rom[i / 8] = (rom[i / 8] & ~(1u << (i % 8))) |
+                         (direction << (i % 8));
+            onewire_write_bit(qts, node, direction);
+        }
+        g_assert_cmpuint(found, <, max);
+        memcpy(roms[found++], rom, sizeof(rom));
+        last_conflict = conflict;
+    } while (last_conflict >= 0);
+    return found;
 }
 
-static void test_module_serial_rom_on_every_node(void)
+static void assert_module_parts(QTestState *qts, unsigned node)
+{
+    uint8_t roms[3][8];
+
+    g_assert_cmpuint(search_all(qts, node, roms, 3), ==, 2);
+    g_assert_cmpmem(roms[0], 8, module_rom, sizeof(module_rom));
+    g_assert_cmpmem(roms[1], 8, midplane_rom, sizeof(midplane_rom));
+}
+
+/* Both parts still answer to their ROMs, read by the cheaper match. */
+static void assert_parts_answer(QTestState *qts, unsigned node)
+{
+    onewire_start_read(qts, node, module_rom, 0xf0, 0);
+    g_assert_cmphex(onewire_read_byte(qts, node), ==, 0x8d);
+    g_assert_cmphex(onewire_read_byte(qts, node), ==, module_pages[0]);
+    onewire_start_read(qts, node, midplane_rom, 0xf0, 0);
+    g_assert_cmphex(onewire_read_byte(qts, node), ==, midplane_pages[0]);
+}
+
+/*
+ * The controller's nic line drives the module's midplane net, which carries
+ * the module's MODULEID part and its 8P12_MPLN midplane part, the same two
+ * the n1 node's Hub bus reaches, and nothing else: the module-management
+ * chip has no part of its own on it. Each adapter reaches the one controller.
+ */
+static void test_module_parts_through_nic(void)
 {
     QTestState *qts = start_module();
 
-    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
-        uint8_t rom[8];
-
-        read_rom(qts, node, rom);
-        g_assert_cmpmem(rom, sizeof(rom), module_rom, sizeof(module_rom));
+    assert_module_parts(qts, 0);
+    for (unsigned node = 1; node < ADAPTER_COUNT; node++) {
+        onewire_start_read(qts, node, midplane_rom, 0xf0, 0);
+        g_assert_cmphex(onewire_read_byte(qts, node), ==, midplane_pages[0]);
     }
     qtest_quit(qts);
 }
@@ -1377,13 +1453,21 @@ static void test_module_serial_memory_pages(void)
     QTestState *qts = start_module();
     uint8_t bytes[sizeof(module_pages)];
 
-    onewire_start_read(qts, 1, 0xf0, 0);
+    onewire_start_read(qts, 1, module_rom, 0xf0, 0);
     g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0x8d);
     for (unsigned i = 0; i < sizeof(bytes); i++) {
         bytes[i] = onewire_read_byte(qts, 1);
     }
     g_assert_cmpmem(bytes, sizeof(bytes), module_pages,
                     sizeof(module_pages));
+
+    /* The midplane part's Read Memory carries no header CRC. */
+    onewire_start_read(qts, 2, midplane_rom, 0xf0, 0);
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = onewire_read_byte(qts, 2);
+    }
+    g_assert_cmpmem(bytes, sizeof(bytes), midplane_pages,
+                    sizeof(midplane_pages));
     qtest_quit(qts);
 }
 
@@ -1406,29 +1490,25 @@ static void test_module_serial_memory_pages(void)
 static void test_module_serial_reset_preserves_identity(void)
 {
     QTestState *qts = start_module();
-    uint8_t rom[8];
 
-    onewire_select(qts, 3);
+    onewire_select(qts, 3, module_rom);
     onewire_write_byte(qts, 3, 0xf0);
     qtest_system_reset(qts);
     for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
         init_adapter(qts, node);
     }
-    read_rom(qts, 3, rom);
-    g_assert_cmpmem(rom, sizeof(rom), module_rom, sizeof(module_rom));
+    assert_parts_answer(qts, 3);
     qtest_quit(qts);
 }
 
+/* The module number is NVRAM state; no part's ROM serial follows it. */
 static void test_module_serial_ignores_mutable_module_number(void)
 {
     QTestState *qts = start_module();
-    uint8_t before[8], after[8];
 
-    read_rom(qts, 0, before);
     nvram_write(qts, 1, NVRAM_MODULE_NUMBER, 7);
     g_assert_cmphex(nvram_read(qts, 2, NVRAM_MODULE_NUMBER), ==, 7);
-    read_rom(qts, 3, after);
-    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    assert_parts_answer(qts, 3);
     qtest_quit(qts);
 }
 
@@ -1561,7 +1641,7 @@ static void test_module_serial_migration_in_progress(void)
     QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
     int64_t departed;
 
-    onewire_start_read(from, 0, 0xf0, 0);
+    onewire_start_read(from, 0, module_rom, 0xf0, 0);
     g_assert_cmphex(onewire_read_byte(from, 0), ==, 0x8d);
     for (unsigned i = 0; i < 7; i++) {
         g_assert_cmphex(onewire_read_byte(from, 0), ==, module_pages[i]);
@@ -1650,8 +1730,8 @@ int main(int argc, char **argv)
                    test_module_power_cycle_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
                    test_dip_switches_reach_the_controller);
-    qtest_add_func("/sn0/o2000-module-management/module-serial-rom",
-                   test_module_serial_rom_on_every_node);
+    qtest_add_func("/sn0/o2000-module-management/module-parts-through-nic",
+                   test_module_parts_through_nic);
     qtest_add_func("/sn0/o2000-module-management/module-serial-memory",
                    test_module_serial_memory_pages);
     qtest_add_func("/sn0/o2000-module-management/module-serial-reset",

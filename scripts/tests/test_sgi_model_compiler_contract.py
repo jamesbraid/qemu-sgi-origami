@@ -1981,9 +1981,13 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(
             set(node["identity"]),
             {"ni-revision", "widget-revision", "serial", "i2c-controller",
-             "system-controller", "module-responder-serial"})
-        self.assertEqual(node["identity"]["module-responder-serial"],
-                         0x51454D554D10)
+             "system-controller"})
+        module = topology["modules"][0]
+        self.assertEqual(module["identity-serial"], 0x51454D555900)
+        self.assertEqual(module["midplane-serial"], 0x51454D554C00)
+        self.assertEqual(module["midplane-record"],
+                         {"part": "030-0762-006", "revision": "H",
+                          "name": "8P12_MPLN"})
         self.assertNotIn("management-adapter-offset", node)
         self.assertEqual(set(node["flash"]), {"kind", "size"})
         board = topology["io-boards"][0]

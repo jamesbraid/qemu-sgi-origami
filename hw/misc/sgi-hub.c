@@ -13,7 +13,6 @@
 #include "qemu/main-loop.h"
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
-#include "hw/1wire/ds2502.h"
 #include "hw/1wire/ds2505.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/misc/sgi-hub.h"
@@ -237,7 +236,6 @@
  * should say is an open question, and a blank part states nothing.
 */
 #define MD_ONEWIRE_ROM_FAMILY      0x0b
-#define MD_MODULE_ROM_FAMILY       0x09
 #define MD_ONEWIRE_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
@@ -3276,8 +3274,9 @@ static void sgi_hub_write_onewire(SGIHubState *s, hwaddr addr,
      * from the slot's own deadline; see sgi_hub_onewire_value().
     */
     s->md_onewire = val & MD_ONEWIRE_WRITABLE;
-    s->onewire_level = sgi_onewire_slot(
-        s->onewire_bus, (val & MD_ONEWIRE_PULSE) >> MD_ONEWIRE_PULSE_SHIFT,
+    s->onewire_level = sgi_onewire_slot_wired(
+        s->onewire_bus, s->midplane_bus,
+        (val & MD_ONEWIRE_PULSE) >> MD_ONEWIRE_PULSE_SHIFT,
         (val & MD_ONEWIRE_SAMPLE) >> MD_ONEWIRE_SAMPLE_SHIFT);
     s->md_onewire_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                 MD_ONEWIRE_SLOT_NS;
@@ -4501,26 +4500,14 @@ static void sgi_hub_reset_exit(Object *obj, ResetType type)
     sgi_hub_calias_update(s);
 }
 
-bool sgi_hub_attach_module_identity(SGIHubState *s,
-                                    const SGIHubModuleIdentity *identity,
-                                    Error **errp)
+bool sgi_hub_attach_midplane_onewire(SGIHubState *s, OneWireBus *bus,
+                                     Error **errp)
 {
-    if (qdev_is_realized(DEVICE(s))) {
-        error_setg(errp, "cannot attach Hub module identity after realize");
+    if (s->midplane_bus) {
+        error_setg(errp, "Hub is already wired to a midplane one-wire net");
         return false;
     }
-    if (s->has_module_identity) {
-        error_setg(errp, "Hub already has a module identity responder");
-        return false;
-    }
-    if (identity->rom[0] != MD_MODULE_ROM_FAMILY ||
-        onewire_crc8(0, identity->rom, sizeof(identity->rom)) != 0) {
-        error_setg(errp, "Hub module identity has an invalid one-wire ROM");
-        return false;
-    }
-
-    s->module_identity = *identity;
-    s->has_module_identity = true;
+    s->midplane_bus = bus;
     return true;
 }
 
@@ -5288,23 +5275,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         if (s->has_board_record) {
             ds2505_set_image(part, s->board_record, sizeof(s->board_record));
         }
-        if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
-            return;
-        }
-    }
-    if (s->has_module_identity) {
-        DeviceState *part = qdev_new(TYPE_ONEWIRE_DS2502);
-        uint64_t serial = 0;
-
-        for (n = 0; n < 6; n++) {
-            serial |= (uint64_t)s->module_identity.rom[1 + n] << (8 * n);
-        }
-        object_property_add_child(OBJECT(dev), "module-identity",
-                                  OBJECT(part));
-        qdev_prop_set_uint8(part, "family", MD_MODULE_ROM_FAMILY);
-        qdev_prop_set_uint64(part, "serial", serial);
-        ds2502_set_image(part, &s->module_identity.page[0][0],
-                         sizeof(s->module_identity.page));
         if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
             return;
         }

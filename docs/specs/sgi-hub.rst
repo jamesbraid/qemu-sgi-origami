@@ -333,7 +333,11 @@ board's record in the same layout: ``IP27``, part 030-0733-003
 revision G, a marked synthetic barcode (``EMUN`` and the part's
 instance), and group, capability and variety bytes of 0xff. An IP27
 node carries no separate processor-module record. The programming
-commands are not answered.
+commands are not answered. On an Origin 2000 or Onyx2 the ``n1`` node's
+line also reaches its module's midplane one-wire net, which carries
+the module's ``MODULEID`` part and its midplane part: the two are one
+open-drain line, so a search from the ``n1`` Hub finds three parts and
+from any other node's Hub one (see :ref:`sgi-origin2000-module-identity`).
 
 The PCF8584 is mapped as a subregion of the Hub's own register region
 at higher priority, so both of the machine's mappings of the window

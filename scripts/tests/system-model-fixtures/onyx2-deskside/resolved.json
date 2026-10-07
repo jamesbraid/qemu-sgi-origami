@@ -2026,16 +2026,11 @@
       ],
       "lifecycle": "implemented",
       "machine_name": "onyx2",
-      "module_responder_identities": [
+      "module_onewire_parts": [
         {
-          "component": "node-board-1-hub",
-          "reason": "Synthetic module-identity responder serial for node 1, the module letter M at instance 16, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d10"
-        },
-        {
-          "component": "node-board-2-hub",
-          "reason": "Synthetic module-identity responder serial for node 2, the module letter M at instance 17, carrying the \"QEMU\" marker; not hardware evidence.",
-          "serial": "0x51454d554d11"
+          "component": "compute-module",
+          "identity_serial": "0x51454d555900",
+          "reason": "Synthetic ROM serial for module 1's MODULEID part, letter Y at the module's index 0, carrying the \"QEMU\" marker; not hardware evidence. No midplane part, because the record this deskside's two-slot midplane holds is not known."
         }
       ],
       "module_semantic_serials": [

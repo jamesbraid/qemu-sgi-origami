@@ -219,9 +219,12 @@ Command vocabulary
     boot-driven. Its wire contract takes three hex arguments (pulse,
     sample, delay) that bit-bang the midplane one-wire line, and it answers ``ok
     <hex>`` with the sampled bit, over which a one-wire ROM read is
-    layered by repeated calls. No one-wire device is modelled, so the
-    open-drain line idles high and every sample reads ``1`` -- a
-    modelling choice, not a datasheet value. A malformed argument list
+    layered by repeated calls. On an Origin 2000 module the line
+    reaches the module's ``MODULEID`` and midplane parts
+    (:ref:`sgi-origin2000-module-identity`). On an Origin 200 no
+    one-wire device is modelled on it, so the open-drain line idles high
+    and every sample reads ``1`` -- a modelling choice, not a datasheet
+    value. A malformed argument list
     is ``err arg``; a bare ``nic`` or junk with no space delimiter
     (``nicx``) is ``err cmd``.
 

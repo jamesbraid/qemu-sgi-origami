@@ -162,10 +162,6 @@
 # @system-controller: whether that controller also answers as the
 #     node's system controller (Origin 200's embedded ELSC)
 #
-# @module-responder-serial: the ROM serial of the module-identity
-#     responder on this node's Hub bus, present on an SN0 node whose
-#     module has a shared module controller (Origin 2000 and Onyx2)
-#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelAsicIdentity',
@@ -173,8 +169,7 @@
             '*widget-revision': 'uint8',
             'serial': 'uint64',
             'i2c-controller': 'bool',
-            'system-controller': 'bool',
-            '*module-responder-serial': 'uint64' } }
+            'system-controller': 'bool' } }
 
 ##
 # @SGIModelBoardRecord:
@@ -1053,6 +1048,22 @@
             '*l1': 'SGIModelL1Config' } }
 
 ##
+# @SGIModelMidplaneRecord:
+#
+# The board record a module's midplane one-wire part holds.
+#
+# @part: twelve-character part number, such as 030-0762-006
+#
+# @revision: board revision
+#
+# @name: board name, such as 8P12_MPLN
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelMidplaneRecord',
+  'data': { 'part': 'str', 'revision': 'str', 'name': 'str' } }
+
+##
 # @SGIModelModule:
 #
 # One module or brick: the nodes it carries and, when it has one, the
@@ -1074,6 +1085,16 @@
 # @io-peers: positions of this module's I/O-only endpoints in the
 #     topology's @io-peers list, omitted when none are fitted
 #
+# @identity-serial: ROM serial of the module's family-0x09 MODULEID
+#     part, present on a module with a shared controller (Origin 2000
+#     and Onyx2); the part sits on the n1 node's Hub bus and the
+#     controller's midplane line
+#
+# @midplane-serial: ROM serial of the module's midplane part, on the
+#     same two lines, present when @midplane-record is
+#
+# @midplane-record: the record that midplane part holds
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelModule',
@@ -1082,7 +1103,10 @@
             'initial-module-number': 'uint8',
             'controller-index': 'int',
             'nodes': ['uint32'],
-            '*io-peers': ['uint32'] } }
+            '*io-peers': ['uint32'],
+            '*identity-serial': 'uint64',
+            '*midplane-serial': 'uint64',
+            '*midplane-record': 'SGIModelMidplaneRecord' } }
 
 ##
 # @SGIModelCpuPopulation:

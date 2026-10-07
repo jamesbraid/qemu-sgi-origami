@@ -4,6 +4,7 @@
  * driven against the real adapters, controller and shared wire.
  */
 #include "qemu/osdep.h"
+#include "hw/1wire/crc.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
@@ -11,6 +12,7 @@
 #include "hw/i2c/i2c-wire.h"
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "qapi/error.h"
+#include "qemu/bitops.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/rcu.h"
@@ -107,13 +109,9 @@ static void probe_class_init(ObjectClass *oc, const void *data)
     ec->wire_address = probe_wire_address;
 }
 
-/* The device takes its serial from the machine's model; any ten bytes do. */
 static DeviceState *module_new(void)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
-
-    qdev_prop_set_string(dev, "model-serial", "TESTSERIAL");
-    return dev;
+    return qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 }
 
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
@@ -672,36 +670,190 @@ static void test_undeclared_actions_refused(void)
     drain_call_rcu();
 }
 
-/*
- * A node's module-identity responder ROM is family 0x09, its serial least
- * significant byte first and the Dallas CRC-8; a node of a controller
- * module with no responder serial is refused with the message the machine
- * exits on, rather than given a made-up ROM.
- */
-static void test_responder_rom(void)
+static void wire_write_byte(OneWireBus *bus, uint8_t byte)
 {
-    static const uint8_t m16[8] = {
-        0x09, 0x10, 0x4d, 0x55, 0x4d, 0x45, 0x51, 0x0b,
+    for (unsigned int i = 0; i < 8; i++) {
+        onewire_touch_bit(bus, (byte >> i) & 1);
+    }
+}
+
+static uint8_t wire_read_byte(OneWireBus *bus)
+{
+    uint8_t byte = 0;
+
+    for (unsigned int i = 0; i < 8; i++) {
+        byte |= onewire_touch_bit(bus, true) << i;
+    }
+    return byte;
+}
+
+/* Every ROM on the bus, by the standard search, lowest first. */
+static unsigned int wire_search_all(OneWireBus *bus, uint64_t *roms,
+                                    unsigned int max)
+{
+    uint64_t rom = 0;
+    int last_conflict = -1;
+    unsigned int found = 0;
+
+    do {
+        int conflict = -1;
+
+        g_assert_true(onewire_reset(bus));
+        wire_write_byte(bus, 0xf0);
+        for (int i = 0; i < 64; i++) {
+            bool bit = onewire_touch_bit(bus, true);
+            bool complement = onewire_touch_bit(bus, true);
+            bool direction;
+
+            g_assert_false(bit && complement);
+            if (bit != complement) {
+                direction = bit;
+            } else if (i < last_conflict) {
+                direction = (rom >> i) & 1;
+                if (!direction) {
+                    conflict = i;
+                }
+            } else {
+                direction = i == last_conflict;
+                if (!direction) {
+                    conflict = i;
+                }
+            }
+            rom = deposit64(rom, i, 1, direction);
+            onewire_touch_bit(bus, direction);
+        }
+        g_assert_cmpuint(found, <, max);
+        roms[found++] = rom;
+        last_conflict = conflict;
+    } while (last_conflict >= 0);
+    return found;
+}
+
+/* Address one part and read its first 64 memory bytes with Read Memory. */
+static void wire_read_pages(OneWireBus *bus, uint64_t rom, bool header_crc,
+                            uint8_t page[64])
+{
+    g_assert_true(onewire_reset(bus));
+    wire_write_byte(bus, 0x55);
+    for (unsigned int i = 0; i < 8; i++) {
+        wire_write_byte(bus, rom >> (8 * i));
+    }
+    wire_write_byte(bus, 0xf0);
+    wire_write_byte(bus, 0);
+    wire_write_byte(bus, 0);
+    if (header_crc) {
+        wire_read_byte(bus);
+    }
+    for (unsigned int i = 0; i < 64; i++) {
+        page[i] = wire_read_byte(bus);
+    }
+}
+
+static uint64_t wire_rom(uint8_t family, uint64_t serial)
+{
+    uint8_t bytes[7] = { family };
+    uint64_t rom = family;
+
+    for (unsigned int i = 0; i < 6; i++) {
+        bytes[1 + i] = serial >> (8 * i);
+        rom |= (uint64_t)bytes[1 + i] << (8 * (1 + i));
+    }
+    return rom | (uint64_t)onewire_crc8(0, bytes, sizeof(bytes)) << 56;
+}
+
+/*
+ * The module's two parts on the controller's midplane net, as the module
+ * one-wire records contract states them: the MODULEID part's two pages for
+ * KORIGAMI01, and module 1's 8P12_MPLN record, byte for byte, each under its
+ * marked ROM serial, letter Y and letter L at the module's index.
+ */
+static void test_module_parts(void)
+{
+    static const uint8_t moduleid[64] = {
+        0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
+        0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x4b, 0x59,
     };
-    const uint64_t serial = UINT64_C(0x51454d554d10);
-    uint8_t rom[8] = { 0 };
+    static const uint8_t mpln[64] = {
+        0x01, 0x45, 0x4d, 0x55, 0x4c, 0x30, 0x30, 0x20,
+        0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+        0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+        0x2d, 0x30, 0x37, 0x36, 0x32, 0x2d, 0xd8, 0x16,
+        0x20, 0x20, 0x20, 0x30, 0x30, 0x36, 0x48, 0x20,
+        0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x38, 0x50, 0x31, 0x32, 0x5f, 0x4d, 0x50, 0x4c,
+        0x4e, 0x20, 0x20, 0x20, 0x20, 0x20, 0x78, 0x3e,
+    };
+    const uint64_t identity = UINT64_C(0x51454d555900);
+    const uint64_t midplane = UINT64_C(0x51454d554c00);
+    const SGIBoardRecord record = {
+        "EMUL00", "030-0762-006", "H", "8P12_MPLN",
+    };
+    DeviceState *dev = module_new();
+    SN0ModuleManagementState *module;
+    OneWireBus *bus;
+    uint64_t roms[4];
+    uint8_t page[64];
+
+    qdev_realize(dev, NULL, &error_abort);
+    module = SGI_SN0_MODULE_MANAGEMENT(dev);
+    bus = sgi_sn0_module_management_midplane_onewire(module);
+    /* Before the machine fits them the net is empty. */
+    g_assert_false(onewire_reset(bus));
+
+    g_assert_true(sgi_sn0_module_management_attach_parts(
+                      module, "KORIGAMI01", identity, &record, midplane,
+                      &error_abort));
+    g_assert_cmpuint(wire_search_all(bus, roms, G_N_ELEMENTS(roms)), ==, 2);
+    g_assert_cmphex(roms[0], ==, wire_rom(0x09, identity));
+    g_assert_cmphex(roms[1], ==, wire_rom(0x0b, midplane));
+
+    wire_read_pages(bus, roms[0], true, page);
+    g_assert_cmpmem(page, sizeof(page), moduleid, sizeof(moduleid));
+    wire_read_pages(bus, roms[1], false, page);
+    g_assert_cmpmem(page, sizeof(page), mpln, sizeof(mpln));
+    for (unsigned int i = 0; i < 2; i++) {
+        g_assert_cmphex(onewire_crc16(0, &mpln[32 * i], 32), ==, 0xb001);
+        g_assert_cmphex(onewire_crc16(0, &moduleid[32 * i], 32), ==, 0xb001);
+    }
+
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
+    drain_call_rcu();
+}
+
+/*
+ * A module whose midplane record is not known carries the MODULEID part
+ * alone, and a serial that does not fit the record is refused.
+ */
+static void test_module_parts_without_midplane(void)
+{
+    const uint64_t identity = UINT64_C(0x51454d555900);
+    DeviceState *dev = module_new();
+    SN0ModuleManagementState *module;
+    uint64_t roms[2];
     Error *err = NULL;
 
-    g_assert_true(sgi_sn0_module_management_responder_rom(
-                      "compute-module", 0, &serial, rom, &error_abort));
-    g_assert_cmpmem(rom, sizeof(rom), m16, sizeof(m16));
-
-    memset(rom, 0xa5, sizeof(rom));
-    g_assert_false(sgi_sn0_module_management_responder_rom(
-                       "compute-module", 2, NULL, rom, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "module 'compute-module' node 2 has no module-responder "
-                    "serial");
+    qdev_realize(dev, NULL, &error_abort);
+    module = SGI_SN0_MODULE_MANAGEMENT(dev);
+    g_assert_false(sgi_sn0_module_management_attach_parts(
+                       module, "SHORT", identity, NULL, 0, &err));
     error_free(err);
-    for (size_t i = 0; i < sizeof(rom); i++) {
-        g_assert_cmphex(rom[i], ==, 0xa5);
-    }
+    g_assert_true(sgi_sn0_module_management_attach_parts(
+                      module, "EMUM000001", identity, NULL, 0,
+                      &error_abort));
+    g_assert_cmpuint(wire_search_all(
+                         sgi_sn0_module_management_midplane_onewire(module),
+                         roms, G_N_ELEMENTS(roms)), ==, 1);
+    g_assert_cmphex(roms[0], ==, wire_rom(0x09, identity));
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
+    drain_call_rcu();
 }
 
 /*
@@ -1154,8 +1306,10 @@ int main(int argc, char **argv)
                Fixture, NULL, setup, test_partial_capability, teardown);
     g_test_add_func("/sgi-sn0-module-management/action/declares-nothing",
                     test_undeclared_actions_refused);
-    g_test_add_func("/sgi-sn0-module-management/identity/responder-rom",
-                    test_responder_rom);
+    g_test_add_func("/sgi-sn0-module-management/identity/module-parts",
+                    test_module_parts);
+    g_test_add_func("/sgi-sn0-module-management/identity/module-parts-alone",
+                    test_module_parts_without_midplane);
     g_test_add("/sgi-sn0-module-management/realize/needs-declared-lines",
                Fixture, GUINT_TO_POINTER(0), setup,
                test_declared_action_needs_its_line, teardown);

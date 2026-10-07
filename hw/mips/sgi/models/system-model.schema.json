@@ -56,7 +56,7 @@
           "then": {
             "properties": { "machine": { "properties": {
               "firmware_config": { "required": ["cpu_clock_hz", "hub_clock_hz"] },
-              "emulation": { "required": ["synthetic_identities", "module_semantic_serials", "module_responder_identities", "initially_operational_crossbow_links"] }
+              "emulation": { "required": ["synthetic_identities", "module_semantic_serials", "module_onewire_parts", "initially_operational_crossbow_links"] }
             } } }
           }
         }]
@@ -554,16 +554,27 @@
                 }
               }
             },
-            "module_responder_identities": {
+            "module_onewire_parts": {
               "type": "array",
-              "description": "Explicit 48-bit ROM serials for node-local Hub module identity responders, keyed by final resolved node ASIC component ID.",
+              "description": "Per-module one-wire parts on the module's n1 Hub bus and its controller's midplane line, keyed by final resolved module component ID: the family-0x09 MODULEID part's ROM serial and, when the midplane's record is known, the family-0x0b midplane part's ROM serial and record.",
               "items": {
                 "type": "object",
-                "required": ["component", "serial", "reason"],
+                "required": ["component", "identity_serial", "reason"],
                 "additionalProperties": false,
                 "properties": {
                   "component": { "$ref": "#/$defs/identifier" },
-                  "serial": { "type": "string", "pattern": "^0x[0-9a-f](?:_?[0-9a-f]){0,11}$" },
+                  "identity_serial": { "type": "string", "pattern": "^0x[0-9a-f](?:_?[0-9a-f]){0,11}$" },
+                  "midplane_serial": { "type": "string", "pattern": "^0x[0-9a-f](?:_?[0-9a-f]){0,11}$" },
+                  "midplane": {
+                    "type": "object",
+                    "required": ["name", "part", "revision"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": { "type": "string", "minLength": 1, "maxLength": 14 },
+                      "part": { "type": "string", "pattern": "^[0-9]{3}-[0-9]{4}-[0-9]{3}$" },
+                      "revision": { "type": "string", "minLength": 1, "maxLength": 4 }
+                    }
+                  },
                   "reason": { "type": "string", "minLength": 1 }
                 }
               }

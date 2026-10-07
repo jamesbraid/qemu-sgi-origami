@@ -27,7 +27,7 @@
  *   X  XBridge one-wire part
  *   C  IOC3 one-wire parts
  *   R  Router
- *   M  module or brick (one-wire instances split; see below)
+ *   M  module or brick (a module number is reserved for its management chip)
  *   G  graphics board
  *   P  PCI option card
  *   O  XIO option board
@@ -47,15 +47,6 @@
  * code and ROM CRC around it are the part's own and are unaffected.
  */
 #define SGI_SYNTHETIC_ONEWIRE_PREFIX  UINT64_C(0x51454d55)
-
-/*
- * The module letter's one-wire instances split in two on an Origin 2000 or
- * Onyx2. A module's serial chip takes the module number, which therefore
- * stays below this; each node's module-identity responder on its Hub bus
- * takes an instance at or above it. The catalogue compiler refuses a module
- * number or responder serial on the wrong side.
- */
-#define SGI_SYNTHETIC_MODULE_RESPONDER_FIRST 16
 
 /*
  * A serial for a UniqueWare part whose top twelve bits are a customer code a

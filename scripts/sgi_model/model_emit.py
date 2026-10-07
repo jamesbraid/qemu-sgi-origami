@@ -88,9 +88,7 @@ def _identity(raw: dict) -> dict:
         "system-controller": raw["system_controller"],
     }
     for source, target in (("ni_revision", "ni-revision"),
-                           ("widget_revision", "widget-revision"),
-                           ("module_responder_serial",
-                            "module-responder-serial")):
+                           ("widget_revision", "widget-revision")):
         if source in raw:
             identity[target] = raw[source]
     return identity

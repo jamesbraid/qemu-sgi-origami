@@ -2806,49 +2806,50 @@ static bool sgi_machine_realize_crossbars(SGIMachineState *s,
 /* ---- Module identity, shared controllers and routers ---- */
 
 /*
- * A module naming a shared system controller shares one MicroLAN
- * module-identity responder across every node it carries. A module
- * whose nodes each carry their own controller (Origin 200) has none.
+ * A module with a shared controller carries its MODULEID part and, where
+ * the catalogue knows its midplane's record, its midplane part on the
+ * midplane one-wire net the controller's nic line drives. Of the node
+ * slots only n1 is wired to that net, so those parts answer on the n1
+ * node's Hub bus and on no other; a module with n1 empty reaches them
+ * through the controller alone. The midplane barcode is marked synthetic,
+ * the midplane letter and the instance of the part holding it.
  */
-static void sgi_machine_attach_module_identities(SGIMachineState *s,
-                                                  const SGIModelTopology *t)
+static void sgi_machine_attach_module_parts(SGIMachineState *s,
+                                            const SGIModelTopology *t,
+                                            const SGIModelModule *module,
+                                            SN0ModuleManagementState *mgmt)
 {
-    g_autofree const SGIModelModule **modules = NULL;
     g_autofree const SGIModelNode **nodes = NULL;
-    size_t module_count, node_count, module_index;
+    g_autofree unsigned int *module_nodes = NULL;
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+    SGIBoardRecord midplane;
+    size_t node_count, module_node_count, i;
 
-    modules = sgi_model_module_array(t->modules, &module_count);
+    if (!module->has_identity_serial) {
+        error_report("module '%s' has a shared controller but no MODULEID "
+                     "part", module->id);
+        exit(EXIT_FAILURE);
+    }
+    if (module->midplane_record) {
+        sgi_synthetic_barcode(barcode, 'L', module->midplane_serial);
+        midplane = (SGIBoardRecord) {
+            barcode, module->midplane_record->part,
+            module->midplane_record->revision, module->midplane_record->name,
+        };
+    }
+    sgi_sn0_module_management_attach_parts(
+        mgmt, module->serial, module->identity_serial,
+        module->midplane_record ? &midplane : NULL, module->midplane_serial,
+        &error_fatal);
+
     nodes = sgi_model_node_array(t->nodes, &node_count);
-    for (module_index = 0; module_index < module_count; module_index++) {
-        const SGIModelModule *module = modules[module_index];
-        g_autofree unsigned int *module_nodes = NULL;
-        size_t module_node_count, i;
-        SGIHubModuleIdentity identity;
-
-        if (module->controller_index < 0) {
-            continue;
-        }
-        if (!sgi_sn0_module_management_identity_pages(module->serial,
-                                                      identity.page)) {
-            error_report("module '%s' has an invalid identity serial",
-                        module->id);
-            exit(EXIT_FAILURE);
-        }
-        module_nodes = sgi_model_array_uint32(module->nodes,
-                                              &module_node_count);
-        for (i = 0; i < module_node_count; i++) {
-            unsigned int node_index = module_nodes[i];
-            const SGIModelAsicIdentity *asic = nodes[node_index]->identity;
-
-            if (!sgi_sn0_module_management_responder_rom(
-                    module->id, node_index,
-                    asic->has_module_responder_serial ?
-                    &asic->module_responder_serial : NULL,
-                    identity.rom, &error_fatal) ||
-                !sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
-                                                &identity, &error_fatal)) {
-                exit(EXIT_FAILURE);
-            }
+    module_nodes = sgi_model_array_uint32(module->nodes, &module_node_count);
+    for (i = 0; i < module_node_count; i++) {
+        if (nodes[module_nodes[i]]->slot == 1) {
+            sgi_hub_attach_midplane_onewire(
+                &s->nodes[module_nodes[i]]->hub,
+                sgi_sn0_module_management_midplane_onewire(mgmt),
+                &error_fatal);
         }
     }
 }
@@ -2978,7 +2979,6 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                                   OBJECT(dev));
         qdev_prop_set_uint8(dev, "module-number",
                             module->initial_module_number);
-        qdev_prop_set_string(dev, "model-serial", module->serial);
         if (sgi_machine_module_nvram_node(s, t, module)) {
             qdev_prop_set_string(dev, "nvram-drive",
                                  sgi_machine_module_nvram_node(s, t, module));
@@ -2999,6 +2999,8 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
             qdev_prop_set_chr(dev, "chardev", aux);
         }
         qdev_realize_and_unref(dev, NULL, &error_fatal);
+        sgi_machine_attach_module_parts(s, t, module,
+                                        SGI_SN0_MODULE_MANAGEMENT(dev));
 
         for (i = 0; i < module_node_count; i++) {
             unsigned int node_index = module_nodes[i];
@@ -4635,8 +4637,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, io_board_count);
-
-    sgi_machine_attach_module_identities(s, t);
 
     s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
     clock_set_hz(s->rt_refclk, SN0_HUB_RTC_CLOCK_HZ);
