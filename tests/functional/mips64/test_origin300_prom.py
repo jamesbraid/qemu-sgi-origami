@@ -36,6 +36,15 @@ PASSED" and System Maintenance Menu.
 test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
 
+test_two_cpus_start_without_power_cycles boots a new two-processor flash
+from qemu-sgi-machine-init, which records the empty slots B and D as
+disabled. Without those records PROM 6.210 power-cycles the module three
+times per empty slot, each retry printing "Starting PROM Boot process
+[CPU-B PLL 1]" and so on, before writing the records itself. With them
+it reaches the menu on its first power-up with two processors enabled
+and none disabled. The four-processor case is the control: it has no
+empty slot, no records and no retry either.
+
 test_reset_keeps_the_nvram_owner resets the machine at that menu and
 requires the second boot to accept its NVRAM. The PROM compares a board
 number it derives from the node board area's serial with the one it saved,
@@ -84,6 +93,8 @@ class Origin300PromMenu(QemuSystemTest):
         lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
 
     def boot_to_menu(self, cpus):
+        """Boot a new flash for cpus processors to the menu, refusing any
+        PROM retry of an empty slot on the way."""
         firmware = self.ASSET_FIRMWARE.fetch()
         machine, argv = lib_origin300.launch_args(
             firmware, cpus, self.workdir)
@@ -93,6 +104,10 @@ class Origin300PromMenu(QemuSystemTest):
         self.vm.set_machine(machine)
         self.vm.add_args(*argv)
         launch_paused(self.vm)
+        wait_for_console_pattern(
+            self, f'No. of CPUs enabled     = {cpus}',
+            failure_message=' PLL ')
+        wait_for_console_pattern(self, 'No. of CPUs disabled    = 0')
         wait_for_console_pattern(self, 'ALL DIAGS PASSED')
         wait_for_console_pattern(self, 'System Maintenance Menu')
         self.vm.shutdown()
@@ -100,6 +115,10 @@ class Origin300PromMenu(QemuSystemTest):
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_four_cpus_reach_the_menu_with_all_diags_passed(self):
         self.boot_to_menu(4)
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_two_cpus_start_without_power_cycles(self):
+        self.boot_to_menu(2)
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_reset_keeps_the_nvram_owner(self):

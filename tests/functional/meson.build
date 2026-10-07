@@ -77,6 +77,11 @@ foreach speed : ['quick', 'thorough']
       test_env.set('QEMU_TEST_QEMU_IMG', meson.global_build_root() / 'qemu-img')
       test_deps += [qemu_img]
     endif
+    if is_variable('qemu_sgi_machine_init')
+      test_env.set('QEMU_TEST_SGI_MACHINE_INIT',
+                   qemu_sgi_machine_init.full_path())
+      test_deps += [qemu_sgi_machine_init]
+    endif
     test_env.set('QEMU_TEST_QEMU_BINARY', test_emulator.full_path())
     test_env.set('MESON_BUILD_ROOT', meson.project_build_root())
     test_env.prepend('PYTHONPATH',

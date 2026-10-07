@@ -5,9 +5,9 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """
-A plain unittest -- no QEMU, no qemu_test import. The launch cases build
-the boot flash from a stand-in payload, so they patch the reviewed seed
-digests that a real firmware image would have to match.
+A plain unittest -- no QEMU, no qemu_test import. The launch cases stand
+in for qemu-sgi-machine-init, which refuses anything but a real PROM, and
+patch the reviewed digests a real flash would have to match.
 """
 
 import os
@@ -30,13 +30,23 @@ class LaunchTests(unittest.TestCase):
             out.write(b'\x00' * 4096)
         self.scratch = os.path.join(root, 'scratch')
         os.makedirs(self.scratch)
-        # The stand-in firmware cannot match the reviewed boot-flash digest.
-        # Use a fixed hash for this synthetic fixture.
+        self.calls = []
         self.enterContext(mock.patch.object(
-            lib, 'hashlib', mock.Mock(sha256=lambda data: mock.Mock(
-                hexdigest=lambda: 'seed'))))
-        self.enterContext(mock.patch.dict(lib.BOOT_FLASH_SEED_SHA256,
-                                          {2: 'seed', 4: 'seed'}))
+            lib, '_run_machine_init', self._machine_init))
+        self.enterContext(mock.patch.dict(lib.BOOT_FLASH_SEED_SHA256, {
+            2: lib.hashlib.sha256(b'2').hexdigest(),
+            4: lib.hashlib.sha256(b'4').hexdigest()}))
+
+    def _machine_init(self, args):
+        """Write each node's flash as its processor count, as text."""
+        self.calls.append(args)
+        state = args[-1]
+        os.makedirs(state)
+        population = args[args.index('--population') + 1]
+        for node, cpus in enumerate(population.split(':')):
+            with open(os.path.join(state, f'node{node}-flash.raw'),
+                      'wb') as out:
+                out.write(cpus.encode())
 
     @staticmethod
     def _props(machine):
@@ -48,8 +58,27 @@ class LaunchTests(unittest.TestCase):
         self.assertTrue(machine.startswith('origin300,'))
         self.assertEqual(self._props(machine), {'mac': lib.NETWORK_MAC})
         self.assertEqual(argv[argv.index('-smp') + 1], '2')
-        self.assertIn(f'if=pflash,index=0,file='
-                      f'{self.scratch}/ip35-boot-flash.raw,format=raw', argv)
+        self.assertIn(f'if=pflash,index=0,file={self.scratch}/'
+                      'origin300-state/node0-flash.raw,format=raw', argv)
+        self.assertEqual(self.calls, [[
+            '--machine', 'origin300,topology=origin300,nodes=1',
+            '--population', '2', '--boot-prom', self.firmware,
+            f'{self.scratch}/origin300-state']])
+
+    def test_a_relaunch_starts_from_new_state(self):
+        lib.launch_args(self.firmware, 4, self.scratch)
+        lib.launch_args(self.firmware, 2, self.scratch)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_flash_with_another_digest_is_refused(self):
+        with mock.patch.dict(lib.BOOT_FLASH_SEED_SHA256, {2: 'other'}):
+            with self.assertRaisesRegex(ValueError, 'reviewed SHA-256'):
+                lib.launch_args(self.firmware, 2, self.scratch)
+
+    def test_an_unreviewed_population_is_refused(self):
+        with self.assertRaisesRegex(ValueError, '3-processor'):
+            lib.launch_args(self.firmware, 3, self.scratch)
+        self.assertEqual(self.calls, [])
 
     def test_the_pair_adds_its_topology_and_second_flash(self):
         machine, argv = lib.launch_args_two_chassis(
@@ -60,9 +89,11 @@ class LaunchTests(unittest.TestCase):
             'population': '4:2'})
         self.assertEqual(argv[argv.index('-smp') + 1], '6')
         self.assertEqual(argv[argv.index('-m') + 1], '1024M')
-        self.assertIn(f'if=pflash,index=1,file='
-                      f'{self.scratch}/node1/ip35-boot-flash.raw,format=raw',
-                      argv)
+        self.assertIn(f'if=pflash,index=1,file={self.scratch}/'
+                      'origin300-state/node1-flash.raw,format=raw', argv)
+        self.assertEqual(self.calls[0][:4], [
+            '--machine', 'origin300,topology=origin300-two-chassis,nodes=2',
+            '--population', '4:2'])
 
     def test_no_identity_or_spd_file_is_written(self):
         lib.launch_args_two_chassis(self.firmware, (4, 4), self.scratch)
@@ -70,8 +101,8 @@ class LaunchTests(unittest.TestCase):
                                          self.scratch)
                          for where, _dirs, names in os.walk(self.scratch)
                          for name in names)
-        self.assertEqual(written, ['ip35-boot-flash.raw',
-                                   'node1/ip35-boot-flash.raw'])
+        self.assertEqual(written, ['origin300-state/node0-flash.raw',
+                                   'origin300-state/node1-flash.raw'])
 
 
 if __name__ == '__main__':
