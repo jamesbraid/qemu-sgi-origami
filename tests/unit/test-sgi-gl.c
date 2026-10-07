@@ -8147,6 +8147,39 @@ static void test_checked_draw_ordinary(void)
     g_assert_cmphex(c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
 }
 
+static void test_checked_draw_requires_checked_sink(void)
+{
+    SGIGLContext checked, legacy;
+    CheckedDrawProbe probe = { 0 };
+    SGIGLSink sink = {
+        .draw = checked_probe_void_draw,
+        .opaque = &probe,
+    };
+    uint32_t mode = SGI_GL_TRIANGLES;
+    uint32_t vertex[2] = { bits(0), bits(0) };
+
+    context_init(&checked);
+    g_assert_cmpint(checked_command(&checked, &sink, SGI_GL_OP_BEGIN,
+                                    &mode, 1), ==, SGI_GL_DRAW_OK);
+    for (unsigned i = 0; i < 2; i++) {
+        g_assert_cmpint(checked_command(&checked, &sink,
+                                        SGI_GL_OP_VERTEX2F, vertex, 2),
+                        ==, SGI_GL_DRAW_OK);
+    }
+    g_assert_cmpint(checked_command(&checked, &sink, SGI_GL_OP_VERTEX2F,
+                                    vertex, 2), ==,
+                    SGI_GL_DRAW_RESOURCE_ERROR);
+    g_assert_cmpuint(probe.void_calls, ==, 0);
+    g_assert_cmphex(checked.polygon.error, ==, 0);
+
+    context_init(&legacy);
+    command(&legacy, &sink, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 3; i++) {
+        command(&legacy, &sink, SGI_GL_OP_VERTEX2F, vertex, 2);
+    }
+    g_assert_cmpuint(probe.void_calls, ==, 1);
+}
+
 static void test_checked_draw_results(void)
 {
     const SGIGLDrawResult results[] = {
@@ -10760,6 +10793,8 @@ int main(int argc, char **argv)
                     test_polygon_mode_activation_oom);
     g_test_add_func("/sgi-gl/checked-draw-ordinary",
                     test_checked_draw_ordinary);
+    g_test_add_func("/sgi-gl/checked-draw-requires-checked-sink",
+                    test_checked_draw_requires_checked_sink);
     g_test_add_func("/sgi-gl/checked-draw-results",
                     test_checked_draw_results);
     g_test_add_func("/sgi-gl/checked-draw-latched-failure",
