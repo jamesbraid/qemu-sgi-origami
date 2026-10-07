@@ -48,6 +48,36 @@ answered ``err csum``. The protocol names no separate framing error:
 a malformed packet fails the same sums-to-zero test a corrupted
 checksum does.
 
+Request grammar
+---------------
+
+The controller parses every command the same way. It keeps the
+request's text and puts a carriage return where the checksum was, so
+each command ends in one.
+
+* The first four bytes are a three-letter lowercase mnemonic and a
+  separator, which must be a space or the end of the text. Anything
+  else, including an empty request or an uppercase mnemonic, is
+  ``err cmd``.
+* Most single-letter arguments come from a character reader: it skips
+  spaces and takes the next character, and the end of the text or a
+  line feed is no argument. ``pwr  q`` and ``pwr q junk`` are both
+  ``pwr q``.
+* Numeric arguments come from a hex reader: up to four digits, either
+  case, with no leading spaces skipped. A number shorter than four
+  digits consumes the character that ends it, so a second number must
+  follow exactly one space; a four-digit number consumes nothing, so
+  the next number follows with no space at all and a fifth digit
+  starts it. No digits at all is no value. ``hbt 1e 14`` and
+  ``hbt 025814`` carry two values; ``hbt 1e  14`` carries one.
+* Whatever a command does not read is discarded.
+* Hex values in replies are lowercase with no leading zero.
+
+The firmware runs a recognised command whose checksum or length is bad
+and then answers the checksum error. The model answers ``err csum``
+without running it, which is safer and differs from the firmware only
+for a corrupted request.
+
 Command vocabulary
 ------------------
 
@@ -60,7 +90,7 @@ Command vocabulary
 
 ``rsw``
     The front-panel DIP switches, reported active-low, as
-    ``ok <two hex digits>``.
+    ``ok <hex>`` with no leading zero.
 
 ``get``
     The console-input poll. The response payload begins with a fixed
@@ -158,18 +188,20 @@ Command vocabulary
     a two-module Origin 200's slave controller would power off only its
     own module. The controller does not track module power, so it never
     gives the firmware's bare ``ok`` to a ``pwr d`` sent while its
-    module is off. Both supplies are modelled healthy. An unknown
-    subcommand letter is ``err cmd``, but a known letter with a bad or
-    extra argument is ``err arg``.
+    module is off. Both supplies are modelled healthy. The letter comes
+    from the character reader, and a letter the controller does not
+    know is ``err arg``. ``pwr c`` takes an optional off interval, read
+    like the ``pwr d`` delay, from 5 to 0x258 seconds; anything outside
+    that is ``err arg``, and the model restarts at once whatever the
+    interval.
 
 ``hbt [<interval> [<cycle>]]``
-    Heartbeat / NMI-watchdog control. ``hbt`` alone sends one
-    heartbeat and ``hbt 0`` disables monitoring. Both arguments are
-    hex, like every other numeric argument: the interval is ``5`` to
-    ``258`` seconds, and the optional second argument is the wait from
-    the NMI to the controller's power cycle. A malformed or
-    out-of-range argument is ``err arg``; everything else answers a
-    plain ``ok``. IRIX 6.5.30 sends ``hbt 30 20`` only when its
+    Heartbeat / NMI-watchdog control. ``hbt`` with no readable value
+    sends one heartbeat and ``hbt 0`` disables monitoring. Both
+    values come from the hex reader: the interval is ``5`` to ``258``
+    seconds, and the optional second value is the wait from the NMI to
+    the controller's power cycle. An interval out of range is
+    ``err arg``; everything else answers a plain ``ok``. IRIX 6.5.30 sends ``hbt 30 20`` only when its
     heartbeat tunable is set, which it is not by default, so the model
     validates the request and arms no timer: no missed-heartbeat NMI
     or power cycle is modelled.
@@ -228,9 +260,8 @@ Command vocabulary
     (:ref:`sgi-origin2000-module-identity`). On an Origin 200 no
     one-wire device is modelled on it, so the open-drain line idles high
     and every sample reads ``1`` -- a modelling choice, not a datasheet
-    value. A malformed argument list
-    is ``err arg``; a bare ``nic`` or junk with no space delimiter
-    (``nicx``) is ``err cmd``.
+    value. The three values come from the hex reader, and any of them
+    missing is ``err arg``.
 
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
