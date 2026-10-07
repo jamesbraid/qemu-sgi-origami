@@ -19,5 +19,6 @@ void sgi_sn1_router_set_changed(SGISN1RouterState *s,
     void (*changed)(void *), void *opaque);
 
 void sgi_sn1_router_lock_cables(SGISN1RouterState *s);
+void sgi_sn1_router_enable_synthetic_diagnostics(SGISN1RouterState *s);
 
 #endif

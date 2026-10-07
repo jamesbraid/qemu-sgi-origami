@@ -6533,6 +6533,187 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
 #define ROUTED_TOPOLOGY \
     "origin300,topology=origin300-numalink-pci-expansion-experiment"
 
+static uint64_t routed_uart_read(void *opaque, uint64_t offset);
+static void routed_uart_write(void *opaque, uint64_t offset, uint64_t value);
+
+static void routed_diagnostic_l1_query(QTestState *qts, uint8_t reply[16])
+{
+    SGIL1TestIO io = { qts, routed_uart_read, routed_uart_write };
+    uint8_t request[8] = { 0x13 };
+    uint8_t frame[32];
+
+    stl_be_p(request + 1, (0x54u << 12) | 6);
+    stw_be_p(request + 5, 3);
+    sgi_l1_test_send_io(&io, request, sizeof(request), false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(&io, frame, sizeof(frame)), ==, 16);
+    memcpy(reply, frame, 16);
+    g_assert_cmphex(reply[0], ==, 0x33);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmphex(reply[15], ==, 0x52);
+}
+
+static void routed_diagnostic_vector_route(QTestState *qts, uint64_t address,
+                                           bool write, uint64_t data,
+                                           uint64_t route, unsigned failure,
+                                           uint64_t result)
+{
+    const uint64_t lb = EXPANSION_LB_LOCAL + 0x60c000;
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    const uint64_t params = address | (UINT64_C(0x1c8) << 40);
+
+    qtest_readq(qts, lb + 0x38);
+    qtest_writeq(qts, lb + 0x30, sentinel);
+    qtest_writeq(qts, lb + 0x08, route);
+    qtest_writeq(qts, lb + 0x10, data);
+    qtest_writeq(qts, lb, params | write);
+    g_assert_cmphex(qtest_readq(qts, lb + 0x20), ==,
+                    (UINT64_C(1) << 63) | params |
+                    (failure ? failure : write));
+    g_assert_cmphex(qtest_readq(qts, lb + 0x30), ==,
+                    failure || write ? sentinel : result);
+}
+
+static void routed_diagnostic_vector(QTestState *qts, uint64_t address,
+                                     bool write, uint64_t data,
+                                     unsigned failure, uint64_t result)
+{
+    routed_diagnostic_vector_route(qts, address, write, data, 0,
+                                   failure, result);
+}
+
+static void test_routed_synthetic_diagnostics(void)
+{
+    static const uint64_t addresses[] = { 0x30, 0x38, 0x40, 0x48 };
+    static const uint64_t initial[] = { 0, 0x3fffc00, 0, 0 };
+    static const uint64_t masks[] = { 0, 0x3ff, UINT64_C(0x1ffffffff),
+                                      UINT64_C(0x3ffffffff) };
+    static const uint64_t observed[] = {
+        0, 0x8, 0x10, 0x18, 0x20, 0x28, 0x50,
+        0x100, 0x10000, 0x10008, 0x10100, 0x10200,
+        0x20800, 0x20808, 0x30800, 0x30808,
+    };
+    uint64_t before[G_N_ELEMENTS(observed)];
+    uint64_t route_before;
+    uint8_t l1_before[16], l1_after[16];
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=router-test,"
+        "router=/machine/module3/router "
+        "-nodefaults -display none", prom, image);
+    const uint64_t patterns[] = { UINT64_MAX, UINT64_C(0x123456789abcdef0),
+                                  UINT64_C(0xaaaaaaaaaaaaaaaa) };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        routed_diagnostic_vector(qts, addresses[i], false, 0, 0, initial[i]);
+    }
+    expansion_vector(qts, 0x10000, true, 0x12345);
+    expansion_vector(qts, 0x10200, true, 3);
+    expansion_vector(qts, 0x10100, true, 5);
+    expansion_vector(qts, 0x100, true, 0x98765);
+    for (unsigned i = 0; i < G_N_ELEMENTS(observed); i++) {
+        before[i] = expansion_vector(qts, observed[i], false, 0);
+    }
+    g_assert_cmphex(before[0] & ((UINT64_C(1) << 37) |
+                                   (UINT64_C(1) << 43) |
+                                   (UINT64_C(1) << 47)), ==,
+                    (UINT64_C(1) << 37) | (UINT64_C(1) << 43) |
+                    (UINT64_C(1) << 47));
+    route_before = qom_get_uint(qts, "/machine/peripheral/router-test",
+                                "route");
+    g_assert_cmphex(route_before, ==, 1 | (3 << 8));
+    routed_diagnostic_l1_query(qts, l1_before);
+    for (unsigned i = 1; i < G_N_ELEMENTS(addresses); i++) {
+        for (unsigned j = 0; j < G_N_ELEMENTS(patterns); j++) {
+            uint64_t expected = (patterns[j] & masks[i]) |
+                                (i == 1 ? initial[i] : 0);
+
+            routed_diagnostic_vector(qts, addresses[i], true, patterns[j],
+                                     0, 0);
+            routed_diagnostic_vector(qts, addresses[i], false, 0, 0,
+                                     expected);
+        }
+    }
+    routed_diagnostic_vector(qts, 0x30, true, 0, 0, 0);
+    routed_diagnostic_vector(qts, 0x30, true, 1, 5, 0);
+    routed_diagnostic_vector(qts, 0x30, false, 0, 0, 0);
+    routed_diagnostic_vector(qts, 0x10030, false, 0, 4, 0);
+    routed_diagnostic_vector(qts, 0x10030, true, 0, 4, 0);
+    routed_diagnostic_vector(qts, 0x10038, false, 0, 4, 0);
+    routed_diagnostic_vector(qts, 0x10038, true, 0, 4, 0);
+    routed_diagnostic_vector(qts, 0x58, false, 0, 4, 0);
+    routed_diagnostic_vector_route(qts, 0x38, false, 0, 9, 4, 0);
+    /* The adapter rejects partial width before it reaches the router. */
+    qtest_readl(qts, 0x10000000 + 0x38);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                  "result"), ==, 1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                  "failure"), ==, 4);
+    for (unsigned i = 0; i < G_N_ELEMENTS(observed); i++) {
+        g_assert_cmphex(expansion_vector(qts, observed[i], false, 0), ==,
+                        before[i]);
+    }
+    g_assert_cmphex(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                   "route"), ==, route_before);
+    routed_diagnostic_l1_query(qts, l1_after);
+    g_assert_cmpmem(l1_after, sizeof(l1_after), l1_before,
+                    sizeof(l1_before));
+    qtest_system_reset(qts);
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        routed_diagnostic_vector(qts, addresses[i], false, 0, 0, initial[i]);
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
+static void test_routed_synthetic_diagnostics_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *dir = g_dir_make_tmp("router-diag-migrate-XXXXXX",
+                                         &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    from = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none", prom, image);
+    to = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none -incoming defer", prom, image);
+    routed_diagnostic_vector(from, 0x38, true, 0x2a5, 0, 0);
+    routed_diagnostic_vector(from, 0x40, true, UINT64_C(0x112345678), 0, 0);
+    routed_diagnostic_vector(from, 0x48, true, UINT64_C(0x312345678), 0, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    routed_diagnostic_vector(to, 0x38, false, 0, 0, 0x3fffc00 | 0x2a5);
+    routed_diagnostic_vector(to, 0x40, false, 0, 0,
+                             UINT64_C(0x112345678));
+    routed_diagnostic_vector(to, 0x48, false, 0, 0,
+                             UINT64_C(0x312345678));
+    qtest_quit(from);
+    qtest_quit(to);
+    if (unlink(socket) < 0) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_rmdir(dir);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
 static void routed_set_bool(QTestState *qts, const char *path,
                             const char *property, bool value)
 {
@@ -8525,6 +8706,10 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_routed_composer);
     qtest_add_func("sn/builder/routed/attachment-lock",
                    test_routed_attachment_lock);
+    qtest_add_func("sn/builder/routed/synthetic-diagnostics",
+                   test_routed_synthetic_diagnostics);
+    qtest_add_func("sn/builder/routed/synthetic-diagnostics-migration",
+                   test_routed_synthetic_diagnostics_migration);
     qtest_add_func("sn/builder/routed/standalone-attachment",
                    test_routed_standalone_attachment);
     qtest_add_func("sn/builder/routed/partial-memory-cleanup",
