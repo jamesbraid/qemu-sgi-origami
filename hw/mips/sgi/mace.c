@@ -5,6 +5,9 @@
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/mace.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_device.h"
+#include "hw/pci/pci_host.h"
 #include "hw/mips/sgi/mace-timer.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
@@ -16,6 +19,19 @@
 
 #define MACE_APERTURE_SIZE 0x400000
 #define MACE_RING_BASE     0x310000
+#define MACE_PCI_BASE      0x080000
+#define MACE_PCI_SIZE      0x080000
+#define MACE_PCI_ERROR_ADDR  0x0000
+#define MACE_PCI_ERROR_FLAGS 0x0004
+#define MACE_PCI_CONTROL     0x0008
+#define MACE_PCI_REVISION    0x000c
+#define MACE_PCI_CFGADDR     0x0cf8
+#define MACE_PCI_CFGDATA     0x0cfc
+#define MACE_PCI_MASTER_ABORT (1U << 31)
+#define MACE_PCI_ADDR_VALID   (1U << 19)
+#define MACE_PCI_CONFIG_ADDR  (1U << 20)
+#define MACE_PCI_SUPPORTED_CONTROL (0x800000ffU)
+#define MACE_PCI_NO_PIN 8
 #define MACE_UART_A        0x390000
 #define MACE_UART_B        0x398000
 #define MACE_ISTAT         0x310010
@@ -33,9 +49,14 @@ typedef struct MACEUARTPort {
 } MACEUARTPort;
 
 struct SGIMACEState {
-    SysBusDevice parent_obj;
+    PCIHostState parent_obj;
     MemoryRegion aperture;
     MemoryRegion regs;
+    MemoryRegion pci_regs;
+    MemoryRegion pci_memory;
+    MemoryRegion pci_io;
+    MemoryRegion pci_mem_block;
+    MemoryRegion pci_io_block;
     DS1685State rtc;
     SerialState uart[2];
     MACEUARTPort uart_port[2];
@@ -50,6 +71,12 @@ struct SGIMACEState {
     uint32_t compare[3];
     uint64_t compare_due[3];
     bool compare_programmed[3];
+    uint32_t pci_control;
+    uint32_t pci_config_addr;
+    uint32_t pci_error_addr;
+    uint32_t pci_error_flags;
+    uint8_t pci_wire_level;
+    uint8_t pci_bus_level;
 };
 
 static uint64_t mace_elapsed_ticks(SGIMACEState *s)
@@ -84,6 +111,275 @@ static void mace_uart_irq(void *opaque, int n, int level)
     s->istat = (s->istat & ~bit) | (level ? bit : 0);
     mace_update_irqs(s);
 }
+
+static void mace_update_pci_irqs(SGIMACEState *s)
+{
+    unsigned i;
+
+    qemu_set_irq(s->crime[7],
+                 (s->pci_error_flags & s->pci_control &
+                  MACE_PCI_MASTER_ABORT) != 0);
+    for (i = 0; i < 8; i++) {
+        bool level = ((s->pci_wire_level | s->pci_bus_level) & (1U << i)) &&
+                     (s->pci_control & (1U << i));
+
+        qemu_set_irq(s->crime[8 + i], level);
+    }
+}
+
+static void mace_pci_wire_irq(void *opaque, int n, int level)
+{
+    SGIMACEState *s = opaque;
+
+    s->pci_wire_level = (s->pci_wire_level & ~(1U << n)) |
+                        ((level != 0) << n);
+    mace_update_pci_irqs(s);
+}
+
+static void mace_pci_set_irq(void *opaque, int n, int level)
+{
+    SGIMACEState *s = opaque;
+
+    if (n == MACE_PCI_NO_PIN) {
+        if (level) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-mace: PCI device asserted an unwired pin\n");
+        }
+        return;
+    }
+    s->pci_bus_level = (s->pci_bus_level & ~(1U << n)) |
+                       ((level != 0) << n);
+    mace_update_pci_irqs(s);
+}
+
+static int mace_pci_map_irq(PCIDevice *dev, int pin)
+{
+    static const int slot0[4] = { 2, 5, 6, 7 };
+    unsigned slot = PCI_SLOT(dev->devfn);
+
+    if ((slot == 1 || slot == 2) && pin == 0) {
+        return slot - 1;
+    }
+    if (slot == 3) {
+        return slot0[pin];
+    }
+    return MACE_PCI_NO_PIN;
+}
+
+static void mace_pci_master_abort(SGIMACEState *s, uint32_t addr)
+{
+    if (!(s->pci_error_flags & MACE_PCI_ADDR_VALID)) {
+        s->pci_error_addr = addr;
+    }
+    s->pci_error_flags |= MACE_PCI_MASTER_ABORT | MACE_PCI_ADDR_VALID |
+                          MACE_PCI_CONFIG_ADDR;
+    mace_update_pci_irqs(s);
+}
+
+static bool mace_pci_config_claimed(SGIMACEState *s, uint32_t addr)
+{
+    PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
+
+    return pci_find_device(bus, addr >> 16, (addr >> 8) & 0xff) != NULL;
+}
+
+static uint32_t mace_pci_config_address(SGIMACEState *s, hwaddr offset,
+                                        unsigned size)
+{
+    unsigned lane = offset - MACE_PCI_CFGDATA;
+
+    return (s->pci_config_addr & ~3U) | (lane ^ (4 - size));
+}
+
+static bool mace_pci_listed(hwaddr offset)
+{
+    switch (offset & ~3ULL) {
+    case MACE_PCI_ERROR_ADDR:
+    case MACE_PCI_ERROR_FLAGS:
+    case MACE_PCI_CONTROL:
+    case MACE_PCI_REVISION:
+    case MACE_PCI_CFGADDR:
+    case MACE_PCI_CFGDATA:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static MemTxResult mace_pci_read(void *opaque, hwaddr offset, uint64_t *value,
+                                 unsigned size, MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint32_t addr;
+
+    if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
+        size <= 4 && offset + size <= MACE_PCI_CFGDATA + 4) {
+        addr = mace_pci_config_address(s, offset, size);
+        if (!mace_pci_config_claimed(s, addr)) {
+            mace_pci_master_abort(s, addr);
+            *value = MAKE_64BIT_MASK(0, size * 8);
+            return MEMTX_OK;
+        }
+        *value = pci_data_read(PCI_HOST_BRIDGE(s)->bus, addr, size);
+        return MEMTX_OK;
+    }
+    if (!mace_pci_listed(offset)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: unlisted PCI host read at 0x%" HWADDR_PRIx
+                      "\n", offset);
+        *value = MAKE_64BIT_MASK(0, size * 8);
+        return MEMTX_OK;
+    }
+    if (size != 4 || (offset & 3)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-mace: illegal PCI host read width/address\n");
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    switch (offset) {
+    case MACE_PCI_ERROR_ADDR:
+        *value = s->pci_error_addr;
+        return MEMTX_OK;
+    case MACE_PCI_ERROR_FLAGS:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: PCI fixed error capability bits unresolved\n");
+        *value = s->pci_error_flags;
+        return MEMTX_OK;
+    case MACE_PCI_CONTROL:
+        *value = s->pci_control;
+        return MEMTX_OK;
+    case MACE_PCI_REVISION:
+        *value = 1;
+        return MEMTX_OK;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: unlisted PCI host read at 0x%" HWADDR_PRIx
+                      "\n", offset);
+        *value = 0xffffffff;
+        return MEMTX_OK;
+    }
+}
+
+static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint32_t addr, unsupported;
+
+    if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
+        size <= 4 && offset + size <= MACE_PCI_CFGDATA + 4) {
+        addr = mace_pci_config_address(s, offset, size);
+        if (!mace_pci_config_claimed(s, addr)) {
+            mace_pci_master_abort(s, addr);
+            return MEMTX_OK;
+        }
+        if ((addr & 0xfc) == 0x04) {
+            unsigned shift = (addr & 3) * 8;
+            uint64_t mask = MAKE_64BIT_MASK(0, size * 8) << shift;
+            uint32_t old = pci_data_read(PCI_HOST_BRIDGE(s)->bus,
+                                         addr & ~3U, 4);
+            uint32_t next = (old & ~mask) | (value << shift);
+
+            if (next & 7) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace: PCI BAR and bus-master enables "
+                              "require a reviewed address view\n");
+                return MEMTX_ERROR;
+            }
+        }
+        if (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28) ||
+            (addr & 0xfc) == 0x30) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-mace: PCI BAR programming is unsupported\n");
+            return MEMTX_ERROR;
+        }
+        pci_data_write(PCI_HOST_BRIDGE(s)->bus, addr, value, size);
+        return MEMTX_OK;
+    }
+    if (!mace_pci_listed(offset)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: unlisted PCI host write at 0x%" HWADDR_PRIx
+                      "\n", offset);
+        return MEMTX_OK;
+    }
+    if (size != 4 || (offset & 3)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-mace: illegal PCI host write width/address\n");
+        return MEMTX_ERROR;
+    }
+    switch (offset) {
+    case MACE_PCI_ERROR_FLAGS:
+        if (!(value & MACE_PCI_MASTER_ABORT)) {
+            s->pci_error_flags &= ~(MACE_PCI_MASTER_ABORT |
+                                    MACE_PCI_ADDR_VALID);
+        }
+        mace_update_pci_irqs(s);
+        return MEMTX_OK;
+    case MACE_PCI_CONTROL:
+        unsupported = value & ~MACE_PCI_SUPPORTED_CONTROL;
+        if (unsupported) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-mace: unsupported PCI control bits 0x%" PRIx32
+                          "\n", unsupported);
+            return MEMTX_ERROR;
+        }
+        s->pci_control = value;
+        mace_update_pci_irqs(s);
+        return MEMTX_OK;
+    case MACE_PCI_REVISION:
+        /* The write side invalidates prefetch buffers, which are absent. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: PCI read-buffer flush is unsupported\n");
+        return MEMTX_ERROR;
+    case MACE_PCI_CFGADDR:
+        s->pci_config_addr = value & 0x00fffffcU;
+        return MEMTX_OK;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: unlisted PCI host write at 0x%" HWADDR_PRIx
+                      "\n", offset);
+        return MEMTX_OK;
+    }
+}
+
+static const MemoryRegionOps mace_pci_ops = {
+    .read_with_attrs = mace_pci_read,
+    .write_with_attrs = mace_pci_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static MemTxResult mace_pci_dma_block_read(void *opaque, hwaddr offset,
+                                           uint64_t *value, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-mace: PCI bus-master host-memory read is unsupported\n");
+    *value = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult mace_pci_dma_block_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-mace: PCI bus-master host-memory write is unsupported\n");
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps mace_pci_dma_block_ops = {
+    .read_with_attrs = mace_pci_dma_block_read,
+    .write_with_attrs = mace_pci_dma_block_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
 
 static void mace_schedule_compare(SGIMACEState *s)
 {
@@ -287,6 +583,12 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->ring_base = 1;
     s->istat = 0;
     s->imask = 0;
+    s->pci_control = 0;
+    s->pci_config_addr = 0;
+    s->pci_error_addr = 0;
+    s->pci_error_flags = 0;
+    s->pci_wire_level = 0;
+    s->pci_bus_level = 0;
     memset(s->compare, 0, sizeof(s->compare));
     for (i = 0; i < ARRAY_SIZE(s->compare_due); i++) {
         s->compare_due[i] = UINT64_MAX;
@@ -299,6 +601,7 @@ static void mace_reset_hold(Object *obj, ResetType type)
     serial_set_rx_discard(&s->uart[0], true);
     serial_set_rx_discard(&s->uart[1], true);
     qemu_set_irq(s->isa_reset, 1);
+    mace_update_pci_irqs(s);
 }
 
 static int mace_pre_save(void *opaque)
@@ -317,6 +620,7 @@ static int mace_post_load(void *opaque, int version_id)
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                   s->saved_elapsed_ns;
     mace_update_irqs(s);
+    mace_update_pci_irqs(s);
     serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
     serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
@@ -338,6 +642,12 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT32_ARRAY(compare, SGIMACEState, 3),
         VMSTATE_UINT64_ARRAY(compare_due, SGIMACEState, 3),
         VMSTATE_BOOL_ARRAY(compare_programmed, SGIMACEState, 3),
+        VMSTATE_UINT32(pci_control, SGIMACEState),
+        VMSTATE_UINT32(pci_config_addr, SGIMACEState),
+        VMSTATE_UINT32(pci_error_addr, SGIMACEState),
+        VMSTATE_UINT32(pci_error_flags, SGIMACEState),
+        VMSTATE_UINT8(pci_wire_level, SGIMACEState),
+        VMSTATE_UINT8(pci_bus_level, SGIMACEState),
         VMSTATE_STRUCT_ARRAY(uart, SGIMACEState, 2, 0, vmstate_serial,
                              SerialState),
         VMSTATE_END_OF_LIST()
@@ -357,6 +667,7 @@ static void mace_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->isa_reset, "isa-reset", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_rtc_irq, "rtc", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_uart_irq, "uart", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_pci_wire_irq, "pci", 8);
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_DS1685);
     object_initialize_child(obj, "uart-a", &s->uart[0], TYPE_SERIAL);
     object_initialize_child(obj, "uart-b", &s->uart[1], TYPE_SERIAL);
@@ -405,6 +716,40 @@ static void mace_realize(DeviceState *dev, Error **errp)
                                             i ? MACE_UART_B : MACE_UART_A,
                                             &port->mmio, 1);
     }
+
+    memory_region_init_io(&s->pci_regs, OBJECT(dev), &mace_pci_ops, s,
+                          "sgi-mace-pci-regs", MACE_PCI_SIZE);
+    memory_region_add_subregion_overlap(&s->aperture, MACE_PCI_BASE,
+                                        &s->pci_regs, 1);
+    memory_region_init(&s->pci_memory, OBJECT(dev), "sgi-mace-pci-memory",
+                       1ULL << 32);
+    memory_region_init(&s->pci_io, OBJECT(dev), "sgi-mace-pci-io",
+                       1ULL << 32);
+    memory_region_init_io(&s->pci_mem_block, OBJECT(dev),
+                          &mace_pci_dma_block_ops, s,
+                          "sgi-mace-pci-memory-blocked", 1ULL << 31);
+    memory_region_init_io(&s->pci_io_block, OBJECT(dev),
+                          &mace_pci_dma_block_ops, s,
+                          "sgi-mace-pci-io-blocked", 1ULL << 31);
+    memory_region_add_subregion_overlap(&s->pci_memory, 0,
+                                        &s->pci_mem_block, 2);
+    memory_region_add_subregion_overlap(&s->pci_io, 0,
+                                        &s->pci_io_block, 2);
+    PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, "mace.0",
+        mace_pci_set_irq, mace_pci_map_irq, s,
+        &s->pci_memory, &s->pci_io, PCI_DEVFN(0, 0), 9, TYPE_PCI_BUS);
+    pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
+                                   ~((1U << 1) | (1U << 2) | (1U << 3)));
+}
+
+static void mace_unrealize(DeviceState *dev)
+{
+    PCIHostState *phb = PCI_HOST_BRIDGE(dev);
+
+    if (phb->bus) {
+        pci_unregister_root_bus(phb->bus);
+        phb->bus = NULL;
+    }
 }
 
 static void mace_class_init(ObjectClass *oc, const void *data)
@@ -414,6 +759,7 @@ static void mace_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI MACE 2.0 I/O controller";
     dc->realize = mace_realize;
+    dc->unrealize = mace_unrealize;
     dc->user_creatable = true;
     dc->vmsd = &vmstate_mace;
     rc->phases.hold = mace_reset_hold;
@@ -421,7 +767,7 @@ static void mace_class_init(ObjectClass *oc, const void *data)
 
 static const TypeInfo mace_type_info = {
     .name = TYPE_SGI_MACE,
-    .parent = TYPE_SYS_BUS_DEVICE,
+    .parent = TYPE_PCI_HOST_BRIDGE,
     .instance_size = sizeof(SGIMACEState),
     .instance_init = mace_init,
     .instance_finalize = mace_finalize,
