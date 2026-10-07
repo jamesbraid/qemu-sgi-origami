@@ -323,6 +323,86 @@ static void test_uart_receive_backends(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+static QTestState *mace_start_uart_socket(const char *path,
+                                          const char *extra)
+{
+    QTestState *s = qtest_initf("-M none -cpu R10000 "
+        "-chardev socket,id=port-a,path=%s,server=on,wait=off "
+        "-device sgi-mace,id=mace,chardev-a=port-a %s", path, extra);
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/mace", 0, MACE_BASE);
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/mace", "crime");
+    return s;
+}
+
+static void test_uart_receive_after_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("mace-uart-migrate-XXXXXX",
+                                                &error);
+    g_autofree char *source_path = NULL;
+    g_autofree char *target_path = NULL;
+    g_autofree char *migration_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    int source_fd, target_fd;
+    uint8_t first = 'M', held = 'x', second = 'N';
+
+    g_assert_no_error(error);
+    source_path = g_build_filename(directory, "source.sock", NULL);
+    target_path = g_build_filename(directory, "target.sock", NULL);
+    migration_path = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", migration_path);
+    from = mace_start_uart_socket(source_path, "");
+    to = mace_start_uart_socket(target_path, "-incoming defer");
+    source_fd = mace_connect_socket(source_path);
+    target_fd = mace_connect_socket(target_path);
+
+    qtest_writeq(from, MACE_RING_BASE, 0);
+    qtest_writeq(from, MACE_IMASK, MACE_UART_A_INT);
+    qtest_writeb(from, MACE_UART_A + 0x100, 0x01);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readq(to, MACE_RING_BASE) & 1, ==, 0);
+
+    g_assert_cmpint(write(target_fd, &first, 1), ==, 1);
+    sgi_wait_socket_read(target_fd);
+    g_assert_cmphex(qtest_readb(to, MACE_UART_A + 0x500) & 1, ==, 1);
+    g_assert_true(qtest_readq(to, MACE_ISTAT) & MACE_UART_A_INT);
+    g_assert_true(qtest_get_irq(to, 4));
+    g_assert_cmphex(qtest_readb(to, MACE_UART_A), ==, first);
+    g_assert_false(qtest_get_irq(to, 4));
+
+    qtest_writeq(to, MACE_RING_BASE, 1);
+    g_assert_cmpint(write(target_fd, &held, 1), ==, 1);
+    sgi_wait_socket_read(target_fd);
+    qtest_writeq(to, MACE_RING_BASE, 0);
+    qtest_writeb(to, MACE_UART_A + 0x100, 0x01);
+    g_assert_cmphex(qtest_readb(to, MACE_UART_A + 0x500) & 1, ==, 0);
+    g_assert_false(qtest_readq(to, MACE_ISTAT) & MACE_UART_A_INT);
+    g_assert_false(qtest_get_irq(to, 4));
+
+    g_assert_cmpint(write(target_fd, &second, 1), ==, 1);
+    sgi_wait_socket_read(target_fd);
+    g_assert_cmphex(qtest_readb(to, MACE_UART_A), ==, second);
+    close(source_fd);
+    close(target_fd);
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(source_path, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(source_path), ==, 0);
+    }
+    if (g_file_test(target_path, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(target_path), ==, 0);
+    }
+    if (g_file_test(migration_path, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(migration_path), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -344,5 +424,7 @@ int main(int argc, char **argv)
                    test_reset_after_pending_sources);
     qtest_add_func("/sgi/mace/uart-receive-backends",
                    test_uart_receive_backends);
+    qtest_add_func("/sgi/mace/uart-receive-after-migration",
+                   test_uart_receive_after_migration);
     return g_test_run();
 }
