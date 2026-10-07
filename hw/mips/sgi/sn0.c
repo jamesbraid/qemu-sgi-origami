@@ -1105,15 +1105,15 @@ static void sn0_node_create_hub(SN0NodeState *node)
          SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
         (identity->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
     /*
-     * The ELSC's address answers only where this Hub's I2C bus carries one
-     * (identity->system_controller); the NVRAM behind it answers wherever the
-     * Hub carries an I2C controller at all (identity->i2c_controller);
-     * Origin 2000's Hub has one without an embedded ELSC. Both are 0 (unread:
-     * sgi-hub.c guards each with its population bit) where the fact does not
-     * apply.
+     * The ELSC and its configuration NVRAM answer only where this Hub's I2C
+     * bus carries the ELSC (identity->system_controller). The NVRAM belongs
+     * to the controller, not the node: Origin 2000's Hub carries an I2C
+     * controller without an embedded ELSC, and its module's one store sits
+     * on the shared module bus instead. Both are 0 (unread: sgi-hub.c guards
+     * each with its population bit) where the fact does not apply.
      */
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
-                         identity->i2c_controller ?
+                         identity->system_controller ?
                          SN0_HUB_I2C_NVRAM_PAGES : 0);
     qdev_prop_set_uint64(DEVICE(&node->hub), "i2c-controller-offset",
                          SN0_HUB_MODULE_ADAPTER_OFFSET);
@@ -1121,7 +1121,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
                         identity->system_controller ?
                         SN0_HUB_I2C_ELSC_ADDR : 0);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-first-addr",
-                        identity->i2c_controller ?
+                        identity->system_controller ?
                         SN0_HUB_I2C_NVRAM_FIRST_ADDR : 0);
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);

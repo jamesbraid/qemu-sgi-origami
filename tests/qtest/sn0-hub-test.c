@@ -3332,55 +3332,26 @@ static bool hub_has_child(QTestState *qts, const char *name)
     return qom_child_count(qts, "/machine/node0/hub", name, NULL) == 1;
 }
 
-static void assert_hub_nvram_pages(QTestState *qts,
-                                   unsigned int expected_pages)
+/*
+ * The embedded ELSC's configuration NVRAM: one store of eight 256-byte
+ * blocks, its first at I2C address 0x50.
+ */
+static void assert_hub_nvram_store(QTestState *qts)
 {
-    const char *bus_path = "/machine/node0/hub/i2c/i2c";
-    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
-                                     " 'arguments': { 'path': %s } }",
-                                     bus_path);
-    QList *children;
-    const QListEntry *entry;
-    uint32_t addresses = 0;
-    unsigned int count = 0;
+    QDict *type = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                                 " 'arguments': { 'path': %s,"
+                                 " 'property': 'type' } }",
+                                 "/machine/node0/hub/nvram");
+    QDict *address = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+                                    " 'arguments': { 'path': %s,"
+                                    " 'property': 'address' } }",
+                                    "/machine/node0/hub/nvram");
 
-    g_assert_true(qdict_haskey(response, "return"));
-    children = qdict_get_qlist(response, "return");
-    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
-        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *type = qdict_get_try_str(child, "type");
-        QDict *target;
-        QDict *address_response;
-        uint64_t address;
-
-        if (!type || !g_str_equal(type, "link<at24c-eeprom>")) {
-            continue;
-        }
-
-        target = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                                " 'arguments': { 'path': %s,"
-                                " 'property': %s } }",
-                                bus_path, qdict_get_str(child, "name"));
-        g_assert_true(qdict_haskey(target, "return"));
-        address_response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
-                                          " 'arguments': { 'path': %s,"
-                                          " 'property': 'address' } }",
-                                          qdict_get_str(target, "return"));
-        g_assert_true(qdict_haskey(address_response, "return"));
-        address = qdict_get_int(address_response, "return");
-        g_assert_cmpuint(address, >=, 0x50);
-        g_assert_cmpuint(address, <, 0x50 + expected_pages);
-        g_assert_false(addresses & (1U << (address - 0x50)));
-        addresses |= 1U << (address - 0x50);
-        count++;
-
-        qobject_unref(address_response);
-        qobject_unref(target);
-    }
-
-    g_assert_cmpuint(count, ==, expected_pages);
-    g_assert_cmphex(addresses, ==, (1U << expected_pages) - 1);
-    qobject_unref(response);
+    g_assert_true(hub_has_child(qts, "nvram"));
+    g_assert_cmpstr(qdict_get_str(type, "return"), ==, "sgi-elsc-nvram");
+    g_assert_cmpuint(qdict_get_int(address, "return"), ==, 0x50);
+    qobject_unref(type);
+    qobject_unref(address);
 }
 
 static void test_the_default_population_remains_fitted(const void *data)
@@ -3390,7 +3361,7 @@ static void test_the_default_population_remains_fitted(const void *data)
     g_assert_true(hub_has_child(qts, "i2c"));
     g_assert_true(hub_has_child(qts, "elsc"));
     g_assert_true(hub_has_child(qts, "onewire-part"));
-    assert_hub_nvram_pages(qts, 8);
+    assert_hub_nvram_store(qts);
 }
 
 static void test_model_population_overrides_class_globals(const void *data)
@@ -3404,7 +3375,7 @@ static void test_model_population_overrides_class_globals(const void *data)
     g_assert_true(hub_has_child(qts, "i2c"));
     g_assert_true(hub_has_child(qts, "elsc"));
     g_assert_true(hub_has_child(qts, "onewire-part"));
-    assert_hub_nvram_pages(qts, 8);
+    assert_hub_nvram_store(qts);
 
     qtest_quit(qts);
 }

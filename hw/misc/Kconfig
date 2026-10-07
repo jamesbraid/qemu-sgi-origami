@@ -277,7 +277,7 @@ config SGI_HUB
     select SGI_BOARD_RECORD
     select SGI_PI_GFX
     select SGI_PIO_FORWARD
-    select AT24C
+    select SGI_ELSC_NVRAM
     select ONEWIRE
     select PCF8584
     select SERIAL
@@ -291,7 +291,7 @@ config SGI_ELSC
 
 config SGI_O2000_MODULE_MGMT
     bool
-    select AT24C
+    select SGI_ELSC_NVRAM
     select PCF8584
     select SGI_ELSC
 

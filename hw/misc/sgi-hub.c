@@ -20,7 +20,7 @@
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-onewire-slot.h"
-#include "hw/nvram/eeprom_at24c.h"
+#include "hw/nvram/sgi-elsc-nvram.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -257,10 +257,6 @@
 
 /* The PCF8584 (hw/i2c/pcf8584.c) is mapped over this window in realize. */
 #define HUB_MD_I2C_BASE         0x220000  /* PCF8584, S0 then S1 eight on */
-
-#define ELSC_NVRAM_PAGE_COUNT   8
-#define ELSC_NVRAM_PAGE_SIZE    256
-#define ELSC_NVRAM_RESERVED_PAGE 7
 
 /*
  * The junk-bus UART: an NS16550 at an eight-byte stride, which belongs to the
@@ -4930,9 +4926,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                    "addresses");
         return;
     }
-    if (s->i2c_nvram_pages > ELSC_NVRAM_PAGE_COUNT) {
-        error_setg(errp, "Hub I2C NVRAM has at most %u pages",
-                   ELSC_NVRAM_PAGE_COUNT);
+    if (s->i2c_nvram_pages && s->i2c_nvram_pages != SGI_ELSC_NVRAM_BLOCKS) {
+        error_setg(errp, "Hub I2C NVRAM is one store of %u pages",
+                   SGI_ELSC_NVRAM_BLOCKS);
         return;
     }
     if (s->ni_revision > NI_STATUS_REVISION_MAX) {
@@ -5085,25 +5081,26 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     }
 
     /*
-     * The controller's 2 KiB NVRAM: eight I2C addresses of one 256-byte page
-     * each. Page 7 is the reserved page the PROM reads before probing a
-     * console; only its validity marker has a required value.
-    */
+     * The controller's 2 KiB configuration NVRAM: one store answering eight
+     * I2C addresses of one 256-byte block each (hw/nvram/sgi-elsc-nvram.c).
+     */
     if (s->i2c_nvram_pages) {
-        static const uint8_t reserved_page_defaults[16] = { 0x37 };
+        I2CSlave *nvram = i2c_slave_new(TYPE_SGI_ELSC_NVRAM,
+                                        s->i2c_nvram_first_addr);
 
-        for (n = 0; n < s->i2c_nvram_pages; n++) {
-            uint8_t address = s->i2c_nvram_first_addr + n;
-
-            if (n == ELSC_NVRAM_RESERVED_PAGE) {
-                at24c_eeprom_init_rom(s->i2c.bus, address,
-                                     ELSC_NVRAM_PAGE_SIZE,
-                                     reserved_page_defaults,
-                                     sizeof(reserved_page_defaults));
-            } else {
-                at24c_eeprom_init(s->i2c.bus, address,
-                                  ELSC_NVRAM_PAGE_SIZE);
-            }
+        object_property_add_child(OBJECT(s), "nvram", OBJECT(nvram));
+        qdev_prop_set_uint8(DEVICE(nvram), "config", s->i2c_nvram_config);
+        qdev_prop_set_uint8(DEVICE(nvram), "module", s->i2c_nvram_module);
+        qdev_prop_set_uint8(DEVICE(nvram), "clock", s->i2c_nvram_clock);
+        if (s->i2c_nvram_drive &&
+            !object_property_set_str(OBJECT(nvram), "drive",
+                                     s->i2c_nvram_drive, errp)) {
+            object_unparent(OBJECT(nvram));
+            object_unref(OBJECT(nvram));
+            return;
+        }
+        if (!i2c_slave_realize_and_unref(nvram, s->i2c.bus, errp)) {
+            return;
         }
     }
 
@@ -5461,7 +5458,14 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT8("i2c-nvram-first-addr", SGIHubState,
                       i2c_nvram_first_addr, 0),
     DEFINE_PROP_UINT32("i2c-nvram-pages", SGIHubState, i2c_nvram_pages,
-                       ELSC_NVRAM_PAGE_COUNT),
+                       SGI_ELSC_NVRAM_BLOCKS),
+    DEFINE_PROP_STRING("i2c-nvram-drive", SGIHubState, i2c_nvram_drive),
+    /* The Hub's embedded controller is the Origin 200 build. */
+    DEFINE_PROP_UINT8("i2c-nvram-config", SGIHubState, i2c_nvram_config,
+                      SGI_ELSC_NVRAM_CONFIG_AUTO_POWER),
+    DEFINE_PROP_UINT8("i2c-nvram-module", SGIHubState, i2c_nvram_module, 0),
+    DEFINE_PROP_UINT8("i2c-nvram-clock", SGIHubState, i2c_nvram_clock,
+                      SGI_ELSC_NVRAM_CLOCK_FULL),
     DEFINE_PROP_UINT8("onewire-kind", SGIHubState, onewire_kind,
                       SGI_HUB_ONEWIRE_BLANK_DS2505),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),

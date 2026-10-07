@@ -440,6 +440,7 @@ sn0_machine_qtests = \
                                                    'sn0-pi-link-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
+                                                   'sn0-elsc-nvram-test',
                                                    'sn0-widget-decode-test',
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-master-timeout-test',

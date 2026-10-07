@@ -5,6 +5,8 @@ system_ss.add(when: 'CONFIG_CHRP_NVRAM', if_true: files('chrp_nvram.c'))
 system_ss.add(when: 'CONFIG_DS1225Y', if_true: files('ds1225y.c'))
 system_ss.add(when: 'CONFIG_NMC93XX_EEPROM', if_true: files('eeprom93xx.c'))
 system_ss.add(when: 'CONFIG_AT24C', if_true: files('eeprom_at24c.c'))
+system_ss.add(when: 'CONFIG_SGI_ELSC_NVRAM',
+              if_true: files('sgi-elsc-nvram.c', 'sgi-elsc-nvram-image.c'))
 system_ss.add(when: 'CONFIG_MAC_NVRAM', if_true: files('mac_nvram.c'))
 system_ss.add(when: 'CONFIG_NPCM7XX', if_true: files('npcm7xx_otp.c'))
 system_ss.add(when: 'CONFIG_NRF51_SOC', if_true: files('nrf51_nvm.c'))

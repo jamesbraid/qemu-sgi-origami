@@ -13,6 +13,7 @@
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/nvram/sgi-elsc-nvram.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 
@@ -26,26 +27,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 #define SGI_O2000_WIRE_MASTERS      (SGI_O2000_ADAPTER_COUNT + 1)
 
 /*
- * 2048 addressable bytes of management NVRAM reached across eight consecutive
+ * The module controller's configuration NVRAM (hw/nvram/sgi-elsc-nvram.h):
+ * one 2048-byte store shared by the module's four Hubs, eight consecutive
  * slave addresses from 0x50, the top three bits of the eleven-bit byte
- * address choosing among them. Whether that is one part or several is
- * unestablished. The guest-visible logical space is the contract.
- *
- * The model builds it from eight 256-byte parts, which decides one thing the
- * contract does not: a sequential read running off the end of a page wraps to
- * the start of that same page, where one 2 KiB part occupying eight addresses
- * would carry on into the next.
+ * address choosing among them.
  */
-#define SGI_O2000_NVRAM_FIRST_ADDR  0x50
-#define SGI_O2000_NVRAM_ADDRESSES   8
-#define SGI_O2000_NVRAM_PAGE_BYTES  256
-#define SGI_O2000_NVRAM_BYTES \
-    (SGI_O2000_NVRAM_ADDRESSES * SGI_O2000_NVRAM_PAGE_BYTES)
+#define SGI_O2000_NVRAM_FIRST_ADDR  SGI_ELSC_NVRAM_FIRST_ADDR
+#define SGI_O2000_NVRAM_ADDRESSES   SGI_ELSC_NVRAM_BLOCKS
+#define SGI_O2000_NVRAM_PAGE_BYTES  SGI_ELSC_NVRAM_BLOCK_BYTES
+#define SGI_O2000_NVRAM_BYTES       SGI_ELSC_NVRAM_BYTES
 
 /* The controller's own reserved region, and the fields a boot reads from it. */
-#define SGI_O2000_NVRAM_RESERVED_PAGE   7
+#define SGI_O2000_NVRAM_RESERVED_PAGE   SGI_ELSC_NVRAM_CONTROLLER_BLOCK
 #define SGI_O2000_NVRAM_VALIDITY_OFFSET 0
-#define SGI_O2000_NVRAM_VALIDITY_VALUE  0x37
+#define SGI_O2000_NVRAM_VALIDITY_VALUE  SGI_ELSC_NVRAM_MARKER_VALUE
 #define SGI_O2000_NVRAM_MODULE_OFFSET   8
 
 /* The logical MSC endpoint. */
@@ -54,9 +49,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 struct SN0ModuleManagementState {
     DeviceState parent_obj;
 
-    /* Model-derived identity written into the reserved NVRAM region. */
+    /*
+     * Model-derived identity. The module number also seeds the NVRAM's
+     * module byte when no backing file supplies the store.
+     */
     uint8_t module_number;
     char *module_serial_text;
+    /* The block node or drive backing the NVRAM, or NULL. */
+    char *nvram_drive;
 
     /*
      * Which destructive actions this installation can carry out. Each is off

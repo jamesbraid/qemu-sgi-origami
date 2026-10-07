@@ -392,6 +392,33 @@ static void nvram_write(QTestState *qts, unsigned node, uint16_t offset,
     g_assert_not_reached();
 }
 
+/* @count bytes from @offset in one transaction, as the controller does. */
+static void nvram_write_block(QTestState *qts, unsigned node, uint16_t offset,
+                              const uint8_t *data, size_t count)
+{
+    uint8_t address = NVRAM_FIRST + (offset >> 8);
+    unsigned attempt;
+
+    g_assert_cmpuint(offset + count, <=, NVRAM_BYTES);
+    for (attempt = 0; attempt < 8; attempt++) {
+        size_t i = 0;
+
+        if (start_transfer(qts, node, address, false) &&
+            send_byte(qts, node, offset & 0xff)) {
+            for (i = 0; i < count; i++) {
+                if (!send_byte(qts, node, data[i])) {
+                    break;
+                }
+            }
+        }
+        stop_transfer(qts, node);
+        if (i == count) {
+            return;
+        }
+    }
+    g_assert_not_reached();
+}
+
 /*
  * Four windows, four adapters. Each keeps the address its own node wrote, so
  * a node reaching the complex is not reaching its neighbour's chip, and no
@@ -1038,6 +1065,46 @@ static void test_initial_identity_on_every_node(void)
     qtest_quit(qts);
 }
 
+/*
+ * A new store holds what the Origin 2000 build of the controller writes at
+ * its first power-up: the marker, the password "none", configuration byte 0
+ * and the module number the module's model selects. Byte 0x70b, the
+ * clock-select default the PROMs read as the domain, stays 0: whether this
+ * module is the full-clock type that would write 0x78 is only inferred.
+ */
+static void test_new_store_contents(void)
+{
+    static const uint8_t block[16] = {
+        NVRAM_VALID_VALUE, 'n', 'o', 'n', 'e', 0, 0, 0,
+        INITIAL_MODULE_NUMBER, 0, 0, 0, 0, 0, 0, 0,
+    };
+    QTestState *qts = start_module();
+
+    for (unsigned i = 0; i < sizeof(block); i++) {
+        g_assert_cmphex(nvram_read(qts, i % ADAPTER_COUNT,
+                                   NVRAM_IDENTITY_PAGE + i), ==, block[i]);
+    }
+    g_assert_cmphex(nvram_read(qts, 0, 0), ==, 0);
+    qtest_quit(qts);
+}
+
+/* The controller's twelve-byte initialization lands in one transaction. */
+static void test_twelve_byte_block_write(void)
+{
+    static const uint8_t block[12] = {
+        0x37, 'w', 'x', 'y', 'z', 0x15, 0x16, 0x01, 0x02, 0x03, 0x04, 0x05,
+    };
+    QTestState *qts = start_module();
+
+    nvram_write_block(qts, 0, NVRAM_IDENTITY_PAGE, block, sizeof(block));
+    for (unsigned i = 0; i < sizeof(block); i++) {
+        g_assert_cmphex(nvram_read(qts, 3, NVRAM_IDENTITY_PAGE + i), ==,
+                        block[i]);
+    }
+    g_assert_cmphex(nvram_read(qts, 3, NVRAM_IDENTITY_PAGE + 12), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_identity_survives_reset(void)
 {
     QTestState *qts = start_module();
@@ -1491,6 +1558,10 @@ int main(int argc, char **argv)
                    test_stop_withdraws_a_released_start);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
+    qtest_add_func("/sn0/o2000-module-management/new-nvram-store",
+                   test_new_store_contents);
+    qtest_add_func("/sn0/o2000-module-management/nvram-twelve-byte-write",
+                   test_twelve_byte_block_write);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",

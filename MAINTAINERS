@@ -1503,6 +1503,7 @@ F: hw/net/dp83840.c
 F: hw/net/ics1890.c
 F: hw/net/sgi-ioc3-eth.c
 F: hw/net/net-rx-latency.c
+F: hw/nvram/sgi-elsc-nvram*.c
 F: hw/pci-host/sgi-bridge.c
 F: hw/pci-host/sgi-dma-placement.c
 F: hw/pci-host/sgi-xbridge.c
@@ -1520,6 +1521,7 @@ F: include/hw/net/dp83840.h
 F: include/hw/net/ics1890.h
 F: include/hw/net/sgi-ioc3-eth.h
 F: include/hw/net/net-rx-latency.h
+F: include/hw/nvram/sgi-elsc-nvram.h
 F: include/hw/pci-host/sgi-bridge.h
 F: include/hw/pci-host/sgi-dma-placement.h
 F: include/hw/pci-host/sgi-xbridge.h

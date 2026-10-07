@@ -1590,6 +1590,9 @@ static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
  */
 static void test_boot_acceptance_sequence(const void *data)
 {
+    static const uint8_t initial_block[16] = {
+        0x37, 'n', 'o', 'n', 'e', 0, 0, 0x02, 0, 0, 0, 0x78, 0, 0, 0, 0,
+    };
     uint8_t req[8], resp[RESP_CAP];
     uint8_t nvram[16];
     unsigned req_len, resp_len, i;
@@ -1601,10 +1604,13 @@ static void test_boot_acceptance_sequence(const void *data)
     for (i = 0; i < ARRAY_SIZE(nvram); i++) {
         nvram[i] = firmware_style_nvram_read(qts, i);
     }
-    g_assert_cmphex(nvram[0], ==, 0x37);
-    for (i = 1; i < ARRAY_SIZE(nvram); i++) {
-        g_assert_cmphex(nvram[i], ==, 0);
-    }
+    /*
+     * The controller's block as its first power-up leaves it: the marker,
+     * the password "none", automatic power-up, no module number and the
+     * full-clock midplane's clock-select byte.
+     */
+    g_assert_cmpmem(nvram, sizeof(nvram), initial_block,
+                    sizeof(initial_block));
 
     req_len = build_request(req, "rsw");
     resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
