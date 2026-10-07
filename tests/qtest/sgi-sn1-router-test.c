@@ -66,8 +66,6 @@ static void test_registers(void)
     g_assert_cmphex(qtest_readq(s, BASE + 0x518), ==, 0);
     qtest_readq(s, BASE + 0x600008);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
-    qtest_readq(s, BASE + 0x30);
-    g_assert_cmpuint(get(s, "failure"), ==, 4);
     qtest_quit(s);
 }
 
@@ -299,6 +297,73 @@ static void test_global_port_def_vector(void)
         g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0x12345678);
         g_assert_cmphex(qtest_readq(s, BASE + bank[0]), ==, 0x1234567);
         g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+        qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    }
+    qtest_quit(s);
+}
+
+static void test_global_diag_parms_vector(void)
+{
+    const uint64_t lb = UINT64_C(0x20600000);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    const uint64_t valid = UINT64_C(1) << 63;
+    const uint64_t params = 0x30 | (UINT64_C(0x5a) << 40);
+    QTestState *s = qtest_init(ARGS " -m 256M "
+        "-object memory-backend-ram,id=dma,size=2M "
+        "-device sgi-bedrock,id=a,revision=2,dma-memory=/objects/dma/dma[0] "
+        "-device sgi-net-cable,id=c,end0=a,end1=r,end1-index=1");
+    uint64_t status;
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/a','property':'net-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/r','property':'port1-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/a", 0, 0x20000000);
+    status = qtest_readq(s, BASE);
+    g_assert_true(status & (UINT64_C(1) << 37));
+
+    for (unsigned phase = 0; phase < 2; phase++) {
+        qtest_writeq(s, BASE + 0x100, 0x12345678);
+        qtest_writeq(s, BASE + bank[0], 0x1234567);
+        qtest_readq(s, lb + 0xc038);
+        qtest_writeq(s, lb + 0xc030, sentinel);
+        qtest_writeq(s, lb + 0xc008, 0);
+        qtest_writeq(s, lb + 0xc010, UINT64_MAX);
+        qtest_writeq(s, lb + 0xc000, params);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, valid | params);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, 0);
+
+        for (unsigned value = 0; value < 2; value++) {
+            qtest_readq(s, lb + 0xc038);
+            qtest_writeq(s, lb + 0xc010, value);
+            qtest_writeq(s, lb + 0xc000, params | 1);
+            g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
+                            valid | params | 4);
+            qtest_readq(s, lb + 0xc038);
+            qtest_writeq(s, lb + 0xc030, sentinel);
+            qtest_writeq(s, lb + 0xc000, params);
+            g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, valid | params);
+            g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, 0);
+        }
+
+        qtest_readq(s, lb + 0xc038);
+        qtest_writeq(s, lb + 0xc030, sentinel);
+        qtest_writeq(s, lb + 0xc000,
+                     (bank[0] + 0x30) | (UINT64_C(0x5a) << 40));
+        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
+                        valid | bank[0] | 0x30 | (UINT64_C(0x5a) << 40) | 4);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
+        qtest_readq(s, BASE + 0x31);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readl(s, BASE + 0x30);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x30), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0x12345678);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[0]), ==, 0x1234567);
+        g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 8), ==, 0);
         qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     }
     qtest_quit(s);
@@ -802,6 +867,8 @@ int main(int argc, char **argv)
                    test_port_reset_vector);
     qtest_add_func("/sgi/sn1-router/global-port-def-vector",
                    test_global_port_def_vector);
+    qtest_add_func("/sgi/sn1-router/global-diag-parms-vector",
+                   test_global_diag_parms_vector);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-storage",
                    test_inactive_barrier_storage);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-fields",
