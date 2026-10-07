@@ -155,6 +155,35 @@ SGIRenderResult sgi_render_resource_snapshot(const SGIRasterTarget *target,
     return result;
 }
 
+static SGIRenderCommitResult sgi_render_commit_result(
+    SGIRenderCommitResult result, uint64_t pixels, Error **errp)
+{
+    if (result.status == SGI_RENDER_OK) {
+        if (result.complete_pixels != pixels || result.partial_pixel ||
+            !result.extent_known) {
+            if (errp && !*errp) {
+                error_setg(errp, "SGI render commit reported "
+                                 "incomplete success");
+            }
+            result.status = SGI_RENDER_HOST_ERROR;
+            result.extent_known = false;
+        }
+    } else {
+        if (result.extent_known &&
+            (result.complete_pixels > pixels ||
+             (result.partial_pixel && result.complete_pixels == pixels))) {
+            if (errp && !*errp) {
+                error_setg(errp, "SGI render commit reported invalid extent");
+            }
+            result.status = SGI_RENDER_HOST_ERROR;
+            result.extent_known = false;
+        } else if (errp && !*errp) {
+            error_setg(errp, "SGI render resource commit failed");
+        }
+    }
+    return result;
+}
+
 SGIRenderCommitResult sgi_render_resource_commit(
     const SGIRasterTarget *target, const SGIRenderResource *resource,
     uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
@@ -184,28 +213,61 @@ SGIRenderCommitResult sgi_render_resource_commit(
     result = target->resource_ops->commit(target->opaque, resource, slice,
                                           rect, slots, stride_slots,
                                           capacity_slots, errp);
-    if (result.status == SGI_RENDER_OK) {
-        if (result.complete_pixels != pixels || result.partial_pixel ||
-            !result.extent_known) {
-            if (errp && !*errp) {
-                error_setg(errp, "SGI render commit reported "
-                                 "incomplete success");
+    return sgi_render_commit_result(result, pixels, errp);
+}
+
+SGIRenderCommitResult sgi_render_resource_commit_covered(
+    const SGIRasterTarget *target, const SGIRenderResource *resource,
+    uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    SGIRenderCommitResult result = {
+        .status = SGI_RENDER_RESOURCE_ERROR,
+        .extent_known = true,
+    };
+    uint64_t pixels, width, rows;
+    size_t required;
+
+    if (!sgi_render_resource_span(target, resource, slice, rect, slots,
+                                  stride_slots, capacity_slots,
+                                  &pixels, errp)) {
+        return result;
+    }
+    width = (uint64_t)rect->x1 - rect->x0 + 1;
+    rows = (uint64_t)rect->y1 - rect->y0 + 1;
+    if (!writes || !writes->pixel || width > SIZE_MAX ||
+        writes->stride_bytes < width ||
+        rows - 1 > (SIZE_MAX - width) / writes->stride_bytes) {
+        error_setg(errp, "Invalid SGI render write coverage");
+        return result;
+    }
+    required = (rows - 1) * writes->stride_bytes + width;
+    if (writes->capacity_bytes < required) {
+        error_setg(errp, "SGI render write coverage is too small");
+        return result;
+    }
+    for (uint64_t y = 0; y < rows; y++) {
+        for (uint64_t x = 0; x < width; x++) {
+            if (writes->pixel[y * writes->stride_bytes + x] > 1) {
+                error_setg(errp, "SGI render write coverage is not binary");
+                return result;
             }
-            result.status = SGI_RENDER_HOST_ERROR;
-            result.extent_known = false;
-        }
-    } else {
-        if (result.extent_known &&
-            (result.complete_pixels > pixels ||
-             (result.partial_pixel && result.complete_pixels == pixels))) {
-            if (errp && !*errp) {
-                error_setg(errp, "SGI render commit reported invalid extent");
-            }
-            result.status = SGI_RENDER_HOST_ERROR;
-            result.extent_known = false;
-        } else if (errp && !*errp) {
-            error_setg(errp, "SGI render resource commit failed");
         }
     }
-    return result;
+    if (!target->resource_ops->commit_covered) {
+        error_setg(errp, "SGI render resource has no covered commit provider");
+        result.status = SGI_RENDER_UNSUPPORTED;
+        return result;
+    }
+    if (!sgi_render_resource_slots(resource, rect, slots,
+                                   stride_slots, errp)) {
+        result.status = SGI_RENDER_HOST_ERROR;
+        return result;
+    }
+    result = target->resource_ops->commit_covered(target->opaque, resource,
+                                                  slice, rect, slots,
+                                                  stride_slots, capacity_slots,
+                                                  writes, errp);
+    return sgi_render_commit_result(result, pixels, errp);
 }

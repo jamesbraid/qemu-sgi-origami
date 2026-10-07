@@ -327,6 +327,13 @@ typedef struct SGIRenderCommitResult {
     bool extent_known;
 } SGIRenderCommitResult;
 
+/* One byte per pixel, in the resource's row order, borrowed for one call. */
+typedef struct SGIRenderWriteCoverage {
+    const uint8_t *pixel;
+    size_t stride_bytes;
+    size_t capacity_bytes;
+} SGIRenderWriteCoverage;
+
 typedef struct SGIRenderResourceOps {
     SGIRenderResult (*snapshot)(void *opaque,
                                 const SGIRenderResource *resource,
@@ -338,6 +345,11 @@ typedef struct SGIRenderResourceOps {
                                     uint32_t slice, const SGIRenderRect *rect,
                                     const uint32_t *slots, size_t stride_slots,
                                     size_t capacity_slots, Error **errp);
+    SGIRenderCommitResult (*commit_covered)(
+        void *opaque, const SGIRenderResource *resource, uint32_t slice,
+        const SGIRenderRect *rect, const uint32_t *slots,
+        size_t stride_slots, size_t capacity_slots,
+        const SGIRenderWriteCoverage *writes, Error **errp);
 } SGIRenderResourceOps;
 
 typedef struct SGIRasterTarget {
@@ -419,6 +431,11 @@ SGIRenderCommitResult sgi_render_resource_commit(
     const SGIRasterTarget *target, const SGIRenderResource *resource,
     uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
     size_t stride_slots, size_t capacity_slots, Error **errp);
+SGIRenderCommitResult sgi_render_resource_commit_covered(
+    const SGIRasterTarget *target, const SGIRenderResource *resource,
+    uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, Error **errp);
 typedef struct SGIRenderer SGIRenderer;
 
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
