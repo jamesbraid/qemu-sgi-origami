@@ -1082,6 +1082,12 @@ static uint8_t elsc_recv(I2CSlave *i2c)
  */
 #define ELSC_SIGNAL_BASE         0xe0   /* 0x70 * 2 */
 #define ELSC_RING_POSITION_COUNT 8      /* three-bit position field */
+/*
+ * The Origin 200 controller's ring: processor codes 0 to 3, then the
+ * slave-controller position. That is stated for two modules; a single
+ * module using the same one counter is an inference.
+ */
+#define ELSC_ORIGIN200_POSITIONS 5
 
 static uint8_t elsc_signal_byte(unsigned ring_position, bool signal2)
 {
@@ -1328,7 +1334,7 @@ static void elsc_realize(DeviceState *dev, Error **errp)
         return;
     }
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
-    s->arb_positions = ELSC_RING_POSITION_COUNT;
+    s->arb_positions = ELSC_ORIGIN200_POSITIONS;
     /*
      * The cold power-on latch is set here rather than in reset because a warm
      * reset (a guest "rst", or any system reset) does not cycle power and

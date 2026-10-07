@@ -386,9 +386,15 @@ The signal pair for a processor code ``c`` is ``0xE0 + c``
 three bits: signal 2 is signal 1 with bit 3 set, so a code of eight
 or more would collide with another processor's signal 1. Eight codes
 is also exactly the protocol's addressable space -- four node slots
-of two processors each. All eight codes are offered in turn whether
-or not the machine populates them, as a real controller doling out
-time slices does.
+of two processors each. The Origin 200 controller's ring is narrower.
+The datasheet states it for the two-module machine: processor codes 0
+to 3, then the slave-controller position. The model uses the same
+five-position ring on a single module too. That is an inference, not
+an established fact: the datasheet describes one controller counter
+covering those five positions, and nothing found describes a
+different count without a second module. The model publishes the
+fifth position as code 4's signal byte, which no processor waits
+for.
 
 Two properties of the rotation are contracts, not conveniences:
 
