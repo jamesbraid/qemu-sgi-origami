@@ -209,6 +209,9 @@ static const char *const elsc_message_text[SGI_ELSC_MESSAGE_COUNT] = {
 /* A message stays announced for about a second. */
 #define ELSC_MESSAGE_LIFETIME_MS 1000
 
+/* An acknowledged "rst" resets the module a second later. */
+#define ELSC_RESET_WAIT_MS 1000
+
 /*
  * Queue a message for the Hubs. It is announced to every processor code
  * until that processor fetches it with "get" or the second runs out; a
@@ -1069,14 +1072,16 @@ static void elsc_request_complete(SGIElscState *s)
  *
  * Only COMMITTED actions fire. Firing clears state, so another boundary or
  * post-migration re-arm cannot execute the same action twice.
+ *
+ * Answers whether it asked the machine itself for a reset or shutdown just
+ * now, which is when the requesting processor stops its peers.
  */
-static void elsc_deferred_action_bh(void *opaque)
+static bool elsc_run_committed_action(SGIElscState *s)
 {
-    SGIElscState *s = opaque;
     uint8_t action = s->deferred_action;
 
     if (!s->deferred_committed) {
-        return;
+        return false;
     }
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
@@ -1110,10 +1115,22 @@ static void elsc_deferred_action_bh(void *opaque)
          */
         s->cold_power_on = true;
         elsc_post_message(s, SGI_ELSC_MESSAGE_PD_CYCLE);
+        /*
+         * The power-off ends a power-down countdown, and the restart that
+         * follows is this controller's own doing.
+         */
+        timer_del(s->pwr_down_timer);
+        s->self_reset = true;
         break;
     case ELSC_ACTION_RESET:
+        /*
+         * The reset comes a second later (elsc_reset_wait_expired); another
+         * "rst" inside that second starts the wait again.
+         */
         elsc_post_message(s, SGI_ELSC_MESSAGE_RST);
-        break;
+        timer_mod(s->rst_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                  ELSC_RESET_WAIT_MS);
+        return false;
     case ELSC_ACTION_SHUTDOWN:
         break;
     case ELSC_ACTION_POWER_UP:
@@ -1139,7 +1156,7 @@ static void elsc_deferred_action_bh(void *opaque)
      */
     if (s->module_ops && s->module_ops->execute) {
         s->module_ops->execute(s->module_opaque, action);
-        return;
+        return false;
     }
 
     if (action == ELSC_ACTION_SHUTDOWN) {
@@ -1147,6 +1164,44 @@ static void elsc_deferred_action_bh(void *opaque)
     } else {
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     }
+    return true;
+}
+
+static void elsc_deferred_action_bh(void *opaque)
+{
+    elsc_run_committed_action(opaque);
+}
+
+/*
+ * The second after an acknowledged "rst" has run out: reset the module. The
+ * firmware then holds the reset for 100 ms, frees the lock and
+ * reinitialises its bus interface. An Origin 2000 module drives that pulse
+ * itself. On an Origin 200 the module is the whole machine, and QEMU's
+ * reset is instantaneous, so no processor runs during a pulse either way.
+ * Releasing the bus first matters for the reason elsc_run_committed_action
+ * gives: a machine reset does not end a transfer this controller is in.
+ */
+static void elsc_reset_wait_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    s->tas_lock = ELSC_TAS_FREE;
+    if (s->module_ops && s->module_ops->execute) {
+        if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: the module refused the reset an "
+                          "acknowledged \"rst\" asked for\n");
+            return;
+        }
+        s->self_reset = true;
+        s->module_ops->execute(s->module_opaque, ELSC_ACTION_RESET);
+        return;
+    }
+    if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
+        i2c_end_transfer(s->bus);
+    }
+    s->self_reset = true;
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
 }
 
 /*
@@ -1189,20 +1244,19 @@ static void elsc_response_fully_read(SGIElscState *s)
  * bounds them to their own next block boundary rather than to whenever the
  * main loop would otherwise have performed the reset.
  *
- * Only the no-module-owner case pauses every processor here. Where a module
- * decides what the action reaches (module_ops->execute for the
- * Origin 2000 module complex), stopping processors is that module's call, not
- * this controller's.
+ * Only an action that asked the machine for a reset or shutdown at once
+ * pauses every processor here: the no-module-owner power-cycle and
+ * power-down. A "rst" waits a second, during which the processors run as
+ * they do on hardware. Where a module decides what the action reaches
+ * (module_ops->execute for the Origin 2000 module complex), stopping
+ * processors is that module's call, not this controller's.
  */
 static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
 {
     SGIElscState *s = data.host_ptr;
-    bool module_owned = s->module_ops != NULL;
     CPUState *peer;
 
-    elsc_deferred_action_bh(s);
-
-    if (!module_owned) {
+    if (elsc_run_committed_action(s)) {
         CPU_FOREACH(peer) {
             cpu_pause(peer);
         }
@@ -1577,10 +1631,20 @@ void sgi_elsc_reinitialize(SGIElscState *s)
     elsc_module_console_input(s, false);
 }
 
+/*
+ * A machine reset is either the controller's own start or a module reset or
+ * power cycle the controller asked for (self_reset). The controller keeps
+ * running through the second kind: it reinitialises its bus interface and
+ * queues, frees the lock and drops what it had queued for the Hubs, and
+ * keeps its countdowns, its flags and its display. Everything else in QEMU
+ * that resets the machine is taken as the controller's start.
+ */
 static void elsc_reset_hold(Object *obj, ResetType type)
 {
     SGIElscState *s = SGI_ELSC(obj);
+    bool keep = s->self_reset;
 
+    s->self_reset = false;
     s->rxlen = 0;
     s->txlen = 0;
     s->txpos = 0;
@@ -1592,11 +1656,20 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
-    timer_del(s->pwr_down_timer);
     timer_del(s->message_timer);
     s->message = SGI_ELSC_MESSAGE_NONE;
     s->message_mask = 0;
     s->tas_lock = ELSC_TAS_FREE;
+
+    /* Tell the module what reset just made true of this controller. */
+    elsc_module_slave_active(s, false);
+    elsc_module_console_input(s, false);
+    if (keep) {
+        return;
+    }
+
+    timer_del(s->pwr_down_timer);
+    timer_del(s->rst_timer);
     s->fan_high = false;
     s->fsc_present = false;
     s->short_timeouts = false;
@@ -1606,10 +1679,6 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->slave_report = 0;
     /* The power-on content is unstated; blank spaces are a model choice. */
     memset(s->display, ' ', sizeof(s->display));
-
-    /* Tell the module what reset just made true of this controller. */
-    elsc_module_slave_active(s, false);
-    elsc_module_console_input(s, false);
 }
 
 /*
@@ -1628,6 +1697,7 @@ static void elsc_reset_exit(Object *obj, ResetType type)
 {
     SGIElscState *s = SGI_ELSC(obj);
 
+    s->self_reset = false;
     if (s->arbitration && !timer_pending(s->arb_timer)) {
         elsc_arb_step(s);
     }
@@ -1655,6 +1725,19 @@ void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,
 
     master->arb_peer = slave;
     master->arb_positions = positions;
+}
+
+/*
+ * A reset the controller asked for that never happens, because the machine
+ * shut down instead (a reset turned into a shutdown, for one), must not make
+ * a later, unrelated reset look like the controller's own. Only a shutdown
+ * cancels it: a stop or a migration in between leaves the reset to come.
+ */
+static void elsc_shutdown(Notifier *n, void *opaque)
+{
+    SGIElscState *s = container_of(n, SGIElscState, shutdown_notifier);
+
+    s->self_reset = false;
 }
 
 static void elsc_realize(DeviceState *dev, Error **errp)
@@ -1690,9 +1773,13 @@ static void elsc_realize(DeviceState *dev, Error **errp)
                                      elsc_pwr_down_expired, s);
     s->message_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                     elsc_message_expired, s);
+    s->rst_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                elsc_reset_wait_expired, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
+    s->shutdown_notifier.notify = elsc_shutdown;
+    qemu_register_shutdown_notifier(&s->shutdown_notifier);
 }
 
 static void elsc_unrealize(DeviceState *dev)
@@ -1706,8 +1793,11 @@ static void elsc_unrealize(DeviceState *dev)
     s->pwr_down_timer = NULL;
     timer_free(s->message_timer);
     s->message_timer = NULL;
+    timer_free(s->rst_timer);
+    s->rst_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
+    notifier_remove(&s->shutdown_notifier);
 }
 
 /*
@@ -1814,6 +1904,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8(message, SGIElscState),
         VMSTATE_UINT8(message_mask, SGIElscState),
         VMSTATE_TIMER_PTR(message_timer, SGIElscState),
+        VMSTATE_TIMER_PTR(rst_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

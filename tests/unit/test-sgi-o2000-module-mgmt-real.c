@@ -1013,6 +1013,20 @@ static void test_nacked_receive_allows_repeated_start(
  * A destructive command carries out its action, and is refused rather than
  * acknowledged when the controller cannot carry it out.
  */
+/* Drain only when the test reaches the deferred action. */
+static void drain_actions(void)
+{
+    while (aio_poll(qemu_get_aio_context(), false)) {
+        continue;
+    }
+}
+
+/* An acknowledged "rst" resets the module a second later. */
+static void wait_for_reset(void)
+{
+    advance_to(virtual_time + NANOSECONDS_PER_SECOND);
+}
+
 static void test_destructive_command(Fixture *f, gconstpointer unused)
 {
     static const char *const commands[] = { "ver", "rst" };
@@ -1051,9 +1065,14 @@ static void test_destructive_command(Fixture *f, gconstpointer unused)
      * runs from a bottom half rather than inside the transaction.
      */
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
-    while (aio_poll(qemu_get_aio_context(), false)) {
-        continue;
-    }
+    drain_actions();
+    /*
+     * And then the reset waits its second, counted in the controller's
+     * milliseconds.
+     */
+    advance_to(virtual_time + 999 * SCALE_MS);
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
+    advance_to(virtual_time + SCALE_MS);
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
     advance_to(f->module->pulse_deadline);
@@ -1072,6 +1091,7 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
     static const char *const commands[] = { "ver", "rst" };
     uint8_t request[16], response[96];
     unsigned c, i, len, total;
+    int64_t first_tick;
 
     run_tick(f);
     g_assert_cmphex(f->adapter[0]->data, ==, GRANT_BASE);
@@ -1106,13 +1126,21 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
         stop_transfer(f, 0);
     }
 
-    while (aio_poll(qemu_get_aio_context(), false)) {
-        continue;
-    }
+    drain_actions();
+    wait_for_reset();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
 
     /* The scheduler cannot wait on the removed controller. */
     g_assert_false(f->module->slave_active);
+    /*
+     * The first service tick at or after the pulse's end publishes code 0.
+     * The reset waits whole controller milliseconds, so that tick can fall
+     * on the pulse's end itself.
+     */
+    first_tick = f->module->service_deadline;
+    while (first_tick < f->module->pulse_deadline) {
+        first_tick += SERVICE_PERIOD_NS;
+    }
     advance_to(f->module->pulse_deadline);
     /*
      * The controller reinitialises itself and nothing else. A node's adapter
@@ -1120,7 +1148,7 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
      * has, so here it keeps the address its node gave it.
      */
     g_assert_cmphex(f->adapter[0]->own_address, ==, ADAPTER_OWN_ADDRESS(0));
-    run_tick(f);
+    advance_to(first_tick + GRANT_SETTLE_NS);
     g_assert_cmphex(f->adapter[0]->data, ==, GRANT_BASE);
 }
 
@@ -1155,19 +1183,12 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     advance_to(f->module->pulse_deadline);
     total = msc_command(f, 0, "rst", response, sizeof(response));
     g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
-    while (aio_poll(qemu_get_aio_context(), false)) {
-        continue;
-    }
+    drain_actions();
+    wait_for_reset();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 2);
 }
 
-/* Drain only when the test reaches the deferred action. */
-static void drain_actions(void)
-{
-    while (aio_poll(qemu_get_aio_context(), false)) {
-        continue;
-    }
-}
+
 
 static void expect_response(Fixture *f, const char *command, const char *text)
 {
@@ -1193,6 +1214,7 @@ static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
     expect_response(f, "ver", "ok VER 3.2 ");
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     drain_actions();
+    wait_for_reset();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_true(f->module->pulse_active);
     advance_to(f->module->pulse_deadline);
@@ -1229,6 +1251,7 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     /* Another action is accepted. */
     expect_response(f, "rst", "ok ");
     drain_actions();
+    wait_for_reset();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     advance_to(f->module->pulse_deadline);
 }
@@ -1275,6 +1298,7 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     g_assert_cmpmem(s->display, sizeof(s->display), "XETAINED", 8);
     expect_response(f, "rst", "ok ");
     drain_actions();
+    wait_for_reset();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     advance_to(f->module->pulse_deadline);
 }

@@ -127,6 +127,14 @@ void qemu_system_shutdown_request(ShutdownCause reason)
 }
 
 /*
+ * The controller watches for machine shutdowns from realize. Nothing here
+ * shuts the machine down, so the notifier never runs.
+ */
+void qemu_register_shutdown_notifier(Notifier *notifier)
+{
+}
+
+/*
  * Queues a committed action on the processor driving it, reached only when
  * current_cpu is set. Both tests exercise only the "no processor" case
  * above, so this is never called; it exists to link hw/misc/sgi-elsc.c,

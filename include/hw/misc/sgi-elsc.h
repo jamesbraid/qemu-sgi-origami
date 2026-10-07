@@ -9,6 +9,7 @@
 #include "hw/i2c/i2c.h"
 #include "qemu/timer.h"
 #include "chardev/char-fe.h"
+#include "system/runstate.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_ELSC "sgi-elsc"
@@ -142,6 +143,19 @@ struct SGIElscState {
      */
     SGIElscState *arb_peer;
     QEMUTimer *arb_timer;
+    /*
+     * The one-second wait between an acknowledged "rst" and the reset it
+     * asks for. Another "rst" inside the wait starts it again.
+     */
+    QEMUTimer *rst_timer;
+    /*
+     * The next machine reset is one this controller asked for, a module
+     * reset or power cycle, rather than the controller's own start: the
+     * controller keeps running through it and keeps what it holds. Not
+     * migrated: the reset it marks is not part of the stream either.
+     */
+    bool self_reset;
+    Notifier shutdown_notifier;
     /*
      * The power-down countdown "pwr d <sec>" arms, on the virtual clock in
      * milliseconds. Each timed request reloads it; expiry shuts down.
