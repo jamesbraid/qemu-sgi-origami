@@ -246,6 +246,8 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
     SGIRendererClear clears[SGI_GL_MAX_TARGETS] = { 0 };
     uint32_t *slots[SGI_GL_MAX_TARGETS] = { 0 };
     uint16_t *rgba[SGI_GL_MAX_TARGETS] = { 0 };
+    uint8_t *covered = NULL;
+    uint32_t max_width = 0;
     size_t pixels[SGI_GL_MAX_TARGETS], nslots[SGI_GL_MAX_TARGETS];
     SGIRenderResult status = SGI_RENDER_OK;
 
@@ -316,6 +318,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             return SGI_RENDER_RESOURCE_ERROR;
         }
         resources[i] = res;
+        max_width = MAX(max_width, res->width);
         clear->width = res->width;
         clear->height = res->height;
         clear->colour_mask = op->clear_colour_mask;
@@ -419,27 +422,61 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             }
         }
     }
+    covered = g_try_new(uint8_t, max_width);
+    if (!covered) {
+        error_setg(errp, "Cannot allocate SGI Mesa clear coverage row");
+        status = SGI_RENDER_OOM;
+        goto out;
+    }
     for (unsigned i = 0; i < op->ntargets; i++) {
         const SGIRenderResource *res = resources[i];
         SGIRendererClear *clear = &clears[i];
-        SGIRenderRect rect = { .x1 = res->width - 1,
-                               .y1 = res->height - 1 };
-        SGIRenderCommitResult committed;
 
         if (!clear->rect_count) {
             continue;
         }
-        committed = sgi_render_resource_commit(target, res, 0, &rect,
-                                               slots[i],
-                                               res->width *
-                                               res->component_count,
-                                               nslots[i], errp);
-        if (committed.status != SGI_RENDER_OK) {
-            status = committed.status;
-            goto out;
+        for (uint32_t y = 0; y < res->height; y++) {
+            uint32_t x = 0;
+
+            memset(covered, 0, res->width);
+            for (unsigned j = 0; j < clear->rect_count; j++) {
+                const SGIRendererClearRect *r = &clear->rects[j];
+
+                if (y >= r->y0 && y <= r->y1) {
+                    memset(covered + r->x0, 1, r->x1 - r->x0 + 1);
+                }
+            }
+            while (x < res->width) {
+                SGIRenderRect rect;
+                SGIRenderCommitResult committed;
+                size_t offset, length;
+
+                if (!covered[x]) {
+                    x++;
+                    continue;
+                }
+                rect.x0 = x;
+                rect.y0 = rect.y1 = y;
+                do {
+                    x++;
+                } while (x < res->width && covered[x]);
+                rect.x1 = x - 1;
+                offset = ((size_t)y * res->width + rect.x0) *
+                         res->component_count;
+                length = (size_t)(rect.x1 - rect.x0 + 1) *
+                         res->component_count;
+                committed = sgi_render_resource_commit(target, res, 0,
+                                                       &rect, slots[i] + offset,
+                                                       length, length, errp);
+                if (committed.status != SGI_RENDER_OK) {
+                    status = committed.status;
+                    goto out;
+                }
+            }
         }
     }
 out:
+    g_free(covered);
     for (unsigned i = 0; i < SGI_GL_MAX_TARGETS; i++) {
         g_free(slots[i]);
         g_free(rgba[i]);
