@@ -279,12 +279,12 @@ static void sgi_gl_draw_result(SGIGLContext *c, const SGIGLSink *sink,
     if (sink->result && *sink->result != SGI_GL_DRAW_OK) {
         return;
     }
-    if (sink->draw_checked) {
-        result = sink->draw_checked(sink->opaque, d);
-    } else if (!sink->result && !c->polygon.enabled &&
-               !c->standalone_stipple && sink->draw) {
+    if (!sink->result && !c->polygon.enabled &&
+        !c->standalone_stipple && sink->draw) {
         sink->draw(sink->opaque, d);
         return;
+    } else if (sink->draw_checked) {
+        result = sink->draw_checked(sink->opaque, d);
     } else {
         error_report_once("sgi-gl: required checked draw callback is missing");
         if (sink->result) {
