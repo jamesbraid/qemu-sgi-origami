@@ -1341,6 +1341,27 @@ static void test_module_power_commands(Fixture *f, gconstpointer unused)
     expect_response(f, "tas", "ok 0");
 }
 
+/*
+ * Nothing ties the heartbeat watchdog to module power: an armed watchdog
+ * pulses its NMI and then powers back up a module "pwr d" turned off.
+ */
+static void test_heartbeat_restores_power(Fixture *f, gconstpointer unused)
+{
+    expect_response(f, "hbt 5 1", "ok ");
+    expect_response(f, "pwr d 0", "ok ");
+    drain_actions();
+    g_assert_false(f->module->power_on);
+    advance_to(virtual_time + 9 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(f->raises[LINE_NMI], ==, 0);
+    advance_to(virtual_time + NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(f->raises[LINE_NMI], ==, 1);
+    g_assert_false(f->module->power_on);
+    advance_to(virtual_time + NANOSECONDS_PER_SECOND);
+    g_assert_true(f->module->power_on);
+    g_assert_cmpint(f->level[LINE_POWER], ==, 1);
+    expect_response(f, "pwr q", "ok 1");
+}
+
 int main(int argc, char **argv)
 {
     Object *machine;
@@ -1422,6 +1443,8 @@ int main(int argc, char **argv)
                test_reinitialize_uncommitted, teardown);
     g_test_add("/sgi-sn0-module-management/msc/power-commands", Fixture,
                NULL, setup, test_module_power_commands, teardown);
+    g_test_add("/sgi-sn0-module-management/msc/heartbeat-restores-power",
+               Fixture, NULL, setup, test_heartbeat_restores_power, teardown);
     g_test_add("/sgi-sn0-module-management/reinitialize/queues", Fixture,
                GINT_TO_POINTER(TEST_CONSOLE), setup, test_reinitialize_queues,
                teardown);

@@ -71,6 +71,15 @@ typedef enum SGIElscSelect {
     SGI_ELSC_SELECT_COUNT,
 } SGIElscSelect;
 
+/* How far an unanswered heartbeat watchdog has gone. */
+typedef enum SGIElscHeartbeat {
+    SGI_ELSC_HEARTBEAT_IDLE = 0,
+    SGI_ELSC_HEARTBEAT_WAITING,     /* for a heartbeat */
+    SGI_ELSC_HEARTBEAT_WARNED,      /* five seconds to the NMI */
+    SGI_ELSC_HEARTBEAT_CYCLING,     /* the delay to the power cycle */
+    SGI_ELSC_HEARTBEAT_COUNT,
+} SGIElscHeartbeat;
+
 /* "see all": every processor's console output reaches the serial port. */
 #define SGI_ELSC_SEE_ALL 0xff
 
@@ -183,6 +192,16 @@ struct SGIElscState {
     QEMUTimer *nmi_pulse_timer;
     bool nmi_pulse_active;
     qemu_irq nmi_out;
+
+    /*
+     * The heartbeat watchdog ("hbt"): its interval and the delay from its
+     * NMI to its power cycle, both in seconds, the stage it has reached (an
+     * SGIElscHeartbeat) and the timer running towards the next stage.
+     */
+    uint16_t hbt_interval;
+    uint16_t hbt_delay;
+    uint8_t hbt_stage;
+    QEMUTimer *hbt_timer;
     /*
      * The next machine reset is one this controller asked for, a module
      * reset or power cycle, rather than the controller's own start: the

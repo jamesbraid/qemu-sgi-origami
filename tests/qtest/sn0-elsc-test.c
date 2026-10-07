@@ -3095,6 +3095,95 @@ static void test_console_selection_announcement(const void *data)
     qtest_quit(qts);
 }
 
+#define ELSC_PATH "/machine/node0/hub/elsc"
+
+/*
+ * The heartbeat watchdog's stages: the interval runs out into a five-second
+ * warning, then an immediate NMI, then the delay to a power cycle, which
+ * sets the cold-power latch and leaves the watchdog idle.
+ */
+static void test_hbt_watchdog_stages(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, ELSC_PATH, "nmi");
+    assert_reply(qts, "pwr q", "ok 1");
+    assert_reply(qts, "hbt 5 a", "ok ");
+    qtest_clock_step(qts, 9999 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    assert_reply(qts, "pwr q", "ok 0");
+
+    /* The second value, 0xa, is the delay to the power cycle. */
+    qtest_clock_step(qts, 9999 * (int64_t)SCALE_MS);
+    assert_reply(qts, "pwr q", "ok 0");
+    qtest_clock_step(qts, SCALE_MS);
+    qtest_qmp_eventwait(qts, "RESET");
+    assert_reply(qts, "pwr q", "ok 1");
+
+    /* Idle now: neither time nor a heartbeat brings another NMI. */
+    qtest_clock_step(qts, 60 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "hbt", "ok ");
+    qtest_clock_step(qts, 60 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    assert_reply(qts, "pwr q", "ok 0");
+    qtest_quit(qts);
+}
+
+/*
+ * A heartbeat in the five-second warning postpones the NMI by an interval
+ * rather than cancelling it. A delay of zero never power-cycles.
+ */
+static void test_hbt_heartbeat_postpones(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, ELSC_PATH, "nmi");
+    assert_reply(qts, "pwr q", "ok 1");
+    assert_reply(qts, "hbt 5 0", "ok ");
+    qtest_clock_step(qts, 6 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "hbt", "ok ");
+    qtest_clock_step(qts, 4999 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_clock_step(qts, 120 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "pwr q", "ok 0");
+    qtest_quit(qts);
+}
+
+/*
+ * "clr" and "hbt 0" stop the watchdog; a "rst" does not, because the
+ * controller keeps running through the reset it causes.
+ */
+static void test_hbt_stopped_only_by_clr_or_zero(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, ELSC_PATH, "nmi");
+    assert_reply(qts, "hbt 5", "ok ");
+    qtest_clock_step(qts, 3 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "clr", "ok ");
+    qtest_clock_step(qts, 20 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "hbt 5", "ok ");
+    assert_reply(qts, "hbt 0", "ok ");
+    qtest_clock_step(qts, 20 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+
+    assert_reply(qts, "hbt 5", "ok ");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    assert_reply(qts, "rst", "ok ");
+    qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
+    qtest_qmp_eventwait(qts, "RESET");
+    qtest_clock_step(qts, 7999 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    assert_reply(qts, "hbt 0", "ok ");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3197,6 +3286,12 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/hbt-watchdog-stages", NULL,
+                        test_hbt_watchdog_stages);
+    qtest_add_data_func("sn0/elsc/hbt-heartbeat-postpones", NULL,
+                        test_hbt_heartbeat_postpones);
+    qtest_add_data_func("sn0/elsc/hbt-stopped-only-by-clr-or-zero", NULL,
+                        test_hbt_stopped_only_by_clr_or_zero);
     qtest_add_data_func("sn0/elsc/console-selection-commands", NULL,
                         test_console_selection_commands);
     qtest_add_data_func("sn0/elsc/console-selection-announcement", NULL,
