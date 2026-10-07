@@ -4451,6 +4451,26 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
     return true;
 }
 
+bool sgi_hub_attach_pimm_record(SGIHubState *s, const SGIBoardRecord *record,
+                                Error **errp)
+{
+    if (qdev_is_realized(DEVICE(s))) {
+        error_setg(errp, "cannot attach a PIMM record after realize");
+        return false;
+    }
+    if (s->has_pimm_record) {
+        error_setg(errp, "Hub already has a PIMM record");
+        return false;
+    }
+    if (!sgi_board_record_check(record, "PIMM", errp)) {
+        return false;
+    }
+
+    sgi_board_record_build(s->pimm_record, record);
+    s->has_pimm_record = true;
+    return true;
+}
+
 /*
  * ---- The processor interface's I/O-space path ----
  *
@@ -5140,9 +5160,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * a parent's reset is the wrong shape whichever order the phases run in,
      * and they run in the safe one: hw/core/resettable.c holds children
      * before the object itself, so the ordering was never the hazard. The
-     * generic Hub remains erased. Origin 2000 attaches a synthetic record
-     * after the Hub has been given its module identity, so the two
-     * compositions do not share an invented inventory payload.
+     * generic Hub remains erased. An Origin 200 machine stores its fitted
+     * PIMM's record; Origin 2000 attaches a synthetic record after the Hub
+     * has been given its module identity, so the two compositions do not
+     * share an invented inventory payload.
     */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
     if (s->onewire_kind == SGI_HUB_ONEWIRE_BLANK_DS2505) {
@@ -5152,7 +5173,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         object_property_add_child(OBJECT(dev), "onewire-part", OBJECT(part));
         qdev_prop_set_uint8(part, "family", MD_ONEWIRE_ROM_FAMILY);
         qdev_prop_set_uint64(part, "serial", s->onewire_serial);
-        if (s->has_module_identity) {
+        if (s->has_pimm_record) {
+            ds2505_set_image(part, s->pimm_record, sizeof(s->pimm_record));
+        } else if (s->has_module_identity) {
             sgi_hub_onewire_build_record(s, image);
             ds2505_set_image(part, image, sizeof(image));
         }

@@ -481,6 +481,80 @@ static bool sgi_machine_node_io_preset(const SGIModelTopology *t,
 }
 
 /*
+ * Whether the machine is an Origin 200: it fits the IP29 System Board's
+ * own I/O, direct or through the GIGAchannel's Crossbow. Every Hub node of
+ * such a machine is an IP29.
+ */
+static bool sgi_machine_topology_is_ip29(const SGIModelTopology *t)
+{
+    const SGIModelIoBoardList *entry;
+
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        if (entry->value->populated &&
+            (entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
+             entry->value->preset ==
+             SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The Origin 200 PIMM each processor population is, as real inventories
+ * print its name, part and revision; the Hub's one-wire part carries its
+ * record. Both are the 180 MHz R10000 with 1 MiB of secondary cache the
+ * catalogue fits. Each is the module and revision a published dual-module
+ * Origin 200 inventory lists in both its modules: 013-1895-001 revision C
+ * for one processor, 013-1896-001 revision D for two.
+ */
+static const struct {
+    uint32_t processors;
+    uint32_t clock_mhz;
+    uint32_t cache_mib;
+    const char *name;
+    const char *part;
+    const char *revision;
+} sgi_ip29_pimms[] = {
+    { 1, 180, 1, "PIMM_1XT5_1MB", "013-1895-001", "C" },
+    { 2, 180, 1, "PIMM_2XT5_1MB", "013-1896-001", "D" },
+};
+
+/*
+ * Store an Origin 200 node's PIMM record in its Hub's one-wire part. The
+ * barcode is marked synthetic: the processor-module letter and the
+ * instance of the Hub part holding the record. A population no real PIMM
+ * is known for leaves the part unprogrammed, which IRIX reports as missing
+ * page data.
+ */
+static void sgi_machine_attach_ip29_pimm(SN0NodeState *node,
+                                         uint32_t processors,
+                                         uint64_t part_serial)
+{
+    const SGIModelCpuSlotList *slots = node->model_node->cpu_slots;
+    const SGIModelProcessor *cpu = slots ? slots->value->assembly : NULL;
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+
+    if (!cpu) {
+        return;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(sgi_ip29_pimms); i++) {
+        if (sgi_ip29_pimms[i].processors == processors &&
+            sgi_ip29_pimms[i].clock_mhz * 1000000ULL == cpu->clock_hz &&
+            sgi_ip29_pimms[i].cache_mib == cpu->cache_mib) {
+            SGIBoardRecord record = {
+                barcode, sgi_ip29_pimms[i].part, sgi_ip29_pimms[i].revision,
+                sgi_ip29_pimms[i].name,
+            };
+
+            sgi_synthetic_barcode(barcode, 'U', part_serial);
+            sgi_hub_attach_pimm_record(&node->hub, &record, &error_fatal);
+            return;
+        }
+    }
+}
+
+/*
  * The Origin 300 node board each processor count is, as real inventories
  * print its name, part and revision. Another four-processor part,
  * 030-1797-001 revision B, also appears in real inventories; the default
@@ -4523,6 +4597,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[node_index]);
         qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
+        if (sgi_machine_topology_is_ip29(t)) {
+            sgi_machine_attach_ip29_pimm(node, requested[node_index],
+                                         model_node->identity->serial);
+        }
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
                                  &error_abort);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);

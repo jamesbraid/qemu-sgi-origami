@@ -274,6 +274,7 @@ config SGI_PIO_FORWARD
 
 config SGI_HUB
     bool
+    select SGI_BOARD_RECORD
     select SGI_PI_GFX
     select SGI_PIO_FORWARD
     select AT24C
