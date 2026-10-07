@@ -156,6 +156,7 @@ config SGI_MACE
     default y if SGI_DEVICES
     depends on SGI_DEVICES
     select DS1685
+    select PCI
     select SERIAL_MM
 
 config SGI_NET_CABLE
