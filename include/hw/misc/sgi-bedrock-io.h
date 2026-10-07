@@ -110,6 +110,8 @@ struct SGIBedrockIOState {
 void sgi_bedrock_io_set_destination(SGIBedrockIOState *s,
                                    SGIBedrockIODestinationRW rw, void *opaque);
 
+bool sgi_bedrock_io_set_widget(SGIBedrockIOState *s, unsigned int widget,
+                               MemoryRegion *region, Error **errp);
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
 void sgi_bedrock_io_set_bte_local_rw(SGIBedrockIOState *s,
                                      SGIBedrockIOBTELocalRW rw,

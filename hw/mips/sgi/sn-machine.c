@@ -6398,9 +6398,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                  sgi_machine_topology_nasid(t, node_index));
             node->model_node = nodes[node_index];
             if (ip53) {
-                if (!sn1_node_set_ip53_assembly_validated(node, errp) ||
-                    !sgi_machine_set_pic_widget_views(s, t, node_index,
-                                                       errp)) {
+                if (!sn1_node_set_ip53_assembly_validated(node, errp)) {
                     return false;
                 }
             } else {
@@ -6550,8 +6548,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         for (node_index = 0; node_index < node_count; node_index++) {
             SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
             size_t i;
+            bool ip53 = nodes[node_index]->has_board_kind &&
+                nodes[node_index]->board_kind == SGI_MODEL_BOARD_KIND_IP53;
 
             sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+            if (ip53 && !sgi_machine_set_pic_widget_views(
+                    s, t, node_index, errp)) {
+                return false;
+            }
             for (i = 0; i < requested[node_index]; i++) {
                 machine->possible_cpus->cpus[cpu_index++].cpu =
                     CPU(node->cpu[i]);

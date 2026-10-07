@@ -57,6 +57,10 @@
 #define ONE_NODE "-M origin300 -cpu R14000 -smp 2 "
 #define TWO_NODES "-M origin300,topology=origin300-two-chassis " \
                   "-cpu R14000 -smp 4 -m 1024 "
+#define IP53_NODE "-M origin350,ip53-experimental=on " \
+                  "-cpu R16000,r16000-experimental=on," \
+                  "r16000-reset-mode=0x009cad85," \
+                  "r16000-scache-bytes=0x800000 -smp 4 -m 2G "
 #define RUN "-accel tcg,thread=multi -no-shutdown -S "
 /*
  * The head's own port, over the global map in node 0's I/O space: a store
@@ -66,7 +70,7 @@
 #define PORT_PAGE UINT64_C(0x0e000000)
 #define HEAD \
     "-device sgi-pi-gfx-test-head,id=head,pi=/machine/node0/bedrock," \
-    "widget=11,port=0x2000e000000,auto-return=on "
+    "widget=11,port=0x2000e000000,auto-return=%s "
 
 #define R_ZERO 0
 #define R_T0 8
@@ -178,9 +182,43 @@ static QTestState *start(const char *machine)
 {
     g_autofree char *prom = write_image();
     g_autofree char *quoted = g_shell_quote(prom);
-    QTestState *qts = qtest_initf("%s" RUN HEAD "-bios %s", machine, quoted);
+    QTestState *qts = qtest_initf("%s" RUN HEAD "-bios %s",
+                                 machine, "on", quoted);
 
     unlink(prom);
+    return qts;
+}
+
+static QTestState *start_ip53(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = write_image();
+    g_autofree char *data = NULL;
+    g_autofree char *clock = NULL;
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    g_autofree char *quoted_data = NULL;
+    g_autofree char *quoted_clock = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-pi-gfx-data-XXXXXX", &data, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-pi-gfx-clock-XXXXXX", &clock, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted_data = g_shell_quote(data);
+    quoted_clock = g_shell_quote(clock);
+    qts = qtest_initf(
+        IP53_NODE RUN HEAD "-bios %s "
+        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+        "off", quoted_prom, quoted_data, quoted_clock);
+    unlink(prom);
+    unlink(data);
+    unlink(clock);
     return qts;
 }
 
@@ -433,6 +471,23 @@ static void test_cross_node(void)
     qtest_quit(qts);
 }
 
+static uint64_t head_taken(QTestState *qts);
+
+static void test_ip53_host_credit_return(void)
+{
+    QTestState *qts = start_ip53();
+
+    prime(qts, 0, 0, 0, PAGE_ENABLE | PORT_PAGE, 64);
+    map(qts, 0, MAP(0, 0, 0, HEAD_WIDGET));
+    run(qts);
+    stores(qts, 0, SLOT_A, PORT_IO, 7);
+    g_assert_cmpuint(head_taken(qts), ==, 7);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 57);
+    head_returns(qts, 7);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 64);
+    qtest_quit(qts);
+}
+
 static uint64_t head_taken(QTestState *qts)
 {
     g_autoptr(QDict) response = qtest_qmp(qts,
@@ -486,5 +541,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/pi-gfx/cross-node", test_cross_node);
     qtest_add_func("sn1/pi-gfx/head-returns-only-counted-stores",
                    test_head_returns_only_counted_stores);
+    qtest_add_func("sn1/pi-gfx/ip53-host-credit-return",
+                   test_ip53_host_credit_return);
     return g_test_run();
 }
