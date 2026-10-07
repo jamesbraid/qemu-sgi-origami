@@ -36,6 +36,20 @@
 #define ROUTER_META_TABLE 0x70000
 #define ROUTER_LOCAL_TABLE 0x70100
 #define ROUTER_PORT_WORKING(port) (UINT64_C(1) << (26 + 3 * (port)))
+#define ROUTER_PORT_FAILED(port) (UINT64_C(1) << (25 + 3 * (port)))
+#define ROUTER_PORT_EIGHT_BIT(port) (UINT64_C(1) << (27 + 3 * (port)))
+#define ROUTER_PORT_LINK(port) (UINT64_C(7) << (25 + 3 * (port)))
+#define ROUTER_PORT_RESET 0x08
+#define ROUTER_FORCE_EIGHT(port) (UINT64_C(1) << (11 + (port)))
+#define ROUTER_STATUS_ERROR(port) (((uint64_t)(port) << 16) + 0x08)
+#define NI_PORT_RESET 0x600008
+#define NI_PORT_RESET_LINK (UINT64_C(1) << 1)
+#define NI_DIAG_PARMS 0x600110
+#define NI_DIAG_EIGHT_BIT (UINT64_C(1) << 12)
+#define NI_STATUS_EIGHT_BIT (UINT64_C(1) << 30)
+#define NI_PORT_ERROR 0x608008
+#define NI_PORT_ERROR_CLEAR 0x608088
+#define NI_PORT_ERROR_LINK_RESET (UINT64_C(1) << 37)
 #define ROUTER_NIC_PHASE(value) ((uint64_t)(value) << 20 | \
                                  (uint64_t)(value) << 27)
 #define ROUTER_NIC_RESET (ROUTER_NIC_PHASE(44) | \
@@ -1131,14 +1145,21 @@ static void test_programmed_routes(void)
     g_assert_false(cpu_read(qts, 0, target, &value));
     vector_op(qts, 2, 0, ROUTER_DIAG_PARMS, 1, 0);
     g_assert_true(cpu_read(qts, 0, target, &value));
+    /*
+     * A force bit takes effect at the port's next link reset, and then on
+     * both ends of the link.
+     */
     vector_write(qts, 0, ROUTER_DIAG_PARMS, UINT64_C(1) << 17);
     vector_op(qts, 0, 0, 0, 0, 0);
     g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA) &
+                    (UINT64_C(1) << 45), ==, 0);
+    vector_write(qts, 0, ROUTER_PORT_RESET, UINT64_C(1) << 6);
+    vector_op(qts, 0, 0, 0, 0, 0);
+    g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA) &
                     (UINT64_C(1) << 45), ==, UINT64_C(1) << 45);
-    /* Peer width negotiation is outside the supported local-force model. */
     vector_op(qts, 0, 6, 0, 0, 0);
     g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA) &
-                    (UINT64_C(1) << 45), ==, 0);
+                    (UINT64_C(1) << 45), ==, UINT64_C(1) << 45);
     vector_write(qts, 0, ROUTER_DIAG_PARMS, 0);
     qtest_qmp_assert_success(qts,
         "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/r1-r2',"
@@ -1486,6 +1507,112 @@ static uint64_t local_router_status(QTestState *qts, unsigned int node)
 
     g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
     return hub_read(qts, node, NI_VECTOR_READ_DATA);
+}
+
+static uint64_t router_read(QTestState *qts, uint64_t route, uint64_t address)
+{
+    uint64_t status = vector_op(qts, 0, route, address, 0, 0);
+
+    g_assert_cmphex(status & (VECTOR_VALID | 7), ==, VECTOR_VALID);
+    return hub_read(qts, 0, NI_VECTOR_READ_DATA);
+}
+
+/*
+ * Link resets in the four-node module, whose Router 1 carries node 0's Hub
+ * on port 5, node 1's on port 4 and Router 2 on port 6, and leaves ports 1
+ * to 3 uncabled. A Router port reset latches the link-reset bit in the Hub
+ * on that port only, and no Router error. A Hub's own force bit brings its
+ * Router port up eight bits wide at the Hub's link reset, and a Router's
+ * force bit brings both Routers' ends of their shared link up eight bits
+ * wide at its port reset. An uncabled port does not come out of reset.
+ */
+static void test_router_link_resets(void)
+{
+    QTestState *qts = start_module();
+    const uint64_t far = 6;
+    unsigned int node, port;
+
+    for (node = 0; node < 4; node++) {
+        g_assert_cmphex(hub_read(qts, node, NI_PORT_ERROR), ==, 0);
+    }
+
+    /* The Star case: Router 1 resets node 0's link. */
+    vector_write(qts, 0, ROUTER_PORT_RESET, UINT64_C(1) << 5);
+    g_assert_cmphex(hub_read(qts, 0, NI_PORT_ERROR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    for (node = 1; node < 4; node++) {
+        g_assert_cmphex(hub_read(qts, node, NI_PORT_ERROR), ==, 0);
+    }
+    g_assert_cmphex(router_read(qts, 0, 0) & ROUTER_PORT_LINK(5), ==,
+                    ROUTER_PORT_WORKING(5));
+    g_assert_cmphex(router_read(qts, 0, ROUTER_STATUS_ERROR(5)), ==, 0);
+    g_assert_cmphex(hub_read(qts, 0, NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+
+    /* Node 0's Hub forces its end; its link reset narrows both ends. */
+    hub_write(qts, 0, NI_DIAG_PARMS, NI_DIAG_EIGHT_BIT);
+    g_assert_cmphex(router_read(qts, 0, 0) & ROUTER_PORT_LINK(5), ==,
+                    ROUTER_PORT_WORKING(5));
+    hub_write(qts, 0, NI_PORT_RESET, NI_PORT_RESET_LINK);
+    g_assert_cmphex(hub_read(qts, 0, NI_STATUS) & NI_STATUS_EIGHT_BIT, ==,
+                    NI_STATUS_EIGHT_BIT);
+    g_assert_cmphex(router_read(qts, 0, 0) & ROUTER_PORT_LINK(5), ==,
+                    ROUTER_PORT_WORKING(5) | ROUTER_PORT_EIGHT_BIT(5));
+    g_assert_cmphex(router_read(qts, 0, ROUTER_STATUS_ERROR(5)), ==, 0);
+    g_assert_cmphex(hub_read(qts, 0, NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(hub_read(qts, 1, NI_STATUS) & NI_STATUS_EIGHT_BIT, ==, 0);
+
+    /* Router 1 forces its end of the inter-Router link. */
+    vector_write(qts, 0, ROUTER_DIAG_PARMS, ROUTER_FORCE_EIGHT(6));
+    g_assert_cmphex(router_read(qts, far, 0) & ROUTER_PORT_LINK(6), ==,
+                    ROUTER_PORT_WORKING(6));
+    vector_write(qts, 0, ROUTER_PORT_RESET, UINT64_C(1) << 6);
+    g_assert_cmphex(router_read(qts, 0, 0) & ROUTER_PORT_LINK(6), ==,
+                    ROUTER_PORT_WORKING(6) | ROUTER_PORT_EIGHT_BIT(6));
+    g_assert_cmphex(router_read(qts, far, 0) & ROUTER_PORT_LINK(6), ==,
+                    ROUTER_PORT_WORKING(6) | ROUTER_PORT_EIGHT_BIT(6));
+    g_assert_cmphex(router_read(qts, 0, ROUTER_DIAG_PARMS), ==,
+                    ROUTER_FORCE_EIGHT(6));
+
+    /*
+     * Router 1 forces node 0's link narrow; a warm reset clears the force
+     * bit and retrains the link, so both ends come back sixteen bits wide
+     * and the Hub records the link reset.
+     */
+    hub_write(qts, 0, NI_DIAG_PARMS, 0);
+    vector_write(qts, 0, ROUTER_DIAG_PARMS, ROUTER_FORCE_EIGHT(5));
+    vector_write(qts, 0, ROUTER_PORT_RESET, UINT64_C(1) << 5);
+    g_assert_cmphex(hub_read(qts, 0, NI_STATUS) & NI_STATUS_EIGHT_BIT, ==,
+                    NI_STATUS_EIGHT_BIT);
+    g_assert_cmphex(hub_read(qts, 0, NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    vector_write(qts, 0, ROUTER_PORT_RESET, UINT64_C(1) << 7);
+    g_assert_cmphex(router_read(qts, 0, ROUTER_DIAG_PARMS), ==, 0);
+    g_assert_cmphex(router_read(qts, 0, 0) &
+                    (ROUTER_PORT_LINK(5) | ROUTER_PORT_LINK(6)), ==,
+                    ROUTER_PORT_WORKING(5) | ROUTER_PORT_WORKING(6));
+    g_assert_cmphex(hub_read(qts, 0, NI_STATUS) & NI_STATUS_EIGHT_BIT, ==, 0);
+    g_assert_cmphex(router_read(qts, far, 0) & ROUTER_PORT_LINK(6), ==,
+                    ROUTER_PORT_WORKING(6));
+    g_assert_cmphex(hub_read(qts, 0, NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(hub_read(qts, 1, NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+
+    /* The power-off write: ports 1 to 3 on both Routers, all uncabled. */
+    vector_write(qts, far, ROUTER_PORT_RESET, 0xe);
+    vector_write(qts, 0, ROUTER_PORT_RESET, 0xe);
+    for (port = 1; port <= 3; port++) {
+        g_assert_cmphex(router_read(qts, 0, 0) & ROUTER_PORT_LINK(port), ==,
+                        ROUTER_PORT_FAILED(port));
+        g_assert_cmphex(router_read(qts, far, 0) & ROUTER_PORT_LINK(port),
+                        ==, ROUTER_PORT_FAILED(port));
+    }
+    for (node = 0; node < 4; node++) {
+        g_assert_cmphex(hub_read(qts, node, NI_PORT_ERROR), ==, 0);
+    }
+    qtest_quit(qts);
 }
 
 static void test_module_interlink_status(void)
@@ -2520,6 +2647,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/all-module-routes", test_all_module_routes);
     qtest_add_func("sn0/origin2000/module-link-isolation",
                     test_module_link_isolation);
+    qtest_add_func("sn0/origin2000/router-link-resets",
+                   test_router_link_resets);
     qtest_add_func("sn0/origin2000/module-interlink-status",
                    test_module_interlink_status);
     qtest_add_func("sn0/origin2000/isolated-migration",

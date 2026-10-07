@@ -19,7 +19,17 @@
 #include "system/cpu-timers.h"
 #include "system/memory.h"
 
+#define RR_STATUS_REV_ID       0x00000
+#define RR_PORT_RESET          0x00008
 #define RR_DIAG_PARMS          0x00030
+#define RR_PORT_PARMS(port)    ((uint64_t)(port) << 16)
+#define RR_LOCAL_TABLE(n)      (0x70100 + (n) * 8)
+#define RR_FORCE_EIGHT(port)   (UINT64_C(1) << (11 + (port)))
+#define RR_RESET_FAILED(port)  (UINT64_C(1) << (25 + 3 * (port)))
+#define RR_WORKING(port)       (UINT64_C(1) << (26 + 3 * (port)))
+#define RR_EIGHT_BIT(port)     (UINT64_C(1) << (27 + 3 * (port)))
+#define RR_PORT_LINK(port)     (UINT64_C(7) << (25 + 3 * (port)))
+#define RR_LOCAL_ERRORS        (UINT64_C(0xf) << 24)
 #define RR_STATUS_ERROR(port)  (((uint64_t)(port) << 16) + 0x0008)
 #define RR_CHECK_COUNT(value)  extract64(value, 8, 8)
 #define RR_RETRY_COUNT(value)  extract64(value, 16, 8)
@@ -38,12 +48,24 @@ struct TestHubState {
     uint64_t ni_port_error;
     /* This test Hub's one port's cable, wired directly by the test. */
     SGINetCableState *cable;
+    /* Whether this test Hub forces its end of the link to eight bits. */
+    bool eight_bit;
+    /* How many times the far end has reset this test Hub's link. */
+    unsigned int link_resets;
 };
 
 static SGINetPortLinkState test_hub_link_state(Object *port,
                                                unsigned int index)
 {
-    return (SGINetPortLinkState) { .enabled = true, .eight_bit = false };
+    return (SGINetPortLinkState) {
+        .enabled = true,
+        .eight_bit = TEST_HUB(port)->eight_bit,
+    };
+}
+
+static void test_hub_link_reset(Object *port, unsigned int index)
+{
+    TEST_HUB(port)->link_resets++;
 }
 
 static SGINetPacketResult test_hub_receive(Object *port, unsigned int index,
@@ -75,6 +97,7 @@ static void test_hub_class_init(ObjectClass *oc, const void *data)
     SGINetPortClass *pc = SGI_NET_PORT_CLASS(oc);
 
     pc->link_state = test_hub_link_state;
+    pc->link_reset = test_hub_link_reset;
     pc->receive = test_hub_receive;
     pc->record_check_error = test_hub_record_check_error;
 }
@@ -553,6 +576,186 @@ static void test_duplicate_number_stays_routed(void)
     object_unparent(container);
 }
 
+static void test_router_start(SGIRouterState *router)
+{
+    qdev_realize(DEVICE(router), NULL, &error_abort);
+    device_cold_reset(DEVICE(router));
+}
+
+/*
+ * Two Routers cabled port 1 to port 1 and port 2 to port 2, both links up
+ * sixteen bits wide. A force bit is an input to the next link reset of its
+ * port, not a view of the running link: it changes nothing until that port
+ * is reset, and then both ends of the link read the width the two settled
+ * on. Forcing one end is enough. The other link and every programmed
+ * register stay as they were, and no Router latches an error.
+ */
+static void test_port_link_reset_width(void)
+{
+    Object *container = object_property_add_new_container(
+        object_get_root(), "port-link-reset-width");
+    SGIRouterState *routers[2] = {
+        test_router_new(container, "router0"),
+        test_router_new(container, "router1"),
+    };
+    SGINetCableState *one = test_cable_new(container, "one",
+                                           OBJECT(routers[0]), 1,
+                                           OBJECT(routers[1]), 1);
+    SGINetCableState *two = test_cable_new(container, "two",
+                                           OBJECT(routers[0]), 2,
+                                           OBJECT(routers[1]), 2);
+    uint64_t saved[2][5];
+    unsigned int i, resetter;
+
+    for (i = 0; i < 2; i++) {
+        router_port_cable(routers[i], 1, one);
+        router_port_cable(routers[i], 2, two);
+        test_router_start(routers[i]);
+    }
+    for (i = 0; i < 2; i++) {
+        g_assert_cmphex(read_router(routers[i], RR_STATUS_REV_ID) &
+                        (RR_PORT_LINK(1) | RR_PORT_LINK(2)), ==,
+                        RR_WORKING(1) | RR_WORKING(2));
+        write_router(routers[i], RR_LOCAL_TABLE(3), 0x123450 + i);
+        write_router(routers[i], RR_PORT_PARMS(1), 0x2bf0 + i);
+        sgi_router_latch_port_error(routers[i], 1, 0x30201 + i);
+        sgi_router_latch_port_error(routers[i], 2, 0x10102 + i);
+    }
+
+    for (resetter = 0; resetter < 2; resetter++) {
+        SGIRouterState *forcing = routers[1 - resetter];
+
+        /* The force bit alone does not change the running link. */
+        write_router(forcing, RR_DIAG_PARMS, RR_FORCE_EIGHT(1));
+        for (i = 0; i < 2; i++) {
+            g_assert_cmphex(read_router(routers[i], RR_STATUS_REV_ID) &
+                            (RR_PORT_LINK(1) | RR_PORT_LINK(2)), ==,
+                            RR_WORKING(1) | RR_WORKING(2));
+            saved[i][0] = read_router(routers[i], RR_DIAG_PARMS);
+            saved[i][1] = read_router(routers[i], RR_LOCAL_TABLE(3));
+            saved[i][2] = read_router(routers[i], RR_PORT_PARMS(1));
+            saved[i][3] = read_router(routers[i], RR_STATUS_ERROR(1));
+            saved[i][4] = read_router(routers[i], RR_STATUS_ERROR(2));
+        }
+
+        write_router(routers[resetter], RR_PORT_RESET, UINT64_C(1) << 1);
+        for (i = 0; i < 2; i++) {
+            uint64_t status = read_router(routers[i], RR_STATUS_REV_ID);
+
+            g_assert_cmphex(status & (RR_PORT_LINK(1) | RR_PORT_LINK(2)),
+                            ==, RR_WORKING(1) | RR_EIGHT_BIT(1) |
+                                RR_WORKING(2));
+            g_assert_cmphex(status & RR_LOCAL_ERRORS, ==, 0);
+        }
+
+        /* Cleared again, the next reset brings the link back to sixteen. */
+        write_router(forcing, RR_DIAG_PARMS, 0);
+        g_assert_cmphex(read_router(routers[resetter], RR_STATUS_REV_ID) &
+                        RR_PORT_LINK(1), ==,
+                        RR_WORKING(1) | RR_EIGHT_BIT(1));
+        write_router(routers[resetter], RR_PORT_RESET, UINT64_C(1) << 1);
+        for (i = 0; i < 2; i++) {
+            g_assert_cmphex(read_router(routers[i], RR_STATUS_REV_ID) &
+                            (RR_PORT_LINK(1) | RR_PORT_LINK(2)), ==,
+                            RR_WORKING(1) | RR_WORKING(2));
+            g_assert_cmphex(read_router(routers[i], RR_DIAG_PARMS), ==, 0);
+            g_assert_cmphex(read_router(routers[i], RR_LOCAL_TABLE(3)), ==,
+                            saved[i][1]);
+            g_assert_cmphex(read_router(routers[i], RR_PORT_PARMS(1)), ==,
+                            saved[i][2]);
+            g_assert_cmphex(read_router(routers[i], RR_STATUS_ERROR(1)), ==,
+                            saved[i][3]);
+            g_assert_cmphex(read_router(routers[i], RR_STATUS_ERROR(2)), ==,
+                            saved[i][4]);
+        }
+        for (i = 0; i < 2; i++) {
+            g_assert_cmphex(saved[i][0], ==,
+                            routers[i] == forcing ? RR_FORCE_EIGHT(1) : 0);
+        }
+    }
+    object_unparent(container);
+}
+
+/*
+ * One write of 0xe resets the links on ports 1, 2 and 3, each exactly once,
+ * and leaves ports 4 to 6 alone. A Hub's own force bit counts in the
+ * negotiation, so a Hub forcing eight bits brings its Router port up eight
+ * bits wide. Each reset Hub hears that its link was reset; that is where the
+ * Hub latches its own link-reset error, since the Router has none to latch.
+ */
+static void test_port_reset_mask(void)
+{
+    Object *container = object_property_add_new_container(
+        object_get_root(), "port-reset-mask");
+    SGIRouterState *router = test_router_new(container, "router");
+    TestHubState *hubs[6];
+    uint64_t status;
+    unsigned int port;
+
+    for (port = 1; port <= 6; port++) {
+        g_autofree char *name = g_strdup_printf("hub%u", port);
+        g_autofree char *cable_name = g_strdup_printf("cable%u", port);
+        SGINetCableState *cable;
+
+        hubs[port - 1] = test_hub_new(container, name, port);
+        cable = test_cable_new(container, cable_name,
+                               OBJECT(hubs[port - 1]), 0, OBJECT(router),
+                               port);
+        hubs[port - 1]->cable = cable;
+        router_port_cable(router, port, cable);
+    }
+    test_router_start(router);
+    hubs[0]->eight_bit = true;
+    hubs[4]->eight_bit = true;
+
+    write_router(router, RR_PORT_RESET, 0xe);
+    status = read_router(router, RR_STATUS_REV_ID);
+    for (port = 1; port <= 6; port++) {
+        g_assert_cmpuint(hubs[port - 1]->link_resets, ==, port <= 3);
+        g_assert_cmphex(status & RR_PORT_LINK(port), ==,
+                        RR_WORKING(port) |
+                        (port == 1 ? RR_EIGHT_BIT(port) : 0));
+        g_assert_cmphex(read_router(router, RR_STATUS_ERROR(port)), ==, 0);
+    }
+    g_assert_cmphex(status & RR_LOCAL_ERRORS, ==, 0);
+    object_unparent(container);
+}
+
+/*
+ * A port whose peer does not answer, its cable down, does not come out of a
+ * link reset: link-working stays clear and reset-failed reads set. The
+ * cable coming back up brings the link up and clears reset-failed.
+ */
+static void test_port_reset_peer_absent(void)
+{
+    Object *container = object_property_add_new_container(
+        object_get_root(), "port-reset-peer-absent");
+    SGIRouterState *router = test_router_new(container, "router");
+    TestHubState *hub = test_hub_new(container, "hub", 1);
+    SGINetCableState *cable = test_cable_new(container, "cable",
+                                             OBJECT(hub), 0, OBJECT(router),
+                                             3);
+
+    hub->cable = cable;
+    router_port_cable(router, 3, cable);
+    test_router_start(router);
+    g_assert_cmphex(read_router(router, RR_STATUS_REV_ID) & RR_PORT_LINK(3),
+                    ==, RR_WORKING(3));
+
+    object_property_set_bool(OBJECT(cable), "down", true, &error_abort);
+    g_assert_cmphex(read_router(router, RR_STATUS_REV_ID) & RR_PORT_LINK(3),
+                    ==, 0);
+    write_router(router, RR_PORT_RESET, UINT64_C(1) << 3);
+    g_assert_cmphex(read_router(router, RR_STATUS_REV_ID) & RR_PORT_LINK(3),
+                    ==, RR_RESET_FAILED(3));
+    g_assert_cmpuint(hub->link_resets, ==, 0);
+
+    object_property_set_bool(OBJECT(cable), "down", false, &error_abort);
+    g_assert_cmphex(read_router(router, RR_STATUS_REV_ID) & RR_PORT_LINK(3),
+                    ==, RR_WORKING(3));
+    object_unparent(container);
+}
+
 int main(int argc, char **argv)
 {
     Object *machine;
@@ -569,6 +772,12 @@ int main(int argc, char **argv)
                     test_diagnostic_error_paths);
     g_test_add_func("/sn0-fabric-routed/duplicate-number-stays-routed",
                     test_duplicate_number_stays_routed);
+    g_test_add_func("/sn0-fabric-routed/port-link-reset-width",
+                    test_port_link_reset_width);
+    g_test_add_func("/sn0-fabric-routed/port-reset-mask",
+                    test_port_reset_mask);
+    g_test_add_func("/sn0-fabric-routed/port-reset-peer-absent",
+                    test_port_reset_peer_absent);
     g_test_add_data_func("/sn0-fabric-routed/fifteen-hops",
                         GUINT_TO_POINTER(15), test_route_length);
     g_test_add_data_func("/sn0-fabric-routed/sixteen-hops",

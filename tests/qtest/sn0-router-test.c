@@ -29,6 +29,8 @@
 #define PORT_RESET_ADMIN           (UINT64_C(1) << 0)
 #define PORT_RESET_PORT(port)      (UINT64_C(1) << (port))
 #define PORT_RESET_WARM            (UINT64_C(1) << 7)
+#define PORT_RESET_FAILED(port)    (UINT64_C(1) << (25 + 3 * (port)))
+#define PORT_WORKING(port)         (UINT64_C(1) << (26 + 3 * (port)))
 
 #define ROUTER_NIC                 0x38
 #define NIC_PHASES                 ((UINT64_C(47) << 27) | (UINT64_C(47) << 20))
@@ -108,6 +110,7 @@ static void test_bist_and_programmed_resets(void)
     QTestState *qts = start("");
     const uint64_t working = UINT64_C(1) << (26 + 3 * 3);
     const uint64_t width = working << 1;
+    const uint64_t failed = working >> 1;
 
     g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
 
@@ -144,12 +147,17 @@ static void test_bist_and_programmed_resets(void)
     write_reg(qts, RR_SCRATCH_REG0, 0x1234);
     write_reg(qts, RR_PROTECTION_CONFIG, 0x12345);
 
-    /* A selected port reset leaves all modeled administrative state alone. */
+    /*
+     * A selected port reset leaves all modeled administrative state alone.
+     * The fixture's port has no cable, so nothing answers the reset and the
+     * port does not come out of it.
+     */
     write_reg(qts, RR_PORT_RESET, PORT_RESET_PORT(3));
     g_assert_cmphex(read_reg(qts, RR_SCRATCH_REG0), ==, 0x1234);
     g_assert_cmphex(read_reg(qts, RR_STATUS_ERROR(3)), ==, 0x1234);
-    g_assert_cmphex(read_reg(qts, 0) & (working | width), ==,
-                    working | width);
+    g_assert_cmphex(read_reg(qts, 0) & (working | width | failed), ==,
+                    failed);
+    set(qts, "link", 3);
 
     /* Administrative reset clears programming while preserving link state. */
     write_reg(qts, RR_PORT_RESET, PORT_RESET_ADMIN);
@@ -164,6 +172,48 @@ static void test_bist_and_programmed_resets(void)
     g_assert_cmphex(read_reg(qts, RR_SCRATCH_REG0), ==, 0);
     g_assert_cmphex(read_reg(qts, 0) & (working | width), ==, 0);
     g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
+    qtest_quit(qts);
+}
+
+/*
+ * A port link reset with nothing on the far end: link-working stays clear,
+ * reset-failed reads set, and no other port, error register or the port
+ * reset register itself changes. Bringing the link up clears reset-failed.
+ */
+static void test_port_reset_without_peer(void)
+{
+    QTestState *qts = start("");
+    const uint64_t links = UINT64_C(0x3ffff) << 28;
+
+    set(qts, "port", 4);
+    set(qts, "link", 1);
+    for (unsigned int port = 1; port <= 6; port++) {
+        set(qts, "port", port);
+        set(qts, "port-errors", 0x100 * port);
+    }
+    g_assert_cmphex(read_reg(qts, RR_PORT_RESET), ==, 0);
+
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_PORT(2));
+    g_assert_cmphex(read_reg(qts, 0) & links, ==,
+                    PORT_RESET_FAILED(2) | PORT_WORKING(4));
+    g_assert_cmphex(read_reg(qts, RR_PORT_RESET), ==, 0);
+    for (unsigned int port = 1; port <= 6; port++) {
+        g_assert_cmphex(read_reg(qts, RR_STATUS_ERROR(port)), ==,
+                        0x100 * port);
+    }
+
+    set(qts, "port", 2);
+    set(qts, "link", 1);
+    g_assert_cmphex(read_reg(qts, 0) & links, ==,
+                    PORT_WORKING(2) | PORT_WORKING(4));
+
+    /* A whole-chip reset forgets the failed reset with the link state. */
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_PORT(5));
+    g_assert_cmphex(read_reg(qts, 0) & links, ==,
+                    PORT_WORKING(2) | PORT_WORKING(4) |
+                    PORT_RESET_FAILED(5));
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_WARM | PORT_RESET_ADMIN);
+    g_assert_cmphex(read_reg(qts, 0) & links, ==, 0);
     qtest_quit(qts);
 }
 
@@ -430,6 +480,8 @@ static void test_migration(void)
         set(from, "port", port);
         set(from, "link", port & 3);
     }
+    /* A port that failed to come out of a link reset stays failed. */
+    write_reg(from, RR_PORT_RESET, PORT_RESET_PORT(4));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -454,6 +506,8 @@ static void test_migration(void)
         set(to, "port", port);
         g_assert_cmphex(read_reg(to, 0), ==, read_reg(from, 0));
     }
+    g_assert_cmphex(read_reg(to, 0) & (UINT64_C(7) << 37), ==,
+                    PORT_RESET_FAILED(4));
     write_reg(to, RR_DIAG_PARMS, 0x12345);
     qtest_clock_step(to, 9);
     g_assert_cmphex(read_reg(to, RR_HISTOGRAM(1)), ==,
@@ -965,6 +1019,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/router/bist-and-programmed-resets",
                    test_bist_and_programmed_resets);
     qtest_add_func("sn0/router/links-reset", test_links_reset);
+    qtest_add_func("sn0/router/port-reset-without-peer",
+                   test_port_reset_without_peer);
     qtest_add_func("sn0/router/histograms", test_histograms);
     qtest_add_func("sn0/router/histogram-common-rescale",
                    test_histogram_common_rescale);

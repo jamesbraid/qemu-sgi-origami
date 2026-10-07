@@ -965,6 +965,44 @@ interrupt reaches Bedrock, then lowers and acknowledges it:
 A wrong input number fails these tests. They check the model against
 this table; they cannot check the table against a physical board.
 
+Router links
+============
+
+Each Router port reports in its status register whether its link is
+working, whether its last link reset failed, and whether the link runs
+eight bits wide. The width is a property of the link, settled from
+both ends' forced-width bits when the link comes up or is reset: a
+Router's per-port force bit in its diagnostic parameters, a Hub's
+diagnostic bit 12, and the link runs eight bits wide if either end
+forces it. Writing a force bit alone does not change a running link.
+A port link reset (port reset bits 6:1, several at once if several are
+set) completes at the write: the link renegotiates and both ends read
+the new width, a Hub at the far end latches its port error's
+link-reset bit, and the Router itself latches no error and keeps its
+diagnostic parameters, tables, port parameters, histograms and error
+counters. A port with no peer to answer, uncabled or with its cable
+down, does not come out of the reset: link-working stays clear and
+reset-failed reads set until the link next comes up. A warm reset
+(port reset bit 7) clears the force bits and retrains every working
+link the same way, so its peers settle the width again and a Hub at
+the far end latches its link-reset bit. The administrative reset
+(bit 0) clears the force bits but keeps the link engines connected,
+so each link keeps its width until it is next reset. BIST completion
+applies the warm-reset extent to the Router's own state, and the Router
+datasheet's warm-reset extent retrains fitted links, but the model does
+not retrain the peers at BIST completion. This is a stated departure:
+retraining would latch bit 37 at every neighbouring Hub on each
+self-test run, new guest-visible behaviour that no evidence supports.
+A capture of a neighbouring Hub's port error register and the Router's
+port status before and after a Router self-test on real hardware, or
+the Router specification's description of BIST completion, would
+settle it. The reset fences
+are not consulted for a link reset, since whether they apply is not
+known and software only resets open ports. The duration, the
+link-down interval and the fate of traffic in flight are not modelled;
+these are approximations of the Router datasheet's inferred contract,
+not measured behaviour.
+
 Devices
 =======
 
