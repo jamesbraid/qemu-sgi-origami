@@ -5131,6 +5131,11 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             return false;
         }
         router = qdev_new(TYPE_SGI_SN1_ROUTER);
+        if (!strcmp(t->name,
+                    "origin300-numalink-pci-expansion-experiment")) {
+            sgi_sn1_router_enable_synthetic_diagnostics(
+                SGI_SN1_ROUTER(router));
+        }
         object_property_add_child(module, "router", OBJECT(router));
         qdev_prop_set_uint8(router, "chip-revision", record->revision);
         object_property_set_link(OBJECT(router), "l1-uart", OBJECT(uart),

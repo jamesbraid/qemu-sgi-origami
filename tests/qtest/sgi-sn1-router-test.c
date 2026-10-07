@@ -35,6 +35,23 @@ static uint64_t get(QTestState *s, const char *name)
     return value;
 }
 
+static void expect_ordinary_vector_refusal(QTestState *s, uint64_t address,
+                                           bool write)
+{
+    const uint64_t lb = UINT64_C(0x20600000);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    const uint64_t params = address | (UINT64_C(0x5a) << 40);
+
+    qtest_readq(s, lb + 0xc038);
+    qtest_writeq(s, lb + 0xc030, sentinel);
+    qtest_writeq(s, lb + 0xc008, 0);
+    qtest_writeq(s, lb + 0xc010, 0);
+    qtest_writeq(s, lb + 0xc000, params | write);
+    g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
+                    (UINT64_C(1) << 63) | params | 4);
+    g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
+}
+
 static void test_registers(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -346,6 +363,18 @@ static void test_global_diag_parms_vector(void)
             qtest_writeq(s, lb + 0xc000, params);
             g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, valid | params);
             g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, 0);
+        }
+        for (unsigned offset = 0x38; offset <= 0x48; offset += 8) {
+            expect_ordinary_vector_refusal(s, offset, false);
+            expect_ordinary_vector_refusal(s, offset, true);
+        }
+        for (unsigned port = 0; port < G_N_ELEMENTS(bank); port++) {
+            for (unsigned offset = 0x30; offset <= 0x38; offset += 8) {
+                expect_ordinary_vector_refusal(s, bank[port] + offset,
+                                               false);
+                expect_ordinary_vector_refusal(s, bank[port] + offset,
+                                               true);
+            }
         }
 
         qtest_readq(s, lb + 0xc038);

@@ -19,6 +19,8 @@
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
 #define INACTIVE_BARRIER_CONTEXTS 32
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
+#define DEBUG_ADDRESS_MASK ((UINT64_C(1) << 10) - 1)
+#define DEBUG_ADDRESS_FIXED (UINT64_C(0xffff) << 10)
 
 struct SGISN1RouterState {
     SysBusDevice parent_obj;
@@ -29,6 +31,8 @@ struct SGISN1RouterState {
     bool uart_as_ready;
     bool cables_locked;
     uint8_t revision;
+    uint8_t synthetic_diagnostics;
+    uint64_t diagnostic[3];
     uint64_t protection;
     uint64_t global[2];
     uint64_t jbus_control;
@@ -131,6 +135,26 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
             return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
         }
         packet->value = router_status(s, ingress);
+        return SGI_NET_PACKET_OK;
+    }
+    if (s->synthetic_diagnostics && address >= 0x30 && address <= 0x48) {
+        if (address == 0x30) {
+            if (write && packet->data) {
+                return refuse(packet, SGI_NET_PACKET_FAILURE_COMMAND);
+            }
+            packet->value = 0;
+            return SGI_NET_PACKET_OK;
+        }
+        unsigned index = (address - 0x38) / 8;
+        mask = index == 0 ? DEBUG_ADDRESS_MASK :
+            (UINT64_C(1) << (32 + index)) - 1;
+
+        if (write) {
+            s->diagnostic[index] = packet->data & mask;
+        } else {
+            packet->value = s->diagnostic[index] |
+                (index == 0 ? DEBUG_ADDRESS_FIXED : 0);
+        }
         return SGI_NET_PACKET_OK;
     }
     if (address == 0x8 || address == 0x18 || address == 0x30) {
@@ -321,6 +345,7 @@ static void router_reset_enter(Object *obj, ResetType type)
     memset(s->scratch, 0, sizeof(s->scratch));
     memset(s->parameter, 0, sizeof(s->parameter));
     memset(s->inactive_barrier, 0, sizeof(s->inactive_barrier));
+    memset(s->diagnostic, 0, sizeof(s->diagnostic));
     memset(s->local, 0, sizeof(s->local));
     memset(s->meta, 0, sizeof(s->meta));
 }
@@ -365,6 +390,8 @@ static const VMStateDescription vmstate_router = {
     .post_load = router_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(revision, SGISN1RouterState),
+        VMSTATE_UINT8_EQUAL(synthetic_diagnostics, SGISN1RouterState),
+        VMSTATE_UINT64_ARRAY(diagnostic, SGISN1RouterState, 3),
         VMSTATE_UINT64(protection, SGISN1RouterState),
         VMSTATE_UINT64_ARRAY(global, SGISN1RouterState, 2),
         VMSTATE_UINT64(jbus_control, SGISN1RouterState),
@@ -416,6 +443,12 @@ static void router_unrealize(DeviceState *dev)
 void sgi_sn1_router_lock_cables(SGISN1RouterState *s)
 {
     s->cables_locked = true;
+}
+
+void sgi_sn1_router_enable_synthetic_diagnostics(SGISN1RouterState *s)
+{
+    g_assert(!DEVICE(s)->realized);
+    s->synthetic_diagnostics = 1;
 }
 
 static void router_check_cable(const Object *obj, const char *name,
