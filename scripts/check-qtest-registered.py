@@ -67,6 +67,54 @@ def registration_occurrences(meson: str) -> Counter[str]:
     return counts
 
 
+def registered_paths(source: str) -> list[str]:
+    """GLib test paths a qtest source registers, without the target prefix.
+
+    qtest_add_func() and its relatives put "/<target>/" in front of the path
+    they are given, which may be split over adjacent string literals. A
+    grouped test registers through its own add_case(), which calls them.
+    """
+    calls = re.finditer(
+        r'\b(?:qtest_add(?:_func|_data_func|_data_func_full)?|add_case)'
+        r'\(\s*((?:"[^"]*"\s*)+)', source)
+    return ["".join(re.findall(r'"([^"]*)"', call.group(1))) for call in calls]
+
+
+def group_problems(name: str, groups: str, source: str) -> list[str]:
+    """Check that a test's groups take every case it registers, once.
+
+    A groups line is a group name and a GLib path, which names one case or a
+    suite whose cases directly under it all join the group. The path keeps
+    its target prefix, which the source's registrations do not spell.
+    """
+    problems = []
+    paths = []
+    for number, line in enumerate(groups.splitlines(), 1):
+        words = line.split()
+        if not words or words[0].startswith("#"):
+            continue
+        if len(words) != 2 or words[1].count("/") < 2:
+            problems.append(f"{name}-groups.txt:{number} is not "
+                            "'GROUP /TARGET/PATH'")
+            continue
+        paths.append(words[1].split("/", 2)[2])
+    cases = registered_paths(source)
+    taken = Counter()
+    for case in cases:
+        taken[case] = sum(path in (case, case.rsplit("/", 1)[0])
+                          for path in paths)
+    problems.extend(f"{name} case {case} is in no group"
+                    for case in cases if not taken[case])
+    problems.extend(f"{name} case {case} is in more than one group"
+                    for case in cases if taken[case] > 1)
+    suites = {case.rsplit("/", 1)[0] for case in cases}
+    problems.extend(f"{name}-groups.txt names {path}, which {name} "
+                    "does not register"
+                    for path in paths
+                    if path not in cases and path not in suites)
+    return problems
+
+
 def main() -> int:
     meson = (QTEST / "meson.build").read_text()
     names = registration_names(meson)
@@ -96,6 +144,14 @@ def main() -> int:
             problems.append(f"{name} is not in the qos-test sources")
         if name in qos_names and not (QTEST / name).is_file():
             problems.append(f"{name} has no source")
+    for groups in QTEST.glob("*-test-groups.txt"):
+        name = groups.name[:-len("-groups.txt")]
+        source = QTEST / f"{name}.c"
+        if not source.is_file():
+            problems.append(f"{groups.name} has no source")
+            continue
+        problems.extend(group_problems(name, groups.read_text(),
+                                       source.read_text()))
     for problem in sorted(problems):
         print(f"FAIL {problem}")
     if problems:

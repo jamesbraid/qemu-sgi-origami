@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 checker = runpy.run_path(str(Path(__file__).with_name('check-qtest-registered.py')))
+group_problems = checker['group_problems']
 guarded_names = checker['guarded_names']
 registration_names = checker['registration_names']
 main = checker['main']
@@ -88,6 +89,54 @@ qtests_mips64 = sn1_xbridge_qtests
 """
         status, output = self.check_tree(meson, ('sn1-xbridge-chip-test',))
         self.assertEqual(status, 0, output)
+
+
+
+class GroupTests(unittest.TestCase):
+    SOURCE = """
+    qtest_add_func("sn1/x/plain", test_plain);
+    qtest_add_func("sn1/x/"
+                   "split", test_split);
+    if (g_test_slow()) {
+        qtest_add_data_func("sn1/x/suite/one", NULL, test_one);
+    }
+    qtest_add_func("sn1/x/suite/two", test_two);
+"""
+
+    def problems(self, groups):
+        return group_problems('sn1-x-test', groups, self.SOURCE)
+
+    def test_cases_and_a_suite_each_in_one_group(self):
+        self.assertEqual(self.problems("""# A comment line.
+a /mips64/sn1/x/plain
+a /mips64/sn1/x/split
+b /mips64/sn1/x/suite
+"""), [])
+
+    def test_case_in_no_group_fails(self):
+        self.assertEqual(self.problems("""a /mips64/sn1/x/plain
+b /mips64/sn1/x/suite
+"""), ['sn1-x-test case sn1/x/split is in no group'])
+
+    def test_case_in_two_groups_fails(self):
+        self.assertEqual(self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/split
+a /mips64/sn1/x/suite/one
+b /mips64/sn1/x/suite
+"""), ['sn1-x-test case sn1/x/suite/one is in more than one group'])
+
+    def test_unregistered_path_fails(self):
+        self.assertIn('sn1-x-test-groups.txt names sn1/x/gone, which '
+                      'sn1-x-test does not register',
+                      self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/split
+a /mips64/sn1/x/gone
+b /mips64/sn1/x/suite
+"""))
+
+    def test_malformed_line_fails(self):
+        self.assertIn("sn1-x-test-groups.txt:1 is not 'GROUP /TARGET/PATH'",
+                      self.problems("a\n"))
 
 
 if __name__ == '__main__':
