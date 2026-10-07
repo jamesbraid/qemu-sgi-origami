@@ -919,6 +919,19 @@ static void test_decoded_triangle_native_commit(void)
 
     state.blend = 0;
     f.fail_commit = false;
+    rules.smooth_primitives = true;
+    draw.polygon_smooth = true;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 4);
+    g_assert_cmpuint(f.commits, ==, 3);
+
+    draw.polygon_smooth = false;
+    rules.smooth_primitives = false;
     state.clip_planes = 1;
     state.clip_plane[0][3] = -1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
