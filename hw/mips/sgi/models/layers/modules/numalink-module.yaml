@@ -21,7 +21,7 @@ layer:
         router_asic: {port_count: 8, role: router}
         provenance: derived
         parent: numalink-module
-        sources: ["linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/router.h lines 15-18, 45-47: public eight-port SN1 router family", "007-4498-002 p.10, 132-133: eight NUMAlink module ports", "boot-logs/nekonomicon-thread-16727514-origin300-24cpu-l2.html lines 257-259, 405, 1694-1696, 1868: reported board 030-1634-003 rev -A and router Revision 1"]
+        sources: ["linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/router.h lines 15-18, 45-47: public eight-port SN1 router family", "007-4498-002 p.10, 132-133: eight NUMAlink module ports", "web:nekonomicon-16727514 posts: router board 030-1634-003 rev -A and router Revision 1"]
         notes: Inferred software-family mapping, not measured fitted silicon. Owner inventory reports board 030-1634-003 revision -A and router Revision 1. One logical router in this reference does not establish ASIC count. Board and reported router revisions are distinct. No chip revision is selected.
       - id: l1
         name: L1 system controller

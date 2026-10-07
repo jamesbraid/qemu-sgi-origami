@@ -238,6 +238,30 @@ six-chassis rack whose modules at U12, U14, U18, U22 and U24 reported
 active ports 1, 4, 5, 7 and 8 (Nekonomicon thread 16727514) agrees
 with it. The layer's eight router-port buses carry these port numbers.
 
+The routed Origin 300 experiment selects one logical eight-port SN1
+router. Public Linux v2.5.0
+(``linux-history:381ab1f538162eb985c9244aa7d56e54315881ab``)
+names router chip identity ``0x3017`` in
+``include/asm-ia64/sn/sn1/bedrock.h`` lines 19-20 and defines the
+router status fields in ``include/asm-ia64/sn/sn1/router.h``. A
+published six-chassis Origin 300 inventory (Nekochan thread 16727514,
+lines 390-409 and 1860-1869) reports router Revision 1. The model
+selects chip revision one by inference from that software report.
+Neither the inventory nor the manuals measure the fitted silicon or
+establish how many router ASICs the enclosure contains. Chip inputs
+zero is an emulator configuration choice.
+
+The experiment also selects router L1 type ``0x52`` as a software
+profile, not a measured controller reply. Public Linux v2.5.0
+``include/asm-ia64/sn/ksys/l1.h`` line 266 assigns uppercase ``R``
+that code. Its ``arch/ia64/sn/io/l1_command.c`` lines 413-436
+normalize uppercase types for module names and lines 1031-1074
+identify the router module independently of the returned type.
+The Origin 300 NUMAlink module guide (007-4498-002, printed pages
+14, 96 and 130) establishes a separate L1 controller, but gives no
+raw type response. A binary type-query capture from a matching
+controller would settle that byte.
+
 .. _sgi-sn-family-origin350:
 
 Origin 350 compute module
