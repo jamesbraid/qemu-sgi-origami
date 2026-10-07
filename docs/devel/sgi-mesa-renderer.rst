@@ -19,11 +19,14 @@ must have bottom-origin rows and ordered UNORM components of 1 to 16 bits.
 The viewport and single clip rectangle must cover the resource. The path
 rejects colour-index drawing, depth and stencil tests, blending, textures,
 client clip planes, ordered dithering, accumulation, and other draw states it
-has not mapped to Mesa. It snapshots the full colour resource, draws through
-an RGBA16 host buffer, reads back, and commits the full resource rectangle.
-It supplies no per-pixel write or coverage indication. Comparing old and new
-colours cannot detect a write that repeats the stored value, so a family
-cannot use this path to update a separate tag, index, overlay, or WID plane.
+has not mapped to Mesa. It snapshots the full colour resource and draws
+through an RGBA16 host buffer with a private stencil marker from the same
+draw. It reads back both arrays before any native commit. The shared code
+passes a bottom-origin binary write mask to ``commit_covered``. The provider
+must leave zero-mask pixels untouched.
+Equal-colour writes remain marked. A missing sparse callback returns
+``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
+path yet, and KONA's tag meaning remains a family contract.
 
 The decoded CLEAR path is separate dependent work in held QEMU PR #1147. It
 is not part of the implementation described here. The shared type declarations
@@ -70,6 +73,14 @@ fills every requested slot. A successful commit reports the rectangle's full
 pixel count. A failed commit reports its complete pixel prefix, possible
 partial next pixel, and whether the extent is known. Native writes already
 made by the provider remain made. There is no rollback.
+
+For the checked triangle, ``commit_covered`` receives one byte of write
+coverage per pixel. The shared wrapper validates mask capacity and binary
+values before calling the provider, then checks its partial result.
+``complete_pixels`` counts the scanned row-major prefix, including skipped
+pixels. The family provider must preserve mask-zero native storage, apply its
+reviewed colour and coupled-plane rules to mask-one pixels, and update dirty
+and alias state after partial writes.
 
 For a future draw with several attachments, resolve and snapshot every
 required resource under the big lock before any native commit. Complete all
