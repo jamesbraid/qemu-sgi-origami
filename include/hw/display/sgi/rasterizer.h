@@ -442,6 +442,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
                                         const SGIRasterTarget *target,
                                         const SGIGLDraw *draw, Error **errp);
+SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
+                                          const SGIRasterRules *rules,
+                                          const SGIRasterTarget *target,
+                                          const SGIRasterOp *op, Error **errp);
 
 /*
  * Rasterize a draw into the target, under the draw's state and the head's

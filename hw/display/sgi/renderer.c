@@ -236,3 +236,176 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                                    nslots, &writes, errp);
     return committed.status;
 }
+
+SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
+                                          const SGIRasterRules *rules,
+                                          const SGIRasterTarget *target,
+                                          const SGIRasterOp *op, Error **errp)
+{
+    const SGIRenderResource *resources[SGI_GL_MAX_TARGETS];
+    SGIRendererClear clears[SGI_GL_MAX_TARGETS] = { 0 };
+
+    if (!renderer || !rules || !target || !op) {
+        error_setg(errp, "Missing SGI Mesa raster input");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    if (op->kind != SGI_RASTER_CLEAR ||
+        (op->clear_buffers & ~(SGI_GL_COLOR_BUFFER_BIT |
+                               SGI_GL_DEPTH_BUFFER_BIT |
+                               SGI_GL_STENCIL_BUFFER_BIT)) ||
+        (op->clear_buffers & (SGI_GL_DEPTH_BUFFER_BIT |
+                              SGI_GL_STENCIL_BUFFER_BIT)) ||
+        op->index_bits) {
+        error_setg(errp, "Unsupported SGI Mesa raster operation or plane");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    if (op->x0 > op->x1 || op->y0 > op->y1 ||
+        op->ntargets > SGI_GL_MAX_TARGETS ||
+        op->clip.n > SGI_CLIP_MAX ||
+        (op->clear_colour_mask & ~SGI_GL_COLOUR_MASK_ALL)) {
+        error_setg(errp, "Invalid SGI Mesa clear geometry or mask");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    if (!(op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT) ||
+        !op->clear_colour_mask || !op->ntargets ||
+        (!op->clip.n && op->clip.empty)) {
+        return SGI_RENDER_OK;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (!isfinite(op->clear_rgba[c])) {
+            error_setg(errp, "Invalid SGI Mesa clear colour");
+            return SGI_RENDER_RESOURCE_ERROR;
+        }
+    }
+    for (unsigned i = 0; i < op->ntargets; i++) {
+        SGIRendererClear *clear = &clears[i];
+        const SGIRenderResource *res;
+        int32_t x0, y0, x1, y1;
+
+        for (unsigned j = 0; j < i; j++) {
+            if (op->targets[j] == op->targets[i]) {
+                error_setg(errp, "Duplicate SGI Mesa clear target");
+                return SGI_RENDER_RESOURCE_ERROR;
+            }
+        }
+        res = sgi_render_colour_resource(target, op->targets[i]);
+        if (!res || !res->width || !res->height ||
+            res->width > INT_MAX || res->height > INT_MAX ||
+            res->depth != 1 || !res->bottom_origin ||
+            (res->component_count != 3 && res->component_count != 4)) {
+            error_setg(errp, "Unsupported SGI Mesa clear resource");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        for (unsigned c = 0; c < res->component_count; c++) {
+            if (res->component[c].channel != SGI_RENDER_R + c ||
+                res->component[c].numeric != SGI_RENDER_UNORM ||
+                !res->component[c].storage_bits ||
+                res->component[c].storage_bits > 16) {
+                error_setg(errp, "Unsupported SGI Mesa clear component");
+                return SGI_RENDER_UNSUPPORTED;
+            }
+        }
+        if ((uint64_t)res->width * res->height >
+            MIN(SIZE_MAX / 4 / sizeof(uint16_t),
+                SIZE_MAX / res->component_count)) {
+            error_setg(errp, "SGI Mesa clear exceeds host address space");
+            return SGI_RENDER_RESOURCE_ERROR;
+        }
+        resources[i] = res;
+        clear->width = res->width;
+        clear->height = res->height;
+        clear->colour_mask = op->clear_colour_mask;
+        memcpy(clear->rgba, op->clear_rgba, sizeof(clear->rgba));
+        x0 = MAX(op->x0, 0);
+        y0 = MAX(op->y0, 0);
+        x1 = MIN(op->x1, (int32_t)res->width - 1);
+        y1 = MIN(op->y1, (int32_t)res->height - 1);
+        if (x0 > x1 || y0 > y1) {
+            continue;
+        }
+        if (!op->clip.n) {
+            clear->rects[clear->rect_count++] = (SGIRendererClearRect) {
+                x0, y0, x1, y1,
+            };
+            continue;
+        }
+        for (unsigned j = 0; j < op->clip.n; j++) {
+            const SGIClipRect *clip = &op->clip.r[j];
+            int32_t cx0 = MAX(x0, clip->x0);
+            int32_t cy0 = MAX(y0, clip->y0);
+            int32_t cx1 = MIN(x1, clip->x1);
+            int32_t cy1 = MIN(y1, clip->y1);
+
+            if (cx0 <= cx1 && cy0 <= cy1) {
+                clear->rects[clear->rect_count++] =
+                    (SGIRendererClearRect) { cx0, cy0, cx1, cy1 };
+            }
+        }
+    }
+    for (unsigned i = 0; i < op->ntargets; i++) {
+        const SGIRenderResource *res = resources[i];
+        SGIRendererClear *clear = &clears[i];
+        SGIRenderRect rect = { .x1 = res->width - 1,
+                               .y1 = res->height - 1 };
+        g_autofree uint32_t *slots = NULL;
+        g_autofree uint16_t *rgba = NULL;
+        size_t pixels, nslots;
+        SGIRenderResult status;
+        SGIRenderCommitResult committed;
+
+        if (!clear->rect_count) {
+            continue;
+        }
+        pixels = (size_t)res->width * res->height;
+        nslots = pixels * res->component_count;
+        slots = g_try_new(uint32_t, nslots);
+        rgba = g_try_new(uint16_t, pixels * 4);
+        if (!slots || !rgba) {
+            error_setg(errp, "Cannot allocate SGI Mesa clear buffers");
+            return SGI_RENDER_OOM;
+        }
+        status = sgi_render_resource_snapshot(target, res, 0, &rect,
+                                              slots,
+                                              res->width *
+                                              res->component_count,
+                                              nslots, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
+        }
+        for (size_t pixel = 0; pixel < pixels; pixel++) {
+            for (unsigned c = 0; c < res->component_count; c++) {
+                unsigned bits = res->component[c].storage_bits;
+                uint32_t max = (1u << bits) - 1;
+
+                rgba[pixel * 4 + c] =
+                    ((uint64_t)slots[pixel * res->component_count + c] *
+                     65535 + max / 2) / max;
+            }
+            if (res->component_count == 3) {
+                rgba[pixel * 4 + 3] = 65535;
+            }
+        }
+        clear->pixels = rgba;
+        if (!sgi_renderer_clear(renderer, clear, errp)) {
+            return SGI_RENDER_HOST_ERROR;
+        }
+        for (size_t pixel = 0; pixel < pixels; pixel++) {
+            for (unsigned c = 0; c < res->component_count; c++) {
+                unsigned bits = res->component[c].storage_bits;
+                uint32_t max = (1u << bits) - 1;
+
+                slots[pixel * res->component_count + c] =
+                    ((uint64_t)rgba[pixel * 4 + c] * max + 32767) / 65535;
+            }
+        }
+        committed = sgi_render_resource_commit(target, res, 0, &rect,
+                                               slots,
+                                               res->width *
+                                               res->component_count,
+                                               nslots, errp);
+        if (committed.status != SGI_RENDER_OK) {
+            return committed.status;
+        }
+    }
+    return SGI_RENDER_OK;
+}

@@ -1112,6 +1112,243 @@ static void test_frame_coverage_capacity(void)
     sgi_renderer_free(renderer);
 }
 
+typedef struct NativeClearFixture {
+    uint32_t colour[2][4][4][4];
+    unsigned snapshots, commits;
+    bool fail_snapshot;
+    uint32_t fail_commit_target;
+} NativeClearFixture;
+
+static SGIRenderResult native_clear_snapshot(void *opaque,
+                                              const SGIRenderResource *resource,
+                                              uint32_t slice,
+                                              const SGIRenderRect *rect,
+                                              uint32_t *slots,
+                                              size_t stride_slots,
+                                              size_t capacity_slots,
+                                              Error **errp)
+{
+    NativeClearFixture *f = opaque;
+    unsigned bank = resource->target - 7;
+
+    g_assert_cmpuint(bank, <, 2);
+    f->snapshots++;
+    if (f->fail_snapshot) {
+        error_setg(errp, "native clear snapshot failed");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            for (unsigned c = 0; c < resource->component_count; c++) {
+                slots[(y - rect->y0) * stride_slots +
+                      (x - rect->x0) * resource->component_count + c] =
+                    f->colour[bank][y][x][c];
+            }
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult native_clear_commit(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    NativeClearFixture *f = opaque;
+    unsigned bank = resource->target - 7;
+    uint64_t complete = 0;
+
+    g_assert_cmpuint(bank, <, 2);
+    f->commits++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            if (resource->target == f->fail_commit_target && complete == 1) {
+                error_setg(errp, "native clear commit failed after one pixel");
+                return (SGIRenderCommitResult) {
+                    .status = SGI_RENDER_RESOURCE_ERROR,
+                    .complete_pixels = complete,
+                    .extent_known = true,
+                };
+            }
+            for (unsigned c = 0; c < resource->component_count; c++) {
+                f->colour[bank][y][x][c] =
+                    slots[(y - rect->y0) * stride_slots +
+                          (x - rect->x0) * resource->component_count + c];
+            }
+            complete++;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
+static void test_decoded_clear_native_commit(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float vertices[3][4] = {
+        { 16.25f, 16.25f, 0, 1 },
+        { 111.25f, 16.25f, 0, 1 },
+        { 16.25f, 111.25f, 0, 1 },
+    };
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    NativeClearFixture f = { 0 };
+    SGIRenderResource resources[2] = { 0 };
+    const SGIRenderResourceOps ops = {
+        .snapshot = native_clear_snapshot,
+        .commit = native_clear_commit,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = resources, .resource_count = 2,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_CLEAR,
+        .targets = { 7, 8 }, .ntargets = 2,
+        .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
+        .clip = {
+            .n = 2,
+            .r = { { 1, 1, 2, 2 }, { 3, 0, 3, 1 } },
+        },
+        .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+        .clear_rgba = { 1.0f, 0.0f, 0.5f, 1.0f },
+        .clear_colour_mask = SGI_GL_COLOUR_MASK_RED |
+                             SGI_GL_COLOUR_MASK_BLUE,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned bank = 0; bank < 2; bank++) {
+        resources[bank] = (SGIRenderResource) {
+            .backing_id = bank + 1, .backing_generation = 1,
+            .view_id = bank + 1, .view_generation = 1,
+            .role = SGI_RENDER_COLOUR, .target = bank + 7,
+            .buffer = bank ? SGI_RENDER_BACK : SGI_RENDER_FRONT,
+            .eye = SGI_RENDER_MONO,
+            .width = 4, .height = 4, .depth = 1,
+            .bottom_origin = true, .component_count = bank ? 4 : 3,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 12 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 12 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
+                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+            },
+        };
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                for (unsigned c = 0; c < 4; c++) {
+                    f.colour[bank][y][x][c] = 17;
+                }
+            }
+        }
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                bool covered = (x >= 1 && x <= 2 && y >= 1 && y <= 2) ||
+                               (x == 3 && y <= 1);
+
+                g_assert_cmpuint(f.colour[bank][y][x][0], ==,
+                                 covered ? 4095 : 17);
+                g_assert_cmpuint(f.colour[bank][y][x][1], ==, 17);
+                g_assert_cmpuint(f.colour[bank][y][x][2], ==,
+                                 covered ? 2048 : 17);
+                if (bank) {
+                    g_assert_cmpuint(f.colour[bank][y][x][3], ==, 17);
+                }
+            }
+        }
+    }
+
+    memcpy(request->vertices, vertices, sizeof(vertices));
+    request->clip[2] = request->clip[3] = 127;
+    request->rgb[0] = request->rgb[1] = request->rgb[2] = 255;
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_staging_valid(request));
+
+    resources[1].width = INT_MAX;
+    resources[1].height = INT_MAX;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    resources[1].width = 4;
+    resources[1].height = 4;
+
+    op.clip.n = 0;
+    op.clip.empty = 1;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+
+    op.clip.empty = 0;
+    op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+
+    op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+    f.fail_snapshot = true;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 3);
+    g_assert_cmpuint(f.commits, ==, 2);
+    f.fail_snapshot = false;
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                for (unsigned c = 0; c < 4; c++) {
+                    f.colour[bank][y][x][c] = 17;
+                }
+            }
+        }
+    }
+    f.fail_commit_target = 8;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.snapshots, ==, 5);
+    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.colour[0][0][0][0], ==, 4095);
+    g_assert_cmpuint(f.colour[0][3][3][0], ==, 4095);
+    g_assert_cmpuint(f.colour[1][0][0][0], ==, 4095);
+    g_assert_cmpuint(f.colour[1][0][1][0], ==, 17);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1126,6 +1363,8 @@ int main(int argc, char **argv)
                     test_decoded_triangle_native_commit);
     g_test_add_func("/sgi-renderer-gl/frame-coverage-capacity",
                     test_frame_coverage_capacity);
+    g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
+                    test_decoded_clear_native_commit);
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     }
