@@ -849,6 +849,111 @@ static void test_direct64_card_write(void)
     qtest_quit(qts);
 }
 
+static void test_direct64_requester_width(void)
+{
+    static const uint8_t sentinel[24] = {
+        0xa5, 0x5a, 0x91, 0x2c, 0xe3, 0x74, 0x16, 0xc8,
+        0x37, 0xf0, 0x6b, 0x42, 0x8d, 0x19, 0xb6, 0x53,
+        0x72, 0x0d, 0xc4, 0x38, 0x6e, 0x11, 0xfa, 0x85,
+    };
+    static const uint8_t source_bytes[24] = {
+        0x13, 0x84, 0x2b, 0xd6, 0x50, 0xa1, 0x7c, 0x09,
+        0xe2, 0x35, 0xb8, 0x4f, 0x61, 0xca, 0x96, 0x0d,
+        0x77, 0x18, 0xf3, 0x42, 0xad, 0x5e, 0x20, 0x89,
+    };
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    const uint64_t payload = 0x3400;
+    const uint64_t copy_source = 0x3800;
+    const uint64_t copy_destination = 0x3a04;
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off "
+        "-device sgi-bridge-dma-test-64bit,bus=pic-head-0.0,addr=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1 "
+        "-global sgi-pic.req64-slots-head0=0x2");
+    uint8_t observed[sizeof(sentinel)];
+    uint8_t copied[sizeof(sentinel)];
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+
+    for (unsigned reset = 0; reset < 2; reset++) {
+        for (unsigned head = 0; head < 2; head++) {
+            direct64_card_enable(qts, head);
+            g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x38), ==,
+                            head == 0 ? 1 : 0);
+            qtest_memwrite(qts, TARGET + payload - 4, sentinel,
+                           sizeof(sentinel));
+            direct64_card_write(qts, head, widget | payload, 13, 0x30);
+            qtest_memread(qts, TARGET + payload - 4, observed,
+                          sizeof(observed));
+
+            for (unsigned i = 0; i < 13; i++) {
+                unsigned index = ((payload + i) ^
+                                  (head == 0 ? 7 : 3)) - (payload - 4);
+
+                g_assert_cmphex(observed[index], ==, 0x30 + i);
+            }
+            for (unsigned i = 0; i < sizeof(observed); i++) {
+                bool touched = false;
+
+                for (unsigned j = 0; j < 13; j++) {
+                    unsigned index = ((payload + j) ^
+                                      (head == 0 ? 7 : 3)) - (payload - 4);
+
+                    touched |= i == index;
+                }
+                if (!touched) {
+                    g_assert_cmphex(observed[i], ==, sentinel[i]);
+                }
+            }
+            memset(observed, 0xa5, sizeof(observed));
+            qtest_memwrite(qts, TARGET + copy_source - 4, source_bytes,
+                           sizeof(source_bytes));
+            qtest_memwrite(qts, TARGET + copy_destination - 4, observed,
+                           sizeof(observed));
+            direct64_card_copy(qts, head, widget | copy_source,
+                               widget | copy_destination, 13);
+            g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), ==,
+                            MEMTX_OK);
+            qtest_memread(qts, TARGET + copy_destination - 4, copied,
+                          sizeof(copied));
+            for (unsigned i = 0; i < 13; i++) {
+                unsigned source_index = ((copy_source + i) ^
+                                         (head == 0 ? 7 : 3)) -
+                                        (copy_source - 4);
+                unsigned destination_index = ((copy_destination + i) ^
+                                              (head == 0 ? 7 : 3)) -
+                                             (copy_destination - 4);
+
+                g_assert_cmphex(copied[destination_index], ==,
+                                source_bytes[source_index]);
+            }
+            for (unsigned i = 0; i < sizeof(copied); i++) {
+                bool touched = false;
+
+                for (unsigned j = 0; j < 13; j++) {
+                    unsigned index = ((copy_destination + j) ^
+                                      (head == 0 ? 7 : 3)) -
+                                     (copy_destination - 4);
+
+                    touched |= i == index;
+                }
+                if (!touched) {
+                    g_assert_cmphex(copied[i], ==, 0xa5);
+                }
+            }
+        }
+
+        if (reset == 0) {
+            qtest_system_reset(qts);
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_direct64_requester_and_dir_map_controls(void)
 {
     const uint64_t address = (UINT64_C(0xa) << 60) |
@@ -1335,6 +1440,30 @@ static QTestState *pic_profile_v7_migration_start(bool incoming,
         "pic-runtime-profile=on,pic-linked=on,pic-bedrock-interrupts=on "
         "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1";
     g_autofree char *formatted = g_strdup_printf(args, incoming_arg);
+    QTestState *qts = previous_binary ?
+        qtest_init_ext("QTEST_QEMU_BINARY_SRC", formatted, NULL, true) :
+        qtest_initf("%s", formatted);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static QTestState *pic_profile_width_migration_start(bool incoming,
+                                                 bool previous_binary,
+                                                 uint8_t req64_slots)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    const char *args = "-M none -cpu R10000 -S %s "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=on,pic-bedrock-interrupts=on "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1";
+    g_autofree char *formatted_args = g_strdup_printf(args, incoming_arg);
+    g_autofree char *formatted = previous_binary ?
+        g_strdup(formatted_args) :
+        g_strdup_printf("%s -global sgi-pic.req64-slots-head0=0x%02x",
+                        formatted_args, req64_slots);
     QTestState *qts = previous_binary ?
         qtest_init_ext("QTEST_QEMU_BINARY_SRC", formatted, NULL, true) :
         qtest_initf("%s", formatted);
@@ -3716,6 +3845,87 @@ static void test_runtime_profile_v6_migration_rejects_direct64_policy(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_runtime_profile_migration_rejects_requester_width_policy(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*PIC PCI requester width policy mismatch*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-width-mismatch-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_width_migration_start(false, false, 0x02);
+    QTestState *to = pic_profile_width_migration_start(true, false, 0x04);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void
+test_runtime_profile_v8_migration_rejects_attribute_policy(void)
+{
+    if (!g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        g_test_skip("QTEST_QEMU_BINARY_SRC is needed for the version-8 source");
+        return;
+    }
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*PIC direct64 attribute policy mismatch*");
+        return;
+    }
+
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-v8-policy-mismatch-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_profile_width_migration_start(false, true, 0);
+    QTestState *to = pic_profile_width_migration_start(true, false, 0x02);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_runtime_profile_v7_migration_rejects_attribute_policy(void)
 {
     if (!g_getenv("QTEST_QEMU_BINARY_SRC")) {
@@ -4001,6 +4211,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/direct64-card-write", test_direct64_card_write);
     qtest_add_func("/sgi-pic/direct64-requester-and-dir-map-controls",
                    test_direct64_requester_and_dir_map_controls);
+    qtest_add_func("/sgi-pic/direct64-requester-width",
+                   test_direct64_requester_width);
     qtest_add_func("/sgi-pic/direct64-attribute-matrix",
                    test_direct64_attribute_matrix);
     qtest_add_func("/sgi-pic/direct64-kernel-queue-addresses",
@@ -4104,6 +4316,12 @@ int main(int argc, char **argv)
     qtest_add_func(
         "/sgi-pic/runtime-profile-v7-migration-attribute-policy-mismatch",
         test_runtime_profile_v7_migration_rejects_attribute_policy);
+    qtest_add_func(
+        "/sgi-pic/runtime-profile-migration-requester-width-policy-mismatch",
+        test_runtime_profile_migration_rejects_requester_width_policy);
+    qtest_add_func(
+        "/sgi-pic/runtime-profile-v8-migration-direct64-attribute-policy-mismatch",
+        test_runtime_profile_v8_migration_rejects_attribute_policy);
     qtest_add_func("/sgi-pic/v1-migration-defaults-generic-mode",
                    test_pic_v1_migration_defaults_generic_mode);
     qtest_add_func("/sgi-pic/direct-dma-head-targets",

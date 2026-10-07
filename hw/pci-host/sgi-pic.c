@@ -8,6 +8,7 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "hw/pci-host/sgi-pic.h"
+#include "hw/pci-host/sgi-dma-placement.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/pci/pci.h"
@@ -128,6 +129,7 @@ struct SGIPICHead {
     uint64_t req[3][PIC_REQ_COUNT];
     uint8_t pins;
     uint8_t head;
+    uint8_t dma_64bit;
     uint32_t unsupported_logs;
     uint32_t set_requests[PIC_PIN_COUNT];
     uint32_t clear_requests[PIC_PIN_COUNT];
@@ -160,6 +162,7 @@ struct SGIPICState {
     uint8_t pxbow_host_widget;
     uint8_t pxbow_pic_widget;
     uint8_t pxbow_revision;
+    uint8_t req64_slots[2];
     SGIModelPicCompatibilityProfile compatibility_profile;
     bool peer_connected;
     bool widget_as_initialized;
@@ -170,6 +173,7 @@ struct SGIPICState {
     bool migration_cpu_pio_lanes;
     bool migration_direct64_policy;
     uint32_t migration_direct64_attribute_policy;
+    uint8_t migration_req64_slots[2];
     uint8_t migration_pxbow_host_widget;
     uint8_t migration_pxbow_pic_widget;
     uint8_t migration_pxbow_revision;
@@ -384,6 +388,7 @@ static MemTxResult pic_direct64_rw(SGIPICDMA *dma, hwaddr address,
         .widget = REG(head, 0x20) & 0xf,
     };
     unsigned widget = address >> 60;
+    unsigned lane_xor = head->dma_64bit & BIT(dma->slot) ? 7 : 3;
     size_t i;
 
     if (!pic_direct64_valid(dma, address, size)) {
@@ -396,7 +401,7 @@ static MemTxResult pic_direct64_rw(SGIPICDMA *dma, hwaddr address,
 
     for (i = 0; i < size; i++) {
         hwaddr packet = (hwaddr)widget * SGI_XIO_PACKET_SIZE +
-                        ((payload + i) ^ 3);
+                        ((payload + i) ^ lane_xor);
         MemTxResult result = pic_send_typed(pic, packet, bytes + i, 1,
                                             write, &source);
 
@@ -1311,6 +1316,14 @@ static void pic_head_reset_hold(Object *obj, ResetType type)
     REG(s, 0x00) = pic_widget_identity(s);
 }
 
+static void pic_head_reset_exit(Object *obj, ResetType type)
+{
+    SGIPICHead *s = SGI_PIC_HEAD(obj);
+
+    s->dma_64bit = sgi_dma_placement_reset_widths(
+        PCI_HOST_BRIDGE(s)->bus, s->pic->req64_slots[s->head]);
+}
+
 static const VMStateDescription vmstate_pic_head = {
     .name = TYPE_SGI_PIC_HEAD,
     .version_id = 1,
@@ -1448,6 +1461,7 @@ static void pic_head_class_init(ObjectClass *klass, const void *data)
     dc->unrealize = pic_head_unrealize;
     dc->vmsd = &vmstate_pic_head;
     rc->phases.hold = pic_head_reset_hold;
+    rc->phases.exit = pic_head_reset_exit;
     dc->user_creatable = false;
 }
 
@@ -1712,7 +1726,9 @@ static int pic_pre_save(void *opaque)
     s->migration_cpu_pio_lanes = pic_uses_runtime_profile(s);
     s->migration_direct64_policy = pic_uses_runtime_profile(s);
     s->migration_direct64_attribute_policy =
-        pic_uses_runtime_profile(s) ? 2 : 0;
+        pic_uses_runtime_profile(s) ? 3 : 0;
+    memcpy(s->migration_req64_slots, s->req64_slots,
+           sizeof(s->req64_slots));
     return 0;
 }
 
@@ -1784,8 +1800,17 @@ static int pic_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     if (s->migration_direct64_attribute_policy !=
-        (pic_uses_runtime_profile(s) ? 2 : 0)) {
+        (pic_uses_runtime_profile(s) ? 3 : 0)) {
         error_report("PIC direct64 attribute policy mismatch");
+        return -EINVAL;
+    }
+    if (version_id < 9) {
+        memset(s->migration_req64_slots, 0,
+               sizeof(s->migration_req64_slots));
+    }
+    if (memcmp(s->migration_req64_slots, s->req64_slots,
+               sizeof(s->req64_slots))) {
+        error_report("PIC PCI requester width policy mismatch");
         return -EINVAL;
     }
     return 0;
@@ -1793,7 +1818,7 @@ static int pic_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pic = {
     .name = TYPE_SGI_PIC,
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 1,
     .pre_save = pic_pre_save,
     .post_load = pic_post_load,
@@ -1809,6 +1834,7 @@ static const VMStateDescription vmstate_pic = {
         VMSTATE_BOOL_V(migration_cpu_pio_lanes, SGIPICState, 6),
         VMSTATE_BOOL_V(migration_direct64_policy, SGIPICState, 7),
         VMSTATE_UINT32_V(migration_direct64_attribute_policy, SGIPICState, 8),
+        VMSTATE_UINT8_ARRAY_V(migration_req64_slots, SGIPICState, 2, 9),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1969,6 +1995,10 @@ static void pic_class_init(ObjectClass *klass, const void *data)
                           pxbow_pic_widget, 15),
         DEFINE_PROP_UINT8("pxbow-revision", SGIPICState,
                           pxbow_revision, 5),
+        DEFINE_PROP_UINT8("req64-slots-head0", SGIPICState,
+                          req64_slots[0], 0),
+        DEFINE_PROP_UINT8("req64-slots-head1", SGIPICState,
+                          req64_slots[1], 0),
     };
 
     dc->realize = pic_realize;

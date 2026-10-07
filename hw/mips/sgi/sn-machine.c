@@ -2957,6 +2957,8 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
         const SGIModelPciHostBridge *host = hosts[i];
         SGIPICState *pic;
         g_autofree char *child_name = NULL;
+        const SGIModelIoBoardList *board_entry;
+        uint8_t req64_slots[2] = { 0 };
 
         if (host->xio_attachment_index >= attachment_count) {
             error_setg(errp, "PCI host '%s' names an invalid XIO attachment",
@@ -2978,6 +2980,33 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
             qdev_prop_set_uint8(DEVICE(pic), "pxbow-host-widget", 10);
             qdev_prop_set_uint8(DEVICE(pic), "pxbow-pic-widget",
                                 attachment->widget);
+            for (board_entry = t->io_boards; board_entry;
+                 board_entry = board_entry->next) {
+                const SGIModelIoBoard *board = board_entry->value;
+                const SGIModelPciFunctionList *function_entry;
+
+                if (!board->populated ||
+                    board->preset != SGI_MODEL_IO_BOARD_PRESET_IO9 ||
+                    board->pci_host_index != i || board->pci_head >= 2) {
+                    continue;
+                }
+                for (function_entry = board->pci_functions; function_entry;
+                     function_entry = function_entry->next) {
+                    const SGIModelPciFunction *function =
+                        function_entry->value;
+
+                    if (function->kind ==
+                        SGI_MODEL_PCI_FUNCTION_KIND_BCM5701) {
+                        /* IO9 REQ64 wiring is an experimental assumption. */
+                        req64_slots[board->pci_head] |=
+                            BIT(function->pci_device);
+                    }
+                }
+            }
+            qdev_prop_set_uint8(DEVICE(pic), "req64-slots-head0",
+                                req64_slots[0]);
+            qdev_prop_set_uint8(DEVICE(pic), "req64-slots-head1",
+                                req64_slots[1]);
             if (!sgi_pic_enable_pxbow_experiment(
                     pic, SGI_BEDROCK_IO_PIO_SIZE, errp)) {
                 return false;
@@ -4508,8 +4537,8 @@ static bool sgi_machine_ip53_fingerprint(
           sgi_machine_compare_board_ids);
 
     sgi_machine_fingerprint_update(checksum, domain, sizeof(domain));
-    /* Version 5/11 adds profile, CPU inputs, and memory banks. */
-    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 11 : 5);
+    /* Version 12 distinguishes the PIC requester-width DMA policy. */
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 12 : 5);
     sgi_machine_fingerprint_u8(checksum, runtime_permission);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 1 : 0);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 0);
@@ -4524,8 +4553,8 @@ static bool sgi_machine_ip53_fingerprint(
         sgi_machine_fingerprint_u8(checksum, 1);
         /* The CPU PIO lane policy is part of the runtime composition. */
         sgi_machine_fingerprint_u8(checksum, 1);
-        /* Direct64 DMA attributes are part of the runtime composition. */
-        sgi_machine_fingerprint_u8(checksum, 2);
+        /* Direct64 DMA placement and attributes are runtime policy. */
+        sgi_machine_fingerprint_u8(checksum, 3);
     }
     sgi_machine_fingerprint_u32(checksum, node_count);
     for (i = 0; i < node_count; i++) {
