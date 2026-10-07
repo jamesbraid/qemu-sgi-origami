@@ -8,6 +8,7 @@
 #include "memtx.h"
 #include "sgi-launch.h"
 #include "sgi-mips-emit.h"
+#include "sn0-user-image.h"
 #include "sgi-wait.h"
 
 #include <sys/socket.h>
@@ -242,6 +243,79 @@ static void test_coherent_ram(void)
     qtest_quit(qts);
 }
 
+static void test_uncached_window(void)
+{
+    const uint64_t entry = RAM_FULL + 0x2000;
+    const uint64_t target = RAM_FULL + 0x80;
+    const uint64_t data = RAM_FULL + 0x1000;
+    const uint64_t done = RAM_FULL + 0x3000;
+    SN0Image trampoline = { 0 };
+    const uint32_t program[] = {
+        mips_lui(8, 0x0040), mips_daddiu(8, 8, 0x1000),
+        mips_lui(10, 0x5a5a), mips_ori(10, 10, 0x3c3c),
+        mips_sw(10, 8, 0),
+        mips_lui(16, 0xa000), mips_daddiu(16, 16, 0x3000),
+        mips_ori(13, 0, 1), mips_sw(13, 16, 0),
+        mips_branch(MIPS_OPC_BEQ, 0, 0, -1), 0,
+    };
+    uint8_t target_bytes[sizeof(program)];
+    uint8_t word[4];
+    uint64_t beyond;
+    int64_t deadline;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+                      "-M o2-test -cpu R10000 -m 64M -nodefaults "
+                      "-accel tcg,thread=single -S "
+                      "-device loader,addr=0xffffffffa0002000,cpu-num=0");
+    sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_INDEX);
+    sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_PAGEMASK);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x00400000);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYHI);
+    /* PFN=0x40000000/0x40001000, C=2, UC=0, dirty, valid, global. */
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x01000017);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYLO0);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x01000057);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_ENTRYLO1);
+    sn0_emit_tlbwi(&trampoline);
+    sn0_emit_li(&trampoline, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(&trampoline, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li(&trampoline, SN0_R_T0, 0x00400080);
+    sn0_emit(&trampoline, mips_rtype(SN0_R_T0, 0, 0, 0, 0x08));
+    sn0_emit_nop(&trampoline);
+    for (unsigned i = 0; i < G_N_ELEMENTS(program); i++) {
+        stl_be_p(target_bytes + 4 * i, program[i]);
+    }
+    qtest_memwrite(qts, entry, trampoline.bytes, trampoline.pos);
+    qtest_memwrite(qts, target, target_bytes, sizeof(target_bytes));
+    qtest_writel(qts, done, 0);
+    stl_be_p(word, 0x11223344);
+    qtest_memwrite(qts, data, word, sizeof(word));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_readl(qts, done) != 1) {
+        if (g_get_monotonic_time() >= deadline) {
+            g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+            g_error("O2 C=2 RAM fetch/store did not complete: %s",
+                    registers ?: "(registers unavailable)");
+        }
+        g_usleep(1000);
+    }
+    qtest_memread(qts, data, word, sizeof(word));
+    g_assert_cmphex(ldl_be_p(word), ==, 0x5a5a3c3c);
+    qtest_memread(qts, 0x1000, word, sizeof(word));
+    g_assert_cmphex(ldl_be_p(word), ==, 0x5a5a3c3c);
+    g_assert_cmpint(memtx_readq(qts, RAM_FULL + RAM_SIZE, &beyond),
+                    !=, MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static void assert_module_profile(QTestState *qts)
 {
     g_autoptr(QDict) reply = qtest_qmp(qts,
@@ -400,6 +474,7 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/interrupt-chain", test_interrupt_chain);
     qtest_add_func("/o2/rom-aliases", test_rom_aliases);
     qtest_add_func("/o2/coherent-ram", test_coherent_ram);
+    qtest_add_func("/o2/uncached-window", test_uncached_window);
     qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/serial-a", test_serial_a);
     qtest_add_func("/o2/configuration", test_configuration);
