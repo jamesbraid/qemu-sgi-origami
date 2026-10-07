@@ -43,7 +43,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         st->draw_buffers != SGI_GL_DRAW_FRONT ||
         st->colour_mask != SGI_GL_COLOUR_MASK_ALL ||
         st->depth_test || st->stencil_test || st->blend ||
-        st->alpha_test || st->fog || st->cull_face ||
+        st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
         st->scissor_test || st->color_logic_op ||
         st->index_logic_op || st->texture_2d || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
