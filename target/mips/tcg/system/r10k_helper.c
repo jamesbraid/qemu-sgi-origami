@@ -641,8 +641,19 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
     if (cache_type == 1 && cache_operation == 0b000) {
         /* Index WriteBack Invalidate (D) */
         unsigned int set = extract64(addr, 5, 9);
+        unsigned int way = addr & 1;
+        unsigned int tag = set * R10K_PCACHE_WAYS + way;
 
-        r10k_dcache_invalidate(env, set * R10K_PCACHE_WAYS + (addr & 1));
+        if (MIPS_CPU(env_cpu(env))->cache_data_visibility &&
+            (env->r10k->dcache_taglo[tag] & (3 << 6)) == (3 << 6)) {
+            hwaddr line = (r10k_dcache_tag_pa(env, tag) << 12) |
+                          ((set & 0x7f) << 5);
+
+            if (!r10k_dcache_writeback(env, line, way)) {
+                return;
+            }
+        }
+        r10k_dcache_invalidate(env, tag);
         return;
     }
     if ((cache_type == 0 && cache_operation == 0b100) ||
@@ -784,6 +795,17 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         r10k_system_request(env, R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
                             paddr, ctz32(r10k_scache_sets(env)));
         if (env->r10k->scache_taglo[tag] & (3 << 10)) {
+            if (MIPS_CPU(env_cpu(env))->cache_data_visibility) {
+                hwaddr line = (r10k_scache_tag_pa(env, tag) << 18) |
+                              (paddr & 0x3ffff);
+
+                line &= ~(hwaddr)(r10k_scache_line_size(env) - 1);
+
+                if (!r10k_scache_flush_primaries(env, line) ||
+                    !r10k_scache_writeback(env, line, way)) {
+                    return;
+                }
+            }
             r10k_scache_invalidate(env, set, way, paddr, addr);
         }
         return;

@@ -1190,6 +1190,38 @@ refill:
 }
 #endif
 
+#if defined(TARGET_MIPS64)
+static bool r10k_cache_view_supported(CPUMIPSState *env, target_ulong address,
+                                      MMUAccessType access_type,
+                                      MemTxAttrs attrs)
+{
+    if (!MIPS_CPU(env_cpu(env))->cache_data_visibility ||
+        attrs.mips_cca == 2) {
+        return true;
+    }
+    if (attrs.mips_cca == 3) {
+        if (access_type == MMU_INST_FETCH) {
+            qemu_log_mask(LOG_UNIMP,
+                          "R10000 cached instruction fetch unsupported at 0x%"
+                          VADDR_PRIx "\n", address);
+            return false;
+        }
+        if ((address & UINT64_C(0xf800000000000000)) ==
+            UINT64_C(0x9800000000000000)) {
+            return true;
+        }
+        qemu_log_mask(LOG_UNIMP,
+                      "R10000 cached virtual index unsupported at 0x%"
+                      VADDR_PRIx "\n", address);
+        return false;
+    }
+    qemu_log_mask(LOG_UNIMP,
+                  "R10000 cache algorithm C=%u unsupported at 0x%"
+                  VADDR_PRIx "\n", attrs.mips_cca, address);
+    return false;
+}
+#endif
+
 bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                        MMUAccessType access_type, int mmu_idx,
                        bool probe, uintptr_t retaddr)
@@ -1205,14 +1237,8 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     ret = get_physical_address(env, &physical, &prot, address,
                                access_type, mmu_idx, &attrs);
 #if defined(TARGET_MIPS64)
-    /* The first cache view uses xkphys, whose low index bits equal PA. */
-    if (ret == TLBRET_MATCH && MIPS_CPU(cs)->cache_data_visibility &&
-        attrs.mips_cca == 3 &&
-        (address & UINT64_C(0xf800000000000000)) !=
-        UINT64_C(0x9800000000000000)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "R10000 cached virtual index unsupported at 0x%"
-                      VADDR_PRIx "\n", address);
+    if (ret == TLBRET_MATCH &&
+        !r10k_cache_view_supported(env, address, access_type, attrs)) {
         ret = TLBRET_BADADDR;
     }
 #endif
@@ -1280,6 +1306,12 @@ hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
     /* data access */
     ret = get_physical_address(env, &physical, &prot, address, access_type,
                                mips_env_mmu_index(env), &attrs);
+#if defined(TARGET_MIPS64)
+    if (ret == TLBRET_MATCH &&
+        !r10k_cache_view_supported(env, address, access_type, attrs)) {
+        ret = TLBRET_BADADDR;
+    }
+#endif
     if (ret == TLBRET_MATCH) {
         return physical;
     }
