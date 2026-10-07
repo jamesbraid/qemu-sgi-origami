@@ -61,10 +61,16 @@ the products, bricks and cabling they describe. Each fact is rated
 machine), *inferred* (follows from established facts by the stated
 step), *approximation* (an emulator value standing in for unknown
 hardware) or *unknown*. SGI manuals are cited by document number and
-printed page; forum captures by site and thread number. The Origin
-3000 bricks, the NUMAlink module and the Origin 350 are reference
-models in the catalogue's sources: the emulator does not build those
-machines.
+printed page; forum captures by site and thread number. Origin 350 hardware
+facts below describe the product; the ``origin350`` catalogue entry is an
+implemented one-node software profile with explicit approximations and
+unresolved hardware behavior. It does not qualify every Origin 350
+configuration or establish stock PROM behavior. The captured Onyx 350
+compatibility profile remains a proposed cross-version software experiment
+pending its independent review. The Onyx 4 host/G2 and host/G2N entries remain
+reference models, as does the optional second Tezro rack enclosure. Origin
+3000 brick arrangements and the NUMAlink module also remain reference
+configurations.
 
 .. _sgi-sn-family-table:
 
@@ -236,6 +242,13 @@ with it. The layer's eight router-port buses carry these port numbers.
 
 Origin 350 compute module
 -------------------------
+
+The catalogue's ``origin350`` entry selects a four-processor, one-node
+software profile. This is an emulation target with explicit model choices,
+not a claim that its synthetic memory, firmware seed, PIC setup, or board
+wiring reproduces a measured machine. See :ref:`sgi-ip53-pic` for the
+component boundary and the catalogue profile for the selected runtime
+inputs. The hardware facts in this table remain independently rated below.
 
 .. list-table::
    :header-rows: 1

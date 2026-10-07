@@ -2622,9 +2622,9 @@ static void test_ip53_runtime_permission_refusals(void)
 static void test_sgi_catalogue_references(void)
 {
     static const char *const names[] = {
-        "origin350-reference", "onyx350-base", "tezro-tower-one",
-        "tezro-tower-multi", "tezro-tower-four", "tezro-rack-base",
-        "tezro-rack-two-enclosure", "onyx4-host-g2", "onyx4-host-g2n",
+        "onyx350-base", "onyx350-observed-module", "onyx4-host-g2",
+        "onyx4-host-g2n", "origin350-reference", "tezro-deskside-compat",
+        "tezro-rack-two-enclosure", "tezro-tower-four",
     };
     QTestState *qts = qtest_init("-M none");
     QDict *resp = qtest_qmp(qts,
