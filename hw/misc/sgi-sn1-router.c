@@ -17,6 +17,8 @@
 #define FORCE_LOCAL (UINT64_C(1) << 12)
 #define META_ID_MASK (UINT64_C(15) << 8)
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
+#define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
+#define REMOTE_RESET_MASK UINT64_C(0xff)
 #define INACTIVE_BARRIER_CONTEXTS 32
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
 #define DEBUG_ADDRESS_MASK ((UINT64_C(1) << 10) - 1)
@@ -38,6 +40,8 @@ struct SGISN1RouterState {
     uint64_t jbus_control;
     uint64_t scratch[5];
     uint64_t parameter[SGI_SN1_ROUTER_PORTS];
+    uint64_t channel_test[SGI_SN1_ROUTER_PORTS];
+    uint64_t remote_reset_mask[SGI_SN1_ROUTER_PORTS];
     uint64_t inactive_barrier[INACTIVE_BARRIER_CONTEXTS];
     uint8_t local[SGI_SN1_ROUTER_PORTS][128];
     uint8_t meta[SGI_SN1_ROUTER_PORTS][16];
@@ -215,6 +219,18 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
                 notify = false;
                 break;
             }
+            if (s->synthetic_diagnostics && address == bank[p] + 0x10) {
+                storage = &s->channel_test[p];
+                mask = CHANNEL_TEST_MASK;
+                notify = false;
+                break;
+            }
+            if (s->synthetic_diagnostics && address == bank[p] + 0x18) {
+                storage = &s->remote_reset_mask[p];
+                mask = REMOTE_RESET_MASK;
+                notify = false;
+                break;
+            }
             if (!write && (address == bank[p] + 8 ||
                            address == bank[p] + 0x88)) {
                 packet->value = 0;
@@ -344,6 +360,8 @@ static void router_reset_enter(Object *obj, ResetType type)
     memset(s->global, 0, sizeof(s->global));
     memset(s->scratch, 0, sizeof(s->scratch));
     memset(s->parameter, 0, sizeof(s->parameter));
+    memset(s->channel_test, 0, sizeof(s->channel_test));
+    memset(s->remote_reset_mask, 0, sizeof(s->remote_reset_mask));
     memset(s->inactive_barrier, 0, sizeof(s->inactive_barrier));
     memset(s->diagnostic, 0, sizeof(s->diagnostic));
     memset(s->local, 0, sizeof(s->local));
@@ -365,6 +383,10 @@ static int router_post_load(void *opaque, int version_id)
     }
     for (unsigned p = 0; p < SGI_SN1_ROUTER_PORTS; p++) {
         if (s->parameter[p] & ~PARAMETER_MASK) {
+            return -EINVAL;
+        }
+        if (s->channel_test[p] & ~CHANNEL_TEST_MASK ||
+            s->remote_reset_mask[p] & ~REMOTE_RESET_MASK) {
             return -EINVAL;
         }
         for (unsigned i = 0; i < 128; i++) {
@@ -397,6 +419,10 @@ static const VMStateDescription vmstate_router = {
         VMSTATE_UINT64(jbus_control, SGISN1RouterState),
         VMSTATE_UINT64_ARRAY(scratch, SGISN1RouterState, 5),
         VMSTATE_UINT64_ARRAY(parameter, SGISN1RouterState,
+                             SGI_SN1_ROUTER_PORTS),
+        VMSTATE_UINT64_ARRAY(channel_test, SGISN1RouterState,
+                             SGI_SN1_ROUTER_PORTS),
+        VMSTATE_UINT64_ARRAY(remote_reset_mask, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(inactive_barrier, SGISN1RouterState,
                              INACTIVE_BARRIER_CONTEXTS),

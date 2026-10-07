@@ -6670,8 +6670,145 @@ static void test_routed_synthetic_diagnostics(void)
     g_unlink(prom);
 }
 
+static void test_routed_synthetic_port_storage(void)
+{
+    static const uint64_t banks[] = {
+        0x10000, 0x10800, 0x20000, 0x20800,
+        0x30000, 0x30800, 0x40000, 0x40800,
+    };
+    static const uint64_t offsets[] = { 0x10, 0x18 };
+    static const uint64_t masks[] = {
+        UINT64_C(0x004000000fffffff), 0xff,
+    };
+    static const uint64_t patterns[] = {
+        0, UINT64_MAX, UINT64_C(0x0040000000000001),
+        ~UINT64_C(0x0040000000000001),
+    };
+    static const uint64_t observed[] = {
+        0, 0x8, 0x20, 0x28, 0x10000, 0x10008, 0x10800, 0x10808,
+        0x20800, 0x20808, 0x30800, 0x30808, 0x40800,
+        0x40808, 0x100, 0x10100, 0x10200,
+    };
+    uint64_t before[G_N_ELEMENTS(observed)];
+    uint64_t route_before;
+    uint8_t l1_before[16], l1_after[16];
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=router-test,"
+        "router=/machine/module3/router "
+        "-nodefaults -display none", prom, image);
+
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        for (unsigned r = 0; r < G_N_ELEMENTS(offsets); r++) {
+            routed_diagnostic_vector(qts, banks[p] + offsets[r], false,
+                                     0, 0, 0);
+        }
+    }
+    expansion_vector(qts, 0x10000, true, 0x12345);
+    expansion_vector(qts, 0x10200, true, 3);
+    expansion_vector(qts, 0x10100, true, 5);
+    expansion_vector(qts, 0x100, true, 0x98765);
+    for (unsigned i = 0; i < G_N_ELEMENTS(observed); i++) {
+        before[i] = expansion_vector(qts, observed[i], false, 0);
+    }
+    /* Port 8 has no cable in this topology. */
+    g_assert_cmphex(before[0] & (UINT64_C(1) << 51), ==, 0);
+    route_before = qom_get_uint(qts, "/machine/peripheral/router-test",
+                                "route");
+    g_assert_cmphex(route_before, ==, 1 | (3 << 8));
+    routed_diagnostic_l1_query(qts, l1_before);
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        for (unsigned r = 0; r < G_N_ELEMENTS(offsets); r++) {
+            uint64_t address = banks[p] + offsets[r];
+            uint64_t saved = (p + 1) * (r + 1);
+
+            routed_diagnostic_vector(qts, address, true, saved, 0, 0);
+            routed_diagnostic_vector(qts, address, false, 0, 0, saved);
+            for (unsigned i = 0; i < G_N_ELEMENTS(patterns); i++) {
+                routed_diagnostic_vector(qts, address, true, patterns[i],
+                                         0, 0);
+                routed_diagnostic_vector(qts, address, false, 0, 0,
+                                         patterns[i] & masks[r]);
+            }
+            routed_diagnostic_vector(qts, address, true, saved, 0, 0);
+            routed_diagnostic_vector(qts, address, false, 0, 0, saved);
+        }
+    }
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        routed_diagnostic_vector(qts, banks[p] + 0x10, false, 0, 0, p + 1);
+        routed_diagnostic_vector(qts, banks[p] + 0x18, false, 0, 0,
+                                 2 * (p + 1));
+    }
+    routed_diagnostic_vector(qts, 0x10020, false, 0, 4, 0);
+    routed_diagnostic_vector(qts, 0x10020, true, 1, 4, 0);
+    routed_diagnostic_vector(qts, 0x10008, false, 0, 0, 0);
+    routed_diagnostic_vector(qts, 0x10008, true, 1, 4, 0);
+    routed_diagnostic_vector(qts, 0x10088, false, 0, 0, 0);
+    routed_diagnostic_vector(qts, 0x10088, true, 1, 4, 0);
+    routed_diagnostic_vector_route(qts, 0x10010, false, 0, 9, 4, 0);
+    qtest_readl(qts, 0x10000000 + 0x10010);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                  "result"), ==, 1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                  "failure"), ==, 4);
+    for (unsigned i = 0; i < G_N_ELEMENTS(observed); i++) {
+        g_assert_cmphex(expansion_vector(qts, observed[i], false, 0), ==,
+                        before[i]);
+    }
+    g_assert_cmphex(qom_get_uint(qts, "/machine/peripheral/router-test",
+                                   "route"), ==, route_before);
+    routed_diagnostic_l1_query(qts, l1_after);
+    g_assert_cmpmem(l1_after, sizeof(l1_after), l1_before,
+                    sizeof(l1_before));
+    qtest_system_reset(qts);
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        for (unsigned r = 0; r < G_N_ELEMENTS(offsets); r++) {
+            routed_diagnostic_vector(qts, banks[p] + offsets[r], false,
+                                     0, 0, 0);
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
+static void test_routed_ordinary_port_refusals(void)
+{
+    static const uint64_t banks[] = {
+        0x10000, 0x10800, 0x20000, 0x20800,
+        0x30000, 0x30800, 0x40000, 0x40800,
+    };
+    static const uint64_t offsets[] = { 0x10, 0x18 };
+    const char *adapter = "/machine/peripheral/router-test";
+    QTestState *qts = qtest_init(
+        "-M none -cpu R10000 -device sgi-sn1-router,id=router "
+        "-device sgi-sn1-router-test,id=router-test,router=router");
+
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        for (unsigned r = 0; r < G_N_ELEMENTS(offsets); r++) {
+            uint64_t address = 0x10000000 + banks[p] + offsets[r];
+
+            qtest_readq(qts, address);
+            g_assert_cmpuint(qom_get_uint(qts, adapter, "result"), ==, 1);
+            g_assert_cmpuint(qom_get_uint(qts, adapter, "failure"), ==, 4);
+            qtest_writeq(qts, address, UINT64_MAX);
+            g_assert_cmpuint(qom_get_uint(qts, adapter, "result"), ==, 1);
+            g_assert_cmpuint(qom_get_uint(qts, adapter, "failure"), ==, 4);
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_routed_synthetic_diagnostics_migration(void)
 {
+    static const uint64_t banks[] = {
+        0x10000, 0x10800, 0x20000, 0x20800,
+        0x30000, 0x30800, 0x40000, 0x40800,
+    };
     g_autoptr(GError) error = NULL;
     g_autofree char *prom = expansion_prom();
     g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
@@ -6695,6 +6832,13 @@ static void test_routed_synthetic_diagnostics_migration(void)
     routed_diagnostic_vector(from, 0x38, true, 0x2a5, 0, 0);
     routed_diagnostic_vector(from, 0x40, true, UINT64_C(0x112345678), 0, 0);
     routed_diagnostic_vector(from, 0x48, true, UINT64_C(0x312345678), 0, 0);
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        routed_diagnostic_vector(from, banks[p] + 0x10, true,
+                                 UINT64_C(0x0040000000000000) | (p + 1),
+                                 0, 0);
+        routed_diagnostic_vector(from, banks[p] + 0x18, true,
+                                 0x80 | (p + 1), 0, 0);
+    }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
@@ -6704,6 +6848,12 @@ static void test_routed_synthetic_diagnostics_migration(void)
                              UINT64_C(0x112345678));
     routed_diagnostic_vector(to, 0x48, false, 0, 0,
                              UINT64_C(0x312345678));
+    for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
+        routed_diagnostic_vector(to, banks[p] + 0x10, false, 0, 0,
+                                 UINT64_C(0x0040000000000000) | (p + 1));
+        routed_diagnostic_vector(to, banks[p] + 0x18, false, 0, 0,
+                                 0x80 | (p + 1));
+    }
     qtest_quit(from);
     qtest_quit(to);
     if (unlink(socket) < 0) {
@@ -8708,6 +8858,10 @@ int main(int argc, char **argv)
                    test_routed_attachment_lock);
     qtest_add_func("sn/builder/routed/synthetic-diagnostics",
                    test_routed_synthetic_diagnostics);
+    qtest_add_func("sn/builder/routed/synthetic-port-storage",
+                   test_routed_synthetic_port_storage);
+    qtest_add_func("sn/builder/routed/ordinary-port-refusals",
+                   test_routed_ordinary_port_refusals);
     qtest_add_func("sn/builder/routed/synthetic-diagnostics-migration",
                    test_routed_synthetic_diagnostics_migration);
     qtest_add_func("sn/builder/routed/standalone-attachment",
