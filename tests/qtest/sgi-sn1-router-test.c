@@ -146,9 +146,10 @@ static void test_experimental_status_write(void)
         UINT64_C(0x123456789abcdef0) };
     uint64_t status;
     uint64_t vector_status;
-    uint64_t port_before[8][3];
-    uint64_t global_before[4];
+    uint64_t port_before[8][4];
+    uint64_t global_before[5];
     uint64_t route_before;
+    uint64_t port_reset_before;
     uint8_t l1_before[131], l1_after[131];
     size_t l1_size;
 
@@ -180,14 +181,42 @@ static void test_experimental_status_write(void)
         port_before[p][0] = qtest_readq(s, BASE + bank[p]);
         port_before[p][1] = qtest_readq(s, BASE + bank[p] + 8);
         port_before[p][2] = qtest_readq(s, BASE + bank[p] + 0x10);
+        port_before[p][3] = qtest_readq(s, BASE + bank[p] + 0x88);
     }
     global_before[0] = qtest_readq(s, BASE + 0x20);
     global_before[1] = qtest_readq(s, BASE + 0x28);
     global_before[2] = qtest_readq(s, BASE + 0x50);
     global_before[3] = qtest_readq(s, BASE + 0x100);
+    global_before[4] = qtest_readq(s, BASE + 0x10);
     route_before = get(s, "route");
     g_assert_cmphex(route_before, ==, 4 | (2 << 8));
     l1_size = experimental_router_l1_reply(s, l1_before);
+    qtest_writeq(s, BASE + bank[0] + 0x18, 0xa5);
+    port_reset_before = qtest_readq(s, BASE + bank[0] + 0x18);
+    for (unsigned bit = 0; bit < 16; bit++) {
+        uint64_t pattern = UINT64_C(1) << bit;
+
+        experimental_status_vector(s, 0x18, 0, true, pattern, true);
+        g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0,
+                                                  true), ==, pattern);
+        experimental_status_vector(s, 0x18, 0, true, ~pattern, true);
+        g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0,
+                                                  true), ==,
+                        (~pattern & UINT64_C(0xffff)));
+    }
+    experimental_status_vector(s, 0x18, 0, true, UINT64_MAX, true);
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0xffff);
+    experimental_status_vector(s, 0x18, 0, true, 0, true);
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0);
+    experimental_status_vector(s, 0x18, 0, true,
+                               UINT64_C(0x123456789abcdef0), true);
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0xdef0);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x18), ==,
+                    port_reset_before);
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 0);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     vector_status = status;
     assert_experimental_status(status, 1, 0);
@@ -220,15 +249,26 @@ static void test_experimental_status_write(void)
                             port_before[p][1]);
             g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x10), ==,
                             port_before[p][2]);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x88), ==,
+                            port_before[p][3]);
         }
         g_assert_cmphex(qtest_readq(s, BASE + 0x20), ==, global_before[0]);
         g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, global_before[1]);
         g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, global_before[2]);
         g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, global_before[3]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, global_before[4]);
     }
     g_assert_cmpuint(experimental_router_l1_reply(s, l1_after), ==,
                      l1_size);
     g_assert_cmpmem(l1_after, l1_size, l1_before, l1_size);
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0xdef0);
+    experimental_status_vector(s, 0x18, 9, true, 0, false);
+    experimental_status_vector(s, 0x600018, 0, true, 0, false);
+    qtest_writeq(s, BASE + 0x19, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writel(s, BASE + 0x18, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
     experimental_status_vector(s, 0x600000, 0, true, 0, false);
     experimental_status_vector(s, 0, 9, true, 0, false);
     for (unsigned ingress = 1; ingress <= 6; ingress += 5) {
@@ -261,6 +301,8 @@ static void test_experimental_status_write(void)
     g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
                     ==, vector_status);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0);
     experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     assert_experimental_status(status, 1, 0);
@@ -270,6 +312,7 @@ static void test_experimental_status_write(void)
         experimental_status_vector_from(s, 2, 0x600000, 0, false, 0, true),
         6, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
+    experimental_status_vector(s, 0x18, 0, true, 0xabcd, true);
     fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
                          &to_image, &error);
     g_assert_no_error(error);
@@ -293,6 +336,8 @@ static void test_experimental_status_write(void)
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     sgi_wait_migration_status(s, "completed", 30);
     sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(experimental_status_vector(to, 0x18, 0, false, 0, true),
+                    ==, 0xabcd);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
                     ==, status);
     assert_experimental_status(status, 1, 0);

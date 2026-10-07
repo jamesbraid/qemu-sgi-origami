@@ -19,6 +19,7 @@
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
 #define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
 #define REMOTE_RESET_MASK UINT64_C(0xff)
+#define GLOBAL_PORT_DEF_MASK UINT64_C(0xffff)
 #define INACTIVE_BARRIER_CONTEXTS 32
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
 #define DEBUG_ADDRESS_MASK ((UINT64_C(1) << 10) - 1)
@@ -37,6 +38,7 @@ struct SGISN1RouterState {
     uint64_t diagnostic[3];
     uint64_t protection;
     uint64_t global[2];
+    uint64_t global_port_def;
     uint64_t jbus_control;
     uint64_t scratch[5];
     uint64_t parameter[SGI_SN1_ROUTER_PORTS];
@@ -167,6 +169,14 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         } else {
             packet->value = s->diagnostic[index] |
                 (index == 0 ? DEBUG_ADDRESS_FIXED : 0);
+        }
+        return SGI_NET_PACKET_OK;
+    }
+    if (address == 0x18 && s->synthetic_diagnostics) {
+        if (write) {
+            s->global_port_def = packet->data & GLOBAL_PORT_DEF_MASK;
+        } else {
+            packet->value = s->global_port_def;
         }
         return SGI_NET_PACKET_OK;
     }
@@ -367,6 +377,7 @@ static void router_reset_enter(Object *obj, ResetType type)
     s->protection = 0;
     s->jbus_control = 0;
     memset(s->global, 0, sizeof(s->global));
+    s->global_port_def = 0;
     memset(s->scratch, 0, sizeof(s->scratch));
     memset(s->parameter, 0, sizeof(s->parameter));
     memset(s->channel_test, 0, sizeof(s->channel_test));
@@ -387,7 +398,9 @@ static int router_post_load(void *opaque, int version_id)
 {
     SGISN1RouterState *s = opaque;
 
-    if (s->scratch[3] > 1 || s->scratch[4] > 1) {
+    if ((s->global_port_def & ~GLOBAL_PORT_DEF_MASK) ||
+        (!s->synthetic_diagnostics && s->global_port_def) ||
+        s->scratch[3] > 1 || s->scratch[4] > 1) {
         return -EINVAL;
     }
     for (unsigned p = 0; p < SGI_SN1_ROUTER_PORTS; p++) {
@@ -416,8 +429,8 @@ static int router_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_router = {
     .name = TYPE_SGI_SN1_ROUTER,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = router_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(revision, SGISN1RouterState),
@@ -425,6 +438,7 @@ static const VMStateDescription vmstate_router = {
         VMSTATE_UINT64_ARRAY(diagnostic, SGISN1RouterState, 3),
         VMSTATE_UINT64(protection, SGISN1RouterState),
         VMSTATE_UINT64_ARRAY(global, SGISN1RouterState, 2),
+        VMSTATE_UINT64(global_port_def, SGISN1RouterState),
         VMSTATE_UINT64(jbus_control, SGISN1RouterState),
         VMSTATE_UINT64_ARRAY(scratch, SGISN1RouterState, 5),
         VMSTATE_UINT64_ARRAY(parameter, SGISN1RouterState,
