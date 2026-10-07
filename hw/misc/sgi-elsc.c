@@ -726,31 +726,59 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
     }
 }
 
+/* The heartbeat watchdog's default delay, and its warning, in seconds. */
+#define ELSC_HBT_DEFAULT_DELAY  30
+#define ELSC_HBT_WARNING        5
+
+static void elsc_hbt_arm(SGIElscState *s, uint32_t seconds)
+{
+    timer_mod(s->hbt_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)seconds * 1000);
+}
+
+static void elsc_hbt_stop(SGIElscState *s)
+{
+    s->hbt_interval = 0;
+    s->hbt_stage = SGI_ELSC_HEARTBEAT_IDLE;
+    timer_del(s->hbt_timer);
+}
+
 /*
- * "hbt [<interval> [<cycle>]]": heartbeat / NMI-watchdog control, both
- * arguments read by the hex reader. "hbt" with no readable value sends one
- * heartbeat and "hbt 0" disables monitoring. Otherwise the interval is 5 to
- * 0x258 seconds, and the optional second value sets how long after the NMI
- * the controller waits before power-cycling the module. The kernel sends
- * "hbt 30 20" only when its heartbeat tunable is set, which IRIX 6.5.30
- * leaves off, so the request is validated and answered without arming a
- * timer; no missed-heartbeat NMI or power cycle is modelled.
+ * "hbt [<interval> [<delay>]]": the heartbeat watchdog, both values from the
+ * hex reader. "hbt 0" stops it. An interval of 5 to 0x258 seconds arms it:
+ * the stage goes back to waiting, the timer starts at the interval, and the
+ * delay from the NMI to the power cycle is the second value, zero allowed,
+ * or 30 seconds without one. Any other interval is "err arg" and changes
+ * nothing. With no readable value the request is a heartbeat, which only
+ * reloads the timer with the interval: it never returns the watchdog to an
+ * earlier stage. IRIX 6.5.30 sends "hbt 30 20" only when its heartbeat
+ * tunable is set, which it leaves off, and formats the numbers in decimal,
+ * so the controller would read 0x30 and 0x20 seconds.
  */
 static void elsc_handle_hbt(SGIElscState *s, ElscRequest *r)
 {
-    uint32_t interval;
+    uint32_t interval, delay;
 
-    if (!elsc_read_hex(r, &interval) || interval == 0) {
-        elsc_frame_ok(s);   /* a heartbeat, or monitoring disabled */
+    if (!elsc_read_hex(r, &interval)) {
+        if (s->hbt_interval) {
+            elsc_hbt_arm(s, s->hbt_interval);
+        }
+        elsc_frame_ok(s);
+        return;
+    }
+    if (interval == 0) {
+        elsc_hbt_stop(s);
+        elsc_frame_ok(s);
         return;
     }
     if (interval < 5 || interval > SGI_ELSC_DELAY_MAX) {
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-elsc: heartbeat/NMI watchdog enable is not "
-                  "modelled; answering ok without arming it\n");
+    s->hbt_interval = interval;
+    s->hbt_delay = elsc_read_hex(r, &delay) ? delay : ELSC_HBT_DEFAULT_DELAY;
+    s->hbt_stage = SGI_ELSC_HEARTBEAT_WAITING;
+    elsc_hbt_arm(s, interval);
     elsc_frame_ok(s);
 }
 
@@ -938,16 +966,23 @@ static void elsc_handle_aut(SGIElscState *s, ElscRequest *r)
 }
 
 /*
- * "clr": cancel a pending power-down countdown and the fan-high request,
- * and on the Origin 2000 build blank the display. Accepted with the module
- * on or off. It leaves the power-up countdown, the "tas" byte, the console
- * selection, the margins, the "fsc" and "tst" flags, the NVRAM and module
- * power alone. Serial echo and supervisor mode, which it also resets, belong
- * to the operator's serial line, which is not modelled.
+ * "clr": cancel a pending power-down countdown, the heartbeat watchdog and
+ * the fan-high request, and on the Origin 2000 build blank the display.
+ * Accepted with the module on or off. It leaves the power-up countdown, the
+ * "tas" byte, the console selection, the margins, the "fsc" and "tst" flags,
+ * the NVRAM and module power alone. Serial echo and supervisor mode, which
+ * it also resets, belong to the operator's serial line, which is not
+ * modelled.
  */
 static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
 {
     timer_del(s->pwr_down_timer);
+    /*
+     * The watchdog stops with its interval zeroed and its stage left as it
+     * was, so a later heartbeat loads a zero timer and does nothing.
+     */
+    s->hbt_interval = 0;
+    timer_del(s->hbt_timer);
     s->fan_high = false;
     if (s->origin2000) {
         memset(s->display, ' ', sizeof(s->display));
@@ -1166,6 +1201,61 @@ static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
     timer_mod(s->nmi_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
               ELSC_NMI_WAIT_MS);
     elsc_frame_ok(s);
+}
+
+/*
+ * The watchdog's timer ran out. Waiting: warn, and give the host five more
+ * seconds. Warned: pulse the NMI at once, with no wait and no message for
+ * the Hubs, and start the delay. Cycling: power the module off and on and go
+ * idle with the interval still set, so a heartbeat no longer rearms
+ * anything; only "hbt" with an interval does. Nothing here looks at module
+ * power, so an armed watchdog brings back a module "pwr d" turned off.
+ *
+ * The firmware powers up again five seconds after the power-off. The model
+ * restarts at once, as for "pwr c", and the restart sets the cold-power
+ * latch. The Origin 2000 build's warning on its display and an Origin 200
+ * master's forwarding to its slave are not modelled.
+ */
+static void elsc_hbt_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    switch (s->hbt_stage) {
+    case SGI_ELSC_HEARTBEAT_WAITING:
+        s->hbt_stage = SGI_ELSC_HEARTBEAT_WARNED;
+        elsc_hbt_arm(s, ELSC_HBT_WARNING);
+        break;
+    case SGI_ELSC_HEARTBEAT_WARNED:
+        elsc_pulse_nmi(s);
+        s->hbt_stage = SGI_ELSC_HEARTBEAT_CYCLING;
+        if (s->hbt_delay) {
+            elsc_hbt_arm(s, s->hbt_delay);
+        }
+        break;
+    case SGI_ELSC_HEARTBEAT_CYCLING:
+        s->hbt_stage = SGI_ELSC_HEARTBEAT_IDLE;
+        s->cold_power_on = true;
+        timer_del(s->pwr_down_timer);
+        if (s->module_ops && s->module_ops->execute) {
+            if (!elsc_module_can_execute(s, ELSC_ACTION_CYCLE)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-elsc: the module refused the heartbeat "
+                              "watchdog's power cycle\n");
+                break;
+            }
+            s->self_reset = true;
+            s->module_ops->execute(s->module_opaque, ELSC_ACTION_CYCLE);
+            break;
+        }
+        if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
+            i2c_end_transfer(s->bus);
+        }
+        s->self_reset = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        break;
+    default:
+        break;
+    }
 }
 
 /* Which builds have a command in their table. */
@@ -1934,6 +2024,8 @@ static void elsc_reset_hold(Object *obj, ResetType type)
         s->nmi_pulse_active = false;
         qemu_set_irq(s->nmi_out, 0);
     }
+    elsc_hbt_stop(s);
+    s->hbt_delay = 0;
     s->fan_high = false;
     s->fsc_present = false;
     s->short_timeouts = false;
@@ -2045,6 +2137,7 @@ static void elsc_realize(DeviceState *dev, Error **errp)
                                 elsc_nmi_wait_expired, s);
     s->nmi_pulse_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                       elsc_nmi_pulse_ended, s);
+    s->hbt_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_hbt_expired, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -2069,6 +2162,8 @@ static void elsc_unrealize(DeviceState *dev)
     s->nmi_timer = NULL;
     timer_free(s->nmi_pulse_timer);
     s->nmi_pulse_timer = NULL;
+    timer_free(s->hbt_timer);
+    s->hbt_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
     notifier_remove(&s->shutdown_notifier);
@@ -2123,6 +2218,7 @@ static int elsc_post_load(void *opaque, int version_id)
 
     if (s->message >= SGI_ELSC_MESSAGE_COUNT ||
         s->sel_mode >= SGI_ELSC_SELECT_COUNT ||
+        s->hbt_stage >= SGI_ELSC_HEARTBEAT_COUNT ||
         s->sel_processor >= SGI_ELSC_PROCESSORS ||
         (s->see_processor >= SGI_ELSC_PROCESSORS &&
          s->see_processor != SGI_ELSC_SEE_ALL)) {
@@ -2190,6 +2286,10 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8(sel_processor, SGIElscState),
         VMSTATE_UINT8(see_processor, SGIElscState),
         VMSTATE_INT16(console_sender, SGIElscState),
+        VMSTATE_UINT16(hbt_interval, SGIElscState),
+        VMSTATE_UINT16(hbt_delay, SGIElscState),
+        VMSTATE_UINT8(hbt_stage, SGIElscState),
+        VMSTATE_TIMER_PTR(hbt_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,

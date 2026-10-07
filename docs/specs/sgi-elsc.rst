@@ -198,16 +198,32 @@ Command vocabulary
     where a two-module Origin 200's slave controller would power off
     only its own module.
 
-``hbt [<interval> [<cycle>]]``
-    Heartbeat / NMI-watchdog control. ``hbt`` with no readable value
-    sends one heartbeat and ``hbt 0`` disables monitoring. Both
-    values come from the hex reader: the interval is ``5`` to ``258``
-    seconds, and the optional second value is the wait from the NMI to
-    the controller's power cycle. An interval out of range is
-    ``err arg``; everything else answers a plain ``ok``. IRIX 6.5.30 sends ``hbt 30 20`` only when its
-    heartbeat tunable is set, which it is not by default, so the model
-    validates the request and arms no timer: no missed-heartbeat NMI
-    or power cycle is modelled.
+``hbt [<interval> [<delay>]]``
+    The heartbeat watchdog. Both values come from the hex reader.
+    ``hbt 0`` stops it. An interval of 5 to 0x258 seconds arms it: the
+    stage goes back to waiting, its timer starts at the interval, and
+    the delay from its NMI to its power cycle is the second value, zero
+    allowed, or 30 seconds without one. Any other interval is ``err
+    arg`` and changes nothing. With no readable value the request is a
+    heartbeat, which only reloads the timer with the interval. When the
+    timer runs out the watchdog moves on a stage: from waiting to a
+    five-second warning; from the warning to an NMI pulsed at once, as
+    for ``nmi`` but with no one-second wait, and then the delay; from
+    the delay to a power cycle, after which it is idle with its
+    interval still set. A heartbeat never returns it to an earlier
+    stage, so one in the warning postpones the NMI by an interval and
+    one after the NMI postpones the power cycle; a delay of zero never
+    power-cycles. ``clr`` and ``hbt 0`` stop it; ``rst``, ``nmi`` and
+    power-off do not, and an armed watchdog brings back a module ``pwr
+    d`` turned off. The power cycle sets the cold-power latch. The
+    firmware powers up five seconds after the power-off; the model
+    restarts at once, as for ``pwr c``. The timer is the nominal number
+    of seconds, with the same caveat as the ``pwr d`` countdown above
+    0x41 seconds. IRIX 6.5.30 sends ``hbt 30 20``
+    only when its heartbeat tunable is set, which it is not by default,
+    and formats the numbers in decimal, so the controller reads 0x30
+    and 0x20 seconds. The Origin 2000 build's warning on its display
+    and an Origin 200 master's forwarding to its slave are not modelled.
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error
@@ -330,7 +346,8 @@ Command vocabulary
 
 ``clr``
     Answers ``ok`` with the module on or off. It cancels a pending
-    power-down countdown and the fan-high request, and on the Origin
+    power-down countdown, the heartbeat watchdog and the fan-high
+    request, and on the Origin
     2000 build blanks the display. It leaves the ``tas`` byte, the
     margins, the ``fsc`` and ``tst`` flags and the NVRAM alone. The
     serial echo and supervisor mode it also resets belong to the
@@ -398,11 +415,12 @@ Controller state across resets
 
 The controller is powered from the cabinet, not the module, so it keeps
 running through the module resets and power cycles it causes itself:
-``rst``, ``pwr c`` and, below, the heartbeat watchdog's power cycle.
+``rst``, ``pwr c`` and the heartbeat watchdog's power cycle.
 Through those it reinitialises its bus interface and its queues, frees
 the ``tas`` byte and drops any message it had queued for the Hubs, and
 keeps everything else: a power-down countdown (which a power cycle's
-power-off ends), the fan request, the ``fsc`` and ``tst`` flags, the
+power-off ends), the heartbeat watchdog, the console selection, the fan
+request, the ``fsc`` and ``tst`` flags, the
 margins and the display. Any other QEMU reset, such as ``system_reset``
 from the monitor, is taken as the controller's own start and clears all
 of it. On a two-module Origin 200 the machine reset also reaches the
