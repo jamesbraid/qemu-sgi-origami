@@ -261,6 +261,85 @@ typedef struct SGIRasterColour {
     uint32_t component[4];      /* R, G, B, A; absent alpha is canonical zero */
 } SGIRasterColour;
 
+typedef enum SGIRenderResult {
+    SGI_RENDER_OK,
+    SGI_RENDER_OOM,
+    SGI_RENDER_UNSUPPORTED,
+    SGI_RENDER_RESOURCE_ERROR,
+    SGI_RENDER_HOST_ERROR,
+} SGIRenderResult;
+
+typedef enum SGIRenderRole {
+    SGI_RENDER_COLOUR, SGI_RENDER_INDEX, SGI_RENDER_DEPTH,
+    SGI_RENDER_STENCIL, SGI_RENDER_OVERLAY, SGI_RENDER_WID,
+    SGI_RENDER_TAG, SGI_RENDER_ACCUM, SGI_RENDER_TEXTURE,
+} SGIRenderRole;
+
+typedef enum SGIRenderBuffer {
+    SGI_RENDER_BUFFER_NONE, SGI_RENDER_FRONT, SGI_RENDER_BACK,
+    SGI_RENDER_AUX,
+} SGIRenderBuffer;
+
+typedef enum SGIRenderEye {
+    SGI_RENDER_MONO, SGI_RENDER_LEFT, SGI_RENDER_RIGHT,
+} SGIRenderEye;
+
+typedef enum SGIRenderNumeric {
+    SGI_RENDER_UINT, SGI_RENDER_SINT, SGI_RENDER_UNORM,
+    SGI_RENDER_SNORM, SGI_RENDER_FLOAT,
+} SGIRenderNumeric;
+
+typedef enum SGIRenderChannel {
+    SGI_RENDER_R, SGI_RENDER_G, SGI_RENDER_B, SGI_RENDER_A,
+    SGI_RENDER_SCALAR,
+} SGIRenderChannel;
+
+typedef struct SGIRenderComponent {
+    SGIRenderChannel channel;
+    SGIRenderNumeric numeric;
+    uint8_t storage_bits;
+} SGIRenderComponent;
+
+typedef struct SGIRenderResource {
+    uint64_t backing_id, backing_generation;
+    uint64_t view_id, view_generation;
+    SGIRenderRole role;
+    SGIColourTarget target;
+    SGIRenderBuffer buffer;
+    uint32_t auxiliary_index;
+    SGIRenderEye eye;
+    uint32_t width, height, depth;
+    uint32_t texture_level;
+    uint8_t border[3];
+    bool bottom_origin;
+    uint8_t component_count;
+    SGIRenderComponent component[4];
+} SGIRenderResource;
+
+typedef struct SGIRenderRect {
+    uint32_t x0, y0, x1, y1;
+} SGIRenderRect;
+
+typedef struct SGIRenderCommitResult {
+    SGIRenderResult status;
+    uint64_t complete_pixels;
+    bool partial_pixel;
+    bool extent_known;
+} SGIRenderCommitResult;
+
+typedef struct SGIRenderResourceOps {
+    SGIRenderResult (*snapshot)(void *opaque,
+                                const SGIRenderResource *resource,
+                                uint32_t slice, const SGIRenderRect *rect,
+                                uint32_t *slots, size_t stride_slots,
+                                size_t capacity_slots, Error **errp);
+    SGIRenderCommitResult (*commit)(void *opaque,
+                                    const SGIRenderResource *resource,
+                                    uint32_t slice, const SGIRenderRect *rect,
+                                    const uint32_t *slots, size_t stride_slots,
+                                    size_t capacity_slots, Error **errp);
+} SGIRenderResourceOps;
+
 typedef struct SGIRasterTarget {
     void (*store_colour)(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour);
@@ -322,7 +401,24 @@ typedef struct SGIRasterTarget {
                        const SGIRasterColour *colour);
     bool (*load_rgba)(void *opaque, SGIColourTarget target, int x, int y,
                       SGIRasterColour *colour);
+    /* Borrowed until the synchronous render submission returns. */
+    const SGIRenderResource *resources;
+    size_t resource_count;
+    const SGIRenderResourceOps *resource_ops;
 } SGIRasterTarget;
+
+SGIRenderResult sgi_render_resource_snapshot(const SGIRasterTarget *target,
+                                              const SGIRenderResource *resource,
+                                              uint32_t slice,
+                                              const SGIRenderRect *rect,
+                                              uint32_t *slots,
+                                              size_t stride_slots,
+                                              size_t capacity_slots,
+                                              Error **errp);
+SGIRenderCommitResult sgi_render_resource_commit(
+    const SGIRasterTarget *target, const SGIRenderResource *resource,
+    uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots, Error **errp);
 
 /*
  * Rasterize a draw into the target, under the draw's state and the head's
