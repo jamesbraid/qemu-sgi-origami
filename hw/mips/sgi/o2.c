@@ -6,8 +6,8 @@
  * with a synthetic 64 MiB fit. Reset straps and the DIMM-to-bank-register
  * map are unknown.
  * It has no fitted flash, PCI storage or product catalogue offering.
- * Serial A accepts an explicit host backend; flash write control and
- * migration remain unavailable here.
+ * Serial A accepts an explicit host backend; flash write control is
+ * unavailable, and migration has not been qualified for this profile.
  */
 #include "qemu/osdep.h"
 #include "qemu/units.h"
@@ -26,7 +26,6 @@
 #include "hw/pci/pci_host.h"
 #include "qemu/module.h"
 #include "qemu/notify.h"
-#include "system/address-spaces.h"
 #include "system/system.h"
 #include "target/mips/cpu.h"
 
@@ -41,9 +40,6 @@ typedef struct O2MachineState {
     uint32_t rom_size;
     uint32_t rom_offset;
     uint16_t rom_pad_byte;
-    MemoryRegion cpu_uncached;
-    MemoryRegion cpu_uncached_base;
-    MemoryRegion cpu_uncached_attr0;
     Clock *cpuclk;
     PCIBus *pci_bus;
     Notifier machine_done;
@@ -170,27 +166,10 @@ static void o2_init(MachineState *machine)
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(cpuclk, 195 * 1000 * 1000);
     s->cpuclk = cpuclk;
-    memory_region_init(&s->cpu_uncached, OBJECT(machine),
-                       "o2.cpu-uncached", UINT64_MAX);
-    memory_region_init_alias(&s->cpu_uncached_base, OBJECT(machine),
-                             "o2.cpu-uncached.base", get_system_memory(),
-                             0, 1ULL << MIPS_UNCACHED_WINDOW_SHIFT);
-    memory_region_add_subregion(&s->cpu_uncached, 0,
-                                &s->cpu_uncached_base);
-    /* R10000 uncached attribute 0 adds this internal 1 TiB offset. */
-    memory_region_init_alias(&s->cpu_uncached_attr0, OBJECT(machine),
-                             "o2.cpu-uncached.attr0", get_system_memory(),
-                             0, 1ULL << MIPS_UNCACHED_WINDOW_SHIFT);
-    memory_region_add_subregion(&s->cpu_uncached,
-                                1ULL << MIPS_UNCACHED_WINDOW_SHIFT,
-                                &s->cpu_uncached_attr0);
     cpu_dev = qdev_new(machine->cpu_type);
     qdev_connect_clock_in(cpu_dev, "clk-in", cpuclk);
     object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                              &error_fatal);
-    object_property_set_link(OBJECT(cpu_dev), "uncached-memory",
-                             OBJECT(&s->cpu_uncached), &error_fatal);
-    qdev_prop_set_bit(cpu_dev, "cache-data-visibility", true);
     if (!qdev_realize_and_unref(cpu_dev, NULL, &err)) {
         error_report_err(err);
         exit(1);
