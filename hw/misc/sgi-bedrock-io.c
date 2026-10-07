@@ -1090,10 +1090,37 @@ static const MemoryRegionOps ii_inbound_ops = {
 };
 
 /*
- * A composing parent may hand over its own DMA address space instead of
- * linking a region. Only before realize:
- * engines may be mid-transfer after.
-*/
+ * Add an XIO widget view after realization. The composing machine retains
+ * the endpoint for the lifetime of this interface.
+ */
+bool sgi_bedrock_io_set_widget(SGIBedrockIOState *s, unsigned int widget,
+                               MemoryRegion *region, Error **errp)
+{
+    g_autofree char *name = NULL;
+
+    if (widget >= ARRAY_SIZE(s->widget_as) || !region) {
+        error_setg(errp, "Bedrock widget attachment has an invalid widget "
+                   "or region");
+        return false;
+    }
+    if (!qdev_is_realized(DEVICE(s))) {
+        error_setg(errp, "Bedrock widget attachment requires a realized "
+                   "interface");
+        return false;
+    }
+    if (s->widget_as_initialized[widget] || s->widget_mr[widget]) {
+        error_setg(errp, "Bedrock widget %u is already attached", widget);
+        return false;
+    }
+
+    name = g_strdup_printf("sgi-bedrock-io.widget%u", widget);
+    s->widget_mr[widget] = region;
+    address_space_init(&s->widget_as[widget], region, name);
+    s->widget_as_initialized[widget] = true;
+    return true;
+}
+
+/* A composing parent may hand over its DMA address space before realize. */
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as)
 {
     assert(!DEVICE(s)->realized);

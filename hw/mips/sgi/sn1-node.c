@@ -2359,8 +2359,23 @@ bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
 {
     size_t i;
 
-    if (!node->ip53_assembly_validated || qdev_is_realized(DEVICE(node)) ||
-        node->bedrock || node->xbridge || node->cpu[0] ||
+    if (!node->ip53_assembly_validated || !face ||
+        widget >= SGI_XIO_WIDGETS) {
+        error_setg(errp, "IP53 widget mapping has an invalid assembly, "
+                   "widget, or face");
+        return false;
+    }
+    if (qdev_is_realized(DEVICE(node))) {
+        SGIBedrockIOState *io = sn1_node_bedrock_io(node);
+
+        if (!io || node->xbridge) {
+            error_setg(errp, "realized IP53 node cannot attach a PIC widget "
+                       "without Bedrock I/O or with an XBridge");
+            return false;
+        }
+        return sgi_bedrock_io_set_widget(io, widget, face, errp);
+    }
+    if (node->bedrock || node->xbridge || node->cpu[0] ||
         node->endpoint.ready) {
         error_setg(errp, "cannot map a PIC widget after node construction "
                    "has started");
