@@ -1,0 +1,128 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-mesa-renderer:
+
+Shared SGI Mesa renderer
+========================
+
+The shared renderer accepts decoded SGI drawing work and returns pixels to a
+family-owned resource provider. It does not decode device commands, translate
+guest addresses, own native planes, or prove hardware behaviour. No family
+device calls the checked Mesa draw path yet.
+
+Current drawing support
+-----------------------
+
+``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
+smooth-shaded triangle and one front RGB or RGBA colour resource. The resource
+must have bottom-origin rows and ordered UNORM components of 1 to 16 bits.
+The viewport and single clip rectangle must cover the resource. The path
+rejects colour-index drawing, depth and stencil tests, blending, textures,
+client clip planes, ordered dithering, accumulation, and other draw states it
+has not mapped to Mesa. It snapshots the full colour resource, draws through
+an RGBA16 host buffer, reads back, and commits the full resource rectangle.
+It supplies no per-pixel write or coverage indication. Comparing old and new
+colours cannot detect a write that repeats the stored value, so a family
+cannot use this path to update a separate tag, index, overlay, or WID plane.
+
+The decoded CLEAR path is separate dependent work in held QEMU PR #1147. It
+is not part of the implementation described here. The shared type declarations
+also cover more roles and numeric formats than this Mesa draw path supports.
+
+Renderer lifetime and ownership
+-------------------------------
+
+``sgi_renderer_new()`` creates an ``SGIRenderer`` with a surfaceless EGL
+context and one worker thread. ``sgi_renderer_free()`` joins that worker and
+releases its host resources. Submissions are synchronous. The worker uses
+host arrays and immutable draw data for the duration of each call. It does
+not access guest memory or call family resource callbacks. It does not
+acquire QEMU's big lock. A host draw failure latches the renderer's failed
+state, so later draw requests fail.
+
+A family adopting this API must own the renderer for the head's lifetime and
+fail device realization if its required renderer cannot be created. The family
+still owns command decoding, ``SGIGLContext``, target selection, native
+storage, dirty tracking, migration, and guest-visible completion. It must
+resolve those inputs before calling the shared code. Reset and migration
+must drain synchronous submissions and rebuild host GL objects from guest
+state. Host handles are not migration state.
+
+Typed resources and commit order
+--------------------------------
+
+``SGIRasterTarget`` lends a ``SGIRenderResource`` array and
+``SGIRenderResourceOps`` callbacks for one call. A descriptor states the role,
+colour target, front/back/auxiliary buffer, eye, dimensions, row origin, and
+component channels, widths, and numeric interpretation. The backing ID and
+generation name native storage. The view ID and generation name one typed
+interpretation of that storage. The shared validator checks descriptor shape,
+rectangle bounds, scalar-slot stride and capacity, and component values. It
+does not infer aliases, advance generations, or mark scanout dirty. The family
+provider must update those after every native write, including a partial
+commit, and invalidate other views of the same backing.
+
+Snapshots and commits use inclusive rectangles. Each declared component has
+one zero-extended ``uint32_t`` slot. Components are interleaved per pixel,
+and stride counts slots rather than bytes. The provider handles native
+packing, endianness, and guest-address translation. A successful snapshot
+fills every requested slot. A successful commit reports the rectangle's full
+pixel count. A failed commit reports its complete pixel prefix, possible
+partial next pixel, and whether the extent is known. Native writes already
+made by the provider remain made. There is no rollback.
+
+For a future draw with several attachments, resolve and snapshot every
+required resource under the big lock before any native commit. Complete all
+host rendering and readback before committing attachments in order. A
+snapshot or host failure commits nothing. A later native commit failure
+retains earlier commits and returns an error. The provider must dirty the
+known changed region or the whole resource when the extent is unknown.
+Publish a guest fence, reply, or interrupt only after every required commit
+succeeds.
+
+``SGIRenderResult`` distinguishes ``SGI_RENDER_OK``, ``SGI_RENDER_OOM``,
+``SGI_RENDER_UNSUPPORTED``, ``SGI_RENDER_RESOURCE_ERROR``, and
+``SGI_RENDER_HOST_ERROR``. Only a real allocation failure can become guest
+GL out-of-memory. Unsupported mandatory work blocks family adoption. An
+unexpected failure of already validated work must stop the VM visibly under
+the big lock, with its host diagnostic, rather than report guest success or
+retry through the software rasterizer.
+
+Build and test
+--------------
+
+Configure a MIPS64 build with OpenGL, GBM, and test dependencies available.
+From a QEMU source checkout, build the emulator and the two focused tests:
+
+.. code-block:: sh
+
+   ./configure --target-list=mips64-softmmu --enable-tests --enable-opengl
+   ninja -C build qemu-system-mips64 \
+       tests/unit/test-sgi-renderer-gl tests/unit/test-sgi-render-resource
+   QEMU_TEST_SGI_REQUIRE_MESA=1 build/pyvenv/bin/meson test -C build \
+       --setup qemu:thorough --print-errorlogs \
+       test-sgi-renderer-gl test-sgi-render-resource
+
+The renderer test selects software llvmpipe and checks the reported GL
+renderer. ``QEMU_TEST_SGI_REQUIRE_MESA=1`` makes missing surfaceless Mesa a
+failure instead of a skip. The optional render-node case is registered only
+when ``QEMU_TEST_SGI_RENDER_NODE`` is set. The required SGI unit selection is
+documented in :doc:`testing/sgi`. These tests exercise Linux surfaceless EGL
+and GBM. They do not qualify macOS or Windows context creation.
+
+Run tests against the build directory for the source checkout being edited.
+Meson rebuilds named test binaries, but a unit pass does not prove that a
+separately built ``qemu-system-mips64`` contains the same edits. Record the
+source revision, working-tree state, build artifact, and test result together.
+Do not infer a pass from an old binary or another worktree's build.
+
+Evidence boundary
+-----------------
+
+Synthetic tests establish the shared code's behaviour, not physical SGI
+hardware behaviour. Hardware-visible claims need the family's reviewed
+contract, public evidence, and separate device register and guest acceptance
+tests. Do not copy SGI or IRIX source text or identifiers into this tree.
+Someone exposed to restricted source for a device cannot implement or
+independently review that device's emulator code. Record hardware facts in
+the owning reviewed datasheet with citations to permitted sources.

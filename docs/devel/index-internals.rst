@@ -22,6 +22,7 @@ Details about QEMU's various subsystems including how to add features to them.
    s390-cpu-topology
    s390-dasd-ipl
    sgi-byte-order
+   sgi-mesa-renderer
    ssi
    tracing
    uefi-vars
