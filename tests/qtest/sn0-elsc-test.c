@@ -2314,10 +2314,9 @@ static void test_tas_lock_nul_owner(const void *data)
 
 /*
  * The remaining power subcommands (firmware command contract), none
- * boot-driven. This covers the response contract with no real action: the
- * read-only "pwr r" (redundant-supply query) answers the supply records, and
- * out-of-range or extra arguments are "err arg". The destructive "pwr d" and
- * "pwr c" actions are checked in the shutdown and power-cycle tests below.
+ * boot-driven. This covers the refusals, which take no action. The
+ * destructive "pwr d" and "pwr c" actions are checked in the shutdown and
+ * power-cycle tests below.
  */
 static void test_pwr_control_subcommands(const void *data)
 {
@@ -2327,24 +2326,14 @@ static void test_pwr_control_subcommands(const void *data)
     elsc_reset();
 
     /*
-     * The wire response is a per-module record per supply, tagged
-     * tag:present:health, "ok m:y:ok s:y:ok" with both supplies modelled
-     * present and healthy.
-     */
-    req_len = build_request(req, "pwr r");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 16);
-    assert_response_begins(resp, "ok m:y:ok s:y:ok");
-
-    /*
-     * A delay above 0x258 is err arg, as are extra arguments to a known
-     * subcommand letter (a bad argument, not an unknown command). None of
-     * these arm an action.
+     * A delay above 0x258 is err arg, as is a power-cycle interval outside
+     * 5 to 0x258, and so is "pwr r": the redundant-supply query is later
+     * firmware's, and neither modelled build has it. None of these arm an
+     * action.
      */
     {
         const char *bad_forms[] = { "pwr d 259", "pwr d ffff",
-                                    "pwr c 4", "pwr c 259" };
+                                    "pwr c 4", "pwr c 259", "pwr r" };
         unsigned i;
 
         for (i = 0; i < ARRAY_SIZE(bad_forms); i++) {
