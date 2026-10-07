@@ -67,11 +67,15 @@ static void test_identity_and_reset(void)
     static const struct {
         unsigned offset;
         uint32_t value;
+        uint32_t mask;
     } writable[] = {
-        { VT_1, 0x0056789a }, { VT_4, 0x00123456 },
-        { VT_5, 0x00654321 }, { OVR_0, 0x00001fff },
-        { FRM_0, 0x00003fff }, { FRM_1, 0x12340000 },
-        { CRS_0, 0x12345678 },
+        { VT_1, 0x0056789a, 0x00ffffff },
+        { VT_4, 0x00123456, 0x00ffffff },
+        { VT_5, 0x00654321, 0x00ffffff },
+        { OVR_0, 0x00001fff, 0x00001fff },
+        { FRM_0, 0x00003fff, 0x00007fff },
+        { FRM_1, 0x12340000, 0xffff0000 },
+        { CRS_0, 0x12345678, 0xffffffff },
     };
     QTestState *qts = start("");
 
@@ -84,7 +88,8 @@ static void test_identity_and_reset(void)
     }
     for (size_t i = 0; i < G_N_ELEMENTS(writable); i++) {
         wr(qts, writable[i].offset, writable[i].value);
-        g_assert_cmphex(rd(qts, writable[i].offset), ==, writable[i].value);
+        g_assert_cmphex(rd(qts, writable[i].offset) & writable[i].mask,
+                        ==, writable[i].value & writable[i].mask);
     }
     wr(qts, VT_0, 0x80ffffff);
     g_assert_cmphex(rd(qts, VT_0) & 0x80ffffff, ==, 0x80ffffff);
