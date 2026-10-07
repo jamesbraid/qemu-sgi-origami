@@ -14,6 +14,7 @@ fork_unit_tests = [
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
   'test-sgi-gl-vmstate', 'test-sgi-kona-texture',
+  'test-sgi-kona-mesa-provider',
   'test-sgi-renderer', 'test-sgi-renderer-gl',
   'test-sgi-render-resource', 'test-sgi-egl-display',
 ]
@@ -271,6 +272,12 @@ if have_system
                               '../../hw/display/sgi/rasterizer.c',
                               '../../hw/display/sgi/board-memory.c',
                               migration, io],
+    'test-sgi-kona-mesa-provider': [
+      '../../hw/misc/sgi-kona-mesa-provider.c',
+      '../../hw/display/sgi/board-memory.c',
+      '../../hw/display/sgi/render-resource.c',
+      migration, io,
+    ],
     'test-sgi-gl-vmstate': ['../../hw/display/sgi/gl-context.c',
                             migration, io],
     'test-sgi-dma': ['../../hw/display/sgi/board-memory.c',
