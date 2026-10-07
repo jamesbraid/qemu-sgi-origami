@@ -5334,9 +5334,15 @@ static void sgi_machine_set_bedrock_revision(Object *obj, Visitor *v,
 static char *sgi_machine_get_routes(Object *obj, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
-    GString *result = g_string_new(NULL);
+    GString *result;
     unsigned int from, to;
 
+    /* A Bedrock topology has no Hubs to ask, and no s->nodes array. */
+    if (!s->nodes) {
+        error_setg(errp, "routes are not modelled for this topology");
+        return NULL;
+    }
+    result = g_string_new(NULL);
     for (from = 0; from < s->num_nodes; from++) {
         for (to = 0; to < s->num_nodes; to++) {
             uint32_t number;
