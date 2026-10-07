@@ -78,6 +78,24 @@ static uint64_t experimental_status_vector(QTestState *s, uint64_t address,
     return response;
 }
 
+static void assert_experimental_status(uint64_t status, unsigned ingress,
+                                       unsigned disconnected)
+{
+    static const unsigned state[8] = { 2, 1, 1, 2, 1, 2, 1, 1 };
+
+    g_assert_cmphex(status & 1, ==, 1);
+    g_assert_cmphex((status >> 1) & 0x7ff, ==, 0x24);
+    g_assert_cmphex((status >> 12) & 0xffff, ==, 0x3017);
+    g_assert_cmphex((status >> 28) & 15, ==, 1);
+    g_assert_cmphex((status >> 32) & 15, ==, 0);
+    for (unsigned p = 1; p <= 8; p++) {
+        g_assert_cmphex((status >> (34 + 2 * p)) & 3, ==,
+                        p == disconnected ? 1 : state[p - 1]);
+    }
+    g_assert_cmphex((status >> 52) & 15, ==, ingress);
+    g_assert_cmphex(status >> 56, ==, 0);
+}
+
 static size_t experimental_router_l1_reply(QTestState *s, uint8_t reply[131])
 {
     const uint8_t request[] = { 19, 0x00, 0x04, 0x10, 6, 0, 3, 0 };
@@ -145,13 +163,23 @@ static void test_experimental_status_write(void)
     l1_size = experimental_router_l1_reply(s, l1_before);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     vector_status = status;
-    g_assert_true(status & (UINT64_C(1) << 37));
-    g_assert_true(status & (UINT64_C(1) << 47));
-    g_assert_false(status & (UINT64_C(1) << 39));
+    assert_experimental_status(status, 1, 0);
+    assert_experimental_status(
+        experimental_status_vector(s, 0x600000, 0, false, 0, true), 1, 0);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/slave-route','property':'down','value':true}}");
+    assert_experimental_status(
+        experimental_status_vector(s, 0, 0, false, 0, true), 1, 6);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/slave-route','property':'down','value':false}}");
+    g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
+                    ==, vector_status);
     for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
         experimental_status_vector(s, 0, 0, true, values[i], true);
         g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
                         ==, status);
+        g_assert_cmphex(experimental_status_vector(s, 0x600000, 0, false,
+                                                  0, true), ==, status);
         g_assert_cmphex(get(s, "route"), ==, route_before);
         for (unsigned p = 0; p < 8; p++) {
             g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==,
@@ -174,6 +202,8 @@ static void test_experimental_status_write(void)
     for (unsigned ingress = 1; ingress <= 8; ingress += 7) {
         set(s, "ingress", ingress);
         status = qtest_readq(s, BASE);
+        assert_experimental_status(status, ingress, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x600000), ==, status);
         for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
             qtest_writeq(s, BASE, values[i]);
             g_assert_cmpuint(get(s, "result"), ==, 2);
@@ -201,8 +231,7 @@ static void test_experimental_status_write(void)
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
-    g_assert_true(status & (UINT64_C(1) << 37));
-    g_assert_true(status & (UINT64_C(1) << 47));
+    assert_experimental_status(status, 1, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
     fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
                          &to_image, &error);
@@ -229,6 +258,9 @@ static void test_experimental_status_write(void)
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
                     ==, status);
+    assert_experimental_status(status, 1, 0);
+    g_assert_cmphex(experimental_status_vector(to, 0x600000, 0, false, 0,
+                                              true), ==, status);
     experimental_status_vector(to, 0, 0, true,
                                UINT64_C(0x123456789abcdef0), true);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
