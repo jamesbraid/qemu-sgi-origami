@@ -1177,6 +1177,8 @@ struct SGIKonaState {
     SGIBoardMemory x_write_mem;
     bool x_write_snapshot;
     bool x_write_refused;
+    bool x_write_multi;
+    int32_t x_write_x1, x_write_y1, x_write_x2, x_write_y2;
     uint32_t x_write_gc[SGI_KONA_X_GC_WORDS];
     uint32_t x_write_setup[SGI_KONA_X_PIXEL_SETUP_WORDS];
     uint32_t x_write_clip_count;

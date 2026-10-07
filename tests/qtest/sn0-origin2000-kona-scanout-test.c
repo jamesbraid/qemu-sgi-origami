@@ -473,6 +473,8 @@ static void test_planes_declared(void)
           1 },
         { "plane 1 base 0x500000 len 0x140000 1280x1024 stride 1280 format 6",
           1 },
+        { "plane 2 base 0x640000 len 0x500000 1280x1024 stride 5120 format 9",
+          1 },
     };
 
     s = qtest_initf("%s -trace enable=sgi_plane_add -D %s", MACHINE_ARGS,
@@ -486,7 +488,7 @@ static void test_planes_declared(void)
         g_assert_cmpuint(count_occurrences(found, internal[i].line), ==,
                          internal[i].count);
     }
-    g_assert_cmpuint(count_occurrences(found, "sgi_plane_add "), ==, 13);
+    g_assert_cmpuint(count_occurrences(found, "sgi_plane_add "), ==, 14);
     g_free(found);
 
     s = qtest_initf("%s,list-memory-size=0x200000 -trace enable=sgi_plane_add"

@@ -406,6 +406,258 @@ static void test_packing4_help_glyph(void)
     assert_in_step(qts);
 }
 
+/* Several glyph writes can share the one finish sent for their label. */
+static void test_packing4_glyphs_one_finish(void)
+{
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 350, 330);
+    load_bitmap_gc(qts, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(qts, 4, 32, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 310, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    x_command(qts, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(qts, 310, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 310, 307), ==, TAG_X_INDEX);
+    frame = kona_screendump(qts);
+    assert_glyph(frame, 260, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    assert_glyph(frame, 310, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    g_assert_cmphex(ppm_pixel(frame, 300, 307), ==, RGB_GREY_192);
+    assert_in_step(qts);
+}
+
+static void test_packing4_glyphs_one_finish_xor_overlap(void)
+{
+    static const uint32_t xor_gc[] = {
+        0xfff0, 0x230, 0, 0, 0xf00fff, 0,
+        0x180c, 0x40001, 1, 12, 0, 1, 1,
+    };
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_RED, 250, 300, 350, 330);
+    g_assert_cmphex(front_at(qts, 263, 313), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 263, 313), ==, TAG_X_INDEX);
+    x_command(qts, TOKEN_GC, xor_gc, ARRAY_SIZE(xor_gc));
+    bitmap_setup(qts, 4, 32, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    g_assert_cmphex(front_at(qts, 263, 313), ==, INDEX_RED);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 261, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    g_assert_cmphex(front_at(qts, 260, 313), ==, INDEX_RED);
+    g_assert_cmphex(front_at(qts, 263, 313), ==, INDEX_RED);
+    g_assert_cmphex(front_at(qts, 269, 313), ==, INDEX_RED);
+    x_command(qts, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    /* Source index 0x23 XOR red 0x23 toggles the edges to black. */
+    g_assert_cmphex(front_at(qts, 260, 313), ==, INDEX_BLACK);
+    g_assert_cmphex(front_at(qts, 263, 313), ==, INDEX_RED);
+    g_assert_cmphex(front_at(qts, 269, 313), ==, INDEX_BLACK);
+    g_assert_cmphex(front_at(qts, 300, 313), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 260, 313), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 263, 313), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 269, 313), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 300, 313), ==, TAG_X_INDEX);
+    frame = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(frame, 260, 313), ==, RGB_BLACK);
+    g_assert_cmphex(ppm_pixel(frame, 263, 313), ==, RGB_RED);
+    g_assert_cmphex(ppm_pixel(frame, 269, 313), ==, RGB_BLACK);
+    g_assert_cmphex(ppm_pixel(frame, 300, 313), ==, RGB_RED);
+    assert_in_step(qts);
+}
+
+/* Migration must retain both writes without publishing either before finish. */
+static void test_packing4_glyphs_one_finish_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree uint8_t *frame = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-glyph-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    load_entries(from);
+    full_screen_clip(from);
+    fill_box(from, INDEX_GREY, 250, 300, 350, 330);
+    load_bitmap_gc(from, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(from, 4, 32, 20);
+    x_command(from, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(from, glyph_h, 20);
+    x_command(from, TOKEN_PIXEL_WRITE, (uint32_t[]){ 310, 304 }, 2);
+    data_words(from, glyph_h, 20);
+    g_assert_cmphex(front_at(from, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(from, 310, 307), ==, INDEX_GREY);
+
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(front_at(to, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(to, 310, 307), ==, INDEX_GREY);
+    x_command(to, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    g_assert_cmphex(front_at(to, 260, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(to, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(to, 310, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(to, 310, 307), ==, TAG_X_INDEX);
+    frame = kona_screendump(to);
+    assert_glyph(frame, 260, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    assert_glyph(frame, 310, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    g_assert_cmphex(ppm_pixel(frame, 300, 307), ==, RGB_GREY_192);
+    assert_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/* A changed setup refuses the whole pending batch across migration. */
+static void test_packing4_glyphs_setup_change_migration_refused(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree uint8_t *frame = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-glyph-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    load_entries(from);
+    full_screen_clip(from);
+    fill_box(from, INDEX_GREY, 250, 300, 350, 330);
+    load_bitmap_gc(from, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(from, 4, 32, 20);
+    x_command(from, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(from, glyph_h, 20);
+    bitmap_setup(from, 4, 32, 19);
+    x_command(from, TOKEN_PIXEL_WRITE, (uint32_t[]){ 310, 304 }, 2);
+    data_words(from, glyph_h, 19);
+    g_assert_cmphex(front_at(from, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(from, 310, 307), ==, INDEX_GREY);
+
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(front_at(to, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(to, 310, 307), ==, INDEX_GREY);
+    x_command(to, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    g_assert_cmphex(front_at(to, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(to, 310, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_tag_at(to, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(to, 310, 307), ==, TAG_X_INDEX);
+    frame = kona_screendump(to);
+    for (unsigned y = 304; y < 324; y++) {
+        for (unsigned x = 0; x < 32; x++) {
+            g_assert_cmphex(ppm_pixel(frame, 260 + x, y), ==, RGB_GREY_192);
+            g_assert_cmphex(ppm_pixel(frame, 310 + x, y), ==, RGB_GREY_192);
+        }
+    }
+    g_assert_cmphex(ppm_pixel(frame, 300, 307), ==, RGB_GREY_192);
+    assert_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_packing4_glyphs_incomplete_predecessor(void)
+{
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 350, 330);
+    load_bitmap_gc(qts, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(qts, 4, 32, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(qts, glyph_h, 19);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 310, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(qts, 310, 307), ==, INDEX_GREY);
+    x_command(qts, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(qts, 310, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 310, 307), ==, TAG_X_INDEX);
+    frame = kona_screendump(qts);
+    for (unsigned y = 304; y < 324; y++) {
+        for (unsigned x = 0; x < 32; x++) {
+            g_assert_cmphex(ppm_pixel(frame, 260 + x, y), ==, RGB_GREY_192);
+            g_assert_cmphex(ppm_pixel(frame, 310 + x, y), ==, RGB_GREY_192);
+        }
+    }
+    assert_in_step(qts);
+}
+
+static void test_packing4_glyphs_reset_open_group(void)
+{
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 400, 330);
+    load_bitmap_gc(qts, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(qts, 4, 32, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 260, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 310, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(qts, 310, 307), ==, INDEX_GREY);
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 400, 330);
+    load_bitmap_gc(qts, 0xfff0, 0x230, 0, 0);
+    bitmap_setup(qts, 4, 32, 20);
+    x_command(qts, TOKEN_PIXEL_WRITE, (uint32_t[]){ 360, 304 }, 2);
+    data_words(qts, glyph_h, 20);
+    x_command(qts, TOKEN_PIXEL_FINISH, (uint32_t[]){ 0 }, 1);
+
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(qts, 310, 307), ==, INDEX_GREY);
+    g_assert_cmphex(front_at(qts, 360, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 310, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_tag_at(qts, 360, 307), ==, TAG_X_INDEX);
+    frame = kona_screendump(qts);
+    for (unsigned y = 304; y < 324; y++) {
+        for (unsigned x = 0; x < 32; x++) {
+            g_assert_cmphex(ppm_pixel(frame, 260 + x, y), ==, RGB_GREY_192);
+            g_assert_cmphex(ppm_pixel(frame, 310 + x, y), ==, RGB_GREY_192);
+        }
+    }
+    assert_glyph(frame, 360, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    assert_in_step(qts);
+}
+
 /*
  * The label GCs of the acceptance run carry 0xfff0, 0: foreground index
  * 0. Through entry 0x2d00, zero in the default colour map, the "H" comes
@@ -1104,6 +1356,23 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-help-glyph",
                    test_packing4_help_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/packing4-glyphs-one-finish",
+                   test_packing4_glyphs_one_finish);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-glyphs-one-finish-xor-overlap",
+                   test_packing4_glyphs_one_finish_xor_overlap);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-glyphs-one-finish-migration",
+                   test_packing4_glyphs_one_finish_migration);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-glyphs-setup-change-migration-refused",
+                   test_packing4_glyphs_setup_change_migration_refused);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-glyphs-incomplete-predecessor",
+                   test_packing4_glyphs_incomplete_predecessor);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-glyphs-reset-open-group",
+                   test_packing4_glyphs_reset_open_group);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-run-label-is-black",
                    test_packing4_run_label_is_black);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-grammar-row",

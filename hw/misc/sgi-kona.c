@@ -8321,12 +8321,35 @@ static bool sgi_kona_x_bitmap_index(SGIKonaState *s, bool bit,
 /* Snapshot geometry bounds all staged coordinates, including clipped holes. */
 static void sgi_kona_x_write_bounds(SGIKonaState *s, SGIKonaRect *r)
 {
-    r->x1 = MAX(INT64_C(0), s->x_pixel_x);
-    r->y1 = MAX(INT64_C(0), s->x_pixel_y);
-    r->x2 = MIN((int64_t)SGI_KONA_FB_WIDTH, (int64_t)s->x_pixel_x +
-                s->x_write_setup[SGI_KONA_X_SETUP_WIDTH]);
-    r->y2 = MIN((int64_t)SGI_KONA_FB_HEIGHT, (int64_t)s->x_pixel_y +
-                s->x_write_setup[SGI_KONA_X_SETUP_HEIGHT]);
+    *r = (SGIKonaRect) { s->x_write_x1, s->x_write_y1,
+                         s->x_write_x2, s->x_write_y2 };
+}
+
+static void sgi_kona_x_write_extend(SGIKonaState *s)
+{
+    int64_t x1 = CLAMP((int64_t)s->x_pixel_x, 0, SGI_KONA_FB_WIDTH);
+    int64_t y1 = CLAMP((int64_t)s->x_pixel_y, 0, SGI_KONA_FB_HEIGHT);
+    int64_t x2 = CLAMP((int64_t)s->x_pixel_x +
+                       s->x_pixel_setup[SGI_KONA_X_SETUP_WIDTH],
+                       0, SGI_KONA_FB_WIDTH);
+    int64_t y2 = CLAMP((int64_t)s->x_pixel_y +
+                       s->x_pixel_setup[SGI_KONA_X_SETUP_HEIGHT],
+                       0, SGI_KONA_FB_HEIGHT);
+
+    if (x1 >= x2 || y1 >= y2) {
+        return;
+    }
+    if (s->x_write_x1 == s->x_write_x2) {
+        s->x_write_x1 = x1;
+        s->x_write_y1 = y1;
+        s->x_write_x2 = x2;
+        s->x_write_y2 = y2;
+    } else {
+        s->x_write_x1 = MIN(s->x_write_x1, x1);
+        s->x_write_y1 = MIN(s->x_write_y1, y1);
+        s->x_write_x2 = MAX(s->x_write_x2, x2);
+        s->x_write_y2 = MAX(s->x_write_y2, y2);
+    }
 }
 
 static void sgi_kona_x_write_clear(SGIKonaState *s)
@@ -8334,6 +8357,7 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
     if (s->x_write_snapshot) {
         const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
         const SGIPlane *valid = sgi_board_memory_plane(&s->x_write_mem, 1);
+        const SGIPlane *ones = sgi_board_memory_plane(&s->x_write_mem, 2);
         SGIKonaRect r;
 
         sgi_kona_x_write_bounds(s, &r);
@@ -8341,11 +8365,15 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
             for (int64_t x = r.x1; x < r.x2; x++) {
                 sgi_plane_store(&s->x_write_mem, source, x, y, 0);
                 sgi_plane_store(&s->x_write_mem, valid, x, y, 0);
+                sgi_plane_store(&s->x_write_mem, ones, x, y, 0);
             }
         }
     }
     s->x_write_snapshot = false;
     s->x_write_refused = false;
+    s->x_write_multi = false;
+    s->x_write_x1 = s->x_write_y1 = 0;
+    s->x_write_x2 = s->x_write_y2 = 0;
     memset(s->x_write_gc, 0, sizeof(s->x_write_gc));
     memset(s->x_write_setup, 0, sizeof(s->x_write_setup));
     s->x_write_clip_count = 0;
@@ -8458,6 +8486,38 @@ static bool sgi_kona_x_write_contains(SGIKonaState *s, int64_t x, int64_t y)
     return true;
 }
 
+static bool sgi_kona_x_write_same_state(SGIKonaState *s)
+{
+    if (memcmp(s->x_write_gc, s->x_gc, sizeof(s->x_gc)) ||
+        memcmp(s->x_write_setup, s->x_pixel_setup,
+               sizeof(s->x_pixel_setup)) ||
+        s->x_write_clip_count != s->x_clip_count ||
+        memcmp(s->x_write_clip_rects, s->x_clip_rects,
+               sizeof(s->x_clip_rects)) ||
+        s->x_write_scissor_valid != s->x_scissor_valid ||
+        memcmp(s->x_write_scissor, s->x_scissor,
+               sizeof(s->x_scissor))) {
+        return false;
+    }
+    if (s->x_stipple_loaded >= SGI_KONA_X_STIPPLE_ENTRIES) {
+        return !s->x_write_stipple_width;
+    }
+
+    unsigned entry = s->x_stipple_loaded;
+
+    return s->x_write_stipple_width == s->x_stipple_width[entry] &&
+           s->x_write_stipple_height == s->x_stipple_height[entry] &&
+           s->x_write_stipple_x ==
+               (int64_t)(int32_t)s->x_position[0] +
+               s->x_stipple_origin_x[entry] &&
+           s->x_write_stipple_y ==
+               (int64_t)(int32_t)s->x_position[1] +
+               s->x_stipple_origin_y[entry] &&
+           !memcmp(s->x_write_stipple_rows,
+                   s->x_stipple_rows + entry * SGI_KONA_X_STIPPLE_MAX,
+                   sizeof(s->x_write_stipple_rows));
+}
+
 /* Bank-zero source staging ends at the established X finish boundary. */
 static void sgi_kona_x_pixel_write(SGIKonaState *s, const uint32_t *args)
 {
@@ -8468,36 +8528,57 @@ static void sgi_kona_x_pixel_write(SGIKonaState *s, const uint32_t *args)
     uint32_t bpp = sgi_kona_x_pixel_bpp(src_pack);
     uint64_t stride = 0, words = 0;
     SGIXGC gc;
+    bool refuse_new = false;
 
+    if (s->x_pixel_open && !s->x_pixel_words && !s->x_write_multi) {
+        s->x_pixel_open = false;
+    }
     if (s->x_pixel_open) {
         if (s->x_pixel_remaining) {
             sgi_kona_x_read_invalidate(s);
+            refuse_new = true;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-kona: X pixel write while another still"
+                          " needs %u words; batch refused\n",
+                          s->x_pixel_remaining);
+        } else if (!sgi_kona_x_write_same_state(s)) {
+            refuse_new = true;
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: X pixel batch changes drawing state;"
+                          " batch refused\n");
         }
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-kona: X pixel write while another is open;"
-                      " the open one ends\n");
+        refuse_new |= s->x_write_refused;
+        if (refuse_new) {
+            s->x_pixel_open = false;
+        } else {
+            s->x_write_multi = true;
+        }
     }
-    sgi_kona_x_write_clear(s);
-    s->x_write_snapshot = true;
-    memcpy(s->x_write_gc, s->x_gc, sizeof(s->x_write_gc));
-    memcpy(s->x_write_setup, s->x_pixel_setup, sizeof(s->x_write_setup));
-    s->x_write_clip_count = s->x_clip_count;
-    memcpy(s->x_write_clip_rects, s->x_clip_rects,
-           sizeof(s->x_write_clip_rects));
-    s->x_write_scissor_valid = s->x_scissor_valid;
-    memcpy(s->x_write_scissor, s->x_scissor, sizeof(s->x_write_scissor));
-    if (s->x_stipple_loaded < SGI_KONA_X_STIPPLE_ENTRIES) {
-        unsigned entry = s->x_stipple_loaded;
+    if (!s->x_pixel_open) {
+        sgi_kona_x_write_clear(s);
+        s->x_write_snapshot = true;
+        s->x_write_refused = refuse_new;
+        memcpy(s->x_write_gc, s->x_gc, sizeof(s->x_write_gc));
+        memcpy(s->x_write_setup, s->x_pixel_setup, sizeof(s->x_write_setup));
+        s->x_write_clip_count = s->x_clip_count;
+        memcpy(s->x_write_clip_rects, s->x_clip_rects,
+               sizeof(s->x_write_clip_rects));
+        s->x_write_scissor_valid = s->x_scissor_valid;
+        memcpy(s->x_write_scissor, s->x_scissor,
+               sizeof(s->x_write_scissor));
+        if (s->x_stipple_loaded < SGI_KONA_X_STIPPLE_ENTRIES) {
+            unsigned entry = s->x_stipple_loaded;
 
-        s->x_write_stipple_width = s->x_stipple_width[entry];
-        s->x_write_stipple_height = s->x_stipple_height[entry];
-        s->x_write_stipple_x = (int64_t)(int32_t)s->x_position[0] +
-                               s->x_stipple_origin_x[entry];
-        s->x_write_stipple_y = (int64_t)(int32_t)s->x_position[1] +
-                               s->x_stipple_origin_y[entry];
-        memcpy(s->x_write_stipple_rows,
-               s->x_stipple_rows + entry * SGI_KONA_X_STIPPLE_MAX,
-               sizeof(s->x_write_stipple_rows));
+            s->x_write_stipple_width = s->x_stipple_width[entry];
+            s->x_write_stipple_height = s->x_stipple_height[entry];
+            s->x_write_stipple_x = (int64_t)(int32_t)s->x_position[0] +
+                                   s->x_stipple_origin_x[entry];
+            s->x_write_stipple_y = (int64_t)(int32_t)s->x_position[1] +
+                                   s->x_stipple_origin_y[entry];
+            memcpy(s->x_write_stipple_rows,
+                   s->x_stipple_rows + entry * SGI_KONA_X_STIPPLE_MAX,
+                   sizeof(s->x_write_stipple_rows));
+        }
     }
     if (!sgi_kona_x_write_decode(s, &gc) ||
         (s->x_write_stipple_width && !s->x_write_stipple_height)) {
@@ -8515,6 +8596,7 @@ static void sgi_kona_x_pixel_write(SGIKonaState *s, const uint32_t *args)
     s->x_pixel_open = true;
     s->x_pixel_x = args[0];
     s->x_pixel_y = args[1];
+    sgi_kona_x_write_extend(s);
     s->x_pixel_bpp = bpp;
     s->x_pixel_prev = 0;
 
@@ -8555,6 +8637,7 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
     int64_t y = (int64_t)s->x_pixel_y + row;
     const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
     const SGIPlane *valid = sgi_board_memory_plane(&s->x_write_mem, 1);
+    const SGIPlane *ones = sgi_board_memory_plane(&s->x_write_mem, 2);
     uint32_t pack = s->x_write_setup[SGI_KONA_X_SETUP_SRC_PACK];
 
     if (!sgi_kona_x_write_contains(s, x, y)) {
@@ -8573,7 +8656,17 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
                s->x_pixel_bpp != 1) {
         value = (value << s->x_write_setup[SGI_KONA_X_SETUP_SHIFT]) & 0xffff;
     }
-    sgi_plane_store(&s->x_write_mem, source, x, y, value);
+    /* Boolean GX operations compose per bit across writes before finish. */
+    uint32_t zero = 0, one = gc->width_mask;
+
+    if (sgi_plane_load(&s->x_write_mem, valid, x, y)) {
+        zero = sgi_plane_load(&s->x_write_mem, source, x, y);
+        one = sgi_plane_load(&s->x_write_mem, ones, x, y);
+    }
+    sgi_plane_store(&s->x_write_mem, source, x, y,
+                    sgi_x_gc_apply(gc, value, zero));
+    sgi_plane_store(&s->x_write_mem, ones, x, y,
+                    sgi_x_gc_apply(gc, value, one));
     sgi_plane_store(&s->x_write_mem, valid, x, y, 1);
 }
 
@@ -9125,6 +9218,7 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
     const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
     const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
     const SGIPlane *valid = sgi_board_memory_plane(&s->x_write_mem, 1);
+    const SGIPlane *ones = sgi_board_memory_plane(&s->x_write_mem, 2);
     size_t width, pixels;
     SGIKonaRect r;
     g_autofree SGIKonaXPreparedPixel *prepared = NULL;
@@ -9170,8 +9264,10 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
                               "incompatible destination (%u,%u)\n", x, y);
                 return;
             }
-            pixel->value = sgi_x_gc_apply(&gc,
-                sgi_plane_load(&s->x_write_mem, source, x, y), dest);
+            uint32_t zero = sgi_plane_load(&s->x_write_mem, source, x, y);
+            uint32_t one = sgi_plane_load(&s->x_write_mem, ones, x, y);
+
+            pixel->value = (zero & ~dest) | (one & dest);
             pixel->tag = target_tag;
             pixel->write = pixel->value != dest || pixel->tag != dest_tag;
         }
@@ -10653,19 +10749,19 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
         sgi_board_memory_add_plane(&s->desktop_mem, &plane, &error_abort);
     }
     sgi_board_memory_init(&s->x_write_mem,
-                          (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 5);
-    for (unsigned i = 0; i < 2; i++) {
-        unsigned bytes = i ? 1 : 4;
+                          (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 9);
+    for (unsigned i = 0; i < 3; i++) {
+        unsigned bytes = i == 1 ? 1 : 4;
         SGIPlane plane = {
-            .base = i ? (uint64_t)SGI_KONA_FB_WIDTH *
-                        SGI_KONA_FB_HEIGHT * 4 : 0,
+            .base = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT *
+                    (i == 0 ? 0 : i == 1 ? 4 : 5),
             .len = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * bytes,
             .width = SGI_KONA_FB_WIDTH,
             .height = SGI_KONA_FB_HEIGHT,
             .stride = SGI_KONA_FB_WIDTH * bytes,
-            .format = i ? SGI_PLANE_TAG : SGI_PLANE_RAW,
+            .format = i == 1 ? SGI_PLANE_TAG : SGI_PLANE_RAW,
             .packing = SGI_PACK_LE_RED_LOW,
-            .evidence = "model representation: pending X source pixels",
+            .evidence = "model representation: pending X pixel transform",
         };
 
         sgi_board_memory_add_plane(&s->x_write_mem, &plane, &error_abort);
@@ -11414,6 +11510,7 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
     const uint32_t *setup = s->x_write_setup;
     const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
     const SGIPlane *valid = sgi_board_memory_plane(&s->x_write_mem, 1);
+    const SGIPlane *ones = sgi_board_memory_plane(&s->x_write_mem, 2);
     uint64_t width = setup[SGI_KONA_X_SETUP_WIDTH];
     uint64_t height = setup[SGI_KONA_X_SETUP_HEIGHT];
     uint64_t pad = setup[SGI_KONA_X_SETUP_PAD];
@@ -11432,6 +11529,10 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
     if (!s->x_pixel_open || s->x_pixel_bpp != bpp ||
         s->x_pixel_stride != stride || s->x_pixel_words != words ||
         s->x_pixel_remaining > words ||
+        s->x_write_x1 < 0 || s->x_write_x1 > s->x_write_x2 ||
+        s->x_write_x2 > SGI_KONA_FB_WIDTH ||
+        s->x_write_y1 < 0 || s->x_write_y1 > s->x_write_y2 ||
+        s->x_write_y2 > SGI_KONA_FB_HEIGHT ||
         s->x_write_clip_count > SGI_KONA_X_CLIP_MAX_RECTS ||
         s->x_write_stipple_width > SGI_KONA_X_STIPPLE_MAX ||
         s->x_write_stipple_height > SGI_KONA_X_STIPPLE_MAX ||
@@ -11451,19 +11552,24 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
         for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
             uint32_t present = sgi_plane_load(&s->x_write_mem, valid, x, y);
             uint32_t value = sgi_plane_load(&s->x_write_mem, source, x, y);
+            uint32_t one = sgi_plane_load(&s->x_write_mem, ones, x, y);
             int64_t col = (int64_t)x - s->x_pixel_x;
             int64_t row = (int64_t)y - s->x_pixel_y;
             bool candidate = decoded && col >= 0 && row >= 0 &&
                              col < width && row < height &&
                              sgi_kona_x_write_contains(s, x, y);
+            bool in_bounds = x >= s->x_write_x1 && x < s->x_write_x2 &&
+                             y >= s->x_write_y1 && y < s->x_write_y2;
             uint64_t end = candidate ? (uint64_t)row * stride +
                 DIV_ROUND_UP(pad + bpp * (col + 1), 32) : UINT64_MAX;
             bool arrived = candidate && end <= consumed;
-
             if (present > 1 || value > (decoded ? gc.width_mask : 0xff) ||
-                (!present && value) ||
-                (present && (!arrived || sgi_x_gc_noop(&gc))) ||
-                (!s->x_write_refused && arrived && !sgi_x_gc_noop(&gc) &&
+                one > (decoded ? gc.width_mask : 0xff) ||
+                (!present && (value || one)) ||
+                (present && (!in_bounds || sgi_x_gc_noop(&gc) ||
+                             (!s->x_write_multi && !arrived))) ||
+                (!s->x_write_refused && !s->x_write_multi && arrived &&
+                 !sgi_x_gc_noop(&gc) &&
                  setup[SGI_KONA_X_SETUP_SRC_PACK] != SGI_KONA_X_PACK_BITMAP &&
                  !present)) {
                 return false;
@@ -11658,6 +11764,11 @@ static const VMStateDescription vmstate_sgi_kona_x_write = {
         VMSTATE_STRUCT(x_write_mem, SGIKonaState, 0,
                        vmstate_sgi_board_memory, SGIBoardMemory),
         VMSTATE_BOOL(x_write_refused, SGIKonaState),
+        VMSTATE_BOOL(x_write_multi, SGIKonaState),
+        VMSTATE_INT32(x_write_x1, SGIKonaState),
+        VMSTATE_INT32(x_write_y1, SGIKonaState),
+        VMSTATE_INT32(x_write_x2, SGIKonaState),
+        VMSTATE_INT32(x_write_y2, SGIKonaState),
         VMSTATE_UINT32_ARRAY(x_write_gc, SGIKonaState, SGI_KONA_X_GC_WORDS),
         VMSTATE_UINT32_ARRAY(x_write_setup, SGIKonaState,
                              SGI_KONA_X_PIXEL_SETUP_WORDS),
