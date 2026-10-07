@@ -5,6 +5,10 @@ config AT24C
     bool
     depends on I2C
 
+config SGI_ELSC_NVRAM
+    bool
+    depends on I2C
+
 config MAC_NVRAM
     bool
     select CHRP_NVRAM

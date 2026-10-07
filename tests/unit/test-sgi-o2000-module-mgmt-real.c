@@ -598,8 +598,14 @@ static void test_nvram_defaults(Fixture *f, gconstpointer unused)
     g_assert_cmphex(nvram_read(f, 1, reserved +
                                SGI_O2000_NVRAM_MODULE_OFFSET), ==,
                     f->module->module_number);
-    /* Nothing else in the region is invented. */
-    g_assert_cmphex(nvram_read(f, 2, reserved + 1), ==, 0);
+    /*
+     * The rest of the block as the controller's first power-up leaves it:
+     * the password "none", configuration byte 0, and nothing invented
+     * beyond the twelve bytes it writes.
+     */
+    g_assert_cmphex(nvram_read(f, 2, reserved + 1), ==, 'n');
+    g_assert_cmphex(nvram_read(f, 3, reserved + 4), ==, 'e');
+    g_assert_cmphex(nvram_read(f, 2, reserved + 7), ==, 0);
     g_assert_cmphex(nvram_read(f, 3, reserved + 15), ==, 0);
     g_assert_cmphex(nvram_read(f, 0, 0), ==, 0);
 }

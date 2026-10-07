@@ -152,6 +152,15 @@ struct SGIHubState {
     uint8_t i2c_elsc_addr;
     uint8_t i2c_nvram_first_addr;
     uint32_t i2c_nvram_pages;
+    /*
+     * The ELSC's configuration NVRAM: the block node or drive backing it,
+     * or NULL, and the configuration, module and clock-select bytes an
+     * unbacked store starts with.
+     */
+    char *i2c_nvram_drive;
+    uint8_t i2c_nvram_config;
+    uint8_t i2c_nvram_module;
+    uint8_t i2c_nvram_clock;
     uint8_t onewire_kind;
 
     /* Diagnostic reference; the I2C bus retains object ownership. */

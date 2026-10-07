@@ -14,7 +14,7 @@
 #include "hw/i2c/i2c-wire.h"
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
-#include "hw/nvram/eeprom_at24c.h"
+#include "hw/nvram/sgi-elsc-nvram.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -732,25 +732,35 @@ static DeviceState *mgmt_add_child(SN0ModuleManagementState *s,
     return child;
 }
 
-static void mgmt_populate_nvram(SN0ModuleManagementState *s)
+/*
+ * The configuration NVRAM, as the Origin 2000 build of the controller leaves
+ * it after its first power-up: configuration byte 0 and the module number
+ * this module's model selects. A backing file's contents win over these.
+ *
+ * Byte 0x70b is an approximation. The controller writes its clock-select
+ * default there, 0x78 on the full-clock midplane type and 0 on the others,
+ * and that this module is the full-clock type is only inferred. The
+ * Origin 2000 PROMs read the byte as the domain number, so it stays 0, the
+ * value the model has always presented, rather than changing what a guest
+ * sees on an inference.
+ */
+static bool mgmt_create_nvram(SN0ModuleManagementState *s, Error **errp)
 {
-    uint8_t reserved[SGI_O2000_NVRAM_PAGE_BYTES] = { };
-    unsigned page;
+    I2CSlave *nvram = i2c_slave_new(TYPE_SGI_ELSC_NVRAM,
+                                    SGI_O2000_NVRAM_FIRST_ADDR);
 
-    reserved[SGI_O2000_NVRAM_VALIDITY_OFFSET] =
-        SGI_O2000_NVRAM_VALIDITY_VALUE;
-    reserved[SGI_O2000_NVRAM_MODULE_OFFSET] = s->module_number;
-
-    for (page = 0; page < SGI_O2000_NVRAM_ADDRESSES; page++) {
-        uint8_t address = SGI_O2000_NVRAM_FIRST_ADDR + page;
-
-        if (page == SGI_O2000_NVRAM_RESERVED_PAGE) {
-            at24c_eeprom_init_rom(s->bus, address, SGI_O2000_NVRAM_PAGE_BYTES,
-                                  reserved, sizeof(reserved));
-        } else {
-            at24c_eeprom_init(s->bus, address, SGI_O2000_NVRAM_PAGE_BYTES);
-        }
+    object_property_add_child(OBJECT(s), "nvram", OBJECT(nvram));
+    qdev_prop_set_uint8(DEVICE(nvram), "config", 0);
+    qdev_prop_set_uint8(DEVICE(nvram), "module", s->module_number);
+    qdev_prop_set_uint8(DEVICE(nvram), "clock", 0);
+    if (s->nvram_drive &&
+        !object_property_set_str(OBJECT(nvram), "drive", s->nvram_drive,
+                                 errp)) {
+        object_unparent(OBJECT(nvram));
+        object_unref(OBJECT(nvram));
+        return false;
     }
+    return i2c_slave_realize_and_unref(nvram, s->bus, errp);
 }
 
 static void mgmt_realize(DeviceState *dev, Error **errp)
@@ -826,7 +836,9 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     if (!qdev_realize(s->module_serial, BUS(s->onewire_bus), errp)) {
         return;
     }
-    mgmt_populate_nvram(s);
+    if (!mgmt_create_nvram(s, errp)) {
+        return;
+    }
 
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         g_autofree char *name = g_strdup_printf("adapter[%u]", i);
@@ -999,6 +1011,7 @@ static const Property mgmt_properties[] = {
                       module_number, 1),
     DEFINE_PROP_STRING("model-serial", SN0ModuleManagementState,
                        module_serial_text),
+    DEFINE_PROP_STRING("nvram-drive", SN0ModuleManagementState, nvram_drive),
     DEFINE_PROP_BOOL("can-reset", SN0ModuleManagementState, can_reset, false),
     DEFINE_PROP_BOOL("can-nmi", SN0ModuleManagementState, can_nmi, false),
     DEFINE_PROP_BOOL("can-power", SN0ModuleManagementState, can_power, false),

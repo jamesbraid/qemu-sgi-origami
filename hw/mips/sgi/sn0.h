@@ -295,8 +295,8 @@ extern const SN0ModelMemory sn0_ip27_memory;
 
 /*
  * A node's embedded ELSC answers I2C address 8 on every Hub that carries one
- * (identity->system_controller); its NVRAM pages start at address 80 and
- * there are 8 of them, again fixed by the ELSC/PCF8584 pairing, the same on
+ * (identity->system_controller); its configuration NVRAM's 8 pages start
+ * at address 80, again fixed by the ELSC/PCF8584 pairing, the same on
  * every node measured. The compiled catalogue no longer carries these (unread
  * where the corresponding identity flag is false, since that Hub has no
  * embedded ELSC or I2C controller to address).
