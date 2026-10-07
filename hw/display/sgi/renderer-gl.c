@@ -245,7 +245,13 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glDisable(GL_SAMPLE_COVERAGE);
     glDisable(GL_RASTERIZER_DISCARD);
     glDisable(GL_FRAMEBUFFER_SRGB);
-    glDisable(GL_BLEND);
+    if (frame->blend) {
+        glBlendEquation(frame->blend_equation);
+        glBlendFunc(frame->blend_src, frame->blend_dst);
+        glEnable(GL_BLEND);
+    } else {
+        glDisable(GL_BLEND);
+    }
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
@@ -264,7 +270,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glClear(GL_STENCIL_BUFFER_BIT);
     glStencilFunc(GL_ALWAYS, 1, 0xff);
     glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-    glShadeModel(GL_SMOOTH);
+    glShadeModel(frame->shade_model);
+    glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
     glMatrixMode(GL_PROJECTION);
     glLoadMatrixf(frame->projection);
     glMatrixMode(GL_MODELVIEW);

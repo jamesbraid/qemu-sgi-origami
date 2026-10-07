@@ -22,6 +22,8 @@ typedef struct SGIRendererRequest {
 typedef struct SGIRendererFrame {
     uint32_t width, height, count;
     const float *vertices; /* position xyzw, then premade colour rgba */
+    uint32_t shade_model;
+    uint32_t blend, blend_src, blend_dst, blend_equation;
     float modelview[16], projection[16];
     uint16_t *rgba; /* width * height * 4 host slots, bottom row first */
     uint8_t *written; /* width * height binary bytes, bottom row first */

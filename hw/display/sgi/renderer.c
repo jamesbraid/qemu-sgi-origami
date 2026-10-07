@@ -59,10 +59,11 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         draw->polygon_stipple_enabled || draw->point_smooth ||
         draw->line_smooth || draw->polygon_smooth ||
         draw->line_stipple_enabled ||
-        st->shade_model != SGI_GL_SMOOTH || st->index_bits ||
+        (st->shade_model != SGI_GL_SMOOTH &&
+         st->shade_model != SGI_GL_FLAT) || st->index_bits ||
         st->draw_buffers != SGI_GL_DRAW_FRONT ||
         st->colour_mask != SGI_GL_COLOUR_MASK_ALL ||
-        st->depth_test || st->stencil_test || st->blend ||
+        st->depth_test || st->stencil_test || st->blend > 1 ||
         st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
         st->scissor_test || st->color_logic_op ||
         st->index_logic_op || st->texture_2d || st->texture_3d ||
@@ -107,6 +108,13 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
             res->component[c].storage_bits > 16) {
             return false;
         }
+    }
+    if (st->blend &&
+        (st->blend_src != SGI_GL_SRC_ALPHA ||
+         st->blend_dst != SGI_GL_ONE_MINUS_SRC_ALPHA ||
+         st->blend_equation != SGI_GL_FUNC_ADD ||
+         res->component_count != 3)) {
+        return false;
     }
     *result = res;
     return true;
@@ -210,6 +218,11 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     frame.height = resource->height;
     frame.count = 3;
     frame.vertices = &vertices[0][0];
+    frame.shade_model = draw->state->shade_model;
+    frame.blend = draw->state->blend;
+    frame.blend_src = draw->state->blend_src;
+    frame.blend_dst = draw->state->blend_dst;
+    frame.blend_equation = draw->state->blend_equation;
     frame.rgba = rgba;
     frame.written = written;
     frame.written_capacity = pixels;
