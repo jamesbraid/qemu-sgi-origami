@@ -16,11 +16,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_irix_diag import (QemuSystemTest, IrixDiagMatrix,  # noqa: E402
-                            register_irix_diag_row)
+                            DIAG_MEDIUM_SPEC, IP35_DIAG_DISK_SPEC,
+                            IP35_FIRMWARE_SPEC, register_irix_diag_row)
+from qemu_test.asset import LocalAsset
 
 
 class IrixDiagOrigin300Pair(IrixDiagMatrix):
     """two Origin 300 chassis joined by NUMAlink"""
+
+    ASSET_FIRMWARE = LocalAsset(*IP35_FIRMWARE_SPEC)
+    ASSET_DISK = LocalAsset(*IP35_DIAG_DISK_SPEC)
+    ASSET_MEDIUM = LocalAsset(*DIAG_MEDIUM_SPEC)
 
 
 register_irix_diag_row(IrixDiagOrigin300Pair, 'origin300_pair')
