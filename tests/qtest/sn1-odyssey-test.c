@@ -5157,6 +5157,125 @@ static void test_command_fifo_compare_unsupported(void)
     qtest_quit(qts);
 }
 
+static void compare_push(QTestState *qts, bool user, uint32_t word)
+{
+    if (user) {
+        user_cmd_push(qts, word);
+    } else {
+        cmd_push(qts, word);
+    }
+}
+
+static void test_command_fifo_compare_neutral(bool user)
+{
+    QTestState *qts = board_start("");
+    const uint64_t base = 0xb70000;
+    uint64_t last_interrupt_addr;
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
+    odsy_test_pixel_write(qts, 10, 10, 0x01020304);
+    qtest_writel(qts, base + 8, 0x87654321);
+    last_interrupt_addr = odsy_qom_get_uint(qts,
+                                            "x-test-last-interrupt-addr");
+    g_assert_cmphex(last_interrupt_addr, ==, 0);
+
+    compare_push(qts, user, ODSY_CMD_DID_COMPARE);
+    compare_push(qts, user, 0);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, last_interrupt_addr);
+    compare_push(qts, user, 0);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, last_interrupt_addr);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
+    g_assert_cmphex(qtest_readl(qts, base + 8), ==, 0x87654321);
+
+    compare_push(qts, user, ODSY_CMD_HOST_WRITE_SELECT);
+    compare_push(qts, user, 2);
+    compare_push(qts, user, 0x5a00);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0x5a00);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, 0);
+    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), !=, 0x01020304);
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_compare_neutral_kernel(void)
+{
+    test_command_fifo_compare_neutral(false);
+}
+
+static void test_command_fifo_compare_neutral_user(void)
+{
+    test_command_fifo_compare_neutral(true);
+}
+
+static void test_command_fifo_compare_nonzero(bool second)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    const uint64_t base = 0xb70000;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-compare-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
+    odsy_test_pixel_write(qts, 10, 10, 0x01020304);
+
+    cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    cmd_push(qts, second ? 0 : 1);
+    cmd_push(qts, second ? 1 : 0);
+    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x5a00);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log,
+                            "command FIFO word 0x00010840 is not modeled"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+static void test_command_fifo_compare_nonzero_first(void)
+{
+    test_command_fifo_compare_nonzero(false);
+}
+
+static void test_command_fifo_compare_nonzero_second(void)
+{
+    test_command_fifo_compare_nonzero(true);
+}
+
 /*
  * The GL feature probes' window: 128x128 at (256, 256), one clip
  * rectangle, the probe's identity combined matrix and the four floats
@@ -16999,6 +17118,14 @@ int main(int argc, char **argv)
              test_command_fifo_gl_texture_slot_leaves_geometry);
     add_fresh_case("sn1/odyssey/command-fifo-compare-unsupported",
                    test_command_fifo_compare_unsupported);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-neutral-kernel",
+                   test_command_fifo_compare_neutral_kernel);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-neutral-user",
+                   test_command_fifo_compare_neutral_user);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-nonzero-first",
+                   test_command_fifo_compare_nonzero_first);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-nonzero-second",
+                   test_command_fifo_compare_nonzero_second);
     add_case("sn1/odyssey/"
              "command-fifo-gl-float-colour-integer-conversion",
              test_command_fifo_gl_float_colour_integer_conversion);
