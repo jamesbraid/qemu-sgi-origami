@@ -10988,6 +10988,10 @@ static void texture_public_border_upload_3d(QTestState *qts,
 
     for (unsigned z = 0; z < d; z++) {
         uint32_t base = 0x16a800 + z * (stored ? 0x400 : 0x80);
+        /* Only this captured 2x2x2 stored profile uses the high slices. */
+        if (stored && width == 2 && height == 2 && depth == 2) {
+            base = 0x16e400 + z * 0x400;
+        }
 
         if (stored && missing == 1 && z == 0) {
             continue;
@@ -11051,7 +11055,7 @@ static void test_texture_public_border_3d_copied_rows(void)
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
                 g_assert_cmphex(odsy_test_object_texel(
-                                    qts, 0x16a800 + z * 0x400,
+                                    qts, 0x16e400 + z * 0x400,
                                     15 + x, 15 + y), ==,
                                 texture_public_border_volume_texel(x, y, z));
             }
@@ -11109,9 +11113,10 @@ static void texture_public_border_sample_3d(bool linear)
 
         texture_adapter_point_3d(qts, x, 64, s, t, r);
         g_assert_cmphex(odsy_test_pixel(qts, x, 64), ==,
-                        texture_public_border_volume_texel(points[i][0],
-                                                           points[i][1],
-                                                            points[i][2]));
+                        texture_public_border_volume_texel(
+                            MIN(MAX(points[i][0], 1u), 2u),
+                            MIN(MAX(points[i][1], 1u), 2u),
+                            MIN(MAX(points[i][2], 1u), 2u)));
     }
     if (linear) {
         for (unsigned i = 0; i < ARRAY_SIZE(linear_border); i++) {
@@ -11201,6 +11206,22 @@ static void test_texture_public_border_3d_zero_linear(void)
                     texture_public_border_volume_texel(0, 0, 0));
     board_quit(qts);
 }
+
+
+
+
+
+
+/*
+ * These are original synthetic distinct-colour RGBA words for the captured
+ * address and sampler test. They do not replay the public probe's texels or
+ * the guest's upload words.
+ */
+
+
+
+
+
 
 static void test_texture_public_border_3d(void)
 {
@@ -15024,14 +15045,14 @@ static void test_texture_public_border_1d_migration(void)
  */
 static void test_texture_public_border_3d_migration(void)
 {
-    /* -0.25 selects stored index -1; 0.25 selects interior index 0. */
+    /* GL_CLAMP nearest selects stored index 1 on each negative axis. */
     static const struct {
         float s, t, r;
         unsigned x, y, z;
     } samples[] = {
-        { -0.25f, 0.25f, 0.25f, 0, 1, 1 },
-        { -0.25f, -0.25f, 0.25f, 0, 0, 1 },
-        { -0.25f, -0.25f, -0.25f, 0, 0, 0 },
+        { -0.25f, 0.25f, 0.25f, 1, 1, 1 },
+        { -0.25f, -0.25f, 0.25f, 1, 1, 1 },
+        { -0.25f, -0.25f, -0.25f, 1, 1, 1 },
     };
     g_autoptr(GError) error = NULL;
     g_autofree char *path = NULL;
@@ -15078,6 +15099,36 @@ static void test_texture_public_border_3d_migration(void)
     board_quit(to);
     board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_texture_public_border_3d_reset(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, true, 0);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, true, false);
+    odsy_test_pixel_write(qts, 10, 10, 0x12345678);
+    texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x110101ff);
+
+    qtest_system_reset(qts);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, true, false);
+    odsy_test_pixel_write(qts, 38, 10, 0x12345678);
+    texture_adapter_point_3d(qts, 38, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 38, 10), ==, 0x12345678);
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, true, 0);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, true, false);
+    odsy_test_pixel_write(qts, 66, 10, 0x12345678);
+    texture_adapter_point_3d(qts, 66, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 66, 10), ==, 0x110101ff);
+    qtest_quit(qts);
 }
 
 static void test_buffers_transfers_follow_mask(void)
@@ -17153,6 +17204,9 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/texture-adapter/"
                    "public-stored-border-3d-migration",
                    test_texture_public_border_3d_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-reset",
+                   test_texture_public_border_3d_reset);
     add_case("sn1/odyssey/texture-adapter/"
              "two-dimensional-border-upload",
              test_texture_two_dimensional_border_upload);
