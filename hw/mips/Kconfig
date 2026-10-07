@@ -54,6 +54,15 @@ config SGI_O2_ROM
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
 
+config SGI_O2_TEST
+    bool
+    default y
+    depends on SGI_DEVICES
+    imply TEST_DEVICES
+    select SGI_CRIME
+    select SGI_MACE
+    select SGI_O2_ROM
+
 config SGI_OCTANE
     bool
     select PFLASH_CFI01
