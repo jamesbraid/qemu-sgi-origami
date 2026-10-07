@@ -299,7 +299,7 @@ static void test_worker_fault(gconstpointer opaque)
     SGIRendererRequest *request;
     Error *err = NULL;
 #ifdef CONFIG_GBM
-    int fd;
+    int fd = -1;
 #endif
     static const float vertices[3][4] = {
         { 16.25f, 16.25f, 0, 1 },
