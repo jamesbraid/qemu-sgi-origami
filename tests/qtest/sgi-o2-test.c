@@ -243,6 +243,39 @@ static void test_cached_data(void)
     qtest_quit(qts);
 }
 
+static void assert_module_profile(QTestState *qts)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':'cpu-clock-hz'}}");
+    g_autofree char *registers = qtest_hmp(qts, "info registers");
+    const char *field;
+    unsigned config;
+
+    if (qdict_haskey(reply, "error")) {
+        g_error("O2 clock query: %s",
+                qdict_get_str(qdict_get_qdict(reply, "error"), "desc"));
+    }
+    g_assert_nonnull(registers);
+    field = strstr(registers, "Config0 0x");
+    g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 195000000);
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field, "Config0 0x%x", &config), ==, 1);
+    /* Selected 1 MiB L2 and 128-byte blocks are model values. */
+    g_assert_cmphex((config >> 16) & 7, ==, 1);
+    g_assert_cmphex((config >> 13) & 1, ==, 1);
+}
+
+static void test_module_profile(void)
+{
+    QTestState *qts = o2_start();
+
+    assert_module_profile(qts);
+    qtest_system_reset(qts);
+    assert_module_profile(qts);
+    qtest_quit(qts);
+}
+
 static void assert_o2_rejected(const char *option, const char *value,
                                const char *message)
 {
@@ -275,6 +308,11 @@ static void test_configuration(void)
         qtest_qemu_binary(NULL), "-M", "o2-test,usb=on", "-m", "64M",
         "-nodefaults", "-display", "none", "-S", "-qmp", "stdio", NULL,
     };
+    const char *pci[] = {
+        qtest_qemu_binary(NULL), "-M", "o2-test", "-m", "64M",
+        "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
+        "-device", "e1000,bus=mace.0,addr=1", NULL,
+    };
     const char *rom_without_image[] = {
         qtest_qemu_binary(NULL), "-M", "o2-test,rom-size=524288", "-m",
         "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
@@ -294,6 +332,8 @@ static void test_configuration(void)
     assert_o2_rejected("-kernel", "unused", "o2-test does not support -kernel");
     assert_o2_rejected("-bios", "unused", "o2-test does not support -bios");
     assert_launch_rejected(usb, "o2-test does not support USB devices");
+    assert_launch_rejected(pci,
+                           "o2-test does not support attached PCI devices");
     assert_launch_rejected(rom_without_image,
                            "o2-test ROM settings require rom-image");
     assert_launch_rejected(rom_without_layout,
@@ -309,6 +349,7 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/interrupt-chain", test_interrupt_chain);
     qtest_add_func("/o2/rom-aliases", test_rom_aliases);
     qtest_add_func("/o2/cached-data", test_cached_data);
+    qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/configuration", test_configuration);
     return g_test_run();
 }
