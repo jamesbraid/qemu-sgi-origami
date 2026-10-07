@@ -153,6 +153,30 @@ static void assert_response_begins(const uint8_t *resp, const char *want)
     g_assert_cmpstr(seen, ==, want);
 }
 
+/*
+ * One reply for one request, against the whole reply text: a request built
+ * from an explicit byte count, so an empty request and one carrying a NUL
+ * can be sent.
+ */
+static void assert_reply_bytes(QTestState *qts, const char *text,
+                               unsigned text_len, const char *want)
+{
+    uint8_t req[RESP_CAP], resp[RESP_CAP];
+    unsigned resp_len;
+
+    req[0] = text_len;
+    memcpy(&req[1], text, text_len);
+    req[text_len + 1] = (uint8_t)(-(int)frame_checksum(req, text_len + 1));
+    resp_len = elsc_transact(qts, req, text_len + 2, resp, sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert_cmpmem(&resp[1], resp[0], want, strlen(want));
+}
+
+static void assert_reply(QTestState *qts, const char *text, const char *want)
+{
+    assert_reply_bytes(qts, text, strlen(text), want);
+}
+
 static void test_ver_command_succeeds(const void *data)
 {
     uint8_t req[8], resp[RESP_CAP];
@@ -2216,12 +2240,20 @@ static void test_tas_lock_cell(const void *data)
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok z");
 
-    /* More than one channel character is a bad argument. */
-    req_len = build_request(req, "tas zz");
-    resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpuint(resp[0], ==, 7);
-    assert_response_begins(resp, "err arg");
+    /* No argument only reports the holder. */
+    assert_reply(qts, "tas", "ok z");
+    assert_reply(qts, "tas 0", "ok z");
+    assert_reply(qts, "tas", "ok 0");
+
+    /*
+     * The owner is the next non-space character and the rest is discarded,
+     * so "tas  AB" offers 'A'. Another caller's "tas B" then reads 'A' and
+     * leaves it holding.
+     */
+    assert_reply(qts, "tas  AB", "ok 0");
+    assert_reply(qts, "tas B", "ok A");
+    assert_reply(qts, "tas", "ok A");
+    assert_reply(qts, "tas 0", "ok A");
 
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "tasx");
@@ -2647,30 +2679,6 @@ static void test_nic_onewire_identity(const void *data)
     assert_response_begins(resp, "err cmd");
 }
 
-
-/*
- * One reply for one request, against the whole reply text: a request built
- * from an explicit byte count, so an empty request and one carrying a NUL
- * can be sent.
- */
-static void assert_reply_bytes(QTestState *qts, const char *text,
-                               unsigned text_len, const char *want)
-{
-    uint8_t req[RESP_CAP], resp[RESP_CAP];
-    unsigned resp_len;
-
-    req[0] = text_len;
-    memcpy(&req[1], text, text_len);
-    req[text_len + 1] = (uint8_t)(-(int)frame_checksum(req, text_len + 1));
-    resp_len = elsc_transact(qts, req, text_len + 2, resp, sizeof(resp));
-    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert_cmpmem(&resp[1], resp[0], want, strlen(want));
-}
-
-static void assert_reply(QTestState *qts, const char *text, const char *want)
-{
-    assert_reply_bytes(qts, text, strlen(text), want);
-}
 
 /*
  * The request grammar every command shares: a three-letter lowercase
