@@ -24,6 +24,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 
@@ -569,27 +570,56 @@ def failing_step_reported(args):
 
 DURATIONS_HEADER = """\
 # Seconds each MIPS64 qtest took in a full run, which scripts/ci/sgi-check
-# uses to split the qtests evenly between the full run's jobs. Measured in
-# actions run 42473 on an 8-CPU builder at four processes, 2026-10-05.
-# Refresh from a later full run's Meson test logs with
-#   scripts/ci/sgi-check qtest-durations build-ci/meson-logs/full-qtest-*.json
+# uses to split the qtests evenly between the full run's jobs. Each value is
+# the median of the test's duration over several full runs, at four processes
+# on an 8-CPU builder.
+"""
+
+DURATIONS_REFRESH = """\
+# Refresh from later full runs' job logs, or Meson's JSON test logs, with
+#   scripts/ci/sgi-check qtest-durations --source 'actions runs N, M, ...' \\
+#       job-1.log job-2.log ...
 # A test missing from this list counts as the median of the others.
 """
 
+# A Meson console result line, as printed in a CI job log:
+#   12/69 qemu:qtest+... / qtest-mips64/sn0-hub-test   OK   34.36s   150 ...
+QTEST_RESULT = re.compile(
+    r'\s/\s(?P<name>qtest-mips64/\S+)\s+[A-Z]+\s+(?P<seconds>[\d.]+)s\b')
 
-def qtest_durations(args):
-    """Print a durations list from Meson's JSON test logs."""
-    durations = {}
-    for log in args.logs:
-        for line in log.read_text(encoding='utf-8').splitlines():
-            if not line.strip():
-                continue
+
+def log_durations(text):
+    """Yield (test, seconds) from a Meson JSON test log or a console log."""
+    for line in text.splitlines():
+        if line.startswith('{'):
             entry = json.loads(line)
             if entry.get('name', '').startswith('qtest-mips64/'):
-                durations[entry['name']] = entry['duration']
+                yield entry['name'], float(entry['duration'])
+        else:
+            match = QTEST_RESULT.search(line)
+            if match:
+                yield match['name'], float(match['seconds'])
+
+
+def median_durations(texts):
+    """Map each qtest to its median duration over the logs naming it."""
+    seen = {}
+    for text in texts:
+        for name, seconds in log_durations(text):
+            seen.setdefault(name, []).append(seconds)
+    return {name: statistics.median(values) for name, values in seen.items()}
+
+
+def qtest_durations(args):
+    """Print a durations list from Meson JSON test logs or CI job logs."""
+    durations = median_durations(log.read_text(encoding='utf-8',
+                                               errors='replace')
+                                 for log in args.logs)
     if not durations:
         sys.exit('no MIPS64 qtest durations in those logs')
-    sys.stdout.write(DURATIONS_HEADER + ''.join(
+    source = ''.join(f'# {line}\n'
+                     for line in textwrap.wrap(f'Source: {args.source}.', 74))
+    sys.stdout.write(DURATIONS_HEADER + source + DURATIONS_REFRESH + ''.join(
         f'{name} {seconds:.0f}\n' for name, seconds in sorted(
             durations.items())))
 
@@ -655,7 +685,9 @@ def main(argv=None):
 
     mode = modes.add_parser(
         'qtest-durations', help='print a new scripts/ci/qtest-durations.txt '
-                                "from Meson's JSON test logs")
+                                "from Meson's JSON test logs or CI job logs")
+    mode.add_argument('--source', required=True,
+                      help='where the logs came from, for the file header')
     mode.add_argument('logs', nargs='+', type=Path)
     mode.set_defaults(func=qtest_durations)
 

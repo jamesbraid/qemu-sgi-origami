@@ -121,6 +121,35 @@ class QtestShards(unittest.TestCase):
     def test_tree_durations_carry_the_generated_header(self):
         text = sgi_check.QTEST_DURATIONS.read_text(encoding='utf-8')
         self.assertTrue(text.startswith(sgi_check.DURATIONS_HEADER))
+        self.assertIn('# Source: ', text)
+
+
+class QtestDurations(unittest.TestCase):
+    CONSOLE = (
+        '2026-10-06T23:53:11.6Z  1/69 qemu:qtest+qtest-mips64+slow / '
+        'qtest-mips64/qom-test      OK     36.90s   15 subtests passed\n'
+        '2026-10-06T23:53:14.4Z  2/69 qemu:qtest+qtest-mips64+sgi / '
+        'qtest-mips64/sn0-hub-test  SKIP    0.01s\n'
+        '2026-10-06T23:53:14.5Z  1/44 qemu:unit+sgi / test-onewire   OK   '
+        '0.06s\n')
+
+    def test_console_lines_name_only_qtests(self):
+        self.assertEqual(list(sgi_check.log_durations(self.CONSOLE)),
+                         [('qtest-mips64/qom-test', 36.9),
+                          ('qtest-mips64/sn0-hub-test', 0.01)])
+
+    def test_json_lines(self):
+        text = json.dumps({'name': 'qtest-mips64/a', 'duration': 2.5}) + '\n' \
+            + json.dumps({'name': 'func-x', 'duration': 9}) + '\n'
+        self.assertEqual(list(sgi_check.log_durations(text)),
+                         [('qtest-mips64/a', 2.5)])
+
+    def test_median_across_logs(self):
+        logs = [f'1/2 s / qtest-mips64/a   OK   {seconds}s\n'
+                for seconds in (10, 100, 12)]
+        logs.append('1/2 s / qtest-mips64/b   OK   7s\n')
+        self.assertEqual(sgi_check.median_durations(logs),
+                         {'qtest-mips64/a': 12, 'qtest-mips64/b': 7})
 
 
 class SmokeQtestSetup(unittest.TestCase):
