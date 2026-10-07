@@ -2703,6 +2703,224 @@ static void test_gdb_status_unmask_delivers(const void *data)
     rmdir(dir);
 }
 
+/*
+ * The Hub registers a waiting processor polls are answered without the big
+ * lock. The PROM's second processor reads a pending bank about a hundred
+ * thousand times a second while the first loads the BASEIO PROM; when each
+ * of those reads took the lock, the first processor and the main loop waited
+ * behind every one. The region is marked lockless and TCG has to honour
+ * that: a mark it ignores (as it did) still takes the lock on every read, and
+ * so does a Hub that never marks its window. Each phase makes PL_READS reads
+ * of one register through the processor's uncached I/O space and counts the
+ * big-lock acquisitions. False pass to watch for: a count that sees no MMIO
+ * acquisitions at all would pass the lock-free phases whatever the model
+ * did. The last phase reads the same pending bank a word at a time, which
+ * keeps the lock, and must count at least one acquisition per read.
+ */
+#define PL_GO_OFF           0x100
+#define PL_READS            100000u
+#define PL_HUB_LOCAL        UINT64_C(0x9200000001000000)
+#define PL_PI_INT_PEND0     0x000098
+#define PL_PI_INT_PEND1     0x0000a0
+#define PL_PI_RT_COUNT      0x030100
+
+typedef struct {
+    const char *name;
+    uint32_t offset;
+    bool word;
+    bool lockless;
+} PolledRead;
+
+static const PolledRead polled_reads[] = {
+    { "PI_INT_PEND0", PL_PI_INT_PEND0, false, true },
+    { "PI_INT_PEND1", PL_PI_INT_PEND1, false, true },
+    { "PI_RT_COUNT", PL_PI_RT_COUNT, false, true },
+    { "PI_INT_PEND0 word", PL_PI_INT_PEND0, true, false },
+};
+
+static void build_polled_reads(GuestImage *img)
+{
+    unsigned int phase, loop;
+
+    /* KX, for the 64-bit uncached segment the Hub is read through. */
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_ori(img, R_T3, R_T3, STATUS_KX);
+    emit_mtc0(img, R_T3, CP0_STATUS, 0);
+    emit_ehb(img);
+
+    for (phase = 0; phase < G_N_ELEMENTS(polled_reads); phase++) {
+        const PolledRead *r = &polled_reads[phase];
+
+        emit_li64(img, R_S1, PL_HUB_LOCAL + r->offset);
+        emit_li(img, R_T3, phase + 1);
+        emit_publish(img, R_T3, PROGRESS_OFF);
+        emit_li(img, R_T3, phase + 1);
+        emit_wait_ge(img, R_T3, PL_GO_OFF);
+
+        emit_li(img, R_T7, PL_READS);
+        loop = img->pos;
+        if (r->word) {
+            emit_lw(img, R_T6, R_S1, 0);
+        } else {
+            emit_ld(img, R_T6, R_S1, 0);
+        }
+        emit_addiu(img, R_T7, R_T7, -1);
+        emit_bne(img, R_T7, R_ZERO, loop);
+        emit_nop(img);
+    }
+
+    emit_li(img, R_T3, G_N_ELEMENTS(polled_reads) + 1);
+    emit_publish(img, R_T3, PROGRESS_OFF);
+    emit_done_and_halt(img);
+}
+
+static void test_polled_hub_reads_stay_off_the_lock(const void *data)
+{
+    uint64_t locks[G_N_ELEMENTS(polled_reads)];
+    unsigned int phase;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
+                        build_polled_reads);
+    g_free(qtest_hmp(qts, "sync-profile on"));
+
+    for (phase = 0; phase < G_N_ELEMENTS(polled_reads); phase++) {
+        g_assert_true(wait_for_progress(qts, phase + 1));
+        g_free(qtest_hmp(qts, "sync-profile reset"));
+        qtest_writeq(qts, STATE_PHYS + PL_GO_OFF, phase + 1);
+        g_assert_true(wait_for_progress(qts, phase + 2));
+        locks[phase] = bql_acquisitions(qts);
+        g_test_message("big-lock acquisitions over %u %s reads: %" PRIu64,
+                       PL_READS, polled_reads[phase].name, locks[phase]);
+    }
+    g_assert_true(wait_for_cpu0_done(qts));
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, 0);
+
+    for (phase = 0; phase < G_N_ELEMENTS(polled_reads); phase++) {
+        if (polled_reads[phase].lockless) {
+            g_assert_cmpuint(locks[phase], <, PL_READS / 10);
+        } else {
+            g_assert_cmpuint(locks[phase], >=, PL_READS);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same reads with a writer on the other processor. The PROM uses pending
+ * bits as mailboxes: CPU A writes a word to memory, then sets or clears a
+ * pending bit through interrupt modify, and CPU B, polling the bank, reads
+ * the word once it sees the bit move. Its poll no longer takes the big lock
+ * that used to order it after A's store, so the bank's own publication has
+ * to. Each round A writes the round number, flips the bit and waits for B's
+ * acknowledgement; B counts every round where the word it reads after seeing
+ * the flip is not that round's. A host with total store order will not show
+ * a missing release here. Nor would a weakly ordered one on the sender's
+ * side: A issues a sync between the word and the interrupt-modify store,
+ * which TCG turns into a host barrier, so only B's acquire is exercised.
+ * Every round still runs B's lock-free reads against A's locked writes on
+ * two threads, for a thread sanitizer to watch.
+ */
+#define MB_DATA_OFF         0x100
+#define MB_ACK_OFF          0x120
+#define MB_STALE_OFF        0x140
+#define MB_ROUNDS           20000u
+#define MB_BIT              40u
+#define PL_PI_INT_MODIFY    0x000090
+
+/* DSRL32: shift a doubleword right by sa + 32, SPECIAL function 0x3e. */
+static void emit_dsrl32(GuestImage *img, int rd, int rt, int sa)
+{
+    emit(img, OPC_SPECIAL | (rt << 16) | (rd << 11) | (sa << 6) | 0x3eu);
+}
+
+static void build_pending_mailbox(GuestImage *img)
+{
+    unsigned int follower, leader_loop, follower_loop, poll, fresh;
+
+    emit_li64(img, R_S1, PL_HUB_LOCAL);
+    emit_addiu(img, R_S0, R_ZERO, 1);
+    emit_li(img, R_S2, MB_ROUNDS + 1);
+    follower = emit_bne_fwd(img, R_K0, R_ZERO);
+    emit_nop(img);
+
+    /*
+     * CPU A: the word, then the bit. Interrupt modify sets the numbered bit
+     * when its bit 8 is set and clears it otherwise, so odd rounds set it.
+     */
+    leader_loop = img->pos;
+    emit_publish(img, R_S0, PROGRESS_OFF);
+    emit_sd(img, R_S0, R_T0, MB_DATA_OFF);
+    emit_sync(img);
+    emit_andi(img, R_T3, R_S0, 1);
+    emit_sll(img, R_T3, R_T3, 8);
+    emit_ori(img, R_T3, R_T3, MB_BIT);
+    emit_sd(img, R_T3, R_S1, PL_PI_INT_MODIFY);
+    emit_wait_ge(img, R_S0, MB_ACK_OFF);
+    emit_addiu(img, R_S0, R_S0, 1);
+    emit_bne(img, R_S0, R_S2, leader_loop);
+    emit_nop(img);
+    emit_done_and_halt(img);
+
+    /* CPU B: poll for the flip, then read the word. */
+    patch_fwd(img, follower);
+    follower_loop = img->pos;
+    emit_publish(img, R_S0, PROGRESS_OFF);
+    emit_andi(img, R_T5, R_S0, 1);
+    poll = img->pos;
+    emit_ld(img, R_T6, R_S1, PL_PI_INT_PEND0);
+    emit_dsrl32(img, R_T6, R_T6, MB_BIT - 32);
+    emit_andi(img, R_T6, R_T6, 1);
+    emit_bne(img, R_T6, R_T5, poll);
+    emit_nop(img);
+    emit_ld(img, R_T7, R_T0, MB_DATA_OFF);
+    fresh = emit_beq_fwd(img, R_T7, R_S0);
+    emit_nop(img);
+    emit_ld(img, R_T4, R_T0, MB_STALE_OFF);
+    emit_addiu(img, R_T4, R_T4, 1);
+    emit_sd(img, R_T4, R_T0, MB_STALE_OFF);
+    patch_fwd(img, fresh);
+    emit_sd(img, R_S0, R_T0, MB_ACK_OFF);
+    emit_sync(img);
+    emit_addiu(img, R_S0, R_S0, 1);
+    emit_bne(img, R_S0, R_S2, follower_loop);
+    emit_nop(img);
+    emit_done_and_halt(img);
+}
+
+static void test_pending_mailbox_orders_the_word(const void *data)
+{
+    QTestState *qts;
+    bool done;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_case("tcg,thread=multi", build_pending_mailbox);
+    done = wait_for_done(qts);
+    if (!done) {
+        g_test_message("progress 0x%" PRIx64 " / 0x%" PRIx64
+                       ", ack 0x%" PRIx64,
+                       state_word(qts, PROGRESS_OFF),
+                       state_word(qts, PROGRESS_OFF + 8),
+                       state_word(qts, MB_ACK_OFF));
+    }
+    g_assert_true(done);
+    assert_common(qts);
+    g_assert_cmpuint(state_word(qts, MB_ACK_OFF), ==, MB_ROUNDS);
+    g_assert_cmpuint(state_word(qts, MB_STALE_OFF), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2715,6 +2933,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/interrupt/unmask-by-dmtc0-delivers",
                         GINT_TO_POINTER(1),
                         test_masked_interrupt_stays_off_the_lock);
+    qtest_add_data_func("mttcg/hub/polled-reads-stay-off-the-lock", NULL,
+                        test_polled_hub_reads_stay_off_the_lock);
+    qtest_add_data_func("mttcg/hub/pending-mailbox-orders-the-word", NULL,
+                        test_pending_mailbox_orders_the_word);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
     qtest_add_data_func("mttcg/interrupt/unmask-by-gdb-status-delivers", NULL,
