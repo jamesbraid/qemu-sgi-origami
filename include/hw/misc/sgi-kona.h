@@ -386,6 +386,7 @@ typedef struct SGIKonaGLPipe {
     bool texture_selector_valid;
     uint32_t texture_assoc_handle[2];
     uint8_t texture_assoc_valid;
+    bool texture_rebind_refused;
 } SGIKonaGLPipe;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
@@ -1001,6 +1002,8 @@ struct SGIKonaState {
     bool texture_bind_valid;
     bool texture_record_valid;
     bool texture_state_used;
+    /* Context of a complete bind packet awaiting its texture table. */
+    int32_t texture_bind_context;
     /* A complete 0x179 commits the preceding explicit association. */
     bool texture_associate_pending;
     int32_t texture_associate_context;

@@ -4476,39 +4476,62 @@ static void test_texture_native_publication(void)
     qtest_quit(s);
 }
 
-static void texture_rebind_uploads(QTestState *s, bool reverse)
+static const uint32_t texture_8x8_headers[2][20];
+static const uint32_t texture_8x8_sources[2][64];
+static void texture_words(QTestState *s, const uint32_t *v, unsigned n,
+                          unsigned width);
+
+static void texture_rebind_uploads(QTestState *s, unsigned mode)
 {
+    bool reverse = mode == 1, wide = mode != 0;
     uint32_t h[20];
 
     gl_make_current(s);
     for (unsigned upload = 0; upload < 2; upload++) {
         unsigned object = reverse ? 1 - upload : upload;
-        uint32_t handle = object ? 29 : 17;
+        uint32_t handle = reverse ? (object ? 17 : 29) :
+                                  (object ? 29 : 17);
 
-        memcpy(h, texture_header, sizeof(h));
+        memcpy(h, wide ? texture_8x8_headers[object] : texture_header,
+               sizeof(h));
         h[10] = handle;
-        texture_native_bind(s, handle);
+        if (!wide) {
+            texture_native_bind(s, handle);
+        }
         kona_command(s, 0x174, h, 20);
-        for (unsigned k = 0; k < 4; k++) {
-            qtest_writel(s, REG_COMMAND,
-                         object ? 0x00ff00ff : texture_source[k]);
+        if (wide) {
+            texture_words(s, texture_8x8_sources[object], 64, 1);
+        } else {
+            for (unsigned k = 0; k < 4; k++) {
+                qtest_writel(s, REG_COMMAND,
+                             object ? 0x00ff00ff : texture_source[k]);
+            }
         }
         kona_command(s, 0x176, (uint32_t[]) { handle }, 1);
-        assert_texture_pixel(s, 0, 0,
-                             object ? 0x00ff00ff : texture_source[0]);
+        if (!wide) {
+            assert_texture_pixel(s, 0, 0,
+                                 object ? 0x00ff00ff : texture_source[0]);
+        }
     }
+}
+
+static void texture_rebind_packet_layout(QTestState *s, uint32_t selector,
+                                         uint32_t handle, bool wide)
+{
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    record[3] = wide ? 0x33 : 0;
+    kona_command(s, 0x178, &selector, 1);
+    kona_command(s, 0x106,
+                 (uint32_t[]) { handle, (2u << 28) | (41 << 12),
+                                0x30 << 14, wide ? 0x33 : 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
 }
 
 static void texture_rebind_packet(QTestState *s, uint32_t selector,
                                   uint32_t handle)
 {
-    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
-
-    kona_command(s, 0x178, &selector, 1);
-    kona_command(s, 0x106,
-                 (uint32_t[]) { handle, (2u << 28) | (41 << 12),
-                                0x30 << 14, 0x11, 1 }, 5);
-    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    texture_rebind_packet_layout(s, selector, handle, false);
 }
 
 static void test_texture_rebind_control(gconstpointer opaque)
@@ -4517,28 +4540,33 @@ static void test_texture_rebind_control(gconstpointer opaque)
         { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
     };
     QTestState *s = qtest_init(MACHINE_ARGS);
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool reverse = mode == 1, wide = mode != 0;
+    uint32_t a = reverse ? 29 : 17, b = reverse ? 17 : 29;
+    uint32_t sample_a = wide ? 0xffffffff : texture_source[0];
+    uint32_t sample_b = wide ? 0x000000ff : 0x00ff00ff;
 
-    texture_rebind_uploads(s, GPOINTER_TO_UINT(opaque));
+    texture_rebind_uploads(s, mode);
     gl_window_cleared(s, 0, 0, 1);
     kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
     kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
-    texture_rebind_packet(s, 1, 17);
-    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    texture_rebind_packet_layout(s, 1, a, wide);
+    assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_a);
     gl_triangle_z(s, tri, 0);
-    assert_stencil_colour(s, 0xff0000);
-    texture_rebind_packet(s, 0, 29);
-    assert_texture_pixel(s, 0, 0, 0x00ff00ff);
+    assert_stencil_colour(s, sample_a >> 8);
+    texture_rebind_packet_layout(s, 0, b, wide);
+    assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_b);
     gl_triangle_z(s, tri, 0);
-    assert_stencil_colour(s, 0x00ff00);
-    texture_rebind_packet(s, 1, UINT32_MAX);
-    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    assert_stencil_colour(s, sample_b >> 8);
+    texture_rebind_packet_layout(s, 1, UINT32_MAX, wide);
+    assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_a);
     gl_triangle_z(s, tri, 0);
-    assert_stencil_colour(s, 0xff0000);
-    texture_rebind_packet(s, 0, UINT32_MAX);
-    assert_texture_pixel(s, 0, 0, 0x00ff00ff);
+    assert_stencil_colour(s, sample_a >> 8);
+    texture_rebind_packet_layout(s, 0, UINT32_MAX, wide);
+    assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_b);
     gl_triangle_z(s, tri, 0);
-    assert_stencil_colour(s, 0x00ff00);
+    assert_stencil_colour(s, sample_b >> 8);
     qtest_quit(s);
 }
 
@@ -4561,6 +4589,163 @@ static void test_texture_rebind_refusals(void)
     kona_command(s, 0x1c5, (uint32_t[]) { 17 }, 1);
     texture_rebind_packet(s, 1, UINT32_MAX);
     assert_texture_pixel(s, 0, 0, 0);
+    qtest_quit(s);
+}
+
+static void test_texture_rebind_missing_draw(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    texture_rebind_uploads(s, false);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(s, 1, 17);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+
+    gl_window_cleared(s, 0, 0, 1);
+    texture_rebind_packet(s, 0, UINT32_MAX);
+    assert_texture_pixel(s, 0, 0, 0);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x0000ff);
+
+    texture_rebind_packet(s, 1, 17);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+    gl_window_cleared(s, 0, 0, 1);
+    texture_rebind_packet(s, 2, UINT32_MAX);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x0000ff);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "texture rebind without an "
+                                       "associated selector; draw refused"),
+                     ==, 2);
+}
+
+static void test_texture_rebind_missing_migration(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_rebind_uploads(from, false);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(from, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(from, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(from, 0, UINT32_MAX);
+    dir = g_dir_make_tmp("sn0-kona-rebind-missing-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    gl_triangle_z(to, tri, 0);
+    assert_stencil_colour(to, 0x0000ff);
+    texture_rebind_packet(to, 1, 17);
+    gl_triangle_z(to, tri, 0);
+    assert_stencil_colour(to, 0xff0000);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_texture_rebind_recovery_migration(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_rebind_uploads(from, false);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(from, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(from, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(from, 0, UINT32_MAX);
+    kona_command(from, 0x178, (uint32_t[]) { 1 }, 1);
+    kona_command(from, 0x106,
+                 (uint32_t[]) { 17, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x11, 1 }, 5);
+    dir = g_dir_make_tmp("sn0-kona-rebind-recovery-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    kona_command(to, 0x179, record, ARRAY_SIZE(record));
+    gl_triangle_z(to, tri, 0);
+    assert_stencil_colour(to, 0xff0000);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_texture_rebind_refusal_lifetime(gconstpointer opaque)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_rebind_uploads(s, false);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(s, 0, UINT32_MAX);
+    if (kind == 1) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        texture_rebind_packet(s, 1, 17);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    } else if (kind == 2) {
+        uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+        kona_command(s, 0x178, (uint32_t[]) { 1 }, 1);
+        kona_command(s, 0x106,
+                     (uint32_t[]) { 17, (2u << 28) | (41 << 12),
+                                    0x30 << 14, 0x11, 1 }, 5);
+        kona_command(s, 0xc7, (uint32_t[]) { 0 }, 1);
+        kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    } else {
+        texture_rebind_packet(s, 1, 0xdeadbeef);
+    }
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x0000ff);
+    qtest_quit(s);
+}
+
+static void test_texture_rebind_standalone_recovery(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_rebind_uploads(s, false);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(s, 0, UINT32_MAX);
+    kona_command(s, 0x178, (uint32_t[]) { 17 }, 1);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
     qtest_quit(s);
 }
 
@@ -14625,8 +14810,28 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_texture_rebind_control);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",
                         GUINT_TO_POINTER(1), test_texture_rebind_control);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rebind-8x8-normal",
+                        GUINT_TO_POINTER(2), test_texture_rebind_control);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-refusals",
                    test_texture_rebind_refusals);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-missing-draw",
+                   test_texture_rebind_missing_draw);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-missing-migration",
+                   test_texture_rebind_missing_migration);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-recovery-migration",
+                   test_texture_rebind_recovery_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-3d/texture/rebind-refusal-context",
+        GUINT_TO_POINTER(1), test_texture_rebind_refusal_lifetime);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-3d/texture/rebind-refusal-invalid-bind",
+        GUINT_TO_POINTER(0), test_texture_rebind_refusal_lifetime);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-3d/texture/rebind-refusal-interrupted",
+        GUINT_TO_POINTER(2), test_texture_rebind_refusal_lifetime);
+    qtest_add_func(
+        "sn0/origin2000/kona-3d/texture/rebind-standalone-recovery",
+        test_texture_rebind_standalone_recovery);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-contexts",
                    test_texture_rebind_contexts);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-reset",
