@@ -1973,7 +1973,8 @@ static void test_flash_cpu_program_benchmark(void)
     uint8_t ram_code[sizeof(code)];
     QTestState *qts;
     uint32_t result = 0;
-    int64_t started, elapsed, deadline;
+    int64_t started, elapsed;
+    SgiWait w;
 
     memset(image, 0xff, MiB);
     for (unsigned i = 0; i < G_N_ELEMENTS(boot); i++) {
@@ -1992,15 +1993,19 @@ static void test_flash_cpu_program_benchmark(void)
     qtest_writel(qts, RAM + 0x5000, 0);
     qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
     started = g_get_monotonic_time();
-    deadline = started + 30 * G_TIME_SPAN_SECOND;
+    /*
+     * The program's completion word is the only verdict. How long the
+     * vCPU thread takes depends on the host, so the wait only bounds a
+     * hang and the rate below is reported, never asserted.
+     */
+    sgi_wait_start(&w, "flash halfword programs");
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     do {
         result = qtest_readl(qts, RAM + 0x5000);
         if (result) {
             break;
         }
-        g_usleep(10000);
-    } while (g_get_monotonic_time() < deadline);
+    } while (sgi_wait_continue(&w, 10000));
     elapsed = g_get_monotonic_time() - started;
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     if (result != 1) {
