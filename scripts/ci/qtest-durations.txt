@@ -2,30 +2,31 @@
 # uses to split the qtests evenly between the full run's jobs. Each value is
 # the median of the test's duration over several full runs, at four processes
 # on an 8-CPU builder.
-# Source: the qtest parts of actions runs 44111, 44135, 44165, 44175 and
-# 44198, the full runs on merge-queue/batch-* branches, 2026-10-06.
+# Source: the qtest parts of actions runs 44111, 44135, 44165, 44175, 44198
+# and 44301 (the full runs on merge-queue/batch-* branches, 2026-10-06 and
+# 07); timeouts and failures are left out.
 # Refresh from later full runs' job logs, or Meson's JSON test logs, with
 #   scripts/ci/sgi-check qtest-durations --source 'actions runs N, M, ...' \
 #       job-1.log job-2.log ...
 # A test missing from this list counts as the median of the others.
 qtest-mips64/bcm570x-test 46
 qtest-mips64/cdrom-test 0
-qtest-mips64/device-introspect-test 127
+qtest-mips64/device-introspect-test 128
 qtest-mips64/display-vga-test 1
 qtest-mips64/ds1742-test 4
 qtest-mips64/endianness-test 2
 qtest-mips64/ics1890-test 12
-qtest-mips64/machine-none-test 1
+qtest-mips64/machine-none-test 2
 qtest-mips64/memory-buffer-test 3
 qtest-mips64/netdev-socket 3
 qtest-mips64/octane-mgras-test 20
-qtest-mips64/octane-test 70
+qtest-mips64/octane-test 68
 qtest-mips64/octane-vpro-test 3
 qtest-mips64/psitech-rad1-test 5
 qtest-mips64/psitech-rad4-test 36
 qtest-mips64/qmp-cmd-test 11
 qtest-mips64/qmp-test 1
-qtest-mips64/qom-test 51
+qtest-mips64/qom-test 46
 qtest-mips64/qos-test 4
 qtest-mips64/r10000-identity-test 8
 qtest-mips64/readconfig-test 0
@@ -40,16 +41,16 @@ qtest-mips64/sgi-ioc3-eth-test 42
 qtest-mips64/sgi-kona-read-defense-test 8
 qtest-mips64/sgi-machine-init-test 4
 qtest-mips64/sgi-machine-storage-test 7
-qtest-mips64/sgi-mgras-board-test 23
+qtest-mips64/sgi-mgras-board-test 24
 qtest-mips64/sgi-mgras-fifo-test 7
-qtest-mips64/sgi-mgras-gl-draw-test 54
-qtest-mips64/sgi-mgras-gl-test 67
+qtest-mips64/sgi-mgras-gl-draw-test 56
+qtest-mips64/sgi-mgras-gl-test 65
 qtest-mips64/sgi-mgras-irq-test 3
 qtest-mips64/sgi-mgras-migration-gl-test 27
 qtest-mips64/sgi-mgras-migration-glstate-test 36
 qtest-mips64/sgi-mgras-migration-test 14
 qtest-mips64/sgi-mgras-pixels-test 21
-qtest-mips64/sgi-mgras-texture-test 144
+qtest-mips64/sgi-mgras-texture-test 142
 qtest-mips64/sgi-migration-roundtrip-test 22
 qtest-mips64/sgi-pci-expansion-ni-test 135
 qtest-mips64/sgi-replay-test 52
@@ -58,39 +59,39 @@ qtest-mips64/sn-builder-test 115
 qtest-mips64/sn-node-population-test 6
 qtest-mips64/sn-promdata-window-test 5
 qtest-mips64/sn0-address-map-test 8
-qtest-mips64/sn0-baseio-test 46
+qtest-mips64/sn0-baseio-test 45
 qtest-mips64/sn0-bcm570x-test 7
 qtest-mips64/sn0-bridge-flash-test 3
 qtest-mips64/sn0-bridge-identity-test 4
 qtest-mips64/sn0-bridge-invalid-addr-test 2
 qtest-mips64/sn0-bridge-master-timeout-test 1
-qtest-mips64/sn0-bridge-test 25
+qtest-mips64/sn0-bridge-test 26
 qtest-mips64/sn0-cross-node-test 1
 qtest-mips64/sn0-display-heads-test 0
-qtest-mips64/sn0-ds1685-test 17
+qtest-mips64/sn0-ds1685-test 18
 qtest-mips64/sn0-elsc-test 12
 qtest-mips64/sn0-fabric-test 6
 qtest-mips64/sn0-forward-progress-test 3
 qtest-mips64/sn0-gigachannel-test 5
 qtest-mips64/sn0-hub-inbound-test 3
-qtest-mips64/sn0-hub-test 35
+qtest-mips64/sn0-hub-test 36
 qtest-mips64/sn0-i2c-test 2
 qtest-mips64/sn0-ioc3-kbc-routing-test 0
 qtest-mips64/sn0-ioc3-parallel-test 18
 qtest-mips64/sn0-ioc3-serial-test 11
-qtest-mips64/sn0-ioc3-test 62
+qtest-mips64/sn0-ioc3-test 64
 qtest-mips64/sn0-isp12160-test 39
 qtest-mips64/sn0-menet-test 4
 qtest-mips64/sn0-migration-test 10
-qtest-mips64/sn0-module-management-test 36
+qtest-mips64/sn0-module-management-test 37
 qtest-mips64/sn0-mscsi-test 4
 qtest-mips64/sn0-mttcg-test 35
 qtest-mips64/sn0-onyx2-test 1
-qtest-mips64/sn0-origin2000-kona-3d-test 183
+qtest-mips64/sn0-origin2000-kona-3d-test 182
 qtest-mips64/sn0-origin2000-kona-bringup-test 5
 qtest-mips64/sn0-origin2000-kona-context-test 6
 qtest-mips64/sn0-origin2000-kona-dma-test 1
-qtest-mips64/sn0-origin2000-kona-fill-test 56
+qtest-mips64/sn0-origin2000-kona-fill-test 58
 qtest-mips64/sn0-origin2000-kona-gl-test 2
 qtest-mips64/sn0-origin2000-kona-glyph-test 6
 qtest-mips64/sn0-origin2000-kona-pi-credit-test 2
@@ -100,9 +101,9 @@ qtest-mips64/sn0-origin2000-kona-test 3
 qtest-mips64/sn0-origin2000-kona-textport-test 7
 qtest-mips64/sn0-origin2000-kona-video-test 5
 qtest-mips64/sn0-origin2000-kona-xdma-test 15
-qtest-mips64/sn0-origin2000-pflash-test 3
-qtest-mips64/sn0-origin2000-test 23
-qtest-mips64/sn0-pci-carrier-test 1
+qtest-mips64/sn0-origin2000-pflash-test 4
+qtest-mips64/sn0-origin2000-test 24
+qtest-mips64/sn0-pci-carrier-test 2
 qtest-mips64/sn0-pci-shoehorn-test 4
 qtest-mips64/sn0-pi-error-test 2
 qtest-mips64/sn0-pi-gfx-test 3
@@ -112,32 +113,32 @@ qtest-mips64/sn0-qlogic-isp-test 6
 qtest-mips64/sn0-qtest-cpu-test 7
 qtest-mips64/sn0-r10k-perf-migration-test 8
 qtest-mips64/sn0-r10k-test 4
-qtest-mips64/sn0-router-test 63
+qtest-mips64/sn0-router-test 65
 qtest-mips64/sn0-snapshot-test 1
 qtest-mips64/sn0-tigon-test 26
 qtest-mips64/sn0-widget-decode-test 2
 qtest-mips64/sn0-xbow-test 7
 qtest-mips64/sn0-xbow-transport-test 3
 qtest-mips64/sn0-xframe-test 5
-qtest-mips64/sn1-address-map-test 67
+qtest-mips64/sn1-address-map-test 68
 qtest-mips64/sn1-bedrock-flash-test 8
 qtest-mips64/sn1-bedrock-io-test 5
 qtest-mips64/sn1-bedrock-lb-test 3
 qtest-mips64/sn1-bedrock-link-test 2
-qtest-mips64/sn1-bedrock-md-test 31
+qtest-mips64/sn1-bedrock-md-test 32
 qtest-mips64/sn1-bedrock-pi-test 7
 qtest-mips64/sn1-bedrock-test 5
 qtest-mips64/sn1-bedrock-xb-test 2
 qtest-mips64/sn1-cpu-identity-test 1
 qtest-mips64/sn1-cross-node-test 9
-qtest-mips64/sn1-directory-state-test 17
-qtest-mips64/sn1-fuel-test 31
+qtest-mips64/sn1-directory-state-test 18
+qtest-mips64/sn1-fuel-test 33
 qtest-mips64/sn1-fuel-usb-test 2
 qtest-mips64/sn1-fuel-vpro-test 2
 qtest-mips64/sn1-io8-scsi-test 17
 qtest-mips64/sn1-l1-test 30
 qtest-mips64/sn1-odyssey-query-test 22
-qtest-mips64/sn1-odyssey-test 659
+qtest-mips64/sn1-odyssey-test 669
 qtest-mips64/sn1-pci-expansion-module-test 3
 qtest-mips64/sn1-pi-gfx-test 2
 qtest-mips64/sn1-xbridge-chip-test 12
