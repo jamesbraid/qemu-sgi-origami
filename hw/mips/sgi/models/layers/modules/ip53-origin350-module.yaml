@@ -15,13 +15,13 @@ layer:
         kind: node-asic
         hardware_kind: bedrock
         datasheet_contracts:
-          - docs/datasheets/ip35-address-map.md
-          - docs/datasheets/bedrock-processor-interface.md
-          - docs/datasheets/bedrock-local-block.md
-          - docs/datasheets/bedrock-network-interface.md
-          - docs/datasheets/bedrock-io-interface.md
-          - docs/datasheets/bedrock-memory-directory.md
-          - docs/datasheets/bedrock-crossbar.md
+          - qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-hub
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
+          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         parent: ip53-board
         identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
@@ -116,8 +116,7 @@ layer:
         kind: pci-host-bridge
         hardware_kind: pic
         datasheet_contracts:
-          - docs/datasheets/pic.md
-          - docs/datasheets/pic-direct64-dma.md
+          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
         pci_host_bridge: {heads: 2}
         parent: pic-board
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
@@ -129,8 +128,7 @@ layer:
         kind: io-controller
         hardware_kind: ioc4
         datasheet_contracts:
-          - docs/datasheets/ioc4.md
-          - docs/datasheets/ioc4-serial-dma.md
+          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4
         parent: io9
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
         ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
@@ -145,7 +143,7 @@ layer:
         name: QLogic ISP12160
         kind: storage-hba
         hardware_kind: isp12160
-        datasheet_contracts: [docs/datasheets/isp12160.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
         parent: io9
         identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
         provenance: derived
@@ -157,7 +155,7 @@ layer:
         name: BCM5701
         kind: io-controller
         hardware_kind: bcm5701
-        datasheet_contracts: [docs/datasheets/bcm570x.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-bcm570x]
         parent: io9
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
         provenance: derived
@@ -171,8 +169,7 @@ layer:
         kind: rtc
         hardware_kind: ds1742
         datasheet_contracts:
-          - docs/datasheets/ds1742.md
-          - docs/datasheets/ds1742-ioc4.md
+          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1742
         parent: io9
         provenance: derived
         ds1742_fresh_year_base: 1968
@@ -185,7 +182,7 @@ layer:
         name: L1 system controller
         kind: system-controller
         hardware_kind: l1
-        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
         system_controller: {kind: l1}
         provenance: vendor-document
         sources: [sn-family-closure-origin350]

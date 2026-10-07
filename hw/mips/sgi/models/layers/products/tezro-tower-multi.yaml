@@ -182,12 +182,12 @@ layer:
       kind: node-asic
       hardware_kind: bedrock
       datasheet_contracts:
-      - docs/datasheets/bedrock-processor-interface.md
-      - docs/datasheets/bedrock-local-block.md
-      - docs/datasheets/bedrock-network-interface.md
-      - docs/datasheets/bedrock-io-interface.md
-      - docs/datasheets/bedrock-memory-directory.md
-      - docs/datasheets/bedrock-crossbar.md
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
+      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
       parent: ip53-board
       node_asic:
         processor_interfaces: 2
@@ -275,7 +275,7 @@ layer:
       kind: system-controller
       hardware_kind: l1
       datasheet_contracts:
-      - docs/datasheets/l1-controller.md
+      - qemu:docs/specs/sgi-l1.rst
       system_controller:
         kind: l1
       provenance: derived
@@ -300,8 +300,7 @@ layer:
       kind: pci-host-bridge
       hardware_kind: pic
       datasheet_contracts:
-      - docs/datasheets/pic.md
-      - docs/datasheets/pic-direct64-dma.md
+      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
       parent: pic-board-b
       pci_host_bridge:
         heads: 2
@@ -313,8 +312,7 @@ layer:
       kind: pci-host-bridge
       hardware_kind: pic
       datasheet_contracts:
-      - docs/datasheets/pic.md
-      - docs/datasheets/pic-direct64-dma.md
+      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
       parent: pic-board-f
       pci_host_bridge:
         heads: 2
@@ -337,8 +335,7 @@ layer:
       kind: io-controller
       hardware_kind: ioc4
       datasheet_contracts:
-      - docs/datasheets/ioc4.md
-      - docs/datasheets/ioc4-serial-dma.md
+      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4
       parent: io9
       identity:
         pci_revision: 83
@@ -354,8 +351,7 @@ layer:
       kind: rtc
       hardware_kind: ds1742
       datasheet_contracts:
-      - docs/datasheets/ds1742.md
-      - docs/datasheets/ds1742-ioc4.md
+      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1742
       parent: io9
       ds1742_fresh_year_base: 1968
       provenance: derived
