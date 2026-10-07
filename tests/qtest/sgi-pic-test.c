@@ -2313,12 +2313,15 @@ static void test_cpu_word_view_interrupt_effects(void)
         g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
                          calls + 2);
         g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 3);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x104) & 3, ==, 3);
         qtest_set_irq_in(qts, head_path, NULL, 0, 0);
         qtest_writel(qts, CPU_HEAD(head) + 0x114, 1);
         g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 2);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x104) & 3, ==, 2);
         qtest_set_irq_in(qts, head_path, NULL, 1, 0);
         qtest_writel(qts, CPU_HEAD(head) + 0x114, 2);
         g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x100) & 3, ==, 0);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x104) & 3, ==, 0);
     }
     qtest_quit(qts);
 }
