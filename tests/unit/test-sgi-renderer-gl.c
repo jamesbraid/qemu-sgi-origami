@@ -243,6 +243,15 @@ static void fail_colour_read_pixels(GLint x, GLint y, GLsizei width,
                       type, pixels);
 }
 
+static void fail_scalar_clear_read_pixels(GLint x, GLint y, GLsizei width,
+                                           GLsizei height, GLenum format,
+                                           GLenum type, void *pixels)
+{
+    saved_read_pixels(x, y, width, height,
+                      format == GL_DEPTH_STENCIL ? GL_NONE : format,
+                      type, pixels);
+}
+
 static unsigned clear_readback_count;
 
 static void fail_second_clear_read_pixels(GLint x, GLint y, GLsizei width,
@@ -1475,6 +1484,294 @@ static void test_decoded_clear_full_screen_commit(void)
     sgi_renderer_free(renderer);
 }
 
+typedef struct NativeScalarClearFixture {
+    uint32_t colour[4][4][3];
+    uint32_t depth[4][4];
+    uint32_t stencil[4][4];
+    unsigned writes[SGI_RENDER_STENCIL + 1][4][4];
+    unsigned snapshots, commits;
+    SGIRenderRole fail_snapshot_role, fail_commit_role;
+    bool fail_snapshot, fail_commit;
+} NativeScalarClearFixture;
+
+static SGIRenderResult native_scalar_clear_snapshot(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    NativeScalarClearFixture *f = opaque;
+
+    f->snapshots++;
+    if (f->fail_snapshot && res->role == f->fail_snapshot_role) {
+        error_setg(errp, "scalar clear snapshot failed");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            size_t at = (y - rect->y0) * stride_slots +
+                        (x - rect->x0) * res->component_count;
+
+            if (res->role == SGI_RENDER_COLOUR) {
+                memcpy(&slots[at], f->colour[y][x], 3 * sizeof(uint32_t));
+            } else if (res->role == SGI_RENDER_DEPTH) {
+                slots[at] = f->depth[y][x];
+            } else {
+                slots[at] = f->stencil[y][x];
+            }
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult native_scalar_clear_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    NativeScalarClearFixture *f = opaque;
+    uint64_t complete = 0;
+
+    f->commits++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            size_t at = (y - rect->y0) * stride_slots +
+                        (x - rect->x0) * res->component_count;
+
+            if (f->fail_commit && res->role == f->fail_commit_role &&
+                complete == 1) {
+                error_setg(errp, "scalar clear commit failed after one pixel");
+                return (SGIRenderCommitResult) {
+                    .status = SGI_RENDER_RESOURCE_ERROR,
+                    .complete_pixels = complete,
+                    .extent_known = true,
+                };
+            }
+            f->writes[res->role][y][x]++;
+            if (res->role == SGI_RENDER_COLOUR) {
+                memcpy(f->colour[y][x], &slots[at], 3 * sizeof(uint32_t));
+            } else if (res->role == SGI_RENDER_DEPTH) {
+                f->depth[y][x] = slots[at];
+            } else {
+                f->stencil[y][x] = slots[at];
+            }
+            complete++;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
+static void test_decoded_clear_depth_stencil(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float probe_vertices[3][4] = {
+        { 16.25f, 16.25f, 0, 1 },
+        { 111.25f, 16.25f, 0, 1 },
+        { 16.25f, 111.25f, 0, 1 },
+    };
+    g_autofree SGIRendererRequest *probe = g_new0(SGIRendererRequest, 1);
+    NativeScalarClearFixture f = { 0 };
+    SGIRenderResource resources[3] = {
+        {
+            .role = SGI_RENDER_COLOUR, .target = 7,
+            .buffer = SGI_RENDER_FRONT, .width = 4, .height = 4,
+            .depth = 1, .bottom_origin = true, .component_count = 3,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 12 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 12 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
+            },
+        },
+        {
+            .role = SGI_RENDER_DEPTH, .width = 4, .height = 4,
+            .depth = 1, .bottom_origin = true, .component_count = 1,
+            .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, 24 } },
+        },
+        {
+            .role = SGI_RENDER_STENCIL, .width = 4, .height = 4,
+            .depth = 1, .bottom_origin = true, .component_count = 1,
+            .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, 8 } },
+        },
+    };
+    const SGIRenderResourceOps ops = {
+        .snapshot = native_scalar_clear_snapshot,
+        .commit = native_scalar_clear_commit,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = resources, .resource_count = 3,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = {
+        .color_bits = 12, .depth_bits = 24, .stencil_bits = 8,
+        .evidence = "synthetic",
+    };
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_CLEAR, .targets = { 7 }, .ntargets = 1,
+        .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
+        .clip = { .n = 2, .r = {
+            { 1, 1, 2, 2 }, { 2, 1, 3, 2 },
+        } },
+        .clear_buffers = SGI_GL_COLOR_BUFFER_BIT |
+                         SGI_GL_DEPTH_BUFFER_BIT |
+                         SGI_GL_STENCIL_BUFFER_BIT,
+        .clear_rgba = { 1, 0, 0, 1 },
+        .clear_colour_mask = SGI_GL_COLOUR_MASK_RED,
+        .clear_depth24 = 0x123456,
+        .clear_stencil = 0xa5, .stencil_mask = 0x0f,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][0] = 17;
+            f.colour[y][x][1] = 23;
+            f.colour[y][x][2] = 31;
+            f.depth[y][x] = 0xabcdef;
+            f.stencil[y][x] = 0xf0;
+        }
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 3);
+    g_assert_cmpuint(f.commits, ==, 6);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            bool covered = x >= 1 && x <= 3 && y >= 1 && y <= 2;
+
+            g_assert_cmpuint(f.writes[SGI_RENDER_COLOUR][y][x], ==,
+                             covered ? 1 : 0);
+            g_assert_cmpuint(f.writes[SGI_RENDER_DEPTH][y][x], ==,
+                             covered ? 1 : 0);
+            g_assert_cmpuint(f.writes[SGI_RENDER_STENCIL][y][x], ==,
+                             covered ? 1 : 0);
+            g_assert_cmpuint(f.colour[y][x][0], ==, covered ? 4095 : 17);
+            g_assert_cmpuint(f.colour[y][x][1], ==, 23);
+            g_assert_cmpuint(f.colour[y][x][2], ==, 31);
+            g_assert_cmphex(f.depth[y][x], ==,
+                            covered ? 0x123456 : 0xabcdef);
+            g_assert_cmphex(f.stencil[y][x], ==, covered ? 0xf5 : 0xf0);
+        }
+    }
+    memcpy(probe->vertices, probe_vertices, sizeof(probe_vertices));
+    probe->clip[2] = probe->clip[3] = 127;
+    probe->rgb[1] = 255;
+    g_assert_true(sgi_renderer_draw(renderer, probe, &err));
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_staging_valid(probe));
+
+    f.fail_snapshot = true;
+    f.fail_snapshot_role = SGI_RENDER_STENCIL;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 6);
+    f.fail_snapshot = false;
+
+    resources[2].component[0].storage_bits = 16;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    resources[2].component[0].storage_bits = 8;
+    rules.depth_bits = 16;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    rules.depth_bits = 24;
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][0] = 17;
+            f.depth[y][x] = 0xabcdef;
+            f.stencil[y][x] = 0xf0;
+        }
+    }
+    f.fail_commit = true;
+    f.fail_commit_role = SGI_RENDER_STENCIL;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 9);
+    g_assert_cmpuint(f.commits, ==, 11);
+    g_assert_cmpuint(f.colour[1][1][0], ==, 4095);
+    g_assert_cmphex(f.depth[1][1], ==, 0x123456);
+    g_assert_cmphex(f.stencil[1][1], ==, 0xf5);
+    g_assert_cmphex(f.stencil[1][2], ==, 0xf0);
+    sgi_renderer_free(renderer);
+
+    f.fail_commit = false;
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    op.clear_buffers = SGI_GL_DEPTH_BUFFER_BIT;
+    op.clear_depth24 = 0x654321;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmphex(f.depth[1][1], ==, 0x654321);
+    g_assert_cmphex(f.depth[0][0], ==, 0xabcdef);
+    g_assert_cmpuint(f.snapshots, ==, 10);
+    g_assert_cmpuint(f.commits, ==, 13);
+
+    op.clear_buffers = SGI_GL_STENCIL_BUFFER_BIT;
+    op.clear_stencil = 0x0c;
+    op.stencil_mask = 0xf0;
+    op.clear_rgba[0] = NAN;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmphex(f.stencil[1][1], ==, 0x05);
+    g_assert_cmphex(f.stencil[0][0], ==, 0xf0);
+    g_assert_cmpuint(f.snapshots, ==, 11);
+    g_assert_cmpuint(f.commits, ==, 15);
+    sgi_renderer_free(renderer);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT |
+                       SGI_GL_DEPTH_BUFFER_BIT |
+                       SGI_GL_STENCIL_BUFFER_BIT;
+    op.clear_rgba[0] = 1;
+    saved_read_pixels = epoxy_glReadPixels;
+    epoxy_glReadPixels = fail_scalar_clear_read_pixels;
+    g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
+                                               &op, &err), ==,
+                    SGI_RENDER_HOST_ERROR);
+    epoxy_glReadPixels = saved_read_pixels;
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.snapshots, ==, 14);
+    g_assert_cmpuint(f.commits, ==, 15);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1493,6 +1790,8 @@ int main(int argc, char **argv)
                     test_decoded_clear_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",
                     test_decoded_clear_full_screen_commit);
+    g_test_add_func("/sgi-renderer-gl/decoded-clear-depth-stencil",
+                    test_decoded_clear_depth_stencil);
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     }

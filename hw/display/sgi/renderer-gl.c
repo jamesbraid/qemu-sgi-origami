@@ -311,31 +311,52 @@ out:
 static bool renderer_gl_execute_clear(SGIRendererGL *renderer)
 {
     SGIRendererClear *clear = &renderer->clear;
-    GLuint texture = 0, framebuffer = 0;
+    GLuint texture = 0, scalar = 0, framebuffer = 0;
+    GLbitfield buffers = 0;
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
         error_setg(&renderer->error, "SGI renderer EGL display is quarantined");
         return false;
     }
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, clear->width, clear->height,
-                 0, GL_RGBA, GL_UNSIGNED_SHORT, clear->pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, texture, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (clear->colour) {
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, clear->width, clear->height,
+                     0, GL_RGBA, GL_UNSIGNED_SHORT, clear->pixels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, texture, 0);
+        buffers |= GL_COLOR_BUFFER_BIT;
+    }
+    if (clear->depth || clear->stencil) {
+        glGenTextures(1, &scalar);
+        glBindTexture(GL_TEXTURE_2D, scalar);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8,
+                     clear->width, clear->height, 0, GL_DEPTH_STENCIL,
+                     GL_UNSIGNED_INT_24_8, clear->depth_stencil);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_TEXTURE_2D, scalar, 0);
+        if (clear->depth) {
+            buffers |= GL_DEPTH_BUFFER_BIT;
+        }
+        if (clear->stencil) {
+            buffers |= GL_STENCIL_BUFFER_BIT;
+        }
+    }
+    glDrawBuffer(clear->colour ? GL_COLOR_ATTACHMENT0 : GL_NONE);
+    glReadBuffer(clear->colour ? GL_COLOR_ATTACHMENT0 : GL_NONE);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         error_setg(&renderer->error,
                    "SGI renderer native clear framebuffer failed");
         goto out;
     }
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glReadBuffer(GL_COLOR_ATTACHMENT0);
     glDisable(GL_DITHER);
     glEnable(GL_SCISSOR_TEST);
     glColorMask(!!(clear->colour_mask & 1),
@@ -344,17 +365,32 @@ static bool renderer_gl_execute_clear(SGIRendererGL *renderer)
                 !!(clear->colour_mask & 8));
     glClearColor(clear->rgba[0], clear->rgba[1],
                  clear->rgba[2], clear->rgba[3]);
+    glDepthMask(GL_TRUE);
+    glClearDepth((double)clear->depth24 / 0xffffffu);
+    glStencilMask(clear->stencil_mask);
+    glClearStencil(clear->stencil8);
     for (unsigned i = 0; i < clear->rect_count; i++) {
         const SGIRendererClearRect *rect = &clear->rects[i];
 
         glScissor(rect->x0, rect->y0,
                   rect->x1 - rect->x0 + 1,
                   rect->y1 - rect->y0 + 1);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(buffers);
     }
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, clear->width, clear->height, GL_RGBA,
-                 GL_UNSIGNED_SHORT, clear->pixels);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (clear->colour) {
+        glReadPixels(0, 0, clear->width, clear->height, GL_RGBA,
+                     GL_UNSIGNED_SHORT, clear->pixels);
+    }
+    if (clear->depth || clear->stencil) {
+        glReadPixels(0, 0, clear->width, clear->height, GL_DEPTH_STENCIL,
+                     GL_UNSIGNED_INT_24_8, clear->depth_stencil);
+    }
     error = glGetError();
     if (error != GL_NO_ERROR) {
         error_setg(&renderer->error, "SGI renderer native clear failed: "
@@ -363,8 +399,11 @@ static bool renderer_gl_execute_clear(SGIRendererGL *renderer)
 out:
     glDisable(GL_SCISSOR_TEST);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilMask(0xff);
+    glDepthMask(GL_TRUE);
     glDeleteFramebuffers(1, &framebuffer);
     glDeleteTextures(1, &texture);
+    glDeleteTextures(1, &scalar);
     return !renderer->error;
 }
 

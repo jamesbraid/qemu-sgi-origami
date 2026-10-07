@@ -27,6 +27,25 @@ static const SGIRenderResource *sgi_render_colour_resource(
     return found;
 }
 
+static const SGIRenderResource *sgi_render_scalar_resource(
+    const SGIRasterTarget *target, SGIRenderRole role)
+{
+    const SGIRenderResource *found = NULL;
+
+    if (!target->resources) {
+        return NULL;
+    }
+    for (size_t i = 0; i < target->resource_count; i++) {
+        if (target->resources[i].role == role) {
+            if (found) {
+                return NULL;
+            }
+            found = &target->resources[i];
+        }
+    }
+    return found;
+}
+
 static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
                                       const SGIRenderResource **result)
@@ -275,13 +294,17 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterTarget *target,
                                           const SGIRasterOp *op, Error **errp)
 {
-    const SGIRenderResource *resources[SGI_GL_MAX_TARGETS];
+    const SGIRenderResource *resources[SGI_GL_MAX_TARGETS + 2] = { 0 };
     SGIRendererClear clears[SGI_GL_MAX_TARGETS] = { 0 };
-    uint32_t *slots[SGI_GL_MAX_TARGETS] = { 0 };
+    uint32_t *slots[SGI_GL_MAX_TARGETS + 2] = { 0 };
     uint16_t *rgba[SGI_GL_MAX_TARGETS] = { 0 };
     uint8_t *covered = NULL;
     uint32_t max_width = 0;
-    size_t pixels[SGI_GL_MAX_TARGETS], nslots[SGI_GL_MAX_TARGETS];
+    uint32_t *packed = NULL;
+    size_t pixels[SGI_GL_MAX_TARGETS + 2] = { 0 };
+    size_t nslots[SGI_GL_MAX_TARGETS + 2] = { 0 };
+    unsigned colour_count, depth_index, stencil_index, clear_count;
+    bool depth, stencil;
     SGIRenderResult status = SGI_RENDER_OK;
 
     if (!renderer || !rules || !target || !op) {
@@ -292,8 +315,6 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         (op->clear_buffers & ~(SGI_GL_COLOR_BUFFER_BIT |
                                SGI_GL_DEPTH_BUFFER_BIT |
                                SGI_GL_STENCIL_BUFFER_BIT)) ||
-        (op->clear_buffers & (SGI_GL_DEPTH_BUFFER_BIT |
-                              SGI_GL_STENCIL_BUFFER_BIT)) ||
         op->index_bits) {
         error_setg(errp, "Unsupported SGI Mesa raster operation or plane");
         return SGI_RENDER_UNSUPPORTED;
@@ -305,18 +326,31 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         error_setg(errp, "Invalid SGI Mesa clear geometry or mask");
         return SGI_RENDER_RESOURCE_ERROR;
     }
-    if (!(op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT) ||
-        !op->clear_colour_mask || !op->ntargets ||
-        (!op->clip.n && op->clip.empty)) {
+    depth = !!(op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT);
+    stencil = !!(op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT) &&
+              !!(op->stencil_mask & 0xff);
+    colour_count = (op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT) &&
+                   op->clear_colour_mask ? op->ntargets : 0;
+    depth_index = colour_count;
+    stencil_index = colour_count + !!depth;
+    clear_count = MAX(colour_count, (unsigned)(depth || stencil));
+    if (!clear_count || (!op->clip.n && op->clip.empty)) {
         return SGI_RENDER_OK;
     }
-    for (unsigned c = 0; c < 4; c++) {
-        if (!isfinite(op->clear_rgba[c])) {
-            error_setg(errp, "Invalid SGI Mesa clear colour");
-            return SGI_RENDER_RESOURCE_ERROR;
+    if (colour_count) {
+        for (unsigned c = 0; c < 4; c++) {
+            if (!isfinite(op->clear_rgba[c])) {
+                error_setg(errp, "Invalid SGI Mesa clear colour");
+                return SGI_RENDER_RESOURCE_ERROR;
+            }
         }
     }
-    for (unsigned i = 0; i < op->ntargets; i++) {
+    if ((depth && rules->depth_bits != 24) ||
+        (stencil && rules->stencil_bits != 8)) {
+        error_setg(errp, "Unsupported SGI Mesa clear scalar precision");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    for (unsigned i = 0; i < colour_count; i++) {
         SGIRendererClear *clear = &clears[i];
         const SGIRenderResource *res;
         int32_t x0, y0, x1, y1;
@@ -354,6 +388,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         max_width = MAX(max_width, res->width);
         clear->width = res->width;
         clear->height = res->height;
+        clear->colour = true;
         clear->colour_mask = op->clear_colour_mask;
         memcpy(clear->rgba, op->clear_rgba, sizeof(clear->rgba));
         x0 = MAX(op->x0, 0);
@@ -382,7 +417,82 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             }
         }
     }
-    for (unsigned i = 0; i < op->ntargets; i++) {
+    for (unsigned k = 0; k < (unsigned)depth + (unsigned)stencil; k++) {
+        unsigned i = colour_count + k;
+        SGIRenderRole role = k == 0 && depth ? SGI_RENDER_DEPTH :
+                                                   SGI_RENDER_STENCIL;
+        const SGIRenderResource *res = sgi_render_scalar_resource(target,
+                                                                  role);
+        unsigned bits = role == SGI_RENDER_DEPTH ? 24 : 8;
+
+        if (!res || !res->width || !res->height ||
+            res->width > INT_MAX || res->height > INT_MAX ||
+            res->depth != 1 || !res->bottom_origin ||
+            res->component_count != 1 ||
+            res->component[0].channel != SGI_RENDER_SCALAR ||
+            res->component[0].numeric != SGI_RENDER_UINT ||
+            res->component[0].storage_bits != bits ||
+            (uint64_t)res->width * res->height >
+                SIZE_MAX / sizeof(uint32_t) ||
+            (colour_count && (res->width != clears[0].width ||
+                              res->height != clears[0].height)) ||
+            (k && (res->width != resources[colour_count]->width ||
+                   res->height != resources[colour_count]->height))) {
+            error_setg(errp, "Unsupported SGI Mesa clear scalar resource");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        resources[i] = res;
+        max_width = MAX(max_width, res->width);
+    }
+    if (depth || stencil) {
+        for (unsigned i = 1; i < colour_count; i++) {
+            if (clears[i].width != clears[0].width ||
+                clears[i].height != clears[0].height) {
+                error_setg(errp, "SGI Mesa clear attachment sizes differ");
+                return SGI_RENDER_UNSUPPORTED;
+            }
+        }
+    }
+    if (depth || stencil) {
+        SGIRendererClear *clear = &clears[0];
+
+        clear->depth = depth;
+        clear->stencil = stencil;
+        clear->depth24 = op->clear_depth24 & 0xffffff;
+        clear->stencil8 = op->clear_stencil & 0xff;
+        clear->stencil_mask = op->stencil_mask & 0xff;
+        if (!colour_count) {
+            const SGIRenderResource *res = resources[0];
+            int32_t x0 = MAX(op->x0, 0);
+            int32_t y0 = MAX(op->y0, 0);
+            int32_t x1 = MIN(op->x1, (int32_t)res->width - 1);
+            int32_t y1 = MIN(op->y1, (int32_t)res->height - 1);
+
+            clear->width = res->width;
+            clear->height = res->height;
+            if (x0 <= x1 && y0 <= y1) {
+                if (!op->clip.n) {
+                    clear->rects[clear->rect_count++] =
+                        (SGIRendererClearRect) { x0, y0, x1, y1 };
+                } else {
+                    for (unsigned j = 0; j < op->clip.n; j++) {
+                        const SGIClipRect *clip = &op->clip.r[j];
+                        int32_t cx0 = MAX(x0, clip->x0);
+                        int32_t cy0 = MAX(y0, clip->y0);
+                        int32_t cx1 = MIN(x1, clip->x1);
+                        int32_t cy1 = MIN(y1, clip->y1);
+
+                        if (cx0 <= cx1 && cy0 <= cy1) {
+                            clear->rects[clear->rect_count++] =
+                                (SGIRendererClearRect) { cx0, cy0,
+                                                         cx1, cy1 };
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (unsigned i = 0; i < colour_count; i++) {
         const SGIRenderResource *res = resources[i];
         SGIRendererClear *clear = &clears[i];
         SGIRenderRect rect = { .x1 = res->width - 1,
@@ -423,8 +533,47 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         }
         clear->pixels = rgba[i];
     }
-    for (unsigned i = 0; i < op->ntargets; i++) {
+    for (unsigned i = colour_count; i < colour_count + depth + stencil; i++) {
         const SGIRenderResource *res = resources[i];
+        SGIRenderRect rect = { .x1 = res->width - 1,
+                               .y1 = res->height - 1 };
+
+        if (!clears[0].rect_count) {
+            continue;
+        }
+        pixels[i] = (size_t)res->width * res->height;
+        nslots[i] = pixels[i];
+        slots[i] = g_try_new(uint32_t, nslots[i]);
+        if (!slots[i]) {
+            error_setg(errp, "Cannot allocate SGI Mesa scalar slots");
+            status = SGI_RENDER_OOM;
+            goto out;
+        }
+        status = sgi_render_resource_snapshot(target, res, 0, &rect,
+                                              slots[i], res->width,
+                                              nslots[i], errp);
+        if (status != SGI_RENDER_OK) {
+            goto out;
+        }
+    }
+    if ((depth || stencil) && clears[0].rect_count) {
+        size_t count = (size_t)clears[0].width * clears[0].height;
+
+        packed = g_try_new(uint32_t, count);
+        if (!packed) {
+            error_setg(errp, "Cannot allocate SGI Mesa scalar buffer");
+            status = SGI_RENDER_OOM;
+            goto out;
+        }
+        for (size_t pixel = 0; pixel < count; pixel++) {
+            packed[pixel] = (depth ? slots[depth_index][pixel] << 8 : 0) |
+                            (stencil ? slots[stencil_index][pixel] : 0);
+        }
+        clears[0].depth_stencil = packed;
+    }
+    for (unsigned i = 0; i < clear_count; i++) {
+        const SGIRenderResource *res = i < colour_count ? resources[i] :
+                                                     resources[0];
         SGIRendererClear *clear = &clears[i];
 
         if (!clear->rect_count) {
@@ -433,6 +582,9 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         if (!sgi_renderer_clear(renderer, clear, errp)) {
             status = SGI_RENDER_HOST_ERROR;
             goto out;
+        }
+        if (i >= colour_count) {
+            continue;
         }
         for (unsigned j = 0; j < clear->rect_count; j++) {
             const SGIRendererClearRect *r = &clear->rects[j];
@@ -455,15 +607,35 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             }
         }
     }
+    if ((depth || stencil) && clears[0].rect_count) {
+        const SGIRendererClear *clear = &clears[0];
+
+        for (unsigned j = 0; j < clear->rect_count; j++) {
+            const SGIRendererClearRect *r = &clear->rects[j];
+
+            for (uint32_t y = r->y0; y <= r->y1; y++) {
+                for (uint32_t x = r->x0; x <= r->x1; x++) {
+                    size_t pixel = (size_t)y * clear->width + x;
+
+                    if (depth) {
+                        slots[depth_index][pixel] = packed[pixel] >> 8;
+                    }
+                    if (stencil) {
+                        slots[stencil_index][pixel] = packed[pixel] & 0xff;
+                    }
+                }
+            }
+        }
+    }
     covered = g_try_new(uint8_t, max_width);
     if (!covered) {
         error_setg(errp, "Cannot allocate SGI Mesa clear coverage row");
         status = SGI_RENDER_OOM;
         goto out;
     }
-    for (unsigned i = 0; i < op->ntargets; i++) {
+    for (unsigned i = 0; i < colour_count + depth + stencil; i++) {
         const SGIRenderResource *res = resources[i];
-        SGIRendererClear *clear = &clears[i];
+        SGIRendererClear *clear = i < colour_count ? &clears[i] : &clears[0];
 
         if (!clear->rect_count) {
             continue;
@@ -516,9 +688,12 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
     }
 out:
     g_free(covered);
-    for (unsigned i = 0; i < SGI_GL_MAX_TARGETS; i++) {
+    for (unsigned i = 0; i < SGI_GL_MAX_TARGETS + 2; i++) {
         g_free(slots[i]);
-        g_free(rgba[i]);
+        if (i < SGI_GL_MAX_TARGETS) {
+            g_free(rgba[i]);
+        }
     }
+    g_free(packed);
     return status;
 }

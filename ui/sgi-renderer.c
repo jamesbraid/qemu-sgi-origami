@@ -168,7 +168,11 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp)
 {
-    if (!renderer || !clear || !clear->pixels || !clear->width ||
+    if (!renderer || !clear ||
+        (!clear->colour && !clear->depth && !clear->stencil) ||
+        (clear->colour && !clear->pixels) ||
+        ((clear->depth || clear->stencil) && !clear->depth_stencil) ||
+        !clear->width ||
         !clear->height || clear->width > INT_MAX ||
         clear->height > INT_MAX ||
         clear->width > SIZE_MAX / clear->height / 4 /
