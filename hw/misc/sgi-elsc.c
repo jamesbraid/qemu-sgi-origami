@@ -587,6 +587,97 @@ static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
 }
 
 /*
+ * The controller's own page of the management NVRAM, and the configuration
+ * byte in it whose bit 0x02 powers the module up when the controller starts
+ * (Origin 200 build). The controller lays the page out as the validity
+ * marker, a four-character password, two zero bytes and then this byte.
+ */
+#define ELSC_NVRAM_ADDRESS      0x57
+#define ELSC_NVRAM_CONFIG       7
+#define ELSC_CONFIG_AUTO_POWER  0x02
+
+/*
+ * The controller reaches its NVRAM page as another master on the same bus.
+ * The request being answered still holds that bus, so the model drives the
+ * part's own I2C interface directly, one complete transfer at a time,
+ * rather than nest a second transfer inside the first. The part's address
+ * counter moves exactly as a real access moves it.
+ */
+static bool elsc_nvram_access(SGIElscState *s, uint8_t offset, uint8_t *value,
+                              bool write)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &BUS(s->bus)->children, sibling) {
+        I2CSlave *part = I2C_SLAVE(kid->child);
+        I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(part);
+        I2CNodeList found = QLIST_HEAD_INITIALIZER(found);
+        I2CNode *node;
+
+        /*
+         * The part's own match decides, as an addressed transfer would:
+         * one part can answer several addresses.
+         */
+        if (part == I2C_SLAVE(s) ||
+            !sc->match_and_add(part, ELSC_NVRAM_ADDRESS, false, &found)) {
+            continue;
+        }
+        while ((node = QLIST_FIRST(&found))) {
+            QLIST_REMOVE(node, next);
+            g_free(node);
+        }
+        sc->event(part, I2C_START_SEND);
+        sc->send(part, offset);
+        if (write) {
+            sc->send(part, *value);
+        } else {
+            sc->event(part, I2C_START_RECV);
+            *value = sc->recv(part);
+        }
+        sc->event(part, I2C_FINISH);
+        return true;
+    }
+    return false;
+}
+
+/*
+ * "aut [1|0]", Origin 200 build: query, set or clear the automatic power-on
+ * bit in the NVRAM configuration byte. The bit takes effect only when the
+ * controller next starts, which the model does not distinguish from the
+ * machine's own start, so it is only kept in the NVRAM. Every machine that
+ * builds this controller gives it the NVRAM page; without one the query
+ * reads as clear and a change is lost, and that is logged.
+ */
+static void elsc_handle_aut(SGIElscState *s, ElscRequest *r)
+{
+    uint8_t config = 0;
+    char c;
+    bool set = elsc_read_char(r, &c);
+
+    if (set && c != '1' && c != '0') {
+        elsc_frame_response_str(s, "err arg");
+        return;
+    }
+    if (!elsc_nvram_access(s, ELSC_NVRAM_CONFIG, &config, false)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-elsc: \"aut\" with no NVRAM page at 0x%02x\n",
+                      ELSC_NVRAM_ADDRESS);
+    }
+    if (!set) {
+        elsc_frame_response_str(s, config & ELSC_CONFIG_AUTO_POWER ?
+                                "ok 1" : "ok 0");
+        return;
+    }
+    if (c == '1') {
+        config |= ELSC_CONFIG_AUTO_POWER;
+    } else {
+        config &= ~ELSC_CONFIG_AUTO_POWER;
+    }
+    elsc_nvram_access(s, ELSC_NVRAM_CONFIG, &config, true);
+    elsc_frame_ok(s);
+}
+
+/*
  * "clr": cancel a pending power-down countdown and the fan-high request,
  * and on the Origin 2000 build blank the display. Accepted with the module
  * on or off. It leaves the power-up countdown, the "tas" byte, the console
@@ -770,6 +861,7 @@ typedef struct ElscCommand {
  */
 static const ElscCommand elsc_commands[] = {
     { "acp", ELSC_BUILD_BOTH,       elsc_handle_acp },
+    { "aut", ELSC_BUILD_ORIGIN200,  elsc_handle_aut },
     { "clr", ELSC_BUILD_BOTH,       elsc_handle_clr },
     { "dsc", ELSC_BUILD_ORIGIN2000, elsc_handle_dsc },
     { "dsp", ELSC_BUILD_ORIGIN2000, elsc_handle_dsp },
