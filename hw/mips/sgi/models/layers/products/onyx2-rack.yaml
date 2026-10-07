@@ -160,8 +160,8 @@ layer:
             not a measured or factory-default module number.
         module_semantic_serials:
         - component: compute-module
-          serial: EMUM000001
-          reason: Synthetic module serial for module 1, carrying the "EMU" marker; not hardware evidence.
+          serial: KORIGAMI01
+          reason: Synthetic module serial for module 1, the "KORIGAMI" marker and the module's number, beginning with K because the kernel takes no other module serial; not hardware evidence.
         module_onewire_parts:
         - component: compute-module
           identity_serial: '0x51454d555900'

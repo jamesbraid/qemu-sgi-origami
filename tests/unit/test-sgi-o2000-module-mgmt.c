@@ -845,7 +845,7 @@ static void test_module_parts_without_midplane(void)
                        module, "SHORT", identity, NULL, 0, &err));
     error_free(err);
     g_assert_true(sgi_sn0_module_management_attach_parts(
-                      module, "EMUM000001", identity, NULL, 0,
+                      module, "KORIGAMI02", identity, NULL, 0,
                       &error_abort));
     g_assert_cmpuint(wire_search_all(
                          sgi_sn0_module_management_midplane_onewire(module),

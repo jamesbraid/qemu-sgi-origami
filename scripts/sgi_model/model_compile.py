@@ -779,9 +779,19 @@ def _module_onewire_parts(model: dict, module_id: str,
 
 
 def _check_module_onewire_parts(model: dict, modules: list[dict]) -> None:
-    """Refuse a module with a shared controller and no MODULEID part, and a
-    binding for a module that has no shared controller or does not exist."""
+    """Refuse a module with a shared controller and no MODULEID part, a
+    binding for a module that has no shared controller or does not exist,
+    and two modules sharing a module serial."""
     known = {module["id"]: module for module in modules}
+    serials: dict[str, str] = {}
+    for module in modules:
+        if module["controller_index"] < 0 or not module["serial"]:
+            continue
+        if module["serial"] in serials:
+            raise CompileError(
+                f"modules '{serials[module['serial']]}' and '{module['id']}' "
+                f"share module serial '{module['serial']}'")
+        serials[module["serial"]] = module["id"]
     emulation = model["machine"].get("emulation", {})
     for entry in emulation.get("module_onewire_parts") or []:
         module = known.get(entry.get("component"))
@@ -2028,7 +2038,7 @@ def _compile_module(model: dict, module_id: str, module_index: int,
     for item in emulation.get("module_semantic_serials", []) or []:
         if item.get("component") == module_id:
             serial = item["serial"]
-            if not synthetic_serial.text_serial_marked(serial):
+            if not synthetic_serial.module_serial_marked(serial):
                 raise CompileError(
                     f"module '{module_id}' serial '{serial}' carries no "
                     "synthetic-serial marker")

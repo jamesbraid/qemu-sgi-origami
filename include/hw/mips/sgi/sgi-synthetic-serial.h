@@ -73,6 +73,13 @@
 /* The shortest text serial: the marker, a letter and two digits. */
 #define SGI_SYNTHETIC_TEXT_MIN_WIDTH  6
 
+/*
+ * An Origin 2000 or Onyx2 module serial is the exception to the text form:
+ * the kernel takes a module serial only if it begins with K, so the marker
+ * is "KORIGAMI", followed by two decimal digits, ten characters in all.
+ */
+#define SGI_SYNTHETIC_MODULE_SERIAL_MARKER "KORIGAMI"
+
 static inline uint64_t sgi_synthetic_onewire_serial(char letter,
                                                     unsigned int index)
 {

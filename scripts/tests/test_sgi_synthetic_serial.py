@@ -43,6 +43,9 @@ class SyntheticSerialTests(unittest.TestCase):
         self.assertEqual(ss.text_serial("M", 1, 10), "EMUM000001")
         self.assertTrue(ss.text_serial_marked("EMUM000001"))
         self.assertFalse(ss.text_serial_marked("SGIMODULE1"))
+        self.assertTrue(ss.module_serial_marked("KORIGAMI01"))
+        self.assertFalse(ss.module_serial_marked("EMUM000001"))
+        self.assertFalse(ss.module_serial_marked("KORIGAMI1"))
 
     def test_barcode_vectors(self):
         self.assertEqual(ss.barcode("N", 0x51454D554203), "EMUN03")
@@ -63,6 +66,8 @@ class SyntheticSerialTests(unittest.TestCase):
         self.assertIn("SGI_SYNTHETIC_ONEWIRE_PREFIX  UINT64_C(0x51454d55)", header)
         self.assertIn("SGI_SYNTHETIC_UNIQUEWARE_MARKER UINT64_C(0x454d55)", header)
         self.assertIn('SGI_SYNTHETIC_TEXT_MARKER     "EMU"', header)
+        self.assertIn('SGI_SYNTHETIC_MODULE_SERIAL_MARKER '
+                      f'"{ss.MODULE_SERIAL_MARKER}"', header)
         table = re.findall(r"^ \*   ([A-Z])  ", header, re.MULTILINE)
         self.assertEqual(table, list(ss.LETTERS))
 
@@ -123,6 +128,30 @@ class ModuleOnewirePartsTests(unittest.TestCase):
     def test_midplane_serial_without_record_is_refused(self):
         del self.parts[0]["midplane"]
         self.refused("both or neither")
+
+    def test_catalogue_module_serial_starts_with_k(self):
+        compiled = self.compile_model(self.model)
+        self.assertEqual(compiled["modules"][0]["serial"], "KORIGAMI01")
+
+    def test_emu_module_serial_is_refused(self):
+        self.emulation["module_semantic_serials"][0]["serial"] = "EMUM000001"
+        self.refused("marker")
+
+    def test_shared_module_serial_is_refused(self):
+        from sgi_model.model_compile import _check_module_onewire_parts
+
+        modules = [
+            {"id": "module-a", "serial": "KORIGAMI01", "controller_index": 0,
+             "identity_serial": ss.onewire_serial("Y", 0)},
+            {"id": "module-b", "serial": "KORIGAMI01", "controller_index": 1,
+             "identity_serial": ss.onewire_serial("Y", 1)},
+        ]
+        model = {"machine": {"emulation": {"module_onewire_parts": []}}}
+        with self.assertRaisesRegex(self.CompileError,
+                                    "share module serial 'KORIGAMI01'"):
+            _check_module_onewire_parts(model, modules)
+        modules[1]["serial"] = "KORIGAMI02"
+        _check_module_onewire_parts(model, modules)
 
     def test_unknown_module_is_refused(self):
         self.parts[0]["component"] = "no-such-module"

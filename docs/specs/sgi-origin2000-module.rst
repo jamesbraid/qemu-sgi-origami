@@ -229,7 +229,12 @@ The module-management chip has no part of its own on the line.
 The ``MODULEID`` pages carry the module serial in the layout the Hub
 module-serial record uses: format byte 0x01, the ten-character serial,
 the name at page one offset sixteen, 0xff in every other field and a
-stored CRC per page. The four-node module's
+stored CRC per page. The serial is a marked synthetic one,
+``KORIGAMI01`` for module 1: the kernel takes a module serial only if
+it begins with ``K``, so it cannot carry the ``EMU`` marker other
+synthetic text serials use. The contract names no serial for a second
+module; ``KORIGAMI`` followed by two digits is this model's choice,
+and the catalogue compiler refuses two modules sharing one. The four-node module's
 midplane record is ``8P12_MPLN``, part 030-0762-006 revision H, the
 ``030-`` part seen most often in real inventories; which midplane an
 IP27-era module carried is *unknown*, and every held capture uses later

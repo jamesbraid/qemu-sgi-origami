@@ -17,6 +17,10 @@ UNIQUEWARE_MARKER = 0x454D55
 TEXT_MARKER = "EMU"
 TEXT_MIN_WIDTH = 6
 
+# An Origin 2000 or Onyx2 module serial: the kernel takes one only if it
+# begins with K, so the marker is "KORIGAMI" and two digits follow.
+MODULE_SERIAL_MARKER = "KORIGAMI"
+
 # The component letters, in the header's order.
 LETTERS = {
     "N": "node or system board",
@@ -83,6 +87,13 @@ def barcode(letter: str, part_serial: int) -> str:
         index = part_serial & 0xFFF
     width = 6 if index < 100 else 7 if index < 1000 else 8
     return text_serial(letter, index, width)
+
+
+def module_serial_marked(text: str) -> bool:
+    """Whether a module serial is the marker and two decimal digits."""
+    return (len(text) == len(MODULE_SERIAL_MARKER) + 2 and
+            text.startswith(MODULE_SERIAL_MARKER) and
+            text[len(MODULE_SERIAL_MARKER):].isdigit())
 
 
 def text_serial_marked(text: str) -> bool:
