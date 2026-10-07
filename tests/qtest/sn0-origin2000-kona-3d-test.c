@@ -6290,8 +6290,16 @@ static void test_draw_pixels_native_dma(gconstpointer opaque)
         }
         qtest_memwrite(s, 0x380000, bytes, total);
     }
+    if (mode == 0 || mode == 41) {
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
+                        ==, 0);
+    }
     texture_dma_packet(s, io, total, line, gap);
     g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+    if (mode == 0 || mode == 41) {
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
+                        ==, refused ? 0 : INT_CAUSE_MAILBOX);
+    }
     assert_window_matches(s, e);
     if (mode == 47) {
         kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
@@ -10703,10 +10711,18 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
         sgi_migrate_stopped(from, uri);
         s = to;
     }
+    if (mode == 0 || mode == 5) {
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
+                        ==, 0);
+    }
     if (mode < 12 || extended) {
         texture_dma_packet(s, io, total, line, gap);
     }
     g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+    if (mode == 0 || mode == 5) {
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
+                        ==, refused ? 0 : INT_CAUSE_MAILBOX);
+    }
     expected_clear(e, 0);
     if (!refused) {
         for (unsigned y = 0; y < 2; y++) {
