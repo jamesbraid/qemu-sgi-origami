@@ -6,7 +6,9 @@
 typedef struct RenderResourceFixture {
     uint32_t native[4][4];
     uint32_t alpha[4];
+    uint32_t tag[4];
     unsigned snapshots, commits, dirty;
+    unsigned covered_commits;
     size_t fail_after;
 } RenderResourceFixture;
 
@@ -72,9 +74,54 @@ static SGIRenderCommitResult render_resource_commit(void *opaque,
     };
 }
 
+static SGIRenderCommitResult render_resource_commit_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    RenderResourceFixture *f = opaque;
+    size_t width = rect->x1 - rect->x0 + 1;
+
+    g_assert_cmpuint(slice, ==, 0);
+    g_assert_cmpuint(rect->y0, ==, 0);
+    g_assert_cmpuint(rect->y1, ==, 0);
+    g_assert_cmpuint(res->component_count, ==, 3);
+    f->covered_commits++;
+    for (size_t i = 0; i < width; i++) {
+        unsigned x = rect->x0 + i;
+
+        if (!writes->pixel[i]) {
+            continue;
+        }
+        if (i == f->fail_after) {
+            f->native[x][0] = slots[i * 3];
+            f->dirty |= 1u << x;
+            error_setg(errp, "paired native write stopped at pixel %zu", i);
+            return (SGIRenderCommitResult) {
+                .status = SGI_RENDER_RESOURCE_ERROR,
+                .complete_pixels = i,
+                .partial_pixel = true,
+                .extent_known = true,
+            };
+        }
+        for (unsigned c = 0; c < 3; c++) {
+            f->native[x][c] = slots[i * 3 + c];
+        }
+        f->tag[x] = 9;
+        f->dirty |= 1u << x;
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = width,
+        .extent_known = true,
+    };
+}
+
 static const SGIRenderResourceOps render_resource_ops = {
     .snapshot = render_resource_snapshot,
     .commit = render_resource_commit,
+    .commit_covered = render_resource_commit_covered,
 };
 
 static SGIRenderResource render_colour_resource(void)
@@ -203,6 +250,133 @@ static void test_render_resource_partial_commit(void)
     g_assert_cmpuint(f.native[1][0], ==, 4094);
     g_assert_cmpuint(f.native[2][0], ==, 7);
     g_assert_cmpuint(f.native[3][0], ==, 10);
+}
+
+static void test_render_resource_covered_commit(void)
+{
+    RenderResourceFixture f = {
+        .native = {
+            { 1, 2, 3 }, { 4, 5, 6 },
+            { 7, 8, 9 }, { 10, 11, 12 },
+        },
+        .tag = { 1, 1, 1, 1 },
+        .fail_after = SIZE_MAX,
+    };
+    SGIRenderResource res = render_colour_resource();
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &res, .resource_count = 1,
+        .resource_ops = &render_resource_ops,
+    };
+    SGIRenderRect rect = { 0, 0, 3, 0 };
+    uint32_t slots[12] = {
+        100, 101, 102, 4, 5, 6, 200, 201, 202, 300, 301, 302,
+    };
+    uint8_t mask[4] = { 0, 1, 0, 1 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = mask, .stride_bytes = 4, .capacity_bytes = 4,
+    };
+    SGIRenderCommitResult committed;
+    Error *err = NULL;
+
+    committed = sgi_render_resource_commit_covered(&target, &res, 0, &rect,
+                                                    slots, 12,
+                                                    ARRAY_SIZE(slots),
+                                                    &writes, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(committed.complete_pixels, ==, 4);
+    g_assert_true(committed.extent_known);
+    g_assert_null(err);
+    g_assert_cmpuint(f.covered_commits, ==, 1);
+    g_assert_cmphex(f.dirty, ==, 0xa);
+    g_assert_cmpuint(f.native[0][0], ==, 1);
+    g_assert_cmpuint(f.native[1][0], ==, 4);
+    g_assert_cmpuint(f.native[2][0], ==, 7);
+    g_assert_cmpuint(f.native[3][0], ==, 300);
+    g_assert_cmpmem(f.tag, sizeof(f.tag),
+                    ((uint32_t[4]) { 1, 9, 1, 9 }), sizeof(f.tag));
+
+    mask[2] = 2;
+    committed = sgi_render_resource_commit_covered(&target, &res, 0, &rect,
+                                                    slots, 12,
+                                                    ARRAY_SIZE(slots),
+                                                    &writes, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.covered_commits, ==, 1);
+    mask[2] = 0;
+
+    writes.capacity_bytes = 3;
+    committed = sgi_render_resource_commit_covered(&target, &res, 0, &rect,
+                                                    slots, 12,
+                                                    ARRAY_SIZE(slots),
+                                                    &writes, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.covered_commits, ==, 1);
+
+    SGIRenderResourceOps ops = render_resource_ops;
+
+    ops.commit_covered = NULL;
+    target.resource_ops = &ops;
+    writes.capacity_bytes = 4;
+    committed = sgi_render_resource_commit_covered(&target, &res, 0, &rect,
+                                                    slots, 12,
+                                                    ARRAY_SIZE(slots),
+                                                    &writes, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.covered_commits, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 0);
+}
+
+static void test_render_resource_covered_partial(void)
+{
+    RenderResourceFixture f = {
+        .native = {
+            { 1, 2, 3 }, { 4, 5, 6 },
+            { 7, 8, 9 }, { 10, 11, 12 },
+        },
+        .tag = { 1, 1, 1, 1 },
+        .fail_after = 2,
+    };
+    SGIRenderResource res = render_colour_resource();
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &res, .resource_count = 1,
+        .resource_ops = &render_resource_ops,
+    };
+    SGIRenderRect rect = { 0, 0, 3, 0 };
+    uint32_t slots[12] = {
+        100, 101, 102, 200, 201, 202, 300, 301, 302, 400, 401, 402,
+    };
+    uint8_t mask[4] = { 0, 1, 1, 0 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = mask, .stride_bytes = 4, .capacity_bytes = 4,
+    };
+    SGIRenderCommitResult committed;
+    Error *err = NULL;
+
+    committed = sgi_render_resource_commit_covered(&target, &res, 0, &rect,
+                                                    slots, 12,
+                                                    ARRAY_SIZE(slots),
+                                                    &writes, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(committed.complete_pixels, ==, 2);
+    g_assert_true(committed.partial_pixel);
+    g_assert_true(committed.extent_known);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmphex(f.dirty, ==, 0x6);
+    g_assert_cmpuint(f.native[0][0], ==, 1);
+    g_assert_cmpuint(f.native[1][0], ==, 200);
+    g_assert_cmpuint(f.native[2][0], ==, 300);
+    g_assert_cmpuint(f.native[2][1], ==, 8);
+    g_assert_cmpmem(f.tag, sizeof(f.tag),
+                    ((uint32_t[4]) { 1, 9, 1, 1 }), sizeof(f.tag));
 }
 
 static void test_render_resource_rejects_attachment_border(void)
@@ -337,6 +511,10 @@ int main(int argc, char **argv)
                     test_render_resource_invalid_span);
     g_test_add_func("/sgi-render-resource/partial-commit",
                     test_render_resource_partial_commit);
+    g_test_add_func("/sgi-render-resource/covered-commit",
+                    test_render_resource_covered_commit);
+    g_test_add_func("/sgi-render-resource/covered-partial",
+                    test_render_resource_covered_partial);
     g_test_add_func("/sgi-render-resource/attachment-border",
                     test_render_resource_rejects_attachment_border);
     g_test_add_func("/sgi-render-resource/invalid-extent",
