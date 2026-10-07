@@ -301,6 +301,85 @@ static void test_gl_clear_captured_readpixels_1x1_ordinary_format(void)
     g_assert_cmpmem(got + 8, 4, poison + 8, 4);
 }
 
+/* The native software path remains the board's default. */
+static void test_gl_mesa_default_software(void)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 0, 0, 1280, 1024, 0x11);
+    gl_viewport(qts, 0, 0, 1280, 1024);
+    gl_one(qts, GL_SHADE_MODEL_HDR, 0x1d01);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    gl_color3f(qts, 1, 0, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, -1, -1);
+    gl_vertex2f(qts, 1, -1);
+    gl_vertex2f(qts, -1, 1);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmpuint(mgras_qom_get_uint(qts,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(qts,
+        "x-test-render-commits"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_test_format(qts, 100, 923), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+}
+
+/* One checked Mesa draw must commit before the following guest read. */
+static void test_gl_mesa_triangle_ordinary_readback(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t red[4] = { 0xff, 0, 0, 0xff };
+    uint8_t got[sizeof(poison)];
+    QTestState *test = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+
+    mgras_reset_state(test);
+    mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+    gl_viewport(test, 0, 0, 1280, 1024);
+    gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
+    gl_draw_buffer(test, 1);
+    gl_clear_color(test, 0, 0, 0, 1);
+    gl_word(test, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-commits"), ==, 0);
+
+    gl_color3f(test, 1, 0, 0);
+    gl_word(test, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(test, -1, -1);
+    gl_vertex2f(test, 1, -1);
+    gl_vertex2f(test, -1, 1);
+    gl_word(test, GL_END_TRIANGLES);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-commits"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_test_format(test, 100, 923), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_test_pixel(test, 1100, 123), ==, 0);
+    g_assert_cmphex(mgras_test_format(test, 1100, 123), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_qom_get_uint(test, "x-test-back-pixel"), ==, 0);
+
+    mgras_visual_select_read_buffer(test, 0, 0, 0x404);
+    mgras_visual_read_map(test);
+    qtest_memwrite(test, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels_format_at(test, 1, false, true, 0x00c00080,
+                                       100, 100);
+    qtest_memread(test, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+
+    qtest_quit(test);
+}
+
 static void test_gl_clear_captured_readpixels_alpha_zero(void)
 {
     static const uint8_t poison[12] = {
@@ -3803,6 +3882,12 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-1x1-ordinary-format",
         test_gl_clear_captured_readpixels_1x1_ordinary_format, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-default-software",
+        test_gl_mesa_default_software, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-triangle-ordinary-readback",
+        test_gl_mesa_triangle_ordinary_readback, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-alpha-zero",
