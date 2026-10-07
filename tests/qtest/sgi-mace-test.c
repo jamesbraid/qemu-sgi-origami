@@ -262,6 +262,7 @@ static void test_uart_receive_backends(void)
     QTestState *s;
     int fd_a, fd_b;
     uint8_t byte_a = 'A', byte_b = 'B';
+    uint8_t held_a = 'x', held_b = 'y';
 
     g_assert_no_error(error);
     path_a = g_build_filename(directory, "a.sock", NULL);
@@ -276,10 +277,21 @@ static void test_uart_receive_backends(void)
     fd_a = mace_connect_socket(path_a);
     fd_b = mace_connect_socket(path_b);
 
+    g_assert_cmphex(qtest_readq(s, MACE_RING_BASE) & 1, ==, 1);
+    g_assert_cmpint(write(fd_a, &held_a, 1), ==, 1);
+    g_assert_cmpint(write(fd_b, &held_b, 1), ==, 1);
+    sgi_wait_socket_read(fd_a);
+    sgi_wait_socket_read(fd_b);
     qtest_writeq(s, MACE_RING_BASE, 0);
     qtest_writeq(s, MACE_IMASK, MACE_UART_A_INT | MACE_UART_B_INT);
     qtest_writeb(s, MACE_UART_A + 0x100, 0x01);
     qtest_writeb(s, MACE_UART_B + 0x100, 0x01);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x500) & 1, ==, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_B + 0x500) & 1, ==, 0);
+    g_assert_cmphex(qtest_readq(s, MACE_ISTAT) &
+                    (MACE_UART_A_INT | MACE_UART_B_INT), ==, 0);
+    g_assert_false(qtest_get_irq(s, 4));
+
     g_assert_cmpint(write(fd_a, &byte_a, 1), ==, 1);
     g_assert_cmpint(write(fd_b, &byte_b, 1), ==, 1);
     sgi_wait_socket_read(fd_a);

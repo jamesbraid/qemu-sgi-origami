@@ -651,6 +651,10 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
 
 static int serial_can_receive(SerialState *s)
 {
+    if (s->rx_discard) {
+        /* Drain the backend while an external controller holds reset. */
+        return UART_FIFO_LENGTH;
+    }
     if(s->fcr & UART_FCR_FE) {
         if (!fifo8_is_full(&s->recv_fifo)) {
             /*
@@ -698,6 +702,9 @@ static void serial_receive1(void *opaque, const uint8_t *buf, int size)
 {
     SerialState *s = opaque;
 
+    if (s->rx_discard) {
+        return;
+    }
     if (s->wakeup) {
         qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
     }
@@ -721,8 +728,9 @@ static void serial_receive1(void *opaque, const uint8_t *buf, int size)
 static void serial_event(void *opaque, QEMUChrEvent event)
 {
     SerialState *s = opaque;
-    if (event == CHR_EVENT_BREAK)
+    if (event == CHR_EVENT_BREAK && !s->rx_discard) {
         serial_receive_break(s);
+    }
 }
 
 static int serial_pre_save(void *opaque)
@@ -995,6 +1003,11 @@ static void serial_reset(void *opaque)
 void serial_reset_device(SerialState *s)
 {
     serial_reset(s);
+}
+
+void serial_set_rx_discard(SerialState *s, bool discard)
+{
+    s->rx_discard = discard;
 }
 
 static int serial_be_change(void *opaque)

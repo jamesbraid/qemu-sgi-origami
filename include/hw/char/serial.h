@@ -62,6 +62,7 @@ struct SerialState {
     uint32_t tsr_retry;
     guint watch_tag;
     bool wakeup;
+    bool rx_discard;
 
     /*
      * Bounds how long a backend that never becomes writable can hold the
@@ -102,6 +103,7 @@ extern const MemoryRegionOps serial_io_ops;
 OBJECT_DECLARE_SIMPLE_TYPE(SerialState, SERIAL)
 
 void serial_reset_device(SerialState *s);
+void serial_set_rx_discard(SerialState *s, bool discard);
 
 #define SERIAL_GPIO_TX_READY "tx-ready"
 
