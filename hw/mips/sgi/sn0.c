@@ -136,7 +136,11 @@ const SN0ModelMemory sn0_hub_memory = {
     .architectural_banks = 8,
     .supported_mib = sn0_hub_memory_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_hub_memory_sizes_mib),
-    .first_bank_max_mib = 0x100ULL,
+    /*
+     * Not 512: the PROM tests RAM under the boot flash's reset address,
+     * which a 512 MiB bank 0 would put behind the flash overlay.
+     */
+    .first_bank_max_mib = 0x80ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
     .interleave_slots_per_bank = 4,
