@@ -22,6 +22,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "system/qtest.h"
+#include "trace.h"
 
 #define TYPE_SGI_PIC_HEAD "sgi-pic-head"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
@@ -969,12 +970,20 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     if (addr == 0 && size == 8) {
-        return pic_widget_identity(s);
+        uint64_t value = pic_widget_identity(s);
+
+        trace_sgi_pic_head_reg_read(s->head, addr, size, value);
+        return value;
     }
     if (addr == 4 && size == 4) {
-        return pic_widget_identity(s);
+        uint64_t value = pic_widget_identity(s);
+
+        trace_sgi_pic_head_reg_read(s->head, addr, size, (uint32_t)value);
+        return value;
     }
     if (addr >= 0x20000 && addr < 0x29000 && size <= 4) {
+        uint64_t value;
+
         cfg = pic_config_address(s, addr, size);
         if (!pci_find_device(PCI_HOST_BRIDGE(s)->bus, cfg >> 16,
                              (cfg >> 8) & 0xff)) {
@@ -982,26 +991,35 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
                           "sgi-pic: head %u configuration miss at 0x%"
                           HWADDR_PRIx "\n", s->head, addr);
         }
-        return pci_data_read(PCI_HOST_BRIDGE(s)->bus, cfg, size);
+        value = pci_data_read(PCI_HOST_BRIDGE(s)->bus, cfg, size);
+        trace_sgi_pic_head_reg_read(s->head, addr, size, value);
+        return value;
     }
     if (size == 8 && !(addr & 7) && pic_defined(addr) &&
         addr < sizeof(s->reg)) {
-        return REG(s, addr);
+        uint64_t value = REG(s, addr);
+
+        trace_sgi_pic_head_reg_read(s->head, addr, size, value);
+        return value;
     }
     if (size == 8 && !(addr & 7) && addr >= 0x18000 && addr < 0x19800) {
         unsigned bank = (addr - 0x18000) / 0x800;
         unsigned index = ((addr - 0x18000) % 0x800) / 8;
 
-        return s->req[bank][index];
+        uint64_t value = s->req[bank][index];
+
+        trace_sgi_pic_head_reg_read(s->head, addr, size, value);
+        return value;
     }
     pic_unsupported(s, addr, size, 0, false);
     return 0;
 }
 
-static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
+                               unsigned size, bool trace)
 {
-    SGIPICHead *s = opaque;
     uint32_t cfg;
+    uint64_t requested_value = value;
 
     if (pic_short_window(addr, &(unsigned){ 0 }, &(hwaddr){ 0 },
                          &(hwaddr){ 0 })) {
@@ -1018,6 +1036,7 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
                           HWADDR_PRIx "\n", s->head, addr);
         }
         pci_data_write(PCI_HOST_BRIDGE(s)->bus, cfg, value, size);
+        trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
         return;
     }
     if (size != 8 || (addr & 7)) {
@@ -1029,6 +1048,9 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         unsigned index = ((addr - 0x18000) % 0x800) / 8;
 
         s->req[bank][index] = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     }
     if (!pic_defined(addr) || addr >= sizeof(s->reg)) {
@@ -1047,6 +1069,9 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             value &= 0xf;
         }
         REG(s, addr) = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     case 0x80: {
         /* Experimental software mask; other hardware fields are unknown. */
@@ -1057,6 +1082,9 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             value &= supported;
         }
         REG(s, addr) = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     }
     case 0x108: {
@@ -1069,6 +1097,9 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
                 pic_packet(s, pin, true);
             }
         }
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     }
     case 0x110:
@@ -1079,10 +1110,16 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
                 pic_packet(s, pin, true);
             }
         }
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     case 0x120:
         pic_unsupported(s, addr, size, value, true);
         REG(s, addr) = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     default:
         if (addr >= 0x200 && addr <= 0x218 &&
@@ -1093,8 +1130,16 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
                      (1U << 12) | (1U << 22) | 0xfff;
         }
         REG(s, addr) = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
         return;
     }
+}
+
+static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+{
+    pic_write_internal(opaque, addr, value, size, true);
 }
 
 static bool pic_cpu_word_slot(SGIPICHead *s, hwaddr addr, hwaddr *slot)
@@ -1119,15 +1164,24 @@ static uint64_t pic_cpu_word_read(SGIPICHead *s, hwaddr addr)
         return 0;
     }
     if (slot == 0) {
-        return pic_widget_identity(s);
+        uint64_t value = pic_widget_identity(s);
+
+        trace_sgi_pic_head_reg_read(s->head, addr, 4, (uint32_t)value);
+        return value;
     }
     if (slot >= 0x18000) {
         unsigned bank = (slot - 0x18000) / 0x800;
         unsigned index = ((slot - 0x18000) % 0x800) / 8;
 
-        return s->req[bank][index];
+        uint64_t value = s->req[bank][index];
+
+        trace_sgi_pic_head_reg_read(s->head, addr, 4, (uint32_t)value);
+        return value;
     }
-    return REG(s, slot);
+    uint64_t value = REG(s, slot);
+
+    trace_sgi_pic_head_reg_read(s->head, addr, 4, (uint32_t)value);
+    return value;
 }
 
 static void pic_cpu_word_write(SGIPICHead *s, hwaddr addr, uint32_t value)
@@ -1146,14 +1200,17 @@ static void pic_cpu_word_write(SGIPICHead *s, hwaddr addr, uint32_t value)
 
         s->req[bank][index] =
             (s->req[bank][index] & UINT64_C(0xffffffff00000000)) | value;
+        trace_sgi_pic_head_reg_write(s->head, addr, 4, value);
         return;
     }
     if (slot == 0x110) {
-        pic_write(s, slot, value, 8);
+        pic_write_internal(s, slot, value, 8, false);
+        trace_sgi_pic_head_reg_write(s->head, addr, 4, value);
         return;
     }
     merged = (REG(s, slot) & UINT64_C(0xffffffff00000000)) | value;
-    pic_write(s, slot, merged, 8);
+    pic_write_internal(s, slot, merged, 8, false);
+    trace_sgi_pic_head_reg_write(s->head, addr, 4, value);
 }
 
 static const MemoryRegionOps pic_ops = {
