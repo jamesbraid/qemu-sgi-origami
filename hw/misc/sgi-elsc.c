@@ -10,6 +10,7 @@
 #include "hw/misc/sgi-elsc.h"
 #include "hw/i2c/i2c-wire.h"
 #include "hw/core/cpu.h"
+#include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -211,6 +212,10 @@ static const char *const elsc_message_text[SGI_ELSC_MESSAGE_COUNT] = {
 
 /* An acknowledged "rst" resets the module a second later. */
 #define ELSC_RESET_WAIT_MS 1000
+
+/* "nmi" pulses a second after the request, for 100 ms. */
+#define ELSC_NMI_WAIT_MS   1000
+#define ELSC_NMI_PULSE_MS  100
 
 /*
  * Queue a message for the Hubs. It is announced to every processor code
@@ -939,6 +944,71 @@ static void elsc_handle_sla(SGIElscState *s, ElscRequest *r)
     elsc_frame_ok(s);
 }
 
+/*
+ * Pulse the module's NMI output for 100 ms now, then free the lock and
+ * reinitialise the bus interface. An Origin 2000 module drives the pulse
+ * itself and reinitialises this controller when it ends, so the lock is
+ * freed as the pulse starts there rather than 100 ms later. With no module
+ * owner the controller drives its own "nmi" output, which the machine
+ * wires to its node's processors.
+ */
+static void elsc_pulse_nmi(SGIElscState *s)
+{
+    if (s->module_ops && s->module_ops->nmi) {
+        if (!s->module_ops->nmi(s->module_opaque)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-elsc: the module could not pulse its NMI "
+                          "output\n");
+            return;
+        }
+        s->tas_lock = ELSC_TAS_FREE;
+        return;
+    }
+    if (s->nmi_pulse_active) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-elsc: NMI requested during an NMI pulse\n");
+        return;
+    }
+    s->nmi_pulse_active = true;
+    qemu_set_irq(s->nmi_out, 1);
+    timer_mod(s->nmi_pulse_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              ELSC_NMI_PULSE_MS);
+}
+
+static void elsc_nmi_pulse_ended(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    s->nmi_pulse_active = false;
+    qemu_set_irq(s->nmi_out, 0);
+    s->tas_lock = ELSC_TAS_FREE;
+    sgi_elsc_reinitialize(s);
+}
+
+static void elsc_nmi_wait_expired(void *opaque)
+{
+    elsc_pulse_nmi(opaque);
+}
+
+/*
+ * "nmi": an unpowered module answers "err cmd". Otherwise "ok ", and a
+ * second later the module's processors get a 100 ms NMI pulse; another
+ * "nmi" inside that second starts the wait again. No message goes to the
+ * Hubs, and power, countdowns and console selection are untouched. The
+ * wait starts as the command is answered, as the firmware's does: the
+ * pulse disturbs nothing an unread "ok" would protect.
+ */
+static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
+{
+    if (!elsc_module_powered(s)) {
+        elsc_frame_response_str(s, "err cmd");
+        return;
+    }
+    timer_mod(s->nmi_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              ELSC_NMI_WAIT_MS);
+    elsc_frame_ok(s);
+}
+
 /* Which builds have a command in their table. */
 #define ELSC_BUILD_ORIGIN200    (1u << 0)
 #define ELSC_BUILD_ORIGIN2000   (1u << 1)
@@ -967,6 +1037,7 @@ static const ElscCommand elsc_commands[] = {
     { "hbt", ELSC_BUILD_BOTH,       elsc_handle_hbt },
     { "key", ELSC_BUILD_ORIGIN2000, elsc_handle_key },
     { "nic", ELSC_BUILD_BOTH,       elsc_handle_nic },
+    { "nmi", ELSC_BUILD_BOTH,       elsc_handle_nmi },
     { "pwr", ELSC_BUILD_BOTH,       elsc_handle_pwr },
     { "rst", ELSC_BUILD_BOTH,       elsc_handle_rst },
     { "rsw", ELSC_BUILD_BOTH,       elsc_handle_rsw },
@@ -1670,6 +1741,12 @@ static void elsc_reset_hold(Object *obj, ResetType type)
 
     timer_del(s->pwr_down_timer);
     timer_del(s->rst_timer);
+    timer_del(s->nmi_timer);
+    timer_del(s->nmi_pulse_timer);
+    if (s->nmi_pulse_active) {
+        s->nmi_pulse_active = false;
+        qemu_set_irq(s->nmi_out, 0);
+    }
     s->fan_high = false;
     s->fsc_present = false;
     s->short_timeouts = false;
@@ -1775,6 +1852,10 @@ static void elsc_realize(DeviceState *dev, Error **errp)
                                     elsc_message_expired, s);
     s->rst_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                 elsc_reset_wait_expired, s);
+    s->nmi_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                elsc_nmi_wait_expired, s);
+    s->nmi_pulse_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                      elsc_nmi_pulse_ended, s);
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
@@ -1795,6 +1876,10 @@ static void elsc_unrealize(DeviceState *dev)
     s->message_timer = NULL;
     timer_free(s->rst_timer);
     s->rst_timer = NULL;
+    timer_free(s->nmi_timer);
+    s->nmi_timer = NULL;
+    timer_free(s->nmi_pulse_timer);
+    s->nmi_pulse_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
     notifier_remove(&s->shutdown_notifier);
@@ -1905,6 +1990,9 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8(message_mask, SGIElscState),
         VMSTATE_TIMER_PTR(message_timer, SGIElscState),
         VMSTATE_TIMER_PTR(rst_timer, SGIElscState),
+        VMSTATE_TIMER_PTR(nmi_timer, SGIElscState),
+        VMSTATE_TIMER_PTR(nmi_pulse_timer, SGIElscState),
+        VMSTATE_BOOL(nmi_pulse_active, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
@@ -1919,6 +2007,17 @@ static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_STRING("build", SGIElscState, build),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
+
+/*
+ * The NMI output a controller with no module owner drives. A machine that
+ * has nothing to deliver an NMI to leaves it unconnected.
+ */
+static void elsc_init(Object *obj)
+{
+    SGIElscState *s = SGI_ELSC(obj);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
+}
 
 static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
 {
@@ -1944,6 +2043,7 @@ static const TypeInfo sgi_elsc_types[] = {
         .name          = TYPE_SGI_ELSC,
         .parent        = TYPE_I2C_SLAVE,
         .instance_size = sizeof(SGIElscState),
+        .instance_init = elsc_init,
         .class_init    = sgi_elsc_class_init,
         .interfaces    = (const InterfaceInfo[]) {
             { TYPE_I2C_WIRE_ENDPOINT },

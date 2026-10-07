@@ -1325,6 +1325,7 @@ static void test_module_power_commands(Fixture *f, gconstpointer unused)
     g_assert_cmpint(f->level[LINE_POWER], ==, 0);
     expect_response(f, "pwr", "ok d");
     expect_response(f, "rst", "err cmd");
+    expect_response(f, "nmi", "err cmd");
     expect_response(f, "pwr d 259", "ok ");
     expect_response(f, "tas", "ok A");
 

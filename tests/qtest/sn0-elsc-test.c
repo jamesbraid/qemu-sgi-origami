@@ -2930,6 +2930,43 @@ static void test_rst_waits_one_second(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "nmi" pulses the node's processors' NMI a second after the request, for
+ * 100 ms, and another "nmi" inside the second starts the wait again. The
+ * lock is freed when the pulse ends.
+ */
+static void test_nmi_pulses_after_one_second(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub/elsc", "nmi");
+    assert_reply(qts, "tas A", "ok 0");
+    assert_reply(qts, "nmi", "ok ");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    assert_reply(qts, "nmi junk", "ok ");
+    qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    g_assert_true(qtest_get_irq(qts, 0));
+    assert_reply(qts, "tas", "ok A");
+    qtest_clock_step(qts, 99 * (int64_t)SCALE_MS);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_clock_step(qts, SCALE_MS);
+    g_assert_false(qtest_get_irq(qts, 0));
+    assert_reply(qts, "tas", "ok 0");
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+
+    /* A power cycle inside the wait does not cancel it. */
+    assert_reply(qts, "nmi", "ok ");
+    qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
+    assert_reply(qts, "pwr c", "ok ");
+    qtest_qmp_eventwait(qts, "RESET");
+    qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 2);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3032,6 +3069,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/nmi-pulses-after-one-second", NULL,
+                        test_nmi_pulses_after_one_second);
     qtest_add_data_func("sn0/elsc/rst-waits-one-second", NULL,
                         test_rst_waits_one_second);
     qtest_add_data_func("sn0/elsc/pwr-down-posts-pd-remote", NULL,
