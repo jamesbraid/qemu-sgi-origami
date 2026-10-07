@@ -122,7 +122,8 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
  * XIO destination, which has no reverse mapping to a PCI address.
  * "Plain offset" describes the address math only: the specification names
  * this range the alias of PCI memory for 32-bit device targets, so bytes are
- * placed as for a swap-clear 32-bit device window.
+ * placed as for a 32-bit device window, with the control register's memory
+ * swap bit standing in for a device register's programmed-access swap.
  * Only this range is modeled; the 64-bit device alias above it and the PCI
  * I/O range are not.
  *
@@ -130,7 +131,8 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
  * 8 MiB BAR2 (framebuffer plus control registers, hw/display/psitech-rad4.c)
  * is too large for a per-slot window and is reachable only through here. IRIX
  * 6.5.30 booted through it renders a real but wrong-colored xdm login screen
- * (correct shapes and layout, wrong colors).
+ * (correct shapes and layout, wrong colors). IRIX maps BAR2 asking for
+ * word values, which leaves the memory swap bit clear.
  */
 #define SGI_BRIDGE_PIO_XLATE_BASE 0x40000000
 #define SGI_BRIDGE_PIO_XLATE_SIZE 0x40000000
