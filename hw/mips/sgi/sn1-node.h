@@ -62,7 +62,6 @@ typedef struct SN1NodeState {
 
     uint8_t option_intx_selected;
     uint8_t option_intx_map[SGI_PCI_INTX_MAP_SIZE];
-    uint32_t option_intx_owner;
     uint32_t option_intx_raw;
     uint8_t option_intx_levels;
     qemu_irq *option_intx_inputs;

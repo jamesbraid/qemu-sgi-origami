@@ -1948,7 +1948,6 @@ bool sn1_node_set_option_intx_map(SN1NodeState *node,
         }
     }
     memcpy(node->option_intx_map, map, sizeof(node->option_intx_map));
-    node->option_intx_owner = node->nasid;
     node->option_intx_selected = 1;
     return true;
 }
@@ -2772,7 +2771,6 @@ static const VMStateDescription vmstate_sn1_node = {
         VMSTATE_UINT64(board_id_word, SN1NodeState),
         VMSTATE_SINGLE(option_intx_selected, SN1NodeState, 0,
                        vmstate_info_uint8_equal, uint8_t),
-        VMSTATE_UINT32_EQUAL(option_intx_owner, SN1NodeState),
         VMSTATE_ARRAY(option_intx_map, SN1NodeState, SGI_PCI_INTX_MAP_SIZE, 0,
                       vmstate_info_uint8_equal, uint8_t),
         VMSTATE_UINT32(option_intx_raw, SN1NodeState),

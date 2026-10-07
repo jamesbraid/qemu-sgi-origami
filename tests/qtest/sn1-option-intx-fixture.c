@@ -37,7 +37,6 @@ static bool option_fixture_restore(OptionFixtureState *s, unsigned node,
     QEMUFile *input;
     Error *error = NULL;
     uint8_t map = n->option_intx_map[0];
-    uint32_t owner = n->option_intx_owner;
     uint8_t selected = n->option_intx_selected;
     bool loaded;
 
@@ -49,8 +48,6 @@ static bool option_fixture_restore(OptionFixtureState *s, unsigned node,
     if (mismatch == 1) {
         n->option_intx_map[0] ^= 1;
     } else if (mismatch == 2) {
-        n->option_intx_owner ^= 1;
-    } else if (mismatch == 3) {
         n->option_intx_selected ^= 1;
     } else {
         device_cold_reset(DEVICE(n));
@@ -59,7 +56,6 @@ static bool option_fixture_restore(OptionFixtureState *s, unsigned node,
     input = qemu_file_new_input(QIO_CHANNEL(channel));
     loaded = vmstate_load_vmsd(input, vmsd, n, vmsd->version_id, &error);
     n->option_intx_map[0] = map;
-    n->option_intx_owner = owner;
     n->option_intx_selected = selected;
     if (error) {
         error_report_err(error);
@@ -107,7 +103,7 @@ static void option_fixture_write(void *opaque, hwaddr offset, uint64_t value,
     if (node >= 2) {
         return;
     }
-    if (at == 8 && value <= 3) {
+    if (at == 8 && value <= 2) {
         s->migration_result = option_fixture_restore(s, node, value);
     } else if (at >= 0x400) {
         unsigned device = (at - 0x400) / 0x100;
