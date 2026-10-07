@@ -59,11 +59,12 @@ an emulator setting, not an observed IO9 card revision. The model uses
 QEMU's network backend interface; the IP53 profile does not claim that a
 particular host network backend or physical network route exists.
 
-The register, DMA, and interrupt behavior follows the reviewed BCM570x
-contract and its implemented qtests. Startup timing includes a bounded model
-approximation. Physical startup timing and the exact fitted IO9 Ethernet
-component remain unverified. DMA must continue through the selected PCI
-device's bus-master address space.
+The QEMU BCM570x model's register, DMA, and interrupt behavior is exercised
+by ``tests/qtest/bcm570x-test.c`` and ``tests/qtest/sn0-bcm570x-test.c``.
+Those qtests establish model behavior, not physical BCM5701 behavior on IO9.
+Startup timing includes a bounded model approximation. Physical startup
+timing and the exact fitted IO9 Ethernet component remain unverified. DMA
+must continue through the selected PCI device's bus-master address space.
 
 .. _sgi-ip53-ds1742:
 
