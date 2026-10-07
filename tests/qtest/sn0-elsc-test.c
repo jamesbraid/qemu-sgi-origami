@@ -2704,6 +2704,14 @@ static void test_request_grammar(const void *data)
     /* The character reader skips spaces and leaves the rest unread. */
     assert_reply(qts, "pwr   q", "ok 1");
     assert_reply(qts, "pwr q   junk", "ok 0");
+
+    /*
+     * An Origin 200 module is powered whenever the machine runs: "pwr"
+     * reports it and "pwr u" has nothing to do.
+     */
+    assert_reply(qts, "pwr", "ok u");
+    assert_reply(qts, "pwr u", "ok ");
+    assert_reply(qts, "pwr q", "ok 0");
     qtest_quit(qts);
 }
 

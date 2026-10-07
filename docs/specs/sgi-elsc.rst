@@ -149,42 +149,52 @@ Command vocabulary
     result. Whether a multi-module cold-power latch is per-module or
     machine-wide is not settled by the datasheet.
 
-``pwr d <sec>`` / ``pwr c``
+``pwr`` / ``pwr u``
+    ``pwr`` with no letter reports the module's power, ``ok u`` or ``ok
+    d``. ``pwr u`` answers ``ok`` and, on an unpowered module, powers it
+    up once the caller has read the ``ok``; every power-up sets the
+    cold-power latch and frees the ``tas`` byte. A powered module ignores
+    it. An Origin 200 module is powered whenever the machine runs, so
+    only an Origin 2000 module, whose module-management device owns its
+    power, is ever reported off. The firmware's power-up sequence holds
+    the controller for about four seconds while it checks the supplies;
+    the model's supplies are healthy and it answers at once.
+
+``pwr d <sec>`` / ``pwr c [<sec>]``
     The remaining power control, none boot-driven. ``pwr d <sec>``
     schedules a delayed power-down and ``pwr c`` power-cycles, both
     answered a bare ``ok``; both are destructive and, like ``rst``, need
-    no supervisor mode over I2C. The power-down delay is up to four hex
-    digits after one separator character, read until the first non-hex
-    character. 1 to 0x258 (re)loads a countdown measured from that
-    request, so a repeated request moves the deadline either way; IRIX
-    sends ``pwr d 1`` at halt and repeats ``pwr d 8`` while extending a
-    shutdown. 0 powers down at once, as does a request with no delay
-    while a countdown is pending; a request with no delay otherwise
-    starts a three-second countdown. A delay above 0x258 is ``err arg``
-    and changes nothing. ``pwr r``, the redundant-supply query, belongs
-    to controller firmware 3.3S and later; neither 6.5.7-era build has
-    it, so it is ``err arg`` like any unknown letter. The IRIX kernel
-    and IO6 PROM query it and skip the supply report on an error. An
-    immediate ``pwr d`` and ``pwr c`` act, like ``rst``,
-    once the caller has read the ``ok``: ``pwr d`` shuts the machine
-    down, ``pwr c`` resets it (a power-cycle). A countdown shuts the
-    machine down when it expires, on the virtual clock. A timed or soft
-    request also queues ``pd remote`` for the Hubs (see `Controller
-    messages`_). Four approximations remain. A system reset cancels a pending countdown,
-    although the controller keeps running through a reset on hardware,
-    so a countdown followed by ``rst`` never powers down. The countdown
-    is the nominal number of seconds, although the datasheet infers that
-    the firmware's 16-bit millisecond count wraps above 0x41; and
-    expiry shuts down the whole machine, where
-    a two-module Origin 200's slave controller would power off only its
-    own module. The controller does not track module power, so it never
-    gives the firmware's bare ``ok`` to a ``pwr d`` sent while its
-    module is off. Both supplies are modelled healthy. The letter comes
-    from the character reader, and a letter the controller does not
-    know is ``err arg``. ``pwr c`` takes an optional off interval, read
-    like the ``pwr d`` delay, from 5 to 0x258 seconds; anything outside
-    that is ``err arg``, and the model restarts at once whatever the
-    interval.
+    no supervisor mode over I2C. Exactly one character after the ``d``
+    is skipped and the delay comes from the hex reader. 1 to 0x258
+    (re)loads a countdown measured from that request, so a repeated
+    request moves the deadline either way; IRIX sends ``pwr d 1`` at
+    halt and repeats ``pwr d 8`` while extending a shutdown. 0 powers
+    down at once, as does a request with no delay while a countdown is
+    pending; a request with no delay otherwise starts a three-second
+    countdown. A delay above 0x258 is ``err arg`` and changes nothing.
+    On an unpowered module every ``pwr d`` answers a bare ``ok`` and
+    does nothing, with no range check. A timed or soft request also
+    queues ``pd remote`` for the Hubs (see `Controller messages`_).
+    ``pwr c`` takes an optional off interval, read the same way, from 5
+    to 0x258 seconds; anything outside that is ``err arg``. ``pwr r``,
+    the redundant-supply query, belongs to controller firmware 3.3S and
+    later; neither 6.5.7-era build has it, so it is ``err arg`` like any
+    unknown letter. The IRIX kernel and IO6 PROM query it and skip the
+    supply report on an error.
+
+    An immediate ``pwr d`` and ``pwr c`` act, like ``rst``, once the
+    caller has read the ``ok``: ``pwr d`` shuts the machine down,
+    ``pwr c`` resets it (a power-cycle). A countdown shuts the machine
+    down when it expires, on the virtual clock. Four approximations
+    remain. A system reset cancels a pending countdown, although the
+    controller keeps running through a reset on hardware, so a countdown
+    followed by ``rst`` never powers down. The countdown is the nominal
+    number of seconds, although the datasheet infers that the firmware's
+    16-bit millisecond count wraps above 0x41. The power cycle restarts
+    at once, whatever its interval: QEMU cannot hold a machine unpowered
+    and keep its clock running. And expiry shuts down the whole machine,
+    where a two-module Origin 200's slave controller would power off
+    only its own module.
 
 ``hbt [<interval> [<cycle>]]``
     Heartbeat / NMI-watchdog control. ``hbt`` with no readable value
@@ -325,7 +335,7 @@ The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 ``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
 no other effect. Some commands the controller firmware answers over I2C
 are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
-``sel`` in both builds, and ``pwr u``.
+``sel`` in both builds.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
 
 Controller messages
@@ -423,7 +433,7 @@ still answers ``ok``, deliberately -- refusing would make the IRIX caller
 fall back to its own hardware reset and race the committed action, which
 is worse than a stale ``ok``. But that ``ok`` then describes a command the
 machine will not perform. The action carried out is always the committed
-one; the nine combinations resolve as:
+one; the sixteen combinations resolve as:
 
 .. list-table::
    :header-rows: 1
@@ -432,17 +442,26 @@ one; the nine combinations resolve as:
      - ``rst`` (reset)
      - ``pwr c`` (cycle)
      - ``pwr d`` (shutdown)
+     - ``pwr u`` (power-up)
    * - reset
      - exact
      - restarts; name only
      - restart, not off
+     - ignored: module on
    * - power-cycle
      - restarts; name only
      - exact
      - restart, not off
+     - ignored while on; else on after the interval
    * - shutdown
      - off, not restart
      - off, not restart
+     - exact
+     - ignored: module on; ends off
+   * - power-up
+     - refused: ``err cmd``
+     - on with no off interval
+     - on, not off
      - exact
 
 On the diagonal the ``ok`` is exact. Between ``reset`` and ``power-cycle``
@@ -452,7 +471,15 @@ meets a requested restart, or a committed restart meets a requested
 ``shutdown``, the outcome itself differs -- the machine ends up off when
 the caller asked it to come back, or the reverse. Every absorbed command
 is logged (``LOG_GUEST_ERROR``) naming the committed action and the new
-command, so the mismatch is never silent.
+command, so the mismatch is never silent. ``pwr u`` and the commands
+against a committed power-up follow from the module's power instead: a
+committed reset, cycle or shutdown leaves the module on until it fires,
+so ``pwr u`` is the powered module's no-op ``ok`` and nothing is logged,
+and a committed power-up leaves it off, so ``rst`` is refused and
+``pwr d`` gives the unpowered module's bare ``ok``, again unlogged; the
+module then comes on although the caller asked for it off. Only a ``pwr
+c`` meeting a committed power-up, or a ``pwr u`` meeting a cycle
+committed on an unpowered module, is absorbed and logged.
 
 **This table is model behaviour that no hardware capture has confirmed.**
 The window in which the collision arises is host-scheduling latency

@@ -81,6 +81,8 @@ static const char *elsc_action_name(uint8_t action)
         return "power-cycle";
     case ELSC_ACTION_SHUTDOWN:
         return "shutdown";
+    case ELSC_ACTION_POWER_UP:
+        return "power-up";
     default:
         return "deferred action";
     }
@@ -91,6 +93,14 @@ static const char *elsc_action_name(uint8_t action)
  * answers are the Origin 200's: this controller is the whole module, so it
  * can carry out its own actions and there is nobody to report the rest to.
  */
+static bool elsc_module_powered(SGIElscState *s)
+{
+    if (!s->module_ops || !s->module_ops->powered) {
+        return true;
+    }
+    return s->module_ops->powered(s->module_opaque);
+}
+
 static bool elsc_module_can_execute(SGIElscState *s, SGIElscAction action)
 {
     if (!s->module_ops || !s->module_ops->can_execute) {
@@ -420,6 +430,11 @@ static void elsc_handle_pwr_down(SGIElscState *s, ElscRequest *r)
     uint32_t sec;
     bool has_delay, immediate;
 
+    if (!elsc_module_powered(s)) {
+        /* Nothing to power down: a bare "ok", with no range check. */
+        elsc_frame_ok(s);
+        return;
+    }
     elsc_skip(r);
     has_delay = elsc_read_hex(r, &sec);
     if (has_delay && sec > SGI_ELSC_DELAY_MAX) {
@@ -466,11 +481,24 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
     char sub;
 
     if (!elsc_read_char(r, &sub)) {
-        elsc_frame_response_str(s, "err arg");
+        elsc_frame_response_str(s, elsc_module_powered(s) ? "ok u" : "ok d");
         return;
     }
 
     switch (sub) {
+    case 'u':
+        /*
+         * Power-up runs the module's power sequence, which also
+         * reinitialises this controller's bus interface, so like the
+         * destructive commands it waits until the "ok" has been read. A
+         * powered module ignores the request.
+         */
+        elsc_frame_ok(s);
+        if (!elsc_module_powered(s) &&
+            elsc_module_can_execute(s, ELSC_ACTION_POWER_UP)) {
+            elsc_arm_action(s, ELSC_ACTION_POWER_UP, "pwr u");
+        }
+        return;
     case 'q':
         /*
          * Power-on query: the PROM issues it once at power-on to detect a
@@ -642,7 +670,8 @@ static void elsc_handle_nic(SGIElscState *s, ElscRequest *r)
  */
 static void elsc_handle_rst(SGIElscState *s, ElscRequest *r)
 {
-    if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
+    if (!elsc_module_powered(s) ||
+        !elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
         elsc_frame_response_str(s, "err cmd");
         return;
     }
@@ -1087,9 +1116,17 @@ static void elsc_deferred_action_bh(void *opaque)
         break;
     case ELSC_ACTION_SHUTDOWN:
         break;
+    case ELSC_ACTION_POWER_UP:
+        /*
+         * Every power-up sets the cold-power latch and frees the lock. Only
+         * a module owner can have an unpowered module to power up.
+         */
+        s->cold_power_on = true;
+        s->tas_lock = ELSC_TAS_FREE;
+        break;
     default:
         /*
-         * Only the three actions above can be committed; post_load rejects
+         * Only the actions above can be committed; post_load rejects
          * any other value, so reaching here is a model bug.
          */
         g_assert_not_reached();
@@ -1708,13 +1745,13 @@ static int elsc_post_load(void *opaque, int version_id)
     /*
      * Reject an inconsistent stream before it can drive the bottom half. A
      * pairing the model never produces (an action past
-     * ELSC_ACTION_SHUTDOWN, the committed flag set with no action, or the
+     * ELSC_ACTION_POWER_UP, the committed flag set with no action, or the
      * scheduled flag set without the committed flag (scheduled is only ever
      * set while committed)) means a corrupt or foreign stream, so fail the
      * load rather than schedule a bottom half that would hit
      * g_assert_not_reached() or fire a phantom action.
      */
-    if (s->deferred_action > ELSC_ACTION_SHUTDOWN ||
+    if (s->deferred_action > ELSC_ACTION_POWER_UP ||
         (s->deferred_committed && s->deferred_action == ELSC_ACTION_NONE) ||
         (s->deferred_scheduled && !s->deferred_committed)) {
         return -EINVAL;

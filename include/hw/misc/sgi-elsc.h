@@ -37,16 +37,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 #define SGI_ELSC_DELAY_MAX 0x258
 
 /*
- * A destructive command whose effect is deferred until the guest reads its
- * "ok" (see deferred_action/deferred_committed): "rst" resets, "pwr c"
- * power-cycles (a reset that also re-arms the cold-power latch) and "pwr d"
- * shuts down.
+ * A command whose effect is deferred until the guest reads its "ok" (see
+ * deferred_action/deferred_committed): "rst" resets, "pwr c" power-cycles
+ * (a reset that also re-arms the cold-power latch), "pwr d" shuts down and
+ * "pwr u" powers an unpowered module up.
  */
 typedef enum SGIElscAction {
     SGI_ELSC_ACTION_NONE = 0,
     SGI_ELSC_ACTION_RESET,
     SGI_ELSC_ACTION_CYCLE,
     SGI_ELSC_ACTION_SHUTDOWN,
+    SGI_ELSC_ACTION_POWER_UP,
 } SGIElscAction;
 
 /*
@@ -66,6 +67,7 @@ typedef enum SGIElscMessage {
 #define ELSC_ACTION_RESET    SGI_ELSC_ACTION_RESET
 #define ELSC_ACTION_CYCLE    SGI_ELSC_ACTION_CYCLE
 #define ELSC_ACTION_SHUTDOWN SGI_ELSC_ACTION_SHUTDOWN
+#define ELSC_ACTION_POWER_UP SGI_ELSC_ACTION_POWER_UP
 
 /*
  * An Origin 2000 module complex owns what is module-scoped rather than
@@ -74,9 +76,12 @@ typedef enum SGIElscMessage {
  * alternate console belongs to. It installs these before realize
  * (sgi_elsc_set_module_ops). Every member is optional, and with none
  * installed the controller answers for its own module, which is what the
- * single-module Origin 200 needs.
+ * single-module Origin 200 needs: a module that is powered whenever the
+ * machine runs.
  */
 typedef struct SGIElscModuleOps {
+    /* Whether the module is powered. */
+    bool (*powered)(void *opaque);
     /* True when the module can actually carry the action out. */
     bool (*can_execute)(void *opaque, SGIElscAction action);
     /* Carry it out. Only called after can_execute() returned true. */

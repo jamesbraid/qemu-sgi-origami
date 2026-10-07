@@ -1279,6 +1279,41 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     advance_to(f->module->pulse_deadline);
 }
 
+/*
+ * The module's power as the controller reports and changes it. An
+ * unpowered module answers "pwr d" with a bare "ok" and no range check, and
+ * refuses "rst"; "pwr u" powers it up, which sets the cold-power latch and
+ * frees the lock.
+ */
+static void test_module_power_commands(Fixture *f, gconstpointer unused)
+{
+    expect_response(f, "pwr", "ok u");
+    expect_response(f, "pwr u", "ok ");
+    drain_actions();
+    g_assert_cmpuint(f->raises[LINE_POWER], ==, 1);
+    expect_response(f, "pwr q", "ok 1");
+    expect_response(f, "pwr q", "ok 0");
+    expect_response(f, "tas A", "ok 0");
+
+    expect_response(f, "pwr d 0", "ok ");
+    drain_actions();
+    g_assert_false(f->module->power_on);
+    g_assert_cmpint(f->level[LINE_POWER], ==, 0);
+    expect_response(f, "pwr", "ok d");
+    expect_response(f, "rst", "err cmd");
+    expect_response(f, "pwr d 259", "ok ");
+    expect_response(f, "tas", "ok A");
+
+    expect_response(f, "pwr u", "ok ");
+    g_assert_false(f->module->power_on);
+    drain_actions();
+    g_assert_true(f->module->power_on);
+    g_assert_cmpuint(f->raises[LINE_POWER], ==, 2);
+    expect_response(f, "pwr", "ok u");
+    expect_response(f, "pwr q", "ok 1");
+    expect_response(f, "tas", "ok 0");
+}
+
 int main(int argc, char **argv)
 {
     Object *machine;
@@ -1358,6 +1393,8 @@ int main(int argc, char **argv)
     g_test_add("/sgi-sn0-module-management/reinitialize/partial", Fixture,
                GINT_TO_POINTER(TEST_PARTIAL), setup,
                test_reinitialize_uncommitted, teardown);
+    g_test_add("/sgi-sn0-module-management/msc/power-commands", Fixture,
+               NULL, setup, test_module_power_commands, teardown);
     g_test_add("/sgi-sn0-module-management/reinitialize/queues", Fixture,
                GINT_TO_POINTER(TEST_CONSOLE), setup, test_reinitialize_queues,
                teardown);
