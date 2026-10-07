@@ -466,6 +466,17 @@ static void crime_unrealize(DeviceState *dev)
     migrate_del_blocker(&s->migration_blocker);
 }
 
+MemoryRegion *sgi_crime_get_decoded_ram(DeviceState *dev)
+{
+    SGICrimeState *s = SGI_CRIME(dev);
+
+    if (!qdev_is_realized(dev) || !s->eight_128m_banks ||
+        !s->ram_aliases_mapped) {
+        return NULL;
+    }
+    return &s->decoded_ram;
+}
+
 static void crime_init(Object *obj)
 {
     SGICrimeState *s = SGI_CRIME(obj);

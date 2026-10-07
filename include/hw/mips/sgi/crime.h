@@ -38,4 +38,14 @@ struct SGICrimeState {
     bool ram_aliases_mapped;
 };
 
+/**
+ * sgi_crime_get_decoded_ram: Borrow the populated-bank memory view.
+ * @dev: a TYPE_SGI_CRIME device
+ *
+ * Return the 1 GiB decoded region only after @dev is realized with
+ * eight-128m-banks enabled. Return NULL otherwise. The caller holds
+ * the BQL and removes aliases of this region before unrealizing @dev.
+ */
+MemoryRegion *sgi_crime_get_decoded_ram(DeviceState *dev);
+
 #endif
