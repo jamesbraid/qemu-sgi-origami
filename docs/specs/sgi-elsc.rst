@@ -145,7 +145,8 @@ Command vocabulary
     power cycle and ``ok 0`` afterwards. The model latches a cold
     power-on and clears the latch on read, so only the first caller
     after power-on sees the 1; the latch is set when the controller
-    powers up and is not re-armed by a warm reset. The controller
+    starts and at every power-up of its module, and no reset of the module
+    re-arms it. The controller
     datasheet records this clear-on-read behaviour as 6.5.7-derived and
     unconfirmed for the 6.5.30 firmware; one measured exchange would
     settle it. The latch is per-controller: on the single-module Origin
@@ -247,17 +248,15 @@ Command vocabulary
     module drives that pulse itself, and on an Origin 200 QEMU's reset
     is instantaneous. A caller treats ``ok`` as proof the reset happened
     and does not fall back to its own hardware reset, so the reset is
-    performed rather than logged. The datasheet's reset is
-    module-scoped; on the single-module Origin 200 the module is the
-    whole machine, so this is exact. On a
-    multi-node machine it resets the whole VM, broader than the hardware's
-    per-module reset -- QEMU provides no per-module reset and the model
-    keeps the whole-machine reset rather than refuse.
+    performed rather than logged. The reset is the module's: the machine
+    cold-starts the module whose controller took the command (`Module
+    power`_) and no other, as the datasheet specifies. Whether the
+    hardware reset reaches the module's Routers, Crossbows and XIO boards
+    is unknown, so the model resets them with the rest of the module.
 
-        A power cycle's restart re-arms only the initiating controller's
-    cold-power latch: on a two-chassis machine the other module's
-    ``pwr q`` answers ``ok 0`` after the machine reset it also went
-    through.
+    A power cycle's restart re-arms only the initiating controller's
+    cold-power latch: the other module of a two-chassis machine is not
+    restarted, and its ``pwr q`` is neither set nor cleared by it.
 
 ``tas [<ch>]``
     The test-and-set lock cell: one byte, ``0`` when free. The argument
@@ -439,7 +438,11 @@ Module power
 
 The controller decides whether its module is powered: the Origin 200
 controller holds that itself, and an Origin 2000 module's controller
-drives its module-management device's power output. While a module is
+drives its module-management device's power output. Either way a power
+event, and the module reset ``rst`` asks for, reaches the controller's own
+module and no other: the Origin 200 controller drives power and reset
+outputs of its own that the machine acts on for that module alone, and the
+Origin 2000 module-management device does the same through its outputs. While a module is
 unpowered the controller keeps running and answering: ``pwr`` gives
 ``ok d``, ``rst`` and ``nmi`` give ``err cmd``, an ``nmi`` or heartbeat
 pulse already under way reaches no processor, and an Origin 2000
@@ -453,8 +456,10 @@ rest of the machine run on. After the reset Status.ERL masks every
 interrupt, so an interrupt the Hub still raises cannot end the halt, and
 the controller sends no NMI to an unpowered module. The machine's resets
 keep the processors stopped while the module stays unpowered. When power
-returns the controller resets the machine, a reset it asked for (below),
-and the processors start from reset.
+returns the machine cold-starts that module and no other: its processors
+are reset and its parts cold-reset, and the processors start from the
+reset vector (:doc:`sgi-sn`, "Module power and reset"). The power-up sets
+the controller's cold-power latch before the module starts.
 
 The state that holds them is the controller's power state, the Hub's
 processor enables and the processors' own state, all migrated, and the
@@ -462,35 +467,44 @@ timers that end the hold are on the virtual clock, so a migration or a
 record and replay reproduces the off interval. A controller whose module
 is off says so again after a load, which holds the module's processors
 again in case their reset was still queued when the source stopped. A
-power-up reset asked for but not yet run when the source stopped is
-asked for again when the destination starts running
-(``power_up_reset_owed``), not during the load, where it could run
-before later sections load over it.
+module start owed when the source stopped is part of the machine's
+migrated state and is made when the destination starts running, not
+during the load, where it could run before later sections load over it.
 
 When a module loses power and every module of the machine is then off
 with no power-up to come -- no power-cycle countdown and no heartbeat
 watchdog that will cycle a module -- the machine powers down, which is
 what IRIX's ``shutdown -p`` relies on; a migration taken after that
 point makes the destination power down too. The machine decides this
-only as a module loses power: a module that went off with a power-up to
-come, whose power-up then goes away (``clr`` or ``hbt 0`` stopping the
-watchdog), stays off with its processors stopped and QEMU running, as
-the hardware would, until an operator's ``pwr u`` on the serial line
-brings it back. A module off while others run stays stopped, so a
+as a module loses power, and again when a power-up that was to come is
+cancelled on an unpowered module (``hbt 0`` or ``clr`` stopping the
+watchdog): with nothing left to bring any module back, the machine ends
+rather than idle with every module off, which the datasheet's rule asks
+for. A module off while others run stays stopped, so a
 two-module Origin 200's slave powers off only its own tower.
 
-Two approximations remain. The Hub's processor enables are registers a
+One approximation remains. The Hub's processor enables are registers a
 guest could write: the stopped processors cannot, but on a machine of
 several modules a running module's processors can reach an unpowered
-module's Hub and restart its processors from reset. And QEMU resets the
-whole machine, so a module's power-up restarts the other modules too.
+module's Hub and restart its processors from reset. The datasheet's other
+pending events that keep the machine alive -- an Origin 2000 controller's
+start-up power-up a few seconds after its start, an Origin 200 master's
+automatic power-up, and a master's power-up or power-down forward not yet
+delivered to its slave -- do not arise: the model starts every module
+powered, and has no controller-to-controller link (see "Deliberate gaps").
+The power-return test above is the part of the datasheet's rule the model
+can reach.
 
 Controller state across resets
 ------------------------------
 
-The controller is powered from the cabinet, not the module, so it keeps
-running through the module resets and power changes it causes itself:
-``rst``, power-off and power-up. Through those it reinitialises its bus
+The controller is powered from the cabinet, not the module, so it is in
+none of the module's resets and power changes: ``rst``, power-off and
+power-up never name it. The Origin 200 controller sits on its Hub's I2C
+adapter bus, which the module's cold start resets with the adapter, so
+there it rides through that reset; the Origin 2000 controller's bus is its
+module-management device's, which the module's start does not touch.
+Through them it reinitialises its bus
 interface and its queues, frees the ``tas`` byte and drops any message
 it had queued for the Hubs, and keeps everything else: module power and
 its power-up countdown, a power-down countdown (which a power-off ends),
@@ -499,12 +513,11 @@ console selection and output sender, the fan request, the ``fsc`` and
 ``tst`` flags and the margins. The Origin 2000 build's display keeps
 what was last shown there, though the controller's own status messages
 replace whatever a host wrote (see `Alphanumeric display`_). Any other
-QEMU reset, such as ``system_reset`` from the monitor, is taken as the
-controller's own start and clears all of it. A reset the controller
-asked for that turns into a shutdown (``-no-reboot``) or is not carried
-across a migration leaves no mark that a later reset could be mistaken
-for. On a two-module Origin 200 the machine reset also reaches the other
-module's controller, which takes it as its own start.
+QEMU reset, such as ``system_reset`` from the monitor, stands for an AC
+cycle: it is the controller's own start and clears all of it, the other
+module's controller included on a two-module Origin 200, and the start
+powers the module up (the model does not run the few seconds before an
+Origin 2000 controller's start-up power-up).
 
 Controller messages
 -------------------
@@ -575,16 +588,15 @@ free to keep executing until the main loop next runs the reset, a
 different number of instructions on every run -- does not arise. A
 ``rst`` only starts its one-second wait there, on the virtual clock, so
 its reset lands at a fixed point of virtual time and the processors run
-until then. For an immediate power-cycle or power-down where no module
-owns the controller (the Origin 200; see below), every processor is
-then stopped, mirroring the Hub's port-reset write
-(``sgi_hub_request_machine_reset()`` in :file:`hw/misc/sgi-hub.c`).
-Multi-threaded execution cannot promise a peer stops before its own next
-instruction -- it runs on its own host thread -- so there only the
-resulting reset, power-cycle or shutdown itself is guaranteed, not a
-bound on what a peer executed first. With no processor to queue the work
-on -- the bottom half re-armed after a migration, or a qtest access with
-no processor running guest code -- firing still uses a bottom half, which
+until then. An immediate power-cycle or power-down removes the module's
+power in that work, which queues a stop on each of the module's processors
+(:doc:`sgi-sn`, "Module power and reset"); the requester's own stop runs at
+its next block boundary. Multi-threaded execution cannot promise a peer
+stops before its own next instruction -- it runs on its own host thread --
+so there only the resulting power-cycle or shutdown itself is guaranteed,
+not a bound on what a peer executed first. With no processor to queue the
+work on -- the bottom half re-armed after a migration, or a qtest access
+with no processor running guest code -- firing still uses a bottom half, which
 does not stop any processor; nothing here has settled what real hardware
 does with a peer processor's execution in that window, only that this
 model must not leave it to host scheduling.

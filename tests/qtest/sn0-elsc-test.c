@@ -12,6 +12,7 @@
 #include "qobject/qjson.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -55,6 +56,41 @@
 /* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
 #define ELSC_AUX_LEADING_SERIALS "-serial none -serial none "
 
+/*
+ * A module's reset or power-up is a reset of that module's Hub, not the
+ * machine's, so there is no QMP RESET event to wait for. Every request the
+ * tests make first leaves a mark in the Hub's scratch register, which only
+ * a reset of that Hub clears, and module_reset_wait() waits for the mark to
+ * go. The module restarts from the main loop, whole, before the next
+ * access is served, so the wait never sees it half done.
+ */
+#define HUB_NI_SCRATCH_0    0x600100
+#define MODULE_MARK         0x600d
+
+static void module_mark_at(QTestState *qts, uint64_t hub)
+{
+    qtest_writeq(qts, hub + HUB_NI_SCRATCH_0, MODULE_MARK);
+}
+
+static void module_reset_wait(QTestState *qts)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "the module's reset");
+    while (qtest_readq(qts, HUB_LOCAL + HUB_NI_SCRATCH_0) == MODULE_MARK) {
+        sgi_wait_pause(&w, 1000);
+    }
+}
+
+/* No whole-machine reset has been requested. */
+static void assert_no_machine_reset(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+
+    qobject_unref(rsp);
+    g_assert_null(qtest_qmp_event_ref(qts, "RESET"));
+}
+
 static uint8_t frame_checksum(const uint8_t *buf, unsigned len)
 {
     uint8_t sum = 0;
@@ -88,6 +124,7 @@ static unsigned elsc_transact_at(QTestState *qts, uint64_t hub,
 {
     unsigned i, total;
 
+    module_mark_at(qts, hub);
     qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
 
     qtest_writeq(qts, hub + I2C_DATA, (ELSC_ADDR << 1) | 0);
@@ -421,6 +458,7 @@ static void elsc_request_without_read_cpu(QTestState *qts, unsigned int cpu,
     unsigned int req_len, i;
 
     req_len = build_request(req, text);
+    cpu_writeq(qts, cpu, hub + HUB_NI_SCRATCH_0, MODULE_MARK);
     cpu_writeq(qts, cpu, hub + I2C_DATA, ELSC_ADDR << 1);
     cpu_writeq(qts, cpu, hub + I2C_CTRL,
                CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
@@ -788,6 +826,7 @@ static void elsc_request_without_read(QTestState *qts, const char *text)
 
     req_len = build_request(req, text);
 
+    module_mark_at(qts, HUB_LOCAL);
     /* Enable the interface: a reset leaves it off, so nothing else may. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
@@ -1189,11 +1228,14 @@ static void test_two_towers_share_master_grant_ring(const void *data)
 }
 
 /*
- * A system-controller reset can arrive while the other module's PCF owns an
- * open transaction. The reset clears that PCF's registers, but it must also
- * release the I2C core transaction or the shared grant timer sees the peer
- * bus busy forever. Poll status before data as firmware does and require CPU
- * 3's own grant to remain reachable after the reset.
+ * A module reset can arrive while that module's PCF owns an open
+ * transaction: the processor that asked for the reset has read the
+ * acknowledgement and not closed the frame. The reset clears the PCF's
+ * registers, but it must also release the I2C core transaction or the shared
+ * grant timer sees the module's bus busy forever. Poll status before data as
+ * firmware does and require CPU 3's own grant to remain reachable after the
+ * reset. (A module reset leaves the other module's adapter alone, so it is
+ * the slave's own reset that this exercises.)
  */
 static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
 {
@@ -1206,25 +1248,51 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
     uint8_t req[16], resp[RESP_CAP];
     unsigned int req_len, resp_len, i;
     bool saw_cpu3_grant = false;
+    SgiWait w;
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
 
-    /* Leave the slave module's ELSC selected when the reset arrives. */
+    /*
+     * The slave module's processor addresses its own controller, asks for
+     * the reset, reads the whole acknowledgement and leaves the frame open.
+     * Unprogrammed, every Hub has node number zero, so the explicit address
+     * names the caller's own Hub.
+     */
+    cpu_writeq(qts, slave_cpu, explicit_zero + HUB_NI_SCRATCH_0, MODULE_MARK);
     cpu_writeq(qts, slave_cpu, explicit_zero + I2C_DATA, ELSC_ADDR << 1);
     cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
                CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(cpu_readq(qts, slave_cpu,
                               explicit_zero + I2C_CTRL) & I2C_PCF_LRB,
                     ==, 0);
-
     req_len = build_request(req, "rst");
-    resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
-                                sizeof(resp));
+    for (i = 0; i < req_len; i++) {
+        cpu_writeq(qts, slave_cpu, explicit_zero + I2C_DATA, req[i]);
+    }
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_ESO | CTL_STA | CTL_ACK);
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_DATA,
+               (ELSC_ADDR << 1) | 1);
+    (void)cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA);
+    resp[0] = cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA);
+    resp_len = resp[0] + 2;
+    g_assert_cmpuint(resp_len, <=, sizeof(resp));
+    for (i = 1; i < resp_len; i++) {
+        if (i == resp_len - 1) {
+            cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL, CTL_ESO);
+        }
+        resp[i] = cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA);
+    }
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     assert_response_begins(resp, "ok");
+
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    sgi_wait_start(&w, "the slave module's reset");
+    while (cpu_readq(qts, slave_cpu, explicit_zero + HUB_NI_SCRATCH_0) ==
+           MODULE_MARK) {
+        sgi_wait_pause(&w, 1000);
+    }
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
@@ -1502,7 +1570,7 @@ static void test_no_supervisor_on_i2c(const void *data)
     g_assert_cmpuint(resp[0], ==, 3);
     assert_response_begins(resp, "ok");
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 }
 
 /*
@@ -1827,12 +1895,13 @@ static void test_hbt_watchdog_control(const void *data)
 }
 
 /*
- * "rst" is the controller's module reset. It performs a real machine
- * reset, not the no-op the model
- * used to answer. A panic reboot treats "ok" as "the reset happened" and
- * does not fall back to its own hardware reset, so the reset must actually
- * fire; this asserts QEMU's RESET event, the way sn0-hub-test checks a
- * Hub-driven reset, and that the reset cleared controller state.
+ * "rst" is the controller's module reset. It really resets the module, not
+ * the no-op the model used to answer. A panic reboot treats "ok" as "the
+ * reset happened" and does not fall back to its own hardware reset, so the
+ * reset must actually fire. On this one-module machine it resets the
+ * module's Hub, and it is not a whole-machine reset: QEMU sends no RESET
+ * event, and the controller, which runs on standby power, keeps its state
+ * except for the lock the reset frees.
  */
 static void test_rst_performs_machine_reset(const void *data)
 {
@@ -1855,9 +1924,10 @@ static void test_rst_performs_machine_reset(const void *data)
 
     /* The reset actually happened, not just an "ok". */
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
+    assert_no_machine_reset(qts);
 
-    /* And it cleared controller state: the lock is free again. */
+    /* And it freed the lock the controller was holding. */
     req_len = build_request(req, "tas B");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
@@ -1890,7 +1960,7 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
 
     /* Only now, once the ack has been read, does the reset fire. */
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 }
 
 /*
@@ -1963,7 +2033,7 @@ static void test_rst_reset_fires_without_stop(const void *data)
 
     /* Reading the last ack byte fired the reset; no STOP was issued. */
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 }
 
 /*
@@ -2023,7 +2093,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
      * request did not cancel it.
      */
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 }
 
 /*
@@ -2070,7 +2140,7 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
 
     /* Reading the last ack byte fired the reset. */
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 
     /*
      * Re-enable the controller and read identity-EEPROM page 7, offset 0,
@@ -2142,7 +2212,7 @@ static void test_rst_reset_survives_migration(const void *data)
     assert_response_begins(resp, "ok");
 
     qtest_clock_step(to, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(to, "RESET");
+    module_reset_wait(to);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -2207,7 +2277,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     /* The closing STOP is the boundary that carries out the committed
      * reset. */
     qtest_clock_step(to, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(to, "RESET");
+    module_reset_wait(to);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -2454,7 +2524,7 @@ static void test_pwr_cycle_resets(const void *data)
 
     /* Power comes back after the interval and the power-up hold. */
     qtest_clock_step(qts, ELSC_CYCLE_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 }
 
 /* Whether QEMU has taken the guest's power-down, under -no-shutdown. */
@@ -2644,7 +2714,7 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     assert_response_begins(resp, "ok");
     assert_reply(qts, "pwr q", "ok 0");
     qtest_clock_step(qts, ELSC_CYCLE_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
 
     /* The cycle re-armed the latch: the first post-cycle query reads 1. */
     req_len = build_request(req, "pwr q");
@@ -2907,7 +2977,7 @@ static void test_rst_waits_one_second(const void *data)
     qtest_clock_step(qts, 999 * (int64_t)SCALE_MS);
     assert_reply(qts, "tas", "ok A");
     qtest_clock_step(qts, SCALE_MS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     assert_reply(qts, "tas", "ok 0");
     assert_reply(qts, "fan", "ok h");
 
@@ -2915,7 +2985,7 @@ static void test_rst_waits_one_second(const void *data)
     assert_reply(qts, "pwr d 3", "ok ");
     assert_reply(qts, "rst", "ok ");
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     g_assert_false(powered_down(qts));
     qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
     qtest_qmp_eventwait(qts, "SHUTDOWN");
@@ -2937,20 +3007,22 @@ static void test_rst_waits_one_second(const void *data)
     qtest_clock_step(qts, 699 * (int64_t)SCALE_MS);
     assert_reply(qts, "tas", "ok A");
     qtest_clock_step(qts, SCALE_MS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     assert_reply(qts, "tas", "ok 0");
     qtest_quit(qts);
 
     /*
-     * A reset the controller asked for that the machine turns into a
-     * shutdown never happens; the next reset, from outside, is the
-     * controller's start.
+     * The module reset is not the machine's: with the machine told to shut
+     * down on a reboot, "rst" still resets the module and keeps the
+     * controller, and only a reset from outside, an AC cycle, restarts it.
      */
     qts = qtest_init("-M origin200 -action reboot=shutdown,shutdown=pause");
     assert_reply(qts, "fan h", "ok ");
     assert_reply(qts, "rst", "ok ");
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    module_reset_wait(qts);
+    g_assert_false(powered_down(qts));
+    assert_reply(qts, "fan", "ok h");
     qtest_qmp_assert_success(qts, "{ 'execute': 'set-action', "
                              "'arguments': { 'reboot': 'reset' } }");
     qtest_system_reset(qts);
@@ -3149,7 +3221,7 @@ static void test_hbt_watchdog_stages(const void *data)
     qtest_clock_step(qts, SCALE_MS);
     assert_reply(qts, "pwr", "ok d");
     qtest_clock_step(qts, ELSC_CYCLE_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     assert_reply(qts, "pwr", "ok u");
     assert_reply(qts, "pwr q", "ok 1");
 
@@ -3206,7 +3278,7 @@ static void test_hbt_stopped_only_by_clr_or_zero(const void *data)
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
     assert_reply(qts, "rst", "ok ");
     qtest_clock_step(qts, ELSC_RESET_WAIT_NS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     qtest_clock_step(qts, 7999 * (int64_t)SCALE_MS);
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
     qtest_clock_step(qts, SCALE_MS);
@@ -3263,7 +3335,7 @@ static void test_pwr_cycle_holds_power_off(const void *data)
     assert_reply(qts, "pwr", "ok d");
     g_assert_false(cpus_enabled(qts));
     qtest_clock_step(qts, 2 * SCALE_MS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     assert_reply(qts, "pwr", "ok u");
     g_assert_true(cpus_enabled(qts));
 
@@ -3274,7 +3346,7 @@ static void test_pwr_cycle_holds_power_off(const void *data)
     qtest_clock_step(qts, 3999 * (int64_t)SCALE_MS);
     assert_reply(qts, "pwr", "ok d");
     qtest_clock_step(qts, SCALE_MS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     assert_reply(qts, "pwr", "ok u");
     qtest_quit(qts);
 }
@@ -3392,7 +3464,7 @@ static void test_controller_timers_survive_migration(const void *data)
     qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
     qts = migrate_to_new(qts, tmpfs, 3);
     qtest_clock_step(qts, 500 * (int64_t)SCALE_MS);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     qtest_quit(qts);
 }
 

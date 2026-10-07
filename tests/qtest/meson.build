@@ -454,6 +454,7 @@ sn0_machine_qtests = \
                                                    'sn0-baseio-test',
                                                    'sn0-bridge-identity-test',
                                                    'sn0-module-management-test',
+                                                   'sn0-module-domain-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
                                                    'sn0-migration-test',

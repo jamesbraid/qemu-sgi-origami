@@ -130,9 +130,9 @@ bool sgi_elsc_module_powered(SGIElscState *s)
     return elsc_module_powered(s);
 }
 
-bool sgi_elsc_resetting_itself(SGIElscState *s)
+void sgi_elsc_ride_through_reset(SGIElscState *s, bool on)
 {
-    return s->resetting_itself;
+    s->ride_through = on;
 }
 
 /* Record an Origin 2000 display status message. */
@@ -824,6 +824,18 @@ static void elsc_hbt_arm(SGIElscState *s, uint32_t seconds)
               (int64_t)seconds * 1000);
 }
 
+/*
+ * A power-up that was to come may have just been cancelled. On an unpowered
+ * module, say again that the power is off, so the machine asks whether
+ * anything is left to power a module up and ends if not.
+ */
+static void elsc_recheck_shutdown(SGIElscState *s)
+{
+    if (!elsc_module_powered(s)) {
+        qemu_set_irq(s->power_out, 0);
+    }
+}
+
 static void elsc_hbt_stop(SGIElscState *s)
 {
     s->hbt_interval = 0;
@@ -856,6 +868,7 @@ static void elsc_handle_hbt(SGIElscState *s, ElscRequest *r)
     }
     if (interval == 0) {
         elsc_hbt_stop(s);
+        elsc_recheck_shutdown(s);
         elsc_frame_ok(s);
         return;
     }
@@ -1102,6 +1115,7 @@ static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
         memset(s->display, ' ', sizeof(s->display));
         s->status = SGI_ELSC_STATUS_NONE;
     }
+    elsc_recheck_shutdown(s);
     elsc_frame_ok(s);
 }
 
@@ -1396,24 +1410,23 @@ static void elsc_power_sequence(SGIElscState *s)
 /*
  * Remove module power. The processors of an unpowered module do not run:
  * the power output tells the machine, which stops them at once through
- * their Hub's processor enables and keeps them stopped across resets
- * (sgi_elsc_module_powered()), while the virtual clock, and so this
- * controller, keeps running. Once every module of the machine is off with
- * no power-up to come, the machine powers down. Answers whether this
- * controller's own processors should stop where they are.
+ * their Hub's processor enables and keeps them stopped while the module
+ * stays unpowered (sgi_elsc_module_powered()), while the virtual clock, and
+ * so this controller, keeps running. Once every module of the machine is
+ * off with no power-up to come, the machine powers down.
  */
-static bool elsc_remove_power(SGIElscState *s)
+static void elsc_remove_power(SGIElscState *s)
 {
     /* The power-off ends a power-down countdown. */
     timer_del(s->pwr_down_timer);
     if (!elsc_module_powered(s)) {
-        return false;
+        return;
     }
     elsc_status(s, SGI_ELSC_STATUS_POWER_OFF);
     if (s->module_ops && s->module_ops->execute) {
         /* The module's power output reaches the machine. */
         s->module_ops->execute(s->module_opaque, ELSC_ACTION_SHUTDOWN);
-        return false;
+        return;
     }
     s->module_off = true;
     sgi_elsc_reinitialize(s);
@@ -1421,13 +1434,13 @@ static bool elsc_remove_power(SGIElscState *s)
         i2c_end_transfer(s->bus);
     }
     qemu_set_irq(s->power_out, 0);
-    return true;
 }
 
 /*
  * The countdown or the hold ran out. After the off interval the power-up
  * sequence starts; after the hold, power is back: the cold-power latch is
- * set and the machine is reset so the module's processors start.
+ * set and the module's power output rises, which cold-starts that module
+ * and no other.
  */
 static void elsc_power_up_expired(void *opaque)
 {
@@ -1446,9 +1459,6 @@ static void elsc_power_up_expired(void *opaque)
         s->module_off = false;
         qemu_set_irq(s->power_out, 1);
     }
-    s->self_reset = true;
-    s->power_up_reset_owed = true;
-    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
 }
 
 /*
@@ -1456,11 +1466,11 @@ static void elsc_power_up_expired(void *opaque)
  * power-up sequence. On a module already off it only restarts the
  * countdown. The power-off ends a power-down countdown.
  */
-static bool elsc_power_cycle(SGIElscState *s, unsigned seconds)
+static void elsc_power_cycle(SGIElscState *s, unsigned seconds)
 {
     timer_del(s->pwr_down_timer);
     elsc_power_countdown(s, seconds);
-    return elsc_remove_power(s);
+    elsc_remove_power(s);
 }
 
 /*
@@ -1630,7 +1640,7 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     elsc_frame_response_str(s, "err cmd");
 }
 
-static bool elsc_run_action(SGIElscState *s, uint8_t action);
+static void elsc_run_action(SGIElscState *s, uint8_t action);
 
 /*
  * The serial line's own commands. "ech" sets echo: "1" on, "0" off, and
@@ -2157,11 +2167,8 @@ static void elsc_request_complete(SGIElscState *s)
  *
  * Only COMMITTED actions fire. Firing clears state, so another boundary or
  * post-migration re-arm cannot execute the same action twice.
- *
- * Answers whether it asked the machine itself for a reset or shutdown just
- * now, which is when the requesting processor stops its peers.
  */
-static bool elsc_run_action(SGIElscState *s, uint8_t action)
+static void elsc_run_action(SGIElscState *s, uint8_t action)
 {
     /*
      * Release the bus for every destructive action, before it fires. All
@@ -2183,7 +2190,8 @@ static bool elsc_run_action(SGIElscState *s, uint8_t action)
     case ELSC_ACTION_CYCLE:
         /* The Hubs hear "pd cycle" before the power goes. */
         elsc_post_message(s, SGI_ELSC_MESSAGE_PD_CYCLE);
-        return elsc_power_cycle(s, s->cycle_seconds);
+        elsc_power_cycle(s, s->cycle_seconds);
+        break;
     case ELSC_ACTION_RESET:
         /*
          * The reset comes a second later (elsc_reset_wait_expired); another
@@ -2193,9 +2201,10 @@ static bool elsc_run_action(SGIElscState *s, uint8_t action)
         elsc_status(s, SGI_ELSC_STATUS_RESET);
         timer_mod(s->rst_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                   ELSC_RESET_WAIT_MS);
-        return false;
+        break;
     case ELSC_ACTION_SHUTDOWN:
-        return elsc_remove_power(s);
+        elsc_remove_power(s);
+        break;
     case ELSC_ACTION_POWER_UP:
         /*
          * "pwr u" on an unpowered module starts the power-up sequence now,
@@ -2205,7 +2214,7 @@ static bool elsc_run_action(SGIElscState *s, uint8_t action)
             !(s->power_sequence && timer_pending(s->power_up_timer))) {
             elsc_power_sequence(s);
         }
-        return false;
+        break;
     default:
         /*
          * Only the actions above can be committed; post_load rejects
@@ -2215,17 +2224,17 @@ static bool elsc_run_action(SGIElscState *s, uint8_t action)
     }
 }
 
-static bool elsc_run_committed_action(SGIElscState *s)
+static void elsc_run_committed_action(SGIElscState *s)
 {
     uint8_t action = s->deferred_action;
 
     if (!s->deferred_committed) {
-        return false;
+        return;
     }
     s->deferred_action = ELSC_ACTION_NONE;
     s->deferred_committed = false;
     s->deferred_scheduled = false;
-    return elsc_run_action(s, action);
+    elsc_run_action(s, action);
 }
 
 static void elsc_deferred_action_bh(void *opaque)
@@ -2237,10 +2246,11 @@ static void elsc_deferred_action_bh(void *opaque)
  * The second after an acknowledged "rst" has run out: reset the module. The
  * firmware then holds the reset for 100 ms, frees the lock and
  * reinitialises its bus interface. An Origin 2000 module drives that pulse
- * itself. On an Origin 200 the module is the whole machine, and QEMU's
- * reset is instantaneous, so no processor runs during a pulse either way.
+ * itself. With no module owner this controller's own reset output carries
+ * it, and the machine resets that controller's module alone; QEMU's reset
+ * is instantaneous, so no processor runs during a pulse either way.
  * Releasing the bus first matters for the reason elsc_run_committed_action
- * gives: a machine reset does not end a transfer this controller is in.
+ * gives: a reset does not end a transfer this controller is in.
  */
 static void elsc_reset_wait_expired(void *opaque)
 {
@@ -2254,15 +2264,13 @@ static void elsc_reset_wait_expired(void *opaque)
                           "acknowledged \"rst\" asked for\n");
             return;
         }
-        s->self_reset = true;
         s->module_ops->execute(s->module_opaque, ELSC_ACTION_RESET);
         return;
     }
     if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
         i2c_end_transfer(s->bus);
     }
-    s->self_reset = true;
-    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    qemu_irq_pulse(s->reset_out);
 }
 
 /*
@@ -2294,37 +2302,17 @@ static void elsc_response_fully_read(SGIElscState *s)
 }
 
 /*
- * Run a COMMITTED action from the requesting processor's own queued work,
- * then stop every processor, mirroring sgi_hub_request_machine_reset() in
- * hw/misc/sgi-hub.c for the Hub's port-reset write (#606). Queued work runs
- * at the writer's next translation-block boundary, outside the execution
- * loop, which is where a processor may be stopped. Round-robin execution
- * reaches it before any peer is scheduled again, so nothing else executes
- * past the write that committed the action; multi-threaded execution cannot
- * promise that, since the peers run on their own host threads, and this only
- * bounds them to their own next block boundary rather than to whenever the
- * main loop would otherwise have performed the reset.
- *
- * Only an action that asked the machine for a reset or shutdown at once
- * pauses every processor here: the no-module-owner power-cycle and
- * power-down. A "rst" waits a second, during which the processors run as
- * they do on hardware. Where a module decides what the action reaches
- * (module_ops->execute for the Origin 2000 module complex), stopping
- * processors is that module's call, not this controller's.
+ * Run a COMMITTED action from the requesting processor's own queued work.
+ * Queued work runs at the writer's next translation-block boundary, outside
+ * the execution loop. An action that takes the module's power away stops
+ * the module's processors the same way, from work queued on each of them
+ * (sgi_hub_power_off_cpu()), so the requester runs no further than its
+ * next block either way. A "rst" waits a second, during which the
+ * processors run as they do on hardware.
  */
 static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
 {
-    SGIElscState *s = data.host_ptr;
-    CPUState *peer;
-
-    if (elsc_run_committed_action(s)) {
-        CPU_FOREACH(peer) {
-            if (peer->cpu_index >= s->cpu_base &&
-                peer->cpu_index < s->cpu_base + s->num_cpus) {
-                cpu_pause(peer);
-            }
-        }
-    }
+    elsc_run_committed_action(data.host_ptr);
 }
 
 /*
@@ -2777,21 +2765,20 @@ void sgi_elsc_reinitialize(SGIElscState *s)
 }
 
 /*
- * A machine reset is either the controller's own start or a module reset or
- * power cycle the controller asked for (self_reset). The controller keeps
- * running through the second kind: it reinitialises its bus interface and
- * queues, frees the lock and drops what it had queued for the Hubs, and
- * keeps its countdowns, its flags and its display. Everything else in QEMU
- * that resets the machine is taken as the controller's start.
+ * A reset is either the controller's own start, which the machine's reset
+ * stands for (an AC cycle), or a module event reaching it through a bus it
+ * shares with module parts (ride_through). The machine's module events do
+ * not name the controller, which runs on standby power, but resetting the
+ * Origin 200 Hub's I2C adapter resets the bus the controller sits on. The
+ * controller keeps running through the second kind: it reinitialises its
+ * bus interface and queues, frees the lock and drops what it had queued for
+ * the Hubs, and keeps its countdowns, its flags and its display.
  */
 static void elsc_reset_hold(Object *obj, ResetType type)
 {
     SGIElscState *s = SGI_ELSC(obj);
-    bool keep = s->self_reset;
+    bool keep = s->ride_through;
 
-    s->self_reset = false;
-    s->power_up_reset_owed = false;
-    s->resetting_itself = keep;
     s->rxlen = 0;
     s->txlen = 0;
     s->txpos = 0;
@@ -2881,14 +2868,12 @@ static void elsc_reset_exit(Object *obj, ResetType type)
      * The controller's own start announces it on the serial line with its
      * version field.
      */
-    if (!s->resetting_itself) {
+    if (!s->ride_through) {
         elsc_serial_puts(s, "\x14MSC ");
         elsc_serial_puts(s, s->origin2000 ? SGI_ELSC_VERSION_ORIGIN2000 :
                                             SGI_ELSC_VERSION_ORIGIN200);
         elsc_serial_puts(s, "\r\n");
     }
-    s->self_reset = false;
-    s->resetting_itself = false;
     if (s->arbitration && !timer_pending(s->arb_timer)) {
         elsc_arb_step(s);
     }
@@ -2918,37 +2903,6 @@ void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,
     master->arb_positions = positions;
 }
 
-/*
- * A reset the controller asked for that never happens, because the machine
- * shut down instead (a reset turned into a shutdown, for one), must not make
- * a later, unrelated reset look like the controller's own. Only a shutdown
- * cancels it: a stop or a migration in between leaves the reset to come.
- */
-static void elsc_shutdown(Notifier *n, void *opaque)
-{
-    SGIElscState *s = container_of(n, SGIElscState, shutdown_notifier);
-
-    s->self_reset = false;
-    s->power_up_reset_owed = false;
-}
-
-/*
- * A reset request is not in the migration stream: one a power-up asked for
- * that had not run when the source stopped is asked for again once the
- * destination runs, or the module would stay powered with its processors
- * still stopped. Asking during the load would let the reset run before
- * later sections load over it.
- */
-static void elsc_vm_state_change(void *opaque, bool running, RunState state)
-{
-    SGIElscState *s = opaque;
-
-    if (running && s->power_up_reset_owed) {
-        s->self_reset = true;
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-    }
-}
-
 static void elsc_realize(DeviceState *dev, Error **errp)
 {
     SGIElscState *s = SGI_ELSC(dev);
@@ -2965,10 +2919,11 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
     s->arb_positions = ELSC_ORIGIN200_POSITIONS;
     /*
-     * The cold power-on latch is set here rather than in reset because a warm
-     * reset (a guest "rst", or any system reset) does not cycle power and
-     * so must not re-arm it; only powering the controller up does, which
-     * realize models. A migrated stream overwrites it on load.
+     * The cold power-on latch is set here, at the controller's first power-up,
+     * and again whenever its module powers up (elsc_power_up_expired). A
+     * reset does not cycle power, so no reset re-arms it: neither a module's
+     * "rst" nor the guest-requested whole-machine resets the model still
+     * makes for a Hub port reset. A migrated stream overwrites it on load.
      */
     s->cold_power_on = true;
     s->tas_lock = ELSC_TAS_FREE;
@@ -2998,9 +2953,6 @@ static void elsc_realize(DeviceState *dev, Error **errp)
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
                              NULL, NULL, s, NULL, true);
-    s->shutdown_notifier.notify = elsc_shutdown;
-    qemu_register_shutdown_notifier(&s->shutdown_notifier);
-    s->vm_state = qemu_add_vm_change_state_handler(elsc_vm_state_change, s);
 }
 
 static void elsc_unrealize(DeviceState *dev)
@@ -3028,8 +2980,6 @@ static void elsc_unrealize(DeviceState *dev)
     s->serial_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
-    notifier_remove(&s->shutdown_notifier);
-    qemu_del_vm_change_state_handler(s->vm_state);
 }
 
 /*
@@ -3121,7 +3071,6 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT32(txpos, SGIElscState),
         VMSTATE_TIMER_PTR(arb_timer, SGIElscState),
         VMSTATE_UINT32(arb_code, SGIElscState),
-        VMSTATE_BOOL(power_up_reset_owed, SGIElscState),
         VMSTATE_UINT8_ARRAY(rx_queue, SGIElscState, SGI_ELSC_RX_QUEUE_SIZE),
         VMSTATE_UINT32(rx_queue_len, SGIElscState),
         VMSTATE_UINT8(dip_switches, SGIElscState),
@@ -3205,6 +3154,7 @@ static void elsc_init(Object *obj)
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->power_out, "power", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->reset_out, "reset", 1);
 }
 
 static void sgi_elsc_class_init(ObjectClass *klass, const void *data)

@@ -440,7 +440,7 @@ static const MemoryRegionOps sn_promdata_ops = {
     .impl.unaligned = true,
 };
 
-static void sn_promdata_reset(void *opaque)
+void sn_promdata_reset(void *opaque)
 {
     SNPromDataState *s = opaque;
 

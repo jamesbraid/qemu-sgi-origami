@@ -107,6 +107,42 @@ static void adapter_write(QTestState *qts, unsigned node, uint64_t offset,
 }
 
 /*
+ * A module's reset or power-up is a reset of that module's parts, not the
+ * machine's, so QEMU sends no RESET event. Every controller command first
+ * leaves a mark in the first Hub's scratch register, which only a reset of
+ * that Hub clears, and module_reset_wait() waits for the mark to go. The
+ * module restarts from the main loop, whole, before the next access is
+ * served.
+ */
+#define HUB_NI_SCRATCH_0    0x600100
+#define MODULE_MARK         0x600d
+
+static void module_mark(QTestState *qts)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, MODULE_MARK);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, HUB_BASE + HUB_NI_SCRATCH_0,
+                                     bytes, sizeof(bytes)));
+}
+
+static void module_reset_wait(QTestState *qts)
+{
+    uint8_t bytes[8];
+    SgiWait w;
+
+    sgi_wait_start(&w, "the module's reset");
+    for (;;) {
+        g_assert_true(qtest_memread_cpu(qts, 0, HUB_BASE + HUB_NI_SCRATCH_0,
+                                        bytes, sizeof(bytes)));
+        if (ldq_be_p(bytes) != MODULE_MARK) {
+            return;
+        }
+        sgi_wait_pause(&w, 1000);
+    }
+}
+
+/*
  * The shared wire carries a byte over eighteen clock edges rather than in one
  * register write, so every step ends in the firmware's own poll.
  */
@@ -257,6 +293,7 @@ static bool msc_command_once(QTestState *qts, unsigned node, const char *text,
     }
     request[len + 1] = (uint8_t)-(int)sum;
 
+    module_mark(qts);
     if (!start_transfer(qts, node, MSC_ADDRESS, false)) {
         stop_transfer(qts, node);
         return false;
@@ -1258,6 +1295,7 @@ static void msc_command_then_reset(QTestState *qts, const char *text)
     }
     request[len + 1] = (uint8_t)-(int)sum;
 
+    module_mark(qts);
     g_assert_true(start_transfer(qts, 0, MSC_ADDRESS, false));
     for (i = 0; i < len + 2; i++) {
         g_assert_true(send_byte(qts, 0, request[i]));
@@ -1281,19 +1319,66 @@ static void msc_command_then_reset(QTestState *qts, const char *text)
      * its five-second interval and the 4.4-second power-up hold.
      */
     qtest_clock_step(qts, 10 * NANOSECONDS_PER_SECOND);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
+}
+
+static void assert_exact(QTestState *qts, unsigned node, const char *text,
+                         const char *expected);
+
+/* Leave a mark in node @node's Hub that only a reset of that Hub clears. */
+static void node_mark(QTestState *qts, unsigned node)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, MODULE_MARK);
+    g_assert_true(qtest_memwrite_cpu(qts, 2 * node,
+                                     HUB_BASE + HUB_NI_SCRATCH_0,
+                                     bytes, sizeof(bytes)));
+}
+
+static uint64_t node_mark_value(QTestState *qts, unsigned node)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 2 * node,
+                                    HUB_BASE + HUB_NI_SCRATCH_0,
+                                    bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+/* QEMU has requested no whole-machine reset. */
+static void assert_no_machine_reset(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+
+    qobject_unref(rsp);
+    g_assert_null(qtest_qmp_event_ref(qts, "RESET"));
 }
 
 /*
- * The module controller's reset and power outputs reach the machine. IRIX
+ * The module controller's reset and power outputs reach the module. IRIX
  * powers an Origin 2000 off with "pwr d 1" to every module controller, so
- * a refused power-down left the guest spinning at halt.
+ * a refused power-down left the guest spinning at halt. A reset restarts
+ * every node of the module and no more than the module: QEMU sends no
+ * whole-machine reset, and the controller, on standby power, keeps its
+ * console selection.
  */
 static void test_module_reset_reaches_machine(void)
 {
     QTestState *qts = start_module();
+    unsigned node;
 
+    for (node = 1; node < ADAPTER_COUNT; node++) {
+        node_mark(qts, node);
+    }
+    assert_exact(qts, 0, "sel none", "ok ");
     msc_command_then_reset(qts, "rst");
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(node_mark_value(qts, node), ==, 0);
+        init_adapter(qts, node);
+    }
+    assert_exact(qts, 0, "sel", "ok none");
+    assert_no_machine_reset(qts);
     qtest_quit(qts);
 }
 
@@ -1308,13 +1393,24 @@ static void test_module_power_down_reaches_machine(void)
     qtest_quit(qts);
 }
 
-/* "pwr c" removes power and restores it: a cold restart, not a power-off. */
+/*
+ * "pwr c" removes power and restores it: a cold restart of the module, not
+ * a power-off and not a reset of the machine.
+ */
 static void test_module_power_cycle_reaches_machine(void)
 {
     QTestState *qts = start_module_with(" -no-shutdown");
+    unsigned node;
 
+    for (node = 1; node < ADAPTER_COUNT; node++) {
+        node_mark(qts, node);
+    }
     msc_command_then_reset(qts, "pwr c");
     g_assert_false(powered_down(qts));
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(node_mark_value(qts, node), ==, 0);
+    }
+    assert_no_machine_reset(qts);
     qtest_quit(qts);
 }
 
@@ -1517,13 +1613,44 @@ static void test_module_power_cycle_holds_nodes(void)
     qtest_clock_set(qts, t0 + 8 * NANOSECONDS_PER_SECOND);
     assert_exact(qts, 0, "pwr", "ok d");
     qtest_clock_set(qts, t0 + 10 * NANOSECONDS_PER_SECOND);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     for (node = 0; node < ADAPTER_COUNT; node++) {
         init_adapter(qts, node);
         g_assert_true(node_cpu_enabled(qts, node));
     }
     assert_exact(qts, 0, "pwr", "ok u");
     assert_exact(qts, 0, "pwr q", "ok 1");
+    qtest_quit(qts);
+}
+
+/*
+ * The machine's own reset stands for an AC cycle, which restarts the
+ * controller too, and the controller's start powers the module up: a module
+ * left unpowered by a long power cycle is powered again, with its nodes
+ * running, and the cycle's countdown is gone with the controller's state.
+ */
+static void test_ac_cycle_powers_the_module_up(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+    unsigned node;
+
+    assert_exact(qts, 0, "pwr c 258", "ok ");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    assert_exact(qts, 1, "pwr", "ok d");
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_false(node_cpu_enabled(qts, node));
+    }
+
+    qtest_system_reset(qts);
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+        g_assert_true(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr", "ok u");
+    /* No power-up is left to come from the cycle the reset ended. */
+    qtest_clock_step(qts, 300 * NANOSECONDS_PER_SECOND);
+    assert_exact(qts, 0, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
     qtest_quit(qts);
 }
 
@@ -1681,7 +1808,7 @@ static void test_module_serial_power_up(void)
     module_serial_command(qts, fd, "pwr u", "ok");
     t0 = qtest_clock_step(qts, 1);
     qtest_clock_set(qts, t0 + 5 * NANOSECONDS_PER_SECOND);
-    qtest_qmp_eventwait(qts, "RESET");
+    module_reset_wait(qts);
     module_serial_command(qts, fd, "pwr", "ok u");
     close(fd);
     close(lfd);
@@ -2010,6 +2137,35 @@ static void test_migration(void)
     qtest_quit(to);
 }
 
+/*
+ * Loading a stream is no power event. The controller drives its power
+ * output to what the load left it, and a rise there must not cold-start the
+ * module, which would wipe the state just loaded. The destination's module
+ * is off when the stream, taken with the module on, arrives.
+ */
+static void test_load_is_not_a_power_return(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = start_module_with(" -incoming defer");
+
+    node_mark(from, 1);
+    assert_exact(to, 0, "pwr c 258", "ok ");
+    qtest_clock_step(to, 1);
+    assert_exact(to, 1, "pwr", "ok d");
+    g_assert_false(node_cpu_enabled(to, 1));
+
+    migrate_module(from, to);
+    wait_until_running(to);
+    /* Give a wrongly scheduled start every chance to run. */
+    qtest_clock_step(to, NANOSECONDS_PER_SECOND);
+    g_assert_cmphex(node_mark_value(to, 1), ==, MODULE_MARK);
+    g_assert_true(node_cpu_enabled(to, 1));
+    assert_exact(to, 1, "pwr", "ok u");
+    assert_no_machine_reset(to);
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 static void test_module_serial_migration_in_progress(void)
 {
     QTestState *from = start_module();
@@ -2123,6 +2279,8 @@ int main(int argc, char **argv)
                    test_module_power_down_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-cycle",
                    test_module_power_cycle_reaches_machine);
+    qtest_add_func("/sn0/o2000-module-management/ac-cycle-powers-up",
+                   test_ac_cycle_powers_the_module_up);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
                    test_dip_switches_reach_the_controller);
     qtest_add_func("/sn0/o2000-module-management/module-parts-through-nic",
@@ -2138,6 +2296,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/o2000-module-management/nvram-read-vs-second-adapter",
                    test_nvram_read_survives_a_second_adapter);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
+    qtest_add_func("/sn0/o2000-module-management/load-is-not-power-return",
+                   test_load_is_not_a_power_return);
     qtest_add_func("/sn0/o2000-module-management/late-grant-service",
                    test_late_grant_service);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",

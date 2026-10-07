@@ -218,8 +218,13 @@ struct SGIElscState {
     QEMUTimer *nmi_pulse_timer;
     bool nmi_pulse_active;
     qemu_irq nmi_out;
-    /* Module power, with no module owner: the machine holds what is off. */
+    /*
+     * With no module owner, the lines a controller drives to its module:
+     * power (low as the module loses power, high as it comes back) and a
+     * reset pulse. The machine acts on that controller's module alone.
+     */
     qemu_irq power_out;
+    qemu_irq reset_out;
 
     /*
      * The heartbeat watchdog ("hbt"): its interval and the delay from its
@@ -231,15 +236,12 @@ struct SGIElscState {
     uint8_t hbt_stage;
     QEMUTimer *hbt_timer;
     /*
-     * The next machine reset is one this controller asked for, a module
-     * reset or power cycle, rather than the controller's own start: the
-     * controller keeps running through it and keeps what it holds. Not
-     * migrated: the reset it marks is not part of the stream either.
+     * The reset that follows reaches this controller only through a bus it
+     * shares with a module part being reset, not as the controller's own
+     * start: it keeps running through it and keeps what it holds. Set and
+     * cleared by the machine around that reset, so not migrated.
      */
-    bool self_reset;
-    Notifier shutdown_notifier;
-    /* The reset in progress is one self_reset marked (until its exit). */
-    bool resetting_itself;
+    bool ride_through;
 
     /*
      * Module power as this controller drives it. With no module owner the
@@ -259,14 +261,6 @@ struct SGIElscState {
      * SGIElscStatus), which overwrites what a host wrote there.
      */
     uint8_t status;
-
-    /*
-     * Power came back and the reset that starts the module's processors
-     * has been asked for but not yet run. Migrated, unlike the request
-     * itself, so the destination asks again once it runs (vm_state).
-     */
-    bool power_up_reset_owed;
-    VMChangeStateEntry *vm_state;
 
     /*
      * The power-down countdown "pwr d <sec>" arms, on the virtual clock in
@@ -442,11 +436,11 @@ bool sgi_elsc_module_powered(SGIElscState *s);
  */
 bool sgi_elsc_power_return_pending(SGIElscState *s);
 /*
- * Whether the machine reset under way is one the controller asked for, a
- * module reset or power cycle it keeps running through. True from the
- * hold phase of that reset to its exit phase.
+ * Mark the reset the caller is about to make as a module event that reaches
+ * this controller only through a shared bus: the controller runs on standby
+ * power and keeps its state through it. Clear the mark afterwards.
  */
-bool sgi_elsc_resetting_itself(SGIElscState *s);
+void sgi_elsc_ride_through_reset(SGIElscState *s, bool on);
 
 /* Join a realized slave to its master's arbitration ring. */
 void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,

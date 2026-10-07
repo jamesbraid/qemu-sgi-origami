@@ -807,22 +807,58 @@ Module power and reset
 
 An Origin 2000 module controller carries out ``pwr d``, ``pwr c`` and
 ``rst`` through its module's power and reset outputs, which the machine
-connects; an Origin 200 controller holds its module's power itself. When
-a controller removes power, the machine resets and halts the processors
-of every node in that module with their Hub's processor enables clear, a
-state no interrupt ends, and its resets keep them stopped until the
-controller restores power and resets the machine. Once every module's
-power is off with no power-up to come the machine powers down
-(:doc:`sgi-elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
-1`` to every module at ``shutdown -p``. A module reset resets the whole
-machine. QEMU has no per-module reset, so one module's reset or power-up
-resets them all, and on a machine of several modules the running
-modules' processors could still write an unpowered module's processor
-enables. The module's NMI output, which the controller pulses for
-``nmi`` and for its heartbeat watchdog, reaches the NMI input of every
-processor in the module directly. On an Origin 200 each node's own
-controller drives an NMI output that the node wires the same way to its
-processors.
+connects; an Origin 200 controller drives its own power and reset outputs
+for its module the same way. Each event acts on the one module whose
+controller raised it, and the machine derives which parts belong to that
+module from the topology it built: the module's node boards with their Hubs
+and everything below them (the Hub's adapter and identity parts, the
+Bridge and the PCI devices behind it), the Routers, Crossbows and I/O
+boards the topology puts in it, and a board plugged into one of its XIO
+slots. The controller is in none of it.
+
+When a controller removes power, the machine resets and halts the
+processors of every node in that module with their Hub's processor enables
+clear, a state no interrupt ends. The module's other parts keep what they
+hold while it is off. When power returns, and when ``rst`` resets the
+module, the machine cold-starts that module: its processors are reset and
+halted, every part of the module is cold-reset, and the processors run
+again from the reset vector if the module has power. Memory keeps its
+bytes, which the datasheet allows as an approximation: the PROM tests and
+initialises it on a cold start. Other modules run through all of it. The
+start runs from a bottom half and not from the controller's own timer, so
+it can wait for the module's processors to stop; a start owed when a
+migration stream was taken is part of that stream and is carried out once
+the destination runs.
+
+The machine's own reset, ``system_reset`` or a Hub port reset, is an AC
+cycle: every module and every controller starts over, and a controller's
+start powers its module up. Once every module's power is off with no
+power-up to come the machine powers down (:doc:`sgi-elsc` says when it
+decides this); IRIX 6.5.30 sends ``pwr d 1`` to every module at ``shutdown
+-p``.
+
+These limits remain. The model does not know whether ``rst`` reaches the
+Routers, Crossbows and XIO boards, whether it gives the processors a cold
+or a soft entry, or which Hub error registers survive it, so it resets
+every part of the module and gives the processors the cold entry. An
+unpowered module's parts are not inert: its Hub, Routers and links still
+answer, a peer's links do not read down, and on a machine of several
+modules a running module's processors could write an unpowered module's
+processor enables and restart them. A Hub port reset, and the per-processor
+NMI and soft-reset registers, still reset the whole machine or do nothing.
+A cabinet module with no node or controller of its own (the GIGAchannel
+cabinet) has its Crossbow and board in that topology module, which is in no
+power domain here, so a power event of the module it is attached to does not
+reach them although the datasheet has the cabinet follow it. Module events
+under record/replay are not supported: the start waits for the processors
+through run_on_cpu, as the Hub's synchronous enable does, which the replay
+lock can deadlock. No topology with more than one Origin 2000 module is
+built, so the several-module Origin 2000 path is the same code as the
+Origin 200 pair's and is only exercised there. The module's NMI output,
+which the controller pulses for ``nmi`` and for its heartbeat watchdog,
+reaches the NMI input of every processor in the module directly. On an
+Origin 200 each node's own controller drives an NMI output that the node
+wires the same way to its processors.
 
 .. _sgi-sn-launch-metadata:
 
