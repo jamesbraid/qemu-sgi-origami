@@ -389,11 +389,72 @@ static char *create_prom(void)
     return path;
 }
 
-static QTestState *board_start(const char *extra)
+/*
+ * Most cases need a board in its reset state, not a newly started machine,
+ * and starting one costs ten times what a system reset does. Cases
+ * registered with add_case() share one machine, reset before each use;
+ * add_fresh_case() gives a case machines of its own.
+ *
+ * Each shared case was checked once against a migration of its machine
+ * taken before the case ran: after the case and a system reset, every
+ * device section of the stream matched byte for byte, and every guest page
+ * matched. A reset does not clear memory, so a case that writes guest
+ * memory, directly or through the board's DMA, stays fresh. So does a case
+ * that migrates its machine, reads the board's last-interrupt record (a
+ * host-only value no reset touches), starts the machine with options, or
+ * is about the state a machine starts in. The host-only pixel and object
+ * selectors are not machine state either, so they are put back here.
+ */
+static QTestState *shared_board;
+static bool shared_case;
+static bool shared_in_use;
+
+static QTestState *board_launch(const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
 
     return qtest_initf(MACHINE " -bios %s%s", quoted, extra);
+}
+
+static QTestState *board_start(const char *extra)
+{
+    static const char *const selectors[] = {
+        "x-test-pixel-x", "x-test-pixel-y", "x-test-pixel-buffer",
+        "x-test-object-base",
+    };
+
+    if (!shared_case || *extra || shared_in_use) {
+        return board_launch(extra);
+    }
+    shared_in_use = true;
+    if (!shared_board) {
+        shared_board = board_launch("");
+        return shared_board;
+    }
+    qtest_system_reset(shared_board);
+    for (unsigned i = 0; i < ARRAY_SIZE(selectors); i++) {
+        qtest_qmp_assert_success(shared_board,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': %s, 'value': 0}}", BOARD, selectors[i]);
+    }
+    return shared_board;
+}
+
+static void board_quit(QTestState *qts)
+{
+    if (qts == shared_board) {
+        shared_in_use = false;
+    } else {
+        qtest_quit(qts);
+    }
+}
+
+static void shared_case_run(gconstpointer data)
+{
+    shared_case = true;
+    ((GTestFunc)data)();
+    shared_case = false;
+    g_assert_false(shared_in_use);
 }
 
 /* A running processor polls a mailbox and issues the requested stores. */
@@ -481,7 +542,7 @@ static void test_processor_credit_return(void)
             g_assert_cmpuint(qtest_readq(qts, pi + 0x308), ==, 100);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static uint32_t reg_read(QTestState *qts, uint64_t off)
@@ -783,11 +844,11 @@ static void test_identity_carries_part_and_revision(void)
     QTestState *qts = board_start("");
 
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start(" -global sgi-odyssey.revision=3");
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, 0x3c013047);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -809,7 +870,7 @@ static void test_configuration_block_mirrors_both_halves(void)
     g_assert_cmphex(qtest_readl(qts, WIDGET + 0x0020), ==,
                      reg_read(qts, ODSY_CONTROL));
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -834,7 +895,7 @@ static void test_widget_control_reads_back(void)
     reg_write(qts, ODSY_ERROR_COMMAND, 0xffffffff);
     g_assert_cmphex(reg_read(qts, ODSY_ERROR_COMMAND), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -853,17 +914,17 @@ static void test_memory_configuration_follows_properties(void)
     QTestState *qts = board_start("");
 
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0xa1000000);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start(" -global sgi-odyssey.memory-size=32");
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x21000000);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start(" -global sgi-odyssey.memory-size=64"
                       " -global sgi-odyssey.memory-banks=2"
                       " -global sgi-odyssey.cas-latency=2");
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x71000000);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -899,7 +960,7 @@ static void test_profile_selects_identity_and_memory(void)
         g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, cases[i].identity);
         g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==,
                          cases[i].memory_config);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -920,7 +981,7 @@ static void test_v12_profile_memory_word_bits(void)
     g_assert_cmphex(config & (1u << 29), ==, (1u << 29));
     g_assert_cmphex(config & (1u << 28), ==, 0);
     g_assert_cmphex((config >> 24) & 0xf, ==, 0x1);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -953,7 +1014,7 @@ static void test_reset_control_accepts_six_writes(void)
         reg_write(qts, ODSY_RESET_CONTROL, sequence[i]);
     }
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -991,7 +1052,7 @@ static void test_backend_version_is_pinned(void)
     g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
     qtest_writel(qts, WIDGET + ODSY_BACKEND_VERSION, 1);
     g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -1038,7 +1099,7 @@ static void test_board_memory_bound_is_a_guest_error(void)
     cmd_push(qts, 0);
     cmd_push(qts, 0);
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -1076,7 +1137,7 @@ static void test_board_identity_part_answers(void)
     g_assert_cmphex(page[5], ==, ';');
     g_assert_cmpmem(&page[6], 20, "Name:ODY128VERSIONB;", 20);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1123,7 +1184,7 @@ static void test_interrupt_registers(void)
     reg_write(qts, ODSY_SW_TOKEN, 0x5a5a5a5a);
     g_assert_cmphex(reg_read(qts, ODSY_SW_TOKEN), ==, 0x5a5a5a5a);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1173,7 +1234,7 @@ static void test_interrupt_enable_set_and_clear(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1205,7 +1266,7 @@ static void test_interrupt_clear_acknowledges_flags(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1228,7 +1289,7 @@ static void test_interrupt_flags_write_is_accepted(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1264,7 +1325,7 @@ static void test_lowater_not_raised_while_disabled(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1282,7 +1343,7 @@ static void test_board_status_reports_fifo_ready(void)
     /* The FIFO-enabled, low-water and empty bits. */
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1322,7 +1383,7 @@ static void test_command_fifo_lowater_interrupt(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1373,7 +1434,7 @@ static void test_interrupt_packet_composition(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1408,7 +1469,7 @@ static void test_interrupt_packet_reaches_bedrock_pending(void)
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) &
                     (UINT64_C(1) << ODSY_TEST_VECTOR), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1453,7 +1514,7 @@ static void test_baseio_prom_diagnostic_registers(void)
     reg_write(qts, ODSY_BUZZ_6, 0x55555555);
     g_assert_cmphex(reg_read(qts, ODSY_BUZZ_6), ==, 0x55555555);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* How many times @needle occurs in @haystack, without overlapping. */
@@ -1507,7 +1568,7 @@ static void test_unmodeled_offsets_are_visible(void)
      */
     cmd_push(qts, 0x00007777);
     g_assert_cmphex(reg_read(qts, ODSY_CMD_FIFO), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -1547,7 +1608,7 @@ static void test_command_fifo_selftest(void)
 
     g_assert_cmphex(reg_read(qts, ODSY_CFIFO_SELFTEST), ==, 0x003d0046);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_reset_restores_the_documented_values(void)
@@ -1578,7 +1639,7 @@ static void test_reset_restores_the_documented_values(void)
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0xa1000000);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1619,7 +1680,7 @@ static void test_i2c_opt_port_pll_register_write(void)
     i2c_push(qts, ODSY_I2C_OPT_SELECTOR, 0x00001834);
     g_assert_cmphex(reg_read(qts, ODSY_I2C_OPT_STATUS), ==, 0x00400200);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1660,7 +1721,7 @@ static void test_i2c_opt_port_ddc_register_read(void)
     /* Bus release, no wait follows. */
     i2c_push(qts, ODSY_I2C_OPT_SELECTOR, 0x00000a05);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1684,7 +1745,7 @@ static void test_i2c_reset_state_poll_terminates(void)
             >> ODSY_I2C_STATE_SHIFT;
     g_assert_true(state == 0 || state == 0xa);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1714,7 +1775,7 @@ static void test_framebuffer_pixel_reaches_display_and_screendump(void)
     g_assert_cmphex(odsy_test_pixel(qts, 6, 5), ==, 0);
     g_assert_cmphex(odsy_screendump_pixel(qts, 6, 5), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1734,7 +1795,7 @@ static void test_reset_clears_the_framebuffer(void)
     g_assert_cmphex(odsy_test_pixel(qts, 5, 5), ==, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 5, 5), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1759,7 +1820,7 @@ static void test_framebuffer_pixel_accessor_bounds(void)
     g_assert_true(qdict_haskey(resp, "error"));
     qobject_unref(resp);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1904,7 +1965,7 @@ static void test_command_fifo_fillrect(void)
     g_assert_cmphex(odsy_test_pixel(qts, 504, 503), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1940,7 +2001,7 @@ static void test_command_fifo_accepts_64bit_stores(void)
     g_assert_cmphex(odsy_test_pixel(qts, 39, 59), ==, 0x112233ff);
     g_assert_cmphex(odsy_test_pixel(qts, 40, 20), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -1987,7 +2048,7 @@ static void test_command_fifo_copyrect(void)
     /* The source is undisturbed by a non-overlapping copy. */
     g_assert_cmphex(odsy_test_pixel(qts, sx, sy), ==, 0x10101010);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2031,7 +2092,7 @@ static void test_command_fifo_copyrect_overlapping_shift(void)
     g_assert_cmphex(odsy_test_pixel(qts, 0, 3), ==, 0x03000000);
     g_assert_cmphex(odsy_test_pixel(qts, 0, 4), ==, 0x04000000);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A maximal copy still visits only destination pixels on the plane. */
@@ -2074,7 +2135,7 @@ static void test_command_fifo_copyrect_large_offscreen(void)
     g_assert_cmphex(odsy_test_pixel(qts, 1279, 1022), ==, 0x22222222);
     g_assert_cmphex(odsy_test_pixel(qts, 1278, 1023), ==, 0x33333333);
     g_assert_cmphex(odsy_test_pixel(qts, 1279, 1023), ==, 0x44444444);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2195,7 +2256,7 @@ static void test_command_fifo_copyrect_ignores_window_clip(void)
     rgb_fill(qts, 0x44, 0x55, 0x66, 100, 100, 110, 110);
     g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2231,7 +2292,7 @@ static void test_command_fifo_copyrect_prefix_is_a_plain_register(void)
     cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
     /* Idle again: a word with no recognized shape is reported, not held. */
     cmd_push(qts, 0x00007777);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -2291,7 +2352,7 @@ static void test_command_fifo_host_write_sync(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_SOFTSYNC_VECTOR | ODSY_HUB_INT_MODIFY_SET);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2394,7 +2455,7 @@ static void test_command_fifo_dma_trace(void)
     dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
     g_assert_cmphex(odsy_test_dma_word(qts, 0), ==, 0x00010203);
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
     g_assert_no_error(error);
     lines = g_strsplit(contents, "\n", -1);
@@ -2574,7 +2635,7 @@ static void test_command_fifo_dma_page_table(void)
     g_assert_cmphex(odsy_test_dma_word(qts, page1_len / 4 - 1), ==,
                     0xbb000000u | (page1_len / 4 - 1));
 
-    qtest_quit(qts);
+    board_quit(qts);
 
     /*
      * A descriptor whose entries disagree with its header -- one entry
@@ -2604,7 +2665,7 @@ static void test_command_fifo_dma_page_table(void)
                     ODSY_TEST_DMA_VECTOR | ODSY_HUB_INT_MODIFY_SET);
     g_assert_cmphex(odsy_test_dma_word(qts, 0), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 
     /*
      * Before the driver programs the routing, a consumed descriptor sends
@@ -2617,7 +2678,7 @@ static void test_command_fifo_dma_page_table(void)
     dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2762,7 +2823,7 @@ static void test_command_fifo_dma_image(void)
     g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0xff0000ff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2816,7 +2877,7 @@ static void test_swap_retrace_vector(void)
                     ((UINT64_C(1) << ODSY_TEST_RETRACE_VECTOR) |
                      (UINT64_C(1) << ODSY_TEST_SOFTSYNC_VECTOR)), ==,
                     UINT64_C(1) << ODSY_TEST_RETRACE_VECTOR);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2881,7 +2942,7 @@ static void test_swap_arm_toggles_displayed_buffer(void)
     fire_retrace(qts);
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000005);
 
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -2913,7 +2974,7 @@ static void test_swap_arm_accumulates(void)
     g_assert_cmphex(reg_read(qts, ODSY_SWAP_ARM), ==, 0);
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==,
                     ODSY_SWAP_ARM_BIT | 0x00000001);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2937,7 +2998,7 @@ static void test_swap_immediate_set_and_clear(void)
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000010);
     reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 0x00000010);
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -2974,7 +3035,7 @@ static void test_command_fifo_unknown_word_is_unimplemented(void)
      */
     cmd_push(qts, 0x00007777);
     g_assert_cmphex(odsy_test_pixel(qts, 5, 5), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -3026,7 +3087,7 @@ static void test_unimplemented_reports_have_independent_budgets(void)
     }
     /* An unmodeled register offset, distinct from every case above. */
     qtest_readb(qts, WIDGET + 0x0008);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -3058,7 +3119,7 @@ static void test_context_switch_completion(void)
     g_assert_cmphex(qtest_readl(qts, base + ODSY_CTX_SWITCH_DONE_OFFSET), !=,
                     0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -3087,7 +3148,7 @@ static void test_context_switch_without_shadow_address_is_a_guest_error(void)
     qts = board_start(extra);
 
     qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_WORD);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -3166,7 +3227,7 @@ static void test_backend_colormap_word_stream(void)
     i2c_push(qts, ODSY_I2C_OPT_SELECTOR, 0x00001234);
     g_assert_cmphex(reg_read(qts, ODSY_I2C_OPT_CMD), ==, 0x00001234);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -3288,7 +3349,7 @@ static void test_command_fifo_id_plane_write(void)
     g_assert_cmphex(odsy_shown(qts, x0, y0), ==, colour_b);
     g_assert_cmphex(odsy_shown(qts, x1 - 1, y1 - 1), ==, colour_b);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A 32-word pattern bitmap load: 0x3c4e carries words 0-15, 0x3c4f 16-31. */
@@ -3369,7 +3430,7 @@ static void test_command_fifo_pattern_quad(void)
     /* Just past the quad's right edge is untouched. */
     g_assert_cmphex(odsy_test_pixel(qts, x0 + 32, y0 + 5), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Clipping a quad must keep the pattern anchored to its signed first corner. */
@@ -3395,7 +3456,7 @@ static void test_command_fifo_pattern_quad_straddles_screen(void)
     g_assert_cmphex(odsy_shown(qts, 0, 0), ==, 0x00ff00ff);
     g_assert_cmphex(odsy_shown(qts, 1, 0), ==, 0xff0000ff);
     g_assert_cmphex(odsy_shown(qts, 0, 1), ==, 0xff0000ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -3545,7 +3606,7 @@ static void test_command_fifo_lines(void)
     g_assert_cmphex(odsy_test_pixel(qts, 300, 309), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 310, 309), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Extreme endpoints must finish and keep stipple phase at the first vertex. */
@@ -3597,7 +3658,7 @@ static void test_command_fifo_lines_cross_screen_edge(void)
         g_assert_cmphex(odsy_shown(qts, 10, i), ==, expected);
         g_assert_cmphex(odsy_shown(qts, 1276 + i, 20), ==, expected);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -3688,7 +3749,7 @@ static void test_command_fifo_integer_primitives_stream(void)
     g_assert_cmphex(odsy_test_pixel(qts, 50, 61), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 49, 59), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_null(strstr(log, "truncated"));
@@ -3768,7 +3829,7 @@ static void test_command_fifo_image_raster_rgb(void)
     g_assert_cmphex(odsy_test_pixel(qts, 102, 100), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 100, 102), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Decreasing box endpoints walk the same payload in the opposite directions. */
@@ -3798,7 +3859,7 @@ static void test_command_fifo_image_raster_descending(void)
     g_assert_cmphex(odsy_test_pixel(qts, 20, 20), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 19), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Mixed endpoint directions still advance X first, then Y. */
@@ -3840,7 +3901,7 @@ static void test_command_fifo_image_raster_mixed_directions(void)
     g_assert_cmphex(odsy_test_pixel(qts, 41, 38), ==, 0xabcdefff);
     g_assert_cmphex(odsy_test_pixel(qts, 40, 40), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* An equal endpoint empties its axis without consuming the next image. */
@@ -3882,7 +3943,7 @@ static void test_command_fifo_image_raster_empty_extent(void)
     g_assert_cmphex(odsy_test_pixel(qts, 60, 60), ==, 0x778899ff);
     g_assert_cmphex(odsy_test_pixel(qts, 61, 60), ==, 0xaabbccff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A decreasing interval may start outside the screen and clip per pixel. */
@@ -3902,7 +3963,7 @@ static void test_command_fifo_image_raster_clips_descending(void)
     g_assert_cmphex(odsy_test_pixel(qts, 1279, 10), ==, 0x445566ff);
     g_assert_cmphex(odsy_test_pixel(qts, 1278, 10), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Screen image PIO adds the signed window origin before screen checks. */
@@ -3973,7 +4034,7 @@ static void test_command_fifo_image_raster_window_origin(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 10, 12), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 12), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4023,7 +4084,7 @@ static void test_command_fifo_image_raster_formats(void)
     g_assert_cmphex(odsy_test_pixel(qts, 302, 300), ==, 0x8c8c8cff);
     g_assert_cmphex(odsy_test_pixel(qts, 303, 300), ==, 0xffffffff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* SHORT groups count 32-bit words and carry two RGBA16 words per pixel. */
@@ -4066,7 +4127,7 @@ static void test_command_fifo_image_raster_short(void)
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 80, 80), ==, 0x01020404);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A partial SHORT pixel cannot cross its group or start another format. */
@@ -4107,7 +4168,7 @@ static void test_command_fifo_image_raster_short_incomplete(void)
     cmd_push(qts, 0x00112233);
     g_assert_cmphex(odsy_test_pixel(qts, 71, 70), ==, 0x87654321);
     cmd_push(qts, ODSY_CMD_GL_END);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4167,7 +4228,7 @@ static void test_command_fifo_image_raster_colour_index(void)
     g_assert_cmphex(odsy_shown(qts, 300, 301), ==, 0x00ff00ff);
     g_assert_cmphex(odsy_shown(qts, 301, 301), ==, 0x00ff00ff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4306,7 +4367,7 @@ static void test_command_fifo_gl_integer_triangle(void)
     g_assert_cmphex(odsy_test_pixel(qts, 40, 45), ==, 0xffff00ff);
     g_assert_cmphex(odsy_test_pixel(qts, 30, 40), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 70, 77), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_integer_points_transform(void)
@@ -4345,7 +4406,7 @@ static void test_command_fifo_gl_integer_points_transform(void)
     g_assert_cmphex(odsy_test_pixel(qts, 36, 82), ==, 0xffff00ff);
     g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 4), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void integer_transform_pair(unsigned mode)
@@ -4414,7 +4475,7 @@ static void integer_transform_pair(unsigned mode)
             g_assert_cmphex(odsy_test_pixel(qts, 40, 90), ==,
                             mode == 7 ? 0xffffffff : 0xff00ffff);
         }
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -4481,7 +4542,7 @@ static void test_command_fifo_gl_integer_routing_modes(void)
         g_assert_cmphex(odsy_test_pixel(qts, 42, 63), ==,
                         i == 3 ? 7 : 0xff00ffff);
         g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, 0);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -4529,7 +4590,7 @@ static void test_command_fifo_x11_integer_after_gl(void)
             user_cmd_push(qts, ODSY_CMD_GL_END);
             g_assert_cmphex(odsy_test_pixel(qts, 104 + x, 108), ==, expected);
         }
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -4563,8 +4624,8 @@ static void test_command_fifo_gl_integer_routing_migration_reset(void)
     integer_routing_point(to);
     g_assert_cmphex(odsy_test_pixel(to, 2, 3), ==, 0xff00ffff);
     g_assert_cmphex(odsy_test_pixel(to, 42, 63), ==, 0);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -4628,7 +4689,7 @@ static void x11_captured_line_cap(bool not_last, unsigned shape, bool indexed)
             }
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
 
@@ -4711,7 +4772,7 @@ static void test_command_fifo_x11_line_cap_screen_bounds(void)
         g_assert_cmphex(odsy_test_pixel(qts, 1279, 5), ==, 0xffffffff);
         g_assert_cmphex(odsy_test_pixel(qts, 1278, 1023), ==,
                         not_last ? 0 : 0xffffffff);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -4756,7 +4817,7 @@ static void test_command_fifo_gl_integer_assemblies(void)
         g_assert_cmphex(odsy_test_pixel(qts, 96, 96), ==, 0xffff00ff);
         g_assert_cmphex(odsy_test_pixel(qts, 20, 64), ==, 0);
         g_assert_cmphex(odsy_test_pixel(qts, 108, 64), ==, 0);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -4780,7 +4841,7 @@ static void test_command_fifo_gl_triangle(void)
     g_assert_cmphex(odsy_test_pixel(qts, 613, 402), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 1275, 1019), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4860,7 +4921,7 @@ static void test_command_fifo_gl_clear_rect(void)
     g_assert_cmphex(odsy_test_pixel(qts, 0, 128), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 128, 128), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4886,7 +4947,7 @@ static void test_command_fifo_gl_clear_then_triangle(void)
     g_assert_cmphex(odsy_test_pixel(qts, 56, 110), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 2, 2), ==, ODSY_PLANE_BLUE);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4946,7 +5007,7 @@ static void test_reset_mid_primitive_does_not_hang(void)
 
     g_assert_cmphex(reg_read(qts, ODSY_CONTROL), ==, SLOT);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -4989,7 +5050,7 @@ static void test_command_fifo_gl_ortho_combined_matrix(void)
     g_assert_cmphex(odsy_test_pixel(qts, 115, 90), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 97, 95), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5021,7 +5082,7 @@ static void test_command_fifo_gl_texture_slot_leaves_geometry(void)
     g_assert_cmphex(odsy_test_pixel(qts, 30, 105), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 56, 110), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5070,7 +5131,7 @@ static void test_command_fifo_gl_window_origin_and_clip(void)
     g_assert_cmphex(odsy_test_pixel(qts, 305, 205), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 613, 402), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5105,7 +5166,7 @@ static void test_command_fifo_gl_clip_rectangles(void)
     g_assert_cmphex(odsy_test_pixel(qts, 400, 300), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 395, 291), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5136,7 +5197,7 @@ static void test_command_fifo_gl_id_compare(void)
     g_assert_cmphex(odsy_test_pixel(qts, 320, 300), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 470, 300), ==, ODSY_PLANE_BLUE);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 
@@ -5216,7 +5277,7 @@ static void test_command_fifo_gl_flat_shading(void)
     push_user_words(qts, flat_tri + 2, ARRAY_SIZE(flat_tri) - 2);
     g_assert_cmphex(odsy_test_pixel(qts, 352, 360), !=, 0xffffffffu);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5337,7 +5398,7 @@ static void test_command_fifo_gl_crossing_eye(void)
                     odsy_test_pixel(qts, 50, 64), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 56, 63) |
                     odsy_test_pixel(qts, 56, 64), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* depth.c's pair: a yellow triangle at z -0.5, then a cyan one at +0.5. */
@@ -5403,7 +5464,7 @@ static void test_command_fifo_gl_fog_curve(void)
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
     push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0x000000ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Native packets exercise the local curve policy, not a board measurement. */
@@ -5438,7 +5499,7 @@ static void test_command_fifo_gl_fog_native_packets(void)
             g_assert_cmpuint(odsy_test_pixel(qts, 326, 340) >> 24,
                              ==, cases[c].red[i]);
         }
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -5465,8 +5526,8 @@ static void test_command_fifo_gl_fog_migration(void)
     probe_window(to);
     push_triangle_3f(to, ODSY_F_ONE, 0, 0, odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(to, 326, 340), ==, 0xbf0040ff);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -5508,7 +5569,7 @@ static void test_command_fifo_gl_depth_test(void)
                      odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5554,7 +5615,7 @@ static void test_command_fifo_gl_alpha_test(void)
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
                     ODSY_PLANE_YELLOW_QUARTER_ALPHA);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5677,7 +5738,7 @@ static void test_command_fifo_gl_blend(void)
                      odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5735,7 +5796,7 @@ static void test_command_fifo_gl_depth_sign(void)
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 356, 352), ==, ODSY_PLANE_CYAN);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Native orthographic rows put the depth scale in block 16's fourth word. */
@@ -5782,7 +5843,7 @@ static void test_command_fifo_gl_depth_scale(void)
         push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, triangle);
         g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
                         ODSY_PLANE_YELLOW);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -5816,7 +5877,7 @@ static void test_command_fifo_gl_depth_scale_fallback(void)
             g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
                             ODSY_PLANE_YELLOW);
         }
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -5863,7 +5924,7 @@ static void test_command_fifo_gl_depth_only_clear(void)
     push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, nearest);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -5954,7 +6015,7 @@ static char *lit_finish(QTestState *qts, char *log_path)
     g_autoptr(GError) error = NULL;
     char *log = NULL;
 
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -6010,7 +6071,7 @@ static char *stencil_func_log(uint32_t word)
 
     probe_window(qts);
     set_reg(qts, ODSY_REG_STENCIL_FUNC, word);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -6050,7 +6111,7 @@ static void test_command_fifo_gl_stencil_always_passes(void)
                      odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -6107,7 +6168,7 @@ static void test_command_fifo_gl_cull_face(void)
                      odsy_near_yellow_cw);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -6138,7 +6199,7 @@ static void test_command_fifo_gl_polygon_mode(void)
                      odsy_near_yellow_cw);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -6288,7 +6349,7 @@ static void test_command_fifo_gl_line_point_size(void)
     push_point_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, centre_point);
     g_assert_cmpuint(odsy_count_yellow(qts, 316, 323, 316, 323), ==, 16);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_point_smoothing(void)
@@ -6329,7 +6390,7 @@ static void test_command_fifo_gl_point_smoothing(void)
                         ODSY_PLANE_RED);
     }
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_line_smoothing(void)
@@ -6363,7 +6424,7 @@ static void test_command_fifo_gl_line_smoothing(void)
     g_assert_cmpuint(odsy_count_partial_red_over_blue(qts, 296, 344, 296, 344),
                      ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_line_stipple(void)
@@ -6393,7 +6454,7 @@ static void test_command_fifo_gl_line_stipple(void)
     push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, line);
     g_assert_cmpuint(odsy_count_yellow(qts, 294, 294, 319, 321), ==, 1);
     g_assert_cmpuint(odsy_count_yellow(qts, 310, 310, 319, 321), ==, 1);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_line_stipple_migration(void)
@@ -6429,8 +6490,8 @@ static void test_command_fifo_gl_line_stipple_migration(void)
     g_assert_cmpuint(odsy_count_yellow(to, 290, 290, 319, 321), ==, 1);
     g_assert_cmpuint(odsy_count_yellow(to, 294, 294, 319, 321), ==, 0);
     g_assert_cmpuint(odsy_count_yellow(to, 300, 300, 319, 321), ==, 1);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -6484,7 +6545,7 @@ static void test_command_fifo_gl_polygon_offset(void)
                      odsy_coplanar_tri);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -6562,7 +6623,7 @@ static void test_command_fifo_gl_clip_box(void)
     push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -6614,7 +6675,7 @@ static void test_command_fifo_gl_clip_plane(void)
     g_assert_cmphex(odsy_test_pixel(qts, 270, 340), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -7292,7 +7353,7 @@ static void test_context_save_back_material(void)
     material_snapshot(qts, 0x7f);
     assert_material(qts, 8, front_material_commands, front);
     assert_material(qts, 14, back_material_commands, back_material_values);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_save_back_material_reset(void)
@@ -7305,7 +7366,7 @@ static void test_context_save_back_material_reset(void)
     qtest_system_reset(qts);
     material_snapshot(qts, 1);
     assert_material(qts, 14, back_material_commands, material_defaults);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Ring 3 slot 0 of the snapshot page: the word and three operands. */
@@ -7400,8 +7461,8 @@ static void back_material_migration(bool defaults)
     material_snapshot(to, 0x7f);
     assert_material(to, 14, back_material_commands,
                     defaults ? material_defaults : back_material_values);
-    qtest_quit(from);
-    qtest_quit(to);
+    board_quit(from);
+    board_quit(to);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -7483,8 +7544,8 @@ static void query_record_migration(bool defaults)
                     0xa5a5a5a5);
     g_assert_cmphex(qtest_readl(to, p + ODSY_HW_COLOUR_OPERANDS + 12), ==,
                     0xa5a5a5a5);
-    qtest_quit(from);
-    qtest_quit(to);
+    board_quit(from);
+    board_quit(to);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -7544,7 +7605,7 @@ static void test_texture_current_query_4f(void)
     qtest_system_reset(qts);
     texture_current_query(qts, (uint32_t[]) { 0xc380c821, 0, 0 },
                           3, 2, 5, 1);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static const uint32_t query_texture_1f[2][2] = {
@@ -7580,7 +7641,7 @@ static void texture_current_query_short(bool three, bool replay)
     qtest_system_reset(qts);
     texture_current_query(qts, (uint32_t[]) { 0xc380c821, 0, 0 },
                           3, 2, 5, 1);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_current_query_1f(void)
@@ -7627,8 +7688,8 @@ static void texture_current_query_short_migration(bool three)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(to, "completed");
     texture_current_query(to, record, words, 2, 8, 2);
-    qtest_quit(from);
-    qtest_quit(to);
+    board_quit(from);
+    board_quit(to);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -7667,8 +7728,8 @@ static void texture_current_query_4f_migration(bool defaults)
     sgi_wait_migration(to, "completed");
     texture_current_query(to, defaults ? initial : query_texture_4f[1],
                           defaults ? 3 : 5, 2, 8, 2);
-    qtest_quit(from);
-    qtest_quit(to);
+    board_quit(from);
+    board_quit(to);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -7770,7 +7831,7 @@ static void test_command_fifo_context_save_colour(void)
     push_uncoloured_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -7826,7 +7887,7 @@ static void test_command_fifo_context_save_idle_state(void)
     user_cmd_push(qts, 0x3f3c0000);
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -7879,7 +7940,7 @@ static void test_context_restart_triangle(void)
     user_cmd_push(qts, 0x3f3c0000);
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_restart_edited_page(void)
@@ -7924,7 +7985,7 @@ static void test_context_restart_edited_page(void)
     user_cmd_push(qts, 0x3f3c0000);
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_save_primitive_records(void)
@@ -7964,7 +8025,7 @@ static void test_context_save_primitive_records(void)
         }
     }
     user_cmd_push(qts, ODSY_CMD_GL_END);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_save_zero_vertex_primitive(void)
@@ -7979,7 +8040,7 @@ static void test_context_save_zero_vertex_primitive(void)
     user_cmd_push(qts, ODSY_CMD_GL_END);
     qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
     g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==, 0xf);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_restart_one_vertex_strip(void)
@@ -8029,7 +8090,7 @@ static void test_context_restart_one_vertex_strip(void)
     }
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_restart_quad_strip_after_wrap(void)
@@ -8066,7 +8127,7 @@ static void test_context_restart_quad_strip_after_wrap(void)
         uninterrupted[i] = odsy_test_pixel(qts, pixel[i][0], pixel[i][1]);
         g_assert_cmphex(uninterrupted[i], !=, 0);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = shadow_start("");
     probe_window(qts);
@@ -8138,7 +8199,7 @@ static void test_context_restart_quad_strip_after_wrap(void)
         g_assert_cmphex(odsy_test_pixel(qts, pixel[i][0], pixel[i][1]), ==,
                         uninterrupted[i]);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_switch_integer_quad(void)
@@ -8173,7 +8234,7 @@ static void test_context_switch_integer_quad(void)
     cmd_push(qts, 60);
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 266, 276), ==, 0x112233ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_switch_polygon_assembly(void)
@@ -8218,7 +8279,7 @@ static void test_context_switch_polygon_assembly(void)
     cmd_push(qts, 0);
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -8254,7 +8315,7 @@ static void test_context_restart_unsupported_words(void)
     qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
     g_assert_cmphex(qtest_readl(qts, ODSY_SHADOW_PAGE +
                                 ODSY_HW_PIPE_STATE), ==, 0xf);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -8292,7 +8353,7 @@ static void test_command_fifo_gl_window_restore(void)
     push_captured_clear(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 300, 300), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start("");
     probe_window(qts);
@@ -8303,7 +8364,7 @@ static void test_command_fifo_gl_window_restore(void)
     g_assert_cmphex(odsy_test_pixel(qts, 383, 383), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 384, 300), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8428,7 +8489,7 @@ static void test_command_fifo_gl_texture_luminance(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16b000, 3, 3), ==,
                     0x6c6c6cff);
     assert_screen_untouched(qts);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8468,7 +8529,7 @@ static void test_command_fifo_gl_texture_rgb(void)
                     0xe0e080ff);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16ad00, 8, 0), ==, 0);
     assert_screen_untouched(qts);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* tex.c's 64x64 RGBA texel: (4 x, 4 y, the 8x8-cell checker, 255). */
@@ -8510,7 +8571,7 @@ static void test_command_fifo_gl_texture_rgba(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 63, 63), ==,
                     tex_rgba(63, 63));
     assert_screen_untouched(qts);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8565,7 +8626,7 @@ static void test_dma_texture_object(void)
     g_assert_cmphex(odsy_test_pixel(qts, 129, 0), ==, 0);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==,
                     0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8621,7 +8682,7 @@ static void test_command_fifo_gl_texture_state(void)
     push_user_words(qts, draw, ARRAY_SIZE(draw));
     g_assert_cmphex(odsy_test_pixel(qts, 370, 300), ==, 0xffffffffu);
     g_assert_cmphex(odsy_test_pixel(qts, 114, 44), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -8660,7 +8721,7 @@ static void test_command_fifo_gl_colour_mask(void)
     set_reg(qts, ODSY_REG_WRITE_MASK, 0x00400000);
     push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 260, 260), ==, 0xffffffffu);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8707,7 +8768,7 @@ static char *dither_draw(uint32_t mode, unsigned draws, bool check_block)
             }
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -8775,7 +8836,7 @@ static void test_scanout_wipe_repaint_reload(void)
     lut_write(qts, 0x1105, ODSY_LUT_RED);
     g_assert_cmphex(odsy_shown(qts, 108, 108), ==, 0xff0000ffu);
     g_assert_cmphex(odsy_shown(qts, 100, 115), ==, 0xff0000ffu);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8800,7 +8861,7 @@ static void test_scanout_display_mode_recolours(void)
     dispmode_write(qts, 2, ODSY_DISPMODE_GROUP17);
     g_assert_cmphex(odsy_shown(qts, 208, 108), ==, 0xff0000ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 208, 108), ==, 5);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8833,7 +8894,7 @@ static void test_scanout_rgb_through_gamma(void)
 
     display_identity(qts, 8);
     g_assert_cmphex(odsy_shown(qts, 108, 108), ==, 0x112233ffu);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Paint first, program the drawable and colormap after: the colour shows. */
@@ -8848,7 +8909,7 @@ static void test_scanout_paint_order(void)
     dispmode_write(qts, 1, ODSY_DISPMODE_GROUP17);
     lut_write(qts, 0x1105, ODSY_LUT_GREEN);
     g_assert_cmphex(odsy_shown(qts, 108, 108), ==, 0x00ff00ffu);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -8952,7 +9013,7 @@ static void test_command_fifo_gl_never_set_index(void)
     user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
     push_bare_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, never_set);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_colour_index(void)
@@ -9027,7 +9088,7 @@ static void test_command_fifo_gl_colour_index(void)
     push_bare_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 333), ==, ODSY_PLANE_RED);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -9076,7 +9137,7 @@ static char *index_write_mask_log(uint32_t mask, uint32_t a, uint32_t b)
     push_bare_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, b);
 
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -9194,7 +9255,7 @@ static void test_command_fifo_gl_float_colour_integer_vertices(void)
     g_assert_cmphex(odsy_shown(qts, 330, 212), ==, 0x804020ff);
     g_assert_cmphex(odsy_shown(qts, 339, 227), ==, 0x804020ff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void byte_colour(QTestState *qts, uint32_t r, uint32_t g, uint32_t b)
@@ -9266,7 +9327,7 @@ static void test_command_fifo_gl_byte_colour_float_and_replay(void)
     g_test_message("saved RGB: 0x%08x 0x%08x 0x%08x; raw index: %u",
                    saved[0], saved[1], saved[2], index);
     g_test_message("byte RGB replay integer pixel: 0x%08x", replay_pixel);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_cmphex(integer_pixel, ==, 0x00ff00ff);
     g_assert_cmphex(index, ==, 5);
@@ -9312,7 +9373,7 @@ static void test_byte_colour_conversion(void)
                             rgb[j]);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Index and lit vertices must not resurrect RGB from before a byte update. */
@@ -9348,7 +9409,7 @@ static void test_byte_colour_override(void)
     byte_colour(qts, 255, 0, 0);
     byte_colour_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 320, 320), ==, 0xff0000ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -9398,7 +9459,7 @@ static void test_byte_colour_index_guard(void)
     user_cmd_push(qts, ODSY_GL_MODE_RGBA_B);
     byte_colour_triangle(qts);
     g_assert_cmphex(odsy_test_pixel(qts, 320, 320), ==, 0xff0000ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Byte RGB changes neither the drawable-id source nor an id write's plane. */
@@ -9432,7 +9493,7 @@ static void test_byte_colour_drawable_id(void)
     colour_index_fill(qts, 5, 10, 10, 20, 20);
     g_assert_cmphex(odsy_test_pixel(qts, 271, 271), ==, 5);
     g_assert_cmphex(odsy_shown(qts, 271, 271), ==, 0x804020ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -9480,7 +9541,7 @@ static void test_command_fifo_gl_float_colour_integer_conversion(void)
         g_assert_cmphex(odsy_test_pixel(qts, 303 + x, 203 + y),
                         ==, cases[j].pixel);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void context_switch_to(QTestState *qts, uint32_t id)
@@ -9630,7 +9691,7 @@ static void test_command_fifo_gl_combined_carries_modelview(void)
     g_assert_cmphex(odsy_test_pixel(qts, 281, 364), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 376, 356), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -9655,7 +9716,7 @@ static void test_scanout_main_id_0_uses_drawable_1_mode(void)
     odsy_test_pixel_write(qts, 100, 100, 2);
     g_assert_cmphex(odsy_shown(qts, 100, 100), ==, ODSY_BLUE);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -9717,7 +9778,7 @@ static void test_command_fifo_gl_bitmap_rect_reverse_y(void)
             g_assert_cmphex(odsy_test_pixel(qts, x, y), ==, expected);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_disabled(void)
@@ -9739,7 +9800,7 @@ static void test_command_fifo_gl_bitmap_rect_disabled(void)
             }
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_origin_clip(void)
@@ -9767,7 +9828,7 @@ static void test_command_fifo_gl_bitmap_rect_origin_clip(void)
         }
     }
     g_assert_cmphex(odsy_test_pixel(qts, 10, 35), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_wrap_zero(void)
@@ -9801,7 +9862,7 @@ static void test_command_fifo_gl_bitmap_rect_wrap_zero(void)
     /* A zero pattern preserves both set and clear colour locations. */
     g_assert_cmphex(odsy_test_pixel(qts, 10, 35), ==, ODSY_PLANE_RED);
     g_assert_cmphex(odsy_test_pixel(qts, 11, 35), ==, ODSY_PLANE_BLUE);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_unsupported(void)
@@ -9837,7 +9898,7 @@ static void test_command_fifo_gl_bitmap_rect_unsupported(void)
                             ODSY_PLANE_BLUE);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_large_anchor(void)
@@ -9852,7 +9913,7 @@ static void test_command_fifo_gl_bitmap_rect_large_anchor(void)
     g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, ODSY_PLANE_RED);
     g_assert_cmphex(odsy_test_pixel(qts, 3, 3), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 2, 4), ==, ODSY_PLANE_BLUE);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* An original pixel-coordinate transform and triangle; no geometry program. */
@@ -9911,7 +9972,7 @@ static void test_command_fifo_gl_bitmap_rect_zero_preserves_depth(void)
     /* Depth 0.5 passes the original depth 1, but would fail a depth-0 clear. */
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, ODSY_PLANE_YELLOW);
     g_assert_cmphex(odsy_test_pixel(qts, 13, 12), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_depth_only(void)
@@ -9928,7 +9989,7 @@ static void test_command_fifo_gl_bitmap_rect_depth_only(void)
     /* Only the admitted pattern bit has depth 0 and rejects the triangle. */
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 13, 12), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_command_fifo_gl_bitmap_rect_index(void)
@@ -9953,7 +10014,7 @@ static void test_command_fifo_gl_bitmap_rect_index(void)
             g_assert_cmphex(odsy_test_pixel(qts, x, y), ==, expected);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Original texels: row zero is the lowest T, with padded object rows. */
@@ -10276,7 +10337,7 @@ static void texture_adapter_test_rgba8_colour_table(uint32_t sampler,
                             expected[i]);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_adapter_upload_luminance_alpha(QTestState *qts,
@@ -10426,7 +10487,7 @@ static void test_texture_chain_integer_quads(void)
     texture_integer_quad(qts, 10, 10, 20, 20, false);
     g_assert_cmphex(odsy_test_pixel(qts, 115, 313), ==, colour[0]);
     g_assert_cmphex(odsy_test_pixel(qts, 115, 215), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_chain_explicit_level(void)
@@ -10483,7 +10544,7 @@ static void test_texture_chain_explicit_level(void)
     push_user_words(qts, unknown, ARRAY_SIZE(unknown));
     texture_adapter_point(qts, 13, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_one_dimensional_mode(void)
@@ -10534,7 +10595,7 @@ static void test_texture_one_dimensional_mode(void)
         g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, pixels[1]);
         g_assert_cmphex(odsy_test_pixel(qts, 15, 10), ==, pixels[3]);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_one_dimensional_clamp(bool linear, bool stored, bool wide)
@@ -10674,7 +10735,7 @@ static void texture_one_dimensional_clamp(bool linear, bool stored, bool wide)
         texture_adapter_point(qts, 10, 10, 0.0f, 0.5f);
         g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
     }
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
 
@@ -10742,7 +10803,7 @@ static void texture_one_dimensional_stored_upload(bool wide)
         g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==,
                         wide ? wide_pixels[i] : pixels[i]);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_one_dimensional_stored_upload(void)
@@ -10840,12 +10901,12 @@ static void test_texture_public_border_copied_rows(void)
 
     texture_public_border_upload_1d(qts, false);
     texture_public_border_assert_1d(qts, false);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start("");
     texture_public_border_upload_1d(qts, true);
     texture_public_border_assert_1d(qts, true);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start("");
     texture_public_border_upload_2d(qts, 4);
@@ -10856,7 +10917,7 @@ static void test_texture_public_border_copied_rows(void)
                             public_border_2d_4x2[y][x]);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_public_border_sample_1d(QTestState *qts, bool wide,
@@ -10904,28 +10965,28 @@ static void test_texture_public_border_1d_width8_nearest(void)
 {
     QTestState *qts = board_start("");
     texture_public_border_sample_1d(qts, false, false);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_1d_width8_linear(void)
 {
     QTestState *qts = board_start("");
     texture_public_border_sample_1d(qts, false, true);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_1d_width64_nearest(void)
 {
     QTestState *qts = board_start("");
     texture_public_border_sample_1d(qts, true, false);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_1d_width64_linear(void)
 {
     QTestState *qts = board_start("");
     texture_public_border_sample_1d(qts, true, true);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_public_border_sample_2d(bool linear)
@@ -10981,7 +11042,7 @@ static void texture_public_border_sample_2d(bool linear)
                             expected[linear][row][column]);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_2d_nearest(void)
@@ -11017,7 +11078,7 @@ static void test_texture_public_border_2d_incomplete(void)
     odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
     texture_adapter_point(qts, 10, 10, 0.75f, 0.75f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static uint32_t texture_public_border_volume_texel(unsigned x, unsigned y,
@@ -11108,7 +11169,7 @@ static void test_texture_public_border_3d_copied_rows(void)
             }
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_public_border_sample_3d(bool linear)
@@ -11180,7 +11241,7 @@ static void texture_public_border_sample_3d(bool linear)
             }
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_3d_nearest(void)
@@ -11205,7 +11266,7 @@ static void test_texture_public_border_3d_incomplete(void)
         odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
         texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
         g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -11220,7 +11281,7 @@ static void test_texture_public_border_3d_wide(void)
     texture_adapter_point_3d(qts, 10, 10, 0.625f, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
                     texture_public_border_volume_texel(3, 1, 1));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_3d_zero_nearest(void)
@@ -11236,7 +11297,7 @@ static void test_texture_public_border_3d_zero_nearest(void)
     texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
                     texture_public_border_volume_texel(0, 0, 0));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_3d_zero_linear(void)
@@ -11250,7 +11311,7 @@ static void test_texture_public_border_3d_zero_linear(void)
     texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
                     texture_public_border_volume_texel(0, 0, 0));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_3d(void)
@@ -11305,7 +11366,7 @@ static void test_texture_two_dimensional_border_upload(void)
         QTestState *qts = board_start("");
 
         texture_two_dimensional_border_upload(qts, stored, false);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -11411,7 +11472,7 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
     odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
     texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
     g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
 
@@ -11440,7 +11501,7 @@ static void test_texture_two_dimensional_missing_border_row(void)
 
     g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
     g_assert_cmphex(odsy_test_pixel(qts, 5, 4), ==, 0x234567ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_two_dimensional_clamp_nearest(void)
@@ -11483,7 +11544,7 @@ static void test_texture_chain_height_one(void)
     push_user_words(qts, words, ARRAY_SIZE(words));
     texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x0000ffff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_chain_construction(void)
@@ -11538,7 +11599,7 @@ static void test_texture_chain_construction(void)
     push_user_words(qts, bad, ARRAY_SIZE(bad));
     g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 0, 0), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Read the selected raw attribute-4 entry through the kernel FIFO. */
@@ -11636,7 +11697,7 @@ static void context_save_texture_coordinate_inactive(bool nonunit,
         texture_current_query(qts, records[0], words[0], 2, 5, 1);
         records[0][3] = coords[0][2];
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_context_save_texture_coordinate_inactive_r(void)
@@ -11785,7 +11846,7 @@ static void test_context_save_texture_coordinate(void)
     g_assert_cmphex(reset[0], ==, 0xc380c821);
     g_assert_cmphex(reset[1], ==, 0);
     g_assert_cmphex(reset[2], ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -11833,7 +11894,7 @@ static void test_context_save_idle_descriptors(void)
                         pass ? coord[2] : 0);
         push_user_words(qts, coord, ARRAY_SIZE(coord));
     }
-    qtest_quit(qts);
+    board_quit(qts);
 
     fd = g_file_open_tmp("odyssey-descriptor-store-XXXXXX", &log_path, &error);
     g_assert_no_error(error);
@@ -11855,7 +11916,7 @@ static void test_context_save_idle_descriptors(void)
         g_assert_cmphex(done, ==, 1);
         g_assert_cmphex(colour, ==, 0xc580cc0e);
     }
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -11918,7 +11979,7 @@ static void test_context_save_texture_coordinate_active_primitive(void)
         }
     }
     user_cmd_push(qts, ODSY_CMD_GL_END);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -11955,7 +12016,7 @@ static void test_texture_adapter_rgba12_byte_upload(void)
                     row1[0]);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 1), ==,
                     row1[1]);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_nearest(void)
@@ -11976,7 +12037,7 @@ static void test_texture_adapter_nearest(void)
     g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x00ff0080);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 11), ==, 0x0000ffc0);
     g_assert_cmphex(odsy_test_pixel(qts, 11, 11), ==, 0xffffffff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_detail_zero_identity(void)
@@ -12166,7 +12227,7 @@ static void test_texture_adapter_detail_zero_identity(void)
     push_user_words(qts, (uint32_t[]) { 0, 0, 0 }, 3);
     texture_adapter_point(qts, 13, 10, 0.125f, 0.125f);
     missing_pixel = odsy_test_pixel(qts, 13, 10);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -12255,7 +12316,7 @@ static void test_texture_adapter_detail_zero_alpha_reference(void)
     texture_adapter_point(qts, 13, 10, 0.125f, 0.125f);
     g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x80400080);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_detail_rectangular_migration(void)
@@ -12313,8 +12374,8 @@ static void test_texture_adapter_detail_rectangular_migration(void)
     texture_adapter_point_rgba(to, 64, 64, 0.125f, 0.125f, white);
     g_assert_cmphex(odsy_test_pixel(to, 64, 64), ==, expected);
 
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -12363,7 +12424,7 @@ static void test_texture_adapter_nearest_clamp(void)
     odsy_test_pixel_write(qts, 22, 10, 0x12345678);
     texture_adapter_point(qts, 22, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_nearest_clamp_border(void)
@@ -12442,7 +12503,7 @@ static void test_texture_adapter_nearest_clamp_border(void)
     texture_adapter_point(qts, 26, 10, 0.25f, 0.25f);
     /* A valid sampler without uploaded storage draws untextured. */
     g_assert_cmphex(odsy_test_pixel(qts, 26, 10), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_clamp_border_state_restore(void)
@@ -12477,8 +12538,8 @@ static void test_texture_adapter_clamp_border_state_restore(void)
     /* Raw sampler words and backing objects survive without reupload. */
     texture_adapter_point(to, 11, 10, -0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x00ffff80);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -12524,7 +12585,7 @@ static void test_texture_adapter_binding_filters_matrix(void)
     texture_adapter_point(qts, 15, 10, 0.25f, 0.75f);
     g_assert_cmphex(odsy_test_pixel(qts, 15, 10), ==, 0xff000040);
     g_assert_cmphex(odsy_test_pixel(qts, 16, 10), ==, ODSY_PLANE_BLUE);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Change only the discriminated generation fragment, not a whole program. */
@@ -12681,8 +12742,8 @@ static void test_texture_adapter_linear_st(void)
     texture_linear_program(to, 3);
     texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[0]);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -12718,7 +12779,7 @@ static void test_texture_adapter_components_environment(void)
     set_reg(qts, 0x00010405, 0);
     texture_adapter_point(qts, 20, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* RGB table lookup follows L8 filtering and preserves the incoming alpha. */
@@ -12764,7 +12825,7 @@ static void test_texture_adapter_colour_table(void)
     g_assert_cmphex(odsy_test_pixel(qts, 16, 10), ==, 0xbf400080);
     texture_adapter_point_rgba(qts, 17, 10, 0.75f, 0.75f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x00ff0080);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void texture_adapter_l8_table_alpha(bool rgba)
@@ -12856,7 +12917,7 @@ static void texture_adapter_l8_table_alpha(bool rgba)
     push_user_words(qts, quad, ARRAY_SIZE(quad));
     g_assert_cmphex(odsy_test_pixel(qts, 40, 40), ==, 0xc0408040);
     g_assert_cmphex(odsy_test_pixel(qts, 80, 40), ==, 0x4080c040);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
 
@@ -12893,7 +12954,7 @@ static void test_texture_adapter_colour_table_rgb_basis(void)
     texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
     texture_adapter_point_rgba(qts, 10, 10, 0.75f, 0.75f, white);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x7f00ffff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_colour_table_rgba8_rgb_basis(void)
@@ -12938,7 +12999,7 @@ static void test_texture_adapter_colour_table_incomplete(void)
     odsy_test_pixel_write(qts, 10, 10, 0x12345678);
     texture_adapter_point_rgba(qts, 10, 10, 0.75f, 0.25f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_colour_table_reset(void)
@@ -12962,7 +13023,7 @@ static void test_texture_adapter_colour_table_reset(void)
     odsy_test_pixel_write(qts, 11, 10, 0x12345678);
     texture_adapter_point_rgba(qts, 11, 10, 0.25f, 0.25f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_colour_table_migration(void)
@@ -12996,8 +13057,8 @@ static void test_texture_adapter_colour_table_migration(void)
     sgi_wait_migration(to, "completed");
     texture_adapter_point_rgba(to, 11, 10, 0.75f, 0.75f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0xff00ff80);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -13053,7 +13114,7 @@ static void test_texture_adapter_scalar_components(void)
                              (const uint32_t[5]) { 3, 0, 0, 0, 0 });
     texture_adapter_point(qts, 17, 10, 0.75f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x12345678);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_luminance_alpha(void)
@@ -13118,7 +13179,7 @@ static void test_texture_adapter_luminance_alpha(void)
     user_cmd_push(qts, 0x12345678);
     upload_end(qts);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 0, 0), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void volume_mipmap_upload(QTestState *qts, int missing)
@@ -13242,7 +13303,7 @@ static void volume_mipmap_control(unsigned control)
         }
     }
     g_assert_cmphex(odsy_test_pixel(qts, 31, 64), ==, ODSY_PLANE_BLUE);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_volume_mipmap_trilinear(void)
@@ -13287,7 +13348,7 @@ static void test_texture_adapter_volume_mipmap_nearest(void)
         g_assert_cmphex(odsy_test_pixel(qts, 10 + level, 10), ==,
                         colours[level]);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_volume_mipmap_missing_slice(void)
@@ -13302,7 +13363,7 @@ static void test_texture_adapter_volume_mipmap_missing_slice(void)
         odsy_test_pixel_write(qts, 64, 64, 0x12345678);
         volume_mipmap_native_quad(qts);
         g_assert_cmphex(odsy_test_pixel(qts, 64, 64), ==, 0x12345678);
-        qtest_quit(qts);
+        board_quit(qts);
     }
 }
 
@@ -13333,8 +13394,8 @@ static void test_texture_adapter_volume_mipmap_state_restore(void)
     odsy_test_pixel_write(to, 64, 64, 0x12345678);
     volume_mipmap_native_quad(to);
     g_assert_cmphex(odsy_test_pixel(to, 64, 64), ==, 0x12345678);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -13453,7 +13514,7 @@ static void test_texture_adapter_level_zero_3d(void)
         g_assert_cmphex(odsy_test_pixel(qts, 23, 10), ==,
                         ODSY_PLANE_YELLOW);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_linear_r(void)
@@ -13586,8 +13647,8 @@ static void test_texture_adapter_linear_r(void)
     push_user_words(to, &setup[25], 4);
     texture_adapter_point_3d(to, 52, 64, 0.25f, 0.25f, 0.125f);
     g_assert_cmphex(odsy_test_pixel(to, 52, 64), ==, colours[0]);
-    qtest_quit(to);
-    qtest_quit(qts);
+    board_quit(to);
+    board_quit(qts);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -13728,7 +13789,7 @@ static void texture_adapter_linear_strq(bool t_enabled, bool bulk)
     /* Generated values must leave the explicit current coordinate intact. */
     texture_current_query(qts, query_texture_4f[t_enabled ? 0 : 1],
                           5, 2, 5, 1);
-    qtest_quit(qts);
+    board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
 
@@ -13883,8 +13944,8 @@ static void test_texture_adapter_linear_q(void)
     push_user_words(to, &setup[25], 4);
     texture_adapter_point_3d(to, 36, 64, 0.75f, 0.25f, 0.625f);
     g_assert_cmphex(odsy_test_pixel(to, 36, 64), ==, colours[2]);
-    qtest_quit(to);
-    qtest_quit(qts);
+    board_quit(to);
+    board_quit(qts);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -13931,7 +13992,7 @@ static void test_texture_adapter_projective_3d(void)
     /* A three-component coordinate restores the implicit Q=1. */
     texture_adapter_point_3d(qts, 12, 12, 0.25f, 0.25f, 0.875f);
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, colours[3]);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_3d_state_restore(void)
@@ -13978,8 +14039,8 @@ static void test_texture_adapter_3d_state_restore(void)
     /* The family restores R/Q with the object and sampler state. */
     texture_adapter_current_point(to, 11, 10);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, colours[2]);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -14029,7 +14090,7 @@ static void test_context_save_texture_coordinate_3d(void)
                  (UINT64_C(7) << 40) | (UINT64_C(1) << 16) | 1);
     g_assert_cmphex(qtest_readl(qts, page + 0x140), ==, 0xc380d025);
     g_assert_cmphex(qtest_readl(qts, page + 0x40c), ==, 0x40000000);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_blend_environment(void)
@@ -14078,7 +14139,7 @@ static void test_texture_adapter_blend_environment(void)
         texture_adapter_point(qts, x, 10, 0.25f, 0.25f);
         g_assert_cmphex(odsy_test_pixel(qts, x, 10), ==, 0xa1b2c3d4);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_texture_adapter_blend_state_restore(void)
@@ -14113,8 +14174,8 @@ static void test_texture_adapter_blend_state_restore(void)
     /* No sampler or environment reupload: family state rebuilds the draw. */
     texture_adapter_point(to, 11, 10, 0.75f, 0.75f);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x112233ff);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -14153,7 +14214,7 @@ static void test_texture_adapter_storage_dimensions(void)
     push_user_words(qts, sampler, ARRAY_SIZE(sampler));
     texture_adapter_point(qts, 12, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Family image state travels; descriptors are rebuilt after load. */
@@ -14199,8 +14260,8 @@ static void test_texture_adapter_state_restore(void)
     user_cmd_push(to, bitmap_rect_float(10.5f));
     user_cmd_push(to, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0xff000040);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -14257,7 +14318,7 @@ static void test_texture_adapter_unsupported_missing(void)
     texture_adapter_bind(qts, 0xdead00, 0x13000000, 1);
     texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, ODSY_PLANE_YELLOW);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Original RGBA rectangle operands in the established ten-float format. */
@@ -14312,7 +14373,7 @@ static void test_rgba_clear_masks(void)
         rgba_rect(qts, 1, 1, 1, 0.5f, 10, 10, 14, 14);
         g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, expected[i]);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_material_masks(void)
@@ -14347,7 +14408,7 @@ static void test_rgba_material_masks(void)
     push_user_words(qts, triangle, ARRAY_SIZE(triangle));
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==,
                     (colour & ~0xffu) | 0x28);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_pattern_origin_ownership(void)
@@ -14379,7 +14440,7 @@ static void test_rgba_pattern_origin_ownership(void)
     did_compare(qts, 0);
     rgba_rect(qts, 0, 0, 0, 0, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(qts, 311, 211), ==, 0x0a141e00);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_pattern_float_rectangle(void)
@@ -14431,7 +14492,7 @@ static void test_rgba_pattern_float_rectangle(void)
     bitmap_rect_depth_window(qts);
     push_native_float_quad(qts, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xff0000ff);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_pattern_float_rectangle_migration(void)
@@ -14466,8 +14527,8 @@ static void test_rgba_pattern_float_rectangle_migration(void)
     push_native_float_quad(to, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(to, 10, 10), ==, 0xff0000ff);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x0000ffff);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -14534,7 +14595,7 @@ static void test_rgba_four_float_alpha(void)
     push_user_words(qts, index5, ARRAY_SIZE(index5));
     four_float_triangle(qts, scratch, ARRAY_SIZE(scratch));
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, 5);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_index_transitions(void)
@@ -14553,7 +14614,7 @@ static void test_rgba_index_transitions(void)
     set_reg(qts, ODSY_REG_WRITE_MASK, 0x00800000);
     rgba_rect(qts, 1, 1, 1, 0.5f, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, 0x00000080);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_texture_alpha(void)
@@ -14588,7 +14649,7 @@ static void test_rgba_texture_alpha(void)
         g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10) & 0xff, ==,
                         cases[i].alpha);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_disabled_colour_depth(void)
@@ -14617,7 +14678,7 @@ static void test_rgba_disabled_colour_depth(void)
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, ODSY_PLANE_BLUE);
     push_triangle_3f(qts, ODSY_F_ONE, 0, 0, nearer);
     g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, ODSY_PLANE_RED);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_rgba_read_bounds(void)
@@ -14648,7 +14709,7 @@ static void test_rgba_read_bounds(void)
         g_assert_cmpint(qdict_get_bool(resp, "return"), ==, cases[i].readable);
         qobject_unref(resp);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -14735,7 +14796,7 @@ static void test_buffers_hold_opposite_colours(void)
     rgb_fill(qts, 0xff, 0xff, 0xff, 100, 100, 110, 110);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 105, 105), ==, 0xff0000ffu);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 105, 105), ==, 0x0000ffffu);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -14779,7 +14840,7 @@ static void test_buffers_swap_shows_only_complete_frames(void)
         g_assert_cmphex(odsy_test_display_pixel(qts, 10, 40), ==, colour);
         shown = colour;
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A colour destination select, ending an id-plane write's selection. */
@@ -14825,7 +14886,7 @@ static void test_buffers_display_selection_per_window(void)
     reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 1u << 2);
     g_assert_cmphex(odsy_test_display_pixel(qts, 25, 25), ==, 0x000000ff);
     g_assert_cmphex(odsy_test_display_pixel(qts, 75, 25), ==, 0x00ff0000);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -14877,7 +14938,7 @@ static void test_buffers_draw_selection_keeps_clip_and_masks(void)
     rgb_fill(qts, 0x77, 0x88, 0x99, 500, 500, 501, 501);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 500, 500), ==, 0x778899ffu);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 500, 500), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -14907,7 +14968,7 @@ static void test_buffers_read_and_draw_words_are_independent(void)
     qtest_system_reset(qts);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-draw-word"), ==, 0);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-read-word"), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -14940,7 +15001,7 @@ static void test_buffers_unsupported_mask_reported_once(void)
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 0, 0), ==, 0x123456ffu);
     draw_mask(qts, ODSY_DRAW_BUFFER1_RIGHT);
     draw_mask(qts, 0xa);
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -14965,7 +15026,7 @@ static void test_buffers_gl_triangle_follows_mask(void)
     push_captured_triangle(qts);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 61, 78), ==, 0xffff00ffu);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 61, 78), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 
     qts = board_start("");
     probe_window(qts);
@@ -15005,7 +15066,7 @@ static void test_buffers_gl_triangle_follows_mask(void)
                     ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 326, 340), ==,
                     ODSY_PLANE_BLUE);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15045,8 +15106,8 @@ static void test_buffers_migration(void)
     rgb_fill(to, 0xff, 0, 0, 0, 0, 8, 8);
     g_assert_cmphex(odsy_buffer_pixel(to, 1, 4, 4), ==, 0xff0000ffu);
     g_assert_cmphex(odsy_buffer_pixel(to, 0, 4, 4), ==, 0);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -15072,8 +15133,8 @@ static void test_texture_public_border_1d_migration(void)
 
     texture_adapter_point(to, 24, 64, 0.0f, 0.5f);
     g_assert_cmphex(odsy_test_pixel(to, 24, 64), ==, 0x203458ff);
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -15134,8 +15195,8 @@ static void test_texture_public_border_3d_migration(void)
                                                            samples[i].y,
                                                            samples[i].z));
     }
-    qtest_quit(to);
-    qtest_quit(from);
+    board_quit(to);
+    board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -15183,7 +15244,7 @@ static void test_buffers_transfers_follow_mask(void)
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 101, 100), ==, 0x445566ffu);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 100, 100), ==, 0);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 101, 100), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* The native move emits both colour-plane copies in order. */
@@ -15293,7 +15354,7 @@ static void test_buffers_captured_copy_preserves_both_sources(void)
                      odsy_far_cyan);
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 326, 340), ==, 0xff0000ff);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15438,7 +15499,7 @@ static void test_readback_direction(void)
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x112233ffu);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_draw_sentinel_short_upload(void)
@@ -15476,7 +15537,7 @@ static void test_draw_sentinel_short_upload(void)
     g_assert_cmphex(odsy_buffer_pixel(qts, 0, 103, 203), ==, 0);
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_draw_sentinel_short_row_gap(void)
@@ -15595,7 +15656,7 @@ static void test_draw_sentinel_short_row_gap(void)
     }
 
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_draw_sentinel_short_zero_origin_clip(void)
@@ -15624,7 +15685,7 @@ static void test_draw_sentinel_short_zero_origin_clip(void)
     g_assert_cmphex(odsy_test_pixel(qts, 0, 1), ==, 0);
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_draw_sentinel_short_rejections(void)
@@ -15675,7 +15736,7 @@ static void test_draw_sentinel_short_rejections(void)
     g_assert_cmphex(odsy_test_pixel(qts, 1, 0), ==, 0);
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15719,7 +15780,7 @@ static void test_readback_sentinel_drawable_relative(void)
     g_assert_cmphex(odsy_test_pixel(qts, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63),
                     ==, 0x11223344);
 
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15748,7 +15809,7 @@ static void test_readback_intermediate_block(void)
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==,
                     0);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15785,7 +15846,7 @@ static void test_readback_back_buffer(void)
     expect[18] = 0x33;
     expect[19] = 0x44;
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15851,7 +15912,7 @@ static void test_readback_front_follows_displayed_buffer(void)
         readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
         shown_word = drawn;
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 static void test_readback_two_by_two_row_order(void)
@@ -15892,7 +15953,7 @@ static void test_readback_two_by_two_row_order(void)
     readback_run(qts, hdr, pte, 1);
     memcpy(&expect[16], bottom_up, sizeof(bottom_up));
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15932,7 +15993,7 @@ static void test_readback_row_gap_bottom_up(void)
         }
     }
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -15988,7 +16049,7 @@ static void test_readback_page_crossing(void)
     readback_expect(qts, RB_PAGE_A + 0x3ff0, expect_a, sizeof(expect_a));
     readback_expect(qts, RB_PAGE_B, expect_b, sizeof(expect_b));
     g_assert_true(readback_dma_done(qts));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -16045,7 +16106,7 @@ static void test_readback_object_source(void)
     readback_run(qts, hdr, pte, 1);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 1);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A V6 GL read of one RGBA8 texel uses class 2, code 8 and no format byte. */
@@ -16070,7 +16131,7 @@ static void test_readback_gl_rgba8_object(void)
     memcpy(&expect[16], texel, sizeof(texel));
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_true(readback_dma_done(qts));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* A native RGBA/UNSIGNED_SHORT read expands each stored channel to 16 bits. */
@@ -16106,7 +16167,7 @@ static void test_readback_gl_rgba16_object(void)
         hdr[6] = 4;
         hdr[7] = 0x3201004b;
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* The same V12 copy reads the selected front or back drawable. */
@@ -16151,7 +16212,7 @@ static void test_readback_gl_rgba16_scratch_copy(void)
         memcpy(&expect[16], magenta16, sizeof(magenta16));
         readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* Captured V12 copies fill one 128x64 object chunk before each short read. */
@@ -16275,7 +16336,7 @@ static void test_readback_gl_rgba16_scratch_copy_chunks(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 509, 0), ==, 0);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 511, 0), ==,
                     0x76543210);
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /* The V6 scratch read follows a drawable-to-object copy, then a DMA read. */
@@ -16380,7 +16441,7 @@ static void test_readback_gl_rgba8_scratch_copy(void)
     readback_run(qts, captured_hdr, captured_pte, 1);
     stl_be_p(&expect[16], 0x2468ace0);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -16454,7 +16515,7 @@ static void test_readback_index_follows_display_mode(void)
         readback_run(qts, up, pte, 1);
         readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     }
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -16496,7 +16557,7 @@ static void test_readback_greeter_caret_cell(void)
                             1 + (r * 6 + c) % 200);
         }
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -16532,7 +16593,7 @@ static void test_readback_gl_layouts(void)
         memcpy(&expect[16], cases[i].want, cases[i].bytes);
         readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     }
-    qtest_quit(qts);
+    board_quit(qts);
 }
 
 /*
@@ -16656,7 +16717,7 @@ static void test_readback_failures(void)
                                         RB_ORIGIN_Y + 63), ==, 0x01020304);
         g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
     }
-    qtest_quit(qts);
+    board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -16724,6 +16785,13 @@ static bool in_group(const char *path)
 static void add_case(const char *path, GTestFunc fn)
 {
     if (in_group(path)) {
+        qtest_add_data_func(path, fn, shared_case_run);
+    }
+}
+
+static void add_fresh_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
         qtest_add_func(path, fn);
     }
 }
@@ -16749,58 +16817,58 @@ int main(int argc, char **argv)
              test_rgba_pattern_origin_ownership);
     add_case("sn1/odyssey/rgba/pattern-float-rectangle",
              test_rgba_pattern_float_rectangle);
-    add_case("sn1/odyssey/rgba/pattern-float-rectangle-migration",
-             test_rgba_pattern_float_rectangle_migration);
+    add_fresh_case("sn1/odyssey/rgba/pattern-float-rectangle-migration",
+                   test_rgba_pattern_float_rectangle_migration);
     add_case("sn1/odyssey/rgba/index-transitions",
              test_rgba_index_transitions);
     add_case("sn1/odyssey/rgba/four-float-alpha",
              test_rgba_four_float_alpha);
-    add_case("sn1/odyssey/identity-carries-part-and-revision",
-             test_identity_carries_part_and_revision);
-    add_case("sn1/odyssey/configuration-block-mirrors-both-halves",
-             test_configuration_block_mirrors_both_halves);
-    add_case("sn1/odyssey/widget-control-reads-back",
-             test_widget_control_reads_back);
-    add_case("sn1/odyssey/memory-configuration-follows-properties",
-             test_memory_configuration_follows_properties);
-    add_case("sn1/odyssey/profile-selects-identity-and-memory",
-             test_profile_selects_identity_and_memory);
-    add_case("sn1/odyssey/v12-profile-memory-word-bits",
-             test_v12_profile_memory_word_bits);
-    add_case("sn1/odyssey/reset-control-accepts-six-writes",
-             test_reset_control_accepts_six_writes);
-    add_case("sn1/odyssey/backend-version-is-pinned",
-             test_backend_version_is_pinned);
-    add_case("sn1/odyssey/board-memory-bound-is-a-guest-error",
-             test_board_memory_bound_is_a_guest_error);
-    add_case("sn1/odyssey/board-identity-part-answers",
-             test_board_identity_part_answers);
-    add_case("sn1/odyssey/interrupt-registers",
-             test_interrupt_registers);
-    add_case("sn1/odyssey/interrupt-enable-set-and-clear",
-             test_interrupt_enable_set_and_clear);
-    add_case("sn1/odyssey/interrupt-clear-acknowledges-flags",
-             test_interrupt_clear_acknowledges_flags);
-    add_case("sn1/odyssey/interrupt-flags-write-is-accepted",
-             test_interrupt_flags_write_is_accepted);
-    add_case("sn1/odyssey/lowater-not-raised-while-disabled",
-             test_lowater_not_raised_while_disabled);
-    add_case("sn1/odyssey/board-status-reports-fifo-ready",
-             test_board_status_reports_fifo_ready);
-    add_case("sn1/odyssey/command-fifo-lowater-interrupt",
-             test_command_fifo_lowater_interrupt);
-    add_case("sn1/odyssey/interrupt-packet-composition",
-             test_interrupt_packet_composition);
-    add_case("sn1/odyssey/interrupt-packet-reaches-bedrock-pending",
-             test_interrupt_packet_reaches_bedrock_pending);
-    add_case("sn1/odyssey/baseio-prom-diagnostic-registers",
-             test_baseio_prom_diagnostic_registers);
-    add_case("sn1/odyssey/unmodeled-offsets-are-visible",
-             test_unmodeled_offsets_are_visible);
+    add_fresh_case("sn1/odyssey/identity-carries-part-and-revision",
+                   test_identity_carries_part_and_revision);
+    add_fresh_case("sn1/odyssey/configuration-block-mirrors-both-halves",
+                   test_configuration_block_mirrors_both_halves);
+    add_fresh_case("sn1/odyssey/widget-control-reads-back",
+                   test_widget_control_reads_back);
+    add_fresh_case("sn1/odyssey/memory-configuration-follows-properties",
+                   test_memory_configuration_follows_properties);
+    add_fresh_case("sn1/odyssey/profile-selects-identity-and-memory",
+                   test_profile_selects_identity_and_memory);
+    add_fresh_case("sn1/odyssey/v12-profile-memory-word-bits",
+                   test_v12_profile_memory_word_bits);
+    add_fresh_case("sn1/odyssey/reset-control-accepts-six-writes",
+                   test_reset_control_accepts_six_writes);
+    add_fresh_case("sn1/odyssey/backend-version-is-pinned",
+                   test_backend_version_is_pinned);
+    add_fresh_case("sn1/odyssey/board-memory-bound-is-a-guest-error",
+                   test_board_memory_bound_is_a_guest_error);
+    add_fresh_case("sn1/odyssey/board-identity-part-answers",
+                   test_board_identity_part_answers);
+    add_fresh_case("sn1/odyssey/interrupt-registers",
+                   test_interrupt_registers);
+    add_fresh_case("sn1/odyssey/interrupt-enable-set-and-clear",
+                   test_interrupt_enable_set_and_clear);
+    add_fresh_case("sn1/odyssey/interrupt-clear-acknowledges-flags",
+                   test_interrupt_clear_acknowledges_flags);
+    add_fresh_case("sn1/odyssey/interrupt-flags-write-is-accepted",
+                   test_interrupt_flags_write_is_accepted);
+    add_fresh_case("sn1/odyssey/lowater-not-raised-while-disabled",
+                   test_lowater_not_raised_while_disabled);
+    add_fresh_case("sn1/odyssey/board-status-reports-fifo-ready",
+                   test_board_status_reports_fifo_ready);
+    add_fresh_case("sn1/odyssey/command-fifo-lowater-interrupt",
+                   test_command_fifo_lowater_interrupt);
+    add_fresh_case("sn1/odyssey/interrupt-packet-composition",
+                   test_interrupt_packet_composition);
+    add_fresh_case("sn1/odyssey/interrupt-packet-reaches-bedrock-pending",
+                   test_interrupt_packet_reaches_bedrock_pending);
+    add_fresh_case("sn1/odyssey/baseio-prom-diagnostic-registers",
+                   test_baseio_prom_diagnostic_registers);
+    add_fresh_case("sn1/odyssey/unmodeled-offsets-are-visible",
+                   test_unmodeled_offsets_are_visible);
     add_case("sn1/odyssey/command-fifo-selftest",
              test_command_fifo_selftest);
-    add_case("sn1/odyssey/reset-restores-documented-values",
-             test_reset_restores_the_documented_values);
+    add_fresh_case("sn1/odyssey/reset-restores-documented-values",
+                   test_reset_restores_the_documented_values);
     add_case("sn1/odyssey/i2c-opt-port-pll-register-write",
              test_i2c_opt_port_pll_register_write);
     add_case("sn1/odyssey/i2c-opt-port-ddc-register-read",
@@ -16809,10 +16877,10 @@ int main(int argc, char **argv)
              test_i2c_reset_state_poll_terminates);
     add_case("sn1/odyssey/framebuffer-pixel-reaches-scanout",
              test_framebuffer_pixel_reaches_display_and_screendump);
-    add_case("sn1/odyssey/reset-clears-the-framebuffer",
-             test_reset_clears_the_framebuffer);
-    add_case("sn1/odyssey/reset-mid-primitive-does-not-hang",
-             test_reset_mid_primitive_does_not_hang);
+    add_fresh_case("sn1/odyssey/reset-clears-the-framebuffer",
+                   test_reset_clears_the_framebuffer);
+    add_fresh_case("sn1/odyssey/reset-mid-primitive-does-not-hang",
+                   test_reset_mid_primitive_does_not_hang);
     add_case("sn1/odyssey/framebuffer-pixel-accessor-bounds",
              test_framebuffer_pixel_accessor_bounds);
     add_case("sn1/odyssey/scanout-wipe-repaint-reload",
@@ -16839,62 +16907,62 @@ int main(int argc, char **argv)
              test_command_fifo_copyrect_large_offscreen);
     add_case("sn1/odyssey/command-fifo-copyrect-ignores-window-clip",
              test_command_fifo_copyrect_ignores_window_clip);
-    add_case("sn1/odyssey/command-fifo-copyrect-prefix-is-a-register",
-             test_command_fifo_copyrect_prefix_is_a_plain_register);
-    add_case("sn1/odyssey/command-fifo-host-write-sync",
-             test_command_fifo_host_write_sync);
-    add_case("sn1/odyssey/command-fifo-dma-trace",
-             test_command_fifo_dma_trace);
-    add_case("sn1/odyssey/command-fifo-dma-page-table",
-             test_command_fifo_dma_page_table);
-    add_case("sn1/odyssey/command-fifo-dma-image",
-             test_command_fifo_dma_image);
-    add_case("sn1/odyssey/readback/direction", test_readback_direction);
-    add_case("sn1/odyssey/dma/draw-sentinel-short",
-             test_draw_sentinel_short_upload);
-    add_case("sn1/odyssey/dma/draw-sentinel-short-row-gap",
-             test_draw_sentinel_short_row_gap);
-    add_case("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",
-             test_draw_sentinel_short_zero_origin_clip);
-    add_case("sn1/odyssey/dma/draw-sentinel-short-rejections",
-             test_draw_sentinel_short_rejections);
-    add_case("sn1/odyssey/readback/sentinel-drawable-relative",
-             test_readback_sentinel_drawable_relative);
-    add_case("sn1/odyssey/readback/intermediate-block",
-             test_readback_intermediate_block);
-    add_case("sn1/odyssey/readback/back-buffer",
-             test_readback_back_buffer);
-    add_case("sn1/odyssey/readback/front-follows-displayed-buffer",
-             test_readback_front_follows_displayed_buffer);
-    add_case("sn1/odyssey/readback/two-by-two-row-order",
-             test_readback_two_by_two_row_order);
-    add_case("sn1/odyssey/readback/row-gap-bottom-up",
-             test_readback_row_gap_bottom_up);
-    add_case("sn1/odyssey/readback/page-crossing",
-             test_readback_page_crossing);
-    add_case("sn1/odyssey/readback/object-source",
-             test_readback_object_source);
-    add_case("sn1/odyssey/readback/gl-rgba8-object",
-             test_readback_gl_rgba8_object);
-    add_case("sn1/odyssey/readback/gl-rgba16-object",
-             test_readback_gl_rgba16_object);
-    add_case("sn1/odyssey/readback/gl-rgba16-scratch-copy",
-             test_readback_gl_rgba16_scratch_copy);
-    add_case("sn1/odyssey/readback/gl-rgba16-scratch-copy-chunks",
-             test_readback_gl_rgba16_scratch_copy_chunks);
-    add_case("sn1/odyssey/readback/gl-rgba8-scratch-copy",
-             test_readback_gl_rgba8_scratch_copy);
-    add_case("sn1/odyssey/readback/index-follows-display-mode",
-             test_readback_index_follows_display_mode);
-    add_case("sn1/odyssey/readback/greeter-caret-cell",
-             test_readback_greeter_caret_cell);
-    add_case("sn1/odyssey/readback/gl-layouts",
-             test_readback_gl_layouts);
-    add_case("sn1/odyssey/readback/failures", test_readback_failures);
-    add_case("sn1/odyssey/swap-retrace-vector",
-             test_swap_retrace_vector);
-    add_case("sn1/odyssey/swap-arm-toggles-displayed-buffer",
-             test_swap_arm_toggles_displayed_buffer);
+    add_fresh_case("sn1/odyssey/command-fifo-copyrect-prefix-is-a-register",
+                   test_command_fifo_copyrect_prefix_is_a_plain_register);
+    add_fresh_case("sn1/odyssey/command-fifo-host-write-sync",
+                   test_command_fifo_host_write_sync);
+    add_fresh_case("sn1/odyssey/command-fifo-dma-trace",
+                   test_command_fifo_dma_trace);
+    add_fresh_case("sn1/odyssey/command-fifo-dma-page-table",
+                   test_command_fifo_dma_page_table);
+    add_fresh_case("sn1/odyssey/command-fifo-dma-image",
+                   test_command_fifo_dma_image);
+    add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-short",
+                   test_draw_sentinel_short_upload);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-row-gap",
+                   test_draw_sentinel_short_row_gap);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",
+                   test_draw_sentinel_short_zero_origin_clip);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-rejections",
+                   test_draw_sentinel_short_rejections);
+    add_fresh_case("sn1/odyssey/readback/sentinel-drawable-relative",
+                   test_readback_sentinel_drawable_relative);
+    add_fresh_case("sn1/odyssey/readback/intermediate-block",
+                   test_readback_intermediate_block);
+    add_fresh_case("sn1/odyssey/readback/back-buffer",
+                   test_readback_back_buffer);
+    add_fresh_case("sn1/odyssey/readback/front-follows-displayed-buffer",
+                   test_readback_front_follows_displayed_buffer);
+    add_fresh_case("sn1/odyssey/readback/two-by-two-row-order",
+                   test_readback_two_by_two_row_order);
+    add_fresh_case("sn1/odyssey/readback/row-gap-bottom-up",
+                   test_readback_row_gap_bottom_up);
+    add_fresh_case("sn1/odyssey/readback/page-crossing",
+                   test_readback_page_crossing);
+    add_fresh_case("sn1/odyssey/readback/object-source",
+                   test_readback_object_source);
+    add_fresh_case("sn1/odyssey/readback/gl-rgba8-object",
+                   test_readback_gl_rgba8_object);
+    add_fresh_case("sn1/odyssey/readback/gl-rgba16-object",
+                   test_readback_gl_rgba16_object);
+    add_fresh_case("sn1/odyssey/readback/gl-rgba16-scratch-copy",
+                   test_readback_gl_rgba16_scratch_copy);
+    add_fresh_case("sn1/odyssey/readback/gl-rgba16-scratch-copy-chunks",
+                   test_readback_gl_rgba16_scratch_copy_chunks);
+    add_fresh_case("sn1/odyssey/readback/gl-rgba8-scratch-copy",
+                   test_readback_gl_rgba8_scratch_copy);
+    add_fresh_case("sn1/odyssey/readback/index-follows-display-mode",
+                   test_readback_index_follows_display_mode);
+    add_fresh_case("sn1/odyssey/readback/greeter-caret-cell",
+                   test_readback_greeter_caret_cell);
+    add_fresh_case("sn1/odyssey/readback/gl-layouts",
+                   test_readback_gl_layouts);
+    add_fresh_case("sn1/odyssey/readback/failures", test_readback_failures);
+    add_fresh_case("sn1/odyssey/swap-retrace-vector",
+                   test_swap_retrace_vector);
+    add_fresh_case("sn1/odyssey/swap-arm-toggles-displayed-buffer",
+                   test_swap_arm_toggles_displayed_buffer);
     add_case("sn1/odyssey/swap-arm-accumulates",
              test_swap_arm_accumulates);
     add_case("sn1/odyssey/swap-immediate-set-and-clear",
@@ -16909,14 +16977,14 @@ int main(int argc, char **argv)
              test_buffers_draw_selection_keeps_clip_and_masks);
     add_case("sn1/odyssey/buffers-read-and-draw-words-are-independent",
              test_buffers_read_and_draw_words_are_independent);
-    add_case("sn1/odyssey/buffers-unsupported-mask-reported-once",
-             test_buffers_unsupported_mask_reported_once);
+    add_fresh_case("sn1/odyssey/buffers-unsupported-mask-reported-once",
+                   test_buffers_unsupported_mask_reported_once);
     add_case("sn1/odyssey/buffers-gl-triangle-follows-mask",
              test_buffers_gl_triangle_follows_mask);
-    add_case("sn1/odyssey/buffers-migration",
-             test_buffers_migration);
-    add_case("sn1/odyssey/buffers-transfers-follow-mask",
-             test_buffers_transfers_follow_mask);
+    add_fresh_case("sn1/odyssey/buffers-migration",
+                   test_buffers_migration);
+    add_fresh_case("sn1/odyssey/buffers-transfers-follow-mask",
+                   test_buffers_transfers_follow_mask);
     add_case("sn1/odyssey/buffers-captured-copy-preserves-both-sources",
              test_buffers_captured_copy_preserves_both_sources);
     add_case("sn1/odyssey/command-fifo-pattern-quad",
@@ -16957,9 +17025,9 @@ int main(int argc, char **argv)
              test_command_fifo_gl_integer_routing_modes);
     add_case("sn1/odyssey/command-fifo-x11-integer-after-gl",
              test_command_fifo_x11_integer_after_gl);
-    add_case("sn1/odyssey/"
-             "command-fifo-gl-integer-routing-migration-reset",
-             test_command_fifo_gl_integer_routing_migration_reset);
+    add_fresh_case("sn1/odyssey/"
+                   "command-fifo-gl-integer-routing-migration-reset",
+                   test_command_fifo_gl_integer_routing_migration_reset);
     add_case("sn1/odyssey/command-fifo-x11-line-cap-default",
              test_command_fifo_x11_line_cap_default);
     add_case("sn1/odyssey/command-fifo-x11-line-cap-not-last",
@@ -16986,8 +17054,8 @@ int main(int argc, char **argv)
              test_command_fifo_lines);
     add_case("sn1/odyssey/command-fifo-lines-cross-screen-edge",
              test_command_fifo_lines_cross_screen_edge);
-    add_case("sn1/odyssey/command-fifo-integer-primitives-stream",
-             test_command_fifo_integer_primitives_stream);
+    add_fresh_case("sn1/odyssey/command-fifo-integer-primitives-stream",
+                   test_command_fifo_integer_primitives_stream);
     add_case("sn1/odyssey/command-fifo-gl-bitmap-rect-reverse-y",
              test_command_fifo_gl_bitmap_rect_reverse_y);
     add_case("sn1/odyssey/command-fifo-gl-bitmap-rect-disabled",
@@ -17023,27 +17091,27 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/"
              "command-fifo-gl-float-colour-integer-conversion",
              test_command_fifo_gl_float_colour_integer_conversion);
-    add_case("sn1/odyssey/byte-colour/conversion",
-             test_byte_colour_conversion);
-    add_case("sn1/odyssey/byte-colour/override",
-             test_byte_colour_override);
-    add_case("sn1/odyssey/byte-colour/index-guard",
-             test_byte_colour_index_guard);
-    add_case("sn1/odyssey/byte-colour/drawable-id",
-             test_byte_colour_drawable_id);
-    add_case("sn1/odyssey/"
-             "command-fifo-gl-byte-colour-float-and-replay",
-             test_command_fifo_gl_byte_colour_float_and_replay);
+    add_fresh_case("sn1/odyssey/byte-colour/conversion",
+                   test_byte_colour_conversion);
+    add_fresh_case("sn1/odyssey/byte-colour/override",
+                   test_byte_colour_override);
+    add_fresh_case("sn1/odyssey/byte-colour/index-guard",
+                   test_byte_colour_index_guard);
+    add_fresh_case("sn1/odyssey/byte-colour/drawable-id",
+                   test_byte_colour_drawable_id);
+    add_fresh_case("sn1/odyssey/"
+                   "command-fifo-gl-byte-colour-float-and-replay",
+                   test_command_fifo_gl_byte_colour_float_and_replay);
     add_case("sn1/odyssey/command-fifo-gl-float-colour-integer-vertices",
              test_command_fifo_gl_float_colour_integer_vertices);
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
-    add_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
-             test_command_fifo_gl_colour_index_write_mask);
-    add_case("sn1/odyssey/command-fifo-gl-program-window-unknown",
-             test_command_fifo_gl_program_window_unknown);
-    add_case("sn1/odyssey/command-fifo-gl-program-window-known",
-             test_command_fifo_gl_program_window_known);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
+                   test_command_fifo_gl_colour_index_write_mask);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-unknown",
+                   test_command_fifo_gl_program_window_unknown);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-known",
+                   test_command_fifo_gl_program_window_known);
     add_case("sn1/odyssey/command-fifo-gl-combined-carries-modelview",
              test_command_fifo_gl_combined_carries_modelview);
     add_case("sn1/odyssey/scanout-main-id-0-uses-drawable-1-mode",
@@ -17054,18 +17122,18 @@ int main(int argc, char **argv)
              test_command_fifo_gl_fog_curve);
     add_case("sn1/odyssey/command-fifo-gl-fog-native-packets",
              test_command_fifo_gl_fog_native_packets);
-    add_case("sn1/odyssey/command-fifo-gl-fog-migration",
-             test_command_fifo_gl_fog_migration);
-    add_case("sn1/odyssey/command-fifo-gl-dither",
-             test_command_fifo_gl_dither);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-fog-migration",
+                   test_command_fifo_gl_fog_migration);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-dither",
+                   test_command_fifo_gl_dither);
     add_case("sn1/odyssey/command-fifo-gl-depth-test",
              test_command_fifo_gl_depth_test);
     add_case("sn1/odyssey/command-fifo-gl-alpha-test",
              test_command_fifo_gl_alpha_test);
     add_case("sn1/odyssey/command-fifo-gl-blend",
              test_command_fifo_gl_blend);
-    add_case("sn1/odyssey/command-fifo-gl-stencil-state",
-             test_command_fifo_gl_stencil_state);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-stencil-state",
+                   test_command_fifo_gl_stencil_state);
     add_case("sn1/odyssey/command-fifo-gl-stencil-always-passes",
              test_command_fifo_gl_stencil_always_passes);
     add_case("sn1/odyssey/command-fifo-gl-cull-face",
@@ -17080,8 +17148,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_line_smoothing);
     add_case("sn1/odyssey/command-fifo-gl-line-stipple",
              test_command_fifo_gl_line_stipple);
-    add_case("sn1/odyssey/command-fifo-gl-line-stipple-migration",
-             test_command_fifo_gl_line_stipple_migration);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-line-stipple-migration",
+                   test_command_fifo_gl_line_stipple_migration);
     add_case("sn1/odyssey/command-fifo-gl-polygon-offset",
              test_command_fifo_gl_polygon_offset);
     add_case("sn1/odyssey/command-fifo-gl-clip-box",
@@ -17098,36 +17166,36 @@ int main(int argc, char **argv)
              test_command_fifo_gl_colour_mask);
     add_case("sn1/odyssey/command-fifo-gl-depth-only-clear",
              test_command_fifo_gl_depth_only_clear);
-    add_case("sn1/odyssey/command-fifo-gl-program-record-lit",
-             test_command_fifo_gl_program_record_lit);
-    add_case("sn1/odyssey/command-fifo-gl-integer-normals",
-             test_command_fifo_gl_integer_normals);
-    add_case("sn1/odyssey/command-fifo-gl-program-record-unlit",
-             test_command_fifo_gl_program_record_unlit);
-    add_case("sn1/odyssey/command-fifo-gl-program-list-lit",
-             test_command_fifo_gl_program_list_lit);
-    add_case("sn1/odyssey/command-fifo-gl-program-list-lit-local-viewer",
-             test_command_fifo_gl_program_list_lit_local_viewer);
-    add_case("sn1/odyssey/command-fifo-gl-program-list-lit-positional",
-             test_command_fifo_gl_program_list_lit_positional);
-    add_case("sn1/odyssey/command-fifo-gl-lighting-uses-modelview",
-             test_command_fifo_gl_lighting_uses_modelview);
-    add_case("sn1/odyssey/command-fifo-gl-program-two-sided",
-             test_command_fifo_gl_program_two_sided);
-    add_case("sn1/odyssey/command-fifo-gl-program-texgen",
-             test_command_fifo_gl_program_texgen);
-    add_case("sn1/odyssey/command-fifo-gl-program-texture-finish",
-             test_command_fifo_gl_program_texture_finish);
-    add_case("sn1/odyssey/command-fifo-gl-program-list-unlit",
-             test_command_fifo_gl_program_list_unlit);
-    add_case("sn1/odyssey/command-fifo-gl-program-record-clip-head",
-             test_command_fifo_gl_program_record_clip_head);
-    add_case("sn1/odyssey/command-fifo-gl-program-unknown",
-             test_command_fifo_gl_program_unknown);
-    add_case("sn1/odyssey/command-fifo-unknown-word-is-unimplemented",
-             test_command_fifo_unknown_word_is_unimplemented);
-    add_case("sn1/odyssey/unimplemented-reports-independent-budgets",
-             test_unimplemented_reports_have_independent_budgets);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-lit",
+                   test_command_fifo_gl_program_record_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-integer-normals",
+                   test_command_fifo_gl_integer_normals);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-unlit",
+                   test_command_fifo_gl_program_record_unlit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit",
+                   test_command_fifo_gl_program_list_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit-local-viewer",
+                   test_command_fifo_gl_program_list_lit_local_viewer);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit-positional",
+                   test_command_fifo_gl_program_list_lit_positional);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-lighting-uses-modelview",
+                   test_command_fifo_gl_lighting_uses_modelview);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-two-sided",
+                   test_command_fifo_gl_program_two_sided);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-texgen",
+                   test_command_fifo_gl_program_texgen);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-texture-finish",
+                   test_command_fifo_gl_program_texture_finish);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-unlit",
+                   test_command_fifo_gl_program_list_unlit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-clip-head",
+                   test_command_fifo_gl_program_record_clip_head);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-unknown",
+                   test_command_fifo_gl_program_unknown);
+    add_fresh_case("sn1/odyssey/command-fifo-unknown-word-is-unimplemented",
+                   test_command_fifo_unknown_word_is_unimplemented);
+    add_fresh_case("sn1/odyssey/unimplemented-reports-independent-budgets",
+                   test_unimplemented_reports_have_independent_budgets);
     add_case("sn1/odyssey/command-fifo-gl-window-restore",
              test_command_fifo_gl_window_restore);
     add_case("sn1/odyssey/command-fifo-gl-texture-luminance",
@@ -17136,24 +17204,24 @@ int main(int argc, char **argv)
              test_command_fifo_gl_texture_rgb);
     add_case("sn1/odyssey/command-fifo-gl-texture-rgba",
              test_command_fifo_gl_texture_rgba);
-    add_case("sn1/odyssey/dma-texture-object",
-             test_dma_texture_object);
+    add_fresh_case("sn1/odyssey/dma-texture-object",
+                   test_dma_texture_object);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",
              test_texture_adapter_nearest);
-    add_case("sn1/odyssey/texture-adapter/detail-zero-identity",
-             test_texture_adapter_detail_zero_identity);
+    add_fresh_case("sn1/odyssey/texture-adapter/detail-zero-identity",
+                   test_texture_adapter_detail_zero_identity);
     add_case("sn1/odyssey/texture-adapter/detail-zero-alpha-reference",
              test_texture_adapter_detail_zero_alpha_reference);
-    add_case("sn1/odyssey/texture-adapter/detail-rectangular-migration",
-             test_texture_adapter_detail_rectangular_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/detail-rectangular-migration",
+                   test_texture_adapter_detail_rectangular_migration);
     add_case("sn1/odyssey/texture-adapter/nearest-clamp",
              test_texture_adapter_nearest_clamp);
-    add_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
-             test_texture_adapter_nearest_clamp_border);
-    add_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",
-             test_texture_adapter_clamp_border_state_restore);
+    add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
+                   test_texture_adapter_nearest_clamp_border);
+    add_fresh_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",
+                   test_texture_adapter_clamp_border_state_restore);
     add_case("sn1/odyssey/texture-adapter/explicit-level",
              test_texture_chain_explicit_level);
     add_case("sn1/odyssey/texture-adapter/integer-quads",
@@ -17200,9 +17268,9 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/texture-adapter/"
              "public-stored-border-1d-width8-nearest",
              test_texture_public_border_1d_width8_nearest);
-    add_case("sn1/odyssey/texture-adapter/"
-             "public-stored-border-1d-migration",
-             test_texture_public_border_1d_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-migration",
+                   test_texture_public_border_1d_migration);
     add_case("sn1/odyssey/texture-adapter/"
              "public-stored-border-1d-width8-linear",
              test_texture_public_border_1d_width8_linear);
@@ -17224,9 +17292,9 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/texture-adapter/"
              "public-stored-border-3d",
              test_texture_public_border_3d);
-    add_case("sn1/odyssey/texture-adapter/"
-             "public-stored-border-3d-migration",
-             test_texture_public_border_3d_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-migration",
+                   test_texture_public_border_3d_migration);
     add_case("sn1/odyssey/texture-adapter/"
              "two-dimensional-border-upload",
              test_texture_two_dimensional_border_upload);
@@ -17255,8 +17323,8 @@ int main(int argc, char **argv)
              test_texture_adapter_binding_filters_matrix);
     add_case("sn1/odyssey/texture-adapter/components-environment",
              test_texture_adapter_components_environment);
-    add_case("sn1/odyssey/texture-adapter/linear-st",
-             test_texture_adapter_linear_st);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-st",
+                   test_texture_adapter_linear_st);
     add_case("sn1/odyssey/texture-adapter/colour-table",
              test_texture_adapter_colour_table);
     add_case("sn1/odyssey/texture-adapter/colour-table-l8-rgb-alpha",
@@ -17277,8 +17345,8 @@ int main(int argc, char **argv)
              test_texture_adapter_colour_table_incomplete);
     add_case("sn1/odyssey/texture-adapter/colour-table-reset",
              test_texture_adapter_colour_table_reset);
-    add_case("sn1/odyssey/texture-adapter/colour-table-migration",
-             test_texture_adapter_colour_table_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/colour-table-migration",
+                   test_texture_adapter_colour_table_migration);
     add_case("sn1/odyssey/texture-adapter/scalar-components",
              test_texture_adapter_scalar_components);
     add_case("sn1/odyssey/texture-adapter/luminance-alpha",
@@ -17293,119 +17361,122 @@ int main(int argc, char **argv)
              test_texture_adapter_volume_mipmap_nearest);
     add_case("sn1/odyssey/texture-adapter/volume-mipmap-missing-slice",
              test_texture_adapter_volume_mipmap_missing_slice);
-    add_case("sn1/odyssey/texture-adapter/volume-mipmap-state-restore",
-             test_texture_adapter_volume_mipmap_state_restore);
+    add_fresh_case("sn1/odyssey/texture-adapter/volume-mipmap-state-restore",
+                   test_texture_adapter_volume_mipmap_state_restore);
     add_case("sn1/odyssey/texture-adapter/level-zero-3d",
              test_texture_adapter_level_zero_3d);
-    add_case("sn1/odyssey/texture-adapter/linear-r",
-             test_texture_adapter_linear_r);
-    add_case("sn1/odyssey/texture-adapter/linear-strq-bulk",
-             test_texture_adapter_linear_strq_bulk);
-    add_case("sn1/odyssey/texture-adapter/linear-srq-bulk",
-             test_texture_adapter_linear_srq_bulk);
-    add_case("sn1/odyssey/texture-adapter/linear-srq",
-             test_texture_adapter_linear_srq);
-    add_case("sn1/odyssey/texture-adapter/linear-strq",
-             test_texture_adapter_linear_strq);
-    add_case("sn1/odyssey/texture-adapter/linear-q",
-             test_texture_adapter_linear_q);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-r",
+                   test_texture_adapter_linear_r);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-strq-bulk",
+                   test_texture_adapter_linear_strq_bulk);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-srq-bulk",
+                   test_texture_adapter_linear_srq_bulk);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-srq",
+                   test_texture_adapter_linear_srq);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-strq",
+                   test_texture_adapter_linear_strq);
+    add_fresh_case("sn1/odyssey/texture-adapter/linear-q",
+                   test_texture_adapter_linear_q);
     add_case("sn1/odyssey/texture-adapter/projective-3d",
              test_texture_adapter_projective_3d);
-    add_case("sn1/odyssey/texture-adapter/3d-state-restore",
-             test_texture_adapter_3d_state_restore);
-    add_case("sn1/odyssey/context-save-texture-coordinate-3d",
-             test_context_save_texture_coordinate_3d);
+    add_fresh_case("sn1/odyssey/texture-adapter/3d-state-restore",
+                   test_texture_adapter_3d_state_restore);
+    add_fresh_case("sn1/odyssey/context-save-texture-coordinate-3d",
+                   test_context_save_texture_coordinate_3d);
     add_case("sn1/odyssey/texture-adapter/blend-environment",
              test_texture_adapter_blend_environment);
-    add_case("sn1/odyssey/texture-adapter/blend-state-restore",
-             test_texture_adapter_blend_state_restore);
+    add_fresh_case("sn1/odyssey/texture-adapter/blend-state-restore",
+                   test_texture_adapter_blend_state_restore);
     add_case("sn1/odyssey/texture-adapter/storage-dimensions",
              test_texture_adapter_storage_dimensions);
-    add_case("sn1/odyssey/texture-adapter/state-restore",
-             test_texture_adapter_state_restore);
+    add_fresh_case("sn1/odyssey/texture-adapter/state-restore",
+                   test_texture_adapter_state_restore);
     add_case("sn1/odyssey/texture-adapter/unsupported-missing",
              test_texture_adapter_unsupported_missing);
-    add_case("sn1/odyssey/command-fifo-gl-texture-state",
-             test_command_fifo_gl_texture_state);
-    add_case("sn1/odyssey/back-material-migration",
-             test_back_material_migration);
-    add_case("sn1/odyssey/back-material-migration-defaults",
-             test_back_material_migration_defaults);
-    add_case("sn1/odyssey/texture-current-query-4f-migration",
-             test_texture_current_query_4f_migration);
-    add_case("sn1/odyssey/texture-current-query-4f-migration-defaults",
-             test_texture_current_query_4f_migration_defaults);
-    add_case("sn1/odyssey/texture-current-query-1f",
-             test_texture_current_query_1f);
-    add_case("sn1/odyssey/texture-current-query-1f-kernel",
-             test_texture_current_query_1f_kernel);
-    add_case("sn1/odyssey/texture-current-query-1f-migration",
-             test_texture_current_query_1f_migration);
-    add_case("sn1/odyssey/texture-current-query-3f",
-             test_texture_current_query_3f);
-    add_case("sn1/odyssey/texture-current-query-3f-kernel",
-             test_texture_current_query_3f_kernel);
-    add_case("sn1/odyssey/texture-current-query-3f-migration",
-             test_texture_current_query_3f_migration);
-    add_case("sn1/odyssey/texture-current-query-4f",
-             test_texture_current_query_4f);
-    add_case("sn1/odyssey/query-record-migration",
-             test_query_record_migration);
-    add_case("sn1/odyssey/query-record-migration-defaults",
-             test_query_record_migration_defaults);
-    add_case("sn1/odyssey/context-save-texture-coordinate-inactive-r",
-             test_context_save_texture_coordinate_inactive_r);
-    add_case("sn1/odyssey/context-save-texture-coordinate-inactive-q",
-             test_context_save_texture_coordinate_inactive_q);
-    add_case(
+    add_fresh_case("sn1/odyssey/command-fifo-gl-texture-state",
+                   test_command_fifo_gl_texture_state);
+    add_fresh_case("sn1/odyssey/back-material-migration",
+                   test_back_material_migration);
+    add_fresh_case("sn1/odyssey/back-material-migration-defaults",
+                   test_back_material_migration_defaults);
+    add_fresh_case("sn1/odyssey/texture-current-query-4f-migration",
+                   test_texture_current_query_4f_migration);
+    add_fresh_case("sn1/odyssey/texture-current-query-4f-migration-defaults",
+                   test_texture_current_query_4f_migration_defaults);
+    add_fresh_case("sn1/odyssey/texture-current-query-1f",
+                   test_texture_current_query_1f);
+    add_fresh_case("sn1/odyssey/texture-current-query-1f-kernel",
+                   test_texture_current_query_1f_kernel);
+    add_fresh_case("sn1/odyssey/texture-current-query-1f-migration",
+                   test_texture_current_query_1f_migration);
+    add_fresh_case("sn1/odyssey/texture-current-query-3f",
+                   test_texture_current_query_3f);
+    add_fresh_case("sn1/odyssey/texture-current-query-3f-kernel",
+                   test_texture_current_query_3f_kernel);
+    add_fresh_case("sn1/odyssey/texture-current-query-3f-migration",
+                   test_texture_current_query_3f_migration);
+    add_fresh_case("sn1/odyssey/texture-current-query-4f",
+                   test_texture_current_query_4f);
+    add_fresh_case("sn1/odyssey/query-record-migration",
+                   test_query_record_migration);
+    add_fresh_case("sn1/odyssey/query-record-migration-defaults",
+                   test_query_record_migration_defaults);
+    add_fresh_case("sn1/odyssey/context-save-texture-coordinate-inactive-r",
+                   test_context_save_texture_coordinate_inactive_r);
+    add_fresh_case("sn1/odyssey/context-save-texture-coordinate-inactive-q",
+                   test_context_save_texture_coordinate_inactive_q);
+    add_fresh_case(
         "sn1/odyssey/context-save-texture-coordinate-inactive-negative-zero-r",
         test_context_save_texture_coordinate_inactive_negative_zero_r);
-    add_case("sn1/odyssey/context-save-texture-coordinate",
-             test_context_save_texture_coordinate);
-    add_case("sn1/odyssey/context-save-idle-descriptors",
-             test_context_save_idle_descriptors);
-    add_case("sn1/odyssey/"
-             "context-save-texture-coordinate-active-primitive",
-             test_context_save_texture_coordinate_active_primitive);
-    add_case("sn1/odyssey/context-save-back-material",
-             test_context_save_back_material);
-    add_case("sn1/odyssey/context-save-back-material-reset",
-             test_context_save_back_material_reset);
-    add_case("sn1/odyssey/context-save-normal-ring",
-             test_context_save_normal_ring);
-    add_case("sn1/odyssey/command-fifo-gl-never-set-index",
-             test_command_fifo_gl_never_set_index);
-    add_case("sn1/odyssey/command-fifo-context-save-colour",
-             test_command_fifo_context_save_colour);
-    add_case("sn1/odyssey/command-fifo-context-save-idle-state",
-             test_command_fifo_context_save_idle_state);
-    add_case("sn1/odyssey/context-restart-triangle",
-             test_context_restart_triangle);
-    add_case("sn1/odyssey/context-restart-edited-page",
-             test_context_restart_edited_page);
-    add_case("sn1/odyssey/context-save-primitive-records",
-             test_context_save_primitive_records);
-    add_case("sn1/odyssey/context-save-zero-vertex-primitive",
-             test_context_save_zero_vertex_primitive);
-    add_case("sn1/odyssey/context-restart-one-vertex-strip",
-             test_context_restart_one_vertex_strip);
-    add_case("sn1/odyssey/context-restart-quad-strip-after-wrap",
-             test_context_restart_quad_strip_after_wrap);
-    add_case("sn1/odyssey/context-switch-integer-quad",
-             test_context_switch_integer_quad);
-    add_case("sn1/odyssey/context-switch-polygon-assembly",
-             test_context_switch_polygon_assembly);
-    add_case("sn1/odyssey/context-restart-unsupported-words",
-             test_context_restart_unsupported_words);
-    add_case("sn1/odyssey/context-switch-completion",
-             test_context_switch_completion);
-    add_case("sn1/odyssey/context-switch-without-shadow-address",
-             test_context_switch_without_shadow_address_is_a_guest_error);
+    add_fresh_case("sn1/odyssey/context-save-texture-coordinate",
+                   test_context_save_texture_coordinate);
+    add_fresh_case("sn1/odyssey/context-save-idle-descriptors",
+                   test_context_save_idle_descriptors);
+    add_fresh_case("sn1/odyssey/"
+                   "context-save-texture-coordinate-active-primitive",
+                   test_context_save_texture_coordinate_active_primitive);
+    add_fresh_case("sn1/odyssey/context-save-back-material",
+                   test_context_save_back_material);
+    add_fresh_case("sn1/odyssey/context-save-back-material-reset",
+                   test_context_save_back_material_reset);
+    add_fresh_case("sn1/odyssey/context-save-normal-ring",
+                   test_context_save_normal_ring);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-never-set-index",
+                   test_command_fifo_gl_never_set_index);
+    add_fresh_case("sn1/odyssey/command-fifo-context-save-colour",
+                   test_command_fifo_context_save_colour);
+    add_fresh_case("sn1/odyssey/command-fifo-context-save-idle-state",
+                   test_command_fifo_context_save_idle_state);
+    add_fresh_case("sn1/odyssey/context-restart-triangle",
+                   test_context_restart_triangle);
+    add_fresh_case("sn1/odyssey/context-restart-edited-page",
+                   test_context_restart_edited_page);
+    add_fresh_case("sn1/odyssey/context-save-primitive-records",
+                   test_context_save_primitive_records);
+    add_fresh_case("sn1/odyssey/context-save-zero-vertex-primitive",
+                   test_context_save_zero_vertex_primitive);
+    add_fresh_case("sn1/odyssey/context-restart-one-vertex-strip",
+                   test_context_restart_one_vertex_strip);
+    add_fresh_case("sn1/odyssey/context-restart-quad-strip-after-wrap",
+                   test_context_restart_quad_strip_after_wrap);
+    add_fresh_case("sn1/odyssey/context-switch-integer-quad",
+                   test_context_switch_integer_quad);
+    add_fresh_case("sn1/odyssey/context-switch-polygon-assembly",
+                   test_context_switch_polygon_assembly);
+    add_fresh_case("sn1/odyssey/context-restart-unsupported-words",
+                   test_context_restart_unsupported_words);
+    add_fresh_case("sn1/odyssey/context-switch-completion",
+                   test_context_switch_completion);
+    add_fresh_case("sn1/odyssey/context-switch-without-shadow-address",
+                   test_context_switch_without_shadow_address_is_a_guest_error);
 
-    add_case("sn1/odyssey/processor-credit-return",
-             test_processor_credit_return);
+    add_fresh_case("sn1/odyssey/processor-credit-return",
+                   test_processor_credit_return);
 
     result = g_test_run();
+    if (shared_board) {
+        qtest_quit(shared_board);
+    }
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
     return result;
 }

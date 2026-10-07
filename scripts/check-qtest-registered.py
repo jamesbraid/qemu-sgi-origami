@@ -72,11 +72,12 @@ def registered_paths(source: str) -> list[str]:
 
     qtest_add_func() and its relatives put "/<target>/" in front of the path
     they are given, which may be split over adjacent string literals. A
-    grouped test registers through its own add_case(), which calls them.
+    grouped test registers through its own add_case() or add_fresh_case(),
+    which call them.
     """
     calls = re.finditer(
-        r'\b(?:qtest_add(?:_func|_data_func|_data_func_full)?|add_case)'
-        r'\(\s*((?:"[^"]*"\s*)+)', source)
+        r'\b(?:qtest_add(?:_func|_data_func|_data_func_full)?|'
+        r'add_(?:fresh_)?case)\(\s*((?:"[^"]*"\s*)+)', source)
     return ["".join(re.findall(r'"([^"]*)"', call.group(1))) for call in calls]
 
 
