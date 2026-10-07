@@ -1688,6 +1688,29 @@ static void test_module_serial_power_up(void)
     qtest_quit(qts);
 }
 
+/*
+ * An Origin 2000 module controller announces its start on the serial
+ * line, and with a multimodule controller declared it copies each host
+ * "dsp" there with severity digit 4.
+ */
+static void test_module_serial_unsolicited(void)
+{
+    QTestState *qts = start_module_with(
+        " -serial none -serial none -chardev ringbuf,id=aux,size=4096"
+        " -serial chardev:aux");
+    QDict *rb;
+
+    assert_exact(qts, 0, "dsp quiet", "ok ");
+    assert_exact(qts, 0, "fsc 1", "ok ");
+    assert_exact(qts, 1, "dsp hi", "ok ");
+    rb = qtest_qmp(qts, "{'execute': 'ringbuf-read', "
+                        "'arguments': {'device': 'aux', 'size': 256}}");
+    g_assert_cmpstr(qdict_get_str(rb, "return"), ==,
+                    "\x14MSC VER 3.2 \r\n\x14" "dsp hi4\r\n");
+    qobject_unref(rb);
+    qtest_quit(qts);
+}
+
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
     0x09, 0x00, 0x59, 0x55, 0x4d, 0x45, 0x51, 0x33,
@@ -2086,6 +2109,8 @@ int main(int argc, char **argv)
                    test_module_message_expires);
     qtest_add_func("/sn0/o2000-module-management/nmi-reaches-output",
                    test_module_nmi_reaches_output);
+    qtest_add_func("/sn0/o2000-module-management/serial-unsolicited",
+                   test_module_serial_unsolicited);
     qtest_add_func("/sn0/o2000-module-management/serial-command",
                    test_module_serial_command);
     qtest_add_func("/sn0/o2000-module-management/serial-power-up-unpowered",
