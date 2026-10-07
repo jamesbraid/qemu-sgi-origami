@@ -510,9 +510,12 @@ class SelectQtests(unittest.TestCase):
 
     REGISTERED = {name: set() for name in (
         'qtest-mips64/a-test', 'qtest-mips64/b-test',
-        'qtest-mips64/c-test')}
+        'qtest-mips64/c-test', 'qtest-mips64/g-test',
+        'qtest-mips64/g-test-one', 'qtest-mips64/g-test-two')}
+    GROUPS = '# A comment.\none /mips64/g/x\ntwo /mips64/g/y\none /mips64/g/z\n'
 
-    def select(self, changed, base='abc', fork='fork', new_meson=None):
+    def select(self, changed, base='abc', fork='fork', new_meson=None,
+               groups=False):
         """Select with `changed` as the paths the diff reports."""
         def output(cmd, **kwargs):
             if cmd[3] == 'diff':
@@ -521,11 +524,16 @@ class SelectQtests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            if groups:
+                (root / 'tests/qtest').mkdir(parents=True)
+                (root / 'tests/qtest/g-test-groups.txt').write_text(
+                    self.GROUPS, encoding='utf-8')
             for path in changed:
                 (root / path).parent.mkdir(parents=True, exist_ok=True)
-                (root / path).write_text(
-                    new_meson if path == sgi_check.QTEST_MESON and new_meson
-                    else '', encoding='utf-8')
+                if not (root / path).is_file():
+                    (root / path).write_text(
+                        new_meson if path == sgi_check.QTEST_MESON and
+                        new_meson else '', encoding='utf-8')
             with mock.patch.object(sgi_check, 'SOURCE', root), \
                     mock.patch.object(sgi_check, 'output', output), \
                     mock.patch.object(sgi_check, 'merge_base',
@@ -545,6 +553,16 @@ class SelectQtests(unittest.TestCase):
             self.select(['tests/qtest/a-test.c', 'tests/qtest/c-test.c',
                          'hw/mips/sgi/ip27.c']),
             ['qtest-mips64/a-test', 'qtest-mips64/c-test'])
+
+    def test_grouped_source_selects_its_groups(self):
+        self.assertEqual(
+            self.select(['tests/qtest/g-test.c'], groups=True),
+            ['qtest-mips64/g-test-one', 'qtest-mips64/g-test-two'])
+
+    def test_groups_file_edit_selects_its_groups(self):
+        self.assertEqual(
+            self.select(['tests/qtest/g-test-groups.txt'], groups=True),
+            ['qtest-mips64/g-test-one', 'qtest-mips64/g-test-two'])
 
     def test_shared_test_code_selects_nothing(self):
         self.assertEqual(self.select(['tests/qtest/libqtest.c',
