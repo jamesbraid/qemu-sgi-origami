@@ -127,8 +127,9 @@ into the test container, so missing surfaceless Mesa fails instead of skipping.
 The optional render-node case needs ``QEMU_TEST_SGI_RENDER_NODE`` and device
 access inside that container. Setting the variable only on the host does not
 configure either. The required SGI unit selection is documented in
-:doc:`testing/sgi`. These named tests exercise Linux surfaceless EGL. They do
-not exercise a GBM render node or qualify macOS or Windows context creation.
+:doc:`testing/sgi`. The renderer test exercises Linux surfaceless EGL.
+Neither named test exercises a GBM render node or qualifies macOS or Windows
+context creation.
 
 ``qemu-build`` compiles ``qemu-system-mips64`` from the selected QEMU worktree.
 ``qtest --suite unit`` rebuilds the named unit binaries but does not rebuild
