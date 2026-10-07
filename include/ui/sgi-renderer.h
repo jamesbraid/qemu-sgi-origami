@@ -24,6 +24,8 @@ typedef struct SGIRendererFrame {
     const float *vertices; /* position xyzw, then premade colour rgba */
     float modelview[16], projection[16];
     uint16_t *rgba; /* width * height * 4 host slots, bottom row first */
+    uint8_t *written; /* width * height binary bytes, bottom row first */
+    size_t written_capacity;
 } SGIRendererFrame;
 
 typedef struct SGIRendererOps {

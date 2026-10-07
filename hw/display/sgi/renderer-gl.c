@@ -205,7 +205,7 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
 static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
-    GLuint texture = 0, framebuffer = 0;
+    GLuint texture = 0, framebuffer = 0, stencil = 0;
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
@@ -223,6 +223,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, texture, 0);
+    glGenRenderbuffers(1, &stencil);
+    glBindRenderbuffer(GL_RENDERBUFFER, stencil);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8,
+                          frame->width, frame->height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, stencil);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         error_setg(&renderer->error, "SGI renderer native framebuffer failed");
         goto out;
@@ -231,9 +237,15 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glViewport(0, 0, frame->width, frame->height);
     glUseProgram(0);
+    glDisable(GL_MULTISAMPLE);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_ALPHA_TO_ONE);
+    glDisable(GL_SAMPLE_COVERAGE);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glDisable(GL_FRAMEBUFFER_SRGB);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
-    glDisable(GL_STENCIL_TEST);
+    glEnable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DITHER);
@@ -245,6 +257,11 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glDisable(GL_ALPHA_TEST);
     glDisable(GL_COLOR_LOGIC_OP);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilMask(0xff);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_ALWAYS, 1, 0xff);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
     glShadeModel(GL_SMOOTH);
     glMatrixMode(GL_PROJECTION);
     glLoadMatrixf(frame->projection);
@@ -259,15 +276,31 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glVertex4fv(vertex);
     }
     glEnd();
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
+    glPixelStorei(GL_PACK_LSB_FIRST, GL_FALSE);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
     glReadPixels(0, 0, frame->width, frame->height, GL_RGBA,
                  GL_UNSIGNED_SHORT, frame->rgba);
+    if (renderer_gl_error(renderer, "native colour readback")) {
+        goto out;
+    }
+    glReadPixels(0, 0, frame->width, frame->height, GL_STENCIL_INDEX,
+                 GL_UNSIGNED_BYTE, frame->written);
     error = glGetError();
     if (error != GL_NO_ERROR) {
         error_setg(&renderer->error, "SGI renderer native draw failed: "
                    "GL error 0x%x", error);
     }
 out:
+    glDisable(GL_STENCIL_TEST);
+    glStencilMask(0xff);
+    glStencilFunc(GL_ALWAYS, 0, 0xff);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glDeleteRenderbuffers(1, &stencil);
     glDeleteFramebuffers(1, &framebuffer);
     glDeleteTextures(1, &texture);
     return !renderer->error;
