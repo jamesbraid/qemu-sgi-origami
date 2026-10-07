@@ -12954,13 +12954,72 @@ static void test_renderer_fixture(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static uint32_t renderer_general_rgb(const uint8_t *frame,
+                                     unsigned x, unsigned y)
+{
+    const uint8_t *p = frame +
+        ((FB_HEIGHT - 1 - PROBE_Y - y) * FB_WIDTH + PROBE_X + x) * 3;
+
+    return (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
+}
+
+static void renderer_general_compare(QTestState *gpu, QTestState *cpu)
+{
+    static const unsigned planes[] = { 0, 1, 2, 3, 5, 6 };
+    static const struct {
+        unsigned x, y;
+        bool inside;
+    } samples[] = {
+        { 127, 1, true }, { 96, 32, true },
+        { 32, 96, false }, { 0, 127, false },
+    };
+    g_autofree uint8_t *gpu_frame = kona_screendump(gpu);
+    g_autofree uint8_t *cpu_frame = kona_screendump(cpu);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(planes); i++) {
+        g_autofree char *gpu_digest = renderer_plane_digest(gpu, planes[i]);
+        g_autofree char *cpu_digest = renderer_plane_digest(cpu, planes[i]);
+
+        g_assert_cmpstr(gpu_digest, ==, cpu_digest);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+        unsigned x = samples[i].x, y = samples[i].y;
+        /* gl_window_cleared selects GL_FLAT; vertex 2 provides the colour. */
+        uint32_t want = samples[i].inside ? 0x113fbf : 0xffffff;
+        uint32_t tag = samples[i].inside ? 0 : 1;
+
+        g_assert_cmphex(renderer_general_rgb(cpu_frame, x, y), ==, want);
+        g_assert_cmphex(renderer_general_rgb(gpu_frame, x, y), ==, want);
+        g_assert_cmphex(renderer_plane_at(cpu, 2, PROBE_X + x, PROBE_Y + y),
+                        ==, tag);
+        g_assert_cmphex(renderer_plane_at(gpu, 2, PROBE_X + x, PROBE_Y + y),
+                        ==, tag);
+    }
+}
+
 static void test_renderer_general_triangle(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = NULL;
     float vertices[3][2] = { { 0, 0 }, { 128, 0 }, { 128, 128 } };
 
     renderer_fixture(s);
+    if (mode == 0) {
+        static const unsigned planes[] = { 0, 1, 2, 3, 5, 6 };
+
+        cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+        renderer_fixture(cpu);
+        for (unsigned i = 0; i < ARRAY_SIZE(planes); i++) {
+            g_autofree char *gpu_digest = renderer_plane_digest(s, planes[i]);
+            g_autofree char *cpu_digest = renderer_plane_digest(cpu,
+                                                                planes[i]);
+
+            g_assert_cmpstr(gpu_digest, ==, cpu_digest);
+        }
+        g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-requests"), ==, 0);
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 0);
+    }
     if (mode == 1) {
         vertices[0][0] = vertices[0][1] = .001;
     } else if (mode == 2) {
@@ -13004,11 +13063,30 @@ static void test_renderer_general_triangle(gconstpointer opaque)
         }
     }
     gl_end(s);
+    if (cpu) {
+        gl_begin(cpu, 4);
+        for (unsigned i = 0; i < 3; i++) {
+            kona_command_f(cpu, 0x63, (float[]) {
+                i == 2 ? 17 / 255.0f : 1,
+                i == 2 ? 63 / 255.0f : 0,
+                i == 2 ? 191 / 255.0f : 0,
+            }, 3);
+            gl_vertex2f(cpu, vertices[i][0], vertices[i][1]);
+        }
+        gl_end(cpu);
+        renderer_general_compare(s, cpu);
+        g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-requests"), ==, 0);
+        g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-draws"), ==, 0);
+        g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-fallbacks"), ==, 0);
+        qtest_quit(cpu);
+    }
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode == 4 ? 2 :
                      mode < 4 || (mode >= 6 && mode <= 8) ? 1 : 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     mode == 0 ? 1 : 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                     mode == 0 ? 0 : 1);
     qtest_quit(s);
 }
 
