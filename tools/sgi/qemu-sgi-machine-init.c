@@ -21,6 +21,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/nvram/sgi-elsc-nvram.h"
 #include "hw/rtc/m48t35-ip27.h"
 
 #define CMD_NAME "qemu-sgi-machine-init"
@@ -221,6 +222,30 @@ static SGIPromImage *load_input(const SGIModelInitInput *input,
     }
 }
 
+/*
+ * The module whose controller NVRAM is the store @name, numbered as the
+ * machine numbers its module<N>-nvram stores, or NULL.
+ */
+static const SGIModelModule *nvram_module(const SGIModelTopology *t,
+                                          const char *name)
+{
+    const SGIModelModuleList *entry;
+
+    for (entry = t->modules; entry; entry = entry->next) {
+        g_autofree char *store = NULL;
+
+        if (!sgi_model_module_has_nvram(t, entry->value)) {
+            continue;
+        }
+        store = g_strdup_printf("module%u-nvram",
+                                sgi_model_module_nvram_index(t, entry->value));
+        if (g_str_equal(store, name)) {
+            return entry->value;
+        }
+    }
+    return NULL;
+}
+
 /* Fill @buf with @item's initial contents for a machine created @now. */
 static void build_item(const SGIModelStorageItem *item,
                        const SGIModelInitInput *input,
@@ -239,6 +264,16 @@ static void build_item(const SGIModelStorageItem *item,
         g_assert(item->size == M48T35_SIZE);
         m48t35_ip27_fresh_image(buf, now);
         return;
+    case SGI_MODEL_STORAGE_INITIAL_CONTROLLER_NVRAM: {
+        const SGIModelModule *module = nvram_module(t, item->name);
+        uint8_t config, module_number, clock;
+
+        g_assert(module && item->size == SGI_ELSC_NVRAM_BYTES);
+        sgi_model_module_nvram_seed(t, module, &config, &module_number,
+                                    &clock);
+        sgi_elsc_nvram_fresh_image(buf, config, module_number, clock);
+        return;
+    }
     case SGI_MODEL_STORAGE_INITIAL_IO_PROM:
         data = g_bytes_get_data(image->file, &length);
         sgi_io6_initial_flash(buf, item->size, data, length);
@@ -454,6 +489,14 @@ static bool create_machine(const SGIModelOffering *offering,
         SGIPromImage *image;
 
         g_assert(!strchr(item->name, '/'));
+        if (item->initial == SGI_MODEL_STORAGE_INITIAL_CONTROLLER_NVRAM &&
+            (!nvram_module(t, item->name) ||
+             item->size != SGI_ELSC_NVRAM_BYTES)) {
+            error_setg(errp, "%s lists %s, which is no %u-byte module "
+                       "controller NVRAM", offering->machine_options,
+                       item->name, SGI_ELSC_NVRAM_BYTES);
+            return false;
+        }
         if ((item->initial != SGI_MODEL_STORAGE_INITIAL_BOOT_PROM &&
              item->initial != SGI_MODEL_STORAGE_INITIAL_IO_PROM) ||
             g_hash_table_contains(images, name)) {

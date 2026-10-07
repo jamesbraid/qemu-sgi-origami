@@ -419,6 +419,37 @@ static void nvram_write_block(QTestState *qts, unsigned node, uint16_t offset,
     g_assert_not_reached();
 }
 
+/* A caller's 2048-byte store file, in a directory of its own. */
+typedef struct NvramStore {
+    char *dir;
+    char *path;
+    char *option;
+} NvramStore;
+
+static void nvram_store_create(NvramStore *store, const uint8_t *contents)
+{
+    uint8_t zero[NVRAM_BYTES] = { };
+
+    store->dir = g_dir_make_tmp("o2000-nvram-XXXXXX", NULL);
+    g_assert_nonnull(store->dir);
+    store->path = g_build_filename(store->dir, "module0-nvram.raw", NULL);
+    g_assert_true(g_file_set_contents(store->path,
+                                      (const char *)(contents ?: zero),
+                                      NVRAM_BYTES, NULL));
+    store->option = g_strdup_printf(
+        " -M origin2000,module0-nvram=mnv -blockdev driver=raw,"
+        "node-name=mnv,file.driver=file,file.filename=%s", store->path);
+}
+
+static void nvram_store_destroy(NvramStore *store)
+{
+    unlink(store->path);
+    g_assert_cmpint(rmdir(store->dir), ==, 0);
+    g_free(store->path);
+    g_free(store->dir);
+    g_free(store->option);
+}
+
 /*
  * Four windows, four adapters. Each keeps the address its own node wrote, so
  * a node reaching the complex is not reaching its neighbour's chip, and no
@@ -1105,6 +1136,47 @@ static void test_twelve_byte_block_write(void)
     qtest_quit(qts);
 }
 
+/*
+ * A caller's image wins over the module number the product model selects,
+ * and the bytes written reach the file and the next QEMU process.
+ */
+static void test_store_persists_across_processes(void)
+{
+    static const uint8_t record[] = {
+        'H', 'U', 'B', ' ', 'n', '0', ' ', '\n', '\r', 0,
+    };
+    uint8_t image[NVRAM_BYTES] = { };
+    g_autofree char *contents = NULL;
+    gsize length;
+    NvramStore store;
+    QTestState *qts;
+
+    image[NVRAM_VALID_MARKER] = NVRAM_VALID_VALUE;
+    image[NVRAM_MODULE_NUMBER] = 5;
+    nvram_store_create(&store, image);
+    qts = start_module_with(store.option);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_MODULE_NUMBER), ==, 5);
+    }
+    nvram_write_block(qts, 1, 0, record, sizeof(record));
+    nvram_write(qts, 2, NVRAM_PARTITION, 3);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(store.path, &contents, &length, NULL));
+    g_assert_cmpuint(length, ==, NVRAM_BYTES);
+    g_assert_cmpmem(contents, sizeof(record), record, sizeof(record));
+    g_assert_cmphex((uint8_t)contents[NVRAM_PARTITION], ==, 3);
+
+    qts = start_module_with(store.option);
+    for (unsigned i = 0; i < sizeof(record); i++) {
+        g_assert_cmphex(nvram_read(qts, i % ADAPTER_COUNT, i), ==, record[i]);
+    }
+    g_assert_cmphex(nvram_read(qts, 3, NVRAM_PARTITION), ==, 3);
+    g_assert_cmphex(nvram_read(qts, 3, NVRAM_MODULE_NUMBER), ==, 5);
+    qtest_quit(qts);
+    nvram_store_destroy(&store);
+}
+
 static void test_identity_survives_reset(void)
 {
     QTestState *qts = start_module();
@@ -1562,6 +1634,8 @@ int main(int argc, char **argv)
                    test_new_store_contents);
     qtest_add_func("/sn0/o2000-module-management/nvram-twelve-byte-write",
                    test_twelve_byte_block_write);
+    qtest_add_func("/sn0/o2000-module-management/nvram-store-persists",
+                   test_store_persists_across_processes);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",

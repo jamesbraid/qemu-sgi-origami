@@ -1115,6 +1115,18 @@ static void sn0_node_create_hub(SN0NodeState *node)
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
                          identity->system_controller ?
                          SN0_HUB_I2C_NVRAM_PAGES : 0);
+    if (identity->system_controller) {
+        if (node->elsc_nvram_node) {
+            qdev_prop_set_string(DEVICE(&node->hub), "i2c-nvram-drive",
+                                 node->elsc_nvram_node);
+        }
+        qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-config",
+                            node->elsc_nvram_config);
+        qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-module",
+                            node->elsc_nvram_module);
+        qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-clock",
+                            node->elsc_nvram_clock);
+    }
     qdev_prop_set_uint64(DEVICE(&node->hub), "i2c-controller-offset",
                          SN0_HUB_MODULE_ADAPTER_OFFSET);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-elsc-addr",

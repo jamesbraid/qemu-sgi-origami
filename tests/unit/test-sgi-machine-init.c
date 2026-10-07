@@ -369,11 +369,34 @@ static void assert_starts_with_payload(const uint8_t *bytes, uint8_t seed)
     }
 }
 
+/*
+ * @name holds a module controller's configuration NVRAM as the controller
+ * leaves it after its first power-up: zeroes but for the marker, the
+ * password "none", @config and @module.
+ */
+static void assert_module_nvram(const char *dir, const char *name,
+                                uint8_t config, uint8_t module, uint8_t clock)
+{
+    gsize size;
+    g_autofree uint8_t *bytes = read_store(dir, name, &size);
+
+    g_assert_cmpuint(size, ==, 2048);
+    assert_all(bytes, 0, 0x700, 0);
+    g_assert_cmphex(bytes[0x700], ==, 0x37);
+    g_assert_cmpmem(&bytes[0x701], 4, "none", 4);
+    assert_all(bytes, 0x705, 0x707, 0);
+    g_assert_cmphex(bytes[0x707], ==, config);
+    g_assert_cmphex(bytes[0x708], ==, module);
+    assert_all(bytes, 0x709, 0x70b, 0);
+    g_assert_cmphex(bytes[0x70b], ==, clock);
+    assert_all(bytes, 0x70c, size, 0);
+}
+
 static void test_origin200(void)
 {
     static const StoreSize stores[] = {
         { "node0-flash", 1048576 }, { "nvram0", 32768 },
-        { "nvram0-clock", 16 },
+        { "nvram0-clock", 16 }, { "module0-nvram", 2048 },
     };
     time_t before = time(NULL);
     g_autofree char *dir = create_and_check(
@@ -394,6 +417,8 @@ static void test_origin200(void)
     g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x3c), ==, 4);
     assert_fresh_nvram(dir, "nvram0", before);
     assert_zero_store(dir, "nvram0-clock");
+    /* The Origin 200 build: automatic power-up, no module number. */
+    assert_module_nvram(dir, "module0-nvram", 0x02, 0, 0x78);
     remove_tree(dir);
 }
 
@@ -402,7 +427,7 @@ static void test_origin2000(void)
     static const StoreSize stores[] = {
         { "node0-flash", 1048576 }, { "node1-flash", 1048576 },
         { "io0-flash", 1048576 }, { "nvram0", 32768 },
-        { "nvram0-clock", 16 },
+        { "nvram0-clock", 16 }, { "module0-nvram", 2048 },
     };
     time_t before = time(NULL);
     g_autofree char *dir = create_and_check(
@@ -429,6 +454,8 @@ static void test_origin2000(void)
     assert_all(io, IO_PROM_SIZE, size, 0xff);
     assert_fresh_nvram(dir, "nvram0", before);
     assert_zero_store(dir, "nvram0-clock");
+    /* The Origin 2000 build, and the deskside module's number 1. */
+    assert_module_nvram(dir, "module0-nvram", 0, 1, 0);
     remove_tree(dir);
 }
 
@@ -437,6 +464,7 @@ static void test_origin200_gigachannel(void)
     static const StoreSize stores[] = {
         { "node0-flash", 1048576 }, { "io0-flash", 1048576 },
         { "nvram0", 32768 }, { "nvram0-clock", 16 },
+        { "module0-nvram", 2048 },
     };
     g_autofree char *dir = create_and_check(
         "o200-gigachannel", "origin200,topology=origin200-gigachannel,nodes=1",
@@ -612,7 +640,7 @@ static void test_trailing_slash(void)
 
     g_assert_true(run_succeeded(&run));
     tool_run_clear(&run);
-    g_assert_cmpuint(count_entries(dir), ==, 3);
+    g_assert_cmpuint(count_entries(dir), ==, 4);
     remove_tree(dir);
 }
 

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "618fe11418567409d00a9254026e98c34025e45e32f073359d5b266a5872c99c"
+    "05d82b255afc0ff30ec66cd7c11dd6a851cf89e2bbf196cb9d3b2298eaaacf45"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -197,7 +197,8 @@ class StorageTests(unittest.TestCase):
                 inputs = {item["name"] for item in offering["init-inputs"]}
                 for item in offering["storage"]:
                     self.assertFalse(item["read-only"])
-                    self.assertTrue(item["initial"] in {"zero", "ip27-nvram"}
+                    self.assertTrue(item["initial"] in {"zero", "ip27-nvram",
+                                                        "controller-nvram"}
                                     or item["initial"] in inputs)
                 for resource in offering["resources"]:
                     self.assertIn(resource["kind"],
@@ -219,7 +220,9 @@ class StorageTests(unittest.TestCase):
             {"name": "nvram0", "size": 32768, "read-only": False,
              "initial": "ip27-nvram"},
             {"name": "nvram0-clock", "size": 16, "read-only": False,
-             "initial": "zero"}])
+             "initial": "zero"},
+            {"name": "module0-nvram", "size": 2048, "read-only": False,
+             "initial": "controller-nvram"}])
 
     def test_ioc3_timekeeper_starts_from_the_fresh_ip27_image(self):
         """An IOC3 Timekeeper with no backing installs the fresh IP27
@@ -243,7 +246,23 @@ class StorageTests(unittest.TestCase):
             if item["topology"] == "origin200-dual")
         self.assertEqual([item["name"] for item in offering["storage"]],
                          ["node0-flash", "node1-flash", "nvram0",
-                          "nvram0-clock", "nvram1", "nvram1-clock"])
+                          "nvram0-clock", "nvram1", "nvram1-clock",
+                          "module0-nvram", "module1-nvram"])
+
+    def test_module_controllers_have_a_configuration_nvram(self):
+        """One store per module system controller: each Origin 200 module's
+        embedded ELSC, each Origin 2000 or Onyx2 module's MSC, and none
+        where an L1 or no controller manages the module."""
+        for offering in self.catalogue["offerings"]:
+            names = [item["name"] for item in offering["storage"]
+                     if item["initial"] == "controller-nvram"]
+            expected = {"origin200-dual": 2}.get(
+                offering["topology"],
+                1 if offering["product"] in {"origin200", "origin2000",
+                                             "onyx2"} else 0)
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(names, [f"module{index}-nvram"
+                                         for index in range(expected)])
 
 
 class Ip27FirmwareTests(unittest.TestCase):

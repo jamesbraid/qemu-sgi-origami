@@ -141,6 +141,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
         }
       ],
       "supported-guests": [
@@ -290,6 +296,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
         }
       ],
       "supported-guests": [
@@ -439,6 +451,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
         }
       ],
       "supported-guests": [
@@ -580,6 +598,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
         }
       ],
       "supported-guests": [
@@ -721,6 +745,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
         }
       ],
       "supported-guests": [

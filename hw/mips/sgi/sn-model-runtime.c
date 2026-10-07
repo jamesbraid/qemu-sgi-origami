@@ -10,6 +10,7 @@
 #include "qemu/keyval.h"
 #include "qobject/qdict.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/nvram/sgi-elsc-nvram.h"
 
 /* The @index'th element of a QAPI list, which the caller has range-checked. */
 #define SGI_MODEL_NTH(list, index) ({                                  \
@@ -819,6 +820,73 @@ bool sgi_model_io_board_has_nvram(const SGIModelIoBoard *board)
         return board->has_ioc3_serial;
     default:
         return false;
+    }
+}
+
+/* Whether @module's controller is a listed Origin 2000-family MSC. */
+static bool sgi_model_module_has_msc(const SGIModelTopology *t,
+                                     const SGIModelModule *module)
+{
+    return module->controller_index >= 0 &&
+           (size_t)module->controller_index <
+           QAPI_LIST_LENGTH(t->controllers) &&
+           SGI_MODEL_NTH(t->controllers, module->controller_index)->kind ==
+           SGI_MODEL_CONTROLLER_KIND_MSC;
+}
+
+bool sgi_model_module_has_nvram(const SGIModelTopology *t,
+                                const SGIModelModule *module)
+{
+    size_t nodes = QAPI_LIST_LENGTH(t->nodes);
+    const uint32List *entry;
+
+    if (sgi_model_module_has_msc(t, module)) {
+        return true;
+    }
+    for (entry = module->nodes; entry; entry = entry->next) {
+        const SGIModelNode *node;
+
+        if (entry->value >= nodes) {
+            continue;
+        }
+        node = SGI_MODEL_NTH(t->nodes, entry->value);
+        if (node->identity && node->identity->system_controller) {
+            return true;
+        }
+    }
+    return false;
+}
+
+unsigned int sgi_model_module_nvram_index(const SGIModelTopology *t,
+                                          const SGIModelModule *module)
+{
+    const SGIModelModuleList *entry;
+    unsigned int index = 0;
+
+    for (entry = t->modules; entry && entry->value != module;
+         entry = entry->next) {
+        index += sgi_model_module_has_nvram(t, entry->value);
+    }
+    return index;
+}
+
+void sgi_model_module_nvram_seed(const SGIModelTopology *t,
+                                 const SGIModelModule *module,
+                                 uint8_t *config, uint8_t *module_number,
+                                 uint8_t *clock)
+{
+    if (sgi_model_module_has_msc(t, module)) {
+        *config = 0;
+        *module_number = module->initial_module_number;
+        *clock = 0;
+    } else {
+        /*
+         * The Origin 200 build: automatic power-up, no module number, and
+         * the full-clock midplane type it always assumes.
+         */
+        *config = SGI_ELSC_NVRAM_CONFIG_AUTO_POWER;
+        *module_number = 0;
+        *clock = SGI_ELSC_NVRAM_CLOCK_FULL;
     }
 }
 

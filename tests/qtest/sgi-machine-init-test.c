@@ -192,6 +192,30 @@ static void assert_nodes_equal(uint8_t **created, uint8_t **unbacked,
     }
 }
 
+/*
+ * The module controller's configuration NVRAM the tool created: zeroes but
+ * for the block a master controller writes at its first power-up, with the
+ * product build's configuration byte and module number. A machine with no
+ * file starts its store from the same bytes, which the device's own qtests
+ * check through the I2C bus.
+ */
+static void assert_module_nvram(const char *dir, uint8_t config,
+                                uint8_t module, uint8_t clock)
+{
+    g_autofree char *path = g_build_filename(dir, "module0-nvram.raw", NULL);
+    g_autofree char *bytes = NULL;
+    uint8_t expected[2048] = { };
+    gsize size;
+
+    expected[0x700] = 0x37;
+    memcpy(&expected[0x701], "none", 4);
+    expected[0x707] = config;
+    expected[0x708] = module;
+    expected[0x70b] = clock;
+    g_assert_true(g_file_get_contents(path, &bytes, &size, NULL));
+    g_assert_cmpmem(bytes, size, expected, sizeof(expected));
+}
+
 static void test_origin200(void)
 {
     static const unsigned int cpus[] = { 0 };
@@ -214,6 +238,8 @@ static void test_origin200(void)
     g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x2c), ==, 15);
     g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x30), ==, 1);
     g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x3c), ==, 4);
+    /* Origin 200: automatic power-up, no module number, full clock. */
+    assert_module_nvram(dir, 0x02, 0, 0x78);
     free_nodes(created, 1);
     free_nodes(unbacked, 1);
     remove_state(dir);
@@ -240,6 +266,8 @@ static void test_origin2000(void)
     qtest_quit(qts);
 
     assert_nodes_equal(created, unbacked, 2, IP27_FLASH_SIZE);
+    /* The Origin 2000 build, and the deskside module's number 1. */
+    assert_module_nvram(dir, 0, 1, 0);
     free_nodes(created, 2);
     free_nodes(unbacked, 2);
     remove_state(dir);

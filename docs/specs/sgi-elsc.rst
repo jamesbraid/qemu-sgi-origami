@@ -520,12 +520,17 @@ processor, without requiring a trace backend or diagnostic sink.
 
 .. _sgi-elsc-nvram:
 
-Origin 2000 module NVRAM
-========================
+Module controller configuration NVRAM
+=====================================
 
-An Origin 2000 module keeps its identity (module number, partition) in a
-serial NVRAM on the same I2C bus as the controller, not behind the ASCII
-command protocol. Ratings follow :ref:`sgi-ip30`.
+Each module system controller keeps a 2048-byte configuration NVRAM on
+its module's management I2C bus: the Origin 200 Hub's embedded ELSC, and
+the Origin 2000 or Onyx2 module controller, whose one store its four Hubs
+share. It holds the board inventory log from address 0 and, at 0x700,
+the controller's block: validity marker, password, debug-switch values,
+configuration byte, module number, self-test flags and partition, domain,
+cluster and cell numbers. ``hw/nvram/sgi-elsc-nvram.c`` models it as one
+device. Ratings follow :ref:`sgi-ip30`.
 
 .. list-table::
    :header-rows: 1
@@ -543,25 +548,56 @@ command protocol. Ratings follow :ref:`sgi-ip30`.
        and is backed up in each node's PROM log.
      - established
      - 108-0170-001 section 1.5, printed page 1-4 (PDF 18).
-   * - The NVRAM answers eight consecutive I2C slave addresses from
-       ``0x50``; the top three bits of the 11-bit address pick the slave.
-     - inferred
-     - A 2 KB serial EEPROM conventionally uses ``0x50`` to ``0x57``.
-       Whether it is one part or several is unknown; the addressing
-       arithmetic is the same.
-   * - The module number, a validity marker and the partition number sit
-       in a sixteen-byte controller block at logical 0x700, as bytes 8,
-       0 and 10.
-     - unknown
-     - No public source states the layout. The model uses marker
-       ``0x37``, module byte 8 and partition byte 10. Treat the layout
-       as an emulator choice; a stock firmware boot that finds the
-       module assigned is the discriminating test, and a real
-       controller's NVRAM dump would settle it.
-   * - Seeding and persistence: a newly created NVRAM carries the
-       product description's module number and the marker; reset does
-       not reseed it, guest writes persist and migration restores the
-       saved contents.
+   * - Address ``A`` answers at I2C address ``0x50 + (A >> 8)`` with the
+       one-byte word address ``A & 0xff``.
+     - established
+     - The Origami project's PCF8584 and ELSC datasheet, configuration
+       NVRAM section. Which part, and how many packages, is unknown; one
+       24C16-class part fits the addressing.
+   * - The controller block's layout: 0x700 marker ``0x37``, 0x701 to
+       0x704 the password, 0x705 and 0x706 the debug-switch values, 0x707
+       the configuration byte, 0x708 the module number, 0x709 the
+       self-test flags, 0x70a to 0x70d partition, domain, cluster and
+       cell.
+     - established
+     - SGI's GPL SN code in Linux history (``v2.5.0``,
+       ``arch/ia64/sn/io/l1_command.c``), as the datasheet records it.
+   * - A store with no backing file starts as a master controller leaves
+       it after its first power-up: zeroes, then at 0x700 the marker,
+       ``none``, zero switch values, the configuration byte (``0x02``,
+       automatic power-up, on the Origin 200 build; 0 on the Origin 2000
+       build), the module number (0 on Origin 200; the module's selected
+       number on Origin 2000), zero self-test flags and partition, and the
+       clock-select byte at 0x70b: ``0x78`` on Origin 200, 0 on Origin 2000.
      - approximation
-     - Emulator choice so that a stock firmware boot finds an assigned
-       module without first assigning one.
+     - The controller's initialization, the Origin 200 build's ``0x78``
+       included, is established by the datasheet. The zero fill elsewhere
+       is not, since factory contents are unknown and an erased EEPROM
+       usually reads ``0xff``. The Origin 2000 controller writes ``0x78``
+       only on the full-clock midplane type, and this module being that
+       type is inferred. Its PROMs read 0x70b as the domain, so the model
+       keeps 0 there rather than change what a guest sees on an inference.
+   * - A two-module Origin 200's slave-module store starts like the
+       master's.
+     - approximation
+     - The slave controller does not initialize its store, so its
+       contents are unknown (an erased part usually reads ``0xff``), and
+       which store the slave module's Hub reaches is unknown. In the model
+       the slave node's processors reach that store through their own Hub,
+       so its seed is guest-visible; keeping the master's seed leaves that
+       behaviour unchanged.
+   * - A sequential read or write past a block's last byte wraps to that
+       block's first byte, as the previous model's eight 256-byte parts
+       did. A write of any length is accepted. Writes complete at once and
+       are never refused as busy. The part does not accept a general call.
+     - approximation
+     - Block-end behaviour, the write buffer and the write-cycle time are
+       unknown on hardware, and a real 24C16 wraps a write within a
+       16-byte page; the firmware's longest write is 12 bytes from a
+       block's start. The firmware's log writer does not retry, so a busy
+       NAK would cut its records short.
+   * - Persistence: the store survives reset, migration between identical
+       builds and, with a ``module<N>-nvram`` file bound, QEMU processes.
+       A bound file's contents win over the product's seed.
+     - established
+     - Datasheet persistence paragraph; the file is an emulator feature.

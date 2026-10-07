@@ -27,6 +27,9 @@
 #define SN1_FLASH_MARK 0x2000
 #define SN1_MACHINE "-cpu R14000 -smp 2"
 
+/* A module system controller's configuration NVRAM. */
+#define MODULE_NVRAM_SIZE 2048
+
 /* The m48t35 Timekeeper's NVRAM and the clock record kept beside it. */
 #define NVRAM_SIZE (32 * 1024)
 #define NVRAM_CLOCK_SIZE 16
@@ -254,6 +257,9 @@ static void test_machine_help_lists_storage(void)
 {
     static const char *const expected[][2] = {
         { "origin200", "node0-flash=" },
+        { "origin200", "module0-nvram=" },
+        { "origin2000", "module0-nvram=" },
+        { "onyx2", "module0-nvram=" },
         { "origin2000", "io0-flash=" },
         { "onyx2", "nvram0-clock=" },
         { "origin300", "node1-flash=" },
@@ -799,6 +805,47 @@ static void test_nvram_short_of_a_sector_refused(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+/*
+ * A module controller's configuration NVRAM binds through module<N>-nvram
+ * and reaches the controller's store: the Hub's embedded ELSC on Origin 200,
+ * the shared module controller on Origin 2000.
+ */
+static void test_module_nvram_bound(void)
+{
+    g_autofree char *path = make_store("module-nvram", MODULE_NVRAM_SIZE, 0);
+    g_autofree char *node = blockdev("mnv", path);
+    g_autofree char *device = NULL;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin200,module0-nvram=mnv -blockdev %s", node);
+    device = attached_device(qts, "mnv");
+    g_assert_cmpstr(device, ==, "/machine/node0/hub/nvram");
+    qtest_quit(qts);
+    g_free(device);
+
+    qts = qtest_initf("-M " O2K_DESKSIDE ",module0-nvram=mnv "
+                      O2K_DESKSIDE_SIZE " -blockdev %s", node);
+    device = attached_device(qts, "mnv");
+    g_assert_cmpstr(device, ==, "/machine/module-management/nvram");
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_module_nvram_refusals(void)
+{
+    g_autofree char *small = make_store("module-nvram-small",
+                                        MODULE_NVRAM_SIZE / 2, 0);
+    g_autofree char *small_node = blockdev("mnv", small);
+
+    assert_rejected("origin200,module0-nvram=mnv", "-blockdev", small_node,
+                    "origin200: module0-nvram is 1024 bytes; it must be "
+                    "exactly 2048");
+    assert_rejected("origin200,module1-nvram=mnv", "-blockdev", small_node,
+                    "origin200: topology 'origin200' with 1 node board has "
+                    "no module1-nvram");
+    g_assert_cmpint(g_unlink(small), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -841,6 +888,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-machine-storage/io-flash/refusals",
                    test_io_flash_refusals);
     qtest_add_func("/sgi-machine-storage/nvram/bound", test_nvram_bound);
+    qtest_add_func("/sgi-machine-storage/module-nvram/bound",
+                   test_module_nvram_bound);
+    qtest_add_func("/sgi-machine-storage/module-nvram/refusals",
+                   test_module_nvram_refusals);
     qtest_add_func("/sgi-machine-storage/nvram/without-clock",
                    test_nvram_without_clock);
     qtest_add_func("/sgi-machine-storage/nvram/legacy-drive",

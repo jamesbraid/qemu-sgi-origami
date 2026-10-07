@@ -1833,6 +1833,57 @@ static const char *sgi_machine_storage_node(SGIMachineState *s,
 }
 
 /*
+ * The module<N>-nvram store binding for @module's controller NVRAM, or
+ * NULL when nothing binds it or the module has no such store.
+ */
+static const char *sgi_machine_module_nvram_node(SGIMachineState *s,
+                                                 const SGIModelTopology *t,
+                                                 const SGIModelModule *module)
+{
+    g_autofree char *name = NULL;
+
+    if (!sgi_model_module_has_nvram(t, module)) {
+        return NULL;
+    }
+    name = g_strdup_printf("module%u-nvram",
+                           sgi_model_module_nvram_index(t, module));
+    return sgi_machine_storage_node(s, name);
+}
+
+/*
+ * Give an Origin 200 node's embedded ELSC its module's configuration NVRAM:
+ * the store binding and the bytes an unbacked store starts with. Each such
+ * module has the one node, so the store has one Hub to sit behind.
+ */
+static void sgi_machine_attach_elsc_nvram(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          unsigned int node_index,
+                                          SN0NodeState *node)
+{
+    const SGIModelModuleList *entry;
+
+    for (entry = t->modules; entry; entry = entry->next) {
+        const SGIModelModule *module = entry->value;
+        const uint32List *member;
+
+        for (member = module->nodes; member; member = member->next) {
+            if (member->value != node_index) {
+                continue;
+            }
+            if (!sgi_model_module_has_nvram(t, module)) {
+                return;
+            }
+            node->elsc_nvram_node = sgi_machine_module_nvram_node(s, t,
+                                                                  module);
+            sgi_model_module_nvram_seed(t, module, &node->elsc_nvram_config,
+                                        &node->elsc_nvram_module,
+                                        &node->elsc_nvram_clock);
+            return;
+        }
+    }
+}
+
+/*
  * The BASEIO PROM flash backing for @record: its io<N>-flash binding or
  * the legacy drive @legacy names, refusing both at once.
  */
@@ -2907,6 +2958,10 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         qdev_prop_set_uint8(dev, "module-number",
                             module->initial_module_number);
         qdev_prop_set_string(dev, "model-serial", module->serial);
+        if (sgi_machine_module_nvram_node(s, t, module)) {
+            qdev_prop_set_string(dev, "nvram-drive",
+                                 sgi_machine_module_nvram_node(s, t, module));
+        }
         qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
         qdev_prop_set_bit(dev, "can-reset", true);
         qdev_prop_set_bit(dev, "can-power", true);
@@ -4607,6 +4662,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                              sgi_machine_topology_nasid(t, node_index));
         node->flash_drive = flash_drives[node_index];
         node->flash_node = flash_nodes[node_index];
+        sgi_machine_attach_elsc_nvram(s, t, node_index, node);
         node->model_node = model_node;
         node->memory = node_memory;
         node->slave_role = model_node->slave_role;
@@ -5489,6 +5545,11 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
     if (g_str_has_prefix(name, "io") &&
         !qemu_strtoui(name + strlen("io"), &end, 10, &index) &&
         g_str_equal(end, "-flash")) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
+    }
+    if (g_str_has_prefix(name, "module") &&
+        !qemu_strtoui(name + strlen("module"), &end, 10, &index) &&
+        g_str_equal(end, "-nvram")) {
         return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
     }
     if (g_str_has_prefix(name, "nvram") &&

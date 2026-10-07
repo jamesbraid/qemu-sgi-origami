@@ -569,12 +569,32 @@ def _timekeeper_initial(board: dict) -> str:
     return "ip27-nvram"
 
 
+# A module system controller's configuration NVRAM: eight 256-byte blocks
+# at I2C 0x50-0x57 (hw/nvram/sgi-elsc-nvram.h).
+_CONTROLLER_NVRAM_BYTES = 2048
+
+
+def _module_has_controller_nvram(topology: dict, module: dict,
+                                 fitted: list[int]) -> bool:
+    """Whether a module has a system controller with a configuration
+    NVRAM, by the rule `sgi_model_module_has_nvram()` applies: an Origin
+    2000-family module controller (MSC), or an Origin 200 Hub whose
+    embedded ELSC sits on one of the module's fitted nodes."""
+    index = module["controller_index"]
+    if index >= 0 and topology["controllers"][index]["kind"] == "MSC":
+        return True
+    return any((topology["nodes"][node].get("identity") or {}).get(
+                   "system_controller", False)
+               for node in module["nodes"] if node in fitted)
+
+
 def _storage_for(topology: dict, harness: dict, product: dict,
                  fitted: list[int]) -> list[dict]:
     """Every writable persistent store a launch fitting the `fitted` node
     boards has, numbered as the machine numbers what it builds, in the
     order a launcher creates them: each node's boot flash, each BASEIO
-    PROM flash, then each Timekeeper NVRAM with its clock record. The
+    PROM flash, each Timekeeper NVRAM with its clock record, then each
+    module system controller's configuration NVRAM. The
     name is the file name, the block node name and the machine property
     a launcher binds the store through. `initial` names what a new
     machine's store starts from: an `init-inputs` image, the fresh IP27
@@ -610,6 +630,12 @@ def _storage_for(topology: dict, harness: dict, product: dict,
                         "read-only": False, "initial": initial})
         storage.append({"name": f"nvram{index}-clock", "size": clock_size,
                         "read-only": False, "initial": "zero"})
+    modules = [module for module in topology["modules"]
+               if _module_has_controller_nvram(topology, module, fitted)]
+    for index, _ in enumerate(modules):
+        storage.append({"name": f"module{index}-nvram",
+                        "size": _CONTROLLER_NVRAM_BYTES,
+                        "read-only": False, "initial": "controller-nvram"})
     return storage
 
 
