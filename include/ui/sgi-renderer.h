@@ -41,6 +41,10 @@ typedef struct SGIRendererClear {
     float rgba[4];
     uint32_t colour_mask;
     uint16_t *pixels; /* width * height * 4 host slots, bottom row first */
+    uint32_t *depth_stencil; /* Packed D24S8 words, bottom row first. */
+    uint32_t depth24;
+    uint8_t stencil8, stencil_mask;
+    bool colour, depth, stencil;
 } SGIRendererClear;
 
 typedef struct SGIRendererOps {
