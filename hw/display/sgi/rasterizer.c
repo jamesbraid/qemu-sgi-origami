@@ -3407,6 +3407,28 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     if (!sgi_soft_setup_ops(&r)) {
         return SGI_GL_DRAW_OK;
     }
+    if (rules->smooth_primitives && d->polygon_smooth &&
+        d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing is not "
+                      "implemented\n");
+    } else if (!rules->smooth_primitives) {
+        const char *smooth = NULL;
+
+        if (d->mode == SGI_GL_POINTS && d->point_smooth) {
+            smooth = "point";
+        } else if (d->mode >= SGI_GL_LINES &&
+                   d->mode <= SGI_GL_LINE_STRIP && d->line_smooth) {
+            smooth = "line";
+        } else if (d->mode >= SGI_GL_TRIANGLES &&
+                   d->mode <= SGI_GL_POLYGON && d->polygon_smooth) {
+            smooth = "polygon";
+        }
+        if (smooth) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: %s smoothing requested but "
+                          "unsupported by raster rules; drawn aliased\n",
+                          smooth);
+        }
+    }
     if (d->polygon_modes && d->mode >= SGI_GL_TRIANGLES &&
         d->mode <= SGI_GL_POLYGON &&
         (d->polygon_modes[0] != SGI_GL_FILL ||
