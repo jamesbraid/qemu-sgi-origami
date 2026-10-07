@@ -1,6 +1,12 @@
 config SCSI
     bool
 
+config AIC7880_SCSI_PCI
+    bool
+    default y if PCI_DEVICES
+    depends on PCI
+    select SCSI
+
 config LSI_SCSI_PCI
     bool
     default y if PCI_DEVICES
