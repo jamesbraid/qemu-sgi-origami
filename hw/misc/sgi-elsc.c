@@ -112,6 +112,13 @@ bool sgi_elsc_resetting_itself(SGIElscState *s)
     return s->resetting_itself;
 }
 
+/* Record an Origin 2000 display status message. */
+static void elsc_status(SGIElscState *s, SGIElscStatus status)
+{
+    if (s->origin2000) {
+        s->status = status;
+    }
+}
 
 static bool elsc_module_can_execute(SGIElscState *s, SGIElscAction action)
 {
@@ -572,6 +579,7 @@ static void elsc_handle_dsp(SGIElscState *s, ElscRequest *r)
         return;
     }
     memcpy(s->display, &r->text[r->pos], n);
+    s->status = SGI_ELSC_STATUS_NONE;
     elsc_frame_ok(s);
 }
 
@@ -592,6 +600,7 @@ static void elsc_handle_dsc(SGIElscState *s, ElscRequest *r)
         return;
     }
     s->display[pos - '1'] = ch;
+    s->status = SGI_ELSC_STATUS_NONE;
     elsc_frame_ok(s);
 }
 
@@ -659,6 +668,7 @@ static void elsc_handle_pwr_down(SGIElscState *s, ElscRequest *r)
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)(has_delay ? sec : 3) * 1000);
         elsc_post_message(s, SGI_ELSC_MESSAGE_PD_REMOTE);
+        elsc_status(s, SGI_ELSC_STATUS_PD_REMOTE);
         return;
     }
     /*
@@ -1020,6 +1030,7 @@ static void elsc_handle_clr(SGIElscState *s, ElscRequest *r)
     s->fan_high = false;
     if (s->origin2000) {
         memset(s->display, ' ', sizeof(s->display));
+        s->status = SGI_ELSC_STATUS_NONE;
     }
     elsc_frame_ok(s);
 }
@@ -1240,6 +1251,7 @@ static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
     }
     timer_mod(s->nmi_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
               ELSC_NMI_WAIT_MS);
+    elsc_status(s, SGI_ELSC_STATUS_NMI);
     elsc_frame_ok(s);
 }
 
@@ -1313,6 +1325,7 @@ static bool elsc_remove_power(SGIElscState *s)
     if (!elsc_module_powered(s)) {
         return false;
     }
+    elsc_status(s, SGI_ELSC_STATUS_POWER_OFF);
     if (s->module_ops && s->module_ops->execute) {
         /* The module's power output reaches the machine. */
         s->module_ops->execute(s->module_opaque, ELSC_ACTION_SHUTDOWN);
@@ -1342,6 +1355,7 @@ static void elsc_power_up_expired(void *opaque)
     }
     s->power_sequence = false;
     s->cold_power_on = true;
+    elsc_status(s, SGI_ELSC_STATUS_POWER_UP);
     if (s->module_ops && s->module_ops->execute) {
         s->module_ops->execute(s->module_opaque, ELSC_ACTION_POWER_UP);
     } else {
@@ -1384,6 +1398,7 @@ static void elsc_hbt_expired(void *opaque)
     switch (s->hbt_stage) {
     case SGI_ELSC_HEARTBEAT_WAITING:
         s->hbt_stage = SGI_ELSC_HEARTBEAT_WARNED;
+        elsc_status(s, SGI_ELSC_STATUS_HEARTBEAT);
         elsc_hbt_arm(s, ELSC_HBT_WARNING);
         break;
     case SGI_ELSC_HEARTBEAT_WARNED:
@@ -1617,6 +1632,7 @@ static bool elsc_run_committed_action(SGIElscState *s)
          * "rst" inside that second starts the wait again.
          */
         elsc_post_message(s, SGI_ELSC_MESSAGE_RST);
+        elsc_status(s, SGI_ELSC_STATUS_RESET);
         timer_mod(s->rst_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                   ELSC_RESET_WAIT_MS);
         return false;
@@ -2159,6 +2175,7 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->module_off = false;
     s->power_sequence = false;
     s->cycle_seconds = ELSC_CYCLE_DEFAULT_SECONDS;
+    s->status = SGI_ELSC_STATUS_NONE;
     timer_del(s->rst_timer);
     timer_del(s->nmi_timer);
     timer_del(s->nmi_pulse_timer);
@@ -2175,8 +2192,15 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->slave_link = false;
     s->slave_temp = 'n';
     s->slave_report = 0;
-    /* The power-on content is unstated; blank spaces are a model choice. */
-    memset(s->display, ' ', sizeof(s->display));
+    /*
+     * An Origin 2000 module controller starts with its version string on
+     * the display. The Origin 200 build has none; blank is a model choice.
+     */
+    if (s->origin2000) {
+        memcpy(s->display, SGI_ELSC_VERSION_ORIGIN2000, sizeof(s->display));
+    } else {
+        memset(s->display, ' ', sizeof(s->display));
+    }
 }
 
 /*
@@ -2386,6 +2410,7 @@ static int elsc_post_load(void *opaque, int version_id)
     if (s->message >= SGI_ELSC_MESSAGE_COUNT ||
         s->sel_mode >= SGI_ELSC_SELECT_COUNT ||
         s->hbt_stage >= SGI_ELSC_HEARTBEAT_COUNT ||
+        s->status >= SGI_ELSC_STATUS_COUNT ||
         s->sel_processor >= SGI_ELSC_PROCESSORS ||
         (s->see_processor >= SGI_ELSC_PROCESSORS &&
          s->see_processor != SGI_ELSC_SEE_ALL)) {
@@ -2470,6 +2495,7 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(power_sequence, SGIElscState),
         VMSTATE_UINT16(cycle_seconds, SGIElscState),
         VMSTATE_TIMER_PTR(power_up_timer, SGIElscState),
+        VMSTATE_UINT8(status, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
     .post_load = elsc_post_load,
@@ -2579,6 +2605,20 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
             }
         }
         g_string_append(buf, "\"\n");
+        if (s->status != SGI_ELSC_STATUS_NONE) {
+            static const char *const names[SGI_ELSC_STATUS_COUNT] = {
+                [SGI_ELSC_STATUS_PD_REMOTE] = "remote power-down",
+                [SGI_ELSC_STATUS_POWER_OFF] = "power off",
+                [SGI_ELSC_STATUS_POWER_UP] = "power up",
+                [SGI_ELSC_STATUS_RESET] = "reset",
+                [SGI_ELSC_STATUS_NMI] = "NMI",
+                [SGI_ELSC_STATUS_HEARTBEAT] = "heartbeat timeout",
+            };
+
+            g_string_append_printf(buf, "  status message: %s, shown in "
+                                   "place of the text above (its own text "
+                                   "is not known)\n", names[s->status]);
+        }
     }
     if (s->message != SGI_ELSC_MESSAGE_NONE) {
         g_string_append_printf(buf, "  controller message: \"%s\"\n",

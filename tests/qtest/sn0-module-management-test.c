@@ -1337,7 +1337,7 @@ static void test_origin2000_display(void)
     assert_response(qts, 0, "dsc 1 A", "ok");
     assert_response(qts, 0, "dsc 8 Z", "ok");
     after_dsc = qtest_hmp(qts, "info elsc");
-    g_assert_nonnull(strstr(after_dsc, "display: \"A      Z\""));
+    g_assert_nonnull(strstr(after_dsc, "display: \"AER 3.2Z\""));
 
     for (i = 0; i < ARRAY_SIZE(refused); i++) {
         assert_response(qts, 0, refused[i], "err arg");
@@ -1523,6 +1523,29 @@ static void test_module_power_cycle_holds_nodes(void)
     qtest_quit(qts);
 }
 
+/*
+ * The controller's own status messages replace whatever a host wrote on
+ * the display; their texts are not known, so "info elsc" names them. A
+ * host write replaces them in turn, and the display starts with the
+ * version string.
+ */
+static void test_origin2000_display_status(void)
+{
+    QTestState *qts = start_module();
+    g_autofree char *start = qtest_hmp(qts, "info elsc");
+    g_autofree char *after_nmi = NULL;
+    g_autofree char *after_dsp = NULL;
+
+    g_assert_nonnull(strstr(start, "display: \"VER 3.2 \""));
+    g_assert_null(strstr(start, "status message"));
+    assert_exact(qts, 0, "nmi", "ok ");
+    after_nmi = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(after_nmi, "status message: NMI"));
+    assert_exact(qts, 0, "dsp hi", "ok ");
+    after_dsp = qtest_hmp(qts, "info elsc");
+    g_assert_null(strstr(after_dsp, "status message"));
+    qtest_quit(qts);
+}
 
 /* The module's MODULEID part, letter Y at index 0. */
 static const uint8_t module_rom[8] = {
@@ -1910,6 +1933,8 @@ int main(int argc, char **argv)
                    test_identity_survives_reset);
     qtest_add_func("/sn0/o2000-module-management/power-cycle-holds-nodes",
                    test_module_power_cycle_holds_nodes);
+    qtest_add_func("/sn0/o2000-module-management/origin2000-display-status",
+                   test_origin2000_display_status);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display",
                    test_origin2000_display);
     qtest_add_func("/sn0/o2000-module-management/origin2000-build-commands",
