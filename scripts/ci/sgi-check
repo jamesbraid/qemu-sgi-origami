@@ -329,6 +329,21 @@ def changed_table_tests(old_text, new_text):
     return changed
 
 
+# A qtest source with this file beside it runs as one Meson test per group
+# the file names (tests/qtest/meson.build), not under its own name.
+QTEST_GROUPS = '-groups.txt'
+
+
+def qtest_targets(stem):
+    """Name the Meson tests that run one qtest source's cases."""
+    groups = SOURCE / 'tests/qtest' / f'{stem}{QTEST_GROUPS}'
+    if not groups.is_file():
+        return {f'qtest-mips64/{stem}'}
+    return {f'qtest-mips64/{stem}-{line.split()[0]}'
+            for line in groups.read_text(encoding='utf-8').splitlines()
+            if line.split() and not line.lstrip().startswith('#')}
+
+
 def merge_base(base):
     try:
         return output(['git', '-C', SOURCE, 'merge-base', base, 'HEAD'],
@@ -342,8 +357,10 @@ def select_qtests(build, base):
 
     Compare against the merge base, so commits that reached the base branch
     after the pull request forked do not read as the pull request's changes.
-    An edited test source selects that test, and a change confined to
-    meson.build's per-test tables selects the tests whose entries changed.
+    An edited test source selects that test, or each of its groups when
+    it is split into groups, as does an edited groups file, and a change
+    confined to meson.build's per-test tables selects the tests whose
+    entries changed.
     Nothing else selects a test. Code a test reaches, shared test helpers
     and edits to meson.build outside the tables select none: the full run
     runs every qtest before a land, and the registration check in the
@@ -365,10 +382,12 @@ def select_qtests(build, base):
     paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
                     'HEAD', '--', 'tests/qtest']).splitlines()
     for path in paths:
-        target = 'qtest-mips64/' + Path(path).stem
-        if (path.endswith('.c') and (SOURCE / path).is_file() and
-                target in registered):
-            selected.add(target)
+        if path.endswith('.c') and (SOURCE / path).is_file():
+            selected |= qtest_targets(Path(path).stem) & registered
+        elif (path.endswith(QTEST_GROUPS) and
+                (SOURCE / path).is_file()):
+            selected |= qtest_targets(
+                Path(path).name[:-len(QTEST_GROUPS)]) & registered
         elif path == QTEST_MESON and (SOURCE / path).is_file():
             tests = changed_table_tests(
                 output(['git', '-C', SOURCE, 'show',
