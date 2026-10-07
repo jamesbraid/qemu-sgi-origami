@@ -14,6 +14,7 @@
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
+#include "qemu/seqlock.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/i2c/pcf8584.h"
@@ -318,6 +319,7 @@ struct SGIHubState {
 
     uint64_t pi_region_present;
     uint32_t pi_calias_size;
+    /* Readable without the BQL; sgi_hub_int_modify() publishes changes. */
     uint64_t pi_int_pend[2];
     bool pi_int_pend1_primary_credit;
     uint64_t pi_int_mask[4];
@@ -348,6 +350,12 @@ struct SGIHubState {
     uint64_t rt_period;
     uint64_t rt_reciprocal;
     uint64_t rt_reciprocal_limit_ns;
+
+    /*
+     * Guards the origin and the reciprocal for a counter read made without
+     * the BQL. Writers already hold the BQL, which orders them.
+     */
+    QemuSeqLock rt_seq;
 
     /* A match pends whether or not enabled; enable only gates the line. */
     uint64_t pi_rt_compare[SGI_HUB_PROCESSORS];
