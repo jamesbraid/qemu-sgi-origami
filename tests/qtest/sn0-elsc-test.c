@@ -307,7 +307,7 @@ static void test_read_switches_roundtrip(const void *data)
 #define ARB_MAX_STEPS     2000
 
 /* A single-module controller's ring length. */
-#define ARB_SINGLE_MODULE_POSITIONS 8
+#define ARB_SINGLE_MODULE_POSITIONS 5
 
 /* Scan more finely than the one-millisecond publication interval. */
 #define ARB_SCAN_STEP_NS  (100 * 1000)
@@ -423,6 +423,12 @@ static unsigned int elsc_read_response_cpu(QTestState *qts,
 static bool arb_is_signal_byte(uint64_t value)
 {
     return value >= 0xe0 && value <= 0xef;
+}
+
+/* The single-module ring position n ticks after a published grant. */
+static unsigned int arb_code_after(uint8_t grant, unsigned int n)
+{
+    return ((grant & 7) + n) % ARB_SINGLE_MODULE_POSITIONS;
 }
 
 /*
@@ -575,7 +581,7 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     grant = arb_next_code(qts);
 
     g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-    g_assert_cmpuint(grant & 7, ==, ((signal & 7) + 1) & 7);
+    g_assert_cmpuint(grant & 7, ==, arb_code_after(signal, 1));
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -619,7 +625,7 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_ACK);
     grant = arb_next_code(qts);
-    g_assert_cmpuint(grant & 7, ==, ((signal & 7) + 1) & 7);
+    g_assert_cmpuint(grant & 7, ==, arb_code_after(signal, 1));
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -721,8 +727,8 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
 
     /* That tick publishes the code the busy ticks skipped. */
     qtest_clock_step(qts, 2 * ARB_STEP_NS);
-    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
-    g_assert_cmpuint(arb_next_code(qts) & 7, ==, ((signal & 7) + 2) & 7);
+    g_assert_cmpuint(read_data(qts) & 7, ==, arb_code_after(signal, 1));
+    g_assert_cmpuint(arb_next_code(qts) & 7, ==, arb_code_after(signal, 2));
 }
 
 /*
@@ -1106,7 +1112,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     g_assert_true(node0 < node1);
     g_assert_nonnull(g_strstr_len(node0, node1 - node0,
                                  "next position 0 of 5"));
-    g_assert_nonnull(strstr(node1, "next position 0 of 8"));
+    g_assert_nonnull(strstr(node1, "next position 0 of 5"));
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);

@@ -137,7 +137,7 @@ struct SGIElscState {
      * global processor indexes, so it also says which codes are local.
      */
     uint32_t cpu_base;
-    /* Number of positions in the ring; eight unless a machine narrows it. */
+    /* Number of positions in the ring: four processor codes and the slave. */
     uint32_t arb_positions;
     uint8_t dip_switches;
     uint32_t arb_code;    /* next encoded ring position */
