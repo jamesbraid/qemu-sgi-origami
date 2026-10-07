@@ -388,9 +388,11 @@ static void elsc_handle_pwr_down(SGIElscState *s, ElscRequest *r)
 /*
  * "pwr <sub>": the power subcommands share the "pwr" mnemonic and select on
  * a letter from the character reader, so "pwr q" and "pwr  q junk" are the
- * same request. Only the power-on query is boot-driven; the rest (delayed
- * power-down, power-cycle, redundant supply) are shutdown and reset-recovery
- * paths. A letter the controller does not know is a bad argument.
+ * same request. Only the power-on query is boot-driven; the rest are
+ * shutdown and reset-recovery paths. A letter the controller does not know
+ * is a bad argument, "pwr r" included: the redundant-supply query belongs to
+ * controller firmware 3.3S and later, and neither build modelled here has
+ * it. IRIX treats the error as "no supply report".
  */
 static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
 {
@@ -456,15 +458,6 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
         elsc_arm_action(s, ELSC_ACTION_CYCLE, "pwr c");
         return;
     }
-    case 'r':
-        /*
-         * "pwr r": redundant-supply query, read-only. The wire response is a
-         * per-module record for each supply, tagged tag:present:health:
-         * "m:y:ok"/"m:y:fl"/"m:n" for the master and "s:y:ok"/"s:y:fl"/"s:n"
-         * for the slave. Both supplies are modelled present and healthy.
-         */
-        elsc_frame_response_str(s, "ok m:y:ok s:y:ok");
-        return;
     default:
         elsc_frame_response_str(s, "err arg");
         return;

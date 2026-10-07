@@ -145,7 +145,7 @@ Command vocabulary
     result. Whether a multi-module cold-power latch is per-module or
     machine-wide is not settled by the datasheet.
 
-``pwr d <sec>`` / ``pwr c`` / ``pwr r``
+``pwr d <sec>`` / ``pwr c``
     The remaining power control, none boot-driven. ``pwr d <sec>``
     schedules a delayed power-down and ``pwr c`` power-cycles, both
     answered a bare ``ok``; both are destructive and, like ``rst``, need
@@ -157,24 +157,11 @@ Command vocabulary
     shutdown. 0 powers down at once, as does a request with no delay
     while a countdown is pending; a request with no delay otherwise
     starts a three-second countdown. A delay above 0x258 is ``err arg``
-    and changes nothing. ``pwr r`` is documented for controller
-    firmware 3.3S and later; the 6.5.7-era source of both builds lacks
-    it, so the model answers it while reporting the older version
-    field from ``ver``, a mixed version no real controller presents.
-    The IRIX kernel and IO6 PROM query it and skip the supply report
-    on an error. ``pwr r`` queries the redundant supplies, is
-    read-only and ungated, and answers a per-module record for each
-    supply tagged ``tag:present:health`` -- ``m:y:ok`` / ``m:y:fl`` /
-    ``m:n`` for the master and ``s:y:ok`` / ``s:y:fl`` / ``s:n`` for the
-    slave. The present flag (``y``/``n``) separates an absent supply
-    (``m:n``) from a failed one (``m:y:fl``), and health is ``ok`` or
-    ``fl``. Both supplies are modelled present and healthy, so ``ok
-    m:y:ok s:y:ok``. The response payload is identical on the operator
-    and wire interfaces -- only the command framing differs -- so this
-    is the format the Origin 200 diagnostics guide documents (datasheet
-    PR #602); it supersedes an earlier one-colon ``ok m:ok s:ok`` that
-    came from the driver's test-fixture mock rather than the firmware
-    wire format. An immediate ``pwr d`` and ``pwr c`` act, like ``rst``,
+    and changes nothing. ``pwr r``, the redundant-supply query, belongs
+    to controller firmware 3.3S and later; neither 6.5.7-era build has
+    it, so it is ``err arg`` like any unknown letter. The IRIX kernel
+    and IO6 PROM query it and skip the supply report on an error. An
+    immediate ``pwr d`` and ``pwr c`` act, like ``rst``,
     once the caller has read the ``ok``: ``pwr d`` shuts the machine
     down, ``pwr c`` resets it (a power-cycle). A countdown shuts the
     machine down when it expires, on the virtual clock. Five
