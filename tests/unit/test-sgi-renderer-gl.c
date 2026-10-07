@@ -1262,6 +1262,18 @@ static void test_flat_triangle_alpha_blend(void)
     error_free(err);
     err = NULL;
     resource.component_count = 3;
+    for (unsigned c = 0; c < 3; c++) {
+        resource.component[c].storage_bits = 12;
+    }
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    for (unsigned c = 0; c < 3; c++) {
+        resource.component[c].storage_bits = 8;
+    }
     g_assert_cmpuint(f.snapshots, ==, 2);
     g_assert_cmpuint(f.commits, ==, 2);
     g_assert_cmpuint(f.colour[0][0][0], ==, 0x40);
