@@ -14,6 +14,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define HUB_BASE        UINT64_C(0x20001000000)
 #define MD_ONEWIRE      0x2000a8
@@ -74,6 +75,8 @@
  */
 #define POLL_FINE_STEPS 8
 #define POLL_COARSE_NS  50000
+/* Sixteen of a byte's eighteen clock edges at 90 kHz (5556 ns each). */
+#define BYTE_PRESTEP_NS (16 * 5556)
 #define SERVICE_PERIOD_NS   1000000
 #define GRANT_SETTLE_NS     500000
 #define GRANT_BASE          0xe0
@@ -103,11 +106,9 @@ static void adapter_write(QTestState *qts, unsigned node, uint64_t offset,
  * The shared wire carries a byte over eighteen clock edges rather than in one
  * register write, so every step ends in the firmware's own poll.
  */
-static bool wait_done(QTestState *qts, unsigned node)
+static bool wait_done_from(QTestState *qts, unsigned node, unsigned i)
 {
-    unsigned i;
-
-    for (i = 0; i < POLL_STEPS; i++) {
+    for (; i < POLL_STEPS; i++) {
         uint8_t status = adapter_read(qts, node, I2C_CTRL);
 
         if (!(status & STS_PIN)) {
@@ -120,6 +121,25 @@ static bool wait_done(QTestState *qts, unsigned node)
                                                   : POLL_COARSE_NS);
     }
     return false;
+}
+
+static bool wait_done(QTestState *qts, unsigned node)
+{
+    return wait_done_from(qts, node, 0);
+}
+
+/*
+ * A data byte or address already on the wire cannot finish before its
+ * eighteen edges, and arbitration was settled by the start that came first.
+ * Step most of that time at once and poll coarsely for the rest, rather than
+ * spending round trips on fine polls that cannot see anything. A host that
+ * schedules the test and QEMU slowly pays for every round trip, so this
+ * keeps a transaction's cost near its byte count.
+ */
+static bool wait_byte_done(QTestState *qts, unsigned node)
+{
+    qtest_clock_step(qts, BYTE_PRESTEP_NS);
+    return wait_done_from(qts, node, POLL_FINE_STEPS);
 }
 
 static void init_adapter(QTestState *qts, unsigned node)
@@ -165,7 +185,7 @@ static bool restart_transfer(QTestState *qts, unsigned node, uint8_t address,
 {
     adapter_write(qts, node, I2C_CTRL, CTL_RESTART);
     adapter_write(qts, node, I2C_DATA, (address << 1) | recv);
-    if (!wait_done(qts, node)) {
+    if (!wait_byte_done(qts, node)) {
         return false;
     }
     return !(adapter_read(qts, node, I2C_CTRL) & STS_LRB);
@@ -174,7 +194,7 @@ static bool restart_transfer(QTestState *qts, unsigned node, uint8_t address,
 static bool send_byte(QTestState *qts, unsigned node, uint8_t value)
 {
     adapter_write(qts, node, I2C_DATA, value);
-    if (!wait_done(qts, node)) {
+    if (!wait_byte_done(qts, node)) {
         return false;
     }
     return !(adapter_read(qts, node, I2C_CTRL) & STS_LRB);
@@ -184,7 +204,7 @@ static bool send_byte(QTestState *qts, unsigned node, uint8_t value)
 static void discard_byte(QTestState *qts, unsigned node)
 {
     (void)adapter_read(qts, node, I2C_DATA);
-    g_assert_true(wait_done(qts, node));
+    g_assert_true(wait_byte_done(qts, node));
 }
 
 static uint8_t take_byte(QTestState *qts, unsigned node, bool last)
@@ -195,7 +215,7 @@ static uint8_t take_byte(QTestState *qts, unsigned node, bool last)
         adapter_write(qts, node, I2C_CTRL, CTL_NAK);
     }
     value = adapter_read(qts, node, I2C_DATA);
-    g_assert_true(wait_done(qts, node));
+    g_assert_true(wait_byte_done(qts, node));
     return value;
 }
 
@@ -1526,11 +1546,11 @@ static bool is_running(QTestState *qts)
  */
 static void wait_until_running(QTestState *qts)
 {
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+    SgiWait wait;
 
+    sgi_wait_start(&wait, "migration destination running");
     while (!is_running(qts)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&wait, 1000);
     }
 }
 
