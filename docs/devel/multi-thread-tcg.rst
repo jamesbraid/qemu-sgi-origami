@@ -240,7 +240,8 @@ minimise contention.
 (Current solution)
 
 MMIO access automatically serialises hardware emulation by way of the
-BQL. Currently Arm targets serialise all ARM_CP_IO register accesses
+BQL, except for a region that has called memory_region_enable_lockless_io()
+to say it does its own locking. Currently Arm targets serialise all ARM_CP_IO register accesses
 and also defer the reset/startup of vCPUs to the vCPU context by way
 of async_run_on_cpu().
 
