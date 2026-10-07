@@ -210,18 +210,21 @@ if have_block
   tests += {'test-crypto-pbkdf': [io]}
 endif
 
-if have_system and opengl.found() and gbm.found()
-  tests += {
-    'test-sgi-renderer-gl': ['../../hw/display/sgi/renderer-gl.c',
-                             '../../hw/display/sgi/renderer.c',
-                             '../../hw/display/sgi/render-resource.c',
-                             '../../ui/sgi-renderer.c', '../../ui/egl-helpers.c',
-                             '../../ui/dmabuf.c', '../../util/drm.c',
-                             opengl, gbm, pixman],
-    'test-sgi-egl-display': ['../../ui/egl-helpers.c', '../../ui/egl-context.c',
-                             '../../ui/dmabuf.c',
-                             opengl, gbm, pixman],
-  }
+if have_system and opengl.found()
+  renderer_gl_test = ['../../hw/display/sgi/renderer-gl.c',
+                      '../../hw/display/sgi/renderer.c',
+                      '../../hw/display/sgi/render-resource.c',
+                      '../../ui/sgi-renderer.c', '../../ui/egl-helpers.c',
+                      '../../ui/dmabuf.c', opengl, pixman]
+  if gbm.found()
+    renderer_gl_test += ['../../util/drm.c', gbm]
+    tests += {
+      'test-sgi-egl-display': ['../../ui/egl-helpers.c', '../../ui/egl-context.c',
+                               '../../ui/dmabuf.c',
+                               opengl, gbm, pixman],
+    }
+  endif
+  tests += {'test-sgi-renderer-gl': renderer_gl_test}
 endif
 
 if have_system

@@ -128,6 +128,7 @@ done:
     return available;
 }
 
+#ifdef CONFIG_GBM
 static void test_shader_output(void)
 {
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
@@ -184,6 +185,7 @@ static void test_shader_output(void)
     g_assert_cmpint(fcntl(fd, F_GETFD), ==, -1);
     g_free(request);
 }
+#endif
 
 static PFNEGLCREATECONTEXTPROC saved_create;
 static PFNGLGETSHADERIVPROC saved_shader_status;
@@ -286,13 +288,19 @@ static EGLBoolean fail_release(void)
 static void test_worker_fault(gconstpointer opaque)
 {
     unsigned failure = GPOINTER_TO_UINT(opaque);
+#ifdef CONFIG_GBM
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
+#else
+    const char *node = NULL;
+#endif
     g_auto(MesaTestEnv) mesa_env = { 0 };
     QemuEGLDisplayLease *provider = NULL;
     SGIRenderer *renderer;
     SGIRendererRequest *request;
     Error *err = NULL;
+#ifdef CONFIG_GBM
     int fd;
+#endif
     static const float vertices[3][4] = {
         { 16.25f, 16.25f, 0, 1 },
         { 111.25f, 16.25f, 0, 1 },
@@ -310,14 +318,14 @@ static void test_worker_fault(gconstpointer opaque)
         g_test_trap_assert_passed();
         return;
     }
+#ifdef CONFIG_GBM
     if (node) {
         g_assert_true(egl_init_session(node, DISPLAY_GL_MODE_CORE,
                                        &provider, &err));
         g_assert_null(err);
         fd = qemu_egl_rn_fd;
-    } else {
-        fd = -1;
     }
+#endif
     saved_create = epoxy_eglCreateContext;
     saved_shader_status = (PFNGLGETSHADERIVPROC)
                           eglGetProcAddress("glGetShaderiv");
@@ -376,13 +384,16 @@ static void test_worker_fault(gconstpointer opaque)
     epoxy_eglDestroyContext = saved_destroy;
     epoxy_eglReleaseThread = saved_release;
     egl_cleanup_session(provider);
+#ifdef CONFIG_GBM
     if (node) {
         if (failure >= 5) {
             g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
         } else {
             g_assert_cmpint(fcntl(fd, F_GETFD), ==, -1);
         }
-    } else {
+    }
+#endif
+    if (!node) {
         SGIRenderer *next;
 
         err = NULL;
@@ -1792,9 +1803,11 @@ int main(int argc, char **argv)
                     test_decoded_clear_full_screen_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-depth-stencil",
                     test_decoded_clear_depth_stencil);
+#ifdef CONFIG_GBM
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
     }
+#endif
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/shader-failure",
