@@ -9,6 +9,7 @@
 typedef enum SGIRendererWorkKind {
     SGI_RENDERER_WORK_REQUEST,
     SGI_RENDERER_WORK_FRAME,
+    SGI_RENDERER_WORK_CLEAR,
 } SGIRendererWorkKind;
 
 typedef struct SGIRendererGL {
@@ -18,6 +19,7 @@ typedef struct SGIRendererGL {
     QemuEGLDisplayLease *lease;
     SGIRendererRequest request;
     SGIRendererFrame frame;
+    SGIRendererClear clear;
     SGIRendererWorkKind work_kind;
     Error *error;
     bool ready;
@@ -306,6 +308,66 @@ out:
     return !renderer->error;
 }
 
+static bool renderer_gl_execute_clear(SGIRendererGL *renderer)
+{
+    SGIRendererClear *clear = &renderer->clear;
+    GLuint texture = 0, framebuffer = 0;
+    GLenum error;
+
+    if (!qemu_egl_display_lease_usable(renderer->lease)) {
+        error_setg(&renderer->error, "SGI renderer EGL display is quarantined");
+        return false;
+    }
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, clear->width, clear->height,
+                 0, GL_RGBA, GL_UNSIGNED_SHORT, clear->pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, texture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        error_setg(&renderer->error,
+                   "SGI renderer native clear framebuffer failed");
+        goto out;
+    }
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glDisable(GL_DITHER);
+    glEnable(GL_SCISSOR_TEST);
+    glColorMask(!!(clear->colour_mask & 1),
+                !!(clear->colour_mask & 2),
+                !!(clear->colour_mask & 4),
+                !!(clear->colour_mask & 8));
+    glClearColor(clear->rgba[0], clear->rgba[1],
+                 clear->rgba[2], clear->rgba[3]);
+    for (unsigned i = 0; i < clear->rect_count; i++) {
+        const SGIRendererClearRect *rect = &clear->rects[i];
+
+        glScissor(rect->x0, rect->y0,
+                  rect->x1 - rect->x0 + 1,
+                  rect->y1 - rect->y0 + 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, clear->width, clear->height, GL_RGBA,
+                 GL_UNSIGNED_SHORT, clear->pixels);
+    error = glGetError();
+    if (error != GL_NO_ERROR) {
+        error_setg(&renderer->error, "SGI renderer native clear failed: "
+                   "GL error 0x%x", error);
+    }
+out:
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &texture);
+    return !renderer->error;
+}
+
 static void renderer_gl_cleanup(SGIRendererGL *renderer)
 {
     EGLDisplay display = qemu_egl_display_lease_display(renderer->lease);
@@ -357,9 +419,19 @@ static void *renderer_gl_worker(void *opaque)
             break;
         }
         qemu_mutex_unlock(&renderer->mutex);
-        renderer->success = renderer->work_kind == SGI_RENDERER_WORK_FRAME ?
-                            renderer_gl_execute_frame(renderer) :
-                            renderer_gl_execute(renderer);
+        switch (renderer->work_kind) {
+        case SGI_RENDERER_WORK_REQUEST:
+            renderer->success = renderer_gl_execute(renderer);
+            break;
+        case SGI_RENDERER_WORK_FRAME:
+            renderer->success = renderer_gl_execute_frame(renderer);
+            break;
+        case SGI_RENDERER_WORK_CLEAR:
+            renderer->success = renderer_gl_execute_clear(renderer);
+            break;
+        default:
+            g_assert_not_reached();
+        }
         qemu_mutex_lock(&renderer->mutex);
         renderer->pending = false;
         qemu_cond_signal(&renderer->condition);
@@ -467,10 +539,34 @@ static bool renderer_gl_draw_frame(void *opaque, SGIRendererFrame *frame,
     return success;
 }
 
+static bool renderer_gl_clear(void *opaque, SGIRendererClear *clear,
+                              Error **errp)
+{
+    SGIRendererGL *renderer = opaque;
+    bool success;
+
+    qemu_mutex_lock(&renderer->mutex);
+    renderer->clear = *clear;
+    renderer->work_kind = SGI_RENDERER_WORK_CLEAR;
+    renderer->pending = true;
+    qemu_cond_signal(&renderer->condition);
+    while (renderer->pending) {
+        qemu_cond_wait(&renderer->condition, &renderer->mutex);
+    }
+    success = renderer->success;
+    if (!success) {
+        error_propagate(errp, renderer->error);
+        renderer->error = NULL;
+    }
+    qemu_mutex_unlock(&renderer->mutex);
+    return success;
+}
+
 static const SGIRendererOps renderer_gl_ops = {
     .create = renderer_gl_create,
     .draw = renderer_gl_draw,
     .draw_frame = renderer_gl_draw_frame,
+    .clear = renderer_gl_clear,
     .destroy = renderer_gl_destroy,
 };
 

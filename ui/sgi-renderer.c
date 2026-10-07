@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/module.h"
 #include "ui/sgi-renderer.h"
 
@@ -158,6 +159,50 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         return false;
     }
     if (!renderer->ops->draw_frame(renderer->opaque, frame, errp)) {
+        renderer->failed = true;
+        return false;
+    }
+    return true;
+}
+
+bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
+                        Error **errp)
+{
+    if (!renderer || !clear || !clear->pixels || !clear->width ||
+        !clear->height || clear->width > INT_MAX ||
+        clear->height > INT_MAX ||
+        clear->width > SIZE_MAX / clear->height / 4 /
+                       sizeof(*clear->pixels) ||
+        !clear->rect_count ||
+        clear->rect_count > SGI_RENDERER_CLEAR_RECTS ||
+        (clear->colour_mask & ~0xfu)) {
+        error_setg(errp, "Invalid SGI OpenGL clear request");
+        return false;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (!isfinite(clear->rgba[c])) {
+            error_setg(errp, "Invalid SGI OpenGL clear colour");
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < clear->rect_count; i++) {
+        SGIRendererClearRect *rect = &clear->rects[i];
+
+        if (rect->x0 > rect->x1 || rect->y0 > rect->y1 ||
+            rect->x1 >= clear->width || rect->y1 >= clear->height) {
+            error_setg(errp, "Invalid SGI OpenGL clear rectangle");
+            return false;
+        }
+    }
+    if (renderer->failed) {
+        error_setg(errp, "SGI OpenGL renderer has failed");
+        return false;
+    }
+    if (!renderer->ops->clear) {
+        error_setg(errp, "SGI OpenGL clearing is unavailable");
+        return false;
+    }
+    if (!renderer->ops->clear(renderer->opaque, clear, errp)) {
         renderer->failed = true;
         return false;
     }

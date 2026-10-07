@@ -28,10 +28,26 @@ typedef struct SGIRendererFrame {
     size_t written_capacity;
 } SGIRendererFrame;
 
+#define SGI_RENDERER_CLEAR_RECTS 16
+
+typedef struct SGIRendererClearRect {
+    uint32_t x0, y0, x1, y1; /* Inclusive, in bottom-origin plane pixels. */
+} SGIRendererClearRect;
+
+typedef struct SGIRendererClear {
+    uint32_t width, height;
+    uint32_t rect_count;
+    SGIRendererClearRect rects[SGI_RENDERER_CLEAR_RECTS];
+    float rgba[4];
+    uint32_t colour_mask;
+    uint16_t *pixels; /* width * height * 4 host slots, bottom row first */
+} SGIRendererClear;
+
 typedef struct SGIRendererOps {
     void *(*create)(Error **errp);
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
     bool (*draw_frame)(void *opaque, SGIRendererFrame *frame, Error **errp);
+    bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
     void (*destroy)(void *opaque);
 } SGIRendererOps;
 
@@ -41,6 +57,8 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp);
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp);
+bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
+                        Error **errp);
 void sgi_renderer_free(SGIRenderer *renderer);
 bool sgi_renderer_request_valid(const SGIRendererRequest *request);
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request);
