@@ -521,7 +521,7 @@ sgi_qtests = \
   sn1_pci_expansion_qtests + \
   sn0_mgras_qtests + \
   sgi_board_qtests + \
-  (config_all_devices.has_key('CONFIG_SGI_DEVICES') ?
+  (config_all_devices.has_key('CONFIG_SGI_O2_GBE') ?
     ['sgi-gbe-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_KONA') and
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
