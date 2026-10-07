@@ -193,6 +193,8 @@
 #define NI_PORT_PARMS       0x608000
 #define NI_PORT_ERROR       0x608008
 #define NI_PORT_ERROR_CLEAR 0x608088
+#define NI_PORT_ERROR_LINK_RESET (1ULL << 37)
+#define NI_DIAG_EIGHT_BIT   (1ULL << 12)
 #define NI_PORT_PARMS_RESET ((6ULL << 10) | 0x3f0)
 #define NI_PORT_CHECK_ERROR_SHIFT 8
 #define NI_PORT_CHECK_ERROR_MASK  (0xffULL << NI_PORT_CHECK_ERROR_SHIFT)
@@ -227,6 +229,7 @@
 #define MD_JUNKUART_BELOW    (MD_JUNKUART_BASE - 0x08)  /* one stride short */
 #define MD_JUNKUART_ABOVE    (MD_JUNKUART_BASE + 0x40)  /* one stride past index 7 */
 
+#define NI_EIGHT_BIT    (1ULL << 30)
 #define NI_LINK_UP      (1ULL << 29)
 #define NI_NEVER_OUT_OF_RESET (1ULL << 28)  /* down reason, link-up clear */
 #define NI_MORE_NODES   (1ULL << 18)
@@ -3598,6 +3601,44 @@ static void test_a_local_port_reset_resets_the_machine(const void *data)
                     0x600df00ULL);
 }
 
+/*
+ * A Hub with no cabled peer has nothing to complete a link reset with: the
+ * link stays down and never out of reset, with no width, and the reset
+ * latches the link-reset bit once, which one clearing read clears. Neither
+ * that nor a lone warm-reset bit nor a zero write resets the machine.
+ */
+static void test_peerless_link_reset(const void *data)
+{
+    const uint64_t width_link = NI_EIGHT_BIT | NI_LINK_UP |
+                                NI_NEVER_OUT_OF_RESET;
+
+    hub_reset();
+    qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
+    qtest_writeq(qts, HUB_LOCAL + NI_DIAG_PARMS, NI_DIAG_EIGHT_BIT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & width_link, ==,
+                    NI_NEVER_OUT_OF_RESET);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET, NI_PORT_RESET_LINK);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_RESET), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & width_link, ==,
+                    NI_NEVER_OUT_OF_RESET);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_DIAG_PARMS), ==,
+                    NI_DIAG_EIGHT_BIT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR_CLEAR), ==,
+                    NI_PORT_ERROR_LINK_RESET);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR_CLEAR), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET, NI_PORT_RESET_WARM);
+    qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==, 0);
+}
+
 static void test_both_windows(const void *data)
 {
     hub_reset();
@@ -6378,6 +6419,8 @@ int main(int argc, char **argv)
                         test_a_32_bit_vector_clear_read_leaves_the_status);
     qtest_add_data_func("sn0/hub/local-port-reset-resets-the-machine", NULL,
                         test_a_local_port_reset_resets_the_machine);
+    qtest_add_data_func("sn0/hub/peerless-link-reset", NULL,
+                        test_peerless_link_reset);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
     qtest_add_data_func("sn0/hub/translation-entries-decode", NULL,
                         test_translation_entries_decode);

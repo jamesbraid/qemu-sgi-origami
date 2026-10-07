@@ -137,11 +137,19 @@ processor B's across its own reset to learn which pass it is on.
 Timed-out-request-buffer registers read zero: nothing times out in a
 model that completes every request instantly.
 
-The port reset register carries three resets and only bit 0, the
-local Hub reset, is this machine's; it is tested alone because the
-three consumers write different companion bits (Linux 0x81, OpenBSD
-0x03, the PROM's own self-reset 0x81, measured on both PROM images).
-The link-reset and warm-reset-out bits are accepted and dropped. The
+The port reset register carries three resets. Bit 0, the local Hub
+reset, is tested alone because the three consumers write different
+companion bits (Linux 0x81, OpenBSD 0x03, the PROM's own self-reset
+0x81, measured on both PROM images), and any write with it set resets
+the whole machine. That is exact for bits 7 and 0 together on a
+machine with no partition fences, which is what every reset path
+writes, and an approximation for bit 0 alone on a machine of several
+nodes, where the hardware resets only this node; no supported guest
+depends on the difference, because each restarts the whole machine
+afterwards. Bit 1 without bit 0 resets the network link, described
+under the network interface below. Bit 7 without bit 0 is logged as
+unimplemented and otherwise ignored: no software writes it, and what
+it does is not known. The register stores nothing and reads zero. The
 protection register is deliberately not consulted: OpenBSD arms it
 before resetting and Linux does not. The error-spool addresses keep
 bits 31:3, start at zero from construction (the datasheet's power-on
@@ -455,6 +463,43 @@ behavior. A remote vector access decodes through the target Hub's
 pure store or peek, never its write hook, so it has no local side
 effects; the fabric is serialised only by BQL MMIO dispatch, which
 the launch path asserts before it calls in.
+
+A link reset, port reset bit 1, completes at the moment it is
+written. With a peer across the cable, the two ends settle the width
+from both ends' forced-width bits (diagnostic parameters bit 12 here,
+the Router's per-port bit in its diagnostic parameters on the other
+end): the link comes up eight bits wide if either end forces it,
+sixteen otherwise. Status bit 30 reads that width at both ends, link-up
+stays set and the down reason clear, and both Hub ends latch bit 37,
+"link reset", in their port error registers; a Router end latches
+nothing, its error registers having no such bit. With no peer the link stays down with the reason "never came out of
+reset" and only this Hub latches bit 37. A plain read of the port
+error register leaves the bit and a read of the clearing alias clears
+it, so the IRIX power-off path, which reads the clearing alias with
+no bound until the bit reads clear, and the PROM's single clearing
+read both see it set once and then clear. Node number, mode, routing,
+vector, protection, diagnostic and port parameters keep their values,
+since software keeps running across the reset. Writing bit 12 alone
+changes nothing on a running link: the width is a property of the
+link, settled when it comes up, at a reset exit (from the force bits
+as every reset's enter phase left them) and at a link reset.
+
+These are approximations, not silicon behaviour: no Hub specification
+or capture is held. The reset's duration, the link-down interval
+during it, and the latch on a peerless Hub are unknown; finishing at
+once is chosen because it satisfies every software wait observed.
+Because both ends latch, a link reset written after a node has already
+done its clearing read leaves that node's bit 37 set; the IRIX 6.5.7
+kernel on a two-module Origin 200, where both module owners reset the
+link, and two PROMs running in parallel can do this. The IRIX 6.5.30
+power-off path resets the link from one module owner only, so it does
+not. The network-interface error interrupt is not modelled: bit 62 of
+the second pending bank never sets, so a leftover bit 37 raises no
+interrupt here, though IRIX's bus-error path still reads it as a fatal
+CrayLink error. Whether the hardware interrupt is a level of the fatal
+port-error bits or a separate latch is unknown. Warm reset across the
+link, power-on latching of bit 37, in-flight traffic and the port
+disable and port-timeout diagnostics are not modelled.
 
 The node field is what the Hub decodes node-qualified addresses
 against, not the board position. The fabric gives each Hub a
