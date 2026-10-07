@@ -136,6 +136,7 @@ struct DS1685State {
      */
     MemoryRegion index_port;
     MemoryRegion data_port;
+    MemoryRegion direct_port;
 
     /* Open-drain and active-low on the part; asserted here means driven. */
     qemu_irq irq;
