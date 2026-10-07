@@ -2764,6 +2764,39 @@ static void test_stored_flag_commands(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * "aut", Origin 200 build: the automatic power-on bit, 0x02 of the
+ * configuration byte at offset 7 of the controller's NVRAM page. The page
+ * starts as a controller that initialised it leaves it, with the bit set
+ * and the password "none".
+ */
+static void test_aut_reads_and_writes_nvram(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    arb_enable_observer(qts);
+    assert_reply(qts, "aut", "ok 1");
+    assert_reply(qts, "aut 0", "ok ");
+    assert_reply(qts, "aut", "ok 0");
+    assert_reply(qts, "aut 1", "ok ");
+    assert_reply(qts, "aut", "ok 1");
+    g_assert_cmphex(firmware_style_nvram_read(qts, 7), ==, 0x02);
+    /* The password's last byte, not the configuration byte. */
+    g_assert_cmphex(firmware_style_nvram_read(qts, 4), ==, 'e');
+    assert_reply(qts, "aut x", "err arg");
+    assert_reply(qts, "aut", "ok 1");
+
+    /* The NVRAM, not the controller, holds it: a reset leaves it set. */
+    qtest_system_reset(qts);
+    arb_enable_observer(qts);
+    assert_reply(qts, "aut", "ok 1");
+    assert_reply(qts, "aut  0 junk", "ok ");
+    assert_reply(qts, "aut", "ok 0");
+    g_assert_cmphex(firmware_style_nvram_read(qts, 7), ==, 0);
+    g_assert_cmphex(firmware_style_nvram_read(qts, 0), ==, 0x37);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2866,6 +2899,8 @@ int main(int argc, char **argv)
                         test_pwr_down_parsing);
     qtest_add_data_func("sn0/elsc/pwr-cycle-rearms-cold-power", NULL,
                         test_pwr_cycle_rearms_cold_power);
+    qtest_add_data_func("sn0/elsc/aut-reads-and-writes-nvram", NULL,
+                        test_aut_reads_and_writes_nvram);
     qtest_add_data_func("sn0/elsc/stored-flag-commands", NULL,
                         test_stored_flag_commands);
     qtest_add_data_func("sn0/elsc/request-grammar", NULL,

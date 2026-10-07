@@ -242,6 +242,21 @@ Command vocabulary
     value. The three values come from the hex reader, and any of them
     missing is ``err arg``.
 
+``aut [1|0]``
+    Origin 200 build only. The automatic power-on bit, 0x02 of the
+    configuration byte at offset 7 of the controller's NVRAM page
+    (address 0x57). The query answers ``ok 1`` or ``ok 0``; ``aut 1``
+    and ``aut 0`` read, modify and write the byte and answer ``ok``;
+    anything else is ``err arg``. The bit lives in the modelled NVRAM,
+    so it survives a reset, and it would only matter when the controller
+    next starts, which the model does not separate from the machine's
+    start. The controller reaches the NVRAM as another master on the bus
+    the request still holds, so the model drives the part's own I2C
+    interface directly rather than nest a second transfer. A fresh
+    store starts as the controller's first power-up leaves it (see
+    :file:`hw/nvram/sgi-elsc-nvram.c`), with 0x02 set, so a fresh
+    machine answers ``ok 1``.
+
 ``clr``
     Answers ``ok`` with the module on or off. It cancels a pending
     power-down countdown and the fan-high request, and on the Origin
@@ -306,7 +321,7 @@ The serial-only commands (``cfg``, ``dbg``, ``ech``, ``fre``, ``mod``,
 ``nvm``, ``pas``) and any mnemonic a build lacks answer ``err cmd`` with
 no other effect. Some commands the controller firmware answers over I2C
 are not modelled yet and get that ``err cmd`` too: ``nmi``, ``see`` and
-``sel`` in both builds, and ``pwr u``; ``aut`` in the Origin 200 build.
+``sel`` in both builds, and ``pwr u``.
 Neither the IRIX 6.5.30 PROMs nor its kernel send any of them.
 
 Deferred destructive actions
