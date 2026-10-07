@@ -137,6 +137,11 @@ config SGI_NET_PORT
 config SGI_PI_GFX
     bool
 
+config SGI_CRIME
+    bool
+    default y if SGI_DEVICES
+    depends on SGI_DEVICES
+
 config SGI_MACE
     bool
     default y if SGI_DEVICES
