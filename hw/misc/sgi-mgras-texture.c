@@ -1798,12 +1798,9 @@ static void mgras_tex_commit(SGIMgrasState *s)
         goto done;
     }
     /*
-     * The model drops the border: a texel outside the level, in the
-     * one-texel ring around it that a bordered image carries, is read
-     * and not stored. Approximated: that the board keeps those texels
-     * (in the block the load's TXBORDER word names, which is inferred
-     * from the word) and how a clamped read uses them are unknown, so
-     * a draw samples the border colour register, not the image's border.
+     * The model caches uploaded border texels outside the TRAM image and
+     * offers them for sampling only when the ring is complete. The board's
+     * placement and sampling are unknown.
      */
     mgras_tex_border_invalidate_tram(s, t, start, image_bits);
     mgras_tex_border_prepare(t, border_key, t->load_base, mode, w, h,
