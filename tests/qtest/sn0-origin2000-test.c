@@ -2631,6 +2631,28 @@ static void test_xbow_absent_links(void)
     qtest_quit(qts);
 }
 
+static void test_onyx2_deskside_machine_restart(void)
+{
+    QTestState *qts = qtest_init(
+        "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M -display none");
+    SgiWait w;
+
+    for (unsigned int node = 0; node < 2; node++) {
+        hub_write(qts, node, HUB_NI_SCRATCH_0, 0x1234 + node);
+    }
+    for (unsigned int node = 0; node < 2; node++) {
+        g_assert_cmphex(hub_read(qts, node, HUB_NI_SCRATCH_0), ==,
+                        0x1234 + node);
+    }
+    hub_write(qts, 0, NI_PORT_RESET, 1);
+    sgi_wait_start(&w, "Onyx2 deskside machine restart to clear both Hubs");
+    while (hub_read(qts, 0, HUB_NI_SCRATCH_0) != 0 ||
+           hub_read(qts, 1, HUB_NI_SCRATCH_0) != 0) {
+        sgi_wait_pause(&w, 1000);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2651,6 +2673,8 @@ int main(int argc, char **argv)
                    test_xio_switch_visible);
     qtest_add_func("sn0/origin2000/xbow-prom-error-writes",
                    test_xbow_prom_error_writes);
+    qtest_add_func("sn0/onyx2-deskside/port-reset-restarts-the-machine",
+                   test_onyx2_deskside_machine_restart);
     qtest_add_func("sn0/origin2000/xbow-absent-links",
                    test_xbow_absent_links);
     qtest_add_func("sn0/origin2000/xbow-baseio-link-reset",
