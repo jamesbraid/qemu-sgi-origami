@@ -189,7 +189,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
     res = sgi_render_colour_resource(target, st->drawable.front);
     if (!res || !res->width || !res->height || res->width > INT_MAX ||
         res->height > INT_MAX || res->depth != 1 ||
-        !res->bottom_origin || res->buffer != SGI_RENDER_FRONT ||
+        res->buffer != SGI_RENDER_FRONT ||
         (res->component_count != 3 && res->component_count != 4) ||
         st->viewport[0] || st->viewport[1] ||
         st->viewport[2] != res->width ||
@@ -428,17 +428,27 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             .capacity_slots = texture_capacity_slots,
         };
     }
-    for (size_t i = 0; i < pixels; i++) {
-        for (unsigned c = 0; c < resource->component_count; c++) {
-            unsigned bits = resource->component[c].storage_bits;
-            uint32_t max = (1u << bits) - 1;
+    for (uint32_t y = 0; y < resource->height; y++) {
+        size_t native_row = (size_t)y * resource->width;
+        size_t frame_row = (size_t)(resource->bottom_origin ? y :
+                                    resource->height - 1 - y) * resource->width;
 
-            rgba[i * 4 + c] = ((uint64_t)slots[i *
-                                resource->component_count + c] * 65535 +
-                                max / 2) / max;
-        }
-        if (resource->component_count == 3) {
-            rgba[i * 4 + 3] = 65535;
+        for (uint32_t x = 0; x < resource->width; x++) {
+            size_t native_pixel = native_row + x;
+            size_t frame_pixel = frame_row + x;
+
+            for (unsigned c = 0; c < resource->component_count; c++) {
+                unsigned bits = resource->component[c].storage_bits;
+                uint32_t max = (1u << bits) - 1;
+
+                rgba[frame_pixel * 4 + c] =
+                    ((uint64_t)slots[native_pixel *
+                                     resource->component_count + c] * 65535 +
+                     max / 2) / max;
+            }
+            if (resource->component_count == 3) {
+                rgba[frame_pixel * 4 + 3] = 65535;
+            }
         }
     }
     frame.count = texture_resource ? polygon_count : 3;
@@ -498,16 +508,41 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     if (!any_written) {
         return SGI_RENDER_OK;
     }
-    for (size_t i = 0; i < pixels; i++) {
-        if (!written[i]) {
-            continue;
-        }
-        for (unsigned c = 0; c < resource->component_count; c++) {
-            unsigned bits = resource->component[c].storage_bits;
-            uint32_t max = (1u << bits) - 1;
+    for (uint32_t y = 0; y < resource->height; y++) {
+        size_t native_row = (size_t)y * resource->width;
+        size_t frame_row = (size_t)(resource->bottom_origin ? y :
+                                    resource->height - 1 - y) * resource->width;
 
-            slots[i * resource->component_count + c] =
-                ((uint64_t)rgba[i * 4 + c] * max + 32767) / 65535;
+        for (uint32_t x = 0; x < resource->width; x++) {
+            size_t native_pixel = native_row + x;
+            size_t frame_pixel = frame_row + x;
+
+            if (!written[frame_pixel]) {
+                continue;
+            }
+            for (unsigned c = 0; c < resource->component_count; c++) {
+                unsigned bits = resource->component[c].storage_bits;
+                uint32_t max = (1u << bits) - 1;
+
+                slots[native_pixel * resource->component_count + c] =
+                    ((uint64_t)rgba[frame_pixel * 4 + c] * max + 32767) /
+                    65535;
+            }
+        }
+    }
+    if (!resource->bottom_origin) {
+        for (uint32_t y = 0; y < resource->height / 2; y++) {
+            uint8_t *top = written + (size_t)y * resource->width;
+            uint8_t *bottom = written +
+                              (size_t)(resource->height - 1 - y) *
+                              resource->width;
+
+            for (uint32_t x = 0; x < resource->width; x++) {
+                uint8_t value = top[x];
+
+                top[x] = bottom[x];
+                bottom[x] = value;
+            }
         }
     }
     SGIRenderWriteCoverage writes = {
