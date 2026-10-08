@@ -3704,6 +3704,40 @@ static void test_serial_input_queue(const void *data)
  * module: its processors stop while the master's machine runs on, and the
  * machine powers down only once the master's module is off too.
  */
+/*
+ * One transaction as a processor of the slave module makes it, over its own
+ * Hub's adapter: once that module is off no peer reaches its Hub at all.
+ */
+static unsigned int elsc_transact_slave(QTestState *qts, const uint8_t *req,
+                                        unsigned int req_len, uint8_t *resp,
+                                        unsigned int resp_cap)
+{
+    const unsigned int cpu = 2;
+    unsigned int i, total;
+
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL,
+               CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    for (i = 0; i < req_len; i++) {
+        cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, req[i]);
+    }
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    (void)cpu_readq(qts, cpu, HUB_LOCAL + I2C_DATA);
+    resp[0] = cpu_readq(qts, cpu, HUB_LOCAL + I2C_DATA);
+    total = (unsigned int)resp[0] + 2;
+    g_assert_cmpuint(total, <=, resp_cap);
+    for (i = 1; i < total; i++) {
+        if (i == total - 1) {
+            cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, CTL_ESO);
+        }
+        resp[i] = cpu_readq(qts, cpu, HUB_LOCAL + I2C_DATA);
+    }
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    return total;
+}
+
 static void test_two_towers_slave_power_off(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -3713,16 +3747,16 @@ static void test_two_towers_slave_power_off(const void *data)
 
     sn0_program_nasid(qts, 1);
     req_len = build_request(req, "pwr d 0");
-    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
-                                resp, sizeof(resp));
+    resp_len = elsc_transact_slave(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     assert_response_begins(resp, "ok");
     req_len = build_request(req, "pwr");
-    resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
-                                resp, sizeof(resp));
+    resp_len = elsc_transact_slave(qts, req, req_len, resp, sizeof(resp));
     assert_response_begins(resp, "ok d");
+    /* The slave's Hub answers nothing, to its peer or to its own view. */
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE +
                                 PI_CPU_ENABLE_A) & 1, ==, 0);
+    g_assert_cmphex(cpu_readq(qts, 2, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
     g_assert_true(cpus_enabled(qts));
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
     g_assert_false(powered_down(qts));
@@ -3741,10 +3775,6 @@ static void test_two_towers_slave_power_off(const void *data)
 #define HOLD_MARK_MAGIC     0x1e7u
 #define HOLD_ENTRY          0x800u
 #define HOLD_STATUS         (SN0_STATUS_KERNEL | 0x400u | 0x1u) /* IM2, IE */
-#define HUB_PI_INT_MODIFY   0x000090
-#define HUB_PI_INT_MASK0_A  0x0000a8
-#define HUB_INT_MODIFY_SET  0x100
-#define HOLD_INT_BIT        12
 
 static void build_hold_image(SN0Image *p)
 {
@@ -3800,9 +3830,8 @@ static void hold_assert_stopped(QTestState *qts, uint32_t count)
 }
 
 /*
- * Removing power stops a running processor for good: an enabled interrupt
- * the Hub raises afterwards does not wake it, nor does a stop and
- * continue, nor a migration.
+ * Removing power stops a running processor for good: neither a stop and
+ * continue nor a migration wakes it.
  */
 static void test_power_off_holds_against_interrupts(const void *data)
 {
@@ -3835,11 +3864,12 @@ static void test_power_off_holds_against_interrupts(const void *data)
 
     assert_reply(qts, "pwr c 258", "ok ");
     count = hold_wait_stopped(qts);
-    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MASK0_A, 1ULL << HOLD_INT_BIT);
-    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MODIFY,
-                 HUB_INT_MODIFY_SET | HOLD_INT_BIT);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
-                    1ULL << HOLD_INT_BIT);
+    /*
+     * An unpowered Hub takes no register write, so a test can no longer
+     * raise an interrupt through it while the module is off. What keeps a
+     * powered-off processor stopped, Status.ERL after the reset masking
+     * every interrupt, is the same whatever raises one.
+     */
     hold_assert_stopped(qts, count);
 
     qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");

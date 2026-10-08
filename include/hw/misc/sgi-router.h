@@ -20,6 +20,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRouterState, SGI_ROUTER)
 bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
                        SGINetPacket *packet);
 
+/* Whether the Router's module has power; see the definition. */
+void sgi_router_set_power(SGIRouterState *s, bool on);
+
 /* Diagnostic controls for the fabric, with ports numbered 1 to 6. */
 bool sgi_router_port_eight_bit_forced(SGIRouterState *s, unsigned int port);
 

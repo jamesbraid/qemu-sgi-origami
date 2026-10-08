@@ -90,6 +90,7 @@ config SGI_SN0
     select BCM570X
     select DP83840
     select M48T35
+    select OR_IRQ
     select PCF8584
     select PFLASH_CFI02
     select PSITECH_RAD1

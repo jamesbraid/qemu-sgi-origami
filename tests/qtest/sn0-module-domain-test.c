@@ -184,9 +184,10 @@ static void assert_stopped(QTestState *qts, unsigned int cpu)
     g_assert_cmpuint(progress(qts, cpu), ==, before);
 }
 
-static unsigned int elsc_transact_at(QTestState *qts, uint64_t hub,
+static unsigned int elsc_transact_at(QTestState *qts, unsigned int cpu,
                                      const char *text, uint8_t *resp)
 {
+    const uint64_t hub = SN0_HUB_LOCAL;
     uint8_t req[16];
     unsigned int len = strlen(text), sum = 0, i, total;
 
@@ -197,32 +198,37 @@ static unsigned int elsc_transact_at(QTestState *qts, uint64_t hub,
     }
     req[len + 1] = (uint8_t)-(int)sum;
 
-    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
-    qtest_writeq(qts, hub + I2C_DATA, (ELSC_ADDR << 1) | 0);
-    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    cpu_write_dword(qts, cpu, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
+    cpu_write_dword(qts, cpu, hub + I2C_DATA, (ELSC_ADDR << 1) | 0);
+    cpu_write_dword(qts, cpu, hub + I2C_CTRL,
+                    CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     for (i = 0; i < len + 2; i++) {
-        qtest_writeq(qts, hub + I2C_DATA, req[i]);
+        cpu_write_dword(qts, cpu, hub + I2C_DATA, req[i]);
     }
-    qtest_writeq(qts, hub + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
-    qtest_writeq(qts, hub + I2C_DATA, (ELSC_ADDR << 1) | 1);
-    (void)qtest_readq(qts, hub + I2C_DATA);
-    resp[0] = qtest_readq(qts, hub + I2C_DATA);
+    cpu_write_dword(qts, cpu, hub + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
+    cpu_write_dword(qts, cpu, hub + I2C_DATA, (ELSC_ADDR << 1) | 1);
+    (void)cpu_dword(qts, cpu, hub + I2C_DATA);
+    resp[0] = cpu_dword(qts, cpu, hub + I2C_DATA);
     total = resp[0] + 2;
     g_assert_cmpuint(total, <=, RESP_CAP);
     for (i = 1; i < total; i++) {
         if (i == total - 1) {
-            qtest_writeq(qts, hub + I2C_CTRL, CTL_ESO);
+            cpu_write_dword(qts, cpu, hub + I2C_CTRL, CTL_ESO);
         }
-        resp[i] = qtest_readq(qts, hub + I2C_DATA);
+        resp[i] = cpu_dword(qts, cpu, hub + I2C_DATA);
     }
-    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
+    cpu_write_dword(qts, cpu, hub + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
     return total;
 }
 
-#define MASTER_HUB          HUB_LOCAL
-#define SLAVE_HUB           (HUB_BY_NODE + NODE_STRIDE)
+/*
+ * The controllers are reached as a processor of their own module does, over
+ * its Hub's I2C adapter: a peer cannot reach a module that is off.
+ */
+#define MASTER_HUB          0u
+#define SLAVE_HUB           2u
 
-static void assert_reply(QTestState *qts, uint64_t hub, const char *text,
+static void assert_reply(QTestState *qts, unsigned int hub, const char *text,
                          const char *expect)
 {
     uint8_t resp[RESP_CAP];
@@ -630,6 +636,194 @@ static void test_hub_soft_reset_takes_the_node_s_processors(void)
     qtest_quit(qts);
 }
 
+#define HUB_NI_STATUS       0x600000
+#define NI_STATUS_LINK_UP   (1u << 29)
+#define NI_STATUS_DOWN_REASON (1u << 28)
+#define XIO_WIDGET_SIZE     UINT64_C(0x1000000)
+#define XIO_REG_DATA        4
+#define CABINET_WIDGET      8
+#define BRIDGE_CONTROL      0x0020
+#define BRIDGE_CONTROL_FLASH_WRITE_EN (1u << 31)
+#define BRIDGE_PART         0xc002
+
+static uint32_t ni_status(QTestState *qts, unsigned int cpu)
+{
+    return cpu_dword(qts, cpu, SN0_HUB_LOCAL + HUB_NI_STATUS);
+}
+
+/*
+ * A module with no power answers nothing and its link reads lost at the
+ * peer. The peer's status keeps the reason clear (the link was up and
+ * failed), its processors cannot reach the unpowered Hub, a warm reset
+ * from it does not come back around, and the Hub, the link and the
+ * processors return through the normal bring-up when power does.
+ */
+static void test_off_module_is_inert(void)
+{
+    QTestState *qts;
+    uint64_t remote = HUB_BY_NODE + NODE_STRIDE + HUB_NI_STATUS;
+    uint8_t bytes[8];
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+    g_assert_cmphex(ni_status(qts, 0) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+    g_assert_cmphex(ni_status(qts, 2) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+    g_assert_true(qtest_memread_cpu(qts, 0, remote, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    assert_stopped(qts, 2);
+    assert_stopped(qts, 3);
+
+    /* The slave's Hub answers nothing, to its own view or its peer's. */
+    g_assert_cmphex(ni_status(qts, 2), ==, 0);
+    g_assert_true(qtest_memread_cpu(qts, 0, remote, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    /* The master sees the link lost, having been up. */
+    g_assert_cmphex(ni_status(qts, 0) &
+                    (NI_STATUS_LINK_UP | NI_STATUS_DOWN_REASON), ==, 0);
+
+    /* The master's warm reset restarts the master and finds no one else. */
+    hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM | PORT_RESET_LOCAL);
+    wait_starts(qts, 0, 2);
+    wait_starts(qts, 1, 2);
+    settle();
+    g_assert_cmpuint(starts(qts, 2), ==, 1);
+    g_assert_cmpuint(starts(qts, 3), ==, 1);
+    g_assert_cmphex(ni_status(qts, 0) & NI_STATUS_LINK_UP, ==, 0);
+    assert_running(qts, 0);
+    assert_running(qts, 1);
+
+    /* Power returns: the slave starts again and the link comes back. */
+    assert_reply(qts, SLAVE_HUB, "pwr u", "ok");
+    wait_starts(qts, 2, 2);
+    wait_starts(qts, 3, 2);
+    settle();
+    g_assert_cmphex(ni_status(qts, 2) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+    g_assert_cmphex(ni_status(qts, 0) &
+                    (NI_STATUS_LINK_UP | NI_STATUS_DOWN_REASON), ==,
+                    NI_STATUS_LINK_UP);
+    number_slave(qts);
+    g_assert_true(qtest_memread_cpu(qts, 0, remote, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        assert_running(qts, cpu);
+    }
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
+static uint32_t cabinet_read(QTestState *qts, uint64_t offset)
+{
+    uint8_t bytes[4];
+
+    g_assert_true(qtest_memread_cpu(qts, 0, SPACE_IO +
+                                    CABINET_WIDGET * XIO_WIDGET_SIZE +
+                                    offset + XIO_REG_DATA,
+                                    bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+static void cabinet_write(QTestState *qts, uint64_t offset, uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, SPACE_IO +
+                                     CABINET_WIDGET * XIO_WIDGET_SIZE +
+                                     offset + XIO_REG_DATA,
+                                     bytes, sizeof(bytes)));
+}
+
+/*
+ * The GIGAchannel cabinet's switched domain is its attached module's: the
+ * module's reset restarts the cabinet's Bridge, and with the module off the
+ * cabinet answers nothing until power returns.
+ */
+static void test_cabinet_follows_its_module(void)
+{
+    QTestState *qts = qtest_init("-M origin200,topology=origin200-gigachannel "
+                                 "-no-shutdown");
+    const uint32_t id_before = cabinet_read(qts, 0);
+
+    g_assert_cmphex((id_before >> 12) & 0xffff, ==, BRIDGE_PART);
+    cabinet_write(qts, BRIDGE_CONTROL, BRIDGE_CONTROL_FLASH_WRITE_EN);
+    g_assert_cmphex(cabinet_read(qts, BRIDGE_CONTROL) &
+                    BRIDGE_CONTROL_FLASH_WRITE_EN, ==,
+                    BRIDGE_CONTROL_FLASH_WRITE_EN);
+    cpu_write_dword(qts, 0, SN0_HUB_LOCAL + HUB_NI_SCRATCH_0, SCRATCH_MARK);
+
+    /* The module's reset restarts the cabinet with it. */
+    assert_reply(qts, MASTER_HUB, "rst", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    while (cpu_dword(qts, 0, SN0_HUB_LOCAL + HUB_NI_SCRATCH_0) ==
+           SCRATCH_MARK) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(cabinet_read(qts, BRIDGE_CONTROL) &
+                    BRIDGE_CONTROL_FLASH_WRITE_EN, ==, 0);
+
+    /* Power off: nothing answers. Power on: the cabinet is back. */
+    assert_reply(qts, MASTER_HUB, "pwr c 5", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmphex(cabinet_read(qts, 0), ==, 0);
+    qtest_clock_step(qts, ELSC_CYCLE_NS);
+    while (cabinet_read(qts, 0) == 0) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(cabinet_read(qts, 0), ==, id_before);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * Both of a processor's NMI sources reach one pin through an OR gate, so
+ * neither shortens or hides the other. The controller holds its level for
+ * 100 ms; a Hub trigger inside that window adds nothing to the pin and
+ * takes nothing from it, and one outside it is a pulse of its own.
+ */
+static void test_nmi_sources_merge(void)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const char *gate = "/machine/node0/nmi-or0";
+
+    qtest_irq_intercept_out(qts, gate);
+
+    /* The Hub alone: one pulse, ending low. */
+    hub_write(qts, 0, HUB_PI_NMI_A, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    /* The controller alone: its level rises after the second and holds. */
+    assert_reply(qts, MASTER_HUB, "nmi", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 2);
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    /* A Hub trigger inside it neither drops the level nor adds an edge. */
+    hub_write(qts, 0, HUB_PI_NMI_A, 1);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 2);
+    qtest_clock_step(qts, 99 * 1000 * 1000);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_clock_step(qts, 1000 * 1000);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    /* And one after it is a pulse of its own. */
+    hub_write(qts, 0, HUB_PI_NMI_A, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 3);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+}
+
 static bool powered_down(QTestState *qts)
 {
     QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
@@ -787,6 +981,12 @@ int main(int argc, char **argv)
                    test_hub_nmi_reaches_one_processor);
     qtest_add_func("/sn0/module-domain/hub-soft-reset",
                    test_hub_soft_reset_takes_the_node_s_processors);
+    qtest_add_func("/sn0/module-domain/off-module-is-inert",
+                   test_off_module_is_inert);
+    qtest_add_func("/sn0/module-domain/cabinet-follows-module",
+                   test_cabinet_follows_its_module);
+    qtest_add_func("/sn0/module-domain/nmi-sources-merge",
+                   test_nmi_sources_merge);
     qtest_add_func("/sn0/module-domain/slave-power-cycle",
                    test_slave_power_cycle_stops_only_the_slave);
     qtest_add_func("/sn0/module-domain/shutdown-waits-for-power-up",

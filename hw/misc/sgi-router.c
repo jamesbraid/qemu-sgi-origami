@@ -177,6 +177,11 @@ struct SGIRouterState {
     uint64_t net_generation;
     /* The last warm reset this Router saw, so a cyclic flood visits it once. */
     uint64_t warm_generation;
+    /*
+     * The Router's module has no power: it answers nothing and its ports are
+     * down at their peers. Derived from the controller, so not migrated.
+     */
+    bool unpowered;
 
     uint32_t meta_table[RR_META_TABLE_COUNT];
     uint32_t local_table[RR_LOCAL_TABLE_COUNT];
@@ -340,7 +345,7 @@ static SGINetPortLinkState sgi_router_net_port_link_state(Object *port,
     SGIRouterState *s = SGI_ROUTER(port);
 
     return (SGINetPortLinkState) {
-        .enabled = sgi_router_port_enabled(s, index),
+        .enabled = !s->unpowered && sgi_router_port_enabled(s, index),
         .eight_bit = sgi_router_port_eight_bit_forced(s, index),
     };
 }
@@ -509,7 +514,7 @@ static void sgi_router_net_port_warm_reset(Object *port, unsigned int index,
     SGIRouterState *s = SGI_ROUTER(port);
     unsigned int out;
 
-    if (s->warm_generation == generation) {
+    if (s->unpowered || s->warm_generation == generation) {
         return;
     }
     s->warm_generation = generation;
@@ -572,6 +577,9 @@ static SGINetPacketResult sgi_router_net_port_receive(Object *port,
     SGIRouterState *s = SGI_ROUTER(port);
     unsigned int arrival_port = index;
 
+    if (s->unpowered) {
+        return SGI_NET_PACKET_NONE;
+    }
     if (packet->vector == 0) {
         /*
          * A terminal Router that declines its own register decode is an
@@ -1181,6 +1189,9 @@ bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
 {
     bool accepted;
 
+    if (s->unpowered) {
+        return false;
+    }
     if (arrival_port < 1 || arrival_port > SGI_ROUTER_PORTS ||
         (access->addr & 7) != 0 || access->addr >= (UINT64_C(1) << 20)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1225,6 +1236,22 @@ bool sgi_router_port_eight_bit_forced(SGIRouterState *s, unsigned int port)
 {
     g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
     return s->diag_parms & (UINT64_C(1) << (11 + port));
+}
+
+/*
+ * Power to the Router's module comes or goes. An unpowered chip answers no
+ * vector access and its ports are down at the peers (their link state reads
+ * disabled), so the peers see the link lost exactly as for a cable marked
+ * down. Power returning brings the ports up through the normal link
+ * bring-up: the flood re-derives them against the peers.
+ */
+void sgi_router_set_power(SGIRouterState *s, bool on)
+{
+    if (s->unpowered == !on) {
+        return;
+    }
+    s->unpowered = !on;
+    sgi_router_changed(s);
 }
 
 bool sgi_router_port_enabled(SGIRouterState *s, unsigned int port)

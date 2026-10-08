@@ -26,6 +26,7 @@
 #include "hw/core/cpu.h"
 #include "accel/tcg/cpu-ops.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/or-irq.h"
 #include "hw/core/split-irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
@@ -1238,6 +1239,19 @@ static void sn0_node_create_hub(SN0NodeState *node)
             sgi_hub_processor_io(&node->hub, slice), 2);
     }
 
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        g_autofree char *name = g_strdup_printf("nmi-or%u", slice);
+        DeviceState *gate = qdev_new(TYPE_OR_IRQ);
+
+        qdev_prop_set_uint16(gate, "num-lines", 2);
+        object_property_add_child(OBJECT(node), name, OBJECT(gate));
+        qdev_realize_and_unref(gate, NULL, &error_fatal);
+        qdev_connect_gpio_out(gate, 0,
+                              qdev_get_gpio_in_named(
+                                  DEVICE(node->cpu[slice]), "nmi", 0));
+        node->nmi_or[slice] = gate;
+    }
+
     /*
      * An Origin 200 module controller's NMI output reaches every processor
      * of its node. The path between the midplane line and the processor's
@@ -1254,8 +1268,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
                                     qdev_get_gpio_in(split, 0));
         for (slice = 0; slice < node->nr_cpus; slice++) {
             qdev_connect_gpio_out(split, slice,
-                                  qdev_get_gpio_in_named(
-                                      DEVICE(node->cpu[slice]), "nmi", 0));
+                                  qdev_get_gpio_in(node->nmi_or[slice], 0));
         }
     }
 
@@ -1266,8 +1279,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
      */
     for (slice = 0; slice < node->nr_cpus; slice++) {
         qdev_connect_gpio_out_named(DEVICE(&node->hub), "nmi", slice,
-                                    qdev_get_gpio_in_named(
-                                        DEVICE(node->cpu[slice]), "nmi", 0));
+                                    qdev_get_gpio_in(node->nmi_or[slice], 1));
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "soft-reset", slice,
             qemu_allocate_irq(sn0_cpu_soft_reset, node->cpu[slice], 0));
@@ -1322,6 +1334,16 @@ static void sn0_node_map_xio_windows(SN0NodeState *node)
         system, sn0_model_region_address(map, io, node->nasid,
                                          hub_explicit, 0),
         &node->hub_regs_node_view);
+}
+
+void sn0_node_set_power(SN0NodeState *node, bool on)
+{
+    unsigned int widget;
+
+    for (widget = 0; widget <= SN0_XIO_WIDGET_LAST; widget++) {
+        memory_region_set_enabled(&node->small_window[widget], on);
+    }
+    sgi_hub_set_power(&node->hub, on);
 }
 
 void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,

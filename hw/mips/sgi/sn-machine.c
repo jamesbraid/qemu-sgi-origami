@@ -3035,6 +3035,43 @@ static GPtrArray *sgi_machine_part_roots(GPtrArray *all)
     return roots;
 }
 
+/*
+ * The module whose power a topology module follows. A module with nodes
+ * follows itself. One with none, the GIGAchannel cabinet, has a switched
+ * domain that "turns on only when the attached module turns on" (the
+ * contract), and its Crossbow's XIO link names the node it is attached to.
+ */
+static unsigned int sgi_machine_domain_module(const SGIModelTopology *t,
+                                              unsigned int declared)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    g_autofree const SGIModelNode **nodes = NULL;
+    size_t module_count, crossbar_count, attachment_count, node_count, c, a;
+
+    modules = sgi_model_module_array(t->modules, &module_count);
+    if (declared >= module_count || modules[declared]->nodes) {
+        return declared;
+    }
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (c = 0; c < crossbar_count; c++) {
+        if (crossbars[c]->module_index != declared) {
+            continue;
+        }
+        for (a = 0; a < attachment_count; a++) {
+            if (attachments[a]->crossbar_index == (int64_t)c &&
+                attachments[a]->node_index < node_count) {
+                return nodes[attachments[a]->node_index]->module_index;
+            }
+        }
+    }
+    return declared;
+}
+
 /* The module's parts, as devices to cold-reset. */
 static GPtrArray *sgi_machine_module_parts(SGIMachineState *s,
                                            unsigned int module)
@@ -3076,25 +3113,29 @@ static GPtrArray *sgi_machine_module_parts(SGIMachineState *s,
 
     crossbars = sgi_model_crossbar_array(t->crossbars, &count);
     for (i = 0; i < count; i++) {
-        if (crossbars[i]->module_index == module && s->crossbars[i]) {
+        if (sgi_machine_domain_module(t, crossbars[i]->module_index) ==
+            module && s->crossbars[i]) {
             sgi_machine_collect_part(all, OBJECT(s->crossbars[i]));
         }
     }
     routers = sgi_model_router_array(t->routers, &count);
     for (i = 0; i < count; i++) {
-        if (routers[i]->module_index == module && s->routers[i]) {
+        if (sgi_machine_domain_module(t, routers[i]->module_index) ==
+            module && s->routers[i]) {
             sgi_machine_collect_part(all, OBJECT(s->routers[i]));
         }
     }
     boards = sgi_model_io_board_array(t->io_boards, &count);
     for (i = 0; i < count; i++) {
-        if (boards[i]->module_index == module && s->io_boards[i]) {
+        if (sgi_machine_domain_module(t, boards[i]->module_index) ==
+            module && s->io_boards[i]) {
             sgi_machine_collect_part(all, OBJECT(s->io_boards[i]));
         }
     }
     slots = sgi_model_xio_slot_array(t->xio_slots, &count);
     for (i = 0; i < count; i++) {
-        if (sgi_machine_xio_slot_module(t, slots[i]) == module &&
+        if (sgi_machine_domain_module(
+                t, sgi_machine_xio_slot_module(t, slots[i])) == module &&
             s->slot_claimed[i]) {
             sgi_machine_collect_part(all, s->slot_links[i].end[1].port);
         }
@@ -3190,6 +3231,74 @@ static GPtrArray *sgi_machine_node_parts(SGIMachineState *s,
 }
 
 /*
+ * Power to a module comes or goes: its Hubs and the I/O windows they host
+ * switch on or off, and so do its Routers (a cabinet's parts follow the node
+ * they are attached to). A node or Router without power answers nothing and
+ * its links read down at their peers (sgi_hub_set_power(),
+ * sgi_router_set_power()).
+ */
+static void sgi_machine_set_module_power(SGIMachineState *s,
+                                         unsigned int module, bool on)
+{
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelRouter **routers = NULL;
+    g_autofree uint32_t *module_nodes = NULL;
+    size_t count, node_count, i;
+
+    modules = sgi_model_module_array(t->modules, &count);
+    module_nodes = sgi_model_array_uint32(modules[module]->nodes, &node_count);
+    for (i = 0; i < node_count; i++) {
+        sn0_node_set_power(s->nodes[module_nodes[i]], on);
+    }
+    if (s->routers) {
+        routers = sgi_model_router_array(t->routers, &count);
+        for (i = 0; i < count; i++) {
+            if (s->routers[i] &&
+                sgi_machine_domain_module(t, routers[i]->module_index) ==
+                module) {
+                sgi_router_set_power(s->routers[i], on);
+            }
+        }
+    }
+}
+
+/*
+ * Bring every module's parts in line with its controller's power. Power
+ * is derived state, not migrated, so this runs wherever it could have been
+ * lost: after the machine's own reset and when a machine starts running,
+ * which includes the end of a load.
+ */
+static void sgi_machine_sync_power(SGIMachineState *s)
+{
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t count, module, i;
+
+    /* A machine without Hubs (the builder's test boards) has no power. */
+    if (!s->nodes) {
+        return;
+    }
+    modules = sgi_model_module_array(t->modules, &count);
+    for (module = 0; module < count; module++) {
+        g_autofree uint32_t *module_nodes = NULL;
+        size_t node_count;
+
+        module_nodes = sgi_model_array_uint32(modules[module]->nodes,
+                                              &node_count);
+        for (i = 0; i < node_count; i++) {
+            if (s->nodes[module_nodes[i]]->hub.elsc ||
+                (s->node_controller &&
+                 s->node_controller[module_nodes[i]] >= 0)) {
+                sgi_machine_set_module_power(
+                    s, module, sgi_machine_node_powered(s, module_nodes[i]));
+                break;
+            }
+        }
+    }
+}
+
+/*
  * Queued work behind a processor's power-off has run once this returns:
  * its queue is in order.
  */
@@ -3210,7 +3319,8 @@ static void sgi_machine_cpu_settled(CPUState *cs, run_on_cpu_data data)
  */
 static void sgi_machine_restart_nodes(SGIMachineState *s,
                                       const uint32_t *node_list,
-                                      size_t node_count, GPtrArray *parts)
+                                      size_t node_count, GPtrArray *parts,
+                                      int power_module)
 {
     size_t i;
     unsigned int slice;
@@ -3248,6 +3358,14 @@ static void sgi_machine_restart_nodes(SGIMachineState *s,
         }
     }
 
+    /*
+     * A module coming back from a power-off answers again before its
+     * processors run, with the parts it has just reset.
+     */
+    if (power_module >= 0 &&
+        sgi_machine_node_powered(s, node_list[0])) {
+        sgi_machine_set_module_power(s, power_module, true);
+    }
     for (i = 0; i < node_count; i++) {
         SN0NodeState *node = s->nodes[node_list[i]];
 
@@ -3306,14 +3424,15 @@ static void sgi_machine_module_start_bh(void *opaque)
                 }
             }
         }
-        sgi_machine_restart_nodes(s, nodes, n, parts);
+        sgi_machine_restart_nodes(s, nodes, n, parts, -1);
         return;
     }
     modules = sgi_model_module_array(t->modules, &count);
     module_nodes = sgi_model_array_uint32(modules[start->module]->nodes,
                                           &count);
     parts = sgi_machine_module_parts(s, start->module);
-    sgi_machine_restart_nodes(s, module_nodes, count, parts);
+    sgi_machine_restart_nodes(s, module_nodes, count, parts,
+                              start->module);
 }
 
 /*
@@ -3371,6 +3490,7 @@ static void sgi_machine_module_start_vm_state(void *opaque, bool running,
     if (!running) {
         return;
     }
+    sgi_machine_sync_power(s);
     for (module = 0; module < s->start_count; module++) {
         if (s->module_start[module].pending) {
             replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
@@ -3397,6 +3517,7 @@ static void sgi_machine_elsc_power(void *opaque, int n, int level)
 
     if (!level) {
         sgi_machine_hold_node(s, n);
+        sgi_machine_set_module_power(s, s->node_module[n], false);
         sgi_machine_schedule_power_bh(s);
     } else {
         sgi_machine_module_start(s, s->node_module[n]);
@@ -3445,6 +3566,7 @@ static void sgi_machine_module_power(void *opaque, int n, int level)
                 sgi_machine_hold_node(s, node);
             }
         }
+        sgi_machine_set_module_power(s, s->controller_module[n], false);
         if (was) {
             sgi_machine_schedule_power_bh(s);
         }
@@ -3497,8 +3619,7 @@ static void sgi_machine_connect_module_nmi(SGIMachineState *s,
 
         for (slice = 0; slice < node->nr_cpus; slice++) {
             qdev_connect_gpio_out(split, line++,
-                                  qdev_get_gpio_in_named(
-                                      DEVICE(node->cpu[slice]), "nmi", 0));
+                                  qdev_get_gpio_in(node->nmi_or[slice], 0));
         }
     }
 }
@@ -5795,6 +5916,8 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     s->ac_cycle = true;
     qemu_devices_reset(type);
     s->ac_cycle = false;
+    /* The start-up powers every module up. */
+    sgi_machine_sync_power(s);
     /* A start scheduled before the reset has been made by it. */
     for (unsigned int i = 0; i < s->start_count; i++) {
         s->module_start[i].pending = false;

@@ -1027,6 +1027,32 @@ static void sgi_hub_net_originate(SGIHubState *s)
 }
 
 /*
+ * Power to the Hub's module comes or goes. An unpowered Hub answers nothing:
+ * a register access gets the bus's unassigned-access result, as a gated
+ * device's blocked access does (tz_mpc_handle_block() in hw/misc/tz-mpc.c),
+ * its big window is switched off the way a PCI device's BARs are with the
+ * command register (pci_update_mappings() in hw/pci/pci.c), and its port
+ * reads disabled, so the peer finds the link lost, link-up zero with the
+ * reason left at "failed" (the link was up). The flood that follows
+ * re-derives every peer's link bits and claim aliases. Power returning brings
+ * the link up through the same flood.
+ *
+ * The I2C adapter window sits over the register space and keeps answering:
+ * the controller is reached through it, and a model that cut it would leave
+ * the standby controller unreachable over its own bus. That is an
+ * approximation; on hardware the adapter shares the node's supply.
+ */
+void sgi_hub_set_power(SGIHubState *s, bool on)
+{
+    if (s->unpowered == !on) {
+        return;
+    }
+    s->unpowered = !on;
+    memory_region_set_enabled(&s->bwin, on);
+    sgi_hub_net_originate(s);
+}
+
+/*
  * The public size table: zero disables the window, one is 4 KiB, and every
  * further code doubles it, up to 64 MiB at fifteen.
 */
@@ -2472,7 +2498,12 @@ static SGINetPacketResult sgi_hub_net_port_receive(Object *port,
                                                     Error **errp)
 {
     SGIHubState *target = SGI_HUB(port);
-    bool performed = sgi_hub_vector_access(target, packet);
+    bool performed;
+
+    if (target->unpowered) {
+        return SGI_NET_PACKET_NONE;
+    }
+    performed = sgi_hub_vector_access(target, packet);
     packet->source = sgi_hub_programmed_nasid(target);
     return performed ? SGI_NET_PACKET_OK : SGI_NET_PACKET_ERROR;
 }
@@ -2494,7 +2525,7 @@ static SGINetPortLinkState sgi_hub_net_port_link_state(Object *port,
 
     /* The port-disable diagnostic is stored, not acted on. */
     return (SGINetPortLinkState) {
-        .enabled = true,
+        .enabled = !s->unpowered,
         .eight_bit = s->ni_diag_parms & NI_DIAG_EIGHT_BIT,
     };
 }
@@ -3405,7 +3436,7 @@ static void sgi_hub_net_port_warm_reset(Object *port, unsigned int index,
 {
     SGIHubState *s = SGI_HUB(port);
 
-    if (s->warm_generation == generation) {
+    if (s->unpowered || s->warm_generation == generation) {
         return;
     }
     s->warm_generation = generation;
@@ -4243,6 +4274,10 @@ static MemTxResult sgi_hub_read(void *opaque, hwaddr addr, uint64_t *data,
 {
     SGIHubState *s = opaque;
 
+    if (s->unpowered) {
+        *data = 0;
+        return MEMTX_DECODE_ERROR;
+    }
     /*
      * Only a processor's own read comes here without the BQL. One made with
      * it held, from qtest or from inside another of this Hub's accesses,
@@ -4368,6 +4403,9 @@ static MemTxResult sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SGIHubState *s = opaque;
 
+    if (s->unpowered) {
+        return MEMTX_DECODE_ERROR;
+    }
     BQL_LOCK_GUARD();
     if (!sgi_hub_enter_io(s, addr)) {
         return MEMTX_ACCESS_ERROR;

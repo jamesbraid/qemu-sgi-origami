@@ -189,6 +189,13 @@ typedef struct SN0NodeState {
     Clock *cpuclk;
     Clock *rtclk;
     MIPSCPU *cpu[SN0_MAX_CPUS_PER_NODE];
+    /*
+     * One OR gate per processor in front of its NMI input. The module
+     * controller drives input 0 (a level held for 100 ms) and the Hub's
+     * per-processor trigger input 1 (a pulse), so neither source can
+     * shorten or hide the other.
+     */
+    DeviceState *nmi_or[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion sysmem_alias[SN0_MAX_CPUS_PER_NODE];
     /* The uncached view: the cached one, less the private window. */
@@ -259,6 +266,14 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
  * (nothing frees it today; the machine object outlives the process, as
  * sn0_instance_finalize's comment notes).
  */
+/*
+ * The node's module has power or has not. An unpowered node answers nothing:
+ * its Hub is switched off (sgi_hub_set_power()) and so are the windows that
+ * reach the I/O it hosts, which the Crossbows and boards behind them can only
+ * be reached through.
+ */
+void sn0_node_set_power(SN0NodeState *node, bool on);
+
 void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                              unsigned int num_nodes,
                              MemoryRegion **route_out);

@@ -285,6 +285,12 @@ struct SGIHubState {
     qemu_irq node_reset_irq;
     /* The last warm reset this Hub took part in. Not migrated. */
     uint64_t warm_generation;
+    /*
+     * The Hub's module has no power: its registers do not answer and its
+     * port is down at the peer. Derived from the controller, so not
+     * migrated.
+     */
+    bool unpowered;
 
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
@@ -558,6 +564,9 @@ void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
  * is reset and halted, a state no interrupt ends.
  */
 void sgi_hub_power_off_cpu(SGIHubState *s, unsigned int cpu);
+
+/* The Hub's module has power or has not; see the definition. */
+void sgi_hub_set_power(SGIHubState *s, bool on);
 /*
  * Wire this Hub's one-wire line to a module's midplane net, whose parts the
  * module controller owns: an Origin 2000 module's n1 node reaches its
