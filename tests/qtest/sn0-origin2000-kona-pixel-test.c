@@ -1136,7 +1136,11 @@ static void test_read_context_pages(void)
     read_unchanged(qts, page_b);
 }
 
-static void test_read_context_eviction(void)
+/*
+ * Nine activations no longer evict the first context's record, so its
+ * restored read returns to its own page.
+ */
+static void test_read_context_retained(void)
 {
     qtest_system_reset(qts);
     read_scene(qts);
@@ -1149,7 +1153,7 @@ static void test_read_context_eviction(void)
     read_restore(qts, READ_SAVE);
     read_gc(qts);
     read_setup(qts, 6, 20);
-    read_refused(qts, 454, 700);
+    read_supported(qts);
 }
 
 /* Selector-shaped programmed-I/O words remain pixel data until count zero. */
@@ -3688,8 +3692,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(true), test_read_wrong_tag);
     qtest_add_func("sn0/origin2000/kona-pixel/read-context-pages",
                    test_read_context_pages);
-    qtest_add_func("sn0/origin2000/kona-pixel/read-context-eviction",
-                   test_read_context_eviction);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-context-retained",
+                   test_read_context_retained);
     qtest_add_func("sn0/origin2000/kona-pixel/read-inside-write",
                    test_read_inside_write);
     qtest_add_func("sn0/origin2000/kona-pixel/read-dma-write-refused",

@@ -168,8 +168,16 @@ static void test_migration_refused(gconstpointer opaque)
     g_assert_cmpuint(field(s, FIXTURE_ERROR), ==, 1);
     assert_unchanged(s);
     text = read_log(s, log);
-    g_assert_nonnull(strstr(text,
-        "vmstate_load_state_fail sgi-kona/x-read-state post-load"));
+    if ((request & 0xff) == FIXTURE_INVALID_CONTEXT) {
+        g_assert_nonnull(strstr(text,
+            "vmstate_load_field_error field \"logical-records\" "
+            "load failed, ret = -22"));
+        g_assert_nonnull(strstr(text,
+            "KONA logical context metadata is invalid"));
+    } else {
+        g_assert_nonnull(strstr(text,
+            "vmstate_load_state_fail sgi-kona/x-read-state post-load"));
+    }
 }
 
 static void test_migration_controls(gconstpointer opaque)
