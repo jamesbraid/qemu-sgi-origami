@@ -595,12 +595,13 @@ def read_durations(path):
 
 
 # What the functional part costs the job that runs it, in seconds of wall
-# time: its setup (assets, script suites) runs about 2.3 minutes longer than
-# a qtest job's, and its boots, ROMs and unit tests ran 3.7 minutes at four
-# at a time. Measured in full run 44301, job 52713, which started its first
-# test 6.9 minutes in against 4.6 for a qtest job. Refresh it from a later
-# full run.
-FUNCTIONAL_LOAD_S = 360
+# time: the job reaches its first qtest later than a qtest job does, because
+# it builds the functional prerequisites and then runs the script suites,
+# boots, ROMs and unit tests first. In full runs 46313, 46385 and 46406 that
+# job started its first qtest 594 to 618 seconds in, against a median of
+# 291 to 370 for the other two jobs of the same run: 248, 264 and 303
+# seconds later. Refresh it from a later full run.
+FUNCTIONAL_LOAD_S = 260
 
 
 def qtest_shards(tests, durations, count, preload=None,
