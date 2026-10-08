@@ -523,24 +523,80 @@ static const struct {
 /*
  * Placement follows the control register's swap bit for the space, not a
  * device window's. With the bit clear a narrow access lands mirrored within
- * the target's width, as a window places it without its swap bit. That the
- * 64-bit alias mirrors within eight bytes is an inference from the alias
- * naming the target width.
+ * the target's width, as a window places it without its swap bit. For a
+ * mapped BAR, the 64-bit alias uses the slot's reset width as an approximation
+ * of the target's PCI data-phase width; QEMU cannot observe ACK64# per phase.
  */
+typedef struct XBridgePIOTarget {
+    SGIXBridgeHeadState *head;
+    hwaddr addr;
+    unsigned size;
+    unsigned matches;
+    unsigned slot;
+} XBridgePIOTarget;
+
+static void xbridge_pio_match_bar(PCIBus *bus, PCIDevice *dev, void *opaque)
+{
+    XBridgePIOTarget *target = opaque;
+
+    for (unsigned i = 0; i < PCI_NUM_REGIONS; i++) {
+        PCIIORegion *bar = &dev->io_regions[i];
+        hwaddr offset;
+
+        if (!bar->size || bar->addr == PCI_BAR_UNMAPPED ||
+            bar->address_space != &target->head->pci_mem ||
+            bar->type & PCI_BASE_ADDRESS_SPACE_IO ||
+            target->addr < bar->addr) {
+            continue;
+        }
+        offset = target->addr - bar->addr;
+        if (offset < bar->size && target->size <= bar->size - offset) {
+            target->matches++;
+            target->slot = PCI_SLOT(dev->devfn);
+        }
+    }
+}
+
+static void xbridge_pio_match_bus(PCIBus *bus, void *opaque)
+{
+    pci_for_each_device_under_bus(bus, xbridge_pio_match_bar, opaque);
+}
+
+static unsigned xbridge_range_width(struct XBridgeRange *range, hwaddr addr,
+                                    unsigned size)
+{
+    XBridgePIOTarget target = {
+        .head = range->head,
+        .addr = addr,
+        .size = size,
+    };
+
+    if (range->width != 8) {
+        return range->width;
+    }
+    pci_for_each_bus(PCI_HOST_BRIDGE(range->head)->bus,
+                     xbridge_pio_match_bus, &target);
+    /* Keep the alias width when no single mapped memory BAR owns the access. */
+    if (target.matches != 1) {
+        return range->width;
+    }
+    return range->head->dma_64bit & BIT(target.slot) ? 8 : 4;
+}
+
 static MemTxResult xbridge_range_rw(struct XBridgeRange *range, hwaddr addr,
                                     uint8_t *bytes, unsigned size, bool write)
 {
     bool swap = REG(range->head, 0x20) & range->swap;
+    unsigned width = xbridge_range_width(range, addr, size);
     MemTxResult result;
 
-    if (size > range->width) {
-        result = xbridge_range_rw(range, addr, bytes, range->width, write);
-        return result | xbridge_range_rw(range, addr + range->width,
-                                         bytes + range->width,
-                                         size - range->width, write);
+    if (size > width) {
+        result = xbridge_range_rw(range, addr, bytes, width, write);
+        return result | xbridge_range_rw(range, addr + width,
+                                         bytes + width, size - width, write);
     }
     if (!swap) {
-        addr ^= range->width - size;
+        addr ^= width - size;
         if (write) {
             xbridge_reverse(bytes, size);
         }
