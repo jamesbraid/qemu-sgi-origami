@@ -18,23 +18,24 @@ typedef struct SGIRendererRequest {
 } SGIRendererRequest;
 
 #define SGI_RENDERER_FRAME_VERTEX_FLOATS 8
+#define SGI_RENDERER_CLEAR_RECTS 16
+
+typedef struct SGIRendererClearRect {
+    uint32_t x0, y0, x1, y1; /* Inclusive, bottom-origin plane pixels. */
+} SGIRendererClearRect;
 
 typedef struct SGIRendererFrame {
     uint32_t width, height, count;
     const float *vertices; /* position xyzw, then premade colour rgba */
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
+    uint32_t clip_count; /* Zero means the full plane. */
+    SGIRendererClearRect clips[SGI_RENDERER_CLEAR_RECTS];
     float modelview[16], projection[16];
     uint16_t *rgba; /* width * height * 4 host slots, bottom row first */
     uint8_t *written; /* width * height binary bytes, bottom row first */
     size_t written_capacity;
 } SGIRendererFrame;
-
-#define SGI_RENDERER_CLEAR_RECTS 16
-
-typedef struct SGIRendererClearRect {
-    uint32_t x0, y0, x1, y1; /* Inclusive, in bottom-origin plane pixels. */
-} SGIRendererClearRect;
 
 typedef struct SGIRendererClear {
     uint32_t width, height;
