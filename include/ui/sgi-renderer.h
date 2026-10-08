@@ -25,6 +25,7 @@ typedef struct SGIRendererRequest {
 } SGIRendererRequest;
 
 #define SGI_RENDERER_FRAME_VERTEX_FLOATS 12
+#define SGI_RENDERER_FRAME_VERTICES_MAX 9
 #define SGI_RENDERER_CLEAR_RECTS 16
 
 typedef struct SGIRendererTexture2D {
@@ -40,7 +41,7 @@ typedef struct SGIRendererClearRect {
 } SGIRendererClearRect;
 
 typedef struct SGIRendererFrame {
-    uint32_t width, height, count;
+    uint32_t width, height, count; /* A textured frame is a clipped fan. */
     const float *vertices; /* position xyzw, colour rgba, texcoord strq */
     SGIRendererTexture2D texture;
     uint32_t shade_model;

@@ -190,7 +190,9 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
     if (!renderer || !frame || !frame->vertices || !frame->rgba ||
         !frame->written ||
         !frame->width || !frame->height || frame->width > INT_MAX ||
-        frame->height > INT_MAX || frame->count != 3 ||
+        frame->height > INT_MAX || frame->count < 3 ||
+        frame->count > SGI_RENDERER_FRAME_VERTICES_MAX ||
+        (!frame->texture.slots && frame->count != 3) ||
         frame->width > SIZE_MAX / frame->height / 4 /
                        sizeof(*frame->rgba) ||
         frame->written_capacity < (size_t)frame->width * frame->height ||

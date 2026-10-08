@@ -214,8 +214,12 @@ if have_system and opengl.found()
   renderer_gl_test = ['../../hw/display/sgi/renderer-gl.c',
                       '../../hw/display/sgi/renderer.c',
                       '../../hw/display/sgi/render-resource.c',
+                      '../../hw/display/sgi/gl-context.c',
+                      '../../hw/display/sgi/rasterizer.c',
+                      '../../hw/display/sgi/x-gc.c',
+                      '../../hw/display/sgi/board-memory.c',
                       '../../ui/sgi-renderer.c', '../../ui/egl-helpers.c',
-                      '../../ui/dmabuf.c', opengl, pixman]
+                      '../../ui/dmabuf.c', opengl, pixman, migration, io]
   if gbm.found()
     renderer_gl_test += ['../../util/drm.c', gbm]
     tests += {

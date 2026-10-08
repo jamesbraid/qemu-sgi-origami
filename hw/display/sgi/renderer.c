@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "ui/sgi-renderer.h"
@@ -53,6 +54,8 @@ static const SGIRenderResource *sgi_render_texture_resource(
     const SGIRenderResource *res = NULL;
 
     if (!image || image->volume || image->pyramid || image->border ||
+        !is_power_of_2(image->width) ||
+        !is_power_of_2(image->height) ||
         image->base_format != SGI_GL_RGBA ||
         image->min_filter != SGI_GL_NEAREST ||
         image->mag_filter != SGI_GL_NEAREST ||
@@ -144,10 +147,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
 
         for (unsigned c = 0; c < 4; c++) {
             if (!isfinite(vertex[SGI_GL_V_POSITION + c]) ||
-                !isfinite(vertex[SGI_GL_V_COLOR + c]) ||
-                (st->texture_2d &&
-                 (!isfinite(vertex[SGI_GL_V_TEXCOORD + c]) ||
-                  (c == 3 && vertex[SGI_GL_V_TEXCOORD + c] <= 0)))) {
+                !isfinite(vertex[SGI_GL_V_COLOR + c])) {
                 return false;
             }
         }
@@ -201,16 +201,21 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     const SGIClipList *clip;
     SGIRenderRect rect;
     SGIRendererFrame frame = { 0 };
+    SGIVolumeVertex polygon[SGI_VOLUME_TRIANGLE_MAX];
     g_autofree uint32_t *slots = NULL;
     g_autofree uint16_t *rgba = NULL;
     g_autofree uint8_t *written = NULL;
     g_autofree uint32_t *texture_slots = NULL;
-    float vertices[3][SGI_RENDERER_FRAME_VERTEX_FLOATS];
+    float vertices[SGI_VOLUME_TRIANGLE_MAX]
+                  [SGI_RENDERER_FRAME_VERTEX_FLOATS];
     size_t pixels, nslots, nrgba;
+    unsigned polygon_count = 0;
     bool any_written = false;
     SGIRenderCommitResult committed;
     SGIRenderResult status;
 
+    QEMU_BUILD_BUG_ON(SGI_VOLUME_TRIANGLE_MAX !=
+                      SGI_RENDERER_FRAME_VERTICES_MAX);
     if (!renderer || !rules || !target || !draw || !draw->state ||
         !draw->vertices) {
         error_setg(errp, "Missing SGI Mesa draw input");
@@ -284,6 +289,36 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     if (!frame.clip_count) {
         return SGI_RENDER_OK;
+    }
+    if (texture_resource) {
+        SGIVolumeVertex source[3];
+
+        for (unsigned i = 0; i < 3; i++) {
+            sgi_volume_from_draw_vertex(draw->state,
+                draw->vertices + i * SGI_GL_VERTEX_FLOATS, &source[i]);
+        }
+        polygon_count = sgi_volume_clip_triangle(source, polygon);
+        if (!polygon_count) {
+            return SGI_RENDER_OK;
+        }
+        for (unsigned i = 0; i < polygon_count; i++) {
+            const SGIVolumeVertex *v = &polygon[i];
+            bool valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
+                         (float)v->clip[3] > 0 &&
+                         isfinite(v->attr[SGI_GL_V_TEXCOORD + 3]) &&
+                         v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
+
+            for (unsigned c = 0; c < 4; c++) {
+                valid &= isfinite(v->clip[c]) &&
+                         isfinite((float)v->clip[c]) &&
+                         isfinite(v->attr[SGI_GL_V_TEXCOORD + c]);
+            }
+            if (!valid) {
+                error_setg(errp,
+                           "Unsupported SGI Mesa clipped texture coordinates");
+                return SGI_RENDER_UNSUPPORTED;
+            }
+        }
     }
     if (resource->width > SIZE_MAX / resource->height ||
         (uint64_t)resource->width * resource->height >
@@ -374,18 +409,30 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             rgba[i * 4 + 3] = 65535;
         }
     }
-    for (unsigned i = 0; i < 3; i++) {
-        const float *src = draw->vertices +
-                           i * SGI_GL_VERTEX_FLOATS;
-
-        memcpy(&vertices[i][0], &src[SGI_GL_V_POSITION], 4 * sizeof(float));
-        memcpy(&vertices[i][4], &src[SGI_GL_V_COLOR], 4 * sizeof(float));
+    frame.count = texture_resource ? polygon_count : 3;
+    for (unsigned i = 0; i < frame.count; i++) {
         if (texture_resource) {
-            memcpy(&vertices[i][8], &src[SGI_GL_V_TEXCOORD],
+            const SGIVolumeVertex *v = &polygon[i];
+            const float *colour = draw->state->shade_model == SGI_GL_FLAT ?
+                draw->vertices + 2 * SGI_GL_VERTEX_FLOATS + SGI_GL_V_COLOR :
+                &v->attr[SGI_GL_V_COLOR];
+
+            for (unsigned c = 0; c < 4; c++) {
+                vertices[i][c] = v->clip[c];
+            }
+            memcpy(&vertices[i][4], colour, 4 * sizeof(float));
+            memcpy(&vertices[i][8], &v->attr[SGI_GL_V_TEXCOORD],
+                   4 * sizeof(float));
+        } else {
+            const float *src = draw->vertices +
+                               i * SGI_GL_VERTEX_FLOATS;
+
+            memcpy(&vertices[i][0], &src[SGI_GL_V_POSITION],
+                   4 * sizeof(float));
+            memcpy(&vertices[i][4], &src[SGI_GL_V_COLOR],
                    4 * sizeof(float));
         }
     }
-    frame.count = 3;
     frame.vertices = &vertices[0][0];
     frame.shade_model = draw->state->shade_model;
     frame.blend = draw->state->blend;
@@ -395,10 +442,17 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     frame.rgba = rgba;
     frame.written = written;
     frame.written_capacity = pixels;
-    memcpy(frame.modelview, draw->state->modelview,
-           sizeof(frame.modelview));
-    memcpy(frame.projection, draw->state->projection,
-           sizeof(frame.projection));
+    if (texture_resource) {
+        for (unsigned i = 0; i < 4; i++) {
+            frame.modelview[i * 5] = 1;
+            frame.projection[i * 5] = 1;
+        }
+    } else {
+        memcpy(frame.modelview, draw->state->modelview,
+               sizeof(frame.modelview));
+        memcpy(frame.projection, draw->state->projection,
+               sizeof(frame.projection));
+    }
     if (!sgi_renderer_draw_frame(renderer, &frame, errp)) {
         return SGI_RENDER_HOST_ERROR;
     }
