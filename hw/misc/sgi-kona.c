@@ -7854,17 +7854,18 @@ static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
 }
 
 /*
- * Retain the existing clipped/stippled geometry and bank-zero model choice.
- * Validate every accessed destination before any canonical word/tag store.
+ * Retain the existing clipped/stippled geometry. Validate every accessed
+ * destination before any canonical word/tag store.
  */
 static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                                    int64_t x2, int64_t y2, bool background,
                                    bool commit)
 {
     SGIBoardMemory *memory = &s->mem;
-    const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
-    const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
+    const SGIPlane *front[2] = { sgi_kona_plane(s, s->plane_front) };
+    const SGIPlane *tag[2] = { sgi_kona_plane(s, s->plane_front_tag) };
     uint32_t target_tag = SGI_KONA_TAG_X_INDEX16;
+    unsigned banks = 1;
     SGIXGC gc;
     SGIKonaRect clip;
 
@@ -7878,10 +7879,16 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                          gc.target == SGI_X_GC_OVERLAY1 ? 2 : 3;
 
         memory = &s->desktop_mem;
-        front = sgi_board_memory_plane(memory, plane);
-        tag = NULL;
+        front[0] = sgi_board_memory_plane(memory, plane);
+        tag[0] = NULL;
     } else if (gc.target == SGI_X_GC_MAIN_RGB8) {
         target_tag = SGI_KONA_TAG_DIRECT;
+        if (gc.raw[6] == 4 && gc.first_selector == 3) {
+            /* Selector 3's physical bank meaning is unknown. */
+            front[1] = sgi_kona_plane(s, s->plane_back);
+            tag[1] = sgi_kona_plane(s, s->plane_back_tag);
+            banks = 2;
+        }
     } else if (gc.target != SGI_X_GC_MAIN_INDEX16) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: X fill target %u unsupported\n",
                       gc.target);
@@ -7900,20 +7907,25 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     }
     assert(bql_locked());
     if (sgi_x_gc_needs_destination(&gc)) {
-        for (int y = y1; y < y2; y++) {
-            int row = SGI_KONA_FB_HEIGHT - 1 - y;
+        for (unsigned bank = 0; bank < banks; bank++) {
+            for (int y = y1; y < y2; y++) {
+                int row = SGI_KONA_FB_HEIGHT - 1 - y;
 
-            for (int x = x1; x < x2; x++) {
-                if (!sgi_kona_x_clip_contains(s, x, y) ||
-                    !sgi_kona_x_stipple_bit(s, x, y)) {
-                    continue;
-                }
-                if ((tag && sgi_plane_load(memory, tag, x, row) !=
-                            target_tag) ||
-                    sgi_plane_load(memory, front, x, row) > gc.width_mask) {
-                    qemu_log_mask(LOG_UNIMP, "sgi-kona: X fill incompatible "
-                                  "destination at (%d,%d)\n", x, y);
-                    return false;
+                for (int x = x1; x < x2; x++) {
+                    if (!sgi_kona_x_clip_contains(s, x, y) ||
+                        !sgi_kona_x_stipple_bit(s, x, y)) {
+                        continue;
+                    }
+                    if ((tag[bank] &&
+                         sgi_plane_load(memory, tag[bank], x, row) !=
+                             target_tag) ||
+                        sgi_plane_load(memory, front[bank], x, row) >
+                            gc.width_mask) {
+                        qemu_log_mask(LOG_UNIMP,
+                                      "sgi-kona: X fill incompatible "
+                                      "destination at (%d,%d)\n", x, y);
+                        return false;
+                    }
                 }
             }
         }
@@ -7921,36 +7933,40 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     if (!commit) {
         return true;
     }
-    for (int y = y1; y < y2; y++) {
-        int row = SGI_KONA_FB_HEIGHT - 1 - y;
-        bool changed = false;
+    for (unsigned bank = 0; bank < banks; bank++) {
+        for (int y = y1; y < y2; y++) {
+            int row = SGI_KONA_FB_HEIGHT - 1 - y;
+            bool changed = false;
 
-        for (int x = x1; x < x2; x++) {
-            uint32_t old, value;
+            for (int x = x1; x < x2; x++) {
+                uint32_t old, value;
 
-            if (!sgi_kona_x_clip_contains(s, x, y) ||
-                !sgi_kona_x_stipple_bit(s, x, y)) {
-                continue;
-            }
-            old = sgi_plane_load(memory, front, x, row);
-            value = sgi_x_gc_apply(&gc, background ? gc.background :
-                                                    gc.foreground, old);
-            if (value != old || (tag && sgi_plane_load(memory, tag, x, row) !=
-                                          target_tag)) {
-                sgi_plane_store(memory, front, x, row, value);
-                if (tag) {
-                    sgi_plane_store(memory, tag, x, row, target_tag);
-                } else {
-                    s->desktop_state_used = true;
-                    if (gc.target == SGI_X_GC_DID) {
-                        s->desktop_id_reported = false;
-                    }
+                if (!sgi_kona_x_clip_contains(s, x, y) ||
+                    !sgi_kona_x_stipple_bit(s, x, y)) {
+                    continue;
                 }
-                changed = true;
+                old = sgi_plane_load(memory, front[bank], x, row);
+                value = sgi_x_gc_apply(&gc, background ? gc.background :
+                                                        gc.foreground, old);
+                if (value != old ||
+                    (tag[bank] &&
+                     sgi_plane_load(memory, tag[bank], x, row) != target_tag)) {
+                    sgi_plane_store(memory, front[bank], x, row, value);
+                    if (tag[bank]) {
+                        sgi_plane_store(memory, tag[bank], x, row, target_tag);
+                    } else {
+                        s->desktop_state_used = true;
+                        if (gc.target == SGI_X_GC_DID) {
+                            s->desktop_id_reported = false;
+                        }
+                    }
+                    changed = true;
+                }
             }
-        }
-        if (changed) {
-            sgi_scanout_invalidate_plane(&s->scanout, front, row, row);
+            if (changed) {
+                sgi_scanout_invalidate_plane(&s->scanout, front[bank],
+                                             row, row);
+            }
         }
     }
     return true;
