@@ -23,14 +23,10 @@ jobs:
   queue:
     if: ${{ github.server_url != 'https://github.com' }}
     runs-on: ${{ vars.CI_QUEUE_RUNNER }}
-    # A job that stops making progress must not hold the line for ever. The
-    # driver bounds its own work with RUN_BUDGET; nothing bounded the job around
-    # it, so when the runner cannot reach its container engine mid-job the run
-    # stays running until a person cancels it -- forty and sixty minutes on two
-    # runs in one morning on the project repository, with every other pull
-    # request waiting behind the group. Generous enough that only a stuck job
-    # reaches it, not a slow one.
-    timeout-minutes: 20
+    # The driver may wait 22 minutes for a full suite and run for 25 minutes.
+    # Leave five more minutes for setup and teardown while bounding a stalled
+    # runner job.
+    timeout-minutes: 30
     steps:
       # Fetch the configured queue driver and reject an empty response.
       - name: fetch the queue driver
