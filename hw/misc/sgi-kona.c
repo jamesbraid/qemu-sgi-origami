@@ -11961,8 +11961,21 @@ static int sgi_kona_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        const SGIKonaGLPipe *p = &s->gl_pipe[i];
+
         if (s->contexts[i].save_offset > 0xfff) {
             return -EINVAL;
+        }
+        for (unsigned slot = 0; slot < 2; slot++) {
+            if (p->texture_assoc_valid & (1u << slot)) {
+                SGIKonaTextureObject *object = g_hash_table_lookup(
+                    s->textures.objects,
+                    GUINT_TO_POINTER(p->texture_assoc_handle[slot]));
+
+                if (!s->contexts[i].valid || !object || !object->native_count) {
+                    return -EINVAL;
+                }
+            }
         }
     }
     /*
@@ -13480,21 +13493,6 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
           s->texture_associate_slot >= 2 ||
          s->context_current != s->texture_associate_context))) {
         return -EINVAL;
-    }
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        const SGIKonaGLPipe *p = &s->gl_pipe[i];
-
-        for (unsigned slot = 0; slot < 2; slot++) {
-            if (p->texture_assoc_valid & (1u << slot)) {
-                SGIKonaTextureObject *object = g_hash_table_lookup(
-                    s->textures.objects,
-                    GUINT_TO_POINTER(p->texture_assoc_handle[slot]));
-
-                if (!s->contexts[i].valid || !object || !object->native_count) {
-                    return -EINVAL;
-                }
-            }
-        }
     }
     if (u->count) {
         uint64_t words = sgi_kona_texture_words(u);

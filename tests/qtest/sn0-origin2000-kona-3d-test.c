@@ -17,6 +17,7 @@
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
 #include "qobject/qdict.h"
+#include "migration/savevm.h"
 #include <float.h>
 #include <math.h>
 #include "sgi-migrate.h"
@@ -4827,25 +4828,12 @@ static void texture_rebind_patch_association(const char *path)
     g_assert_no_error(err);
 }
 
-static void test_texture_rebind_migration_rejects_missing_object(void)
+static void texture_rebind_expect_load_failure(const char *uri)
 {
-    QTestState *from, *to;
-    g_autofree char *dir = NULL, *stream = NULL, *uri = NULL;
-    GError *err = NULL;
+    QTestState *to;
     int64_t deadline;
     bool running;
 
-    dir = g_dir_make_tmp("sn0-kona-rebind-invalid-XXXXXX", &err);
-    g_assert_no_error(err);
-    stream = g_build_filename(dir, "migration", NULL);
-    uri = g_strdup_printf("file:%s", stream);
-    from = qtest_init(MACHINE_ARGS);
-    texture_rebind_uploads(from, false);
-    texture_rebind_packet(from, 1, 17);
-    sgi_migrate_stopped(from, uri);
-    qtest_quit(from);
-
-    texture_rebind_patch_association(stream);
     to = qtest_init(MACHINE_ARGS " -incoming defer");
     qtest_set_expected_status(to, 1);
     qtest_qmp_assert_success(to,
@@ -4867,6 +4855,108 @@ static void test_texture_rebind_migration_rejects_missing_object(void)
         qtest_quit(to);
     }
     g_assert_false(running);
+}
+
+static void test_texture_rebind_migration_rejects_missing_object(void)
+{
+    QTestState *from;
+    g_autofree char *dir = NULL, *stream = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    dir = g_dir_make_tmp("sn0-kona-rebind-invalid-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(dir, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+    from = qtest_init(MACHINE_ARGS);
+    texture_rebind_uploads(from, false);
+    texture_rebind_packet(from, 1, 17);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    texture_rebind_patch_association(stream);
+    texture_rebind_expect_load_failure(uri);
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/* Locate one VMState subsection header and return its first data byte. */
+static gsize kona_stream_subsection(const char *stream, gsize len,
+                                    const char *name, uint32_t version,
+                                    unsigned expected)
+{
+    gsize name_len = strlen(name), payload = 0;
+    unsigned found = 0;
+
+    for (gsize at = 0; at + name_len + 6 <= len; at++) {
+        if ((uint8_t)stream[at] == QEMU_VM_SUBSECTION &&
+            (uint8_t)stream[at + 1] == name_len &&
+            !memcmp(stream + at + 2, name, name_len) &&
+            ldl_be_p(stream + at + 2 + name_len) == version) {
+            payload = at + name_len + 6;
+            found++;
+        }
+    }
+    g_assert_cmpuint(found, ==, expected);
+    return payload;
+}
+
+/* The read-binding marker identifies this context's GL pipe record. */
+static void texture_rebind_patch_absent_subsection(const char *path)
+{
+    static const char dma_name[] = "sgi-kona/dma";
+    static const uint8_t pipe[] = {
+        1, 0x6d, 0x3b, 0x7a, 0x51, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
+    g_autofree char *stream = NULL;
+    GError *err = NULL;
+    gsize len, start, end;
+    unsigned found = 0;
+
+    g_assert_true(g_file_get_contents(path, &stream, &len, &err));
+    g_assert_no_error(err);
+    start = kona_stream_subsection(stream, len, "sgi-kona/contexts", 7, 1);
+    end = kona_stream_subsection(stream, len, dma_name, 2, 1) -
+          sizeof(dma_name) - 5;
+    g_assert_cmpuint(start, <, end);
+    kona_stream_subsection(stream, len, "sgi-kona/textures", 2, 0);
+    for (gsize at = start; at + sizeof(pipe) <= end; at++) {
+        if (!memcmp(stream + at, pipe, sizeof(pipe))) {
+            stl_be_p(stream + at + 14, 0x12345678);
+            stream[at + 18] = 2;
+            found++;
+        }
+    }
+    g_assert_cmpuint(found, ==, 1);
+    g_assert_true(g_file_set_contents(path, stream, len, &err));
+    g_assert_no_error(err);
+}
+
+static void test_texture_rebind_migration_rejects_absent_table(void)
+{
+    QTestState *from, *to;
+    g_autofree char *dir = NULL, *stream = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    dir = g_dir_make_tmp("sn0-kona-rebind-absent-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(dir, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+    from = qtest_init(MACHINE_ARGS);
+    gl_make_current(from);
+    kona_command(from, 0x114, (uint32_t[]){ 0x6d3b7a51 }, 1);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    to = qtest_init(MACHINE_ARGS " -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    sgi_wait_migration(to, "completed");
+    qtest_quit(to);
+
+    texture_rebind_patch_absent_subsection(stream);
+    texture_rebind_expect_load_failure(uri);
     g_assert_cmpint(g_unlink(stream), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -15201,6 +15291,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-3d/texture/"
                    "rebind-migration-missing-object",
                    test_texture_rebind_migration_rejects_missing_object);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/"
+                   "rebind-migration-absent-table",
+                   test_texture_rebind_migration_rejects_absent_table);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-pending-migration",
                    test_texture_rebind_pending_migration);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-split-record",
