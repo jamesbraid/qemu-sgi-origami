@@ -285,7 +285,11 @@ static uint64_t layout_check(SGIKonaState *k)
     }
     g_assert_cmpuint(base, ==, k->mem.size);
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        g_assert_false(k->gl_pipe[i].draw_config_received);
+        if (k->state[i]) {
+            g_assert_false(k->state[i]->pipe.draw_config_received);
+        } else {
+            g_assert_false(k->contexts[i].valid);
+        }
     }
     g_assert_cmpuint(k->gl_data_remaining, ==, 0);
     return old_size;
@@ -369,6 +373,11 @@ static void layout_load(KonaReadFixture *s, bool corrupt)
     }
     g_assert_nonnull(s->layout_stream);
     g_assert_cmpint(s->save_result, ==, 0);
+    g_assert_cmpuint(s->destination->context_count, ==, 0);
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        g_assert_null(s->destination->state[i]);
+        g_assert_false(s->destination->contexts[i].valid);
+    }
     layout_check(s->destination);
     input = qio_channel_buffer_new(s->layout_stream_len);
     memcpy(input->data, s->layout_stream, s->layout_stream_len);

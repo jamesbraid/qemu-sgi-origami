@@ -16,6 +16,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qemu/bswap.h"
+#include "qobject/qdict.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
@@ -68,7 +69,7 @@
 #define RETURN_B            UINT64_C(0x330000)
 #define SAVE_A              UINT64_C(0x340000)
 #define SAVE_B              UINT64_C(0x360000)
-#define SAVE_BASE           UINT64_C(0x400000)
+#define SAVE_BASE           UINT64_C(0x800000)
 #define RETURN_BASE         UINT64_C(0x500000)
 
 /*
@@ -82,7 +83,6 @@
 /* The model's save-area words: its own marker, and the 0x172 token. */
 #define SAVE_MARKER         0x4b4f4e41
 #define SAVE_TOKEN          0x172
-#define CONTEXTS            8
 
 /* The texture table's data words after its slot word. */
 #define TEX_TABLE_WORDS     33
@@ -402,9 +402,9 @@ static void test_swap_packets_framed(void)
                                    " save area 0x14000 "));
     g_assert_nonnull(strstr(found, "sgi_kona_dma_pool base 0x33000000000"
                                    " length 0x1 registered=0"));
-    g_assert_nonnull(strstr(found, "sgi_kona_gl_window token 0x1f3 slot 0"
+    g_assert_nonnull(strstr(found, "sgi_kona_gl_window token 0x1f3 slot 64"
                                    " (1, 9) "));
-    g_assert_nonnull(strstr(found, "sgi_kona_gl_window token 0x1ee slot 0"
+    g_assert_nonnull(strstr(found, "sgi_kona_gl_window token 0x1ee slot 64"
                                    " (1, 9) "));
     g_assert_nonnull(strstr(found, "token 0x1f4 argc 2 consumed"));
 }
@@ -741,86 +741,621 @@ static void test_restore_unknown_context(void)
                                    " registered"));
 }
 
-/*
- * The model keeps eight contexts. A ninth takes the entry of the one
- * activated longest ago, and says so; the second context, still held,
- * answers on its own page when restored, and the forgotten first one
- * answers nowhere, its restore taking another entry in turn.
- */
-static void test_context_table_evicts_oldest(void)
+static uint64_t kona_get_uint(QTestState *s, const char *name);
+static uint32_t shown_pixel(QTestState *s, uint32_t x, uint32_t y);
+static void context_window(QTestState *s, uint32_t x, uint32_t y,
+                            bool buffered);
+
+static void context_table_prepare(QTestState *s)
 {
-    g_autofree char *log = NULL;
-    g_autofree char *found = NULL;
-    g_autofree char *evicted = NULL;
-    QTestState *s = kona_init_logged(&log);
+    static const uint32_t colours[9][3] = {
+        { 0, 0, 0x3f800000 }, { 0, 0x3f800000, 0 },
+        { 0, 0x3f800000, 0x3f800000 }, { 0x3f800000, 0, 0 },
+        { 0x3f800000, 0, 0x3f800000 },
+        { 0x3f800000, 0x3f800000, 0 },
+        { 0x3f800000, 0x3f800000, 0x3f800000 },
+        { 0, 0, 0 }, { 0x3f000000, 0, 0 },
+    };
 
     kona_register_reason_page(s, REASON_PAGE);
-    for (unsigned i = 0; i <= CONTEXTS; i++) {
-        guest_fill_word(s, RETURN_BASE + 0x4000 * i, 0);
+    context_first_physical(s, SAVE_BASE + 0x90000, RETURN_BASE + 0x24000);
+    context_deactivate(s, 9);
+    for (unsigned i = 0; i < 9; i++) {
+        uint32_t viewport[] = { -13 - i, 17 + i, 31 + i, 43 + i };
+
+        context_first_physical(s, SAVE_BASE + 0x10000 * i,
+                               RETURN_BASE + 0x4000 * i);
+        context_window(s, 20 + 8 * i, 30, false);
+        kona_command(s, 0x1d,
+            (uint32_t[]){ colours[i][0], colours[i][1], colours[i][2],
+                          0x3f800000 }, 4);
+        kona_command(s, 0xe3, viewport, 4);
+        kona_command(s, 0xcf,
+            (uint32_t[]){ 0x3fd00000 + 0x10000 * i, 0,
+                          0x3fe80000, 0 }, 4);
+        kona_command(s, 0xc9, (uint32_t[]){ 0x800 }, 1);
+        viewport[0] += 100;
+        kona_command(s, 0xe3, viewport, 4);
+        context_deactivate(s, i);
+        context_restore_physical(s, SAVE_BASE + 0x90000);
+        x_initialise(s, 1280);
+        g_assert_cmphex(guest_word(s, RETURN_BASE + 0x24000), ==, 1);
+        context_deactivate(s, 9);
+    }
+}
+
+static void assert_context_table(QTestState *s)
+{
+    static const uint32_t pixels[] = {
+        0xff, 0xff00, 0xffff, 0xff0000, 0xff00ff,
+        0xffff00, 0xffffff, 0, 0x800000,
+    };
+
+    for (unsigned i = 0; i < 9; i++) {
+        uint64_t page = RETURN_BASE + 0x4000 * i;
+        uint32_t viewport[] = { -13 - i, 17 + i, 31 + i, 43 + i };
+
+        for (unsigned j = 0; j < 10; j++) {
+            guest_fill_word(s, RETURN_BASE + 0x4000 * j, 0);
+        }
+        context_restore_physical(s, SAVE_BASE + 0x10000 * i);
+        kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+        guest_fill_word(s, page + 4, 0x12345678);
+        guest_fill_word(s, page + 24, 0x87654321);
+        kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+        g_assert_cmphex(guest_word(s, page), ==, 1);
+        for (unsigned n = 0; n < 4; n++) {
+            g_assert_cmphex(guest_word(s, page + 8 + 4 * n), ==,
+                            viewport[n]);
+        }
+        g_assert_cmphex(guest_word(s, page + 4), ==, 0x12345678);
+        g_assert_cmphex(guest_word(s, page + 24), ==, 0x87654321);
+        for (unsigned j = 0; j < 10; j++) {
+            if (j != i) {
+                g_assert_cmphex(guest_word(s, RETURN_BASE + 0x4000 * j), ==, 0);
+            }
+        }
+        kona_command(s, 0x4c, (uint32_t[]){ 0xb70 }, 1);
+        g_assert_cmphex(guest_word(s, page + 8), ==,
+                        0x3fd00000 + 0x10000 * i);
+        g_assert_cmphex(guest_word(s, page + 12), ==, 0);
+        g_assert_cmphex(guest_word(s, page + 16), ==, 0x3fe80000);
+        g_assert_cmphex(guest_word(s, page + 20), ==, 0);
+        kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+        g_assert_cmphex(shown_pixel(s, 20 + 8 * i, 30), ==, pixels[i]);
+        g_assert_cmphex(shown_pixel(s, 19 + 8 * i, 30), ==, 0);
+        g_assert_cmphex(shown_pixel(s, 24 + 8 * i, 30), ==, 0);
+        context_deactivate(s, i);
+    }
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 10);
+}
+
+/* Nine GL keys and an interleaved X key retain pages, state and windows. */
+static void test_context_table_retains_ten(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_table_prepare(s);
+    assert_context_table(s);
+    qtest_quit(s);
+}
+
+static uint64_t kona_get_uint(QTestState *s, const char *name)
+{
+    QDict *reply = qtest_qmp(s,
+        "{ 'execute': 'qom-get', 'arguments': { 'path': "
+        "'/machine/module0/kona0', 'property': %s } }", name);
+    uint64_t value = qdict_get_int(reply, "return");
+
+    qobject_unref(reply);
+    return value;
+}
+
+static char *kona_get_string(QTestState *s, const char *name)
+{
+    QDict *reply = qtest_qmp(s,
+        "{ 'execute': 'qom-get', 'arguments': { 'path': "
+        "'/machine/module0/kona0', 'property': %s } }", name);
+    char *value = g_strdup(qdict_get_str(reply, "return"));
+
+    qobject_unref(reply);
+    return value;
+}
+
+static void kona_set_uint(QTestState *s, const char *name, uint32_t value)
+{
+    qtest_qmp_assert_success(s,
+        "{ 'execute': 'qom-set', 'arguments': { 'path': "
+        "'/machine/module0/kona0', 'property': %s, 'value': %u } }",
+        name, value);
+}
+
+static uint32_t shown_pixel(QTestState *s, uint32_t x, uint32_t y)
+{
+    kona_set_uint(s, "x-test-pixel-x", x);
+    kona_set_uint(s, "x-test-pixel-y", y);
+    return kona_get_uint(s, "x-test-pixel");
+}
+
+static void context_window(QTestState *s, uint32_t x, uint32_t y,
+                            bool buffered)
+{
+    uint32_t config[10] = { 0, 0xc, 0, buffered };
+
+    kona_command(s, 1, config, 10);
+    kona_command(s, 2, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(s, 0x1f3,
+        (uint32_t[]){ x, y, 0, 0, x, y, 4, 4, 0, 0xd, 0 }, 11);
+    kona_command(s, 0xe3, (uint32_t[]){ 0, 0, 4, 4 }, 4);
+    kona_command(s, 0xc, (uint32_t[]){ 0, 0, 4, 4 }, 4);
+    kona_command(s, 0x1d,
+        (uint32_t[]){ 0, 0, 0x3f800000, 0x3f800000 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+}
+
+/* An old accepted retrace may complete its tag, never a replacement window. */
+static void test_replaced_context_retrace(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_first_physical(s, SAVE_A, RETURN_A);
+    context_window(s, 20, 30, true);
+    kona_command_kicked(s, 0x1e7, (uint32_t[]){ 7 }, 1);
+    context_first_physical(s, SAVE_A, RETURN_B);
+    context_window(s, 40, 50, true);
+    g_assert_cmphex(shown_pixel(s, 40, 50), ==, 0);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 7);
+    g_assert_cmphex(shown_pixel(s, 40, 50), ==, 0);
+    qtest_quit(s);
+}
+
+/* Unknown restores do not consume allowance, including at the retained cap. */
+static void test_unknown_restore_preserves_allowance(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    for (unsigned i = 0; i < 70; i++) {
+        kona_command_kicked(s, 0x1f9,
+            (uint32_t[]){ SAVE_MARKER,
+                physical_page_word(SAVE_BASE + 0x10000 * i),
+                0x9000, 0xedededed }, 4);
+    }
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 0);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    context_first_physical(s, SAVE_A + 32, RETURN_B);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_A);
+    x_initialise(s, 640);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 640);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 2);
+    qtest_quit(s);
+}
+
+static void context_triangle(QTestState *s)
+{
+    kona_command(s, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+    kona_command(s, 0xc0, (uint32_t[]){ 0x1d00 }, 1);
+    kona_command(s, 0x63, (uint32_t[]){ 0x3f800000, 0x3f800000, 0 }, 3);
+    kona_command(s, 0x5b, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x8c, (uint32_t[]){ 0xbf800000, 0xbf800000 }, 2);
+    kona_command(s, 0x8c, (uint32_t[]){ 0x3f800000, 0xbf800000 }, 2);
+    kona_command(s, 0x8c, (uint32_t[]){ 0xbf800000, 0x3f800000 }, 2);
+    kona_command(s, 0x71, (uint32_t[]){ 0 }, 1);
+}
+
+/* Reconstruct the shared host renderer without losing a logical window. */
+static void test_context_renderer_reconstruction(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    uint64_t before;
+
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    context_window(s, 20, 30, false);
+    context_triangle(s);
+    before = kona_get_uint(s, "x-test-gpu-draws");
+    g_assert_cmpuint(before, >, 0);
+    g_assert_cmphex(shown_pixel(s, 20, 30), ==, 0xffff00);
+    g_assert_cmphex(shown_pixel(s, 23, 33), ==, 0xff);
+    context_deactivate(s, 0);
+    for (unsigned i = 0; i < 9; i++) {
         context_first_physical(s, SAVE_BASE + 0x10000 * i,
                                RETURN_BASE + 0x4000 * i);
         context_deactivate(s, i);
     }
-    context_restore_physical(s, SAVE_BASE + 0x10000);
-    x_initialise(s, 1280);
-    g_assert_cmphex(guest_word(s, RETURN_BASE + 0x4000), ==, 1);
-    context_deactivate(s, 1);
-    context_restore_physical(s, SAVE_BASE);
-    x_initialise(s, 640);
-    g_assert_cmphex(guest_word(s, RETURN_BASE), ==, 0);
+    guest_fill_word(s, RETURN_A, 0);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A + 16), ==, 4);
+    g_assert_cmphex(guest_word(s, RETURN_A + 20), ==, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    context_triangle(s);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-gpu-draws"), >, before);
+    g_assert_cmphex(shown_pixel(s, 20, 30), ==, 0xffff00);
+    g_assert_cmphex(shown_pixel(s, 23, 33), ==, 0xff);
     qtest_quit(s);
-
-    found = kona_log_read(log);
-    evicted = g_strdup_printf("context table full (8 entries); forgetting"
-                              " the context with save area 0x%" PRIx64,
-                              (uint64_t)physical_page_word(SAVE_BASE) << 12);
-    g_assert_nonnull(strstr(found, evicted));
-    g_assert_cmpuint(count_occurrences(found, "context table full"), ==, 2);
-    g_assert_nonnull(strstr(found, "which no 0x1fd set up"));
 }
 
-/*
- * The context table migrates: two contexts set up and switched out on the
- * source, then on the destination a restore of A answers on A's page, and
- * a deactivate writes A's save area.
- */
+static void assert_context_stop(QTestState *s)
+{
+    QDict *status = qtest_qmp_assert_success_ref(s,
+        "{ 'execute': 'query-status' }");
+
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "internal-error");
+    qobject_unref(status);
+}
+
+/* The sixty-fifth distinct key stops visibly without losing earlier records. */
+static void test_context_limit(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    g_autofree char *before = NULL, *after = NULL, *error = NULL;
+
+    for (unsigned i = 0; i < 64; i++) {
+        context_first_physical(s, SAVE_BASE + 0x10000 * i,
+                               RETURN_BASE + 0x4000 * i);
+        context_deactivate(s, i);
+    }
+    context_restore_physical(s, SAVE_BASE);
+    x_initialise(s, 640);
+    g_assert_cmphex(guest_word(s, RETURN_BASE + 8), ==, 640);
+    kona_command_kicked(s, 0x1f9,
+        (uint32_t[]){ SAVE_MARKER,
+            physical_page_word(SAVE_BASE + 0x10000 * 64),
+            0x9000, 0xedededed }, 4);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 64);
+    context_first_physical(s, SAVE_BASE, RETURN_A);
+    x_initialise(s, 1280);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 1280);
+    guest_fill_word(s, RETURN_A, 0);
+    guest_fill_word(s, RETURN_B, 0);
+    before = kona_get_string(s, "x-test-context-digest");
+    context_first_physical(s, SAVE_BASE + 0x10000 * 64, RETURN_B);
+    x_initialise(s, 320);
+    assert_context_stop(s);
+    after = kona_get_string(s, "x-test-context-digest");
+    g_assert_cmpstr(after, ==, before);
+    error = kona_get_string(s, "x-test-context-error");
+    g_assert_nonnull(strstr(error, "command 0x1fd key"));
+    g_assert_nonnull(strstr(error, "64 retained, limit 64"));
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 64);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-current"), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_B), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 1280);
+    qtest_quit(s);
+}
+
+/* Migration retains all ten logical records and their attribute copies. */
 static void test_migration_of_contexts(void)
 {
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from = qtest_init(MIGRATION_ARGS);
+    QTestState *to = qtest_initf(MIGRATION_ARGS " -incoming %s", uri);
 
-    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init(MIGRATION_ARGS);
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-
-    guest_fill_word(from, RETURN_A, 0);
-    guest_fill_word(from, RETURN_B, 0);
-    kona_register_reason_page(from, REASON_PAGE);
-    context_first_physical(from, SAVE_A, RETURN_A);
-    context_deactivate(from, 1);
-    context_first_physical(from, SAVE_B, RETURN_B);
-    context_deactivate(from, 2);
-
+    g_assert_nonnull(dir);
+    context_table_prepare(from);
     sgi_migrate_stopped(from, uri);
-
-    context_restore_physical(to, SAVE_A);
-    x_initialise(to, 1280);
-    g_assert_cmphex(guest_word(to, RETURN_A), ==, 1);
-    g_assert_cmphex(guest_word(to, RETURN_B), ==, 0);
-    guest_fill_word(to, SAVE_A, 0);
-    context_deactivate(to, 1);
-    g_assert_cmphex(guest_word(to, SAVE_A), ==, SAVE_MARKER);
-
+    assert_context_table(to);
     qtest_quit(to);
     qtest_quit(from);
-    g_rmdir(tmpfs);
+    g_rmdir(dir);
+}
+
+static void test_migration_unknown_selection(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from = qtest_init(MIGRATION_ARGS);
+    QTestState *to = qtest_initf(MIGRATION_ARGS " -incoming %s", uri);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    kona_command(from, 0xe3, (uint32_t[]){ 3, 5, 7, 11 }, 4);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_A + 32, RETURN_B);
+    kona_command(from, 0xe3, (uint32_t[]){ 13, 17, 19, 23 }, 4);
+    context_deactivate(from, 2);
+    kona_command_kicked(from, 0x1f9,
+        (uint32_t[]){ SAVE_MARKER, physical_page_word(SAVE_B),
+                      0x9000, 0xedededed }, 4);
+    guest_fill_word(from, RETURN_A, 0);
+    guest_fill_word(from, RETURN_B, 0);
+    sgi_migrate_stopped(from, uri);
+    kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
+    g_assert_cmphex(guest_word(to, RETURN_B), ==, 0);
+    g_assert_cmpuint(kona_get_uint(to, "x-test-context-count"), ==, 2);
+    context_restore_physical(to, SAVE_A);
+    kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A + 8), ==, 3);
+    g_assert_cmphex(guest_word(to, RETURN_A + 12), ==, 5);
+    g_assert_cmphex(guest_word(to, RETURN_A + 16), ==, 7);
+    g_assert_cmphex(guest_word(to, RETURN_A + 20), ==, 11);
+    context_restore_physical(to, SAVE_A + 32);
+    kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_B), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_B + 8), ==, 13);
+    g_assert_cmphex(guest_word(to, RETURN_B + 12), ==, 17);
+    g_assert_cmphex(guest_word(to, RETURN_B + 16), ==, 19);
+    g_assert_cmphex(guest_word(to, RETURN_B + 20), ==, 23);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_migration_pending_page(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from = qtest_init(MIGRATION_ARGS);
+    QTestState *to = qtest_initf(MIGRATION_ARGS " -incoming %s", uri);
+
+    kona_command_kicked(from, 0x1fd,
+        (uint32_t[]){ physical_page_word(SAVE_A), 0x9000, 0x10000 }, 3);
+    sgi_migrate_stopped(from, uri);
+    kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
+    kona_register_return_page(to, RETURN_A);
+    kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A + 8), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_migration_replaced_retrace(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from = qtest_init(MIGRATION_ARGS);
+    QTestState *to = qtest_initf(MIGRATION_ARGS " -incoming %s", uri);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    context_window(from, 20, 30, true);
+    kona_command_kicked(from, 0x1e7, (uint32_t[]){ 7 }, 1);
+    context_first_physical(from, SAVE_A, RETURN_B);
+    context_window(from, 40, 50, true);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(shown_pixel(to, 40, 50), ==, 0);
+    qtest_clock_step(to, RETRACE_STEP_NS);
+    g_assert_cmphex(qtest_readl(to, REG_RETRACE_TAG), ==, 7);
+    g_assert_cmphex(shown_pixel(to, 40, 50), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_context_allocation_failure(void)
+{
+    for (unsigned replacement = 0; replacement < 2; replacement++) {
+        QTestState *s = qtest_init(MACHINE_ARGS);
+        g_autofree char *before = NULL, *after = NULL, *error = NULL;
+
+        context_first_physical(s, SAVE_A, RETURN_A);
+        kona_command(s, 0xe3, (uint32_t[]){ 3, 5, 7, 11 }, 4);
+        kona_command(s, 0xc9, (uint32_t[]){ 0x800 }, 1);
+        x_initialise(s, 640);
+        guest_fill_word(s, RETURN_A, 0);
+        before = kona_get_string(s, "x-test-context-digest");
+        qtest_qom_set_bool(s, "/machine/module0/kona0",
+                          "x-test-context-alloc-fail", true);
+        context_first_physical(s, replacement ? SAVE_A : SAVE_B, RETURN_B);
+        x_initialise(s, 320);
+        assert_context_stop(s);
+        after = kona_get_string(s, "x-test-context-digest");
+        g_assert_cmpstr(after, ==, before);
+        error = kona_get_string(s, "x-test-context-error");
+        g_assert_nonnull(strstr(error, "state allocation failed"));
+        g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 1);
+        g_assert_cmpuint(kona_get_uint(s, "x-test-context-current"), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 640);
+        g_assert_cmphex(guest_word(s, RETURN_B), ==, 0);
+        qtest_quit(s);
+    }
+}
+
+static void test_context_reinitialization(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_first_physical(s, SAVE_A, RETURN_A);
+    kona_command(s, 0xe3, (uint32_t[]){ 3, 5, 7, 11 }, 4);
+    kona_command(s, 0xc9, (uint32_t[]){ 0x800 }, 1);
+    guest_fill_word(s, RETURN_A, 0);
+    kona_command_kicked(s, 0x1fd,
+        (uint32_t[]){ physical_page_word(SAVE_A), 0x9000, 0x10000 }, 3);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_B), ==, 0);
+    kona_register_return_page(s, RETURN_B);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_B), ==, 1);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(guest_word(s, RETURN_B + 8 + 4 * i), ==, 0);
+    }
+    kona_command(s, 0x4c, (uint32_t[]){ 0xbb0 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_B + 8), ==, 0);
+    kona_command(s, 0xe3, (uint32_t[]){ 101, 103, 107, 109 }, 4);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_B + 8), ==, 101);
+    g_assert_cmphex(guest_word(s, RETURN_B + 12), ==, 103);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    qtest_quit(s);
+}
+
+/* Failed page translation cannot resurrect an older generation's page. */
+static void test_failed_context_registration(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_first_physical(s, SAVE_A, RETURN_A);
+    kona_command_kicked(s, 0x1fd,
+        (uint32_t[]){ physical_page_word(SAVE_A), 0x9000, 0x10000 }, 3);
+    kona_command_kicked(s, 0x1f2,
+        (uint32_t[]){ 0x14, 0x9000, 0x4000 }, 3);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    context_deactivate(s, 1);
+    kona_register_return_page(s, RETURN_B);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_B), ==, 0);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_reset_clears_pending_context(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_first_physical(s, SAVE_A, RETURN_A);
+    context_window(s, 20, 30, true);
+    kona_command_kicked(s, 0x1e7, (uint32_t[]){ 7 }, 1);
+    context_deactivate(s, 1);
+    qtest_system_reset(s);
+    guest_fill_word(s, RETURN_A, 0);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 0);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    g_assert_cmphex(shown_pixel(s, 20, 30), ==, 0);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 0);
+    qtest_quit(s);
+}
+
+/* Current-window retirement retains both current and noncurrent records. */
+static void test_context_retirement_retains_records(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    kona_command(s, 0xe3, (uint32_t[]){ 3, 5, 7, 11 }, 4);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    kona_command(s, 0xe3, (uint32_t[]){ 13, 17, 19, 23 }, 4);
+    kona_command_kicked(s, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x103);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 3);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_B);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_B + 8), ==, 13);
+    g_assert_cmpuint(kona_get_uint(s, "x-test-context-count"), ==, 2);
+    qtest_quit(s);
+}
+
+static uint8_t *stream_bytes(uint8_t *data, size_t length,
+                              const void *needle, size_t count)
+{
+    for (size_t i = 0; i + count <= length; i++) {
+        if (!memcmp(data + i, needle, count)) {
+            return data + i;
+        }
+    }
+    g_assert_not_reached();
+}
+
+/* Corrupt the actual same-build stream, not a mocked load path. */
+static void corrupt_context_stream(const char *path, unsigned kind)
+{
+    static const char contexts[] = "sgi-kona/contexts";
+    static const char retrace[] = "sgi-kona/retrace";
+    g_autofree char *data = NULL;
+    gsize length;
+    uint8_t *name, *records;
+
+    g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+    name = stream_bytes((uint8_t *)data, length,
+                        contexts, sizeof(contexts) - 1);
+    g_assert_cmpuint(name[-2], ==, 5); /* QEMU_VM_SUBSECTION */
+    g_assert_cmpuint(ldl_be_p(name + sizeof(contexts) - 1), ==, 7);
+    /* Version, partial-table count and generation clock precede the records. */
+    records = name + sizeof(contexts) - 1 + 4 + 4 + 8;
+    g_assert_cmpuint(ldl_be_p(records), ==, 2);
+    switch (kind) {
+    case 0:
+        stl_be_p(records, 65);
+        break;
+    case 1: {
+        uint8_t second[26] = { 1 };
+        uint8_t *record;
+
+        stl_be_p(second + 1, physical_page_word(SAVE_B));
+        second[9] = 1;
+        stq_be_p(second + 10, RETURN_B);
+        stq_be_p(second + 18, 2);
+        record = stream_bytes(records + 5,
+            length - (records + 5 - (uint8_t *)data), second, sizeof(second));
+        stl_be_p(record + 1, physical_page_word(SAVE_A));
+        break;
+    }
+    case 2:
+        stq_be_p(records + 5 + 18, UINT64_MAX);
+        break;
+    case 3:
+        name = stream_bytes((uint8_t *)data, length,
+                            retrace, sizeof(retrace) - 1);
+        /* Version, tag, valid flag and sequence precede the generation. */
+        stq_be_p(name + sizeof(retrace) - 1 + 4 + 4 + 1 + 8, UINT64_MAX);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    g_assert_true(g_file_set_contents(path, data, length, NULL));
+}
+
+static void test_migration_rejects_context_stream(void)
+{
+    for (unsigned kind = 0; kind < 5; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "stream", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", path);
+        g_autofree char *log = NULL;
+        g_autofree char *found = NULL;
+        QTestState *from = qtest_init(MIGRATION_ARGS);
+        QTestState *to;
+
+        context_first_physical(from, SAVE_A, RETURN_A);
+        context_deactivate(from, 1);
+        context_first_physical(from, SAVE_B, RETURN_B);
+        kona_command_kicked(from, 0x1e7, (uint32_t[]){ 7 }, 1);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        if (kind < 4) {
+            corrupt_context_stream(path, kind);
+        }
+        to = kona_init_logged_args(MIGRATION_ARGS " -incoming defer", &log);
+        if (kind == 4) {
+            qtest_qom_set_bool(to, "/machine/module0/kona0",
+                              "x-test-context-alloc-fail", true);
+        }
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        found = kona_log_read(log);
+        g_assert_null(strstr(found, "sgi_kona_return_post "));
+        g_assert_null(strstr(found, "sgi_kona_retrace_done "));
+        g_unlink(path);
+        g_rmdir(dir);
+    }
 }
 
 /*
@@ -1385,10 +1920,37 @@ int main(int argc, char **argv)
                    test_return_page_per_context);
     qtest_add_func("sn0/origin2000/kona-context/restore-unknown-context",
                    test_restore_unknown_context);
-    qtest_add_func("sn0/origin2000/kona-context/context-table-evicts-oldest",
-                   test_context_table_evicts_oldest);
+    qtest_add_func("sn0/origin2000/kona-context/context-table-retains-ten",
+                   test_context_table_retains_ten);
+    qtest_add_func("sn0/origin2000/kona-context/replaced-context-retrace",
+                   test_replaced_context_retrace);
+    qtest_add_func("sn0/origin2000/kona-context/unknown-preserves-allowance",
+                   test_unknown_restore_preserves_allowance);
+    qtest_add_func("sn0/origin2000/kona-context/renderer-reconstruction",
+                   test_context_renderer_reconstruction);
+    qtest_add_func("sn0/origin2000/kona-context/context-limit",
+                   test_context_limit);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-contexts",
                    test_migration_of_contexts);
+    qtest_add_func("sn0/origin2000/kona-context/migration-unknown-selection",
+                   test_migration_unknown_selection);
+    qtest_add_func("sn0/origin2000/kona-context/migration-pending-page",
+                   test_migration_pending_page);
+    qtest_add_func("sn0/origin2000/kona-context/migration-replaced-retrace",
+                   test_migration_replaced_retrace);
+    qtest_add_func("sn0/origin2000/kona-context/context-allocation-failure",
+                   test_context_allocation_failure);
+    qtest_add_func("sn0/origin2000/kona-context/context-reinitialization",
+                   test_context_reinitialization);
+    qtest_add_func("sn0/origin2000/kona-context/reset-clears-pending-context",
+                   test_reset_clears_pending_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-rejects-context-stream",
+                   test_migration_rejects_context_stream);
+    qtest_add_func("sn0/origin2000/kona-context/retirement-retains-records",
+                   test_context_retirement_retains_records);
+    qtest_add_func("sn0/origin2000/kona-context/failed-context-registration",
+                   test_failed_context_registration);
     qtest_add_func("sn0/origin2000/kona-context/line-distance-answer",
                    test_line_distance_answer);
     qtest_add_func("sn0/origin2000/kona-context/"

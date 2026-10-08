@@ -255,8 +255,12 @@ static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
 static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
                                   SGIClipRect *r)
 {
-    const SGIKonaGLWindow *w = &s->gl_window[i];
+    const SGIKonaGLWindow *w;
 
+    if (!s->state[i]) {
+        return false;
+    }
+    w = &s->state[i]->window;
     return s->contexts[i].valid && w->double_buffered &&
            w->displayed_bank && sgi_kona_gl_window_rect(w, r);
 }
@@ -676,14 +680,25 @@ static void sgi_kona_swap_published(SGIKonaState *s, const SGICompletion *c)
 {
     uint32_t tag = SGI_KONA_SWAP_COOKIE_TAG(c->cookie);
     int slot = SGI_KONA_SWAP_COOKIE_SLOT(c->cookie);
+    SGIKonaPendingSwap *owner = NULL;
 
+    for (unsigned i = 0; i < SGI_SWAP_MAX; i++) {
+        if (s->pending_swaps[i].valid &&
+            s->pending_swaps[i].seq == c->seq) {
+            owner = &s->pending_swaps[i];
+            break;
+        }
+    }
     switch (c->kind) {
     case SGI_DONE_SWAPPED:
         s->retrace_tag = tag;
         s->retrace_completed = true;
         trace_sgi_kona_retrace_done(tag);
-        if (slot >= 0 && slot < SGI_KONA_CONTEXTS &&
-            s->contexts[slot].valid && s->gl_window[slot].double_buffered) {
+        if (owner && owner->context == slot && slot >= 0 &&
+            slot < SGI_KONA_CONTEXTS && s->state[slot] &&
+            s->contexts[slot].valid &&
+            s->contexts[slot].generation == owner->generation &&
+            s->state[slot]->window.double_buffered) {
             sgi_kona_gl_swap(s, slot);
         }
         break;
@@ -696,6 +711,10 @@ static void sgi_kona_swap_published(SGIKonaState *s, const SGICompletion *c)
     default:
         g_assert_not_reached();
     }
+    if (owner) {
+        memset(owner, 0, sizeof(*owner));
+    }
+
 }
 
 static void sgi_kona_video_deliver(SGIKonaState *s)
@@ -711,6 +730,9 @@ static void sgi_kona_retrace(void *opaque)
 {
     SGIKonaState *s = opaque;
 
+    if (s->context_failed) {
+        return;
+    }
     s->retrace_completed = false;
     s->int_cause |= SGI_KONA_INT_CAUSE_VIDEO;
     sgi_kona_video_deliver(s);
@@ -745,6 +767,9 @@ void sgi_kona_publish(void *opaque, const SGICompletion *c)
     uint32_t cause = SGI_KONA_DMA_COOKIE_CAUSE(c->cookie);
     uint32_t word = SGI_KONA_DMA_COOKIE_WORD(c->cookie);
 
+    if (s->context_failed) {
+        return;
+    }
     trace_sgi_kona_completion(c->seq, c->kind, c->cookie, c->payload);
     if (c->cookie & SGI_KONA_SWAP_COOKIE_FLAG) {
         sgi_kona_swap_published(s, c);
@@ -888,6 +913,9 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
 {
     SGIKonaState *s = opaque;
 
+    if (s->context_failed) {
+        return;
+    }
     sgi_kona_port_consumed(s, 1 + argc);
 
     switch (selector) {
@@ -1130,23 +1158,98 @@ static void sgi_kona_register_return_page(SGIKonaState *s, uint32_t page,
     }
 }
 
-static void sgi_kona_gl_reset_context(SGIKonaState *s, unsigned i);
+static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
+                                    unsigned slot);
+static void sgi_kona_renderer_stop(SGIKonaState *s);
+
+static void sgi_kona_state_free(SGIKonaGLState *state)
+{
+    if (!state) {
+        return;
+    }
+    sgi_gl_cleanup(&state->gl);
+    for (unsigned i = 0; i < SGI_KONA_GL_ATTRIB_DEPTH; i++) {
+        sgi_gl_cleanup(&state->attrib[i]);
+    }
+    g_free(state);
+}
+
+static void sgi_kona_contexts_clear(SGIKonaState *s)
+{
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        sgi_kona_state_free(s->state[i]);
+        s->state[i] = NULL;
+    }
+    memset(s->contexts, 0, sizeof(s->contexts));
+    memset(s->pending_swaps, 0, sizeof(s->pending_swaps));
+    s->context_count = 0;
+    s->context_current = SGI_KONA_CONTEXT_NONE;
+    s->context_page_pending = false;
+}
+
+static SGIKonaGLState *sgi_kona_state_new(SGIKonaState *s, unsigned slot)
+{
+    SGIKonaGLState *state;
+
+    if (s->test_context_alloc_fail) {
+        s->test_context_alloc_fail = false;
+        return NULL;
+    }
+    state = g_try_new0(SGIKonaGLState, 1);
+    if (state) {
+        sgi_kona_gl_state_init(s, state, slot);
+        for (unsigned i = 0; i < SGI_KONA_GL_ATTRIB_DEPTH; i++) {
+            sgi_gl_init(&state->attrib[i], slot);
+        }
+    }
+    return state;
+}
+
+static void sgi_kona_context_stop(SGIKonaState *s, uint32_t token,
+                                  uint32_t page, uint32_t offset,
+                                  const char *reason)
+{
+    s->context_failed = true;
+    snprintf(s->context_error, sizeof(s->context_error),
+             "sgi-kona: command 0x%x key 0x%x:0x%x: %s "
+             "(%u retained, limit %u)", token, page, offset, reason,
+             s->context_count, SGI_KONA_CONTEXT_LIMIT);
+    qemu_log_mask(LOG_GUEST_ERROR, "%s\n", s->context_error);
+    error_report("%s", s->context_error);
+    assert(bql_locked());
+    qemu_system_vmstop_request_prepare();
+    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+}
+
+
 
 /*
  * 0x1fd page offset len, or 0x1f9 word0 page offset sentinel: make the
  * context whose save area the two words name current, and answer on its
  * return page from here on. A 0x1fd starts the context afresh, its GL
- * state and window included (see sgi_kona_gl_reset_context()), with no
+ * state and window included, with no
  * return page until the 0x1f2 that follows it. A 0x1f9 restores the page
  * that 0x1f2 gave it; one naming a save area no 0x1fd named is logged and
  * leaves the pipe with no return page, so an answer goes nowhere rather
  * than to another context. The key is the two words as sent, which the
  * kernel derives from one fixed allocation per context. See
- * SGIKonaContext for the table's size and eviction.
+ * SGIKonaContext for the key. The host limit never evicts a logical record.
  */
 static void sgi_kona_gl_image_clear(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
+
+static uint64_t sgi_kona_context_generation(SGIKonaState *s, int context)
+{
+    return context >= 0 && context < SGI_KONA_CONTEXTS && s->state[context] ?
+           s->contexts[context].generation : 0;
+}
+
+static bool sgi_kona_context_owner(SGIKonaState *s, int context,
+                                   uint64_t generation)
+{
+    return generation && sgi_kona_context_generation(s, context) == generation;
+}
 
 static void sgi_kona_gl_read_dma_clear(SGIKonaState *s)
 {
@@ -1174,57 +1277,62 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     bool fresh = first;
     uint64_t device = ((uint64_t)page << 12) | (offset & 0xfff);
     SGIKonaContext *c;
+    SGIKonaGLState *replacement = NULL;
     int slot = SGI_KONA_CONTEXT_NONE;
 
-    sgi_kona_x_read_invalidate(s);
-    sgi_kona_gl_read_dma_refuse(s);
     offset &= 0xfff;
-    for (int i = 0; i < SGI_KONA_CONTEXTS; i++) {
+    for (unsigned i = 0; i < s->context_count; i++) {
         c = &s->contexts[i];
-        if (c->valid && c->save_page == page && c->save_offset == offset) {
+        if (c->save_page == page && c->save_offset == offset) {
             slot = i;
             break;
         }
     }
-    if (slot == SGI_KONA_CONTEXT_NONE) {
-        if (!first) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-kona: context restore names save area 0x%"
-                          PRIx64 ", which no 0x%x set up; no return page\n",
-                          device, SGI_KONA_CMD_CONTEXT_MAP);
-        }
-        for (int i = 0; i < SGI_KONA_CONTEXTS; i++) {
-            if (!s->contexts[i].valid) {
-                slot = i;
-                break;
-            }
-        }
-        if (slot == SGI_KONA_CONTEXT_NONE) {
-            slot = 0;
-            for (int i = 1; i < SGI_KONA_CONTEXTS; i++) {
-                if (s->contexts[i].last_used < s->contexts[slot].last_used) {
-                    slot = i;
-                }
-            }
-            c = &s->contexts[slot];
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-kona: context table full (%d entries);"
-                          " forgetting the context with save area 0x%"
-                          PRIx64 "\n", SGI_KONA_CONTEXTS,
-                          ((uint64_t)c->save_page << 12) | c->save_offset);
-        }
-        c = &s->contexts[slot];
-        memset(c, 0, sizeof(*c));
-        c->valid = true;
-        c->save_page = page;
-        c->save_offset = offset;
+    if (slot == SGI_KONA_CONTEXT_NONE && !first) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: context restore names save area 0x%"
+                      PRIx64 ", which no 0x%x set up; no return page\n",
+                      device, SGI_KONA_CMD_CONTEXT_MAP);
+        slot = SGI_KONA_CONTEXT_TRANSIENT;
         fresh = true;
     }
-    c = &s->contexts[slot];
-    if (first) {
-        c->return_page_valid = false;
-        c->return_page = 0;
+    if (slot == SGI_KONA_CONTEXT_NONE) {
+        if (s->context_count == SGI_KONA_CONTEXT_LIMIT) {
+            sgi_kona_context_stop(s, token, page, offset,
+                                  "logical context limit reached");
+            return;
+        }
+        slot = s->context_count;
     }
+    if (fresh) {
+        if (s->context_clock == UINT64_MAX) {
+            sgi_kona_context_stop(s, token, page, offset,
+                                  "logical context generation exhausted");
+            return;
+        }
+        replacement = sgi_kona_state_new(s, slot);
+        if (!replacement) {
+            sgi_kona_context_stop(s, token, page, offset,
+                                  "logical context state allocation failed");
+            return;
+        }
+        /* Rendering and return writes are synchronous under the big lock. */
+        sgi_kona_renderer_stop(s);
+        sgi_kona_state_free(s->state[slot]);
+        s->state[slot] = replacement;
+        s->contexts[slot] = (SGIKonaContext) {
+            .valid = true,
+            .save_page = page,
+            .save_offset = offset,
+            .generation = ++s->context_clock,
+        };
+        if (first && slot == s->context_count) {
+            s->context_count++;
+        }
+    }
+    sgi_kona_x_read_invalidate(s);
+    sgi_kona_gl_read_dma_refuse(s);
+    c = &s->contexts[slot];
     if (s->texture_upload.draw_pixels &&
         (fresh || s->context_current != slot)) {
         sgi_kona_texture_upload_clear(s);
@@ -1241,13 +1349,10 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         (fresh || s->context_current != slot)) {
         s->gl_map_upload.refused = true;
     }
-    if (fresh) {
-        sgi_kona_gl_reset_context(s, slot);
-    }
-    c->last_used = ++s->context_clock;
     s->texture_associate_pending = false;
-    if (s->context_current != slot) {
+    if (fresh || s->context_current != slot) {
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+        s->texture_bind_generation = 0;
     }
     s->context_current = slot;
     s->gl_grammar = true;
@@ -1429,6 +1534,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     s->gl_map_upload.refused = true;
     s->texture_associate_pending = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_bind_generation = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
     sgi_kona_post_reason(s, SGI_KONA_CMD_CONTEXT_DEACTIVATE,
@@ -2082,8 +2188,8 @@ static void sgi_kona_gl_set_error(SGIKonaState *s, uint32_t error)
         qemu_log_mask(LOG_UNIMP, "sgi-kona: unrecognized native GL error 0x%x;"
                       " pending error unchanged\n", error);
     } else if (i >= 0 && i < SGI_KONA_CONTEXTS && s->contexts[i].valid &&
-               !s->gl_pipe[i].pending_error) {
-        s->gl_pipe[i].pending_error = error;
+               !s->state[i]->pipe.pending_error) {
+        s->state[i]->pipe.pending_error = error;
     }
 }
 
@@ -2098,13 +2204,13 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
     uint32_t code;
     uint8_t error[4];
 
-    if (!sgi_kona_x_read_current(s) || s->gl[i].in_begin) {
+    if (!sgi_kona_x_read_current(s) || s->state[i]->gl.in_begin) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: GL error query without a usable"
                       " current context; pending errors retained\n");
         return;
     }
-    code = s->gl_pipe[i].pending_error ? s->gl_pipe[i].pending_error :
-                                       s->gl[i].polygon.error;
+    code = s->state[i]->pipe.pending_error ? s->state[i]->pipe.pending_error :
+                                       s->state[i]->gl.polygon.error;
     stl_be_p(error, code);
     if (!sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_ERROR, 8, error,
                               sizeof(error))) {
@@ -2112,12 +2218,12 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
                       " error 0x%x retained\n", code);
         return;
     }
-    if (s->gl_pipe[i].pending_error) {
-        s->gl_pipe[i].pending_error = 0;
+    if (s->state[i]->pipe.pending_error) {
+        s->state[i]->pipe.pending_error = 0;
     } else {
         uint32_t consumed;
 
-        bool completed = sgi_gl_consume_error(&s->gl[i], &consumed);
+        bool completed = sgi_gl_consume_error(&s->state[i]->gl, &consumed);
 
         assert(completed && consumed == code);
     }
@@ -2192,7 +2298,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
     SGIKonaState *s = opaque;
     int bank = sgi_kona_target_bank(s, target);
     uint32_t bits = s->context_current == SGI_KONA_CONTEXT_NONE ? 0 :
-                    s->gl[s->context_current].cur.index_bits;
+                    s->state[s->context_current]->gl.cur.index_bits;
     const SGIPlane *p;
     uint32_t old, shift;
 
@@ -2221,7 +2327,7 @@ static uint32_t sgi_kona_gl_load_colour(void *opaque, SGIColourTarget target,
     int bank = sgi_kona_target_bank(s, target);
 
     if (bank >= 0 && s->context_current != SGI_KONA_CONTEXT_NONE) {
-        uint32_t bits = s->gl[s->context_current].cur.index_bits;
+        uint32_t bits = s->state[s->context_current]->gl.cur.index_bits;
 
         if (bits == 8 || bits == 12) {
             return (sgi_plane_load(&s->mem, sgi_kona_plane(s,
@@ -2271,7 +2377,7 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
     if (context >= SGI_KONA_CONTEXTS) {
         return -1;
     }
-    p = &s->gl_pipe[context];
+    p = &s->state[context]->pipe;
     v = p->draw_config;
     if (!p->draw_config_received || v[0] != 0 ||
         !(((v[1] == 8 || v[1] == 12) && !v[2]) ||
@@ -2307,7 +2413,7 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
     };
     /* A rejected live binding must not become an untextured draw. */
     if ((s->context_current != SGI_KONA_CONTEXT_NONE &&
-         s->gl_pipe[s->context_current].texture_rebind_refused) ||
+         s->state[s->context_current]->pipe.texture_rebind_refused) ||
         (!s->textures.bound && s->texture_bind_valid &&
          s->texture_bind[0] != UINT32_MAX &&
          g_hash_table_lookup(s->textures.objects,
@@ -2325,7 +2431,7 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
  */
 static bool sgi_kona_gl_has_depth(SGIKonaState *s, uint32_t i)
 {
-    return i < SGI_KONA_CONTEXTS && s->gl_pipe[i].depth_bits;
+    return i < SGI_KONA_CONTEXTS && s->state[i]->pipe.depth_bits;
 }
 
 static void sgi_kona_renderer_stop(SGIKonaState *s)
@@ -2541,12 +2647,13 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     double window_vertices[3][3];
 
     if (d->context >= SGI_KONA_CONTEXTS ||
-        d->context != s->context_current || !s->gl_grammar ||
+        d->context != s->context_current ||
+        !s->gl_grammar ||
         !s->contexts[d->context].valid ||
-        !s->gl_pipe[d->context].draw_config_received) {
+        !s->state[d->context]->pipe.draw_config_received) {
         return false;
     }
-    visual = s->gl_pipe[d->context].draw_config;
+    visual = s->state[d->context]->pipe.draw_config;
     if (visual[0] || (visual[1] != 8 && visual[1] != 12) || visual[2] ||
         visual[3] > 1 || visual[4] || visual[5] ||
         visual[6] > 32 || (visual[7] != 0 && visual[7] != 8) ||
@@ -2558,8 +2665,9 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         d->line_stipple_enabled || d->line_phase ||
         (d->polygon_modes && (d->polygon_modes[0] != SGI_GL_FILL ||
                               d->polygon_modes[1] != SGI_GL_FILL)) ||
-        s->gl[d->context].raster_enables || s->gl[d->context].lighting ||
-        s->gl[d->context].light_model_two_side) {
+        s->state[d->context]->gl.raster_enables ||
+        s->state[d->context]->gl.lighting ||
+        s->state[d->context]->gl.light_model_two_side) {
         return false;
     }
     if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty ||
@@ -3241,7 +3349,7 @@ static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
  */
 static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
 {
-    const SGIKonaGLWindow *w = &s->gl_window[i];
+    const SGIKonaGLWindow *w = &s->state[i]->window;
     unsigned front = w->double_buffered ? w->displayed_bank : 0;
     SGIGLDrawable d = {
         .bound = w->placed,
@@ -3256,7 +3364,7 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
     } else {
         d.clip.empty = 1;
     }
-    sgi_gl_set_drawable(&s->gl[i], &d);
+    sgi_gl_set_drawable(&s->state[i]->gl, &d);
 }
 
 /*
@@ -3274,26 +3382,32 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
  */
 static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i)
 {
-    s->gl_window[i].displayed_bank ^= 1;
-    trace_sgi_kona_gl_swap(i, s->gl_window[i].displayed_bank);
+    s->state[i]->window.displayed_bank ^= 1;
+    trace_sgi_kona_gl_swap(i, s->state[i]->window.displayed_bank);
     sgi_kona_gl_set_drawable(s, i);
 }
 
-/* Context table entry i starts afresh: GL's initial state, no window. */
-static void sgi_kona_gl_reset_context(SGIKonaState *s, unsigned i)
+/* Prepare complete native defaults before committing a logical generation. */
+static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
+                                    unsigned slot)
 {
     SGIGLSink sink;
+    SGIGLDrawable drawable = {
+        .front = sgi_kona_bank_plane(s, 0),
+        .back = SGI_PLANE_NONE,
+        .clip.empty = 1,
+    };
 
-    sgi_gl_reset(&s->gl[i], i);
+    sgi_gl_init(&state->gl, slot);
     /*
      * glPolygonMode's outlines and points and stippled lines go through
      * the shared context's checked draw path, which this sink has.
      */
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_enable_polygon_modes(&s->gl[i], &sink);
-    sgi_gl_enable_line_stipple(&s->gl[i], &sink);
-    memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
-    s->gl_pipe[i] = (SGIKonaGLPipe) {
+    sgi_gl_enable_polygon_modes(&state->gl, &sink);
+    sgi_gl_enable_line_stipple(&state->gl, &sink);
+    memset(&state->window, 0, sizeof(state->window));
+    state->pipe = (SGIKonaGLPipe) {
         .pixel_zoom = { 0x3f800000, 0x3f800000 },
         .pixel_transfer.scale = { 0x3f800000, 0x3f800000,
                                   0x3f800000, 0x3f800000 },
@@ -3303,8 +3417,8 @@ static void sgi_kona_gl_reset_context(SGIKonaState *s, unsigned i)
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
         .returns.clear_depth = UINT64_C(0x3ff0000000000000),
     };
-    s->gl_attrib_depth[i] = 0;
-    sgi_kona_gl_set_drawable(s, i);
+    state->attrib_depth = 0;
+    sgi_gl_set_drawable(&state->gl, &drawable);
 }
 
 /* The current context's index, or SGI_KONA_CONTEXT_NONE with a log. */
@@ -3332,14 +3446,14 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
     if (i == SGI_KONA_CONTEXT_NONE) {
         return;
     }
-    w = &s->gl_window[i];
+    w = &s->state[i]->window;
     w->x = args[0];
     w->y = args[1];
     if (selector == SGI_KONA_CMD_CONTEXT_RECORDS) {
         if (!w->placed) {
             /* Retirement clears placement, retaining the context visual. */
-            w->double_buffered = s->gl_pipe[i].draw_config_received &&
-                                 s->gl_pipe[i].draw_config[3] != 0;
+            w->double_buffered = s->state[i]->pipe.draw_config_received &&
+                                 s->state[i]->pipe.draw_config[3] != 0;
             w->displayed_bank = 0;
         }
         w->width = args[6];
@@ -3411,16 +3525,16 @@ static void sgi_kona_gl_buffer_config(SGIKonaState *s, const uint32_t *args)
     if (i == SGI_KONA_CONTEXT_NONE) {
         return;
     }
-    sgi_kona_gl_config(&s->gl_pipe[i], false, args);
-    sgi_gl_set_index_mode(&s->gl[i],
+    sgi_kona_gl_config(&s->state[i]->pipe, false, args);
+    sgi_gl_set_index_mode(&s->state[i]->gl,
                            sgi_kona_gl_index_config(args) ? args[2] : 0);
-    s->gl_window[i].double_buffered =
+    s->state[i]->window.double_buffered =
         args[SGI_KONA_GL_BUFFER_CONFIG_DOUBLE] != 0;
-    s->gl_pipe[i].depth_bits = args[SGI_KONA_GL_BUFFER_CONFIG_DEPTH];
-    buffers = s->gl_window[i].double_buffered ? SGI_GL_DRAW_BACK :
+    s->state[i]->pipe.depth_bits = args[SGI_KONA_GL_BUFFER_CONFIG_DEPTH];
+    buffers = s->state[i]->window.double_buffered ? SGI_GL_DRAW_BACK :
                                                 SGI_GL_DRAW_FRONT;
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->gl[i], &sink,
+    sgi_gl_command(&s->state[i]->gl, &sink,
                    &(SGIGLCmd) { SGI_GL_OP_DRAW_BUFFERS, 1, &buffers });
     sgi_kona_gl_set_drawable(s, i);
 }
@@ -3453,7 +3567,7 @@ static void sgi_kona_gl_finish(SGIKonaState *s, uint32_t wait)
             break;
         }
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_command(&s->gl[s->context_current], &sink,
+        sgi_gl_command(&s->state[s->context_current]->gl, &sink,
                        &(SGIGLCmd) { SGI_GL_OP_FINISH, 0, NULL });
         break;
     default:
@@ -3543,7 +3657,7 @@ static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->gl[i], &sink, &cmd);
+    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
 }
 
 /* A slot and 33 transport words, published only after complete decoding. */
@@ -3750,8 +3864,9 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
         cmd.nargs = 3;
         break;
     case SGI_KONA_CMD_GL_DEPTH_RANGE:
-        if (!s->gl[i].in_begin &&
-            !sgi_kona_gl_native_depth(args, s->gl_pipe[i].returns.depth_range,
+        if (!s->state[i]->gl.in_begin &&
+            !sgi_kona_gl_native_depth(args,
+                                      s->state[i]->pipe.returns.depth_range,
                                        2)) {
             return true;
         }
@@ -3999,7 +4114,7 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->gl[i], &sink, &cmd);
+    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
     return true;
 }
 
@@ -4046,7 +4161,7 @@ static void sgi_kona_gl_stipple_rows(SGIKonaState *s, int i)
     for (int r = 0; r < SGI_KONA_GL_STIPPLE_ROWS; r++) {
         rows[r] = revbit32(s->gl_data[r]);
     }
-    sgi_gl_polygon_stipple(&s->gl[i], rows);
+    sgi_gl_polygon_stipple(&s->state[i]->gl, rows);
 }
 
 /*
@@ -4079,8 +4194,9 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
         cmd.nargs = 1;
         break;
     case SGI_KONA_CMD_GL_CLEAR_DEPTH:
-        if (!s->gl[i].in_begin &&
-            !sgi_kona_gl_native_depth(args, &s->gl_pipe[i].returns.clear_depth,
+        if (!s->state[i]->gl.in_begin &&
+            !sgi_kona_gl_native_depth(args,
+                                      &s->state[i]->pipe.returns.clear_depth,
                                        1)) {
             return true;
         }
@@ -4223,7 +4339,7 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->gl[i], &sink, &cmd);
+    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
     return true;
 }
 
@@ -4244,8 +4360,8 @@ static bool sgi_kona_gl_read_enum(uint32_t buffer)
 static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
                                  uint32_t *selection)
 {
-    const SGIKonaGLPipe *p = &s->gl_pipe[i];
-    const SGIKonaGLWindow *w = &s->gl_window[i];
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    const SGIKonaGLWindow *w = &s->state[i]->window;
     uint32_t buffer = p->returns.read_buffer;
     bool back;
 
@@ -4268,8 +4384,8 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
 /* Depth is independent of the colour ReadBuffer selection. */
 static bool sgi_kona_gl_depth_source_ready(SGIKonaState *s, unsigned i)
 {
-    const SGIKonaGLPipe *p = &s->gl_pipe[i];
-    const SGIKonaGLWindow *w = &s->gl_window[i];
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    const SGIKonaGLWindow *w = &s->state[i]->window;
 
     return w->placed && w->width && w->height &&
            sgi_kona_gl_read_compatible(p) && !p->read_binding_unknown &&
@@ -4278,8 +4394,8 @@ static bool sgi_kona_gl_depth_source_ready(SGIKonaState *s, unsigned i)
 
 static bool sgi_kona_gl_stencil_source_ready(SGIKonaState *s, unsigned i)
 {
-    const SGIKonaGLPipe *p = &s->gl_pipe[i];
-    const SGIKonaGLWindow *w = &s->gl_window[i];
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    const SGIKonaGLWindow *w = &s->state[i]->window;
 
     return w->placed && w->width && w->height &&
            sgi_kona_gl_stencil_bits(s, i) == 8 && !p->read_binding_unknown &&
@@ -4429,11 +4545,11 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
     bool depth = type == 0x1801, stencil = type == 0x1802;
     uint32_t index;
 
-    if (i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin) {
+    if (i == SGI_KONA_CONTEXT_NONE || s->state[i]->gl.in_begin) {
         return false;
     }
-    p = &s->gl_pipe[i];
-    w = &s->gl_window[i];
+    p = &s->state[i]->pipe;
+    w = &s->state[i]->window;
     if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])) ||
@@ -4445,7 +4561,7 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
         return false;
     }
     for (unsigned k = 0; !depth && !stencil &&
-                         !s->gl[i].cur.index_bits && k < 4; k++) {
+                         !s->state[i]->gl.cur.index_bits && k < 4; k++) {
         if (!isfinite(sgi_kona_gl_float(p->pixel_transfer.scale[k])) ||
             !isfinite(sgi_kona_gl_float(p->pixel_transfer.bias[k]))) {
             return false;
@@ -4486,7 +4602,7 @@ static void sgi_kona_gl_copy_overlap(SGIKonaState *s, const uint32_t *a)
     }
     for (uint32_t row = 0; row < a[3]; row++) {
         for (uint32_t col = 0; col < a[2]; col++) {
-            uint32_t bits = s->gl[s->context_current].cur.index_bits;
+            uint32_t bits = s->state[s->context_current]->gl.cur.index_bits;
 
             if (bits ?
                 !sgi_kona_gl_read_index(s, source.bank,
@@ -4518,7 +4634,7 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
     float zoom_x, zoom_y;
     bool depth = a[5] == 0x1801, stencil = a[5] == 0x1802;
 
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+    if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
         goto refused;
     }
@@ -4532,7 +4648,7 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                                         a[5], &source)) {
         goto refused;
     }
-    p = &s->gl_pipe[i];
+    p = &s->state[i]->pipe;
     zoom_x = sgi_kona_gl_float(p->pixel_zoom[0]);
     zoom_y = sgi_kona_gl_float(p->pixel_zoom[1]);
     /* The unqueried producer form does not establish its flag's meaning. */
@@ -4559,7 +4675,8 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                 }
             }
         }
-        if (sgi_gl_draw_pixels_stencil(&s->gl[i], &sink, a[2], a[3], pixels,
+        if (sgi_gl_draw_pixels_stencil(&s->state[i]->gl, &sink, a[2], a[3],
+                                       pixels,
                                         zoom_x, zoom_y)) {
             return;
         }
@@ -4582,15 +4699,16 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                     16777215.0;
             }
         }
-        if (sgi_gl_draw_pixels_depth_transfer(&s->gl[i], &sink, a[2], a[3],
-                pixels, zoom_x, zoom_y,
+        if (sgi_gl_draw_pixels_depth_transfer(&s->state[i]->gl, &sink,
+                                              a[2], a[3],
+                                              pixels, zoom_x, zoom_y,
                 sgi_kona_gl_float(p->pixel_transfer.depth_scale),
                 sgi_kona_gl_float(p->pixel_transfer.depth_bias))) {
             return;
         }
         goto refused;
     }
-    if (s->gl[i].cur.index_bits) {
+    if (s->state[i]->gl.cur.index_bits) {
         uint64_t count = (uint64_t)a[2] * a[3];
         g_autofree uint32_t *pixels = g_try_new(uint32_t, count);
 
@@ -4606,14 +4724,15 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                 if (!sgi_kona_gl_read_index(s, source.bank,
                         source.window->x + x + col,
                         source.window->y + y + row,
-                        s->gl[i].cur.index_bits, &index) ||
+                        s->state[i]->gl.cur.index_bits, &index) ||
                     !sgi_kona_gl_colour_index(&p->pixel_transfer,
                                                index, &pixels[at])) {
                     goto refused;
                 }
             }
         }
-        if (sgi_gl_draw_pixels_index(&s->gl[i], &sink, a[2], a[3], pixels,
+        if (sgi_gl_draw_pixels_index(&s->state[i]->gl, &sink, a[2], a[3],
+                                     pixels,
                                       zoom_x, zoom_y)) {
             return;
         }
@@ -4645,7 +4764,8 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                 }
             }
         }
-        if (sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, a[2], a[3],
+        if (sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                                a[2], a[3],
                                                 pixels, zoom_x, zoom_y,
                                                 &identity)) {
             return;
@@ -4656,7 +4776,8 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
     }
-    if (sgi_gl_copy_pixels_rgba_transfer(&s->gl[i], &sink, x, y, a[2], a[3],
+    if (sgi_gl_copy_pixels_rgba_transfer(&s->state[i]->gl, &sink,
+                                         x, y, a[2], a[3],
                                          sgi_kona_gl_copy_read, &source,
                                          zoom_x, zoom_y, &transfer)) {
         return;
@@ -4707,13 +4828,13 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                       " context; no reply\n");
         return false;
     }
-    p = &s->gl_pipe[i];
-    indexed_visual = s->gl[i].cur.index_bits != 0;
+    p = &s->state[i]->pipe;
+    indexed_visual = s->state[i]->gl.cur.index_bits != 0;
     if (format == 11 && !indexed_visual) {
         sgi_kona_gl_set_error(s, 0x502);
         return false;
     }
-    if (s->gl[i].in_begin || p->pixel_transfer_unsupported) {
+    if (s->state[i]->gl.in_begin || p->pixel_transfer_unsupported) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
                       " unsupported; no reply\n");
         return false;
@@ -4761,7 +4882,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
         return false;
     }
     len = row * h;
-    win = &s->gl_window[i];
+    win = &s->state[i]->window;
     px = (int64_t)win->x + x0;
     py = (int64_t)win->y + y0;
     bank = depth ? (sgi_kona_gl_depth_source_ready(s, i) ? 0 : -1) :
@@ -4830,7 +4951,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                 uint8_t *out = data + r * row + c * pixel_bytes;
 
                 if (!sgi_kona_gl_read_index(s, bank, px + c, py + r,
-                                             s->gl[i].cur.index_bits, &raw)) {
+                                             s->state[i]->gl.cur.index_bits,
+                                             &raw)) {
                     return false;
                 }
                 if (format == 11) {
@@ -4938,6 +5060,7 @@ static void sgi_kona_gl_read_dma_start(SGIKonaState *s, const uint32_t *a)
     sgi_kona_gl_read_dma_clear(s);
     d->active = true;
     d->context = s->context_current;
+    d->generation = sgi_kona_context_generation(s, d->context);
     memcpy(d->descriptor, a, sizeof(d->descriptor));
     if (d->context == SGI_KONA_CONTEXT_NONE ||
         !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
@@ -4954,6 +5077,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 
     if (d->active) {
         if (d->refused || d->count || d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
             !sgi_kona_gl_read_dma_layout(d, args,
                                             SGI_KONA_CMD_GL_READ_PIXELS) ||
             !sgi_kona_gl_read_payload(s, args, 64 * MiB, &data, &count)) {
@@ -4984,7 +5108,9 @@ static void sgi_kona_gl_read_dma_finish(SGIKonaState *s, const uint32_t *a)
     uint8_t reason[16];
 
     if (!d->active || d->refused || !d->count || a[0] != 0x100 ||
-        d->context != s->context_current || !s->reason_page_valid ||
+        d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
+        !s->reason_page_valid ||
         !sgi_kona_gl_read_dma_layout(d, d->header, d->selector) ||
         !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
         goto refused;
@@ -5043,16 +5169,17 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         goto unsupported;
     }
     if (name == 0xb70) {
-        memcpy(native, s->gl_pipe[i].returns.depth_range, 2 * sizeof(*native));
+        memcpy(native, s->state[i]->pipe.returns.depth_range,
+               2 * sizeof(*native));
         n = 2;
     } else if (name == 0xb73) {
-        native[0] = s->gl_pipe[i].returns.clear_depth;
+        native[0] = s->state[i]->pipe.returns.clear_depth;
         n = 1;
     } else if (name == 0xbb0) {
-        native[0] = s->gl_attrib_depth[i];
+        native[0] = s->state[i]->attrib_depth;
         n = 1;
     } else if (name >= 0xcb0 && name <= 0xcb9) {
-        const SGIKonaGLPixelTransfer *t = &s->gl_pipe[i].pixel_transfer;
+        const SGIKonaGLPixelTransfer *t = &s->state[i]->pipe.pixel_transfer;
         const SGIKonaGLPixelMap *map = name == 0xcb0 ? &t->index_map :
             name == 0xcb1 ? &t->stencil_map :
             name <= 0xcb5 ? &t->index_rgba[name - 0xcb2] :
@@ -5068,7 +5195,7 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         native[0] = out[0];
         n = 1;
     } else {
-        if (!sgi_gl_get(&s->gl[i], name, out, &n) ||
+        if (!sgi_gl_get(&s->state[i]->gl, name, out, &n) ||
             (info->type != 0x03 && info->type != 0x04 && info->type != 0x13)) {
             goto unsupported;
         }
@@ -5152,7 +5279,7 @@ static void sgi_kona_reply_material(uint8_t *w, const SGIGLMaterial *m)
 static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
                                        uint8_t *w, uint32_t room)
 {
-    const SGIGLContext *c = &s->gl[i];
+    const SGIGLContext *c = &s->state[i]->gl;
     uint32_t used = 0;
 
     memset(w, 0, room);
@@ -5239,23 +5366,22 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
         return;
     }
     len = sgi_kona_gl_push_reply(s, i, mask, reply, sizeof(reply));
-    depth = &s->gl_attrib_depth[i];
+    depth = &s->state[i]->attrib_depth;
     if (*depth >= SGI_KONA_GL_ATTRIB_DEPTH) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glPushAttrib on a full"
                       " attribute stack; nothing kept\n");
-    } else if (sgi_gl_clone(&s->gl_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH +
-                                          *depth], &s->gl[i])) {
-        s->gl_return_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
-            s->gl_pipe[i].returns;
-        s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
+    } else if (sgi_gl_clone(&s->state[i]->attrib[*depth], &s->state[i]->gl)) {
+        s->state[i]->return_attrib[*depth] =
+            s->state[i]->pipe.returns;
+        s->state[i]->zoom_attrib[*depth] =
             (SGIKonaGLPixelZoom) {
-                .factors = { s->gl_pipe[i].pixel_zoom[0],
-                             s->gl_pipe[i].pixel_zoom[1] },
-                .unsupported = s->gl_pipe[i].pixel_zoom_unsupported,
+                .factors = { s->state[i]->pipe.pixel_zoom[0],
+                             s->state[i]->pipe.pixel_zoom[1] },
+                .unsupported = s->state[i]->pipe.pixel_zoom_unsupported,
             };
-        s->gl_transfer_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
-            s->gl_pipe[i].pixel_transfer;
-        s->gl_attrib_mask[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] = mask;
+        s->state[i]->transfer_attrib[*depth] =
+            s->state[i]->pipe.pixel_transfer;
+        s->state[i]->attrib_mask[*depth] = mask;
         ++*depth;
     } else {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib could not keep"
@@ -5452,31 +5578,36 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
     if (i == SGI_KONA_CONTEXT_NONE) {
         return;
     }
-    if (!s->gl_attrib_depth[i] || s->gl[i].in_begin) {
+    if (!s->state[i]->attrib_depth || s->state[i]->gl.in_begin) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glPopAttrib with %s;"
-                      " ignored\n", s->gl[i].in_begin ? "a primitive open" :
+                      " ignored\n", s->state[i]->gl.in_begin ?
+                      "a primitive open" :
                       "an empty attribute stack");
         return;
     }
-    k = i * SGI_KONA_GL_ATTRIB_DEPTH + --s->gl_attrib_depth[i];
-    sgi_kona_gl_restore(&s->gl[i], &s->gl_attrib[k], s->gl_attrib_mask[k]);
-    if (s->gl_attrib_mask[k] & 0x800) {
-        memcpy(s->gl_pipe[i].returns.depth_range,
-               s->gl_return_attrib[k].depth_range,
-               sizeof(s->gl_pipe[i].returns.depth_range));
+    k = --s->state[i]->attrib_depth;
+    sgi_kona_gl_restore(&s->state[i]->gl, &s->state[i]->attrib[k],
+                         s->state[i]->attrib_mask[k]);
+    if (s->state[i]->attrib_mask[k] & 0x800) {
+        memcpy(s->state[i]->pipe.returns.depth_range,
+               s->state[i]->return_attrib[k].depth_range,
+               sizeof(s->state[i]->pipe.returns.depth_range));
     }
-    if (s->gl_attrib_mask[k] & 0x100) {
-        s->gl_pipe[i].returns.clear_depth = s->gl_return_attrib[k].clear_depth;
+    if (s->state[i]->attrib_mask[k] & 0x100) {
+        s->state[i]->pipe.returns.clear_depth =
+            s->state[i]->return_attrib[k].clear_depth;
     }
-    if (s->gl_attrib_mask[k] & 0x20) {
-        memcpy(s->gl_pipe[i].pixel_zoom, s->gl_zoom_attrib[k].factors,
-               sizeof(s->gl_pipe[i].pixel_zoom));
-        s->gl_pipe[i].pixel_zoom_unsupported =
-            s->gl_zoom_attrib[k].unsupported;
-        s->gl_pipe[i].pixel_transfer = s->gl_transfer_attrib[k];
-        s->gl_pipe[i].returns.read_buffer = s->gl_return_attrib[k].read_buffer;
-        s->gl_pipe[i].returns.read_buffer_unsupported =
-            s->gl_return_attrib[k].read_buffer_unsupported;
+    if (s->state[i]->attrib_mask[k] & 0x20) {
+        memcpy(s->state[i]->pipe.pixel_zoom,
+               s->state[i]->zoom_attrib[k].factors,
+               sizeof(s->state[i]->pipe.pixel_zoom));
+        s->state[i]->pipe.pixel_zoom_unsupported =
+            s->state[i]->zoom_attrib[k].unsupported;
+        s->state[i]->pipe.pixel_transfer = s->state[i]->transfer_attrib[k];
+        s->state[i]->pipe.returns.read_buffer =
+            s->state[i]->return_attrib[k].read_buffer;
+        s->state[i]->pipe.returns.read_buffer_unsupported =
+            s->state[i]->return_attrib[k].read_buffer_unsupported;
     }
     trace_sgi_kona_gl_command(SGI_KONA_CMD_GL_POP_ATTRIB, i);
 }
@@ -5506,7 +5637,7 @@ static void sgi_kona_gl_pop_lights(SGIKonaState *s)
 
             memcpy(&a[2], &s->gl_data[l * SGI_KONA_GL_POP_LIGHT_WORDS +
                                       4 * k], 4 * sizeof(uint32_t));
-            sgi_gl_command(&s->gl[i], &sink,
+            sgi_gl_command(&s->state[i]->gl, &sink,
                            &(SGIGLCmd) { SGI_GL_OP_LIGHT, 6, a });
         }
     }
@@ -6152,8 +6283,12 @@ static void sgi_kona_texture_association_forget(SGIKonaState *s,
                                                 uint32_t handle)
 {
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        SGIKonaGLPipe *p = &s->gl_pipe[i];
+        SGIKonaGLPipe *p;
 
+        if (!s->state[i]) {
+            continue;
+        }
+        p = &s->state[i]->pipe;
         for (unsigned slot = 0; slot < 2; slot++) {
             if ((p->texture_assoc_valid & (1u << slot)) &&
                 p->texture_assoc_handle[slot] == handle) {
@@ -6187,7 +6322,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
                       " payload length unknown, stream recovery unsafe\n");
         return 0;
     }
-    p = &s->gl_pipe[i];
+    p = &s->state[i]->pipe;
     if (!h[6]) {
         if (!sgi_kona_gl_pixels_pio_layout(h + 1, p->unpack_row_length,
                                             p->unpack_skip_rows,
@@ -6318,12 +6453,13 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         sgi_kona_gl_stencil_bits(s, i) == 0) {
         sgi_kona_gl_set_error(s, 0x502);
     }
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].cur.index_bits && a[2] < 11) {
+    if (i != SGI_KONA_CONTEXT_NONE &&
+        s->state[i]->gl.cur.index_bits && a[2] < 11) {
         sgi_kona_gl_set_error(s, 0x502);
     }
-    refused = a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+    refused = a[7] || i == SGI_KONA_CONTEXT_NONE || s->state[i]->gl.in_begin ||
         (a[2] == 11 && !p->draw_config_valid) ||
-        (a[2] < 11 && s->gl[i].cur.index_bits) ||
+        (a[2] < 11 && s->state[i]->gl.cur.index_bits) ||
         (a[2] == 12 && sgi_kona_gl_stencil_bits(s, i) != 8) ||
         (a[2] == 13 && p->depth_bits && p->depth_bits != 24) ||
         p->pixel_zoom_unsupported ||
@@ -6339,6 +6475,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     u->header[8] = p->unpack_swap_bytes;
     u->refused = refused;
     u->context = i;
+    u->generation = sgi_kona_context_generation(s, i);
     u->count = layout.payload_words;
     u->draw_pixels = true;
     u->words = g_try_new0(uint32_t, u->count);
@@ -6367,14 +6504,15 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
-        s->gl[i].in_begin || !sgi_kona_gl_pixels_layout(u, &layout)) {
+        !sgi_kona_context_owner(s, i, u->generation) ||
+        s->state[i]->gl.in_begin || !sgi_kona_gl_pixels_layout(u, &layout)) {
         goto out;
     }
-    p = &s->gl_pipe[i];
+    p = &s->state[i]->pipe;
     if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported) {
         goto out;
     }
-    index_destination = indexed_image && s->gl[i].cur.index_bits;
+    index_destination = indexed_image && s->state[i]->gl.cur.index_bits;
     mapped = !depth_image && !stencil_image && !indexed_image &&
              p->pixel_transfer.map_colour;
     scalar = u->header[3] != 1 || indexed_image || mapped;
@@ -6467,7 +6605,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     }
     sgi_kona_gl_sink(s, &sink);
     if (stencil_image) {
-        rendered = sgi_gl_draw_pixels_stencil(&s->gl[i], &sink,
+        rendered = sgi_gl_draw_pixels_stencil(&s->state[i]->gl, &sink,
             layout.width, layout.height, rgba,
             sgi_kona_gl_float(p->pixel_zoom[0]),
             sgi_kona_gl_float(p->pixel_zoom[1]));
@@ -6475,7 +6613,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     }
     if (depth_image) {
         rendered = sgi_gl_draw_pixels_depth_transfer(
-            &s->gl[i], &sink, layout.width, layout.height, depth,
+            &s->state[i]->gl, &sink, layout.width, layout.height, depth,
             sgi_kona_gl_float(p->pixel_zoom[0]),
             sgi_kona_gl_float(p->pixel_zoom[1]),
             sgi_kona_gl_float(p->pixel_transfer.depth_scale),
@@ -6483,7 +6621,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
         goto out;
     }
     if (index_destination) {
-        rendered = sgi_gl_draw_pixels_index(&s->gl[i], &sink,
+        rendered = sgi_gl_draw_pixels_index(&s->state[i]->gl, &sink,
             layout.width, layout.height, rgba,
             sgi_kona_gl_float(p->pixel_zoom[0]),
             sgi_kona_gl_float(p->pixel_zoom[1]));
@@ -6492,7 +6630,8 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     if (indexed_image || mapped) {
         const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
 
-        sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, layout.width,
+        sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                           layout.width,
             layout.height, rgba_double,
             sgi_kona_gl_float(p->pixel_zoom[0]),
             sgi_kona_gl_float(p->pixel_zoom[1]), &identity);
@@ -6507,13 +6646,14 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
         }
     }
     if (scalar) {
-        sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, layout.width,
+        sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                           layout.width,
                                           layout.height, rgba_double,
                                           sgi_kona_gl_float(p->pixel_zoom[0]),
                                           sgi_kona_gl_float(p->pixel_zoom[1]),
                                           &transfer);
     } else {
-        sgi_gl_draw_pixels_rgba_transfer(&s->gl[i], &sink, layout.width,
+        sgi_gl_draw_pixels_rgba_transfer(&s->state[i]->gl, &sink, layout.width,
                                          layout.height, rgba,
                                          sgi_kona_gl_float(p->pixel_zoom[0]),
                                          sgi_kona_gl_float(p->pixel_zoom[1]),
@@ -6531,11 +6671,11 @@ static uint32_t sgi_kona_gl_draw_pixels_open(SGIKonaState *s, int i,
 {
     const SGIKonaGLPipe defaults = { .unpack_alignment = 4 };
     const SGIKonaGLPipe *p = i == SGI_KONA_CONTEXT_NONE ?
-                            &defaults : &s->gl_pipe[i];
+                            &defaults : &s->state[i]->pipe;
 
     sgi_kona_gl_image_clear(s);
     sgi_kona_texture_upload_clear(s);
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+    if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     }
     return sgi_kona_gl_pixels_open(s, i, a, p);
@@ -6549,21 +6689,21 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
     SGIGLPixelTransfer transfer;
 
     if (u->count && u->draw_pixels && s->context_current == i &&
-        !s->gl_pipe[i].pixel_zoom_unsupported &&
-        !s->gl_pipe[i].pixel_transfer_unsupported) {
+        !s->state[i]->pipe.pixel_zoom_unsupported &&
+        !s->state[i]->pipe.pixel_transfer_unsupported) {
         for (unsigned channel = 0; channel < 4; channel++) {
             transfer.scale[channel] = sgi_kona_gl_float(
-                s->gl_pipe[i].pixel_transfer.scale[channel]);
+                s->state[i]->pipe.pixel_transfer.scale[channel]);
             transfer.bias[channel] = sgi_kona_gl_float(
-                s->gl_pipe[i].pixel_transfer.bias[channel]);
+                s->state[i]->pipe.pixel_transfer.bias[channel]);
         }
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_draw_pixels_rgba_transfer(&s->gl[i], &sink, u->header[1],
+        sgi_gl_draw_pixels_rgba_transfer(&s->state[i]->gl, &sink, u->header[1],
                                          u->header[2], u->pixels,
                                          sgi_kona_gl_float(
-                                             s->gl_pipe[i].pixel_zoom[0]),
+                                             s->state[i]->pipe.pixel_zoom[0]),
                                          sgi_kona_gl_float(
-                                             s->gl_pipe[i].pixel_zoom[1]),
+                                             s->state[i]->pipe.pixel_zoom[1]),
                                          &transfer);
     }
     sgi_kona_texture_upload_clear(s);
@@ -6586,7 +6726,7 @@ static uint32_t sgi_kona_gl_bitmap_open(SGIKonaState *s, int i,
     uint32_t words;
 
     memset(u, 0, sizeof(*u));
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+    if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     }
     words = DIV_ROUND_UP((uint64_t)a[7], 4);
@@ -6599,7 +6739,8 @@ static uint32_t sgi_kona_gl_bitmap_open(SGIKonaState *s, int i,
     memcpy(u->header, a, sizeof(u->header));
     u->count = a[7];
     u->context = i;
-    u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+    u->generation = sgi_kona_context_generation(s, i);
+    u->refused = i == SGI_KONA_CONTEXT_NONE || s->state[i]->gl.in_begin ||
                  !a[0] || (a[0] & 7) || !a[1] ||
                  a[0] > SGI_KONA_GL_IMAGE_MAX ||
                  a[1] > SGI_KONA_GL_IMAGE_MAX ||
@@ -6622,14 +6763,15 @@ static void sgi_kona_gl_bitmap_done(SGIKonaState *s)
     SGIGLSink sink;
 
     if (u->count && !u->refused && s->context_current == i &&
-        !s->gl[i].in_begin &&
-        sgi_gl_bitmap_place(&s->gl[i], a[0], a[1],
+        sgi_kona_context_owner(s, i, u->generation) &&
+        !s->state[i]->gl.in_begin &&
+        sgi_gl_bitmap_place(&s->state[i]->gl, a[0], a[1],
                             sgi_kona_gl_float(a[2]), sgi_kona_gl_float(a[3]),
                             sgi_kona_gl_float(a[4]) - sgi_kona_gl_float(a[2]),
                             sgi_kona_gl_float(a[5]) - sgi_kona_gl_float(a[3]),
                             &b)) {
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_bitmap_bytes(&s->gl[i], &sink, &b, 0, u->bytes, u->count);
+        sgi_gl_bitmap_bytes(&s->state[i]->gl, &sink, &b, 0, u->bytes, u->count);
     }
     memset(u, 0, sizeof(*u));
 }
@@ -6644,7 +6786,7 @@ static void sgi_kona_gl_bitmap_move(SGIKonaState *s, int i,
                       " refused\n");
         return;
     }
-    if (s->gl[i].in_begin) {
+    if (s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
         return;
     }
@@ -6658,7 +6800,7 @@ static void sgi_kona_gl_bitmap_move(SGIKonaState *s, int i,
                       " refused\n");
         return;
     }
-    sgi_gl_bitmap_place(&s->gl[i], 0, 0, sgi_kona_gl_float(a[5]),
+    sgi_gl_bitmap_place(&s->state[i]->gl, 0, 0, sgi_kona_gl_float(a[5]),
                         sgi_kona_gl_float(a[6]), sgi_kona_gl_float(a[7]),
                         sgi_kona_gl_float(a[8]), &b);
 }
@@ -6688,7 +6830,7 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     SGIKonaGLImageUpload *u = &s->gl_image_upload;
     const SGIKonaGLPipe defaults = { .unpack_alignment = 4 };
     const SGIKonaGLPipe *p = i == SGI_KONA_CONTEXT_NONE ?
-                            &defaults : &s->gl_pipe[i];
+                            &defaults : &s->state[i]->pipe;
     SGIKonaGLBitmapLayout layout;
     SGIKonaGLImageUpload framing = {
         .row_length = p->unpack_row_length,
@@ -6702,7 +6844,7 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
         sgi_kona_gl_bitmap_move(s, i, a);
         return 0;
     }
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+    if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     }
     memcpy(framing.header, a, sizeof(framing.header));
@@ -6724,8 +6866,9 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     *u = framing;
     u->lsb_first = p->unpack_lsb_first;
     u->context = i;
+    u->generation = sgi_kona_context_generation(s, i);
     u->count = layout.payload_words;
-    u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+    u->refused = i == SGI_KONA_CONTEXT_NONE || s->state[i]->gl.in_begin ||
                  !sgi_kona_gl_bitmap_position_valid(a + 5, false);
     if (u->refused) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap profile refused; %s\n",
@@ -6749,7 +6892,9 @@ static bool sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
     g_autofree uint8_t *bytes = NULL;
 
     if (!u->count || u->refused || i != s->context_current ||
-        s->gl[i].in_begin || !sgi_kona_gl_raw_bitmap_layout(u, &layout)) {
+        !sgi_kona_context_owner(s, i, u->generation) ||
+        s->state[i]->gl.in_begin ||
+        !sgi_kona_gl_raw_bitmap_layout(u, &layout)) {
         goto out;
     }
     row_bytes = DIV_ROUND_UP(layout.width, 8);
@@ -6768,13 +6913,13 @@ static bool sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
             }
         }
     }
-    if (sgi_gl_bitmap_place(&s->gl[i], layout.width, layout.height,
+    if (sgi_gl_bitmap_place(&s->state[i]->gl, layout.width, layout.height,
                             sgi_kona_gl_float(u->header[5]),
                             sgi_kona_gl_float(u->header[6]),
                             sgi_kona_gl_float(u->header[7]),
                             sgi_kona_gl_float(u->header[8]), &b)) {
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_bitmap_bytes(&s->gl[i], &sink, &b, 0, bytes,
+        sgi_gl_bitmap_bytes(&s->state[i]->gl, &sink, &b, 0, bytes,
                             row_bytes * layout.height);
         rendered = true;
     }
@@ -6797,7 +6942,7 @@ static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
     if (!bytes) {
         return sgi_kona_gl_tex_native_words(s, i, h);
     }
-    p = &s->gl_pipe[i];
+    p = &s->state[i]->pipe;
     row = (uint64_t)(p->unpack_row_length ? p->unpack_row_length :
                      h[1]) * bytes;
     stride = ROUND_UP(row, MAX(p->unpack_alignment, 1));
@@ -6829,9 +6974,9 @@ static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
 static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
                                     uint32_t value)
 {
-    SGIKonaGLPipe *p = &s->gl_pipe[i];
+    SGIKonaGLPipe *p = &s->state[i]->pipe;
 
-    if (s->gl[i].in_begin) {
+    if (s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
         return;
     }
@@ -6891,9 +7036,10 @@ static uint32_t sgi_kona_gl_pixel_map_open(SGIKonaState *s, int i,
     memcpy(u->header, a, sizeof(u->header));
     u->token = token;
     u->context = i;
-    u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+    u->generation = sgi_kona_context_generation(s, i);
+    u->refused = i == SGI_KONA_CONTEXT_NONE || s->state[i]->gl.in_begin ||
                  !sgi_kona_gl_pixel_map_header(a);
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+    if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     } else if (a[0] < 0xc70 || a[0] > 0xc79) {
         sgi_kona_gl_set_error(s, 0x500);
@@ -6916,7 +7062,8 @@ static void sgi_kona_gl_pixel_map_done(SGIKonaState *s)
     SGIKonaGLPixelMapUpload *u = &s->gl_map_upload;
     SGIKonaGLPixelMap *map;
 
-    if (u->refused || u->context != s->context_current) {
+    if (u->refused || u->context != s->context_current ||
+        !sgi_kona_context_owner(s, u->context, u->generation)) {
         goto out;
     }
     for (unsigned k = 0; k < u->header[1]; k++) {
@@ -6946,14 +7093,14 @@ static void sgi_kona_gl_pixel_map_done(SGIKonaState *s)
         }
     }
     if (u->header[0] == 0xc70) {
-        map = &s->gl_pipe[u->context].pixel_transfer.index_map;
+        map = &s->state[u->context]->pipe.pixel_transfer.index_map;
     } else if (u->header[0] == 0xc71) {
-        map = &s->gl_pipe[u->context].pixel_transfer.stencil_map;
+        map = &s->state[u->context]->pipe.pixel_transfer.stencil_map;
     } else if (u->header[0] <= 0xc75) {
-        map = &s->gl_pipe[u->context].pixel_transfer.index_rgba[
+        map = &s->state[u->context]->pipe.pixel_transfer.index_rgba[
             u->header[0] - 0xc72];
     } else {
-        map = &s->gl_pipe[u->context].pixel_transfer.colour_rgba[
+        map = &s->state[u->context]->pipe.pixel_transfer.colour_rgba[
             u->header[0] - 0xc76];
     }
     memset(map, 0, sizeof(*map));
@@ -6970,10 +7117,10 @@ out:
 static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
                                        uint32_t pname, uint32_t value)
 {
-    SGIKonaGLPipe *p = &s->gl_pipe[i];
+    SGIKonaGLPipe *p = &s->state[i]->pipe;
     uint32_t *destination;
 
-    if (s->gl[i].in_begin) {
+    if (s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
         return;
     }
@@ -7061,21 +7208,25 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     int i = s->context_current;
     uint32_t words;
 
+    if (s->context_failed) {
+        return;
+    }
     sgi_kona_port_consumed(s, 1 + argc);
     trace_sgi_kona_kernel_command(selector, args[0], argc > 1 ? args[1] : 0,
                                   argc > 2 ? args[2] : 0, argc);
     if (selector != SGI_KONA_CMD_GL_TEX_BIND_2D) {
         s->texture_associate_pending = false;
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+        s->texture_bind_generation = 0;
     }
-    if (i != SGI_KONA_CONTEXT_NONE && !s->gl[i].in_begin &&
-        ((s->gl[i].matrix_mode == 0x1800 && selector >= 0xcf &&
+    if (i != SGI_KONA_CONTEXT_NONE && !s->state[i]->gl.in_begin &&
+        ((s->state[i]->gl.matrix_mode == 0x1800 && selector >= 0xcf &&
           selector <= 0xdf && selector != SGI_KONA_CMD_GL_MATRIX_MODE) ||
          ((selector == 0x24 || selector == 0x25) &&
           (args[0] == 0x8010 || args[0] == 0x8011 || args[0] == 0x8012 ||
            args[0] == 0x8024 || args[0] == 0x802e || args[0] == 0x80d0 ||
            args[0] == 0x80d1 || args[0] == 0x80d2)))) {
-        s->gl_pipe[i].pixel_transfer_unsupported = true;
+        s->state[i]->pipe.pixel_transfer_unsupported = true;
     }
     switch (selector) {
     case SGI_KONA_CMD_GL_BUFFER_CONFIG:
@@ -7085,13 +7236,13 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         if (selector == SGI_KONA_CMD_GL_BUFFER_CONFIG) {
             sgi_kona_gl_buffer_config(s, args);
         } else if (i != SGI_KONA_CONTEXT_NONE) {
-            sgi_kona_gl_config(&s->gl_pipe[i], true, args);
+            sgi_kona_gl_config(&s->state[i]->pipe, true, args);
         }
         return;
     case SGI_KONA_CMD_GL_READ_DRAWABLE:
         if (i != SGI_KONA_CONTEXT_NONE) {
-            s->gl_pipe[i].read_binding_unknown = true;
-            s->gl_pipe[i].read_binding_word = args[0];
+            s->state[i]->pipe.read_binding_unknown = true;
+            s->state[i]->pipe.read_binding_word = args[0];
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unknown read binding;"
                           " reads refused for this context\n");
         }
@@ -7165,7 +7316,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_TEX_BIND_ID:
         s->texture_state_used = true;
         if (i != SGI_KONA_CONTEXT_NONE) {
-            SGIKonaGLPipe *p = &s->gl_pipe[i];
+            SGIKonaGLPipe *p = &s->state[i]->pipe;
 
             p->texture_selector = args[0];
             p->texture_selector_valid = args[0] < 2;
@@ -7173,9 +7324,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_bind[0] = args[0];
         sgi_kona_gl_texture_bind(s);
         if (i != SGI_KONA_CONTEXT_NONE &&
-            s->gl_pipe[i].texture_rebind_refused &&
+            s->state[i]->pipe.texture_rebind_refused &&
             sgi_kona_texture_bound_ordinary_2d(s, args[0])) {
-            s->gl_pipe[i].texture_rebind_refused = false;
+            s->state[i]->pipe.texture_rebind_refused = false;
         }
         return;
     case SGI_KONA_CMD_GL_TEX_BIND:
@@ -7185,9 +7336,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_state_used = true;
         memcpy(s->texture_bind, args, sizeof(s->texture_bind));
         s->texture_bind_context = i;
+        s->texture_bind_generation = sgi_kona_context_generation(s, i);
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_LINEAR &&
             (args[1] >> 28) == 2 && i != SGI_KONA_CONTEXT_NONE) {
-            SGIKonaGLPipe *p = &s->gl_pipe[i];
+            SGIKonaGLPipe *p = &s->state[i]->pipe;
 
             if (handle == UINT32_MAX) {
                 unsigned slot = p->texture_selector;
@@ -7205,6 +7357,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             } else if (p->texture_selector_valid) {
                 s->texture_associate_pending = true;
                 s->texture_associate_context = i;
+                s->texture_associate_generation =
+                    sgi_kona_context_generation(s, i);
                 s->texture_associate_slot = p->texture_selector;
             }
         }
@@ -7244,11 +7398,12 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         sgi_kona_gl_texture_bind(s);
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             i != SGI_KONA_CONTEXT_NONE && i == s->texture_bind_context &&
-            s->gl_pipe[i].texture_rebind_refused &&
+            s->state[i]->pipe.texture_rebind_refused &&
             sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0])) {
-            s->gl_pipe[i].texture_rebind_refused = false;
+            s->state[i]->pipe.texture_rebind_refused = false;
         }
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+        s->texture_bind_generation = 0;
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             s->texture_associate_pending) {
             uint32_t handle = s->texture_bind[0];
@@ -7259,7 +7414,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                 s->texture_record_valid && s->textures.bound &&
                 s->textures.bound_handle == handle && object &&
                 object->native_count) {
-                SGIKonaGLPipe *p = &s->gl_pipe[i];
+                SGIKonaGLPipe *p = &s->state[i]->pipe;
                 unsigned slot = s->texture_associate_slot;
 
                 p->texture_assoc_handle[slot] = handle;
@@ -7331,16 +7486,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_PIXEL_ZOOM:
         if (i != SGI_KONA_CONTEXT_NONE) {
-            if (s->gl[i].in_begin) {
+            if (s->state[i]->gl.in_begin) {
                 sgi_kona_gl_set_error(s, 0x502);
                 return;
             }
-            memcpy(s->gl_pipe[i].pixel_zoom, args,
-                   sizeof(s->gl_pipe[i].pixel_zoom));
-            s->gl_pipe[i].pixel_zoom_unsupported =
+            memcpy(s->state[i]->pipe.pixel_zoom, args,
+                   sizeof(s->state[i]->pipe.pixel_zoom));
+            s->state[i]->pipe.pixel_zoom_unsupported =
                 !isfinite(sgi_kona_gl_float(args[0])) ||
                 !isfinite(sgi_kona_gl_float(args[1]));
-            if (s->gl_pipe[i].pixel_zoom_unsupported) {
+            if (s->state[i]->pipe.pixel_zoom_unsupported) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: nonfinite pixel zoom;"
                               " DrawPixels refused\n");
             }
@@ -7366,12 +7521,12 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_READ_BUFFER:
         if (i != SGI_KONA_CONTEXT_NONE) {
-            s->gl_pipe[i].returns.read_buffer = args[0];
-            s->gl_pipe[i].returns.read_buffer_unsupported =
+            s->state[i]->pipe.returns.read_buffer = args[0];
+            s->state[i]->pipe.returns.read_buffer_unsupported =
                 !sgi_kona_gl_read_enum(args[0]);
-            if (s->gl_pipe[i].returns.read_buffer_unsupported ||
+            if (s->state[i]->pipe.returns.read_buffer_unsupported ||
                 ((args[0] == SGI_GL_BACK || args[0] == 0x402) &&
-                 !s->gl_window[i].double_buffered)) {
+                 !s->state[i]->window.double_buffered)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported read buffer"
                               " 0x%" PRIx32 "; reads refused\n", args[0]);
             }
@@ -8443,6 +8598,7 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
                               setup[2] == 2 ? 4 : 0, 0, 0 };
 
         if (d->refused || d->count || d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
             !sgi_kona_gl_read_dma_layout(d, header,
                                             SGI_KONA_CMD_X_PIXEL_READ) ||
             !sgi_kona_x_read_payload(s, args, 64 * MiB, &data, &count)) {
@@ -9039,6 +9195,7 @@ bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 
     if (!sgi_kona_pixels_dma_waiting(s) || u->refused ||
         u->context != s->context_current ||
+        !sgi_kona_context_owner(s, u->context, u->generation) ||
         !sgi_kona_gl_pixels_dma_layout(u->header, u->row_length,
                                          u->skip_rows, u->skip_pixels,
                                          u->alignment, &d) ||
@@ -9107,6 +9264,7 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 
     if (!sgi_kona_bitmap_dma_waiting(s) || u->refused ||
         u->context != s->context_current ||
+        !sgi_kona_context_owner(s, u->context, u->generation) ||
         !sgi_kona_gl_bitmap_dma_layout(u->header, u->row_length,
                                          u->skip_rows, u->skip_pixels,
                                          u->alignment, &d) ||
@@ -9580,9 +9738,26 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
  */
 static void sgi_kona_retrace_request(SGIKonaState *s, uint32_t tag)
 {
-    trace_sgi_kona_retrace_request(tag, s->context_current);
-    sgi_scanout_queue_swap(&s->scanout, s->dma.seq++,
-                           SGI_KONA_SWAP_COOKIE(s->context_current, tag));
+    uint64_t seq = s->dma.seq++;
+    int slot = s->context_current;
+
+    trace_sgi_kona_retrace_request(tag, slot);
+    if (s->scanout.swap_count < SGI_SWAP_MAX) {
+        for (unsigned i = 0; i < SGI_SWAP_MAX; i++) {
+            if (!s->pending_swaps[i].valid) {
+                s->pending_swaps[i] = (SGIKonaPendingSwap) {
+                    .valid = true,
+                    .seq = seq,
+                    .context = slot,
+                    .generation = slot == SGI_KONA_CONTEXT_NONE ? 0 :
+                                  s->contexts[slot].generation,
+                };
+                break;
+            }
+        }
+    }
+    sgi_scanout_queue_swap(&s->scanout, seq, SGI_KONA_SWAP_COOKIE(slot, tag));
+
 }
 
 static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
@@ -9591,6 +9766,9 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
 {
     SGIKonaState *s = opaque;
 
+    if (s->context_failed) {
+        return;
+    }
     sgi_kona_port_consumed(s, 1 + argc);
     trace_sgi_kona_kernel_command(selector, args[0],
                                   argc > 1 ? args[1] : 0,
@@ -9646,7 +9824,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
             unsigned i = s->context_current;
 
             sgi_kona_gl_read_dma_refuse(s);
-            memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
+            memset(&s->state[i]->window, 0, sizeof(s->state[i]->window));
             sgi_kona_gl_set_drawable(s, i);
             sgi_scanout_invalidate_all(&s->scanout);
         }
@@ -10766,6 +10944,9 @@ static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
     bool counted = sgi_kona_store_counted();
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
+    if (s->context_failed) {
+        return;
+    }
     trace_sgi_kona_pio_write(s->trace_sequence++, cpu, addr, value, size);
 
     if (size != 8) {
@@ -11383,17 +11564,80 @@ static void sgi_kona_test_get_texture_curve_valid(Object *obj, Visitor *v,
     visit_type_bool(v, name, &valid, errp);
 }
 
+static bool sgi_kona_test_get_context_alloc_fail(Object *obj, Error **errp)
+{
+    return SGI_KONA(obj)->test_context_alloc_fail;
+}
+
+static void sgi_kona_test_set_context_alloc_fail(Object *obj, bool fail,
+                                               Error **errp)
+{
+    SGI_KONA(obj)->test_context_alloc_fail = fail;
+}
+
+static bool sgi_kona_test_get_context_failed(Object *obj, Error **errp)
+{
+    return SGI_KONA(obj)->context_failed;
+}
+
+static void sgi_kona_test_get_context_current(Object *obj, Visitor *v,
+                                              const char *name, void *opaque,
+                                              Error **errp)
+{
+    int32_t current = SGI_KONA(obj)->context_current;
+
+    visit_type_int32(v, name, &current, errp);
+}
+
+static void sgi_kona_test_get_context_error(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    g_autofree char *message = g_strdup(SGI_KONA(obj)->context_error);
+
+    visit_type_str(v, name, &message, errp);
+}
+
+static void sgi_kona_test_get_context_digest(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+    g_autofree char *digest = NULL;
+
+    g_checksum_update(sum, (uint8_t *)s->contexts, sizeof(s->contexts));
+    g_checksum_update(sum, (uint8_t *)&s->context_clock,
+                       sizeof(s->context_clock));
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        if (s->state[i]) {
+            g_checksum_update(sum, (uint8_t *)s->state[i],
+                               sizeof(*s->state[i]));
+        }
+    }
+    digest = g_strdup(g_checksum_get_string(sum));
+    visit_type_str(v, name, &digest, errp);
+}
+
 static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
     sgi_kona_texture_init(&s->textures);
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        sgi_gl_init(&s->gl[i], i);
-    }
-    for (unsigned k = 0; k < ARRAY_SIZE(s->gl_attrib); k++) {
-        sgi_gl_init(&s->gl_attrib[k], k / SGI_KONA_GL_ATTRIB_DEPTH);
-    }
+    s->context_current = SGI_KONA_CONTEXT_NONE;
+    object_property_add(obj, "x-test-context-digest", "str",
+                        sgi_kona_test_get_context_digest, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-context-current", "int32",
+                        sgi_kona_test_get_context_current, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-context-error", "str",
+                        sgi_kona_test_get_context_error, NULL, NULL, NULL);
+    object_property_add_bool(obj, "x-test-context-alloc-fail",
+                             sgi_kona_test_get_context_alloc_fail,
+                             sgi_kona_test_set_context_alloc_fail);
+    object_property_add_uint32_ptr(obj, "x-test-context-count",
+                                   &s->context_count, OBJ_PROP_FLAG_READ);
+    object_property_add_bool(obj, "x-test-context-failed",
+                             sgi_kona_test_get_context_failed, NULL);
 
     object_property_add_uint32_ptr(obj, "x-test-gl-data-have", &s->gl_data_have,
                                    OBJ_PROP_FLAG_READ);
@@ -11499,12 +11743,7 @@ static void sgi_kona_instance_finalize(Object *obj)
     if (DEVICE(obj)->realized) {
         address_space_destroy(&s->fabric_as);
     }
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        sgi_gl_cleanup(&s->gl[i]);
-    }
-    for (unsigned k = 0; k < ARRAY_SIZE(s->gl_attrib); k++) {
-        sgi_gl_cleanup(&s->gl_attrib[k]);
-    }
+    sgi_kona_contexts_clear(s);
     sgi_board_memory_cleanup(&s->mem);
     sgi_board_memory_cleanup(&s->desktop_mem);
     sgi_board_memory_cleanup(&s->x_write_mem);
@@ -11545,8 +11784,10 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->texture_record_valid = false;
     s->texture_state_used = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_bind_generation = 0;
     s->texture_associate_pending = false;
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
@@ -11612,13 +11853,10 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->pi_held = 0;
     s->retrace_tag = 0;
     s->retrace_completed = false;
-    memset(s->contexts, 0, sizeof(s->contexts));
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        sgi_kona_gl_reset_context(s, i);
-    }
-    s->context_current = SGI_KONA_CONTEXT_NONE;
-    s->context_page_pending = false;
+    sgi_kona_contexts_clear(s);
     s->context_clock = 0;
+    s->context_failed = false;
+    memset(s->context_error, 0, sizeof(s->context_error));
     s->video_open = false;
     s->video_command = 0;
     s->video_have = 0;
@@ -11773,6 +12011,8 @@ static int sgi_kona_cursor_pre_load(void *opaque)
 {
     SGIKonaState *s = opaque;
 
+    sgi_kona_renderer_stop(s);
+    sgi_kona_contexts_clear(s);
     sgi_kona_gl_read_dma_clear(s);
 
     sgi_kona_texture_reset(&s->textures);
@@ -11788,8 +12028,10 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->texture_record_valid = false;
     s->texture_state_used = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_bind_generation = 0;
     s->texture_associate_pending = false;
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
     memset(s->x_write_mem.bytes, 0, s->x_write_mem.bytes_len);
     sgi_kona_x_write_clear(s);
@@ -11888,9 +12130,10 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
     return true;
 }
 
-static int sgi_kona_post_load(void *opaque, int version_id)
+static int sgi_kona_post_load_validate(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
+    unsigned pending = 0, queued = 0;
 
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
@@ -11967,18 +12210,71 @@ static int sgi_kona_post_load(void *opaque, int version_id)
         s->x_stipple_store_remaining > s->x_stipple_store_height) {
         return -EINVAL;
     }
+    for (unsigned i = 0; i < SGI_SWAP_MAX; i++) {
+        const SGIKonaPendingSwap *owner = &s->pending_swaps[i];
+        bool matched = false;
+
+        if (!owner->valid) {
+            continue;
+        }
+        pending++;
+        if (owner->context < SGI_KONA_CONTEXT_NONE ||
+            owner->context >= SGI_KONA_CONTEXTS ||
+            (owner->context == SGI_KONA_CONTEXT_NONE ? owner->generation != 0 :
+             (!s->state[owner->context] || !owner->generation ||
+              owner->generation > s->contexts[owner->context].generation))) {
+            return -EINVAL;
+        }
+        for (unsigned j = 0; j < i; j++) {
+            if (s->pending_swaps[j].valid &&
+                s->pending_swaps[j].seq == owner->seq) {
+                return -EINVAL;
+            }
+        }
+        for (unsigned j = 0; j < s->scanout.swap_count; j++) {
+            const SGISwapRecord *swap = &s->scanout.swaps[
+                (s->scanout.swap_head + j) % SGI_SWAP_MAX];
+
+            if ((swap->cookie & SGI_KONA_SWAP_COOKIE_FLAG) &&
+                swap->seq == owner->seq &&
+                SGI_KONA_SWAP_COOKIE_SLOT(swap->cookie) == owner->context) {
+                matched = true;
+            }
+        }
+        if (!matched) {
+            return -EINVAL;
+        }
+    }
+    for (unsigned i = 0; i < s->scanout.swap_count; i++) {
+        if (s->scanout.swaps[(s->scanout.swap_head + i) % SGI_SWAP_MAX].cookie &
+            SGI_KONA_SWAP_COOKIE_FLAG) {
+            queued++;
+        }
+    }
+    if (queued != pending ||
+        s->context_error[sizeof(s->context_error) - 1]) {
+        return -EINVAL;
+    }
     /* The current context is a live entry, and only it waits for a page. */
     if (s->context_current < SGI_KONA_CONTEXT_NONE ||
         s->context_current >= SGI_KONA_CONTEXTS ||
         (s->context_current != SGI_KONA_CONTEXT_NONE &&
-         !s->contexts[s->context_current].valid) ||
+         (!s->contexts[s->context_current].valid ||
+          !s->state[s->context_current])) ||
         (s->context_page_pending &&
-         s->context_current == SGI_KONA_CONTEXT_NONE)) {
+         (s->context_current == SGI_KONA_CONTEXT_NONE ||
+          s->context_current == SGI_KONA_CONTEXT_TRANSIENT ||
+          s->contexts[s->context_current].return_page_valid ||
+          s->return_page_valid))) {
         return -EINVAL;
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        const SGIKonaGLPipe *p = &s->gl_pipe[i];
+        const SGIKonaGLPipe *p;
 
+        if (!s->state[i]) {
+            continue;
+        }
+        p = &s->state[i]->pipe;
         if (s->contexts[i].save_offset > 0xfff) {
             return -EINVAL;
         }
@@ -12026,6 +12322,18 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     sgi_scanout_invalidate_all(&s->scanout);
     sgi_kona_cursor_update(s);
     return 0;
+}
+
+static int sgi_kona_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+    int result = sgi_kona_post_load_validate(opaque, version_id);
+
+    if (result) {
+        sgi_kona_renderer_stop(s);
+        sgi_kona_contexts_clear(s);
+    }
+    return result;
 }
 
 /*
@@ -12227,7 +12535,7 @@ static const VMStateDescription vmstate_sgi_kona_context = {
         VMSTATE_UINT32(save_offset, SGIKonaContext),
         VMSTATE_BOOL(return_page_valid, SGIKonaContext),
         VMSTATE_UINT64(return_page, SGIKonaContext),
-        VMSTATE_UINT64(last_used, SGIKonaContext),
+        VMSTATE_UINT64(generation, SGIKonaContext),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -12263,6 +12571,19 @@ static bool sgi_kona_retrace_needed(void *opaque)
     return true;
 }
 
+static const VMStateDescription vmstate_sgi_kona_pending_swap = {
+    .name = TYPE_SGI_KONA "/pending-swap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(valid, SGIKonaPendingSwap),
+        VMSTATE_UINT64(seq, SGIKonaPendingSwap),
+        VMSTATE_UINT64(generation, SGIKonaPendingSwap),
+        VMSTATE_INT32(context, SGIKonaPendingSwap),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_retrace = {
     .name = TYPE_SGI_KONA "/retrace",
     .version_id = 2,
@@ -12270,6 +12591,8 @@ static const VMStateDescription vmstate_sgi_kona_retrace = {
     .needed = sgi_kona_retrace_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(retrace_tag, SGIKonaState),
+        VMSTATE_STRUCT_ARRAY(pending_swaps, SGIKonaState, SGI_SWAP_MAX, 0,
+                             vmstate_sgi_kona_pending_swap, SGIKonaPendingSwap),
         VMSTATE_BOOL(video_delivered, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
@@ -12579,8 +12902,14 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        const SGIKonaGLWindow *w = &s->gl_window[i];
-        const SGIKonaGLPipe *p = &s->gl_pipe[i];
+        const SGIKonaGLWindow *w;
+        const SGIKonaGLPipe *p;
+
+        if (!s->state[i]) {
+            continue;
+        }
+        w = &s->state[i]->window;
+        p = &s->state[i]->pipe;
 
         if (!p->pixel_zoom_unsupported &&
             (!isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
@@ -12596,11 +12925,13 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
               p->depth_bits != p->draw_config[6]))) {
             return -EINVAL;
         }
-        s->gl[i].hw_id = i;
+        s->state[i]->gl.hw_id = i;
         sgi_kona_gl_set_drawable(s, i);
     }
     return 0;
 }
+
+static const VMStateInfo vmstate_sgi_kona_logical_records;
 
 static const VMStateDescription vmstate_sgi_kona_contexts = {
     .name = TYPE_SGI_KONA "/contexts",
@@ -12610,11 +12941,18 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
     .post_load = sgi_kona_contexts_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(gl_tex_table_remaining, SGIKonaState),
-        VMSTATE_STRUCT_ARRAY(contexts, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_context, SGIKonaContext),
+        VMSTATE_UINT64(context_clock, SGIKonaState),
+        {
+            .name = "logical-records",
+            .info = &vmstate_sgi_kona_logical_records,
+            .flags = VMS_SINGLE,
+            .size = sizeof(SGIKonaState),
+            .offset = 0,
+        },
+        VMSTATE_BOOL(context_failed, SGIKonaState),
+        VMSTATE_BUFFER_UNSAFE(context_error, SGIKonaState, 0, 256),
         VMSTATE_INT32(context_current, SGIKonaState),
         VMSTATE_BOOL(context_page_pending, SGIKonaState),
-        VMSTATE_UINT64(context_clock, SGIKonaState),
         VMSTATE_UINT32(gl_port.kick, SGIKonaState),
         VMSTATE_BOOL(gl_port.framing, SGIKonaState),
         VMSTATE_UINT32(gl_port.selector, SGIKonaState),
@@ -12624,37 +12962,15 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              SGI_COMMAND_PORT_MAX_ARGS),
         VMSTATE_BOOL(gl_grammar, SGIKonaState),
         VMSTATE_BOOL(gl_sync_held, SGIKonaState),
-        VMSTATE_STRUCT_ARRAY(gl_window, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_window, SGIKonaGLWindow),
-        VMSTATE_STRUCT_ARRAY(gl, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_gl_context, SGIGLContext),
         VMSTATE_UINT32(gl_token_high, SGIKonaState),
         VMSTATE_UINT32(gl_data_token, SGIKonaState),
         VMSTATE_UINT32(gl_data_remaining, SGIKonaState),
         VMSTATE_UINT32(gl_data_have, SGIKonaState),
         VMSTATE_UINT32_ARRAY(gl_data, SGIKonaState, SGI_KONA_GL_DATA_MAX),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_pipe, SGIKonaGLPipe),
         VMSTATE_UINT32(gl_tex_table_slot, SGIKonaState),
         VMSTATE_UINT32_ARRAY(gl_tex_table_words, SGIKonaState,
                              SGI_KONA_GL_TEX_TABLE_WORDS),
         VMSTATE_BOOL(gl_tex_table_refused, SGIKonaState),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_unpack, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_error, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_pixels, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_zoom, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_transfer_pipe, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_bitmap_unpack, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_pack, SGIKonaGLPipe),
-        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
-                             vmstate_sgi_kona_gl_bitmap_pack, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -12705,6 +13021,7 @@ static bool sgi_kona_gl_image_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_be32(f, u->skip_pixels);
     qemu_put_be32(f, u->alignment);
     qemu_put_be32(f, u->context);
+    qemu_put_be64(f, u->generation);
     qemu_put_be32(f, u->count);
     qemu_put_byte(f, u->lsb_first);
     qemu_put_byte(f, u->refused);
@@ -12732,6 +13049,7 @@ static bool sgi_kona_gl_image_load(QEMUFile *f, void *pv, size_t size,
     tmp.skip_pixels = qemu_get_be32(f);
     tmp.alignment = qemu_get_be32(f);
     tmp.context = qemu_get_be32(f);
+    tmp.generation = qemu_get_be64(f);
     tmp.count = qemu_get_be32(f);
     lsb = qemu_get_byte(f);
     refused = qemu_get_byte(f);
@@ -12785,6 +13103,7 @@ static int sgi_kona_gl_image_post_load(void *opaque, int version_id)
           s->gl_data_have >= u->count ||
           s->gl_data_remaining != u->count - s->gl_data_have)) ||
         (!u->refused && (u->context != s->context_current ||
+        !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid))) {
         return -EINVAL;
     }
@@ -12860,6 +13179,7 @@ static int sgi_kona_gl_bitmap_post_load(void *opaque, int version_id)
         s->gl_data_remaining != words - s->gl_data_have ||
         (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
                         s->context_current != u->context ||
+                        !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid ||
                         !u->header[0] || (u->header[0] & 7) ||
                         !u->header[1] ||
@@ -12890,6 +13210,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_bitmap = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(gl_bitmap_upload.header, SGIKonaState, 8),
         VMSTATE_UINT32(gl_bitmap_upload.context, SGIKonaState),
+        VMSTATE_UINT64(gl_bitmap_upload.generation, SGIKonaState),
         VMSTATE_UINT32(gl_bitmap_upload.count, SGIKonaState),
         VMSTATE_BOOL(gl_bitmap_upload.refused, SGIKonaState),
         VMSTATE_UINT8_ARRAY(gl_bitmap_upload.bytes, SGIKonaState,
@@ -12918,8 +13239,9 @@ static int sgi_kona_gl_pixel_map_post_load(void *opaque, int version_id)
         s->gl_data_remaining != u->header[1] - s->gl_data_have ||
         (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
                         u->context != s->context_current ||
+        !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid ||
-                        s->gl[u->context].in_begin ||
+                        s->state[u->context]->gl.in_begin ||
                         !sgi_kona_gl_pixel_map_header(u->header)))) {
         return -EINVAL;
     }
@@ -12942,6 +13264,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_pixel_map = {
         VMSTATE_UINT32_ARRAY(gl_map_upload.header, SGIKonaState, 4),
         VMSTATE_UINT32(gl_map_upload.token, SGIKonaState),
         VMSTATE_UINT32(gl_map_upload.context, SGIKonaState),
+        VMSTATE_UINT64(gl_map_upload.generation, SGIKonaState),
         VMSTATE_BOOL(gl_map_upload.refused, SGIKonaState),
         VMSTATE_UINT32_ARRAY(gl_map_upload.values, SGIKonaState,
                              SGI_KONA_GL_PIXEL_MAP_MAX),
@@ -12954,67 +13277,166 @@ static const VMStateDescription vmstate_sgi_kona_gl_pixel_map = {
  * copy. Each copy is a whole shared context, refused on load as the
  * contexts are when its own commands could not have left it.
  */
-static bool sgi_kona_gl_attrib_needed(void *opaque)
+static int sgi_kona_gl_state_post_load(void *opaque, int version_id)
 {
-    SGIKonaState *s = opaque;
+    SGIKonaGLState *state = opaque;
 
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        if (s->gl_attrib_depth[i]) {
-            return true;
-        }
+    if (state->attrib_depth > SGI_KONA_GL_ATTRIB_DEPTH) {
+        return -EINVAL;
     }
-    return false;
-}
+    for (unsigned i = 0; i < state->attrib_depth; i++) {
+        const SGIKonaGLPixelZoom *z = &state->zoom_attrib[i];
 
-static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
-{
-    SGIKonaState *s = opaque;
-
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        if (s->gl_attrib_depth[i] > SGI_KONA_GL_ATTRIB_DEPTH) {
+        if (!z->unsupported &&
+            (!isfinite(sgi_kona_gl_float(z->factors[0])) ||
+             !isfinite(sgi_kona_gl_float(z->factors[1])))) {
             return -EINVAL;
-        }
-        for (unsigned depth = 0; depth < s->gl_attrib_depth[i]; depth++) {
-            SGIKonaGLPixelZoom *z =
-                &s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
-
-            if (!z->unsupported &&
-                (!isfinite(sgi_kona_gl_float(z->factors[0])) ||
-                 !isfinite(sgi_kona_gl_float(z->factors[1])))) {
-                return -EINVAL;
-            }
         }
     }
     return 0;
 }
 
-static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
-    .name = TYPE_SGI_KONA "/gl-attrib",
+static const VMStateDescription vmstate_sgi_kona_gl_state = {
+    .name = TYPE_SGI_KONA "/logical-state",
     .version_id = 1,
     .minimum_version_id = 1,
-    .needed = sgi_kona_gl_attrib_needed,
-    .post_load = sgi_kona_gl_attrib_post_load,
+    .post_load = sgi_kona_gl_state_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(gl_attrib_depth, SGIKonaState,
-                             SGI_KONA_CONTEXTS),
-        VMSTATE_UINT32_ARRAY(gl_attrib_mask, SGIKonaState,
-                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH),
-        VMSTATE_STRUCT_ARRAY(gl_attrib, SGIKonaState,
-                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
+        VMSTATE_STRUCT(gl, SGIKonaGLState, 0,
+                       vmstate_sgi_gl_context, SGIGLContext),
+        VMSTATE_STRUCT(window, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_window, SGIKonaGLWindow),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_pipe, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_unpack, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_error, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_pixels, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_zoom, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_transfer_pipe, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_bitmap_unpack, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_pack, SGIKonaGLPipe),
+        VMSTATE_STRUCT(pipe, SGIKonaGLState, 0,
+                       vmstate_sgi_kona_gl_bitmap_pack, SGIKonaGLPipe),
+        VMSTATE_UINT32(attrib_depth, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(attrib_mask, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH),
+        VMSTATE_STRUCT_ARRAY(attrib, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_gl_context, SGIGLContext),
-        VMSTATE_STRUCT_ARRAY(gl_return_attrib, SGIKonaState,
-                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
+        VMSTATE_STRUCT_ARRAY(return_attrib, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_returns, SGIKonaGLReturnState),
-        VMSTATE_STRUCT_ARRAY(gl_zoom_attrib, SGIKonaState,
-                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
+        VMSTATE_STRUCT_ARRAY(zoom_attrib, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_zoom_attrib,
                              SGIKonaGLPixelZoom),
-        VMSTATE_STRUCT_ARRAY(gl_transfer_attrib, SGIKonaState,
-                             SGI_KONA_GL_ATTRIB_SLOTS, 0,
+        VMSTATE_STRUCT_ARRAY(transfer_attrib, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_transfer,
                              SGIKonaGLPixelTransfer),
         VMSTATE_END_OF_LIST()
     },
+};
+
+static bool sgi_kona_logical_records_save(QEMUFile *f, void *pv, size_t size,
+                                         const VMStateField *field,
+                                         JSONWriter *vmdesc, Error **errp)
+{
+    SGIKonaState *s = pv;
+    bool transient = s->state[SGI_KONA_CONTEXT_TRANSIENT] != NULL;
+    int ret;
+
+    qemu_put_be32(f, s->context_count);
+    qemu_put_byte(f, transient);
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        if (i >= s->context_count &&
+            (i != SGI_KONA_CONTEXT_TRANSIENT || !transient)) {
+            continue;
+        }
+        if (!vmstate_save_vmsd(f, &vmstate_sgi_kona_context,
+                               &s->contexts[i], NULL, errp) ||
+            !vmstate_save_vmsd(f, &vmstate_sgi_kona_gl_state,
+                               s->state[i], NULL, errp)) {
+            return false;
+        }
+    }
+    ret = qemu_file_get_error(f);
+    if (ret) {
+        error_setg_errno(errp, -ret, "KONA logical context save failed");
+        return false;
+    }
+    return true;
+}
+
+static bool sgi_kona_logical_records_load(QEMUFile *f, void *pv, size_t size,
+                                         const VMStateField *field,
+                                         Error **errp)
+{
+    SGIKonaState *s = pv;
+    uint32_t count = qemu_get_be32(f);
+    unsigned transient = qemu_get_byte(f);
+
+    if (count > SGI_KONA_CONTEXT_LIMIT || transient > 1) {
+        error_setg(errp, "KONA logical context count is invalid");
+        return false;
+    }
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        SGIKonaContext *c = &s->contexts[i];
+
+        if (i >= count && (i != SGI_KONA_CONTEXT_TRANSIENT || !transient)) {
+            continue;
+        }
+        s->state[i] = sgi_kona_state_new(s, i);
+        if (!s->state[i]) {
+            error_setg(errp, "KONA logical context load allocation failed");
+            goto failed;
+        }
+        if (!vmstate_load_vmsd(f, &vmstate_sgi_kona_context, c, 1, errp) ||
+            !c->valid || !c->generation || c->generation > s->context_clock ||
+            c->save_offset > 0xfff ||
+            !vmstate_load_vmsd(f, &vmstate_sgi_kona_gl_state,
+                               s->state[i], 1, errp)) {
+            if (!errp || !*errp) {
+                error_setg(errp, "KONA logical context metadata is invalid");
+            }
+            goto failed;
+        }
+        for (unsigned j = 0; j < i && j < count; j++) {
+            const SGIKonaContext *other = &s->contexts[j];
+
+            if (i != SGI_KONA_CONTEXT_TRANSIENT &&
+                ((c->save_page == other->save_page &&
+                  c->save_offset == other->save_offset) ||
+                 c->generation == other->generation)) {
+                error_setg(errp, "KONA duplicate logical context key "
+                           "or generation");
+                goto failed;
+            }
+        }
+    }
+    if (qemu_file_get_error(f)) {
+        error_setg(errp, "KONA logical context stream is truncated");
+        goto failed;
+    }
+    s->context_count = count;
+    return true;
+
+failed:
+    sgi_kona_contexts_clear(s);
+    return false;
+}
+
+static const VMStateInfo vmstate_sgi_kona_logical_records = {
+    .name = "sgi-kona-logical-records",
+    .save = sgi_kona_logical_records_save,
+    .load = sgi_kona_logical_records_load,
 };
 
 /*
@@ -13114,6 +13536,7 @@ static bool sgi_kona_gl_read_dma_save(QEMUFile *f, void *pv, size_t size,
     }
     qemu_put_be32(f, d->selector);
     qemu_put_be32(f, d->context);
+    qemu_put_be64(f, d->generation);
     qemu_put_byte(f, d->refused);
     qemu_put_be32(f, d->count);
     if (d->count) {
@@ -13140,6 +13563,7 @@ static bool sgi_kona_gl_read_dma_load(QEMUFile *f, void *pv, size_t size,
     }
     tmp.selector = qemu_get_be32(f);
     tmp.context = qemu_get_be32(f);
+    tmp.generation = qemu_get_be64(f);
     refused = qemu_get_byte(f);
     tmp.refused = refused;
     tmp.count = qemu_get_be32(f);
@@ -13182,6 +13606,7 @@ static int sgi_kona_gl_read_dma_post_load(void *opaque, int version_id)
 
     return !sgi_kona_gl_read_dma_valid(d) ||
            (!d->refused && (d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
                             !s->contexts[d->context].valid)) ? -EINVAL : 0;
 }
 
@@ -13502,12 +13927,16 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
         (s->texture_bind_context != SGI_KONA_CONTEXT_NONE &&
          (s->texture_bind_context < 0 ||
           s->texture_bind_context >= SGI_KONA_CONTEXTS ||
-          s->texture_bind_context != s->context_current)) ||
+          s->texture_bind_context != s->context_current ||
+          !sgi_kona_context_owner(s, s->texture_bind_context,
+                                   s->texture_bind_generation))) ||
         (s->texture_associate_pending &&
          (s->texture_associate_context < 0 ||
           s->texture_associate_context >= SGI_KONA_CONTEXTS ||
           s->texture_associate_slot >= 2 ||
-         s->context_current != s->texture_associate_context))) {
+         s->context_current != s->texture_associate_context ||
+          !sgi_kona_context_owner(s, s->texture_associate_context,
+                                   s->texture_associate_generation)))) {
         return -EINVAL;
     }
     if (u->count) {
@@ -13617,9 +14046,11 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
         VMSTATE_BOOL(texture_record_valid, SGIKonaState),
         VMSTATE_BOOL(texture_state_used, SGIKonaState),
         VMSTATE_INT32(texture_bind_context, SGIKonaState),
+        VMSTATE_UINT64(texture_bind_generation, SGIKonaState),
         VMSTATE_UINT32(texture_record_token, SGIKonaState),
         VMSTATE_BOOL(texture_associate_pending, SGIKonaState),
         VMSTATE_INT32(texture_associate_context, SGIKonaState),
+        VMSTATE_UINT64(texture_associate_generation, SGIKonaState),
         VMSTATE_UINT8(texture_associate_slot, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
@@ -13794,7 +14225,6 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,
-        &vmstate_sgi_kona_gl_attrib,
         &vmstate_sgi_kona_textures,
         &vmstate_sgi_kona_gl_bitmap,
         &vmstate_sgi_kona_gl_pixel_map,

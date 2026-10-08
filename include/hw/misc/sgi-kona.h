@@ -227,23 +227,11 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
  */
 #define SGI_KONA_REASON_CONTEXT_DEACTIVATED 0x101
 
-/*
- * The graphics contexts the model tells apart. The driver gives each
- * context a 64 KiB save area, named by 0x1fd on its first activation and
- * by 0x1f9 on every later one as a page word and a tagged offset word, and
- * a 16 KiB return-data page, registered by the 0x1f2 after its 0x1fd
- * only. An entry is keyed by the save area as sent: save_page the page
- * word, save_offset the offset word's low twelve bits. return_page is the
- * page its 0x1f2 registered, valid only while return_page_valid is set,
- * and last_used orders the entries for eviction.
- *
- * Approximated: eight entries is the model's choice, not a pipe limit,
- * which is unknown. When all eight are in use a new context takes the
- * entry of the one activated longest ago, logged; a later restore of the
- * forgotten context is logged too and answers nowhere.
- */
-#define SGI_KONA_CONTEXTS        8
-#define SGI_KONA_CONTEXT_NONE    (-1)
+/* Logical retention is bounded host policy, not physical pipe capacity. */
+#define SGI_KONA_CONTEXT_LIMIT 64
+#define SGI_KONA_CONTEXT_TRANSIENT SGI_KONA_CONTEXT_LIMIT
+#define SGI_KONA_CONTEXTS (SGI_KONA_CONTEXT_LIMIT + 1)
+#define SGI_KONA_CONTEXT_NONE (-1)
 
 /*
  * The words the model leaves in a context's save area when 0x1fc switches
@@ -264,7 +252,7 @@ typedef struct SGIKonaContext {
     uint32_t save_offset;
     bool return_page_valid;
     uint64_t return_page;
-    uint64_t last_used;
+    uint64_t generation;
 } SGIKonaContext;
 
 /*
@@ -332,6 +320,7 @@ typedef struct SGIKonaGLPixelMapUpload {
     uint32_t header[4];
     uint32_t token;
     uint32_t context;
+    uint64_t generation;
     bool refused;
     uint32_t values[SGI_KONA_GL_PIXEL_MAP_MAX];
 } SGIKonaGLPixelMapUpload;
@@ -392,10 +381,24 @@ typedef struct SGIKonaGLPipe {
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
-enum {
-    SGI_KONA_GL_ATTRIB_SLOTS = SGI_KONA_CONTEXTS *
-                               SGI_KONA_GL_ATTRIB_DEPTH,
-};
+typedef struct SGIKonaGLState {
+    SGIGLContext gl;
+    SGIKonaGLWindow window;
+    SGIKonaGLPipe pipe;
+    uint32_t attrib_depth;
+    SGIGLContext attrib[SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLReturnState return_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLPixelZoom zoom_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLPixelTransfer transfer_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
+    uint32_t attrib_mask[SGI_KONA_GL_ATTRIB_DEPTH];
+} SGIKonaGLState;
+
+typedef struct SGIKonaPendingSwap {
+    bool valid;
+    uint64_t seq;
+    uint64_t generation;
+    int32_t context;
+} SGIKonaPendingSwap;
 
 /*
  * The most words of a GL data run the model keeps: twelve for each of
@@ -763,6 +766,7 @@ typedef struct SGIKonaGLImageUpload {
     uint32_t header[9];
     uint32_t row_length, skip_rows, skip_pixels, alignment;
     uint32_t context, count;
+    uint64_t generation;
     bool lsb_first, refused;
     bool draw_pixels;
     uint32_t *words;
@@ -773,6 +777,7 @@ typedef struct SGIKonaGLImageUpload {
 typedef struct SGIKonaGLBitmapUpload {
     uint32_t header[8];
     uint32_t context;
+    uint64_t generation;
     uint32_t count;
     bool refused;
     uint8_t bytes[SGI_KONA_GL_BITMAP_BYTES];
@@ -782,6 +787,7 @@ typedef struct SGIKonaGLBitmapUpload {
 typedef struct SGIKonaGLReadDMA {
     bool active, refused;
     int32_t context;
+    uint64_t generation;
     uint32_t descriptor[6], header[7];
     uint32_t selector;
     uint32_t count;
@@ -974,25 +980,19 @@ struct SGIKonaState {
     bool retrace_completed;
     bool video_delivered;
 
-    /*
-     * The contexts 0x1fd and 0x1f9 have named (see SGIKonaContext), the
-     * index of the current one or SGI_KONA_CONTEXT_NONE, whether it is a
-     * first activation still waiting for its 0x1f2, and the counter that
-     * stamps each activation's last_used.
-     */
+    /* Stable indices own dynamically allocated native logical state. */
     SGIKonaContext contexts[SGI_KONA_CONTEXTS];
+    SGIKonaGLState *state[SGI_KONA_CONTEXTS];
+    uint32_t context_count;
     int32_t context_current;
     bool context_page_pending;
     uint64_t context_clock;
+    bool context_failed;
+    char context_error[256];
+    SGIKonaPendingSwap pending_swaps[SGI_SWAP_MAX];
+    /* Host-only fault injection, excluded from migration. */
+    bool test_context_alloc_fail;
 
-    /*
-     * Each context table entry's GL context (hw/display/sgi/gl-context.c),
-     * keyed by its index as hw_id, and its window and buffers. A GL
-     * client's drawing commands act on the current entry's.
-     */
-    SGIGLContext gl[SGI_KONA_CONTEXTS];
-    SGIKonaGLWindow gl_window[SGI_KONA_CONTEXTS];
-    SGIKonaGLPipe gl_pipe[SGI_KONA_CONTEXTS];
     SGIKonaTextureState textures;
     SGIKonaTextureUpload texture_upload;
     SGIKonaGLBitmapUpload gl_bitmap_upload;
@@ -1007,25 +1007,12 @@ struct SGIKonaState {
     bool texture_state_used;
     /* Context of a complete bind packet awaiting its texture table. */
     int32_t texture_bind_context;
+    uint64_t texture_bind_generation;
     /* A complete 0x179 commits the preceding explicit association. */
     bool texture_associate_pending;
     int32_t texture_associate_context;
+    uint64_t texture_associate_generation;
     uint8_t texture_associate_slot;
-    /*
-     * Each entry's attribute stack (sgi_kona_gl_push_attrib()): entry i's
-     * copies at gl_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH] on, how many it
-     * holds, and the mask each was pushed with.
-     */
-    SGIGLContext gl_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
-    SGIKonaGLReturnState
-        gl_return_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
-    SGIKonaGLPixelZoom
-        gl_zoom_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
-    SGIKonaGLPixelTransfer
-        gl_transfer_attrib[SGI_KONA_GL_ATTRIB_SLOTS];
-    uint32_t gl_attrib_mask[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
-    uint32_t gl_attrib_depth[SGI_KONA_CONTEXTS];
-
     /*
      * A video command (SGI_KONA_CMD_VIDEO) still collecting its data words
      * and checksum after the command port framed its number: video_have
