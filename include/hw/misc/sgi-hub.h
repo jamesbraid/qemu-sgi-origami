@@ -276,15 +276,12 @@ struct SGIHubState {
     /*
      * One edge per processor for the Hub's non-maskable interrupt and soft
      * reset triggers (the named GPIO outputs "nmi" and "soft-reset"), and
-     * one for a reset of this Hub's node (the output "node-reset"), which
-     * the machine carries out. A reset can come from the port reset
-     * register or arrive over the link.
+     * one for a write of the port reset register with bit 0 set (the output
+     * "machine-restart"), which the machine carries out.
      */
     qemu_irq nmi_irq[SGI_HUB_PROCESSORS];
     qemu_irq soft_reset_irq[SGI_HUB_PROCESSORS];
-    qemu_irq node_reset_irq;
-    /* The last warm reset this Hub took part in. Not migrated. */
-    uint64_t warm_generation;
+    qemu_irq machine_restart_irq;
     /*
      * The Hub's module has no power: its registers do not answer and its
      * port is down at the peer. Derived from the controller, so not

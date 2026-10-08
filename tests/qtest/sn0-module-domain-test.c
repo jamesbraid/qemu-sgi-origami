@@ -464,12 +464,14 @@ static void settle(void)
 }
 
 /*
- * Port reset bit 0 resets this node and no other: its processors start
- * again and its Hub returns to reset, while the error-spool addresses the
- * firmware keeps across a reset survive; the other node runs on untouched,
- * and neither controller notices.
+ * Port reset bit 0 restarts the whole machine, whichever Hub it is written
+ * at: every node's processors start again and every Hub returns to reset,
+ * while the error-spool addresses the firmware keeps across a reset
+ * survive; neither controller notices, and the machine's own reset is not
+ * requested. The datasheet describes the node resetting; the model does not
+ * restart one node alone.
  */
-static void test_port_reset_bit0_resets_one_node(void)
+static void test_port_reset_bit0_restarts_every_node(void)
 {
     QTestState *qts;
 
@@ -484,31 +486,32 @@ static void test_port_reset_bit0_resets_one_node(void)
     assert_reply(qts, SLAVE_HUB, "sel none", "ok");
 
     hub_write(qts, 2, HUB_NI_PORT_RESET, PORT_RESET_LOCAL);
-    wait_starts(qts, 2, 2);
-    wait_starts(qts, 3, 2);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        wait_starts(qts, cpu, 2);
+    }
     settle();
     number_slave(qts);
 
-    g_assert_cmpuint(starts(qts, 0), ==, 1);
-    g_assert_cmpuint(starts(qts, 1), ==, 1);
-    assert_hub_reset(qts, 0, false);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_assert_cmpuint(starts(qts, cpu), ==, 2);
+        assert_running(qts, cpu);
+    }
+    assert_hub_reset(qts, 0, true);
     assert_hub_reset(qts, 2, true);
     assert_spool_kept(qts, 0);
     assert_spool_kept(qts, 2);
     g_assert_cmphex(entry_status(qts, 2) & (STATUS_SR | STATUS_NMI), ==, 0);
-    for (unsigned int cpu = 0; cpu < 4; cpu++) {
-        assert_running(qts, cpu);
-    }
     assert_controllers_kept_state(qts);
     assert_no_machine_reset(qts);
     qtest_quit(qts);
 }
 
 /*
- * Bits 7 and 0 send the warm reset over the link to the node across it,
- * which resets unless its protection register's reset bit is clear.
+ * Bits 7 and 0 together, which is what every software reset writes, do the
+ * same, and a node that cleared its protection register's reset bit
+ * restarts too: the register no longer fences a restart.
  */
-static void test_port_reset_bit7_reaches_unfenced_node(void)
+static void test_port_reset_bits_7_and_0_restart_every_node(void)
 {
     QTestState *qts;
 
@@ -519,6 +522,7 @@ static void test_port_reset_bit7_reaches_unfenced_node(void)
     qts = start_counting();
     plant_node(qts, 0);
     plant_node(qts, 2);
+    hub_write(qts, 2, HUB_NI_PROTECTION, 0);
 
     hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM | PORT_RESET_LOCAL);
     for (unsigned int cpu = 0; cpu < 4; cpu++) {
@@ -534,8 +538,8 @@ static void test_port_reset_bit7_reaches_unfenced_node(void)
     qtest_quit(qts);
 }
 
-/* A node that opted out of resets from the link keeps running. */
-static void test_port_reset_bit7_stops_at_the_fence(void)
+/* Bit 7 alone is unknown and no software writes it: nothing restarts. */
+static void test_port_reset_bit7_alone_does_nothing(void)
 {
     QTestState *qts;
 
@@ -546,31 +550,15 @@ static void test_port_reset_bit7_stops_at_the_fence(void)
     qts = start_counting();
     plant_node(qts, 0);
     plant_node(qts, 2);
-    hub_write(qts, 2, HUB_NI_PROTECTION, 0);
 
-    hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM | PORT_RESET_LOCAL);
-    wait_starts(qts, 0, 2);
-    wait_starts(qts, 1, 2);
-    settle();
-    g_assert_cmpuint(starts(qts, 2), ==, 1);
-    g_assert_cmpuint(starts(qts, 3), ==, 1);
-    assert_hub_reset(qts, 0, true);
-    assert_hub_reset(qts, 2, false);
-    assert_running(qts, 2);
-    assert_running(qts, 3);
-
-    /*
-     * The warm reset alone, with the fence open again, resets the far node
-     * and leaves the sender running: the model's choice for a write no
-     * software makes.
-     */
-    hub_write(qts, 2, HUB_NI_PROTECTION, 1);
     hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM);
-    wait_starts(qts, 2, 2);
-    wait_starts(qts, 3, 2);
     settle();
-    g_assert_cmpuint(starts(qts, 0), ==, 2);
-    g_assert_cmpuint(starts(qts, 1), ==, 2);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_assert_cmpuint(starts(qts, cpu), ==, 1);
+        assert_running(qts, cpu);
+    }
+    assert_hub_reset(qts, 0, false);
+    assert_hub_reset(qts, 2, false);
     assert_no_machine_reset(qts);
     qtest_quit(qts);
 }
@@ -1458,11 +1446,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/module-domain/master-reset",
                    test_master_reset_restarts_only_the_master);
     qtest_add_func("/sn0/module-domain/port-reset-bit0",
-                   test_port_reset_bit0_resets_one_node);
-    qtest_add_func("/sn0/module-domain/port-reset-bit7",
-                   test_port_reset_bit7_reaches_unfenced_node);
-    qtest_add_func("/sn0/module-domain/port-reset-fence",
-                   test_port_reset_bit7_stops_at_the_fence);
+                   test_port_reset_bit0_restarts_every_node);
+    qtest_add_func("/sn0/module-domain/port-reset-bits-7-and-0",
+                   test_port_reset_bits_7_and_0_restart_every_node);
+    qtest_add_func("/sn0/module-domain/port-reset-bit7-alone",
+                   test_port_reset_bit7_alone_does_nothing);
     qtest_add_func("/sn0/module-domain/hub-nmi",
                    test_hub_nmi_reaches_one_processor);
     qtest_add_func("/sn0/module-domain/hub-soft-reset",

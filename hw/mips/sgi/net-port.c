@@ -48,23 +48,6 @@ void sgi_net_port_link_reset(Object *port, unsigned int index)
     }
 }
 
-void sgi_net_port_warm_reset(Object *port, unsigned int index,
-                             uint64_t generation)
-{
-    SGINetPortClass *pc = SGI_NET_PORT_GET_CLASS(port);
-
-    if (pc->warm_reset) {
-        pc->warm_reset(port, index, generation);
-    }
-}
-
-static uint64_t sgi_net_port_warm_generation;
-
-uint64_t sgi_net_port_warm_reset_start(void)
-{
-    return ++sgi_net_port_warm_generation;
-}
-
 bool sgi_net_port_negotiate_eight_bit(Object *port, unsigned int index,
                                       Object *peer_port,
                                       unsigned int peer_index)

@@ -424,10 +424,11 @@
 #define NI_VECTOR_ADDRESS_ERROR 4
 
 /*
- * Port reset: bit 0 resets this Hub, tested alone because the three writers
- * set different companion bits; the model resets the whole machine for it.
- * Bit 1 resets the link and bit 7 sends a warm reset across it. The
- * protection register is not consulted; only OpenBSD arms it.
+ * Port reset: bit 0 resets this Hub's node. The model restarts the whole
+ * machine for it (sgi-hub.rst says why). Bit 1 resets the link. Bit 7 sends
+ * a warm reset across the link, which no software does without bit 0 and
+ * which the model does not carry out. The protection register is not
+ * consulted; only OpenBSD arms it.
 */
 #define HUB_NI_PORT_RESET       0x600008
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
@@ -3388,82 +3389,23 @@ static void sgi_hub_store_pi_calias_size(SGIHubState *s, unsigned arg,
 }
 
 /*
- * This Hub's node resets: the machine cold-starts the node's processors and
- * this Hub, from the main loop.
-*/
-static void sgi_hub_request_node_reset(SGIHubState *s)
-{
-    unsigned int cpu;
-
-    /*
-     * The node's processors stop at the write, from work queued on each of
-     * them: round-robin execution reaches it before it schedules any of
-     * them again, so none runs past the write, where the main loop would
-     * leave the count to host scheduling. Multi-threaded execution bounds
-     * a peer to its own next block boundary. The machine then resets the
-     * Hub and starts the processors again.
-     */
-    for (cpu = 0; cpu < s->cpus; cpu++) {
-        sgi_hub_power_off_cpu(s, cpu);
-    }
-    qemu_irq_pulse(s->node_reset_irq);
-}
-
-/*
- * Bit 7: send a warm reset over the link. It reaches every node the Routers'
- * permits and reset masks and the Hubs' protection let it through. The
- * reset does not return to this Hub, which resets itself only if bit 0 is
- * also set.
-*/
-static void sgi_hub_ni_warm_reset(SGIHubState *s)
-{
-    Object *peer_port;
-    unsigned int peer_index;
-    uint64_t generation = sgi_net_port_warm_reset_start();
-
-    s->warm_generation = generation;
-    if (sgi_hub_net_neighbor(s, &peer_port, &peer_index)) {
-        sgi_net_port_warm_reset(peer_port, peer_index, generation);
-    }
-}
-
-/*
- * A warm reset arrived over the link. A Hub whose protection register's
- * reset bit is clear takes no reset from the link.
- */
-static void sgi_hub_net_port_warm_reset(Object *port, unsigned int index,
-                                        uint64_t generation)
-{
-    SGIHubState *s = SGI_HUB(port);
-
-    if (s->unpowered || s->warm_generation == generation) {
-        return;
-    }
-    s->warm_generation = generation;
-    if (s->ni_protection & NI_PROTECTION_RESET) {
-        sgi_hub_request_node_reset(s);
-    }
-}
-
-/*
- * The port reset register. Each set bit acts and nothing is stored. Bit 0
- * resets this Hub and its node's processors and no other node. Bit 7 sends
- * the warm reset over the link, to the nodes the Routers and protection let
- * it reach; every software reset path writes bits 7 and 0 together, which
- * is the machine when it is unpartitioned. Bit 1 resets the link, and a
- * reset of the node supersedes it. Bit 7 without bit 0 is unknown on
- * hardware and no software does it: the model sends the warm reset and
- * leaves this node alone.
+ * The port reset register. Bit 0 restarts the machine (the output
+ * "machine-restart" carries it to the machine, which stops every processor
+ * and cold-starts every powered module together, from the main loop). Bit 1
+ * resets the link, and a restart supersedes it. Bit 7 alone is unknown on
+ * hardware and no software does it: it is logged and does nothing. Software
+ * that resets the machine writes bits 7 and 0 together.
  */
 static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
-    if (val & NI_PORT_RESET_WARM) {
-        sgi_hub_ni_warm_reset(s);
+    if ((val & NI_PORT_RESET_WARM) && !(val & NI_PORT_RESET_LOCAL)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-hub: port reset bit 7 without bit 0 "
+                      "is not implemented\n");
     }
     if (val & NI_PORT_RESET_LOCAL) {
-        sgi_hub_request_node_reset(s);
+        qemu_irq_pulse(s->machine_restart_irq);
     } else if (val & NI_PORT_RESET_LINK) {
         sgi_hub_ni_link_reset(s);
     }
@@ -5767,7 +5709,8 @@ static void sgi_hub_init(Object *obj)
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(DEVICE(obj), s->soft_reset_irq, "soft-reset",
                              SGI_HUB_PROCESSORS);
-    qdev_init_gpio_out_named(DEVICE(obj), &s->node_reset_irq, "node-reset", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->machine_restart_irq,
+                             "machine-restart", 1);
 
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
     seqlock_init(&s->rt_seq);
@@ -5938,7 +5881,6 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;
     npc->link_reset = sgi_hub_net_port_link_reset;
-    npc->warm_reset = sgi_hub_net_port_warm_reset;
     npc->peer_changed = sgi_hub_net_port_peer_changed;
     npc->receive = sgi_hub_net_port_receive;
     npc->record_check_error = sgi_hub_net_port_record_check_error;

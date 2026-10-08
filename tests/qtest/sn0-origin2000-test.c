@@ -1525,12 +1525,11 @@ static uint64_t router_read(QTestState *qts, uint64_t route, uint64_t address)
  * wide at its port reset. An uncabled port does not come out of reset.
  */
 /*
- * Port reset bits 7 and 0 on one node of the four-node module reset every
- * node the Routers let the warm reset through, and nothing else. Open, it
- * reaches all four. With Router 1's reset mask for the inter-Router port
- * closed to resets arriving from node 0's port, the nodes behind Router 2
- * keep their state while node 1, behind Router 1, does not; and a node whose
- * protection register's reset bit is clear takes no reset either.
+ * Port reset bits 7 and 0 on one node of the four-node module restart the
+ * whole machine: every node resets, whatever the Routers' reset masks or a
+ * node's protection register say. Hardware describes a reset of the node
+ * and a flood the masks and protection steer; the model restarts the
+ * machine and no software depends on the difference.
  */
 #define HUB_NI_SCRATCH_0    0x600100
 #define HUB_NI_PROTECTION   0x600010
@@ -1560,11 +1559,9 @@ static void assert_no_machine_reset(QTestState *qts)
     g_assert_null(qtest_qmp_event_ref(qts, "RESET"));
 }
 
-static void test_warm_reset_follows_the_fences(void)
+static void test_port_reset_restarts_the_machine(void)
 {
     static const bool all[4] = { true, true, true, true };
-    static const bool near[4] = { true, true, false, false };
-    static const bool fenced_node[4] = { true, true, false, true };
     QTestState *qts = start_module();
 
     plant_scratch(qts);
@@ -1572,18 +1569,20 @@ static void test_warm_reset_follows_the_fences(void)
     assert_scratch(qts, all);
     qtest_quit(qts);
 
+    /* A closed reset mask does not hold a node back. */
     qts = start_module();
     plant_scratch(qts);
     vector_write(qts, 0, ROUTER_RESET_MASK(6), 0x3f & ~(1u << 4));
     hub_write(qts, 0, NI_PORT_RESET, (1 << 7) | 1);
-    assert_scratch(qts, near);
+    assert_scratch(qts, all);
     qtest_quit(qts);
 
+    /* Nor does a protection register with its reset bit clear. */
     qts = start_module();
     plant_scratch(qts);
     hub_write(qts, 2, HUB_NI_PROTECTION, 0);
-    hub_write(qts, 0, NI_PORT_RESET, (1 << 7) | 1);
-    assert_scratch(qts, fenced_node);
+    hub_write(qts, 0, NI_PORT_RESET, 1);
+    assert_scratch(qts, all);
     assert_no_machine_reset(qts);
     qtest_quit(qts);
 }
@@ -2711,8 +2710,8 @@ int main(int argc, char **argv)
                     test_module_link_isolation);
     qtest_add_func("sn0/origin2000/router-link-resets",
                    test_router_link_resets);
-    qtest_add_func("sn0/origin2000/warm-reset-fences",
-                   test_warm_reset_follows_the_fences);
+    qtest_add_func("sn0/origin2000/port-reset-restarts-the-machine",
+                   test_port_reset_restarts_the_machine);
     qtest_add_func("sn0/origin2000/module-interlink-status",
                    test_module_interlink_status);
     qtest_add_func("sn0/origin2000/isolated-migration",

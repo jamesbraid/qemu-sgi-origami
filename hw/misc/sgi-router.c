@@ -175,8 +175,6 @@ struct SGIRouterState {
     SGINetCableState *port_cable[SGI_ROUTER_PORTS];
     /* The peer_changed flood generation this Router last processed. */
     uint64_t net_generation;
-    /* The last warm reset this Router saw, so a cyclic flood visits it once. */
-    uint64_t warm_generation;
     /*
      * The Router's module has no power: it answers nothing and its ports are
      * down at their peers. Derived from the controller, so not migrated.
@@ -456,12 +454,12 @@ static void sgi_router_net_port_peer_changed(Object *port, unsigned int index)
 }
 
 /*
- * A warm reset retrains every fitted link. The flood that follows it has
- * already brought this Router's ports up at a width settled from its
- * now-cleared force bits; tell each working peer its link was reset so it
- * settles the same width and latches what it records for a link reset.
- * Without this a Hub that ran eight bits wide only because this Router
- * forced it would stay eight bits wide while the Router read sixteen.
+ * A reset of the Router retrains every fitted link. The links come back up
+ * at a width settled from the Router's now-cleared force bits; tell each
+ * working peer its link was reset so it settles the same width and latches
+ * what it records for a link reset. Without this a Hub that ran eight bits
+ * wide only because this Router forced it would stay eight bits wide while
+ * the Router read sixteen.
  */
 static void sgi_router_retrain_peers(SGIRouterState *s)
 {
@@ -493,47 +491,6 @@ static void sgi_router_net_port_link_reset(Object *port, unsigned int index)
         sgi_router_set_port_link(s, index, true,
             sgi_net_port_negotiate_eight_bit(port, index, peer_port,
                                              peer_index));
-    }
-}
-
-static void sgi_router_reset_state(SGIRouterState *s, bool reset_links);
-static void sgi_router_reset_complete(SGIRouterState *s);
-
-/*
- * A warm reset arrived on @index. It goes out of every working port whose
- * reset mask admits this port, and resets the chip when the protection
- * configuration permits resets from this port. The mask is read as "a reset
- * arriving on port p is forwarded out port n" when bit p-1 of port n's mask
- * is set; the datasheet records the opposite reading as possible, and the
- * PROM programs the masks symmetrically, so software cannot tell. The reset
- * forwards before the chip resets, since a reset clears the masks.
- */
-static void sgi_router_net_port_warm_reset(Object *port, unsigned int index,
-                                           uint64_t generation)
-{
-    SGIRouterState *s = SGI_ROUTER(port);
-    unsigned int out;
-
-    if (s->unpowered || s->warm_generation == generation) {
-        return;
-    }
-    s->warm_generation = generation;
-    for (out = 1; out <= SGI_ROUTER_PORTS; out++) {
-        SGINetCableState *cable = s->port_cable[out - 1];
-        Object *peer_port;
-        unsigned int peer_index;
-
-        if (out != index && s->port_working[out - 1] && cable &&
-            (s->reset_masks[out - 1] & (1u << (index - 1))) &&
-            sgi_net_cable_neighbor(cable, port, out, &peer_port,
-                                   &peer_index)) {
-            sgi_net_port_warm_reset(peer_port, peer_index, generation);
-        }
-    }
-    if (s->protection_config & (1u << (index - 1))) {
-        sgi_router_reset_state(s, true);
-        sgi_router_reset_complete(s);
-        sgi_router_retrain_peers(s);
     }
 }
 
@@ -1772,7 +1729,6 @@ static void sgi_router_class_init(ObjectClass *oc, const void *data)
     pc->link_state = sgi_router_net_port_link_state;
     pc->peer_changed = sgi_router_net_port_peer_changed;
     pc->link_reset = sgi_router_net_port_link_reset;
-    pc->warm_reset = sgi_router_net_port_warm_reset;
     pc->receive = sgi_router_net_port_receive;
     pc->record_check_error = sgi_router_net_port_record_check_error;
 }
