@@ -31,6 +31,8 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
+#include "system/runstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "ui/sgi-renderer.h"
@@ -1228,6 +1230,16 @@ static void mgras_gl_test_set_resource(Object *obj, Visitor *v,
                                        const char *name, void *opaque,
                                        Error **errp);
 
+static void mgras_gl_test_get_failed(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = s->gl_renderer_unavailable;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
 void sgi_mgras_gl_init(SGIMgrasState *s)
 {
     object_property_add_uint64_ptr(OBJECT(s), "x-test-render-snapshots",
@@ -1239,6 +1251,8 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
     object_property_add_uint32_ptr(OBJECT(s), "x-test-render-inject-result",
                                    &s->gl_render_inject_result,
                                    OBJ_PROP_FLAG_READWRITE);
+    object_property_add(OBJECT(s), "x-test-render-failed", "uint32",
+                        mgras_gl_test_get_failed, NULL, NULL, NULL);
     object_property_add(OBJECT(s), "x-test-render-resource-pixel", "uint32",
                         mgras_gl_test_get_resource,
                         mgras_gl_test_set_resource, NULL, NULL);
@@ -1264,10 +1278,12 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
 
     sgi_renderer_free(s->gl_renderer);
     s->gl_renderer = NULL;
-    s->gl_renderer_unavailable = false;
+    s->gl_render_validated = false;
     s->gl_render_snapshots = 0;
     s->gl_render_commits = 0;
-    s->gl_render_result = SGI_GL_DRAW_OK;
+    if (!s->gl_renderer_unavailable) {
+        s->gl_render_result = SGI_GL_DRAW_OK;
+    }
     s->gl_render_inject_result = 0;
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
@@ -3601,9 +3617,11 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
         d->state->drawable.clip.r[0].x0 != 0 ||
         d->state->drawable.clip.r[0].y0 != 0 ||
         d->state->drawable.clip.r[0].x1 != s->width - 1 ||
-        d->state->drawable.clip.r[0].y1 != s->height - 1) {
+        d->state->drawable.clip.r[0].y1 != s->height - 1 ||
+        d->state->scissor_test || d->state->clip_planes) {
         return SGI_GL_DRAW_UNSUPPORTED;
     }
+    s->gl_render_validated = true;
     if (s->gl_render_inject_result) {
         uint32_t injected = s->gl_render_inject_result;
 
@@ -3612,7 +3630,8 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
                                                    SGI_GL_DRAW_RESOURCE_ERROR;
     }
     if (s->gl_renderer_unavailable) {
-        return SGI_GL_DRAW_HOST_ERROR;
+        return s->gl_render_result != SGI_GL_DRAW_OK ?
+               s->gl_render_result : SGI_GL_DRAW_HOST_ERROR;
     }
     if (d->polygon_modes &&
         d->polygon_modes[0] == SGI_GL_FILL &&
@@ -3732,7 +3751,8 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
     if (s->gl_renderer_opt_in) {
         sink.result = &checked;
     }
-    if (op == SGI_GL_OP_BEGIN) {
+    s->gl_render_validated = false;
+    if (op == SGI_GL_OP_BEGIN && !s->gl_renderer_unavailable) {
         s->gl_render_result = SGI_GL_DRAW_OK;
     }
     sgi_gl_command(mgras_gl(s), &sink, &cmd);
@@ -3745,7 +3765,16 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
         const char *failure = checked <= SGI_GL_DRAW_HOST_ERROR ?
                               failures[checked] : "invalid result";
 
-        error_report("sgi-mgras: Mesa checked draw %s", failure);
+        error_report("sgi-mgras: Mesa checked draw %s in GL command %u",
+                     failure, op);
+        if (checked == SGI_GL_DRAW_HOST_ERROR ||
+            checked == SGI_GL_DRAW_RESOURCE_ERROR ||
+            (checked == SGI_GL_DRAW_UNSUPPORTED &&
+             s->gl_render_validated)) {
+            s->gl_renderer_unavailable = true;
+            assert(bql_locked());
+            vm_stop(RUN_STATE_INTERNAL_ERROR);
+        }
     }
     if (mgras_gl(s)->polygon.error == SGI_GL_OUT_OF_MEMORY &&
         !s->gl_oom_logged) {
