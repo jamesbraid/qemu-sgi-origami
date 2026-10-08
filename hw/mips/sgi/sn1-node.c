@@ -1965,6 +1965,10 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
+    if (node->model_node->has_board_kind &&
+        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+        qdev_prop_set_uint32(node->l1, "port-speed-first", 1);
+    }
     if (node->l1_mac_eeprom) {
         qdev_prop_set_string(node->l1, "fuel-mac-eeprom", node->l1_mac_eeprom);
     }

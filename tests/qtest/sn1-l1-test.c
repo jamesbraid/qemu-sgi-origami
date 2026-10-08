@@ -2,6 +2,7 @@
 /* Isolated L1 protocol checks; this fixture does not execute firmware. */
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
+#include "qemu/units.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -9,6 +10,7 @@
 #include "sgi-wait.h"
 #include "sgi-l1-test.h"
 #include "sgi-l1-identity-vectors.h"
+#include "sgi-test.h"
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -712,6 +714,54 @@ static void test_profile_migration(gconstpointer opaque)
     qtest_quit(from);
     unlink(socket);
     g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_port_speed_migration(void)
+{
+    for (unsigned test = 0; test < 2; test++) {
+        bool mismatch = test != 0;
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("sn1-l1-port-speed-XXXXXX",
+                                            &error);
+        g_autofree char *socket = NULL, *uri = NULL;
+        QTestState *from, *to;
+
+        g_assert_no_error(error);
+        socket = g_build_filename(dir, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        from = qtest_init("-M none -cpu R10000 -S -device "
+                          "sgi-l1,id=l1c,port-speed-first=1" UART);
+        to = qtest_initf("-M none -cpu R10000 -S -incoming defer -device "
+                         "sgi-l1,id=l1c,port-speed-first=%u" UART,
+                         mismatch ? 0 : 1);
+        qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+        if (mismatch) {
+            qtest_set_expected_status(to, EXIT_FAILURE);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        if (mismatch) {
+            qtest_wait_qemu(to);
+        } else {
+            uint8_t reply[131];
+            const uint8_t expected[] = {
+                0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0
+            };
+
+            sgi_wait_migration(from, "completed");
+            sgi_wait_migration(to, "completed");
+            g_assert_cmpuint(general(to, 0x000a, NULL, 0, 0, reply), ==,
+                             sizeof(expected));
+            g_assert_cmpmem(reply, sizeof(expected), expected,
+                            sizeof(expected));
+        }
+        qtest_quit(to);
+        qtest_quit(from);
+        unlink(socket);
+        g_assert_cmpint(rmdir(dir), ==, 0);
+    }
 }
 
 static void test_selected_board(void)
@@ -2720,6 +2770,95 @@ static void test_general_reads(void)
     g_assert_cmpuint(general(s, 0x4001, NULL, 0, 0, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x9b);
     qtest_quit(s);
+}
+
+static void test_port_speed(void)
+{
+    QTestState *s;
+    uint8_t reply[131];
+    const uint8_t default_reply[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    const uint8_t ip53[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0
+    };
+
+    s = start();
+    g_assert_cmpuint(general(s, 0x000a, NULL, 0, 0, reply), ==,
+                     sizeof(default_reply));
+    g_assert_cmpmem(reply, sizeof(default_reply), default_reply,
+                    sizeof(default_reply));
+    qtest_quit(s);
+
+    s = qtest_init(
+        "-M none -cpu R10000 -S -device "
+        "sgi-l1,id=l1c,port-speed-first=1" UART);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    g_assert_cmpuint(general(s, 0x000a, NULL, 0, 0, reply), ==,
+                     sizeof(ip53));
+    g_assert_cmpmem(reply, sizeof(ip53), ip53, sizeof(ip53));
+    qtest_system_reset(s);
+    g_assert_cmpuint(general(s, 0x000a, NULL, 0, 0, reply), ==,
+                     sizeof(ip53));
+    g_assert_cmpmem(reply, sizeof(ip53), ip53, sizeof(ip53));
+    qtest_quit(s);
+}
+
+static uint64_t l1_port_speed_first(QTestState *s)
+{
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/node0/l1','property':'port-speed-first'}}");
+
+    return qdict_get_uint(result, "return");
+}
+
+static void test_machine_port_speed_profiles(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *flash = NULL, *prom = NULL;
+    g_autofree char *data = NULL, *clock = NULL;
+    QTestState *s;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-l1-ip53-flash-XXXXXX", &flash, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-ip45-prom-XXXXXX", &prom, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-ip53-data-XXXXXX", &data, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-ip53-clock-XXXXXX", &clock, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    s = qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
+                    "-cpu R16000,r16000-experimental=on,"
+                    "r16000-reset-mode=0x009cad85,"
+                    "r16000-scache-bytes=0x800000 "
+                    "-drive if=pflash,index=0,file=%s,format=raw "
+                    "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                    "format=raw "
+                    "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                    "format=raw -display none -S",
+                    flash, data, clock);
+    g_assert_cmpuint(l1_port_speed_first(s), ==, 1);
+    qtest_quit(s);
+
+    s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                    "-bios %s -S", prom);
+    g_assert_cmpuint(l1_port_speed_first(s), ==, 0);
+    qtest_quit(s);
+    g_unlink(flash);
+    g_unlink(prom);
+    g_unlink(data);
+    g_unlink(clock);
 }
 
 /*
@@ -4777,6 +4916,11 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(6), test_profile_migration);
     qtest_add_data_func("sn1/l1/profile-migration/unknown-to-ip45",
                         GUINT_TO_POINTER(7), test_profile_migration);
+    qtest_add_func("sn1/l1/port-speed/migration",
+                   test_port_speed_migration);
+    qtest_add_func("sn1/l1/port-speed", test_port_speed);
+    qtest_add_func("sn1/l1/port-speed/machine-profiles",
+                   test_machine_port_speed_profiles);
     qtest_add_func("sn1/l1/expansion/migration", test_expansion_migration);
     qtest_add_func("sn1/l1/expansion/input-refusal",
                    test_expansion_input_refusal);
