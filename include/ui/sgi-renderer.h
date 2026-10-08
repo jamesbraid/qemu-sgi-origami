@@ -24,8 +24,16 @@ typedef struct SGIRendererRequest {
     uint8_t rgba[SGI_RENDERER_BYTES];
 } SGIRendererRequest;
 
-#define SGI_RENDERER_FRAME_VERTEX_FLOATS 8
+#define SGI_RENDERER_FRAME_VERTEX_FLOATS 12
 #define SGI_RENDERER_CLEAR_RECTS 16
+
+typedef struct SGIRendererTexture2D {
+    uint32_t width, height;
+    uint32_t env_mode, wrap_s, wrap_t;
+    uint8_t component_bits;
+    const uint32_t *slots; /* Raw RGBA slots, bottom row first. */
+    size_t capacity_slots;
+} SGIRendererTexture2D;
 
 typedef struct SGIRendererClearRect {
     uint32_t x0, y0, x1, y1; /* Inclusive, bottom-origin plane pixels. */
@@ -33,7 +41,8 @@ typedef struct SGIRendererClearRect {
 
 typedef struct SGIRendererFrame {
     uint32_t width, height, count;
-    const float *vertices; /* position xyzw, then premade colour rgba */
+    const float *vertices; /* position xyzw, colour rgba, texcoord strq */
+    SGIRendererTexture2D texture;
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
     uint32_t clip_count; /* Zero means the full plane. */
@@ -61,6 +70,7 @@ typedef struct SGIRendererOps {
     void *(*create)(SGIRenderCreateResult *result, Error **errp);
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
     bool (*draw_frame)(void *opaque, SGIRendererFrame *frame, Error **errp);
+    bool (*supports_texture)(void *opaque, Error **errp);
     bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
     void (*destroy)(void *opaque);
 } SGIRendererOps;
@@ -75,6 +85,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp);
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp);
+bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp);
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
 /*

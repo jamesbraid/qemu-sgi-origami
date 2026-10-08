@@ -19,6 +19,7 @@ typedef struct SGIRendererGL {
     QemuEGLDisplayLease *lease;
     SGIRendererRequest request;
     SGIRendererFrame frame;
+    uint32_t *frame_texture_slots;
     SGIRendererClear clear;
     SGIRendererWorkKind work_kind;
     Error *error;
@@ -28,6 +29,10 @@ typedef struct SGIRendererGL {
     bool success;
     EGLContext context;
     GLuint program;
+    GLuint texture_program;
+    Error *texture_error;
+    GLint texture_sampler, texture_mode, texture_wrap_s;
+    GLint texture_wrap_t, texture_shade;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -65,6 +70,100 @@ static GLuint renderer_shader(SGIRendererGL *renderer, GLenum type,
     return shader;
 }
 
+static bool renderer_gl_texture_program(SGIRendererGL *renderer)
+{
+    static const char *vertex_source =
+        "#version 450 compatibility\n"
+        "out vec4 smooth_colour;\n"
+        "flat out vec4 flat_colour;\n"
+        "out vec4 texture_coord;\n"
+        "void main() {\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+        "  smooth_colour = gl_Color; flat_colour = gl_Color;\n"
+        "  texture_coord = gl_MultiTexCoord0;\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 450 compatibility\n"
+        "uniform usampler2D image_slots;\n"
+        "uniform int environment_mode, repeat_s, repeat_t, flat_shade;\n"
+        "in vec4 smooth_colour;\n"
+        "flat in vec4 flat_colour;\n"
+        "in vec4 texture_coord;\n"
+        "layout(location=0) out vec4 pixel;\n"
+        "void main() {\n"
+        "  ivec2 size = textureSize(image_slots, 0);\n"
+        "  dvec2 st = dvec2(texture_coord.xy) / double(texture_coord.w);\n"
+        "  dvec2 uv = dvec2(repeat_s != 0 ? fract(st.x) :\n"
+        "                    clamp(st.x, 0.0, 1.0),\n"
+        "                    repeat_t != 0 ? fract(st.y) :\n"
+        "                    clamp(st.y, 0.0, 1.0));\n"
+        "  ivec2 xy = clamp(ivec2(floor(uv * dvec2(size))),\n"
+        "                   ivec2(0), size - ivec2(1));\n"
+        "  uvec4 texel = texelFetch(image_slots, xy, 0);\n"
+        "  dvec4 primary = dvec4(flat_shade != 0 ? flat_colour :\n"
+        "                         smooth_colour);\n"
+        "  dvec4 bytes;\n"
+        "  if (environment_mode == 0) {\n"
+        "    bytes = dvec4(texel);\n"
+        "  } else if (environment_mode == 1) {\n"
+        "    bytes = primary * dvec4(texel);\n"
+        "  } else {\n"
+        "    double alpha = double(texel.a);\n"
+        "    bytes.rgb = (primary.rgb * (255.0 - alpha) * 255.0 +\n"
+        "                 dvec3(texel.rgb) * alpha) / 255.0;\n"
+        "    bytes.a = primary.a * 255.0;\n"
+        "  }\n"
+        "  uvec4 rounded = uvec4(floor(clamp(bytes, 0.0, 255.0) + 0.5));\n"
+        "  pixel = vec4(rounded) / 255.0;\n"
+        "}\n";
+    GLuint vertex, fragment;
+    GLint linked;
+    char log[512];
+
+    vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
+    if (!vertex) {
+        return false;
+    }
+    fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return false;
+    }
+    renderer->texture_program = glCreateProgram();
+    glAttachShader(renderer->texture_program, vertex);
+    glAttachShader(renderer->texture_program, fragment);
+    glLinkProgram(renderer->texture_program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    glGetProgramiv(renderer->texture_program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        glGetProgramInfoLog(renderer->texture_program, sizeof(log), NULL, log);
+        error_setg(&renderer->error, "SGI texture program failed: %s", log);
+        return false;
+    }
+    renderer->texture_sampler = glGetUniformLocation(renderer->texture_program,
+                                                      "image_slots");
+    renderer->texture_mode = glGetUniformLocation(renderer->texture_program,
+                                                   "environment_mode");
+    renderer->texture_wrap_s = glGetUniformLocation(renderer->texture_program,
+                                                     "repeat_s");
+    renderer->texture_wrap_t = glGetUniformLocation(renderer->texture_program,
+                                                     "repeat_t");
+    renderer->texture_shade = glGetUniformLocation(renderer->texture_program,
+                                                    "flat_shade");
+    if (renderer->texture_sampler < 0 || renderer->texture_mode < 0 ||
+        renderer->texture_wrap_s < 0 || renderer->texture_wrap_t < 0 ||
+        renderer->texture_shade < 0 ||
+        renderer_gl_error(renderer, "texture program setup")) {
+        if (!renderer->error) {
+            error_setg(&renderer->error,
+                       "SGI texture program is missing a uniform");
+        }
+        return false;
+    }
+    return true;
+}
+
 static bool renderer_gl_start(SGIRendererGL *renderer)
 {
     static const char *vertex_source =
@@ -87,6 +186,7 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     EGLDisplay display = qemu_egl_display_lease_display(renderer->lease);
     GLuint vertex, fragment;
     GLint linked;
+    GLint major, minor;
     char log[512];
 
     if (!qemu_egl_display_lease_usable(renderer->lease) ||
@@ -151,6 +251,18 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         error_setg(&renderer->error, "SGI renderer framebuffer is incomplete");
         return false;
     }
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    if (major > 4 || (major == 4 && minor >= 5)) {
+        if (!renderer_gl_texture_program(renderer)) {
+            renderer->texture_error = renderer->error;
+            renderer->error = NULL;
+        }
+    } else {
+        error_setg(&renderer->texture_error,
+                   "SGI typed textures require OpenGL 4.5, host has %d.%d",
+                   major, minor);
+    }
     return !renderer_gl_error(renderer, "startup");
 }
 
@@ -207,7 +319,7 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
 static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
-    GLuint texture = 0, framebuffer = 0, stencil = 0;
+    GLuint texture = 0, sample = 0, framebuffer = 0, stencil = 0;
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
@@ -217,7 +329,9 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, frame->width, frame->height,
+    glTexImage2D(GL_TEXTURE_2D, 0,
+                 frame->texture.slots ? GL_RGBA8 : GL_RGBA16,
+                 frame->width, frame->height,
                  0, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -264,6 +378,28 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glDisable(GL_FOG);
     glDisable(GL_ALPHA_TEST);
     glDisable(GL_COLOR_LOGIC_OP);
+    if (frame->texture.slots) {
+        glActiveTexture(GL_TEXTURE0);
+        glGenTextures(1, &sample);
+        glBindTexture(GL_TEXTURE_2D, sample);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI,
+                     frame->texture.width, frame->texture.height, 0,
+                     GL_RGBA_INTEGER, GL_UNSIGNED_INT,
+                     frame->texture.slots);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glUseProgram(renderer->texture_program);
+        glUniform1i(renderer->texture_sampler, 0);
+        glUniform1i(renderer->texture_mode,
+                    frame->texture.env_mode == GL_REPLACE ? 0 :
+                    frame->texture.env_mode == GL_MODULATE ? 1 : 2);
+        glUniform1i(renderer->texture_wrap_s,
+                    frame->texture.wrap_s == GL_REPEAT);
+        glUniform1i(renderer->texture_wrap_t,
+                    frame->texture.wrap_t == GL_REPEAT);
+        glUniform1i(renderer->texture_shade,
+                    frame->shade_model == GL_FLAT);
+    }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glStencilMask(0xff);
     glClearStencil(0);
@@ -299,6 +435,9 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
 
         glColor4fv(vertex + 4);
+        if (frame->texture.slots) {
+            glTexCoord4fv(vertex + 8);
+        }
         glVertex4fv(vertex);
     }
     glEnd();
@@ -333,6 +472,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         }
     }
 out:
+    glUseProgram(0);
+    glDisable(GL_TEXTURE_2D);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_STENCIL_TEST);
     glStencilMask(0xff);
@@ -341,6 +482,7 @@ out:
     glDeleteRenderbuffers(1, &stencil);
     glDeleteFramebuffers(1, &framebuffer);
     glDeleteTextures(1, &texture);
+    glDeleteTextures(1, &sample);
     return !renderer->error;
 }
 
@@ -455,6 +597,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
             glDeleteBuffers(1, &renderer->vbo);
             glDeleteVertexArrays(1, &renderer->vao);
             glDeleteProgram(renderer->program);
+            glDeleteProgram(renderer->texture_program);
             clean = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                     EGL_NO_CONTEXT);
         }
@@ -526,6 +669,7 @@ static void renderer_gl_destroy(void *opaque)
     qemu_mutex_unlock(&renderer->mutex);
     qemu_thread_join(&renderer->thread);
     error_free(renderer->error);
+    error_free(renderer->texture_error);
     qemu_cond_destroy(&renderer->condition);
     qemu_mutex_destroy(&renderer->mutex);
     g_free(renderer);
@@ -605,10 +749,24 @@ static bool renderer_gl_draw_frame(void *opaque, SGIRendererFrame *frame,
                                    Error **errp)
 {
     SGIRendererGL *renderer = opaque;
+    uint32_t *texture = NULL;
     bool success;
 
+    if (frame->texture.slots) {
+        size_t bytes = (size_t)frame->texture.width * frame->texture.height *
+                       4 * sizeof(*texture);
+
+        texture = g_try_malloc(bytes);
+        if (!texture) {
+            error_setg(errp, "Cannot allocate SGI GL worker texture");
+            return false;
+        }
+        memcpy(texture, frame->texture.slots, bytes);
+    }
     qemu_mutex_lock(&renderer->mutex);
     renderer->frame = *frame;
+    renderer->frame_texture_slots = texture;
+    renderer->frame.texture.slots = texture;
     renderer->work_kind = SGI_RENDERER_WORK_FRAME;
     renderer->pending = true;
     qemu_cond_signal(&renderer->condition);
@@ -616,12 +774,27 @@ static bool renderer_gl_draw_frame(void *opaque, SGIRendererFrame *frame,
         qemu_cond_wait(&renderer->condition, &renderer->mutex);
     }
     success = renderer->success;
+    g_clear_pointer(&renderer->frame_texture_slots, g_free);
+    renderer->frame.texture.slots = NULL;
     if (!success) {
         error_propagate(errp, renderer->error);
         renderer->error = NULL;
     }
     qemu_mutex_unlock(&renderer->mutex);
     return success;
+}
+
+static bool renderer_gl_supports_texture(void *opaque, Error **errp)
+{
+    SGIRendererGL *renderer = opaque;
+
+    if (!renderer->texture_program || renderer->texture_error) {
+        error_setg(errp, "%s", renderer->texture_error ?
+                   error_get_pretty(renderer->texture_error) :
+                   "SGI typed texture program is unavailable");
+        return false;
+    }
+    return true;
 }
 
 static bool renderer_gl_clear(void *opaque, SGIRendererClear *clear,
@@ -651,6 +824,7 @@ static const SGIRendererOps renderer_gl_ops = {
     .create = renderer_gl_create,
     .draw = renderer_gl_draw,
     .draw_frame = renderer_gl_draw_frame,
+    .supports_texture = renderer_gl_supports_texture,
     .clear = renderer_gl_clear,
     .destroy = renderer_gl_destroy,
 };

@@ -198,6 +198,18 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         error_setg(errp, "Invalid SGI OpenGL frame request");
         return false;
     }
+    if (frame->texture.slots &&
+        (!frame->texture.width || !frame->texture.height ||
+         frame->texture.width > INT_MAX ||
+         frame->texture.height > INT_MAX ||
+         frame->texture.width > SIZE_MAX / frame->texture.height / 4 /
+                                sizeof(*frame->texture.slots) ||
+         frame->texture.component_bits != 8 ||
+         frame->texture.capacity_slots <
+             (size_t)frame->texture.width * frame->texture.height * 4)) {
+        error_setg(errp, "Invalid SGI OpenGL texture request");
+        return false;
+    }
     for (unsigned i = 0; i < frame->clip_count; i++) {
         const SGIRendererClearRect *rect = &frame->clips[i];
 
@@ -217,6 +229,18 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
     }
     if (!renderer->ops->draw_frame(renderer->opaque, frame, errp)) {
         renderer->failed = true;
+        return false;
+    }
+    return true;
+}
+
+bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp)
+{
+    if (!renderer || !renderer->ops->supports_texture ||
+        !renderer->ops->supports_texture(renderer->opaque, errp)) {
+        if (errp && !*errp) {
+            error_setg(errp, "SGI OpenGL typed texture support is unavailable");
+        }
         return false;
     }
     return true;
