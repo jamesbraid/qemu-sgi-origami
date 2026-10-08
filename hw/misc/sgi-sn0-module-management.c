@@ -999,15 +999,22 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
     mgmt_reset_state(s);
     /*
      * Only the cabinet's own start resets this device: a module's reset or
-     * power cycle leaves the controller alone. The start powers the module
-     * up at once, which stands for the controller's start-up power-up with
-     * no delay. That holds only while start-delay-ms is zero, the default:
-     * with a delay set the module starts off and the controller powers it up
-     * when the delay ends.
+     * power cycle leaves the controller alone. The module starts off. With
+     * no start delay, the default, the controller powers it up now through
+     * its power-up path, here in the reset, so power is on before any
+     * processor runs; with a delay it counts that delay on its own timer and
+     * runs the whole power-up sequence. A module with no power path starts
+     * powered, as it has no controller to power it. The line is not dropped
+     * for a power-up that follows at once: it would only take every window of
+     * the module away and put it back.
      */
-    s->power_on = !sgi_elsc_start_delayed(s->msc);
+    s->power_on = !s->can_power;
     s->publication_enabled = s->power_on;
-    mgmt_drive_power(s);
+    if (s->can_power && !sgi_elsc_start_delayed(s->msc)) {
+        sgi_elsc_power_up_at_start(s->msc);
+    } else {
+        mgmt_drive_power(s);
+    }
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                           SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);

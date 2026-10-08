@@ -462,10 +462,17 @@ void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque);
 
 /*
- * Whether the controller starts its module off and powers it up after a
- * delay of its own (start-delay-ms), rather than starting it powered.
+ * Whether the controller powers its module up after a delay of its own
+ * (start-delay-ms) rather than at once when it starts.
  */
 bool sgi_elsc_start_delayed(SGIElscState *s);
+
+/*
+ * The controller's start-up power-up with no delay: the power-up that ends
+ * the sequence, run now. The module-management device calls it from its
+ * reset, so the module is powered before any processor runs.
+ */
+void sgi_elsc_power_up_at_start(SGIElscState *s);
 
 /* Whether the controller's module is powered. */
 bool sgi_elsc_module_powered(SGIElscState *s);

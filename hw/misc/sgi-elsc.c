@@ -1459,10 +1459,30 @@ static void elsc_remove_power(SGIElscState *s)
 }
 
 /*
+ * Power is back: the cold-power latch is set, the display shows the
+ * power-up if @announce, and the module's power output rises, which
+ * cold-starts that module and no other.
+ */
+static void elsc_power_up_complete(SGIElscState *s, bool announce)
+{
+    s->power_sequence = false;
+    s->cold_power_on = true;
+    if (announce) {
+        elsc_status(s, SGI_ELSC_STATUS_POWER_UP);
+    }
+    if (s->module_ops && s->module_ops->execute) {
+        s->module_ops->execute(s->module_opaque, ELSC_ACTION_POWER_UP);
+    } else {
+        s->module_off = false;
+        qemu_set_irq(s->power_out, 1);
+    }
+    /* A master that has powered up tells its slave to. */
+    elsc_forward(s, SGI_ELSC_FORWARD_POWER_UP);
+}
+
+/*
  * The countdown or the hold ran out. After the off interval the power-up
- * sequence starts; after the hold, power is back: the cold-power latch is
- * set and the module's power output rises, which cold-starts that module
- * and no other.
+ * sequence starts; after the hold, power is back.
  */
 static void elsc_power_up_expired(void *opaque)
 {
@@ -1472,17 +1492,17 @@ static void elsc_power_up_expired(void *opaque)
         elsc_power_sequence(s);
         return;
     }
-    s->power_sequence = false;
-    s->cold_power_on = true;
-    elsc_status(s, SGI_ELSC_STATUS_POWER_UP);
-    if (s->module_ops && s->module_ops->execute) {
-        s->module_ops->execute(s->module_opaque, ELSC_ACTION_POWER_UP);
-    } else {
-        s->module_off = false;
-        qemu_set_irq(s->power_out, 1);
-    }
-    /* A master that has powered up tells its slave to. */
-    elsc_forward(s, SGI_ELSC_FORWARD_POWER_UP);
+    elsc_power_up_complete(s, true);
+}
+
+void sgi_elsc_power_up_at_start(SGIElscState *s)
+{
+    /*
+     * The power-up that ends the sequence, with none of its wait. The
+     * display keeps the version string it shows at start: whether a
+     * start-up power-up replaces it is not known.
+     */
+    elsc_power_up_complete(s, false);
 }
 
 /*
@@ -1597,9 +1617,10 @@ static void elsc_forward(SGIElscState *s, SGIElscForward command)
  * its module up on its own after a delay, and an Origin 200 master does if
  * its NVRAM says automatic power-on. A slave waits for its master's forward.
  * The delay is start-delay-ms (the datasheet gives about six seconds for the
- * Origin 2000). Only a controller that was told to wait does so; the
- * others start powered, which is how every guest and test has always
- * started.
+ * Origin 2000). Only a controller that was told to wait does so. An Origin
+ * 2000 controller told not to powers its module up in its own reset
+ * (sgi_elsc_power_up_at_start()), and an Origin 200 module starts powered,
+ * which is how every guest and test has always started.
  */
 static void elsc_start_expired(void *opaque)
 {
