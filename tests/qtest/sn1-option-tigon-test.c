@@ -652,6 +652,7 @@ static void test_direct_dma_write(void)
     g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
                                     t.window + 0x800, migrated,
                                     sizeof(migrated)));
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
 
     directory = g_dir_make_tmp("sn1-option-tigon-migration-XXXXXX", &error);
     g_assert_no_error(error);
@@ -670,6 +671,7 @@ static void test_direct_dma_write(void)
     sgi_wait_migration(dest.qts, "completed");
     dest.pio_cpu = t.pio_cpu;
     dest.window = t.window;
+    g_assert_cmphex(reg_read(&dest, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
     g_assert_true(qtest_memread_cpu(dest.qts, dest.pio_cpu,
                                     dest.window + 0x800, seen,
                                     sizeof(seen)));
@@ -806,6 +808,70 @@ static void test_traffic(const void *opaque)
     g_assert_cmpint(unlink(storage), ==, 0);
 }
 
+static void test_pci_state_width_migration(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    g_autofree char *storage = NULL;
+    g_autofree char *dest_storage = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    Tigon dest = { .placement = &p };
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-width-src-XXXXXX",
+                         &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-option-tigon-width-dest-XXXXXX",
+                         &dest_storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+
+    directory = g_dir_make_tmp("sn1-option-tigon-width-migration-XXXXXX",
+                               &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    dest.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC " -incoming defer",
+        prom_path, dest_storage, bus_names[p.head], p.device);
+    qtest_qmp_assert_success(dest.qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(t.qts, uri);
+    sgi_wait_migration(dest.qts, "completed");
+    dest.pio_cpu = t.pio_cpu;
+    dest.window = t.window;
+    g_assert_cmphex(reg_read(&dest, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+
+    qtest_quit(dest.qts);
+    qtest_quit(t.qts);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+    g_assert_cmpint(unlink(storage), ==, 0);
+    g_assert_cmpint(unlink(dest_storage), ==, 0);
+}
+
 static void test_pci_state_width(void)
 {
     const Placement p = { .head = 2, .device = 1, .destination = 1 };
@@ -901,6 +967,8 @@ int main(int argc, char **argv)
                         test_traffic);
     qtest_add_func("/sn1/option-tigon/pci-state-width",
                    test_pci_state_width);
+    qtest_add_func("/sn1/option-tigon/pci-state-width-migration",
+                   test_pci_state_width_migration);
     qtest_add_func("/sn1/option-tigon/direct-dma-write",
                    test_direct_dma_write);
     qtest_add_func("/sn1/option-tigon/pio-sram-direct-dma-bytes",
