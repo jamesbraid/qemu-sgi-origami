@@ -3218,6 +3218,11 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                     nodes[node_index]->has_board_kind &&
                     nodes[node_index]->board_kind ==
                         SGI_MODEL_BOARD_KIND_IP53);
+                qdev_prop_set_bit(
+                    DEVICE(pci), "ata-readback-compat",
+                    nodes[node_index]->has_board_kind &&
+                    nodes[node_index]->board_kind ==
+                        SGI_MODEL_BOARD_KIND_IP53);
                 if (rtc_clock) {
                     object_property_set_link(OBJECT(pci), "clock",
                                              OBJECT(rtc_clock), &error_abort);

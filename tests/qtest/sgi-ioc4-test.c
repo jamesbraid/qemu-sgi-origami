@@ -15,6 +15,7 @@
 #define BRIDGE_DEVICE0 (WIDGET + 0x204)
 #define PCI_COMMAND_MASTER (1u << 2)
 #define BAR (WIDGET + 0x200000)
+#define ATA_READBACK 0x148
 #define PCI_ADDRESS 0x01000000u
 #define UART(n) (BAR + 0x380 + 8 * (n))
 #define RTC(n) (BAR + 0x87ff8 + (n))
@@ -66,6 +67,7 @@
 
 static uint32_t reg_read(QTestState *qts, unsigned offset);
 static void reg_write(QTestState *qts, unsigned offset, uint32_t value);
+static void ioc4_wait_migration_failed(QTestState *qts);
 
 static uint64_t ioc4_target_property(QTestState *qts, const char *property)
 {
@@ -109,6 +111,20 @@ static QTestState *ioc4_start_full(unsigned clock_hz, bool incoming,
 static QTestState *ioc4_start(unsigned clock_hz)
 {
     return ioc4_start_full(clock_hz, false, false);
+}
+
+static QTestState *ioc4_start_readback(bool incoming, bool enabled)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S %s -device sgi-xio-test-target,id=fabric "
+        "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0] "
+        "-device sgi-ioc4,bus=head-e.0,addr=0,ata-readback-compat=%s",
+        incoming ? "-incoming defer" : "", enabled ? "on" : "off");
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
+    ioc4_map(qts);
+    return qts;
 }
 
 static char *ioc4_log_file_new(void)
@@ -1566,6 +1582,109 @@ static void test_identity_and_reset(void)
     qtest_quit(qts);
 }
 
+static void test_ata_readback_latch(void)
+{
+    QTestState *qts = ioc4_start_readback(false, true);
+    uint8_t before[8], after[8];
+    uint32_t bit;
+
+    qtest_memset(qts, DMA_RAM_BASE + DMA_RAM_OFFSET, 0xa5, sizeof(before));
+    qtest_memread(qts, DMA_RAM_BASE + DMA_RAM_OFFSET, before, sizeof(before));
+    for (bit = 1; bit; bit <<= 1) {
+        reg_write(qts, ATA_READBACK, bit);
+        g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, bit);
+    }
+    reg_write(qts, ATA_READBACK, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, UINT32_MAX);
+    qtest_memread(qts, DMA_RAM_BASE + DMA_RAM_OFFSET, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_ata_readback_default_unsupported(void)
+{
+    QTestState *qts = ioc4_start(33333333);
+
+    reg_write(qts, ATA_READBACK, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_ata_readback_rejects_width(void)
+{
+    QTestState *qts = ioc4_start_readback(false, true);
+
+    reg_write(qts, ATA_READBACK, 0x12345678);
+    qtest_writeb(qts, BAR + ATA_READBACK, 0xaa);
+    qtest_writew(qts, BAR + ATA_READBACK, 0xbbcc);
+    /* The XBridge splits 64-bit system accesses into 32-bit PCI writes. */
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_ata_readback_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ata-migration-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ioc4_start_readback(false, true);
+    to = ioc4_start_readback(true, true);
+    reg_write(from, ATA_READBACK, 0x89abcdef);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(reg_read(to, ATA_READBACK), ==, 0x89abcdef);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_ata_readback_migration_mode_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ata-profile-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ioc4_start_readback(false, true);
+    to = ioc4_start_readback(true, false);
+    reg_write(from, ATA_READBACK, 0x89abcdef);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    ioc4_wait_migration_failed(to);
+    {
+        QDict *reply = qtest_qmp_assert_success_ref(to,
+            "{'execute':'query-migrate'}");
+        const char *error_desc = qdict_get_str(reply, "error-desc");
+
+        g_assert_nonnull(strstr(error_desc, "sgi-ioc4"));
+        g_assert_nonnull(strstr(error_desc, "0 != 1"));
+        qobject_unref(reply);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_uart_and_clock(void)
 {
     unsigned clock, n, timeout_ms[2];
@@ -2338,6 +2457,16 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rejects-bad-base-pointer",
                    test_dma_rejects_bad_base_and_pointer);
     qtest_add_func("/sgi-ioc4/identity-reset", test_identity_and_reset);
+    qtest_add_func("/sgi-ioc4/ata-readback-latch",
+                   test_ata_readback_latch);
+    qtest_add_func("/sgi-ioc4/ata-readback-default-unsupported",
+                   test_ata_readback_default_unsupported);
+    qtest_add_func("/sgi-ioc4/ata-readback-rejects-width",
+                   test_ata_readback_rejects_width);
+    qtest_add_func("/sgi-ioc4/ata-readback-migration",
+                   test_ata_readback_migration);
+    qtest_add_func("/sgi-ioc4/ata-readback-migration-mode-mismatch",
+                   test_ata_readback_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/interrupts", test_interrupts);
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);

@@ -29,6 +29,7 @@
 #define IOC4_CLOCK_BAR 0x87ff8
 #define IOC4_CLOCK_NATIVE 0x7f8
 #define IOC4_CLOCK_SIZE 8
+#define IOC4_ATA_READBACK 0x148
 #define IOC4_DMA_PORT_BASE(n) (0x310 + 0x1c * (n))
 #define IOC4_DMA_CONTROL(n) (IOC4_DMA_PORT_BASE(n) + 0x00)
 #define IOC4_DMA_TX_PRODUCE(n) (IOC4_DMA_PORT_BASE(n) + 0x04)
@@ -116,8 +117,11 @@ struct SGIIOC4State {
     unsigned dma_request_depth;
     uint8_t dma_migration_mode;
     uint8_t pci_status_compat_mode;
+    uint8_t ata_readback_compat_mode;
     bool serial_dma_experimental;
     bool pci_status_compat;
+    bool ata_readback_compat;
+    uint32_t ata_readback;
     IRQState uart_irq[IOC4_PORTS];
     uint32_t serial_pending;
     uint32_t serial_enable;
@@ -872,6 +876,9 @@ static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == 0x20 && s->serial_dma_experimental) {
         return s->dma_request_depth ? 0 : 0x80;
     }
+    if (addr == IOC4_ATA_READBACK && s->ata_readback_compat) {
+        return s->ata_readback;
+    }
     switch (addr) {
     case 0x08:
         return s->serial_pending | s->uart_level;
@@ -910,6 +917,10 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
     if (addr == 0x20 && s->serial_dma_experimental) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc4: write to read-only serial status at 0x20\n");
+        return;
+    }
+    if (addr == IOC4_ATA_READBACK && s->ata_readback_compat) {
+        s->ata_readback = val;
         return;
     }
     switch (addr) {
@@ -955,13 +966,34 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
     ioc4_update_irq(s);
 }
 
+static bool ioc4_accepts(void *opaque, hwaddr addr, unsigned size,
+                         bool is_write, MemTxAttrs attrs)
+{
+    SGIIOC4State *s = opaque;
+
+    if (size != 4) {
+        if (addr == IOC4_ATA_READBACK && s->ata_readback_compat) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc4: unsupported ATA readback %s width %u\n",
+                          is_write ? "write" : "read", size);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc4: unsupported BAR %s width %u at 0x%"
+                          HWADDR_PRIx "\n", is_write ? "write" : "read",
+                          size, addr);
+        }
+        return false;
+    }
+    return true;
+}
+
 static const MemoryRegionOps ioc4_ops = {
     .read = ioc4_read,
     .write = ioc4_write,
     .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4,
-               .unaligned = false },
-    .impl = { .min_access_size = 4, .max_access_size = 4 },
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = false, .accepts = ioc4_accepts },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
 static bool ioc4_uart_accepts(void *opaque, hwaddr addr, unsigned size,
@@ -1029,6 +1061,7 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->other_pending = 0;
     s->other_enable = 0;
     s->uart_level = 0;
+    s->ata_readback = 0;
     if (s->pci_status_compat) {
         pci_set_word(s->parent_obj.config + PCI_STATUS,
                      IOC4_PCI_STATUS_COMPAT);
@@ -1142,6 +1175,8 @@ static const VMStateDescription vmstate_ioc4 = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
         VMSTATE_UINT8_EQUAL(pci_status_compat_mode, SGIIOC4State),
+        VMSTATE_UINT8_EQUAL(ata_readback_compat_mode, SGIIOC4State),
+        VMSTATE_UINT32(ata_readback, SGIIOC4State),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC4State),
         VMSTATE_STRUCT_ARRAY(uart, SGIIOC4State, IOC4_PORTS, 0,
                              vmstate_serial, SerialState),
@@ -1206,6 +1241,7 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
 
     s->dma_migration_mode = s->serial_dma_experimental;
     s->pci_status_compat_mode = s->pci_status_compat;
+    s->ata_readback_compat_mode = s->ata_readback_compat;
     /* Local PCI IRQ output needs a pin; IO9 board wiring is not modeled. */
     dev->config[PCI_INTERRUPT_PIN] = 1;
 
@@ -1265,6 +1301,8 @@ static const Property ioc4_properties[] = {
                      serial_dma_experimental, false),
     DEFINE_PROP_BOOL("pci-status-compat", SGIIOC4State, pci_status_compat,
                      false),
+    DEFINE_PROP_BOOL("ata-readback-compat", SGIIOC4State,
+                     ata_readback_compat, false),
     DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_CHR("chardev1", SGIIOC4State, uart[0].chr),
