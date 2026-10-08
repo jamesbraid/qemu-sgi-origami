@@ -1269,7 +1269,14 @@ static const TypeInfo bedrock_test_type = {
     MACHINE_TYPE_NAME("sn-builder-bedrock-nasid-test")
 
 static bool bedrock_nasid_test_activate_requested;
+static bool bedrock_nasid_test_bad_revision_requested;
+static char *bedrock_nasid_test_realize_error;
 static SN1NodeState *bedrock_nasid_test_node[ARRAY_SIZE(bedrock_test_nodes)];
+
+static char *bedrock_nasid_test_get_realize_error(Object *obj, Error **errp)
+{
+    return g_strdup(bedrock_nasid_test_realize_error ?: "");
+}
 
 static void bedrock_nasid_test_set_activate(Object *obj, bool value,
                                             Error **errp)
@@ -1281,13 +1288,16 @@ static void bedrock_nasid_test_set_construction_fault(Object *obj,
                                                        const char *value,
                                                        Error **errp)
 {
-    if (strcmp(value, "ip53")) {
+    if (!strcmp(value, "bedrock-revision")) {
+        bedrock_nasid_test_bad_revision_requested = true;
+    } else if (!strcmp(value, "ip53")) {
+        bedrock_test_nodes[0].has_board_kind = true;
+        bedrock_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    } else {
         error_setg(errp, "unknown sn-builder-bedrock-nasid-test construction "
                    "fault '%s'", value);
         return;
     }
-    bedrock_test_nodes[0].has_board_kind = true;
-    bedrock_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP53;
     bedrock_nasid_test_activate_requested = true;
 }
 
@@ -1328,7 +1338,9 @@ static void bedrock_nasid_test_machine_init(MachineState *machine)
         qdev_prop_set_int32(DEVICE(node), "l1-revision-major", 1);
         qdev_prop_set_int32(DEVICE(node), "l1-revision-minor", 18);
         qdev_prop_set_int32(DEVICE(node), "l1-revision-patch", 5);
-        qdev_prop_set_uint8(DEVICE(node), "bedrock-revision", 2);
+        qdev_prop_set_uint8(DEVICE(node), "bedrock-revision",
+                            i == 0 && bedrock_nasid_test_bad_revision_requested
+                            ? 16 : 2);
         qdev_prop_set_uint8(DEVICE(node), "installed-bank-mask", 0x0c);
         node->xbridge_widgets = g_new0(unsigned int, 1);
         node->xbridge_widgets[0] = 0;
@@ -1338,6 +1350,17 @@ static void bedrock_nasid_test_machine_init(MachineState *machine)
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", 1);
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", cpu_refclk);
 
+        if (bedrock_nasid_test_bad_revision_requested && i == 0) {
+            Error *local_err = NULL;
+
+            sysbus_realize(SYS_BUS_DEVICE(node), &local_err);
+            bedrock_nasid_test_realize_error = local_err
+                ? g_strdup(error_get_pretty(local_err))
+                : g_strdup("unexpected successful realization");
+            error_free(local_err);
+            object_unparent(OBJECT(node));
+            return;
+        }
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
         bedrock_nasid_test_node[i] = node;
     }
@@ -1383,8 +1406,9 @@ static void bedrock_nasid_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "construction-fault", NULL,
                                   bedrock_nasid_test_set_construction_fault);
     object_class_property_set_description(oc, "construction-fault",
-        "Select IP53 for node 0 and realize the node without the machine "
-        "builder.");
+        "Select a test construction fault for node 0.");
+    object_class_property_add_str(oc, "realize-error",
+                                  bedrock_nasid_test_get_realize_error, NULL);
 }
 
 static const TypeInfo bedrock_nasid_test_type = {

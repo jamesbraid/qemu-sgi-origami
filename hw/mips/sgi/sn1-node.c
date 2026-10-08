@@ -2141,7 +2141,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  &error_abort);
     }
 
-    sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
+    if (!sysbus_realize(SYS_BUS_DEVICE(node->bedrock), errp)) {
+        object_unparent(OBJECT(node->bedrock));
+        object_unref(OBJECT(node->bedrock));
+        node->bedrock = NULL;
+        return false;
+    }
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     SGI_BEDROCK(node->bedrock)->md.pointer_present = sn1_node_pointer_present;
