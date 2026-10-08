@@ -10033,6 +10033,37 @@ static void odyssey_test_get_pixel(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/*
+ * Host-only qtest bulk form of x-test-pixel: the x-test-pixel-count pixels
+ * of the row starting at (x-test-pixel-x, x-test-pixel-y), each exactly what
+ * x-test-pixel returns there (zero out of range), as consecutive
+ * eight-digit lower-case hex words in one string. One QMP command then
+ * stands in for a row of per-pixel round trips; no guest-visible state.
+ */
+static void odyssey_test_get_pixel_row(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (uint32_t i = 0; i < s->test_pixel_count; i++) {
+        uint32_t value = 0;
+        uint32_t x = s->test_pixel_x + i;
+
+        if (DEVICE(obj)->realized && x >= s->test_pixel_x &&
+            x < SGI_ODYSSEY_WIDTH && s->test_pixel_y < SGI_ODYSSEY_HEIGHT &&
+            s->test_pixel_buffer < ODSY_BUFFERS) {
+            value = odyssey_buffer_load(s, s->test_pixel_buffer, x,
+                                        s->test_pixel_y);
+        }
+        g_string_append_printf(str, "%08x", value);
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
+}
+
 /* Check the fallible destination callback without creating invalid draws. */
 static void odyssey_test_get_rgba_readable(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
@@ -10163,6 +10194,11 @@ static void odyssey_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add(obj, "x-test-pixel", "uint32", odyssey_test_get_pixel,
                         odyssey_test_set_pixel, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-pixel-count",
+                                   &s->test_pixel_count,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-pixel-row", "str",
+                        odyssey_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add(obj, "x-test-rgba-readable", "bool",
                         odyssey_test_get_rgba_readable, NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",
