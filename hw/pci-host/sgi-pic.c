@@ -193,6 +193,12 @@ static bool pic_uses_runtime_profile(const SGIPICState *s)
                SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
 }
 
+static bool pic_uses_widget_register_profile(const SGIPICState *s)
+{
+    return s->compatibility_profile ==
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
+}
+
 static bool pic_uses_linked_transport(const SGIPICState *s)
 {
     return s->linked || pic_uses_runtime_profile(s);
@@ -626,6 +632,9 @@ static bool pic_defined(hwaddr addr)
     switch (addr) {
     case 0x00:
     case 0x20:
+    case 0x28:
+    case 0x30:
+    case 0x38:
     case 0x50:
     case 0x80:
     case 0xc8:
@@ -998,6 +1007,11 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (size == 8 && !(addr & 7) && pic_defined(addr) &&
         addr < sizeof(s->reg)) {
+        if ((addr == 0x28 || addr == 0x30 || addr == 0x38) &&
+            !pic_uses_widget_register_profile(s->pic)) {
+            pic_unsupported(s, addr, size, 0, false);
+            return 0;
+        }
         uint64_t value = REG(s, addr);
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
@@ -1055,6 +1069,11 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         return;
     }
     if (!pic_defined(addr) || addr >= sizeof(s->reg)) {
+        pic_unsupported(s, addr, size, value, true);
+        return;
+    }
+    if ((addr == 0x28 || addr == 0x30 || addr == 0x38) &&
+        !pic_uses_widget_register_profile(s->pic)) {
         pic_unsupported(s, addr, size, value, true);
         return;
     }
@@ -1150,6 +1169,10 @@ static bool pic_cpu_word_slot(SGIPICHead *s, hwaddr addr, hwaddr *slot)
     }
 
     *slot = addr - 4;
+    if ((*slot == 0x28 || *slot == 0x30 || *slot == 0x38) &&
+        !pic_uses_widget_register_profile(s->pic)) {
+        return false;
+    }
     if (*slot >= 0x18000 && *slot < 0x19800) {
         return true;
     }
@@ -1372,6 +1395,9 @@ static void pic_head_reset_hold(Object *obj, ResetType type)
     memset(s->set_requests, 0, sizeof(s->set_requests));
     memset(s->clear_requests, 0, sizeof(s->clear_requests));
     REG(s, 0x00) = pic_widget_identity(s);
+    if (pic_uses_widget_register_profile(s->pic)) {
+        REG(s, 0x28) = 0xfffff;
+    }
 }
 
 static void pic_head_reset_exit(Object *obj, ResetType type)
@@ -1414,7 +1440,8 @@ static void pic_head_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in(dev, pic_set_pin, PIC_PIN_COUNT);
     qdev_init_gpio_out_named(dev, s->pci_irq, "pci-intx", 32);
-    if (s->pic->test_fixture) {
+    if (s->pic->test_fixture ||
+        (qtest_enabled() && pic_uses_runtime_profile(s->pic))) {
         for (i = 0; i < PIC_PIN_COUNT; i++) {
             g_autofree char *set_name = g_strdup_printf(
                 "x-test-set-requests-%u", i);

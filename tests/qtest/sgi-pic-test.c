@@ -2426,12 +2426,132 @@ static void test_cpu_word_view_profile_isolation(void)
 {
     QTestState *qts = pic_start(false, "");
 
-    qtest_writeq(qts, HEAD(0) + 0x20, 0x5);
-    qtest_writel(qts, HEAD(0) + 0x24, 0x5678);
-    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0x5);
-    g_assert_cmphex(qtest_readl(qts, HEAD(0) + 0x24), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, HEAD(0) + 4), ==,
-                    (uint32_t)qtest_readq(qts, HEAD(0)));
+    qtest_sysbus_mmio_map(qts, PIC, 0, CPU_BASE);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x20, 0x5);
+    qtest_writel(qts, CPU_HEAD(0) + 0x24, 0x5678);
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(0) + 0x20), ==, 0x5);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x24), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 4), ==,
+                    (uint32_t)qtest_readq(qts, CPU_HEAD(0)));
+    for (unsigned head = 0; head < 2; head++) {
+        for (unsigned slot = 0x28; slot <= 0x38; slot += 8) {
+            uint64_t address = CPU_HEAD(head) + slot;
+
+            g_assert_cmphex(qtest_readq(qts, address), ==, 0);
+            qtest_writeq(qts, address, 0x12345678);
+            g_assert_cmphex(qtest_readq(qts, address), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, address + 4), ==, 0);
+            qtest_writel(qts, address + 4, 0xdeadbeef);
+            g_assert_cmphex(qtest_readq(qts, address), ==, 0);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_widget_registers(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(false, NULL);
+    static const uint64_t seed[] = { 0xfffff, 0, 0 };
+
+    for (unsigned head = 0; head < 2; head++) {
+        for (unsigned reg = 0; reg < G_N_ELEMENTS(seed); reg++) {
+            uint64_t slot = 0x28 + reg * 8;
+            uint64_t initial = (UINT64_C(0x1234567800000000) | seed[reg]) ^
+                               ((uint64_t)head << 40);
+            uint32_t low = reg == 1 && head ? 0x5a5a5a5a : 0xa5a5a5a5;
+
+            g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + slot),
+                            ==, seed[reg]);
+            qtest_writeq(qts, BASE + head * 0x800000 + slot, initial);
+            g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + slot), ==,
+                            initial);
+            qtest_writel(qts, CPU_HEAD(head) + slot + 4, low);
+            g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + slot + 4), ==,
+                            low);
+            g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + slot),
+                            ==, (initial & UINT64_C(0xffffffff00000000)) | low);
+            qtest_writeq(qts, CPU_HEAD(head) + slot, initial ^ 0x55aa55aa);
+            g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + slot),
+                            ==, initial ^ 0x55aa55aa);
+
+            /* Narrow packet controls stay refused and cannot change storage. */
+            qtest_writel(qts, BASE + head * 0x800000 + slot + 4, 0xdeadbeef);
+            g_assert_cmphex(qtest_readl(qts,
+                                        BASE + head * 0x800000 + slot + 4),
+                            ==, 0);
+            g_assert_cmphex(qtest_readq(qts,
+                                       BASE + head * 0x800000 + slot),
+                            ==, initial ^ 0x55aa55aa);
+
+            uint64_t packet_addr = BASE + head * 0x800000 + slot;
+            uint64_t cpu_addr = CPU_HEAD(head) + slot;
+
+            qtest_writeb(qts, packet_addr, 0x7e);
+            qtest_writew(qts, packet_addr, 0x7e5a);
+            qtest_writel(qts, packet_addr, 0x7e5a3c1d);
+            qtest_writel(qts, packet_addr + 2, 0xdeadbeef);
+            g_assert_cmphex(qtest_readb(qts, packet_addr), ==, 0);
+            g_assert_cmphex(qtest_readw(qts, packet_addr), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, packet_addr), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, packet_addr + 2), ==, 0);
+
+            qtest_writeb(qts, cpu_addr, 0x7e);
+            qtest_writew(qts, cpu_addr, 0x7e5a);
+            qtest_writel(qts, cpu_addr, 0x7e5a3c1d);
+            qtest_writel(qts, cpu_addr + 2, 0xdeadbeef);
+            g_assert_cmphex(qtest_readb(qts, cpu_addr), ==, 0);
+            g_assert_cmphex(qtest_readw(qts, cpu_addr), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, cpu_addr), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, cpu_addr + 2), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, packet_addr), ==,
+                            initial ^ 0x55aa55aa);
+        }
+    }
+
+    unsigned active_head = 0;
+    unsigned pin = 0;
+    uint64_t pending_bit = 1;
+    uint64_t destination = (UINT64_C(0x34) << 48) | II_REGISTER |
+                           II_NODE(0) | II_HUB_REMOTE | 0x90;
+
+    qtest_writeq(qts, CPU_HEAD(active_head) + 0x130, destination);
+    qtest_writel(qts, CPU_HEAD(active_head) + 0x11c, 1);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, pin, 1);
+    qtest_writel(qts, CPU_HEAD(active_head) + 0x10c, 1);
+    uint64_t status = qtest_readq(qts, CPU_HEAD(active_head) + 0x100);
+    uint32_t set_requests = pic_requests_at(qts, PIC_CHILD, active_head, pin,
+                                             true);
+    uint32_t clear_requests = pic_requests_at(qts, PIC_CHILD, active_head, pin,
+                                               false);
+    uint64_t calls = target_metric(qts, "x-test-packet-calls");
+    qtest_writeq(qts, BASE + 0x30, UINT64_C(0x123456789abcdef0));
+    qtest_writeq(qts, BASE + 0x38, UINT64_C(0xfedcba9876543210));
+    qtest_writeq(qts, CPU_HEAD(0) + 0x30, UINT64_C(0x123456789abcdef0));
+    qtest_writeq(qts, CPU_HEAD(0) + 0x38, UINT64_C(0xfedcba9876543210));
+    qtest_writel(qts, CPU_HEAD(0) + 0x34, 0x0badcafe);
+    qtest_writel(qts, CPU_HEAD(0) + 0x3c, 0x0badcafe);
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(active_head) + 0x100), ==,
+                    status);
+    g_assert_cmphex(status & pending_bit, ==, pending_bit);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, active_head, pin, true),
+                     ==,
+                     set_requests);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, active_head, pin, false),
+                     ==,
+                     clear_requests);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, calls);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + 0x28), ==,
+                        0xfffff);
+        g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + 0x30), ==,
+                        0);
+        g_assert_cmphex(qtest_readq(qts, BASE + head * 0x800000 + 0x38), ==,
+                        0);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x2c), ==,
+                        0xfffff);
+    }
     qtest_quit(qts);
 }
 
@@ -3829,6 +3949,12 @@ static void test_runtime_profile_migration(void)
     qtest_writeq(from, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
     qtest_writel(from, CPU_HEAD(0) + 0x600024, 0x12345678);
     g_assert_cmphex(qtest_readl(from, BASE + 0x44000024), ==, 0x12345678);
+    qtest_writeq(from, HEAD(0) + 0x28, UINT64_C(0x0123456789abcdef));
+    qtest_writeq(from, HEAD(1) + 0x28, UINT64_C(0xfedcba9876543210));
+    qtest_writeq(from, HEAD(0) + 0x30, UINT64_C(0x1122334455667788));
+    qtest_writeq(from, HEAD(1) + 0x30, UINT64_C(0x8877665544332211));
+    qtest_writeq(from, HEAD(0) + 0x38, UINT64_C(0x13579bdf2468ace0));
+    qtest_writeq(from, HEAD(1) + 0x38, UINT64_C(0x0eca8642fdb97531));
     assert_runtime_pic_identity(from);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -3840,6 +3966,22 @@ static void test_runtime_profile_migration(void)
     g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x130), ==,
                     (UINT64_C(0x34) << 48) |
                     UINT64_C(0x800001800090));
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x28), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x28), ==,
+                    UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readl(to, CPU_HEAD(0) + 0x2c), ==,
+                    0x89abcdef);
+    g_assert_cmphex(qtest_readl(to, CPU_HEAD(1) + 0x2c), ==,
+                    0x76543210);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x30), ==,
+                    UINT64_C(0x1122334455667788));
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x30), ==,
+                    UINT64_C(0x8877665544332211));
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x38), ==,
+                    UINT64_C(0x13579bdf2468ace0));
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x38), ==,
+                    UINT64_C(0x0eca8642fdb97531));
     g_assert_cmphex(qtest_readl(to, CPU_HEAD(0) + 0x600024), ==,
                     0x12345678);
     g_assert_cmphex(qtest_readl(to, BASE + 0x44000024), ==, 0x12345678);
@@ -4468,6 +4610,7 @@ int main(int argc, char **argv)
                    test_cpu_word_view_registers);
     qtest_add_func("/sgi-pic/cpu-word-view-profile-isolation",
                    test_cpu_word_view_profile_isolation);
+    qtest_add_func("/sgi-pic/widget-registers", test_widget_registers);
     qtest_add_func("/sgi-pic/cpu-word-view-interrupt-effects",
                    test_cpu_word_view_interrupt_effects);
     qtest_add_func("/sgi-pic/current-identity-migration",
