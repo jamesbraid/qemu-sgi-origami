@@ -848,31 +848,62 @@ and every board the node hosts directly. A Crossbow two nodes share is
 therefore reset when either restarts.
 
 The machine's own reset, ``system_reset``, is an AC cycle: every module and
-every controller starts over, and a controller's start powers its module up. Once every module's power is off with no
-power-up to come the machine powers down (:doc:`sgi-elsc` says when it
-decides this); IRIX 6.5.30 sends ``pwr d 1`` to every module at ``shutdown
--p``.
+every controller starts over, and a controller's start powers its module up.
+Once every module's power is off with no power-up to come the machine powers
+down (:doc:`sgi-elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
+1`` to every module at ``shutdown -p``.
+
+Unpowered parts are inert. While a module is off its Hubs answer no register
+access, which gets the bus's unassigned-access result, as a gated device's
+blocked access does in ``tz_mpc_handle_block()``; the windows that reach the
+I/O they host, and so the Crossbows and boards behind them, are switched off
+the way a PCI device's BARs are with the command register
+(``pci_update_mappings()``); and its Routers answer no vector access. Their
+ports read disabled to their peers, which is the state a cable marked down
+already has: a peer Hub reads link-up zero with the down reason left clear
+(the link was up and failed, as the Hub datasheet's rule gives), a peer Router
+reads the port not working, and the claim aliases that lead to the module
+fall to the error floor, so a running module's processors and a warm reset
+cannot reach an unpowered module. The datasheets do not say whether a Router
+port facing a lost peer reads reset-failed; the model leaves it clear. Power
+returning brings the links up through the normal flood after the module's
+parts have reset and before its processors run. The state is derived from
+the controllers' power, which migrates, and is re-applied when a machine
+starts running and after the machine's own reset, so a load needs nothing of
+its own.
+
+The Hub's I2C adapter window keeps answering while its module is off. On
+hardware the adapter shares the node's supply, so no host could use it; the
+model keeps it so the standby controller stays reachable over its own bus,
+which the controller tests and the Origin 200 controller's grants rely on.
+Every other register of an unpowered Hub does not answer.
+
+A cabinet with no node or controller of its own (the GIGAchannel cabinet)
+follows the module its Crossbow's XIO link is attached to: its Crossbow and
+board are in that module's parts, are reset with it and are switched off
+with its Hub's windows, as the contract has the cabinet's switched domain
+follow the attached module.
 
 These limits remain. The model does not know whether ``rst`` reaches the
 Routers, Crossbows and XIO boards, whether it gives the processors a cold
 or a soft entry, or which Hub error registers survive it, so it resets
-every part of the module and gives the processors the cold entry. An
-unpowered module's parts are not inert: its Hub, Routers and links still
-answer, a peer's links do not read down, and on a machine of several
-modules a running module's processors could write an unpowered module's
-processor enables and restart them. A cabinet module with no node or
-controller of its own (the GIGAchannel cabinet) has its Crossbow and board in
-that topology module, which is in no power domain here, so a power event of the module it is attached to does not
-reach them although the datasheet has the cabinet follow it. Module events
-under record/replay are not supported: the start waits for the processors
-through run_on_cpu, as the Hub's synchronous enable does, which the replay
-lock can deadlock. No topology with more than one Origin 2000 module is
-built, so the several-module Origin 2000 path is the same code as the
-Origin 200 pair's and is only exercised there. The module's NMI output,
-which the controller pulses for ``nmi`` and for its heartbeat watchdog,
-reaches the NMI input of every processor in the module directly. On an
-Origin 200 each node's own controller drives an NMI output that the node
-wires the same way to its processors.
+every part of the module and gives the processors the cold entry. A module
+that is off keeps the register state it had, which returns on its next
+reset; the datasheet's loss of all state is only visible after power
+returns, when everything has reset. Module events under record/replay are
+not supported: the start waits for the processors through run_on_cpu, as
+the Hub's synchronous enable does, which the replay lock can deadlock. No
+topology with more than one Origin 2000 module is built, so the
+several-module Origin 2000 path is the same code as the Origin 200 pair's
+and is only exercised there.
+
+The module controller's NMI output, which it pulses for ``nmi`` and for its
+heartbeat watchdog, and the Hub's per-processor NMI trigger both reach a
+processor's NMI input through an OR gate per processor (``TYPE_OR_IRQ``, as
+boards that share an interrupt line use it), so neither can shorten or hide
+the other. Two overlapping NMIs are one edge at the pin, as on a wired-OR
+line. On an Origin 200 each node's own controller drives an NMI output that
+the node wires the same way to its processors.
 
 .. _sgi-sn-launch-metadata:
 

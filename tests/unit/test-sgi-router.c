@@ -1457,6 +1457,31 @@ static void test_warm_reset_permits(Fixture *f, gconstpointer unused)
     g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0x66);
 }
 
+/*
+ * A Router whose module has no power answers no vector access and reads
+ * every port disabled to its peers; power returning restores both.
+ */
+static void test_unpowered_router_is_inert(Fixture *f, gconstpointer unused)
+{
+    unsigned int port;
+
+    write_reg(f, 1, RR_SCRATCH_REG0, 0x77);
+    sgi_router_set_power(f->router, false);
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_READ,
+                              RR_SCRATCH_REG0, 0, NULL));
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
+                              RR_SCRATCH_REG0, 1, NULL));
+    for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        g_assert_false(sgi_net_port_link_state(OBJECT(f->dev), port).enabled);
+    }
+
+    sgi_router_set_power(f->router, true);
+    g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0x77);
+    for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        g_assert_true(sgi_net_port_link_state(OBJECT(f->dev), port).enabled);
+    }
+}
+
 static void test_cold_reset(Fixture *f, gconstpointer unused)
 {
     int64_t reset_time;
@@ -1563,6 +1588,7 @@ int main(int argc, char **argv)
     ADD_TEST("migration", test_migration);
     ADD_TEST("change-notifications", test_change_notifications);
     ADD_TEST("warm-reset-permits", test_warm_reset_permits);
+    ADD_TEST("unpowered-router-is-inert", test_unpowered_router_is_inert);
     ADD_TEST("cold-reset", test_cold_reset);
 #undef ADD_TEST
 
