@@ -471,6 +471,7 @@ static OdysseyPlaneView *odyssey_plane_lookup(OdysseyPlanes *planes,
         odyssey_plane_rgba_format(view->format, bits, &scalar_bytes);
         if (slice || rect->x0 > rect->x1 || rect->y0 > rect->y1 ||
             rect->x1 >= view->width || rect->y1 >= view->height ||
+            !odyssey_plane_raw_binding_matches(view) ||
             resource->backing_id != view->backing_id ||
             resource->backing_generation !=
                 view->submitted_backing_generation ||
@@ -489,7 +490,7 @@ static OdysseyPlaneView *odyssey_plane_lookup(OdysseyPlanes *planes,
             resource->auxiliary_index || resource->texture_level ||
             resource->border[0] || resource->border[1] ||
             resource->border[2] || resource->component_count != 4 ||
-            resource->bottom_origin != view->bottom_origin) {
+            resource->bottom_origin != view->submitted_raw.bottom_origin) {
             error_setg(errp, "Stale or invalid synthetic Odyssey plane view");
             return NULL;
         }
@@ -530,6 +531,11 @@ static uint32_t odyssey_plane_storage_row(const OdysseyPlaneView *view,
         view->height - 1 - y : y;
 }
 
+static bool odyssey_plane_raw_slots_valid(const SGIRenderRect *rect,
+                                          size_t components,
+                                          size_t stride_slots,
+                                          size_t capacity_slots);
+
 static SGIRenderResult odyssey_plane_snapshot(void *opaque,
                                               const SGIRenderResource *resource,
                                                uint32_t slice,
@@ -546,6 +552,11 @@ static SGIRenderResult odyssey_plane_snapshot(void *opaque,
     size_t scalar_bytes = 0;
 
     if (!view) {
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    if (!slots || !odyssey_plane_raw_slots_valid(rect, 4, stride_slots,
+                                                  capacity_slots)) {
+        error_setg(errp, "Invalid synthetic Odyssey plane slots");
         return SGI_RENDER_RESOURCE_ERROR;
     }
     odyssey_plane_rgba_format(view->format, bits, &scalar_bytes);
@@ -606,6 +617,23 @@ static SGIRenderCommitResult odyssey_plane_commit_pixels(
 
     if (!view) {
         return result;
+    }
+    if (!slots || !odyssey_plane_raw_slots_valid(rect, 4, stride_slots,
+                                                  capacity_slots)) {
+        error_setg(errp, "Invalid synthetic Odyssey plane slots");
+        return result;
+    }
+    if (writes) {
+        size_t width = (size_t)rect->x1 - rect->x0 + 1;
+        size_t height = (size_t)rect->y1 - rect->y0 + 1;
+
+        if (!writes->pixel || writes->stride_bytes < width ||
+            height - 1 > (SIZE_MAX - width) / writes->stride_bytes ||
+            writes->capacity_bytes <
+                (height - 1) * writes->stride_bytes + width) {
+            error_setg(errp, "Invalid synthetic Odyssey write coverage");
+            return result;
+        }
     }
     odyssey_plane_rgba_format(view->format, bits, &scalar_bytes);
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
