@@ -1190,9 +1190,12 @@ static void test_route_table_words(void)
     g_assert_cmphex(qtest_readq(s, local8), ==, first);
     g_assert_cmphex(qtest_readq(s, global1 + 8), ==, 0);
     g_assert_cmphex(qtest_readq(s, local1 + 8), ==, 0);
+    /* The test adapter's refusal says nothing about a vector error code. */
     qtest_writeq(s, BASE + bank[0] + 0x180, UINT64_MAX);
+    g_assert_cmpuint(get(s, "result"), ==, 1);
     g_assert_cmphex(qtest_readq(s, global1), ==, first);
     qtest_writeq(s, BASE + bank[7] + 0x600, UINT64_MAX);
+    g_assert_cmpuint(get(s, "result"), ==, 1);
     g_assert_cmphex(qtest_readq(s, local8), ==, first);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(s, global1), ==, 0);
