@@ -46,6 +46,7 @@
 #define IOC4_RING_1K 0x400
 #define IOC4_RING_4K 0x1000
 #define IOC4_RX_VALID 0x80
+#define IOC4_RX_MODEM_VALID 0x40
 #define IOC4_TX_VALID 0x40
 #define IOC4_TX_EXPLICIT 0x20
 #define IOC4_TX_MCR 0x80
@@ -290,10 +291,12 @@ static bool ioc4_rx_publish(SGIIOC4Port *p)
     return true;
 }
 
-static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value)
+static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value,
+                               bool loopback)
 {
     p->rx_data[p->rx_count] = value;
-    p->rx_status[p->rx_count] = IOC4_RX_VALID;
+    p->rx_status[p->rx_count] = IOC4_RX_VALID |
+        (loopback ? IOC4_RX_MODEM_VALID : 0);
     p->rx_count++;
     if (p->timer_armed && !p->rx_remaining_ns &&
         (p->rx_timer_reload & 0xfff)) {
@@ -360,7 +363,7 @@ static void ioc4_tx_run(SGIIOC4Port *p)
             }
             if (kind == IOC4_TX_VALID) {
                 if (ioc4_dma_loopback(p)) {
-                    ioc4_rx_stage_byte(p, p->tx_data[p->tx_slot]);
+                    ioc4_rx_stage_byte(p, p->tx_data[p->tx_slot], true);
                     p->tx_waiting_rx = p->rx_staged;
                 } else {
                     int sent = qemu_chr_fe_write(&s->uart[p->index].chr,
@@ -493,7 +496,7 @@ static void ioc4_char_read(void *opaque, const uint8_t *buf, int size)
         qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
     }
     for (i = 0; i < size && p->rx_count < 4; i++) {
-        ioc4_rx_stage_byte(p, buf[i]);
+        ioc4_rx_stage_byte(p, buf[i], false);
     }
 }
 

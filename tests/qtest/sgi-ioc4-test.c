@@ -52,6 +52,7 @@
 #define TX_MCR 0x80
 #define TX_DELAY 0xc0
 #define RX_DATA_VALID 0x80
+#define RX_LOOPBACK_VALID 0xc0
 #define RX_RING_FULL(n) (1u << (8 * (n) + 1))
 #define RX_THRESHOLD(n) (1u << (8 * (n) + 2))
 #define RX_TIMER_EXPIRED(n) (1u << (8 * (n) + 3))
@@ -248,7 +249,7 @@ static void ioc4_fill_loopback_tx_ring(QTestState *qts,
         for (j = 0; j < 4; j++) {
             data[j] = (i * 4 + j) & 0xff;
             expected_rx[i * 8 + j] = data[j];
-            expected_rx[i * 8 + 4 + j] = RX_DATA_VALID;
+            expected_rx[i * 8 + 4 + j] = RX_LOOPBACK_VALID;
         }
         ioc4_write_tx_entry(qts, 0, 0x400, i * 8, data, control);
     }
@@ -678,16 +679,16 @@ static void test_dma_loopback_pio_mcr(void)
     g_assert_cmpmem(prom_rx, sizeof(prom_rx),
                     ((const uint8_t[]) {
                         0xf4, 0xf5, 0xf6, 0xf7,
-                        RX_DATA_VALID, RX_DATA_VALID,
-                        RX_DATA_VALID, RX_DATA_VALID,
+                        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
+                        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
                     }), sizeof(prom_rx));
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3f0,
                   last_rx, sizeof(last_rx));
     g_assert_cmpmem(last_rx, sizeof(last_rx),
                     ((const uint8_t[]) {
                         0xf8, 0xf9, 0xfa, 0xfb,
-                        RX_DATA_VALID, RX_DATA_VALID,
-                        RX_DATA_VALID, RX_DATA_VALID,
+                        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
+                        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
                     }), sizeof(last_rx));
     pfd = (struct pollfd) { .fd = loopback_sv[0], .events = POLLIN };
     g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
@@ -729,7 +730,7 @@ static void test_dma_loopback_tx_mcr(void)
             for (j = 1; j < 4; j++) {
                 expected_ring[(rx_count / 4) * 8 + rx_count % 4] = data[j];
                 expected_ring[(rx_count / 4) * 8 + 4 + rx_count % 4] =
-                    RX_DATA_VALID;
+                    RX_LOOPBACK_VALID;
                 rx_count++;
             }
         } else {
@@ -738,7 +739,7 @@ static void test_dma_loopback_tx_mcr(void)
                 control[j] = TX_VALID;
                 expected_ring[(rx_count / 4) * 8 + rx_count % 4] = data[j];
                 expected_ring[(rx_count / 4) * 8 + 4 + rx_count % 4] =
-                    RX_DATA_VALID;
+                    RX_LOOPBACK_VALID;
                 rx_count++;
             }
         }
@@ -841,11 +842,13 @@ static void test_dma_loopback_full_ring_recovery(void)
     const uint8_t valid[4] = { TX_VALID, TX_VALID, TX_VALID, TX_VALID };
     const uint8_t first_rx[8] = {
         0xa1, 0xa2, 0xa3, 0xa4,
-        RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID,
+        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
+        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
     };
     const uint8_t second_rx[8] = {
         0xb1, 0xb2, 0xb3, 0xb4,
-        RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID,
+        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
+        RX_LOOPBACK_VALID, RX_LOOPBACK_VALID,
     };
     uint8_t rx_ring[0x3f8], expected_ring[0x3f8], entry[8];
     struct pollfd pfd;
