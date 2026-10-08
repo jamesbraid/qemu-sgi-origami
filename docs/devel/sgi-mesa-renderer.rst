@@ -26,8 +26,9 @@ blending twice. If the union is empty, it returns without a native snapshot or
 commit.
 
 An enabled scissor box intersects that union in window coordinates. A box
-with zero width or height leaves no pixels to draw. Negative dimensions are
-invalid. Scissor and clip rectangles are resolved before the native snapshot.
+with zero width or height leaves no pixels to draw. For a visible drawable,
+negative dimensions return a resource error. Scissor and clip rectangles are
+resolved before the native snapshot.
 
 Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
 and these source/destination factor pairs: ``SRC_ALPHA`` with
