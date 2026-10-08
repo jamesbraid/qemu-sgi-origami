@@ -55,6 +55,21 @@ typedef enum SGIElscAction {
  * The messages a command makes the controller queue for the Hubs, which
  * "get" returns in place of console input.
  */
+/*
+ * What an Origin 200 master controller sends its slave over the
+ * controller-to-controller link. Only one can be pending: a later one
+ * replaces an earlier one not yet sent.
+ */
+typedef enum SGIElscForward {
+    SGI_ELSC_FORWARD_NONE = 0,
+    SGI_ELSC_FORWARD_POWER_DOWN,    /* "pwr d 0" */
+    SGI_ELSC_FORWARD_POWER_UP,      /* "pwr u" */
+    SGI_ELSC_FORWARD_NMI,           /* "nmi" */
+    SGI_ELSC_FORWARD_FAN_HIGH,      /* "fan h" */
+    SGI_ELSC_FORWARD_FAN_NORMAL,    /* "fan n" */
+    SGI_ELSC_FORWARD_COUNT,
+} SGIElscForward;
+
 typedef enum SGIElscMessage {
     SGI_ELSC_MESSAGE_NONE = 0,
     SGI_ELSC_MESSAGE_PD_REMOTE,
@@ -318,6 +333,24 @@ struct SGIElscState {
     bool supervisor;
     bool slave_addressed;
     QEMUTimer *serial_timer;
+
+    /*
+     * The master's forward to its slave (arb_peer) that has not reached it
+     * yet, how many attempts it has had, and the timer to the next. The
+     * controller's start-up power-up waits on start_timer. All of it
+     * migrates in a subsection that is present only while one is pending.
+     */
+    uint8_t forward;
+    uint8_t forward_tries;
+    QEMUTimer *forward_timer;
+    QEMUTimer *start_timer;
+    /*
+     * start-delay-ms: how long after the controller starts it powers its
+     * module up on its own (an Origin 2000 controller, or an Origin 200
+     * master whose NVRAM says automatic power-on); zero collapses the wait
+     * and starts the module powered.
+     */
+    uint32_t start_delay_ms;
     /*
      * While a serial command runs: its reply text, whether the reply is
      * printed raw ("cfg"), and a power or reset action it asked for. Not
@@ -427,6 +460,12 @@ void sgi_elsc_reinitialize(SGIElscState *s);
 
 void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque);
+
+/*
+ * Whether the controller starts its module off and powers it up after a
+ * delay of its own (start-delay-ms), rather than starting it powered.
+ */
+bool sgi_elsc_start_delayed(SGIElscState *s);
 
 /* Whether the controller's module is powered. */
 bool sgi_elsc_module_powered(SGIElscState *s);

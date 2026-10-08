@@ -975,6 +975,8 @@ static void mgmt_init(Object *obj)
     object_property_add_alias(obj, "chardev", OBJECT(s->msc), "chardev");
     object_property_add_alias(obj, "dip-switches", OBJECT(s->msc),
                               "dip-switches");
+    object_property_add_alias(obj, "start-delay-ms", OBJECT(s->msc),
+                              "start-delay-ms");
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->reset_out, "reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
@@ -1001,7 +1003,7 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
      * up, which stands for the controller's start-up power-up (the model
      * does not run its few-second delay).
      */
-    s->power_on = true;
+    s->power_on = !sgi_elsc_start_delayed(s->msc);
     s->publication_enabled = s->power_on;
     mgmt_drive_power(s);
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +

@@ -303,6 +303,7 @@ struct SGIMachineState {
     bool debug_leds;
     bool junk_uart_present;
     uint8_t elsc_dip_switches;
+    uint32_t module_start_delay_ms;
 
     /*
      * Each Origin 2000 module controller's power output, by controller
@@ -3721,6 +3722,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                                  sgi_machine_module_nvram_node(s, t, module));
         }
         qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
+        qdev_prop_set_uint32(dev, "start-delay-ms", s->module_start_delay_ms);
         qdev_prop_set_bit(dev, "can-reset", true);
         qdev_prop_set_bit(dev, "can-nmi", true);
         qdev_prop_set_bit(dev, "can-power", true);
@@ -5456,6 +5458,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         qdev_prop_set_uint32(DEVICE(&node->hub), "nasid", 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
+        qdev_prop_set_uint32(DEVICE(&node->hub), "elsc-start-delay-ms",
+                             s->module_start_delay_ms);
         if (!model_node->slave_role) {
             int line = sgi_machine_compute_serial_line(t, node_index,
                                                         SN0_ELSC_CHARDEV);
@@ -6116,6 +6120,29 @@ static void sgi_machine_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_machine_get_module_start_delay(Object *obj, Visitor *v,
+                                               const char *name,
+                                               void *opaque, Error **errp)
+{
+    uint32_t value = SGI_MACHINE(obj)->module_start_delay_ms;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void sgi_machine_set_module_start_delay(Object *obj, Visitor *v,
+                                               const char *name,
+                                               void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    uint32_t value;
+
+    if (sgi_machine_built(name, errp) ||
+        !visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    s->module_start_delay_ms = value;
+}
+
 static void sgi_machine_get_board_id_word(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
                                           Error **errp)
@@ -6563,6 +6590,17 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "elsc-dip-switches",
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
+
+    object_class_property_add(oc, "module-start-delay", "uint32",
+                              sgi_machine_get_module_start_delay,
+                              sgi_machine_set_module_start_delay, NULL, NULL);
+    object_class_property_set_description(oc, "module-start-delay",
+        "Start every module powered off and let its controller power it "
+        "up this many milliseconds after the machine starts, as the "
+        "controller does on hardware (about 6000 on an Origin 2000; an "
+        "Origin 200 master whose NVRAM says automatic power-on, and its "
+        "slave through the master's forward). Zero, the default, starts "
+        "every module powered.");
 
     object_class_property_add(oc, "board-id-word", "uint64",
                               sgi_machine_get_board_id_word,

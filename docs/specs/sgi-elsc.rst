@@ -231,9 +231,8 @@ Command vocabulary
     only when its heartbeat tunable is set, which it is not by default,
     and formats the numbers in decimal, so the controller reads 0x30
     and 0x20 seconds. The Origin 2000 build shows its heartbeat-timeout
-    status message at the warning. An Origin 200 master's forwarding to
-    its slave needs the controller-to-controller link (see `Deliberate
-    gaps`_).
+    status message at the warning. An Origin 200 master that has heard
+    from its slave forwards the NMI to it (see `Master and slave`_).
 
 ``rst``
     The module reset, reached by a panic reboot or fatal-error
@@ -286,9 +285,8 @@ Command vocabulary
     processor's NMI pin is not modelled. The firmware starts the second
     when it answers, and so does the model: unlike a reset, the pulse
     disturbs nothing an unread ``ok`` would protect. The Origin 2000
-    build shows its NMI status message. An Origin 200 master's
-    forwarding to its slave needs the controller-to-controller link
-    (see `Deliberate gaps`_).
+    build shows its NMI status message. An Origin 200 master forwards
+    the NMI to its slave (see `Master and slave`_).
 
 ``sel [<name>|all|none|auto]`` / ``see [<name>|all|none]``
     The console input selection and output filter. Each takes two
@@ -401,10 +399,10 @@ Command vocabulary
     build answers ``ok`` and does nothing. In the Origin 200 build a
     master takes ``n``, ``h`` and ``o`` as its slave's temperature and
     0x07 as the slave announcing itself, and a slave stores the
-    character. The model has no controller-to-controller link, so a
-    slave never forwards its report, and a master logs rather than
-    carries out the shutdowns and fan reports that ``o``, 0x04, 0x05
-    and 0x06 start.
+    character. A slave does not send its own reports in the model, so a
+    master hears one only from a test or a host that sends it, and it
+    logs rather than carries out the shutdowns and fan reports that
+    ``o``, 0x04, 0x05 and 0x06 start.
 
 Anything else is answered ``err cmd``. That reply is load-bearing:
 the firmware's console-selection routine issues a DIP-switch read
@@ -421,13 +419,11 @@ Deliberate gaps
 
 Two parts of the controller are left out on purpose:
 
-* The controller-to-controller link between the two controllers of a
-  two-module Origin 200. A master forwards ``pwr d 0``, ``pwr u``,
-  ``nmi`` and ``fan h``/``fan n`` to its slave over it, and a slave
-  sends its ``sla`` reports to its master. The model has neither side:
-  each controller acts on its own module only, a slave keeps its
-  ``sla`` report, and a master logs rather than carries out the
-  shutdowns and fan reports ``sla o``, 0x04, 0x05 and 0x06 would start.
+* The slave's side of the controller-to-controller link: a slave
+  controller does not send its ``sla`` reports to its master, and a
+  master logs rather than carries out the shutdowns and fan reports
+  ``sla o``, 0x04, 0x05 and 0x06 would start. The master's side, its
+  forwards to the slave, is modelled (`Master and slave`_).
 * The temperature, fan, supply and key-switch fault inputs. The model's
   module is healthy, cool, its fans and supplies never fail and its
   key is on, so none of the shutdowns, messages or replies those
@@ -480,20 +476,76 @@ as a module loses power, and again when a power-up that was to come is
 cancelled on an unpowered module (``hbt 0`` or ``clr`` stopping the
 watchdog): with nothing left to bring any module back, the machine ends
 rather than idle with every module off, which the datasheet's rule asks
-for. A module off while others run stays stopped, so a
-two-module Origin 200's slave powers off only its own tower.
+for. A module off while others run stays stopped. A two-module Origin
+200's slave powers off alone when its own countdown or a command sent to
+it removes its power; its master's power-off takes it along (`Master and
+slave`_).
 
-One approximation remains. The Hub's processor enables are registers a
-guest could write: the stopped processors cannot, but on a machine of
-several modules a running module's processors can reach an unpowered
-module's Hub and restart its processors from reset. The datasheet's other
-pending events that keep the machine alive -- an Origin 2000 controller's
-start-up power-up a few seconds after its start, an Origin 200 master's
-automatic power-up, and a master's power-up or power-down forward not yet
-delivered to its slave -- do not arise: the model starts every module
-powered, and has no controller-to-controller link (see "Deliberate gaps").
-The power-return test above is the part of the datasheet's rule the model
-can reach.
+Every pending event in the datasheet's rule keeps the machine alive: a
+power-cycle interval or power-up sequence, a watchdog stage that leads to
+a cycle, the controller's start-up power-up not yet run, and a master's
+power-up or power-down forward not yet delivered to its slave or dropped.
+The start-up power-up arises only with the machine's ``module-start-delay``
+(`Start-up power-up`_); by default every module starts powered.
+
+Master and slave
+----------------
+
+On a two-module Origin 200 the master controller tells the slave what it
+does to its module, over the link the two controllers have, and the slave
+takes each as an ordinary command:
+
+* ``pwr d 0`` whenever the master removes its own module's power: by
+  ``pwr d`` with or without a delay (the countdown's expiry included), by
+  ``pwr c`` and by the heartbeat watchdog's power cycle;
+* ``pwr u`` whenever the master has powered its own module up, which for
+  ``pwr c`` is after its own off interval and power-up sequence, so the
+  slave stays off behind the master's local power-up timer;
+* ``nmi`` for every ``nmi`` it accepts, and for the heartbeat's NMI only
+  once the slave has announced itself (``sla`` 0x07);
+* ``fan h`` and ``fan n`` while that link is up.
+
+``rst`` is never forwarded. A slave's own countdown, or a ``pwr c`` sent to
+it directly, acts on the slave alone and forwards nothing.
+
+Only one forward can be pending: a later one replaces an earlier one not
+yet sent. A forward goes out at the master's next turn on the bus and is
+tried at most five times, then dropped; the master has done its own part
+either way. The model carries a forward as a call from one controller to
+the other, the way the machine already joins the master's grant ring to the
+slave's adapter, and takes a turn as one revolution of that ring, five
+milliseconds. An attempt fails only when the slave answers nothing, which
+is while it waits out its power-up sequence; the datasheet does not say what
+else could fail an attempt, so failures of the bus grant itself are not
+modelled. A pending power-up or power-down forward keeps the machine from
+ending, and the machine asks again when it is delivered or dropped. The
+pending forward migrates in a subsection that is present only while one is
+waiting.
+
+IRIX's power-off sends ``pwr d 1`` to the lowest-numbered module's
+controller on a two-module Origin 200. The datasheet infers, and does not
+establish, that this is the master. The model gives the master the first
+node and the lowest module number, so the countdown expires on the master,
+the master forwards ``pwr d 0``, both towers go off and the emulator ends.
+Were the lowest-numbered module the slave, only the slave would go off and
+the master's processors would wait in the kernel's power-off loop.
+
+Start-up power-up
+-----------------
+
+On hardware an Origin 2000 controller powers its module up about six
+seconds after it starts, and an Origin 200 master does if its NVRAM says
+automatic power-on (``aut``); an Origin 200 slave waits for its master's
+forward. The model collapses the wait by default: every module starts
+powered, because every guest and test starts its processors at once and the
+stock PROM boots the same either way. The machine property
+``module-start-delay`` (milliseconds) models it instead: every module
+starts off, the controller counts the delay on the virtual clock, then
+runs the power-up sequence, and the machine does not end while that is
+pending. The key switch, over-temperature and a multimodule controller,
+which the datasheet says cancel the Origin 2000 power-up, are not modelled
+(the key is on, the module is cool and no multimodule controller is
+present).
 
 Controller state across resets
 ------------------------------

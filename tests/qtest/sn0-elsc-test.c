@@ -3762,6 +3762,8 @@ static void test_two_towers_slave_power_off(const void *data)
     g_assert_false(powered_down(qts));
 
     assert_reply(qts, "pwr d 0", "ok ");
+    /* The master's power-off is forwarded to the off slave on a timer. */
+    qtest_clock_step(qts, 10 * 1000 * 1000);
     qtest_qmp_eventwait(qts, "SHUTDOWN");
     qtest_quit(qts);
 }

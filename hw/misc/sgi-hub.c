@@ -5333,6 +5333,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_bit(DEVICE(elsc), "arbitration", !s->slave_module);
         qdev_prop_set_uint8(DEVICE(elsc), "dip-switches",
                             s->elsc_dip_switches);
+        qdev_prop_set_uint32(DEVICE(elsc), "start-delay-ms",
+                             s->elsc_start_delay_ms);
         qdev_prop_set_chr(DEVICE(elsc), "chardev", s->elsc_chr);
         s->elsc = SGI_ELSC(elsc);
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
@@ -5691,6 +5693,8 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT8("widget-revision", SGIHubState, widget_revision, 1),
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
                       elsc_dip_switches, 0),
+    DEFINE_PROP_UINT32("elsc-start-delay-ms", SGIHubState,
+                       elsc_start_delay_ms, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIHubState, onewire_serial,
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('N', 0)),

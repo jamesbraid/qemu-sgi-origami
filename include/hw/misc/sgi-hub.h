@@ -310,6 +310,7 @@ struct SGIHubState {
 
     /* Physical ELSC DIP switches, expressed as asserted switch bits. */
     uint8_t elsc_dip_switches;
+    uint32_t elsc_start_delay_ms;
 
     /* Global QEMU CPU index of this node's slice A. */
     uint32_t cpu_base;
