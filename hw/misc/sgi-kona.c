@@ -7868,6 +7868,40 @@ static void sgi_kona_test_get_plane_word(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/*
+ * Host-only qtest bulk form of x-test-plane-word: the x-test-pixel-count
+ * words of plane x-test-plane along the line starting at (x-test-pixel-x,
+ * x-test-pixel-y), each what x-test-plane-word returns there, as
+ * consecutive eight-digit lower-case hex words in one string. One QMP
+ * command replaces a line of per-pixel round trips; no guest-visible state.
+ */
+static void sgi_kona_test_get_plane_row(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    SGIBoardMemory *memory = s->test_plane < s->mem.nplanes ?
+                             &s->mem : &s->desktop_mem;
+    unsigned id = s->test_plane < s->mem.nplanes ? s->test_plane :
+                  s->test_plane - s->mem.nplanes;
+    const SGIPlane *p = DEVICE(obj)->realized ?
+                        sgi_board_memory_plane(memory, id) : NULL;
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (uint32_t i = 0; i < s->test_pixel_count; i++) {
+        uint32_t value = 0;
+
+        if (p) {
+            value = sgi_plane_load(memory, p, s->test_pixel_x + i,
+                                   s->test_pixel_y);
+        }
+        g_string_append_printf(str, "%08x", value);
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
+}
+
 /* Complete plane bytes, for preservation and migration comparisons. */
 static void sgi_kona_test_get_plane_digest(Object *obj, Visitor *v,
                                            const char *name, void *opaque,
@@ -8017,6 +8051,11 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-word", "uint32",
                         sgi_kona_test_get_plane_word, NULL, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-pixel-count",
+                                   &s->test_pixel_count,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-plane-row", "str",
+                        sgi_kona_test_get_plane_row, NULL, NULL, NULL);
     object_property_add(obj, "x-test-plane-digest", "str",
                         sgi_kona_test_get_plane_digest, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-gamma-addr",
