@@ -2374,6 +2374,34 @@ static void mgras_test_get_pixel(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/*
+ * Host-only qtest bulk form of x-test-pixel: the x-test-pixel-count pixels
+ * along the line from (x-test-pixel-x, x-test-pixel-y), each what
+ * x-test-pixel returns there, as consecutive eight-digit lower-case hex
+ * words in one string. No guest-visible state.
+ */
+static void mgras_test_get_pixel_row(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (uint32_t i = 0; i < s->test_pixel_count; i++) {
+        uint32_t x = s->test_pixel_x + i;
+        uint32_t value = 0;
+
+        if (DEVICE(obj)->realized && x < s->width &&
+            s->test_pixel_y < s->height) {
+            value = s->front[s->test_pixel_y * s->width + x];
+        }
+        g_string_append_printf(str, "%08x", value);
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
+}
+
 /* Update scanout before exposing a display pixel to qtests. */
 static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
                                       const char *name, void *opaque,
@@ -2585,6 +2613,11 @@ static void mgras_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-pixel", "uint32", mgras_test_get_pixel,
                         NULL, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-pixel-count",
+                                   &s->test_pixel_count,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-pixel-row", "str",
+                        mgras_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",
                         mgras_test_get_display_pixel, NULL, NULL, NULL);
     object_property_add(obj, "x-test-wid", "uint32", mgras_test_get_wid,
