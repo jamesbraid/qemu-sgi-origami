@@ -138,35 +138,32 @@ Timed-out-request-buffer registers read zero: nothing times out in a
 model that completes every request instantly.
 
 The port reset register carries three resets, each bit acting when
-written, nothing stored, and it reads zero. Bit 0 resets this Hub and
-its node's processors, and no other node: the node's processors stop at
-the write and the machine cold-starts them with the Hub from the main
-loop (:doc:`sgi-sn`, "Module power and reset"). Bit 7 sends the warm
-reset over the link. A Hub that receives one resets its node unless the
-reset bit of its protection register (``0x60_0010`` bit 0, set at
-reset) is clear; a Router resets itself if its protection configuration
-permits resets from the arriving port, and forwards the reset out each
-working port whose reset mask has that arriving port's bit set. The
-Routers' mask direction is the datasheet's working reading, with the
-opposite possible; the PROM programs them symmetrically, so software
-cannot tell. A reset reaches each device once. Every software reset path
-writes bits 7 and 0 together (Linux and the PROM's own self-reset
-0x81, IRIX the same), which resets every node reachable without
-crossing a fence, the whole machine when it is unpartitioned.
-OpenBSD writes bits 1 and 0 to each node in turn after arming the
-protection bit; the model takes that as bit 0, and the link reset
-bit alongside it is superseded. Bit 1 without bit 0 resets the network
-link, described under the network interface below. Bit 7 without bit 0
-is unknown on hardware and no software writes it: the model sends the
-warm reset and leaves the sender's node running. Nodes a warm reset
-reaches restart together. A Router that receives a reset also resets its
-own routing tables, and the Hub that sent it keeps its error-spool
-addresses with the rest: they keep bits 31:3, start at zero from
-construction (the datasheet's power-on value), and survive reset for the
-marker the firmware parks in processor B's and the operation word
-OpenBSD parks in processor A's. Memory survives as well. No controller
-is reached. The node's boot flash and the I/O it hosts restart with it, a
-model approximation described in :doc:`sgi-sn`.
+written, nothing stored, and it reads zero. Bit 0 restarts the machine.
+Approximation: the datasheet describes the Hub resetting its node, and a
+warm reset (bit 7) sent over the link to the nodes the Routers' reset masks
+and each Hub's protection register let it reach. The model restarts every
+module that has power, together: all processors stop at the write and the
+machine cold-starts the modules from the main loop (:doc:`sgi-sn`, "Module
+power and reset"), whichever Hub was written and whatever the masks and
+protection say. No supported guest depends on the difference: every
+software reset path writes bits 7 and 0 together (Linux and the PROM's own
+self-reset 0x81, IRIX the same), which on an unpartitioned machine is the
+whole machine, and OpenBSD writes bits 1 and 0 to each node in turn after
+arming the protection bit, so its first write restarts the machine and the
+rest find it already running again. The protection register's reset bit
+(``0x60_0010`` bit 0, set at reset) and the Routers' reset masks and
+permits are kept as registers and no longer steer a reset. A restart is not
+an AC cycle: the standby controllers keep their state, so a reboot leaves
+``pwr q`` at zero and the PROM sees a warm start. Bit 1 without bit 0
+resets the network link, described under the network interface below, and
+a restart supersedes it. Bit 7 without bit 0 is unknown on hardware and no
+software writes it: the model logs it as unimplemented and does nothing.
+The Hub keeps its error-spool addresses across the restart with the rest:
+they keep bits 31:3, start at zero from construction (the datasheet's
+power-on value), and survive reset for the marker the firmware parks in
+processor B's and the operation word OpenBSD parks in processor A's.
+Memory survives as well. The boot flash and the I/O each node hosts restart
+with their module, a model approximation described in :doc:`sgi-sn`.
 
 The Hub's per-processor triggers act on processors. A store to ``0x70``
 or ``0x78`` raises the non-maskable interrupt of processor A or B and the
@@ -529,7 +526,7 @@ not. The network-interface error interrupt is not modelled: bit 62 of
 the second pending bank never sets, so a leftover bit 37 raises no
 interrupt here, though IRIX's bus-error path still reads it as a fatal
 CrayLink error. Whether the hardware interrupt is a level of the fatal
-port-error bits or a separate latch is unknown. Warm reset across the
+port-error bits or a separate latch is unknown. The warm reset across the
 link, power-on latching of bit 37, in-flight traffic and the port
 disable and port-timeout diagnostics are not modelled.
 

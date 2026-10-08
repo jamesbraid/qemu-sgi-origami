@@ -214,9 +214,9 @@ typedef struct SGIMachinePeerNotifier {
 } SGIMachinePeerNotifier;
 
 /*
- * A cold start owed to one module (sgi_machine_module_start()). The start
- * itself runs from a bottom half that migration does not carry, so the debt
- * is what migrates.
+ * A cold start owed to one module, or to the whole machine
+ * (sgi_machine_module_start()). The start itself runs from a bottom half that
+ * migration does not carry, so the debt is what migrates.
  */
 typedef struct SGIMachineModuleStart {
     SGIMachineState *machine;
@@ -321,7 +321,7 @@ struct SGIMachineState {
      * module_start says whether a cold start of the module is scheduled.
      */
     unsigned int module_count;
-    /* module_count modules, then one start per node. */
+    /* module_count modules, then one start for the whole machine. */
     unsigned int start_count;
     unsigned int *node_module;
     unsigned int *controller_module;
@@ -3147,92 +3147,6 @@ static GPtrArray *sgi_machine_module_parts(SGIMachineState *s,
 }
 
 /*
- * The I/O endpoints a node hosts: the Crossbows its XIO links reach, the
- * boards on them, and any board it hosts directly. A Crossbow treats a warm
- * reset on any link as a power-on reset of its core, and the boards behind
- * it reset with their links. The firmware sends that reset down the node's
- * XIO link on every cold entry (the Hub's I/O interface reset), which this
- * model does not carry as far as the Bridge's PCI side, so a node's start
- * resets them itself.
- */
-static void sgi_machine_collect_node_io(SGIMachineState *s, unsigned int node,
-                                        GPtrArray *all)
-{
-    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree const SGIModelXioAttachment **attachments = NULL;
-    g_autofree const SGIModelCrossbar **crossbars = NULL;
-    g_autofree const SGIModelIoBoard **boards = NULL;
-    g_autofree const SGIModelXioSlot **slots = NULL;
-    g_autofree bool *crossbar_hosted = NULL;
-    size_t attachment_count, board_count, slot_count, crossbar_count, i;
-
-    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
-                                                 &attachment_count);
-    boards = sgi_model_io_board_array(t->io_boards, &board_count);
-    slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
-    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
-    crossbar_hosted = g_new0(bool, crossbar_count + 1);
-    for (i = 0; i < attachment_count; i++) {
-        if (attachments[i]->node_index == node &&
-            attachments[i]->crossbar_index >= 0) {
-            crossbar_hosted[attachments[i]->crossbar_index] = true;
-            sgi_machine_collect_part(
-                all, OBJECT(s->crossbars[attachments[i]->crossbar_index]));
-        }
-    }
-    for (i = 0; i < board_count; i++) {
-        const SGIModelXioAttachment *a = attachments[boards[i]->attachment];
-
-        if (s->io_boards[i] &&
-            (a->node_index == node ||
-             (a->crossbar_index >= 0 && crossbar_hosted[a->crossbar_index]))) {
-            sgi_machine_collect_part(all, OBJECT(s->io_boards[i]));
-        }
-    }
-    for (i = 0; i < slot_count; i++) {
-        if (s->slot_claimed[i] && crossbar_hosted[slots[i]->crossbar_index]) {
-            sgi_machine_collect_part(all, s->slot_links[i].end[1].port);
-        }
-    }
-}
-
-/*
- * The parts of one node: its Hub and what hangs off it, the node's own
- * children (an Origin 200's Bridge and base I/O), its boot flash, which
- * returns to array mode with the processors, and the I/O it hosts.
- */
-static GPtrArray *sgi_machine_node_parts(SGIMachineState *s,
-                                         unsigned int node)
-{
-    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree const SGIModelModule **modules = NULL;
-    g_autofree uint32_t *module_nodes = NULL;
-    GPtrArray *all = g_ptr_array_new();
-    size_t count, i;
-
-    sgi_machine_collect_part(all, OBJECT(s->nodes[node]));
-    sgi_machine_collect_part(all, OBJECT(s->nodes[node]->flash));
-    sgi_machine_collect_node_io(s, node, all);
-    if (s->node_controller[node] >= 0) {
-        /* A shared controller's adapter for this node sits on the node. */
-        modules = sgi_model_module_array(t->modules, &count);
-        module_nodes = sgi_model_array_uint32(
-            modules[s->node_module[node]]->nodes, &count);
-        for (i = 0; i < count; i++) {
-            if (module_nodes[i] == node) {
-                DeviceState *dev = sgi_sn0_module_management_get_adapter(
-                    s->module_mgmt[s->node_controller[node]], i);
-
-                if (dev) {
-                    g_ptr_array_add(all, dev);
-                }
-            }
-        }
-    }
-    return sgi_machine_part_roots(all);
-}
-
-/*
  * Power to a module comes or goes: its Hubs and the I/O windows they host
  * switch on or off, and so do its Routers (a cabinet's parts follow the node
  * they are attached to). A node or Router without power answers nothing and
@@ -3381,8 +3295,9 @@ static void sgi_machine_restart_nodes(SGIMachineState *s,
 }
 
 /*
- * A start owed to a module (its index below module_count) or to one node
- * (module_count plus the node).
+ * A start owed to a module (its index below module_count) or to the whole
+ * machine (module_count): every module that has power starts together, so
+ * that none comes up and numbers a neighbour that is about to lose its state.
  */
 static void sgi_machine_module_start_bh(void *opaque)
 {
@@ -3399,37 +3314,36 @@ static void sgi_machine_module_start_bh(void *opaque)
         return;
     }
     start->pending = false;
+    modules = sgi_model_module_array(t->modules, &count);
     if (start->module >= s->module_count) {
-        /*
-         * Nodes reset by one warm reset restart together: the reset reaches
-         * them at once on hardware, and a node that restarted first could
-         * otherwise assign a number to a neighbour about to lose it.
-         */
         g_autofree uint32_t *nodes = g_new(uint32_t, s->num_nodes);
-        unsigned int index, n = 0;
+        size_t module, n = 0, i;
 
         parts = g_ptr_array_new();
-        for (index = s->module_count; index < s->start_count; index++) {
-            SGIMachineModuleStart *owed = &s->module_start[index];
+        for (module = 0; module < count; module++) {
+            g_autofree uint32_t *list = NULL;
             g_autoptr(GPtrArray) roots = NULL;
+            size_t node_count;
 
-            if (!owed->pending && owed != start) {
+            list = sgi_model_array_uint32(modules[module]->nodes,
+                                          &node_count);
+            if (!node_count || !sgi_machine_node_powered(s, list[0])) {
                 continue;
             }
-            owed->pending = false;
-            nodes[n++] = index - s->module_count;
-            roots = sgi_machine_node_parts(s, index - s->module_count);
-            for (guint i = 0; i < roots->len; i++) {
-                if (!g_ptr_array_find(parts, g_ptr_array_index(roots, i),
+            for (i = 0; i < node_count; i++) {
+                nodes[n++] = list[i];
+            }
+            roots = sgi_machine_module_parts(s, module);
+            for (guint r = 0; r < roots->len; r++) {
+                if (!g_ptr_array_find(parts, g_ptr_array_index(roots, r),
                                       NULL)) {
-                    g_ptr_array_add(parts, g_ptr_array_index(roots, i));
+                    g_ptr_array_add(parts, g_ptr_array_index(roots, r));
                 }
             }
         }
         sgi_machine_restart_nodes(s, nodes, n, parts, -1);
         return;
     }
-    modules = sgi_model_module_array(t->modules, &count);
     module_nodes = sgi_model_array_uint32(modules[start->module]->nodes,
                                           &count);
     parts = sgi_machine_module_parts(s, start->module);
@@ -3439,9 +3353,9 @@ static void sgi_machine_module_start_bh(void *opaque)
 
 /*
  * A module starts from its cold state: it came back from a power-off, or
- * its controller reset it. A node starts when its Hub is reset by the port
- * reset register or over the link. The start is the main loop's (above); the
- * machine's own reset, an AC cycle, starts everything already.
+ * its controller reset it. The whole machine starts when a Hub's port reset
+ * register is written with bit 0 set. The start is the main loop's (above);
+ * the machine's own reset, an AC cycle, starts everything already.
  */
 static void sgi_machine_module_start(SGIMachineState *s, unsigned int module)
 {
@@ -3515,14 +3429,29 @@ static void sgi_machine_module_start_vm_state(void *opaque, bool running,
     }
 }
 
-/* A Hub's node resets: by its port reset register or over the link. */
-static void sgi_machine_node_reset(void *opaque, int n, int level)
+/*
+ * A Hub's port reset register was written with bit 0 set. Hardware describes
+ * this as resetting the node; the model restarts the whole machine, every
+ * powered module together, as the standby controllers keep their state. The
+ * processors stop here, in the writer's context, so none runs past the write.
+ */
+static void sgi_machine_restart(void *opaque, int n, int level)
 {
     SGIMachineState *s = opaque;
+    unsigned int node, slice;
 
-    if (level) {
-        sgi_machine_module_start(s, s->module_count + n);
+    if (!level) {
+        return;
     }
+    for (node = 0; node < s->num_nodes; node++) {
+        if (!sgi_machine_node_powered(s, node)) {
+            continue;
+        }
+        for (slice = 0; slice < s->nodes[node]->nr_cpus; slice++) {
+            sgi_hub_power_off_cpu(&s->nodes[node]->hub, slice);
+        }
+    }
+    sgi_machine_module_start(s, s->module_count);
 }
 
 /* An Origin 200 node's own controller removed or restored its power. */
@@ -3663,7 +3592,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
     s->module_count = module_count;
     s->node_module = g_new0(unsigned int, s->num_nodes);
     s->controller_module = g_new0(unsigned int, controller_count);
-    s->start_count = module_count + s->num_nodes;
+    s->start_count = module_count + 1;
     s->module_start = g_new0(SGIMachineModuleStart, s->start_count);
     for (n = 0; n < s->start_count; n++) {
         s->module_start[n].machine = s;
@@ -3676,8 +3605,9 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         g_assert(n < node_count);
         s->node_module[n] = nodes[n]->module_index;
         s->node_controller[n] = -1;
-        qdev_connect_gpio_out_named(DEVICE(&s->nodes[n]->hub), "node-reset", 0,
-                                    qemu_allocate_irq(sgi_machine_node_reset,
+        qdev_connect_gpio_out_named(DEVICE(&s->nodes[n]->hub),
+                                    "machine-restart", 0,
+                                    qemu_allocate_irq(sgi_machine_restart,
                                                       s, n));
         /* An Origin 200 node's own controller holds its module's power. */
         if (s->nodes[n]->hub.elsc) {

@@ -830,22 +830,26 @@ it can wait for the module's processors to stop; a start owed when a
 migration stream was taken is part of that stream and is carried out once
 the destination runs.
 
-A Hub port reset starts nodes, not modules (:doc:`sgi-hub`): the node's
-processors stop at the write, and the machine then resets the Hub and what
-hangs off it (its adapter and identity parts), the node's boot flash, and the
-I/O the node hosts, and runs the processors again, the same way a module is
-started. Nodes one warm reset reaches start together. The reset reaches no
-controller and no Router apart from the warm reset's own flood, so a reboot
-leaves ``pwr q`` at zero and the PROM sees a warm start.
+A Hub port reset with bit 0 set restarts the whole machine, not a node
+(:doc:`sgi-hub`): every processor stops at the write, and the machine then
+cold-starts every module that has power together, the same way a single
+module is started: each module's parts are reset, the I/O its nodes host
+included, and the processors run again. The standby controllers are not
+reset, so a reboot leaves ``pwr q`` at zero and the PROM sees a warm start.
+This is an approximation. Per the Hub datasheet, hardware is described as
+resetting the node, with the warm reset reaching the nodes the Routers and
+the Hubs' protection registers admit. The model resets the machine, and no
+supported guest depends on the difference: every software reset path writes
+bits 7 and 0 together and so asks for the whole machine, and the Routers'
+masks and the Hubs' protection bit, still readable and writable, no longer
+steer a reset. A module that is off is left off.
 
-The I/O is an approximation. On hardware a node's reset leaves a Crossbow
-and the boards behind it to the firmware's own warm reset down the XIO link,
-which the PROM sends on every cold entry. That reset does not reach the
-Bridge's PCI side in the model, and a PROM started over a Bridge that kept
-IRIX's configuration took a bus error reading it, so the start also resets
-every Crossbow the node's XIO links reach, every board on those Crossbows
-and every board the node hosts directly. A Crossbow two nodes share is
-therefore reset when either restarts.
+The module start also resets every Crossbow the module's nodes reach and the
+boards behind them. On hardware a node's reset leaves a Crossbow and its
+boards to the firmware's own warm reset down the XIO link, which the PROM
+sends on every cold entry. That reset does not reach the Bridge's PCI side in
+the model, and a PROM started over a Bridge that kept IRIX's configuration
+took a bus error reading it.
 
 The machine's own reset, ``system_reset``, is an AC cycle: every module and
 every controller starts over, and a controller's start powers its module up.
@@ -867,8 +871,8 @@ Unpowered parts are inert. While a module is off:
   down already has: a peer Hub reads link-up zero with the down reason left
   clear (the link was up and failed, as the Hub datasheet's rule gives), a
   peer Router reads the port not working, and the claim aliases that lead to
-  the module fall to the error floor. A running module's processors, a block
-  transfer and a warm reset therefore cannot reach the module's memory, its
+  the module fall to the error floor. A running module's processors and a block
+  transfer therefore cannot reach the module's memory, its
   registers or its Routers. The datasheets do not say whether a Router port
   facing a lost peer reads reset-failed; the model leaves it clear.
 - Power returning brings the links up through the normal flood after the
@@ -1119,9 +1123,9 @@ diagnostic parameters, tables, port parameters, histograms and error
 counters. A port with no peer to answer, uncabled or with its cable
 down, does not come out of the reset: link-working stays clear and
 reset-failed reads set until the link next comes up. A warm reset
-(port reset bit 7) clears the force bits and retrains every working
-link the same way, so its peers settle the width again and a Hub at
-the far end latches its link-reset bit. The administrative reset
+of the Router itself (port reset bit 7) clears the force bits and
+retrains every working link the same way, so its peers settle the width
+again and a Hub at the far end latches its link-reset bit. The administrative reset
 (bit 0) clears the force bits but keeps the link engines connected,
 so each link keeps its width until it is next reset. BIST completion
 applies the warm-reset extent to the Router's own state, and the Router

@@ -3680,11 +3680,11 @@ static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
 
 
 /*
- * The local bit resets the node with either companion, 0x81 or 0x03. The
- * cached-alias size is the reset sentinel; the error-spool must survive. It
- * is the node that resets, not QEMU's machine: no RESET event arrives.
+ * The local bit restarts the machine with either companion, 0x81 or 0x03.
+ * The cached-alias size is the reset sentinel; the error-spool must survive.
+ * It is the SGI machine's cold start, not QEMU's: no RESET event arrives.
  */
-static void test_a_local_port_reset_resets_the_node(const void *data)
+static void test_a_local_port_reset_restarts_the_machine(const void *data)
 {
     hub_reset();
 
@@ -6567,7 +6567,7 @@ int main(int argc, char **argv)
                         NULL,
                         test_a_32_bit_vector_clear_read_leaves_the_status);
     qtest_add_data_func("sn0/hub/local-port-reset-resets-the-node", NULL,
-                        test_a_local_port_reset_resets_the_node);
+                        test_a_local_port_reset_restarts_the_machine);
     qtest_add_data_func("sn0/hub/peerless-link-reset", NULL,
                         test_peerless_link_reset);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);
