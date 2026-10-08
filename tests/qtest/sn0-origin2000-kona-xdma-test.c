@@ -92,74 +92,45 @@ static void kona_qom_set_uint(QTestState *s, const char *property,
         "'property': %s, 'value': %u}}", KONA_QOM_PATH, property, value);
 }
 
-static void kona_qom_send_set(QTestState *s, const char *property,
-                              uint32_t value)
-{
-    qtest_qmp_send(s,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': %s, 'value': %u}}", KONA_QOM_PATH, property, value);
-}
-
-static void kona_qom_send_get(QTestState *s, const char *property)
-{
-    qtest_qmp_send(s,
-        "{'execute': 'qom-get', 'arguments': {'path': %s, "
-        "'property': %s}}", KONA_QOM_PATH, property);
-}
-
-/* The reply to the oldest command sent and not yet received. */
-static uint64_t kona_qom_receive(QTestState *s)
-{
-    QDict *resp = qtest_qmp_receive(s);
-    uint64_t value = 0;
-
-    if (!qdict_haskey(resp, "return")) {
-        g_autoptr(GString) str = qobject_to_json(QOBJECT(resp));
-        g_error("qom command failed: %s", str->str);
-    }
-    if (qobject_type(qdict_get(resp, "return")) == QTYPE_QNUM) {
-        value = qdict_get_int(resp, "return");
-    }
-    qobject_unref(resp);
-    return value;
-}
-
 /*
  * The words of one plane at X coordinates (x[i], y[i]), y down from the top
- * line. The commands go out in batches and the replies are read afterwards,
- * so probing costs one wait for QEMU per batch rather than one per
- * property, and the plane and unchanged coordinates are set once.
+ * line. A run of points along one line is read with the device's bulk
+ * x-test-plane-row property, one command for the whole run; any other
+ * point is a run of one. The monitor reads its socket a byte at a time, so
+ * the commands' bytes are what probing costs, and a run saves most of them.
  */
-#define PROBE_BATCH 64
-
 static void plane_words(QTestState *s, uint32_t plane, unsigned n,
                         const uint32_t *x, const uint32_t *y, uint32_t *word)
 {
-    unsigned i, j;
+    unsigned i = 0;
 
-    for (i = 0; i < n; i += PROBE_BATCH) {
-        unsigned end = MIN(n, i + PROBE_BATCH);
-        uint32_t last_y = UINT32_MAX;
+    kona_qom_set_uint(s, "x-test-plane", plane);
+    while (i < n) {
+        unsigned run = 1;
+        QDict *resp;
+        const char *hex;
 
-        kona_qom_send_set(s, "x-test-plane", plane);
-        for (j = i; j < end; j++) {
-            kona_qom_send_set(s, "x-test-pixel-x", x[j]);
-            if (y[j] != last_y) {
-                kona_qom_send_set(s, "x-test-pixel-y", FB_HEIGHT - 1 - y[j]);
-                last_y = y[j];
-            }
-            kona_qom_send_get(s, "x-test-plane-word");
+        while (i + run < n && y[i + run] == y[i] &&
+               x[i + run] == x[i] + run) {
+            run++;
         }
-        kona_qom_receive(s);
-        last_y = UINT32_MAX;
-        for (j = i; j < end; j++) {
-            kona_qom_receive(s);
-            if (y[j] != last_y) {
-                kona_qom_receive(s);
-                last_y = y[j];
-            }
-            word[j] = kona_qom_receive(s);
+        kona_qom_set_uint(s, "x-test-pixel-x", x[i]);
+        kona_qom_set_uint(s, "x-test-pixel-y", FB_HEIGHT - 1 - y[i]);
+        kona_qom_set_uint(s, "x-test-pixel-count", run);
+        resp = qtest_qmp(s,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-test-plane-row'}}", KONA_QOM_PATH);
+        g_assert_true(qdict_haskey(resp, "return"));
+        hex = qdict_get_str(resp, "return");
+        g_assert_cmpuint(strlen(hex), ==, (size_t)run * 8);
+        for (unsigned k = 0; k < run; k++) {
+            char digits[9] = { 0 };
+
+            memcpy(digits, hex + k * 8, 8);
+            word[i + k] = g_ascii_strtoull(digits, NULL, 16);
         }
+        qobject_unref(resp);
+        i += run;
     }
 }
 
