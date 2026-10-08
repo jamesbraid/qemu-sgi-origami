@@ -34,6 +34,7 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     g_autofree bool *router_ports = g_new0(bool, MAX(routers * 8, 1));
     g_autofree bool *assigned = g_new0(bool, MAX(peers, 1));
     g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
+    g_autofree bool *node_connected = g_new0(bool, MAX(nodes, 1));
 
     for (const SGIModelNodeList *n = t->nodes; n; n = n->next) {
         const SGIModelNode *node = n->value;
@@ -56,6 +57,24 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
                 error_setg(errp, "compute option INTx map has no head input %u",
                            pin->value);
                 return false;
+            }
+        }
+    }
+
+    if (t->generation == SGI_MODEL_GENERATION_SN1) {
+        for (link = t->cables; link; link = link->next) {
+            for (const SGIModelLinkEndList *end_entry = link->value->ends;
+                 end_entry; end_entry = end_entry->next) {
+                const SGIModelLinkEnd *end = end_entry->value;
+
+                if (end->kind != SGI_MODEL_LINK_END_KIND_NODE) {
+                    continue;
+                }
+                if (end->index >= nodes || end->port ||
+                    node_connected[end->index]) {
+                    goto unsupported;
+                }
+                node_connected[end->index] = true;
             }
         }
     }
@@ -216,9 +235,6 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
 
             switch (end->kind) {
             case SGI_MODEL_LINK_END_KIND_NODE:
-                if (end->index >= nodes || end->port) {
-                    goto unsupported;
-                }
                 break;
             case SGI_MODEL_LINK_END_KIND_IO_PEER:
                 if (end->index >= peers || end->port || connected[end->index] ||
