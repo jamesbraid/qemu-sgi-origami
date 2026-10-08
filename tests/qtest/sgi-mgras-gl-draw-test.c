@@ -2969,10 +2969,13 @@ static void gl_width_check_rect(QTestState *qts, int x0, int y0,
                                 int x1, int y1, uint32_t colour)
 {
     for (int y = y0 - 1; y <= y1 + 1; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, x0 - 1, y,
+                                                 x1 - x0 + 3);
+
         for (int x = x0 - 1; x <= x1 + 1; x++) {
             uint32_t expected = x >= x0 && x <= x1 && y >= y0 && y <= y1 ?
                                 colour : 0;
-            uint32_t actual = gl_window_pixel(qts, x, y);
+            uint32_t actual = row[x - (x0 - 1)];
 
             if (actual != expected) {
                 g_test_message("pixel (%d, %d), rectangle (%d, %d)-(%d, %d)",
@@ -3007,11 +3010,13 @@ static void test_gl_native_polygon_line(void)
     gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
     gl_polygon_quad(qts, false, true);
     for (unsigned y = 7; y <= 25; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, 7, y, 19);
+
         for (unsigned x = 7; x <= 25; x++) {
             bool boundary = x >= 8 && x <= 24 && y >= 8 && y <= 24 &&
                             (x == 8 || x == 24 || y == 8 || y == 24);
 
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+            g_assert_cmphex(row[x - 7], ==,
                             boundary ? 0xffffff : 0);
         }
     }
@@ -3026,11 +3031,13 @@ static void test_gl_native_polygon_point(void)
     gl_float(qts, 3);
     gl_polygon_quad(qts, false, true);
     for (unsigned y = 6; y <= 26; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, 6, y, 21);
+
         for (unsigned x = 6; x <= 26; x++) {
             bool vertex = ((x >= 7 && x <= 9) || (x >= 23 && x <= 25)) &&
                           ((y >= 7 && y <= 9) || (y >= 23 && y <= 25));
 
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+            g_assert_cmphex(row[x - 6], ==,
                             vertex ? 0xffffff : 0);
         }
     }
@@ -3162,6 +3169,22 @@ static void test_gl_native_stipple_axes(void)
             gl_vertex2f(qts, axis ? 8.5f : start, axis ? start : 8.5f);
             gl_vertex2f(qts, axis ? 8.5f : end, axis ? end : 8.5f);
             gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+            /* pixels[pos - 7][cross - 6], read a line of x at a time. */
+            uint32_t pixels[37][5];
+
+            for (unsigned line = 0; line < (axis ? 37 : 5); line++) {
+                g_autofree uint32_t *row = axis ?
+                    gl_window_row(qts, 6, 7 + line, 5) :
+                    gl_window_row(qts, 7, 6 + line, 37);
+
+                for (unsigned k = 0; k < (axis ? 5 : 37); k++) {
+                    if (axis) {
+                        pixels[line][k] = row[k];
+                    } else {
+                        pixels[k][line] = row[k];
+                    }
+                }
+            }
             for (unsigned pos = 7; pos <= 43; pos++) {
                 bool on = reverse ? (pos == 42 || pos == 41 ||
                                       pos == 10 || pos == 9) :
@@ -3169,9 +3192,7 @@ static void test_gl_native_stipple_axes(void)
                                       pos == 40 || pos == 41);
 
                 for (unsigned cross = 6; cross <= 10; cross++) {
-                    uint32_t pixel = gl_window_pixel(qts,
-                                        axis ? cross : pos,
-                                        axis ? pos : cross);
+                    uint32_t pixel = pixels[pos - 7][cross - 6];
 
                     g_assert_cmphex(pixel, ==,
                                     on && cross >= 7 && cross <= 9 ?
@@ -3300,11 +3321,13 @@ static void test_gl_native_stipple_polygon(void)
     gl_polygon_quad(qts, false, true);
     g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 0);
     for (unsigned y = 7; y <= 25; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, 7, y, 19);
+
         for (unsigned x = 7; x <= 25; x++) {
             bool on = (y == 8 && x >= 8 && x <= 10) ||
                       (x == 8 && y >= 22 && y <= 24);
 
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+            g_assert_cmphex(row[x - 7], ==,
                             on ? 0xffffff : 0);
         }
     }
@@ -3378,11 +3401,13 @@ static void test_gl_native_polygon_clipped_boundary(void)
     gl_one(qts, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
     gl_polygon_quad(qts, false, true);
     for (unsigned y = 7; y <= 25; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, 7, y, 19);
+
         for (unsigned x = 7; x <= 25; x++) {
             bool boundary = x >= 16 && x <= 24 && y >= 8 && y <= 24 &&
                             (x == 16 || x == 24 || y == 8 || y == 24);
 
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+            g_assert_cmphex(row[x - 7], ==,
                             boundary ? 0xffffff : 0);
         }
     }
