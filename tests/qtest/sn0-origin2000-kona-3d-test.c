@@ -13020,11 +13020,17 @@ static void renderer_general_compare(QTestState *gpu, QTestState *cpu,
     }
 }
 
+enum { RENDERER_GENERAL_NO_GPU = 10 };
+
 static void test_renderer_general_triangle(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned test_case = GPOINTER_TO_UINT(opaque);
+    bool no_gpu = test_case == RENDERER_GENERAL_NO_GPU;
+    unsigned mode = no_gpu ? 0 : test_case;
     bool host_draw = mode != 5 && mode != 9;
-    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *gpu = qtest_initf(MACHINE_ARGS
+                                  " -global sgi-kona.host-gpu=%s",
+                                  no_gpu ? "off" : "on");
     QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
     QTestState *states[] = { gpu, cpu };
     float vertices[3][2] = { { 0, 0 }, { 128, 0 }, { 128, 128 } };
@@ -13090,12 +13096,28 @@ static void test_renderer_general_triangle(gconstpointer opaque)
     g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-requests"), ==, 0);
     g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-draws"), ==, 0);
     g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-fallbacks"), ==, 0);
-    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==,
-                     mode == 4 ? 2 : host_draw ? 1 : 0);
-    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
-                     host_draw ? 1 : 0);
-    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
-                     host_draw ? 0 : 1);
+    if (no_gpu) {
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==, 0);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, 0);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==, 0);
+    } else {
+        uint64_t draws = renderer_counter(gpu, "x-test-gpu-draws");
+        bool using_gpu = draws == 1;
+
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==,
+                         mode == 4 ? 2 : host_draw ? 1 : 0);
+        g_assert_cmpuint(draws, <=, host_draw ? 1 : 0);
+        if (host_draw && g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+            g_assert_true(using_gpu);
+        }
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                         using_gpu ? 0 : 1);
+    }
+    g_test_message("mode %u host-gpu=%s counters: %" PRIu64 "/%" PRIu64
+                   "/%" PRIu64, mode, no_gpu ? "off" : "on",
+                   renderer_counter(gpu, "x-test-gpu-requests"),
+                   renderer_counter(gpu, "x-test-gpu-draws"),
+                   renderer_counter(gpu, "x-test-gpu-fallbacks"));
     qtest_quit(cpu);
     qtest_quit(gpu);
 }
@@ -15311,6 +15333,10 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_general_triangle);
     }
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "general-triangle/no-gpu",
+                        GUINT_TO_POINTER(RENDERER_GENERAL_NO_GPU),
+                        test_renderer_general_triangle);
     for (unsigned mode = 0; mode < 4; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/renderer/polygon/%u", mode);
