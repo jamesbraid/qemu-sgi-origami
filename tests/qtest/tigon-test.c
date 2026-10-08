@@ -425,6 +425,9 @@ static void test_pci_state_reports_a_32bit_bus(void)
     reg_wr(&t, TI_PCI_STATE, 0x760600b4);
     g_assert_cmphex(reg_rd(&t, TI_PCI_STATE), ==,
                     0x760600b4 | TI_PCISTATE_32BIT_BUS);
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_RESET);
+    g_assert_cmphex(reg_rd(&t, TI_PCI_STATE), ==,
+                    0x760600b4 | TI_PCISTATE_32BIT_BUS);
     tigon_stop(&t);
 }
 
