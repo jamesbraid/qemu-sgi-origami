@@ -84,6 +84,43 @@ static uint32_t kona_test_pixel(QTestState *s, uint32_t x, uint32_t y)
 }
 
 /*
+ * The `count` pixels along line y from x, each what kona_test_pixel()
+ * reads there, from one x-test-pixel-row command.
+ */
+static char *kona_test_pixel_row(QTestState *s, uint32_t x, uint32_t y,
+                                 uint32_t count)
+{
+    QDict *reply;
+    char *row;
+
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", KONA_QOM_PATH, x);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", KONA_QOM_PATH, y);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-count', 'value': %u}}", KONA_QOM_PATH,
+        count);
+    reply = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-row'}}", KONA_QOM_PATH);
+    row = g_strdup(qdict_get_str(reply, "return"));
+    qobject_unref(reply);
+    g_assert_cmpuint(strlen(row), ==, count * 8);
+    return row;
+}
+
+static uint32_t kona_row_pixel(const char *row, uint32_t i)
+{
+    char digits[9] = { 0 };
+
+    memcpy(digits, row + i * 8, 8);
+    return g_ascii_strtoull(digits, NULL, 16);
+}
+
+/*
  * sn0-origin2000-kona-test.c's own kona_textport_push(): push one whole
  * command (sync word, selector, argc arguments) in a single call.
  */
@@ -182,6 +219,13 @@ static void kona_assert_glyph_pixels(QTestState *s, const KonaGlyph *g,
     uint32_t r, c;
 
     for (r = 0; r < g->height; r++) {
+        int32_t y0 = raster_y - g->yorigin + (int32_t)r;
+        g_autofree char *row = NULL;
+
+        g_assert_cmpint(raster_x - g->xorigin, >=, 0);
+        g_assert_cmpint(y0, >=, 0);
+        row = kona_test_pixel_row(s, (uint32_t)(raster_x - g->xorigin),
+                                  (uint32_t)y0, g->width);
         for (c = 0; c < g->width; c++) {
             uint32_t bit = r * g->width + c;
             uint32_t word = g->payload[bit / 32];
@@ -191,8 +235,7 @@ static void kona_assert_glyph_pixels(QTestState *s, const KonaGlyph *g,
 
             g_assert_cmpint(x, >=, 0);
             g_assert_cmpint(y, >=, 0);
-            g_assert_cmphex(kona_test_pixel(s, (uint32_t)x, (uint32_t)y), ==,
-                            set ? color : 0);
+            g_assert_cmphex(kona_row_pixel(row, c), ==, set ? color : 0);
         }
     }
 }
@@ -284,8 +327,11 @@ static void test_textport_bitmap_leaves_no_corner_artifact(void)
     }
 
     for (y = CORNER_ROW_FIRST; y < KONA_FB_HEIGHT; y++) {
+        g_autofree char *row = kona_test_pixel_row(qts, 0, y,
+                                                   CORNER_COL_LAST + 1);
+
         for (x = 0; x <= CORNER_COL_LAST; x++) {
-            g_assert_cmphex(kona_test_pixel(qts, x, y), ==, 0);
+            g_assert_cmphex(kona_row_pixel(row, x), ==, 0);
         }
     }
 }
