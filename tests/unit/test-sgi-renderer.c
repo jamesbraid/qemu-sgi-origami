@@ -1,5 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include <glib/gstdio.h>
+#ifdef CONFIG_MODULES
+#include <gmodule.h>
+#endif
+#include "qemu/cutils.h"
+#ifdef CONFIG_MODULES
+#include "qemu/module.h"
+#endif
+#ifdef CONFIG_MODULE_UPGRADES
+#include "qemu-version.h"
+#endif
 #include "ui/sgi-renderer.h"
 
 static SGIRendererRequest *fixture(void)
@@ -96,6 +107,22 @@ static void test_missing_backend(void)
     error_free(err);
 }
 
+#endif
+
+#if defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
+static void test_missing_registration(void)
+{
+    SGIRenderer *renderer = (void *)1;
+    Error *err = NULL;
+
+    g_assert_cmpint(sgi_renderer_create(&renderer, &err), ==,
+                    SGI_RENDER_CREATE_HOST_ERROR);
+    g_assert_null(renderer);
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "SGI OpenGL module did not register a renderer");
+    error_free(err);
+}
 #endif
 
 static unsigned draw_count;
@@ -415,8 +442,91 @@ static void test_create_unclassified_failure(void)
     error_free(err);
 }
 
+#ifdef CONFIG_MODULES
+static bool test_opengl_module_installed(void)
+{
+    g_autofree char *name = g_strdup_printf("ui-opengl%s", CONFIG_HOST_DSOSUF);
+    g_autofree char *dir = get_relocated_path(CONFIG_QEMU_MODDIR);
+    g_autofree char *path = g_build_filename(dir, name, NULL);
+
+    if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+        return true;
+    }
+#ifdef CONFIG_MODULE_UPGRADES
+    g_autofree char *version = g_strcanon(g_strdup(QEMU_PKGVERSION),
+        G_CSET_A_2_Z G_CSET_a_2_z G_CSET_DIGITS "+-.~", '_');
+    g_autofree char *upgrade_path =
+        g_build_filename("/var/run/qemu", version, name, NULL);
+
+    return g_file_test(upgrade_path, G_FILE_TEST_EXISTS);
+#else
+    return false;
+#endif
+}
+
+static void test_module_create_result(gconstpointer opaque)
+{
+    bool bad_module = GPOINTER_TO_UINT(opaque);
+    g_autofree char *directory = NULL;
+    g_autofree char *module_name = NULL;
+    g_autofree char *module_path = NULL;
+    SGIRenderer *renderer = (void *)1;
+    GError *glib_error = NULL;
+    Error *err = NULL;
+
+    if (!g_module_supported()) {
+        g_test_skip("GLib module loading is unavailable");
+        return;
+    }
+    if (!bad_module && test_opengl_module_installed()) {
+        g_test_skip("An OpenGL module is installed outside the test directory");
+        return;
+    }
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    directory = g_dir_make_tmp("sgi-renderer-module-XXXXXX", &glib_error);
+    g_assert_no_error(glib_error);
+    g_assert_nonnull(directory);
+    module_name = g_strdup_printf("ui-opengl%s", CONFIG_HOST_DSOSUF);
+    module_path = g_build_filename(directory, module_name, NULL);
+    if (bad_module) {
+        g_assert_true(g_file_set_contents(module_path, "not a module", -1,
+                                          &glib_error));
+        g_assert_no_error(glib_error);
+    }
+    g_setenv("QEMU_MODULE_DIR", directory, true);
+    if (!bad_module) {
+        g_assert_cmpint(ui_module_load("opengl", &err), ==, 0);
+        g_assert_null(err);
+    }
+    g_assert_cmpint(sgi_renderer_create(&renderer, &err), ==,
+                    bad_module ? SGI_RENDER_CREATE_HOST_ERROR :
+                                 SGI_RENDER_CREATE_UNAVAILABLE);
+    g_assert_null(renderer);
+    g_assert_nonnull(err);
+    if (bad_module) {
+        g_assert_true(g_str_has_prefix(error_get_pretty(err),
+                                       "failed to open module:"));
+    } else {
+        g_assert_cmpstr(error_get_pretty(err), ==,
+                        "SGI OpenGL renderer is unavailable");
+    }
+    error_free(err);
+    if (bad_module) {
+        g_assert_cmpint(g_unlink(module_path), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+#endif
+
 int main(int argc, char **argv)
 {
+#ifdef CONFIG_MODULES
+    qemu_init_exec_dir(argv[0]);
+#endif
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sgi-renderer/staging", test_staging);
     g_test_add_func("/sgi-renderer/clip", test_clip);
@@ -425,6 +535,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/request", test_request);
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
     g_test_add_func("/sgi-renderer/missing-backend", test_missing_backend);
+#endif
+#if defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
+    g_test_add_func("/sgi-renderer/create/missing-registration",
+                    test_missing_registration);
 #endif
     g_test_add_func("/sgi-renderer/generation", test_generation);
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
@@ -449,5 +563,11 @@ int main(int argc, char **argv)
                          test_create_result);
     g_test_add_func("/sgi-renderer/create/unclassified",
                     test_create_unclassified_failure);
+#ifdef CONFIG_MODULES
+    g_test_add_data_func("/sgi-renderer/create/module-absent",
+                         GUINT_TO_POINTER(0), test_module_create_result);
+    g_test_add_data_func("/sgi-renderer/create/module-load-error",
+                         GUINT_TO_POINTER(1), test_module_create_result);
+#endif
     return g_test_run();
 }
