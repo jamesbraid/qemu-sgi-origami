@@ -28,10 +28,25 @@ Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
 
-Decoded CLEAR is outside the triangle path described here. QEMU PR #1147
-contains a separate colour CLEAR implementation with its own clipping and
-native commit rules. The shared type declarations cover more roles and numeric
-formats than this Mesa draw path supports.
+Decoded CLEAR
+-------------
+
+``sgi_render_raster_checked()`` accepts decoded colour, depth, and stencil
+CLEAR. Colour resources use three or four ordered UNORM components of 1 to 16
+bits. Depth and stencil use separate unsigned, single-component resources at
+exactly 24 and 8 bits. Colour-index CLEAR and other raster operations remain
+unsupported. The clear masks and inclusive clip rectangles determine which
+native pixels may be written.
+
+The path resolves and snapshots every selected resource before Mesa work. It
+finishes host CLEAR and readback before committing native colour, depth, then
+stencil. The union of clipped pixels is written once per resource. A union
+covering the full plane uses one dense commit. A later native commit failure
+retains earlier writes. A snapshot or host failure commits nothing. The family
+still owns dirty and alias updates and guest-visible completion.
+
+The shared type declarations cover more roles and numeric formats than the
+current Mesa draw and CLEAR paths support.
 
 Renderer lifetime and ownership
 -------------------------------
