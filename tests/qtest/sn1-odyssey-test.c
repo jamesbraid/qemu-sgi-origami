@@ -5132,11 +5132,7 @@ static void test_command_fifo_gl_clip_rectangles(void)
     board_quit(qts);
 }
 
-/*
- * An unknown compare command stops the stream. Later drawing and host-write
- * commands must not publish a result for work the model cannot decode.
- */
-static void test_command_fifo_compare_unsupported(void)
+static void test_command_fifo_compare_incomplete(void)
 {
     QTestState *qts = board_start("");
     const uint64_t base = 0xb70000;
@@ -5145,15 +5141,28 @@ static void test_command_fifo_compare_unsupported(void)
                  BEDROCK_MD_INSTALLED_SELECT2);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
     odsy_test_pixel_write(qts, 10, 10, 0x01020304);
     cmd_push(qts, ODSY_CMD_DID_COMPARE);
-    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
-    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
-    cmd_push(qts, 2);
-    cmd_push(qts, 0x5a00);
 
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
     g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, 0);
+    cmd_push(qts, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, 0);
+    cmd_push(qts, 0);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x5a00);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0x5a00);
+    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xaabbccff);
     qtest_quit(qts);
 }
 
@@ -5204,7 +5213,7 @@ static void test_command_fifo_compare_neutral(bool user)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                     ==, 0);
     rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
-    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), !=, 0x01020304);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xaabbccff);
     qtest_quit(qts);
 }
 
@@ -5218,7 +5227,7 @@ static void test_command_fifo_compare_neutral_user(void)
     test_command_fifo_compare_neutral(true);
 }
 
-static void test_command_fifo_compare_nonzero(bool second)
+static void test_command_fifo_compare_nonzero(bool user, bool second)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *log_path = NULL;
@@ -5246,18 +5255,22 @@ static void test_command_fifo_compare_nonzero(bool second)
     reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
     odsy_test_pixel_write(qts, 10, 10, 0x01020304);
 
-    cmd_push(qts, ODSY_CMD_DID_COMPARE);
-    cmd_push(qts, second ? 0 : 1);
-    cmd_push(qts, second ? 1 : 0);
-    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
-    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
-    cmd_push(qts, 2);
-    cmd_push(qts, 0x5a00);
+    compare_push(qts, user, ODSY_CMD_DID_COMPARE);
+    compare_push(qts, user, second ? 0 : 1);
+    compare_push(qts, user, second ? 1 : 0);
 
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x01020304);
     g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                     ==, 0);
+    compare_push(qts, user, ODSY_CMD_HOST_WRITE_SELECT);
+    compare_push(qts, user, 2);
+    compare_push(qts, user, 0x5a00);
+    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0x5a00);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                    ==, 0);
+    rgb_fill(qts, 0xaa, 0xbb, 0xcc, 10, 10, 11, 11);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xaabbccff);
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
@@ -5268,12 +5281,71 @@ static void test_command_fifo_compare_nonzero(bool second)
 
 static void test_command_fifo_compare_nonzero_first(void)
 {
-    test_command_fifo_compare_nonzero(false);
+    test_command_fifo_compare_nonzero(false, false);
 }
 
 static void test_command_fifo_compare_nonzero_second(void)
 {
-    test_command_fifo_compare_nonzero(true);
+    test_command_fifo_compare_nonzero(false, true);
+}
+
+static void test_command_fifo_compare_nonzero_first_user(void)
+{
+    test_command_fifo_compare_nonzero(true, false);
+}
+
+static void test_command_fifo_compare_nonzero_second_user(void)
+{
+    test_command_fifo_compare_nonzero(true, true);
+}
+
+static void test_command_fifo_compare_cancels_query_user(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t page = 0xb72000;
+    const uint32_t control_prefix[] = { 0x4c0, 0x11223344 };
+    const uint32_t control_suffix[] = { 0x10a5a, 2, 0x2222 };
+    const uint32_t prefix[] = { 0x4c0, 0x12345678 };
+    const uint32_t suffix[] = { 0x10a5a, 3, 0x4321 };
+    const uint32_t fresh[] = { 0x4c0, 0xabcdef01, 0x10a5a, 4, 0x5432 };
+    uint8_t counter[4];
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, page + 0x800);
+    qtest_memset(qts, page, 0xa5, 4096);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(control_prefix); i++) {
+        user_cmd_push(qts, control_prefix[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(control_suffix); i++) {
+        user_cmd_push(qts, control_suffix[i]);
+    }
+    qtest_memread(qts, page + 0x97c, counter, sizeof(counter));
+    g_assert_cmphex((uint32_t)ldl_be_p(counter), ==, 0x11223344);
+    qtest_memset(qts, page, 0xa5, 4096);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(prefix); i++) {
+        user_cmd_push(qts, prefix[i]);
+    }
+    user_cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    user_cmd_push(qts, 1);
+    user_cmd_push(qts, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(suffix); i++) {
+        user_cmd_push(qts, suffix[i]);
+    }
+    qtest_memread(qts, page + 0x97c, counter, sizeof(counter));
+    g_assert_cmphex((uint32_t)ldl_be_p(counter), ==, 0xa5a5a5a5);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(fresh); i++) {
+        user_cmd_push(qts, fresh[i]);
+    }
+    qtest_memread(qts, page + 0x97c, counter, sizeof(counter));
+    g_assert_cmphex((uint32_t)ldl_be_p(counter), ==, 0xabcdef01);
+    qtest_quit(qts);
 }
 
 /*
@@ -17116,8 +17188,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_ortho_combined_matrix);
     add_case("sn1/odyssey/command-fifo-gl-texture-slot-leaves-geometry",
              test_command_fifo_gl_texture_slot_leaves_geometry);
-    add_fresh_case("sn1/odyssey/command-fifo-compare-unsupported",
-                   test_command_fifo_compare_unsupported);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-incomplete",
+                   test_command_fifo_compare_incomplete);
     add_fresh_case("sn1/odyssey/command-fifo-compare-neutral-kernel",
                    test_command_fifo_compare_neutral_kernel);
     add_fresh_case("sn1/odyssey/command-fifo-compare-neutral-user",
@@ -17126,6 +17198,12 @@ int main(int argc, char **argv)
                    test_command_fifo_compare_nonzero_first);
     add_fresh_case("sn1/odyssey/command-fifo-compare-nonzero-second",
                    test_command_fifo_compare_nonzero_second);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-nonzero-first-user",
+                   test_command_fifo_compare_nonzero_first_user);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-nonzero-second-user",
+                   test_command_fifo_compare_nonzero_second_user);
+    add_fresh_case("sn1/odyssey/command-fifo-compare-cancels-query-user",
+                   test_command_fifo_compare_cancels_query_user);
     add_case("sn1/odyssey/"
              "command-fifo-gl-float-colour-integer-conversion",
              test_command_fifo_gl_float_colour_integer_conversion);
