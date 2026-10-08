@@ -238,7 +238,8 @@ static uint32_t pic_widget_identity(const SGIPICHead *s)
 {
     uint32_t part = s->head ? 0xd112 : 0xd102;
 
-    return (3U << 28) | (part << 12) | (0x24U << 1);
+    return (3U << 28) | (part << 12) | (0x24U << 1) |
+           (pic_uses_runtime_profile(s->pic) ? 1U : 0U);
 }
 
 static MemTxResult pic_send_typed(SGIPICState *pic, hwaddr address,
