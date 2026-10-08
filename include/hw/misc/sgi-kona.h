@@ -1170,6 +1170,7 @@ struct SGIKonaState {
      * in plane coordinates, through the shared plane load. Not migrated.
      */
     uint32_t test_plane;
+    uint32_t test_pixel_count;
 
     /*
      * Host-only qtest introspection of the gamma table: x-test-gamma
