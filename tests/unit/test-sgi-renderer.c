@@ -1382,6 +1382,143 @@ static void test_module_create_result(gconstpointer opaque)
 }
 #endif
 
+static void test_instance_batch_draw_failure(void)
+{
+    g_autofree SGIRendererRequest *source = fixture();
+    g_autofree SGIRendererRequest *requests = g_new0(SGIRendererRequest, 2);
+    SGIRenderer *renderer, *other;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    batch_failure = 0;
+    draw_count = 0;
+    sgi_renderer_register_gl(&batch_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    other = sgi_renderer_new(&err);
+    g_assert_nonnull(other);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 2);
+
+    /* Another instance's draw must not advance the armed instance's count. */
+    g_assert_true(sgi_renderer_draw(other, source, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 1);
+    requests[0] = requests[1] = *source;
+    requests[1].rgb[0] = 0;
+    requests[1].rgb[1] = 255;
+    memset(requests[0].rgba, 0, sizeof(requests[0].rgba));
+    memset(requests[1].rgba, 0, sizeof(requests[1].rgba));
+    g_assert_false(sgi_renderer_draw_batch(renderer, requests, 2, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 3);
+    /* A failed batch does not roll back earlier host staging. */
+    g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+    g_assert_cmpuint(requests[0].rgba[(16 * 128 + 16) * 4], ==, 255);
+    error_free(err);
+    err = NULL;
+
+    sgi_renderer_test_fail_draw(renderer, 0);
+    g_assert_false(sgi_renderer_draw(renderer, source, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 3);
+    error_free(err);
+    err = NULL;
+    g_assert_true(sgi_renderer_draw_batch(other, requests, 2, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 5);
+    sgi_renderer_free(renderer);
+    sgi_renderer_free(other);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_draw(renderer, source, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 6);
+    sgi_renderer_free(renderer);
+}
+
+static void test_draw_failure_disable_rearm(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    batch_failure = 0;
+    draw_count = 0;
+    sgi_renderer_register_gl(&batch_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 2);
+    request->clip[0] = -1;
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 0);
+    error_free(err);
+    err = NULL;
+    request->clip[0] = 0;
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 1);
+    sgi_renderer_test_fail_draw(renderer, 0);
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 3);
+
+    sgi_renderer_test_fail_draw(renderer, 2);
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 1);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 5);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
+static void test_batch_draw_failure_staging_precedence(void)
+{
+    g_autofree SGIRendererRequest *source = fixture();
+    g_autofree SGIRendererRequest *requests = g_new0(SGIRendererRequest, 2);
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    batch_failure = 2;
+    draw_count = 0;
+    sgi_renderer_register_gl(&batch_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 2);
+    requests[0] = requests[1] = *source;
+    g_assert_false(sgi_renderer_draw_batch(renderer, requests, 2, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL renderer staging");
+    g_assert_cmpuint(draw_count, ==, 2);
+    g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef CONFIG_MODULES
@@ -1482,5 +1619,11 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sgi-renderer/create/module-load-error",
                          GUINT_TO_POINTER(1), test_module_create_result);
 #endif
+    g_test_add_func("/sgi-renderer/test-fault/instance-batch",
+                   test_instance_batch_draw_failure);
+    g_test_add_func("/sgi-renderer/test-fault/disable-rearm",
+                   test_draw_failure_disable_rearm);
+    g_test_add_func("/sgi-renderer/test-fault/batch-staging-precedence",
+                   test_batch_draw_failure_staging_precedence);
     return g_test_run();
 }
