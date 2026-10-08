@@ -7843,6 +7843,34 @@ static void sgi_kona_test_get_pixel(Object *obj, Visitor *v, const char *name,
 }
 
 /*
+ * Host-only qtest bulk form of x-test-pixel: the x-test-pixel-count
+ * pixels along the line from (x-test-pixel-x, x-test-pixel-y), each what
+ * x-test-pixel returns there, as consecutive eight-digit lower-case hex
+ * words in one string. No guest-visible state.
+ */
+static void sgi_kona_test_get_pixel_row(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (uint32_t i = 0; i < s->test_pixel_count; i++) {
+        uint32_t x = s->test_pixel_x + i;
+        uint32_t value = 0;
+
+        if (DEVICE(obj)->realized && x < SGI_KONA_FB_WIDTH &&
+            s->test_pixel_y < SGI_KONA_FB_HEIGHT) {
+            value = sgi_kona_fb_read(s, x, s->test_pixel_y);
+        }
+        g_string_append_printf(str, "%08x", value);
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
+}
+
+/*
  * Host-only qtest access to board memory through the shared plane load:
  * the word of plane x-test-plane at (x-test-pixel-x, x-test-pixel-y),
  * in plane coordinates. A plane id the table does not hold reads 0.
@@ -7902,28 +7930,91 @@ static void sgi_kona_test_get_plane_row(Object *obj, Visitor *v,
     visit_type_str(v, name, &out, errp);
 }
 
+/*
+ * Host-only qtest write of plane, x and y together, so a test selecting a
+ * point for x-test-plane-word needs one QMP command and not three. The
+ * value is plane << 48 | y << 24 | x, with x and y each below 2^24; it
+ * sets x-test-plane, x-test-pixel-y and x-test-pixel-x and nothing else.
+ */
+static void sgi_kona_test_set_plane_select(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint64_t value;
+
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    s->test_plane = value >> 48;
+    s->test_pixel_y = (value >> 24) & 0xffffff;
+    s->test_pixel_x = value & 0xffffff;
+}
+
+/*
+ * SHA-256 of the bytes of plane `plane`, numbered as x-test-plane numbers
+ * them, or NULL when it has no device-backed storage.
+ */
+static char *sgi_kona_test_plane_digest(SGIKonaState *s, unsigned plane)
+{
+    SGIBoardMemory *memory = plane < s->mem.nplanes ? &s->mem :
+                             &s->desktop_mem;
+    unsigned id = plane < s->mem.nplanes ? plane : plane - s->mem.nplanes;
+    const SGIPlane *p = DEVICE(s)->realized ?
+                        sgi_board_memory_plane(memory, id) : NULL;
+
+    if (!p || !memory->bytes || p->base > memory->bytes_len ||
+        p->len > memory->bytes_len - p->base) {
+        return NULL;
+    }
+    return g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                       memory->bytes + p->base, p->len);
+}
+
 /* Complete plane bytes, for preservation and migration comparisons. */
 static void sgi_kona_test_get_plane_digest(Object *obj, Visitor *v,
                                            const char *name, void *opaque,
                                            Error **errp)
 {
     SGIKonaState *s = SGI_KONA(obj);
-    SGIBoardMemory *memory = s->test_plane < s->mem.nplanes ?
-                             &s->mem : &s->desktop_mem;
-    unsigned id = s->test_plane < s->mem.nplanes ? s->test_plane :
-                  s->test_plane - s->mem.nplanes;
-    const SGIPlane *p = DEVICE(obj)->realized ?
-                        sgi_board_memory_plane(memory, id) : NULL;
-    g_autofree char *digest = NULL;
+    g_autofree char *digest = sgi_kona_test_plane_digest(s, s->test_plane);
 
-    if (!p || !memory->bytes || p->base > memory->bytes_len ||
-        p->len > memory->bytes_len - p->base) {
+    if (!digest) {
         error_setg(errp, "Selected KONA plane has no device-backed storage");
         return;
     }
-    digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
-                                          memory->bytes + p->base, p->len);
     visit_type_str(v, name, &digest, errp);
+}
+
+/*
+ * Host-only qtest bulk form of x-test-plane-digest: the digests of the
+ * x-test-plane-count planes from x-test-plane on, as consecutive
+ * sixty-four-digit hex strings in one string. A plane with no device-backed
+ * storage reads as sixty-four dashes where the per-plane property fails.
+ * No guest-visible state.
+ */
+static void sgi_kona_test_get_plane_digests(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (uint32_t i = 0; i < s->test_plane_count; i++) {
+        g_autofree char *digest =
+            sgi_kona_test_plane_digest(s, s->test_plane + i);
+
+        if (digest) {
+            g_string_append(str, digest);
+        } else {
+            for (unsigned k = 0; k < 64; k++) {
+                g_string_append_c(str, '-');
+            }
+        }
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
 }
 
 /* Host-only access to the selected gamma-table entry. */
@@ -7969,6 +8060,26 @@ static void sgi_kona_test_get_gl_data_word(Object *obj, Visitor *v,
     }
     value = s->gl_data[s->test_gc_index];
     visit_type_uint32(v, name, &value, errp);
+}
+
+/*
+ * Host-only qtest bulk form of x-test-gl-data-word: all
+ * SGI_KONA_GL_DATA_MAX staging words, word 0 first, as consecutive
+ * eight-digit lower-case hex words in one string. No guest-visible state.
+ */
+static void sgi_kona_test_get_gl_data_words(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    g_autoptr(GString) str = g_string_new(NULL);
+    char *out;
+
+    for (unsigned i = 0; i < SGI_KONA_GL_DATA_MAX; i++) {
+        g_string_append_printf(str, "%08x", s->gl_data[i]);
+    }
+    out = str->str;
+    visit_type_str(v, name, &out, errp);
 }
 
 /* Inspect the same immutable texture view supplied to software draws. */
@@ -8034,6 +8145,8 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add(obj, "x-test-gl-data-word", "uint32",
                         sgi_kona_test_get_gl_data_word, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-gl-data-words", "str",
+                        sgi_kona_test_get_gl_data_words, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -8047,6 +8160,8 @@ static void sgi_kona_instance_init(Object *obj)
                         NULL, NULL, NULL);
     object_property_add(obj, "x-test-pixel", "uint32",
                         sgi_kona_test_get_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-pixel-row", "str",
+                        sgi_kona_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-plane", &s->test_plane,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-word", "uint32",
@@ -8056,8 +8171,15 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-row", "str",
                         sgi_kona_test_get_plane_row, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-plane-select", "uint64",
+                        NULL, sgi_kona_test_set_plane_select, NULL, NULL);
     object_property_add(obj, "x-test-plane-digest", "str",
                         sgi_kona_test_get_plane_digest, NULL, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-plane-count",
+                                   &s->test_plane_count,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-plane-digests", "str",
+                        sgi_kona_test_get_plane_digests, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-gamma-addr",
                                    &s->test_gamma_addr,
                                    OBJ_PROP_FLAG_READWRITE);
