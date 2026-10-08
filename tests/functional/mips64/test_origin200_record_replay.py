@@ -21,6 +21,12 @@ queued work at a different instruction from the recording shows up.
   the machine's modules: the start stops the processors, waits for them
   without blocking, resets the modules and releases the processors, which
   is the path that must not wait on a processor thread under replay.
+- test_controller_reset_replays_identically gives the controller's AUX
+  serial line a backend, types the controller command line's ``rst`` on it
+  while recording, and requires the replay to make the same starts and
+  print the same console. Replay used to abort at once with such a backend,
+  because the controller announced itself on the line in the reset that
+  loading the initial snapshot runs.
 - test_seek_back_reloads_the_snapshot replays part way, seeks back, which
   reloads the initial snapshot, and runs on past where it started.
 - test_reverse_debugging reuses QEMU's generic gdb reverse-step and
@@ -28,6 +34,7 @@ queued work at a different instruction from the recording shows up.
 """
 
 import os
+import socket
 import time
 from subprocess import check_output
 
@@ -167,18 +174,55 @@ class Origin200RecordReplay(ReverseDebugging):
 
         self.assertEqual(self.read(replayed), self.read(recorded))
 
-    def run_to_menu(self, mode, console, trace_log):
+    def type_on_aux(self, sock_path, vm, lines):
+        """Type controller command lines on the AUX serial line while
+        recording. Ctrl+T starts a line; the controller takes it once it
+        ends in a return. Returns the connection, to keep it open."""
+        deadline = time.monotonic() + 30
+        conn = socket.socket(socket.AF_UNIX)
+        while True:
+            try:
+                conn.connect(sock_path)
+                break
+            except OSError:
+                if time.monotonic() > deadline or not vm.is_running():
+                    self.fail(f'no AUX serial socket at {sock_path}')
+                time.sleep(0.2)
+        for line in lines:
+            conn.sendall(b'\x14' + line.encode() + b'\r')
+            time.sleep(3)
+        return conn
+
+    def run_to_menu(self, mode, console, trace_log, aux_lines=None):
         """Record or replay the boot to the menu and return the module
-        starts the run traced, with their log prefixes stripped."""
-        vm = self.launch(mode, console, extra=(
-            '-d', 'trace:sgi_machine_module_start', '-D', trace_log))
+        starts the run traced, with their log prefixes stripped. With
+        aux_lines the AUX serial line has a socket backend, and a recording
+        types those lines on it once the menu is up and waits for the menu
+        again, after the module restarts."""
+        extra = ['-d', 'trace:sgi_machine_module_start', '-D', trace_log]
+        # A UNIX socket path is short; the scratch directory's is not.
+        sock_path = os.path.join(self.socket_dir().name, 'aux.sock')
+        if aux_lines:
+            extra += ['-serial', 'null', '-chardev',
+                      f'socket,id=aux,path={sock_path},server=on,wait=off',
+                      '-serial', 'chardev:aux']
+        vm = self.launch(mode, console, extra=extra)
+        conn = None
         try:
             self.wait_for_output(vm, console, mode)
             deadline = time.monotonic() + MENU_SECONDS
             if mode == 'record':
-                while MENU_PROMPT not in self.read(console):
+                menus = 2 if aux_lines else 1
+                while self.read(console).count(MENU_PROMPT) < 1:
                     if time.monotonic() > deadline:
                         self.fail(f'record: no "{MENU_PROMPT.decode()}" '
+                                  f'within {MENU_SECONDS}s')
+                    time.sleep(0.2)
+                if aux_lines:
+                    conn = self.type_on_aux(sock_path, vm, aux_lines)
+                while self.read(console).count(MENU_PROMPT) < menus:
+                    if time.monotonic() > deadline:
+                        self.fail(f'record: {menus} menus not reached '
                                   f'within {MENU_SECONDS}s')
                     time.sleep(0.2)
                 vm.shutdown()
@@ -190,6 +234,8 @@ class Origin200RecordReplay(ReverseDebugging):
                     time.sleep(0.2)
                 vm.wait()
         finally:
+            if conn:
+                conn.close()
             vm.shutdown(hard=True)
         return [line.split(':', 1)[-1].strip()
                 for line in self.read(trace_log).decode().splitlines()
@@ -207,6 +253,26 @@ class Origin200RecordReplay(ReverseDebugging):
         self.assertEqual(
             self.run_to_menu('replay', replayed,
                              self.scratch_file('trace-replay.txt')),
+            starts)
+        self.assertEqual(self.read(replayed), self.read(recorded))
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_controller_reset_replays_identically(self):
+        recorded = self.scratch_file('console-record.txt')
+        replayed = self.scratch_file('console-replay.txt')
+        lines = ['pas none', 'rst']
+
+        starts = self.run_to_menu('record', recorded,
+                                  self.scratch_file('trace-record.txt'),
+                                  aux_lines=lines)
+        # The PROM's own port reset starts the machine once; the
+        # controller's reset starts the module again, and the PROM resets
+        # once more.
+        self.assertGreaterEqual(len(starts), 3, starts)
+        self.assertEqual(
+            self.run_to_menu('replay', replayed,
+                             self.scratch_file('trace-replay.txt'),
+                             aux_lines=lines),
             starts)
         self.assertEqual(self.read(replayed), self.read(recorded))
 
