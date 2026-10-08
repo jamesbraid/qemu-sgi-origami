@@ -4127,9 +4127,9 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
  * each aligned 32-bit word is reversed. That is the model's reading of the
  * public driver names and the datasheet's per-word premise, an approximation
  * (no Tigon reference is held). The Bridge then places each bus byte:
- * identity in a swap-set slot and p ^ 3 in a swap-clear one, since the model
- * makes the Tigon a 32-bit agent; the matrix runs it in unwired device 3 and
- * in option slot 5, which drives REQ64#, and the placement must not change.
+ * identity when swap is set, p ^ 3 in narrow device 3 when clear, and
+ * p ^ 7 in option slot 5 when clear. Slot 5 drives REQ64#, so this matrix
+ * checks the model's different 32-bit and 64-bit placements.
  * A frame byte at address a therefore sits in memory
  * at (a & ~7) + ((a & 7) ^ t ^ u), t being 3 with the swap clear and 0 set,
  * u the Bridge's unit. Descriptors are written the way the card reads them:
@@ -4216,7 +4216,7 @@ static void matrix_expect(uint8_t *want, size_t want_len, const uint8_t *frame,
 
 static void run_matrix_tx(bool swap_set, bool wired, bool data_swap)
 {
-    unsigned int u = swap_set ? 0 : 3;
+    unsigned int u = swap_set ? 0 : (wired ? 7 : 3);
     unsigned int m = (data_swap ? 0 : 3) ^ u;
     uint64_t base = TX_BUF_DIRECT_PHYS - 10;
     uint8_t want[96], got[2048];
@@ -4256,7 +4256,7 @@ static void run_matrix_tx(bool swap_set, bool wired, bool data_swap)
 
 static void run_matrix_rx(bool swap_set, bool wired, bool data_swap)
 {
-    unsigned int u = swap_set ? 0 : 3;
+    unsigned int u = swap_set ? 0 : (wired ? 7 : 3);
     unsigned int m = (data_swap ? 0 : 3) ^ u;
     uint64_t base = RX_BUF_DIRECT_PHYS - 10;
     uint8_t want[96], got[96];
