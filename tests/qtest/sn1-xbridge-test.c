@@ -1606,7 +1606,9 @@ static void test_page_faults(void)
 
 static void test_space_above_face(void)
 {
-    QTestState *qts = transport_start("");
+    /* Preserve the alias's wide-target behavior with a wired 64-bit card. */
+    QTestState *qts = transport_start_card("sgi-bridge-dma-test-64bit",
+        "-global sgi-xbridge-head.req64-slots=1");
 
     /*
      * The card's length register through the 32-bit alias, value kept. Read
@@ -1959,6 +1961,101 @@ static void test_origin300_xbridge_revisions(void)
     qtest_quit(qts);
 }
 
+/* A unique mapped BAR makes the 64-bit alias use its card's cached reset width. */
+static void test_mem64_target_width(void)
+{
+    QTestState *qts = transport_start_card("sgi-bridge-dma-test",
+        "-global sgi-xbridge-head.req64-slots=3 "
+        "-device sgi-bridge-dma-test-64bit,bus=head.0,addr=1");
+    static const struct {
+        uint32_t bar;
+        uint32_t req64;
+        uint32_t first;
+        uint32_t second;
+    } rows[] = {
+        { 0x01000000, 0, 0x12345678, 0xa1b2c3d4 },
+        { 0x03000000, 1, 0xa1b2c3d4, 0x12345678 },
+    };
+
+    qtest_writel(qts, BASE + 0x21010, rows[1].bar);
+    qtest_writel(qts, BASE + 0x21004, 6);
+    /* MEM_SWAP remains clear. Each card's BAR0 has adjacent distinct words. */
+    g_assert_cmphex(reg_read(qts, 0x20) & (1U << 22), ==, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+        uint64_t bar = rows[i].bar;
+
+        /* Both BARs have 32-bit addresses; only one card runs wide phases. */
+        g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x38), ==,
+                        rows[i].req64);
+        qtest_writel(qts, BASE + MEM32 + bar + 0x24, 0xa1b2c3d4);
+        g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x20), ==,
+                        0x12345678);
+        g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x24), ==,
+                        0xa1b2c3d4);
+        g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
+                        rows[i].first);
+        g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x24), ==,
+                        rows[i].second);
+    }
+    qtest_quit(qts);
+}
+
+/* An unmapped BAR leaves the big-memory alias without a PCI target. */
+static void test_mem64_unmapped_bar(void)
+{
+    QTestState *qts = transport_start("");
+    uint64_t bar = 0x01000000;
+
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
+                    0x12345678);
+    qtest_writel(qts, BASE + 0x20004, 4);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x20004), ==, 4);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==, 0);
+    qtest_writel(qts, BASE + 0x20004, 6);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
+                    0x12345678);
+    qtest_quit(qts);
+}
+
+/* Two mapped BARs at one PCI address leave target width ambiguous. */
+static void test_mem64_overlapping_bars(const void *data)
+{
+    bool first_wide = *(const bool *)data;
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-xbridge-head.req64-slots=3 "
+        "-device %s,bus=head.0,addr=1",
+        first_wide ? "sgi-bridge-dma-test" : "sgi-bridge-dma-test-64bit");
+    QTestState *qts = transport_start_card(
+        first_wide ? "sgi-bridge-dma-test-64bit" : "sgi-bridge-dma-test",
+        extra);
+    uint64_t bar = 0x01000000;
+    uint64_t other = 0x03000000;
+
+    qtest_writel(qts, BASE + 0x21010, other);
+    qtest_writel(qts, BASE + 0x21004, 6);
+    qtest_writel(qts, BASE + MEM32 + bar + 0x24, 0xa1b2c3d4);
+    qtest_writel(qts, BASE + MEM32 + other + 0x24, 0x11223344);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x24), ==,
+                    0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + other + 0x24), ==,
+                    0x11223344);
+    qtest_writel(qts, BASE + 0x21010, bar);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x20010), ==, bar);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x21010), ==, bar);
+    /* The second card's marker identifies the PCI memory responder. */
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x24), ==,
+                    0x11223344);
+    g_assert_cmphex(reg_read(qts, 0x20) & (1U << 22), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
+                    0x11223344);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x24), ==,
+                    0x12345678);
+    qtest_quit(qts);
+}
+
+static const bool overlap_first_wide = true;
+static const bool overlap_first_narrow;
+
 /*
  * A card on head E answers through that head's device window: the window
  * for device n carries PCI addresses from the Device(n) register's base,
@@ -2110,6 +2207,12 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
     qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
     qtest_add_func("/sn1/xbridge/space-above-face", test_space_above_face);
+    qtest_add_func("/sn1/xbridge/mem64-target-width", test_mem64_target_width);
+    qtest_add_func("/sn1/xbridge/mem64-unmapped-bar", test_mem64_unmapped_bar);
+    qtest_add_data_func("/sn1/xbridge/mem64-overlapping-bars/wide-first",
+                        &overlap_first_wide, test_mem64_overlapping_bars);
+    qtest_add_data_func("/sn1/xbridge/mem64-overlapping-bars/narrow-first",
+                        &overlap_first_narrow, test_mem64_overlapping_bars);
     qtest_add_func("/sn1/xbridge/onewire/placeholder-identity-reads-back",
                    test_placeholder_identity_reads_back);
     qtest_add_func("/sn1/xbridge/onewire/no-board-stays-inert",
