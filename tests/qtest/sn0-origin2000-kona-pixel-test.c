@@ -89,20 +89,14 @@ static uint64_t kona_qom_get_uint(QTestState *s, const char *property)
     return value;
 }
 
-static void kona_qom_set_uint(QTestState *s, const char *property,
-                              uint32_t value)
-{
-    qtest_qmp_assert_success(s,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': %s, 'value': %u}}", KONA_QOM_PATH, property, value);
-}
-
 static uint32_t kona_plane_word(QTestState *s, uint32_t plane, uint32_t x,
                                 uint32_t y)
 {
-    kona_qom_set_uint(s, "x-test-plane", plane);
-    kona_qom_set_uint(s, "x-test-pixel-x", x);
-    kona_qom_set_uint(s, "x-test-pixel-y", y);
+    /* plane << 48 | y << 24 | x: one command selects the whole point. */
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-select', 'value': %" PRIu64 "}}",
+        KONA_QOM_PATH, ((uint64_t)plane << 48) | ((uint64_t)y << 24) | x);
     return kona_qom_get_uint(s, "x-test-plane-word");
 }
 
@@ -127,18 +121,36 @@ static uint32_t front_tag_at(QTestState *s, uint32_t x, uint32_t y)
     return kona_plane_word(s, PLANE_FRONT_TAG, x, KONA_FB_HEIGHT - 1 - y);
 }
 
-static char *copy_plane_digest(QTestState *s, unsigned plane)
+/*
+ * The digests of `count` planes from `first` on, sixty-four hex digits a
+ * plane, in one command; digest_at() picks one out.
+ */
+static char *copy_digests(QTestState *s, unsigned first, unsigned count)
 {
     QDict *reply;
-    char *digest;
+    char *all;
 
-    kona_qom_set_uint(s, "x-test-plane", plane);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane', 'value': %u}}", KONA_QOM_PATH, first);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-count', 'value': %u}}", KONA_QOM_PATH,
+        count);
     reply = qtest_qmp(s,
         "{'execute':'qom-get','arguments':{'path':%s,"
-        "'property':'x-test-plane-digest'}}", KONA_QOM_PATH);
-    digest = g_strdup(qdict_get_str(reply, "return"));
+        "'property':'x-test-plane-digests'}}", KONA_QOM_PATH);
+    all = g_strdup(qdict_get_str(reply, "return"));
     qobject_unref(reply);
-    return digest;
+    g_assert_cmpuint(strlen(all), ==, count * 64);
+    return all;
+}
+
+/* Plane `i` of a copy_digests() result; dashes mean no storage. */
+static char *digest_at(const char *all, unsigned i)
+{
+    g_assert_cmpint(all[i * 64], !=, '-');
+    return g_strndup(all + i * 64, 64);
 }
 
 static QTestState *kona_init_logged(const char *base_args, char **log)
@@ -643,12 +655,14 @@ static void test_copy_refuses_mixed_tags(void)
     data_words(qts, (uint32_t[]){ 0x05000000 }, 1);
     pixel_finish(qts);
 
+    g_autofree char *dg657 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(qts, plane);
+        before[plane] = digest_at(dg657, plane);
     }
     copy_rect(qts, 300, 10, 400, 20, 3, 1);
+    g_autofree char *dg661 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg661, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1662,9 +1676,10 @@ static void test_copy_semantics(gconstpointer opaque)
 
     qtest_system_reset(qts);
     copy_canaries(qts);
+    g_autofree char *dg1676 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != 0 && plane != 2) {
-            before[plane] = copy_plane_digest(qts, plane);
+            before[plane] = digest_at(dg1676, plane);
         }
     }
     for (unsigned region = 0; region < 2; region++) {
@@ -1703,8 +1718,9 @@ static void test_copy_semantics(gconstpointer opaque)
     x_command(qts, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 1, 1, 0 }, 7);
     x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_autofree char *dg1717 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1717, plane);
 
         if (plane == 0 || plane == 2) {
             g_autofree char *expected = g_compute_checksum_for_data(
@@ -1756,8 +1772,9 @@ static void test_copy_late_refusal(gconstpointer opaque)
         COPY_XY(source_bad ? 11 : 31, source_bad ? 20 : 40),
         COPY_XY(source_bad ? 12 : 32, source_bad ? 21 : 41),
     }, 2);
+    g_autofree char *dg1770 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1770, plane);
     }
     copy_semantic_gc(qts, rgb, rgb ? 0x53a56c : 0x53, 6);
     x_command(qts, TOKEN_PIXEL_SETUP,
@@ -1768,8 +1785,9 @@ static void test_copy_late_refusal(gconstpointer opaque)
     x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
     copy_semantic_gc(qts, rgb, rgb ? 0xffffff : 0xff, 5);
     x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_autofree char *dg1782 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1782, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1802,9 +1820,10 @@ static void test_copy_overlap_semantics(gconstpointer opaque)
 
     qtest_system_reset(qts);
     copy_canaries(qts);
+    g_autofree char *dg1816 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != 0 && plane != 2) {
-            before[plane] = copy_plane_digest(qts, plane);
+            before[plane] = digest_at(dg1816, plane);
         }
     }
     for (unsigned y = 0; y < 4; y++) {
@@ -1851,8 +1870,9 @@ static void test_copy_overlap_semantics(gconstpointer opaque)
             tags[pixel] = rgb ? 0 : TAG_X_INDEX;
         }
     }
+    g_autofree char *dg1865 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1865, plane);
 
         if (plane == 0 || plane == 2) {
             g_autofree char *expected = g_compute_checksum_for_data(
@@ -1896,12 +1916,14 @@ static void test_copy_migration(gconstpointer opaque)
     x_command(from, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 2, 2, 0 }, 7);
     x_command(from, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_autofree char *dg1910 = copy_digests(from, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(from, plane);
+        before[plane] = digest_at(dg1910, plane);
     }
     sgi_migrate_stopped(from, uri);
+    g_autofree char *dg1914 = copy_digests(to, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(to, plane);
+        g_autofree char *actual = digest_at(dg1914, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1952,13 +1974,15 @@ static void test_copy_setup_refusal(gconstpointer opaque)
         /* Huge dimensions clip to screen bounds, then refuse a late tag. */
         setup[4] = setup[5] = UINT32_MAX;
     }
+    g_autofree char *dg1966 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1966, plane);
     }
     x_command(qts, TOKEN_PIXEL_SETUP, setup, ARRAY_SIZE(setup));
     x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_autofree char *dg1971 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = copy_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1971, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1971,8 +1995,9 @@ static void test_copy_setup_refusal(gconstpointer opaque)
 
 static void assert_staged_planes(QTestState *s, char *const *before)
 {
+    g_autofree char *dg1985 = copy_digests(s, 0, 11);
     for (unsigned plane = 0; plane < 11; plane++) {
-        g_autofree char *seen = copy_plane_digest(s, plane);
+        g_autofree char *seen = digest_at(dg1985, plane);
 
         g_assert_cmpstr(seen, ==, before[plane]);
     }
@@ -2412,8 +2437,9 @@ static void test_write_rgb_staged(gconstpointer opaque)
         read_write_pattern(s, 11, 21, 1, 1);
     }
     copy_semantic_gc(s, true, mode == 7 ? 0x53a69c : 0xffffff, 3);
+    g_autofree char *dg2426 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(s, plane);
+        before[plane] = digest_at(dg2426, plane);
     }
     x_command(s, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ dma ? 0x10 : 0, 2, 2, mode == 6 ? 0 : 8,
@@ -2480,9 +2506,10 @@ static void test_write_rgb_staged(gconstpointer opaque)
             g_assert_cmphex(front_at(s, 10 + k % 2, 20 + k / 2), ==, pixels[k]);
         }
     }
+    g_autofree char *dg2494 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            g_autofree char *seen = copy_plane_digest(s, plane);
+            g_autofree char *seen = digest_at(dg2494, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2564,8 +2591,9 @@ static void test_write_snapshot_migrates(gconstpointer opaque)
     x_command(from, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ dma ? 0x10 : 0, 0, 1, 8, 3, 2, 12 }, 7);
     pixel_write(from, 70, 80);
+    g_autofree char *dg2578 = copy_digests(from, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(from, plane);
+        before[plane] = digest_at(dg2578, plane);
     }
     if (dma) {
         staged_dma_words(from, words, consumed);
@@ -2607,9 +2635,10 @@ static void test_write_snapshot_migrates(gconstpointer opaque)
         }
     }
     g_assert_cmphex(front_at(to, 5, 5), ==, 0);
+    g_autofree char *dg2621 = copy_digests(to, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            g_autofree char *seen = copy_plane_digest(to, plane);
+            g_autofree char *seen = digest_at(dg2621, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2633,16 +2662,18 @@ static void test_write_prepares_until_finish(void)
     qtest_system_reset(qts);
     copy_canaries(qts);
     copy_semantic_gc(qts, false, 0xff, 3);
+    g_autofree char *dg2647 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(qts, plane);
+        before[plane] = digest_at(dg2647, plane);
     }
     x_command(qts, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
     pixel_write(qts, 70, 80);
     for (unsigned word = 0; word < ARRAY_SIZE(words); word++) {
         data_words(qts, words + word, 1);
+        g_autofree char *dg2655 = copy_digests(qts, 0, ARRAY_SIZE(before));
         for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-            g_autofree char *seen = copy_plane_digest(qts, plane);
+            g_autofree char *seen = digest_at(dg2655, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2652,9 +2683,10 @@ static void test_write_prepares_until_finish(void)
         g_assert_cmphex(front_at(qts, 70 + x, 80), ==, pixels[x]);
         g_assert_cmphex(front_tag_at(qts, 70 + x, 80), ==, TAG_X_INDEX);
     }
+    g_autofree char *dg2666 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            g_autofree char *seen = copy_plane_digest(qts, plane);
+            g_autofree char *seen = digest_at(dg2666, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2676,8 +2708,9 @@ static void test_write_late_destination(gconstpointer opaque)
     read_write_pattern(s, 70, 80, 8, 1);
     seed_rgb(s, 77, 80, 0xabcdef);
     copy_semantic_gc(s, false, masked ? 0x53 : 0xff, masked ? 3 : 6);
+    g_autofree char *dg2690 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(s, plane);
+        before[plane] = digest_at(dg2690, plane);
     }
     x_command(s, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
@@ -2694,9 +2727,10 @@ static void test_write_late_destination(gconstpointer opaque)
         g_assert_cmphex(front_at(s, 70 + x, 80), ==, 0x11 * (x + 1));
         g_assert_cmphex(front_tag_at(s, 70 + x, 80), ==, TAG_X_INDEX);
     }
+    g_autofree char *dg2708 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            g_autofree char *seen = copy_plane_digest(s, plane);
+            g_autofree char *seen = digest_at(dg2708, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2720,8 +2754,9 @@ static void test_write_interrupted(void)
 
     copy_canaries(s);
     pixel_setup(s, 0, 0, 8, 1, 0);
+    g_autofree char *dg2734 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(s, plane);
+        before[plane] = digest_at(dg2734, plane);
     }
     pixel_write(s, 70, 80);
     data_words(s, words, 1);
@@ -2738,9 +2773,10 @@ static void test_write_interrupted(void)
         g_assert_cmphex(front_at(s, 70 + x, 80), ==, 0x11 * (x + 1));
         g_assert_cmphex(front_tag_at(s, 70 + x, 80), ==, TAG_X_INDEX);
     }
+    g_autofree char *dg2752 = copy_digests(s, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            g_autofree char *seen = copy_plane_digest(s, plane);
+            g_autofree char *seen = digest_at(dg2752, plane);
 
             g_assert_cmpstr(seen, ==, before[plane]);
         }
@@ -2779,8 +2815,9 @@ static void test_staged_bitmap(gconstpointer opaque)
     x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     x_command(qts, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 0, opaque_bitmap ? 5 : 4, 1, 0, 4, 1, 0 }, 7);
+    g_autofree char *dg2793 = copy_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = copy_plane_digest(qts, plane);
+        before[plane] = digest_at(dg2793, plane);
     }
     pixel_write(qts, 70, 80);
     data_words(qts, (uint32_t[]){ 0xa0000000 }, 1);
@@ -2807,9 +2844,10 @@ static void test_staged_bitmap(gconstpointer opaque)
             g_assert_cmphex(front_tag_at(qts, 70 + x, 80), ==,
                            set || opaque_bitmap ? TAG_X_INDEX : TAG_DIRECT);
         }
+        g_autofree char *dg2821 = copy_digests(qts, 0, ARRAY_SIZE(before));
         for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
             if (plane != 0 && plane != 2) {
-                g_autofree char *seen = copy_plane_digest(qts, plane);
+                g_autofree char *seen = digest_at(dg2821, plane);
 
                 g_assert_cmpstr(seen, ==, before[plane]);
             }
