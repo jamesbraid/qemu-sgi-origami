@@ -1271,6 +1271,71 @@ static void test_decoded_triangle_clip_union(void)
     g_assert_null(err);
     g_assert_cmpuint(f.snapshots, ==, 1);
     g_assert_cmpuint(f.commits, ==, 1);
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][0] = 0;
+            f.colour[y][x][1] = 0;
+            f.colour[y][x][2] = 255;
+            f.tag[y][x] = 1;
+            f.written[y][x] = 0;
+        }
+    }
+    state.drawable.clip.empty = 0;
+    state.drawable.clip.n = 2;
+    state.drawable.clip.r[0] = (SGIClipRect) { 0, 0, 1, 0 };
+    state.drawable.clip.r[1] = (SGIClipRect) { 0, 0, 0, 1 };
+    state.scissor_test = 1;
+    state.scissor[2] = 2;
+    state.scissor[3] = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 0x40);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 0x40);
+    g_assert_cmpuint(f.colour[1][0][0], ==, 0);
+    g_assert_cmpuint(f.tag[1][0], ==, 1);
+    g_assert_cmpuint(f.written[1][0], ==, 0);
+
+    state.scissor[2] = 0;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+
+    state.scissor[2] = -1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][0] = 0;
+            f.colour[y][x][1] = 0;
+            f.colour[y][x][2] = 255;
+            f.tag[y][x] = 1;
+            f.written[y][x] = 0;
+        }
+    }
+    state.drawable.clip.n = 0;
+    state.scissor[0] = 1;
+    state.scissor[2] = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 0);
+    g_assert_cmpuint(f.tag[0][1], ==, 1);
+    g_assert_cmpuint(f.written[0][1], ==, 0);
     sgi_renderer_free(renderer);
 }
 

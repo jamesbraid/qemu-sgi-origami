@@ -75,7 +75,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         st->colour_mask != SGI_GL_COLOUR_MASK_ALL ||
         st->depth_test || st->stencil_test || st->blend > 1 ||
         st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
-        st->scissor_test || st->color_logic_op ||
+        st->color_logic_op ||
         st->index_logic_op || st->texture_2d || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
         !st->drawable.bound ||
@@ -161,6 +161,11 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "Invalid SGI Mesa clip rectangle count");
         return SGI_RENDER_RESOURCE_ERROR;
     }
+    if (draw->state->scissor_test &&
+        (draw->state->scissor[2] < 0 || draw->state->scissor[3] < 0)) {
+        error_setg(errp, "Invalid SGI Mesa scissor dimensions");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
     if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
         error_setg(errp, "SGI Mesa ordered dithering is unsupported");
         return SGI_RENDER_UNSUPPORTED;
@@ -175,20 +180,36 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     frame.width = resource->width;
     frame.height = resource->height;
-    for (unsigned i = 0; i < draw->state->drawable.clip.n; i++) {
-        const SGIClipRect *clip = &draw->state->drawable.clip.r[i];
-        int32_t x0 = MAX(clip->x0, 0);
-        int32_t y0 = MAX(clip->y0, 0);
-        int32_t x1 = MIN(clip->x1, (int32_t)resource->width - 1);
-        int32_t y1 = MIN(clip->y1, (int32_t)resource->height - 1);
+    if (draw->state->drawable.clip.n || draw->state->scissor_test) {
+        const SGIClipList *clip = &draw->state->drawable.clip;
+        unsigned count = clip->n ? clip->n : 1;
 
-        if (x0 <= x1 && y0 <= y1) {
-            frame.clips[frame.clip_count++] =
-                (SGIRendererClearRect) { x0, y0, x1, y1 };
+        for (unsigned i = 0; i < count; i++) {
+            int64_t x0 = clip->n ? clip->r[i].x0 : 0;
+            int64_t y0 = clip->n ? clip->r[i].y0 : 0;
+            int64_t x1 = clip->n ? clip->r[i].x1 : resource->width - 1;
+            int64_t y1 = clip->n ? clip->r[i].y1 : resource->height - 1;
+
+            x0 = MAX(x0, 0);
+            y0 = MAX(y0, 0);
+            x1 = MIN(x1, (int64_t)resource->width - 1);
+            y1 = MIN(y1, (int64_t)resource->height - 1);
+            if (draw->state->scissor_test) {
+                const int32_t *s = draw->state->scissor;
+
+                x0 = MAX(x0, s[0]);
+                y0 = MAX(y0, s[1]);
+                x1 = MIN(x1, (int64_t)s[0] + s[2] - 1);
+                y1 = MIN(y1, (int64_t)s[1] + s[3] - 1);
+            }
+            if (x0 <= x1 && y0 <= y1) {
+                frame.clips[frame.clip_count++] =
+                    (SGIRendererClearRect) { x0, y0, x1, y1 };
+            }
         }
-    }
-    if (draw->state->drawable.clip.n && !frame.clip_count) {
-        return SGI_RENDER_OK;
+        if (!frame.clip_count) {
+            return SGI_RENDER_OK;
+        }
     }
     if (resource->width > SIZE_MAX / resource->height ||
         (uint64_t)resource->width * resource->height >
