@@ -72,6 +72,7 @@
 #include "system/qtest.h"
 #include "system/reset.h"
 #include "system/replay.h"
+#include "trace.h"
 #include "system/runstate.h"
 #include "system/system.h"
 #include "trace/control.h"
@@ -3215,56 +3216,62 @@ static void sgi_machine_sync_power(SGIMachineState *s)
 }
 
 /*
- * Queued work behind a processor's power-off has run once this returns:
- * its queue is in order.
+ * A cold start under way. The processors stop first; the start waits for
+ * them without blocking, so it cannot deadlock under record/replay, where
+ * the processor thread needs the lock the main loop holds. Work is queued
+ * on each processor behind its power-off (async_run_on_cpu(), as
+ * arm_set_cpu_off() and arm_set_cpu_on() queue theirs) and the last of the
+ * completions schedules the rest of the start as a bottom half, through the
+ * replay-aware helper so it lands at a reproducible point.
  */
-static void sgi_machine_cpu_settled(CPUState *cs, run_on_cpu_data data)
-{
-}
+typedef struct SGIMachineRestart {
+    SGIMachineState *machine;
+    SGIMachineModuleStart *start;
+    uint32_t *nodes;
+    size_t node_count;
+    GPtrArray *parts;
+    int power_module;
+    /* Processors still to stop, plus one for the loop that queues them. */
+    int outstanding;
+} SGIMachineRestart;
 
 /*
- * Cold-start nodes: their processors take their reset, the @parts reset,
- * and the processors run again if the node's module has power when the
- * start gets here. Nothing else is touched, and the controller, which runs
- * on standby power, is reset by nothing that this does (the Origin 200
- * controller sits on its Hub's adapter bus and rides through that
- * adapter's reset).
- *
- * This is the main loop's, never a processor's: it waits for the
- * processors to stop, which a processor's own thread cannot do.
+ * The rest of a cold start: the @parts reset, and the processors run again
+ * if the node's module has power when the start gets here. Nothing else is
+ * touched, and the controller, which runs on standby power, is reset by
+ * nothing that this does (the Origin 200 controller sits on its Hub's
+ * adapter bus and rides through that adapter's reset).
  */
-static void sgi_machine_restart_nodes(SGIMachineState *s,
-                                      const uint32_t *node_list,
-                                      size_t node_count, GPtrArray *parts,
-                                      int power_module)
+static void sgi_machine_restart_finish_bh(void *opaque)
 {
+    SGIMachineRestart *r = opaque;
+    SGIMachineState *s = r->machine;
     size_t i;
     unsigned int slice;
 
-    for (i = 0; i < node_count; i++) {
-        SN0NodeState *node = s->nodes[node_list[i]];
-
-        for (slice = 0; slice < node->nr_cpus; slice++) {
-            sgi_hub_power_off_cpu(&node->hub, slice);
-        }
+    /*
+     * The debt this start pays is what migrates, so it is cleared here, not
+     * when the start began. A start owed twice, as a resumed machine may
+     * ask, or one the machine's own reset has made, finds it paid.
+     */
+    if (!r->start->pending) {
+        goto out;
     }
-    for (i = 0; i < node_count; i++) {
-        SN0NodeState *node = s->nodes[node_list[i]];
+    r->start->pending = false;
+    trace_sgi_machine_module_start(r->start->module,
+                                   r->start->module >= s->module_count);
+    for (i = 0; i < r->node_count; i++) {
+        SN0NodeState *node = s->nodes[r->nodes[i]];
 
-        for (slice = 0; slice < node->nr_cpus; slice++) {
-            run_on_cpu(CPU(node->cpu[slice]), sgi_machine_cpu_settled,
-                       RUN_ON_CPU_NULL);
-        }
         if (node->hub.elsc) {
             sgi_elsc_ride_through_reset(node->hub.elsc, true);
         }
     }
-
-    for (i = 0; i < parts->len; i++) {
-        device_cold_reset(g_ptr_array_index(parts, i));
+    for (i = 0; i < r->parts->len; i++) {
+        device_cold_reset(g_ptr_array_index(r->parts, i));
     }
-    for (i = 0; i < node_count; i++) {
-        SN0NodeState *node = s->nodes[node_list[i]];
+    for (i = 0; i < r->node_count; i++) {
+        SN0NodeState *node = s->nodes[r->nodes[i]];
 
         if (node->hub.elsc) {
             sgi_elsc_ride_through_reset(node->hub.elsc, false);
@@ -3278,19 +3285,98 @@ static void sgi_machine_restart_nodes(SGIMachineState *s,
      * A module coming back from a power-off answers again before its
      * processors run, with the parts it has just reset.
      */
-    if (power_module >= 0 &&
-        sgi_machine_node_powered(s, node_list[0])) {
-        sgi_machine_set_module_power(s, power_module, true);
+    if (r->power_module >= 0 &&
+        sgi_machine_node_powered(s, r->nodes[0])) {
+        sgi_machine_set_module_power(s, r->power_module, true);
     }
-    for (i = 0; i < node_count; i++) {
-        SN0NodeState *node = s->nodes[node_list[i]];
+    for (i = 0; i < r->node_count; i++) {
+        SN0NodeState *node = s->nodes[r->nodes[i]];
 
-        if (!sgi_machine_node_powered(s, node_list[i])) {
+        if (!sgi_machine_node_powered(s, r->nodes[i])) {
             continue;
         }
         for (slice = 0; slice < node->nr_cpus; slice++) {
             sgi_hub_set_cpu_enable(&node->hub, slice, true, true);
         }
+    }
+out:
+    g_ptr_array_unref(r->parts);
+    g_free(r->nodes);
+    g_free(r);
+}
+
+/*
+ * Runs on a processor, queued behind its power-off: the last one to stop
+ * lets the start go on.
+ */
+static void sgi_machine_cpu_settled(CPUState *cs, run_on_cpu_data data)
+{
+    SGIMachineRestart *r = data.host_ptr;
+
+    if (qatomic_fetch_dec(&r->outstanding) != 1) {
+        return;
+    }
+    /*
+     * Queued work runs between executions, where the replay lock is not
+     * held, and the event that carries the rest of the start needs it.
+     * The lock is taken before the BQL, as rr_cpu_thread_fn() takes it.
+     */
+    if (replay_mode != REPLAY_MODE_NONE) {
+        bql_unlock();
+        replay_mutex_lock();
+        bql_lock();
+    }
+    replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                     sgi_machine_restart_finish_bh, r);
+    if (replay_mode != REPLAY_MODE_NONE) {
+        replay_mutex_unlock();
+    }
+}
+
+/*
+ * Cold-start nodes: stop their processors and, once every one has stopped,
+ * reset the @parts and run the processors again (above). This is the main
+ * loop's and never waits for a processor. It takes its own copies of the
+ * node list and a reference to @parts.
+ */
+static void sgi_machine_restart_nodes(SGIMachineState *s,
+                                      SGIMachineModuleStart *start,
+                                      const uint32_t *node_list,
+                                      size_t node_count, GPtrArray *parts,
+                                      int power_module)
+{
+    SGIMachineRestart *r = g_new0(SGIMachineRestart, 1);
+    size_t i;
+    unsigned int slice;
+
+    r->machine = s;
+    r->start = start;
+    r->nodes = g_memdup2(node_list, node_count * sizeof(*node_list));
+    r->node_count = node_count;
+    r->parts = g_ptr_array_ref(parts);
+    r->power_module = power_module;
+    r->outstanding = 1;
+
+    for (i = 0; i < node_count; i++) {
+        SN0NodeState *node = s->nodes[node_list[i]];
+
+        for (slice = 0; slice < node->nr_cpus; slice++) {
+            sgi_hub_power_off_cpu(&node->hub, slice);
+            /* A processor running no guest code has stopped already. */
+            if (!sgi_hub_cpu_paused(&node->hub, slice)) {
+                qatomic_inc(&r->outstanding);
+                async_run_on_cpu(CPU(node->cpu[slice]),
+                                 sgi_machine_cpu_settled,
+                                 RUN_ON_CPU_HOST_PTR(r));
+            }
+        }
+    }
+    /*
+     * With nothing to wait for the start goes on here, so a paused machine
+     * and a qtest see it done when the request returns, as they always did.
+     */
+    if (qatomic_fetch_dec(&r->outstanding) == 1) {
+        sgi_machine_restart_finish_bh(r);
     }
 }
 
@@ -3313,7 +3399,6 @@ static void sgi_machine_module_start_bh(void *opaque)
     if (!start->pending) {
         return;
     }
-    start->pending = false;
     modules = sgi_model_module_array(t->modules, &count);
     if (start->module >= s->module_count) {
         g_autofree uint32_t *nodes = g_new(uint32_t, s->num_nodes);
@@ -3341,13 +3426,13 @@ static void sgi_machine_module_start_bh(void *opaque)
                 }
             }
         }
-        sgi_machine_restart_nodes(s, nodes, n, parts, -1);
+        sgi_machine_restart_nodes(s, start, nodes, n, parts, -1);
         return;
     }
     module_nodes = sgi_model_array_uint32(modules[start->module]->nodes,
                                           &count);
     parts = sgi_machine_module_parts(s, start->module);
-    sgi_machine_restart_nodes(s, module_nodes, count, parts,
+    sgi_machine_restart_nodes(s, start, module_nodes, count, parts,
                               start->module);
 }
 

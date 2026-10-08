@@ -15,6 +15,12 @@ queued work at a different instruction from the recording shows up.
 - test_menu_replays_identically records the boot to the System
   Maintenance Menu and replays it, and the two consoles must match byte
   for byte.
+- test_module_restart_replays_identically records the same boot with the
+  machine's module-start trace on and requires the replay to make the same
+  starts. The PROM's own first reset is a Hub port reset, which restarts
+  the machine's modules: the start stops the processors, waits for them
+  without blocking, resets the modules and releases the processors, which
+  is the path that must not wait on a processor thread under replay.
 - test_seek_back_reloads_the_snapshot replays part way, seeks back, which
   reloads the initial snapshot, and runs on past where it started.
 - test_reverse_debugging reuses QEMU's generic gdb reverse-step and
@@ -66,11 +72,11 @@ class Origin200RecordReplay(ReverseDebugging):
     def machine_args(self):
         return ['-m', '64M', '-bios', str(self.prom), '-smp', '1']
 
-    def launch(self, mode, console, start=True):
+    def launch(self, mode, console, start=True, extra=()):
         """Start one record or replay run, writing the guest console to a
         file so the two runs compare byte for byte. It starts paused, so
         QMP is up before the PROM's first reset, and runs once start is
-        set."""
+        set. extra adds command-line arguments."""
         if mode == 'record':
             check_output([get_qemu_img(self), 'create', '-f', 'qcow2',
                           self.snapshot_image, '128M'])
@@ -80,6 +86,7 @@ class Origin200RecordReplay(ReverseDebugging):
                     f'rrfile={self.replay_log},rrsnapshot=init',
                     '-drive', f'file={self.snapshot_image},if=none',
                     '-serial', f'file:{console}',
+                    *extra,
                     '-S')
         vm.launch()
         if start:
@@ -158,6 +165,49 @@ class Origin200RecordReplay(ReverseDebugging):
         finally:
             vm.shutdown(hard=True)
 
+        self.assertEqual(self.read(replayed), self.read(recorded))
+
+    def run_to_menu(self, mode, console, trace_log):
+        """Record or replay the boot to the menu and return the module
+        starts the run traced, with their log prefixes stripped."""
+        vm = self.launch(mode, console, extra=(
+            '-d', 'trace:sgi_machine_module_start', '-D', trace_log))
+        try:
+            self.wait_for_output(vm, console, mode)
+            deadline = time.monotonic() + MENU_SECONDS
+            if mode == 'record':
+                while MENU_PROMPT not in self.read(console):
+                    if time.monotonic() > deadline:
+                        self.fail(f'record: no "{MENU_PROMPT.decode()}" '
+                                  f'within {MENU_SECONDS}s')
+                    time.sleep(0.2)
+                vm.shutdown()
+            else:
+                while vm.is_running():
+                    if time.monotonic() > deadline:
+                        self.fail(f'replay: still running after '
+                                  f'{MENU_SECONDS}s')
+                    time.sleep(0.2)
+                vm.wait()
+        finally:
+            vm.shutdown(hard=True)
+        return [line.split(':', 1)[-1].strip()
+                for line in self.read(trace_log).decode().splitlines()
+                if 'sgi_machine_module_start' in line]
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_module_restart_replays_identically(self):
+        recorded = self.scratch_file('console-record.txt')
+        replayed = self.scratch_file('console-replay.txt')
+
+        starts = self.run_to_menu('record', recorded,
+                                  self.scratch_file('trace-record.txt'))
+        self.assertTrue(starts, 'the boot made no module start, so this '
+                        'test would prove nothing')
+        self.assertEqual(
+            self.run_to_menu('replay', replayed,
+                             self.scratch_file('trace-replay.txt')),
+            starts)
         self.assertEqual(self.read(replayed), self.read(recorded))
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')

@@ -555,8 +555,16 @@ bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
  */
 bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
 MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice);
+/*
+ * Set a processor's enable. A processor that is paused changes at once when
+ * @synchronous is set (a system reset pauses them all); a running one is
+ * never waited for, since that deadlocks under record/replay, and the change
+ * is queued on it.
+ */
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
+/* Whether the processor runs no guest code now (see the definition). */
+bool sgi_hub_cpu_paused(SGIHubState *s, unsigned int cpu);
 /*
  * Clear a processor's enable because its module lost power: the processor
  * is reset and halted, a state no interrupt ends.
