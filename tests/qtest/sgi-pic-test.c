@@ -3849,6 +3849,49 @@ static void test_runtime_profile_migration(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_runtime_old_identity_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from;
+    QTestState *to;
+
+    if (!g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        g_test_skip("QTEST_QEMU_BINARY_SRC is not set");
+        return;
+    }
+    dir = g_dir_make_tmp("sgi-pic-runtime-old-id-XXXXXX", &error);
+    g_assert_no_error(error);
+    from = pic_profile_v7_migration_start(false, true);
+    to = pic_profile_v7_migration_start(true, false);
+    for (unsigned head = 0; head < 2; head++) {
+        assert_pic_identity_word(qtest_readq(from, HEAD(head)), head,
+                                 0x24, 0);
+        assert_pic_identity_word(qtest_readl(from, CPU_HEAD(head) + 4), head,
+                                 0x24, 0);
+        qtest_writeq(from, HEAD(head) + 0x20, head + 5);
+    }
+    qtest_writeq(from, HEAD(0) + 0x80, UINT64_C(5) << 20);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    assert_runtime_pic_identity(to);
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(to, HEAD(head) + 0x20), ==, head + 5);
+    }
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x80), ==,
+                    UINT64_C(5) << 20);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_runtime_profile_direct64_migration_and_dma(void)
 {
     GError *error = NULL;
@@ -4473,6 +4516,8 @@ int main(int argc, char **argv)
                    test_bedrock_interrupt_mode_mismatch);
     qtest_add_func("/sgi-pic/runtime-profile-migration",
                    test_runtime_profile_migration);
+    qtest_add_func("/sgi-pic/runtime-old-identity-migration",
+                   test_runtime_old_identity_migration);
     qtest_add_func("/sgi-pic/runtime-profile-direct64-migration-and-dma",
                    test_runtime_profile_direct64_migration_and_dma);
     qtest_add_func("/sgi-pic/runtime-profile-migration-profile-mismatch",
