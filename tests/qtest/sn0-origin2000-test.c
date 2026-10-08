@@ -1524,6 +1524,70 @@ static uint64_t router_read(QTestState *qts, uint64_t route, uint64_t address)
  * force bit brings both Routers' ends of their shared link up eight bits
  * wide at its port reset. An uncabled port does not come out of reset.
  */
+/*
+ * Port reset bits 7 and 0 on one node of the four-node module reset every
+ * node the Routers let the warm reset through, and nothing else. Open, it
+ * reaches all four. With Router 1's reset mask for the inter-Router port
+ * closed to resets arriving from node 0's port, the nodes behind Router 2
+ * keep their state while node 1, behind Router 1, does not; and a node whose
+ * protection register's reset bit is clear takes no reset either.
+ */
+#define HUB_NI_SCRATCH_0    0x600100
+#define HUB_NI_PROTECTION   0x600010
+#define ROUTER_RESET_MASK(port) (((uint64_t)(port) << 16) + 0x18)
+#define SCRATCH_MARK        0x600d
+
+static void plant_scratch(QTestState *qts)
+{
+    for (unsigned int node = 0; node < 4; node++) {
+        hub_write(qts, node, HUB_NI_SCRATCH_0, SCRATCH_MARK);
+    }
+}
+
+static void assert_scratch(QTestState *qts, const bool reset[4])
+{
+    for (unsigned int node = 0; node < 4; node++) {
+        g_assert_cmphex(hub_read(qts, node, HUB_NI_SCRATCH_0), ==,
+                        reset[node] ? 0 : SCRATCH_MARK);
+    }
+}
+
+static void assert_no_machine_reset(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+
+    qobject_unref(rsp);
+    g_assert_null(qtest_qmp_event_ref(qts, "RESET"));
+}
+
+static void test_warm_reset_follows_the_fences(void)
+{
+    static const bool all[4] = { true, true, true, true };
+    static const bool near[4] = { true, true, false, false };
+    static const bool fenced_node[4] = { true, true, false, true };
+    QTestState *qts = start_module();
+
+    plant_scratch(qts);
+    hub_write(qts, 0, NI_PORT_RESET, (1 << 7) | 1);
+    assert_scratch(qts, all);
+    qtest_quit(qts);
+
+    qts = start_module();
+    plant_scratch(qts);
+    vector_write(qts, 0, ROUTER_RESET_MASK(6), 0x3f & ~(1u << 4));
+    hub_write(qts, 0, NI_PORT_RESET, (1 << 7) | 1);
+    assert_scratch(qts, near);
+    qtest_quit(qts);
+
+    qts = start_module();
+    plant_scratch(qts);
+    hub_write(qts, 2, HUB_NI_PROTECTION, 0);
+    hub_write(qts, 0, NI_PORT_RESET, (1 << 7) | 1);
+    assert_scratch(qts, fenced_node);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
 static void test_router_link_resets(void)
 {
     QTestState *qts = start_module();
@@ -2647,6 +2711,8 @@ int main(int argc, char **argv)
                     test_module_link_isolation);
     qtest_add_func("sn0/origin2000/router-link-resets",
                    test_router_link_resets);
+    qtest_add_func("sn0/origin2000/warm-reset-fences",
+                   test_warm_reset_follows_the_fences);
     qtest_add_func("sn0/origin2000/module-interlink-status",
                    test_module_interlink_status);
     qtest_add_func("sn0/origin2000/isolated-migration",

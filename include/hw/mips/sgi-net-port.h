@@ -145,6 +145,17 @@ struct SGINetPortClass {
     void (*link_reset)(Object *port, unsigned int index);
 
     /*
+     * A warm reset arrived over this port's cable (the peer wrote bit 7 of
+     * its port reset, or a Router forwarded one). A Hub resets its node
+     * unless its protection register's reset bit is clear; a Router resets
+     * itself if its permit for this port is set and forwards the reset out
+     * the ports whose reset masks admit it. generation is that reset's own,
+     * from sgi_net_port_warm_reset_start(), so a cyclic topology's flood
+     * reaches each device once. Optional; a port without it ignores resets.
+     */
+    void (*warm_reset)(Object *port, unsigned int index, uint64_t generation);
+
+    /*
      * A vector packet arrived on this port. A Router consumes one nybble of a
      * nonzero packet->vector through its tables and forwards out the exit
      * port's cable; a zero packet->vector, on a Router or a Hub, is answered
@@ -171,6 +182,10 @@ bool sgi_net_port_forwards(Object *port, unsigned int index);
 SGINetPortLinkState sgi_net_port_link_state(Object *port, unsigned int index);
 void sgi_net_port_peer_changed(Object *port, unsigned int index);
 void sgi_net_port_link_reset(Object *port, unsigned int index);
+void sgi_net_port_warm_reset(Object *port, unsigned int index,
+                             uint64_t generation);
+/* The generation of a new warm reset, to hand to every device it visits. */
+uint64_t sgi_net_port_warm_reset_start(void);
 
 /*
  * The width a link between (port, index) and (peer_port, peer_index) comes

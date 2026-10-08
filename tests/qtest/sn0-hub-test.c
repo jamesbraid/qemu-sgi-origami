@@ -3009,7 +3009,7 @@ static void alive_reset_generation(QTestState *qts, uint64_t generation)
 
 /*
  * "Before the first processor's first alive signal" is counted from reset,
- * and the firmware resets the machine several times in a boot: after the
+ * and the firmware resets the node several times in a boot: after the
  * guest's own local reset, the second processor waits again.
  */
 static void test_alive_wait_returns_after_firmware_reset(const void *data)
@@ -3028,7 +3028,6 @@ static void test_alive_wait_returns_after_firmware_reset(const void *data)
     qts = handshake_start(image, "sn0-hub-rt-alive-reset", "multi", path);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     alive_reset_generation(qts, 1);
-    qtest_qmp_eventwait(qts, "RESET");
     alive_reset_generation(qts, 2);
     g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
     g_assert_cmphex(qtest_readq(qts, SN0_USER_MAILBOX + 56), ==, 2);
@@ -3681,10 +3680,11 @@ static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
 
 
 /*
- * The local bit resets the machine with either companion, 0x81 or 0x03. The
- * cached-alias size is the reset sentinel; the error-spool must survive.
+ * The local bit resets the node with either companion, 0x81 or 0x03. The
+ * cached-alias size is the reset sentinel; the error-spool must survive. It
+ * is the node that resets, not QEMU's machine: no RESET event arrives.
  */
-static void test_a_local_port_reset_resets_the_machine(const void *data)
+static void test_a_local_port_reset_resets_the_node(const void *data)
 {
     hub_reset();
 
@@ -3693,10 +3693,7 @@ static void test_a_local_port_reset_resets_the_machine(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET,
                 NI_PORT_RESET_WARM | NI_PORT_RESET_LOCAL);
-    qtest_qmp_eventwait(qts, "RESET");
-
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==,
-                    PI_CALIAS_SIZE_RESET);
+    wait_for_register(qts, HUB_LOCAL + PI_CALIAS_SIZE, PI_CALIAS_SIZE_RESET);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
                     0xdeadbee0ULL);
 
@@ -3706,10 +3703,7 @@ static void test_a_local_port_reset_resets_the_machine(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET,
                 NI_PORT_RESET_LINK | NI_PORT_RESET_LOCAL);
-    qtest_qmp_eventwait(qts, "RESET");
-
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==,
-                    PI_CALIAS_SIZE_RESET);
+    wait_for_register(qts, HUB_LOCAL + PI_CALIAS_SIZE, PI_CALIAS_SIZE_RESET);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
                     0x600df00ULL);
 }
@@ -4123,8 +4117,9 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
 
     for (unsigned int phase = 0; phase < 2; phase++) {
         if (phase) {
+            qtest_writeq(qts, HUB_LOCAL + NI_SCRATCH_0, 0x1234);
             pi_cpu_writeq(qts, 0, NI_PORT_RESET, 0x81);
-            qtest_qmp_eventwait(qts, "RESET");
+            wait_for_register(qts, HUB_LOCAL + NI_SCRATCH_0, 0);
         }
         /* Initialize both phases explicitly, without assuming reset
          * values. */
@@ -6571,8 +6566,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/32-bit-vector-clear-read-leaves-the-status",
                         NULL,
                         test_a_32_bit_vector_clear_read_leaves_the_status);
-    qtest_add_data_func("sn0/hub/local-port-reset-resets-the-machine", NULL,
-                        test_a_local_port_reset_resets_the_machine);
+    qtest_add_data_func("sn0/hub/local-port-reset-resets-the-node", NULL,
+                        test_a_local_port_reset_resets_the_node);
     qtest_add_data_func("sn0/hub/peerless-link-reset", NULL,
                         test_peerless_link_reset);
     qtest_add_data_func("sn0/hub/both-windows", NULL, test_both_windows);

@@ -9,6 +9,7 @@
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
+#include "hw/mips/sgi-net-port.h"
 #include "hw/misc/sgi-router.h"
 #include "io/channel-file.h"
 #include "migration/qemu-file.h"
@@ -1429,6 +1430,33 @@ static void test_nic_migration_invalid(Fixture *f, gconstpointer unused)
     object_unref(OBJECT(dev));
 }
 
+/*
+ * A warm reset arriving over a port resets the chip only when the
+ * protection configuration permits resets from that port, and a repeat of
+ * the same reset, as a cyclic flood delivers, is ignored.
+ */
+static void test_warm_reset_permits(Fixture *f, gconstpointer unused)
+{
+    uint64_t generation;
+
+    write_reg(f, 1, RR_PROTECTION_CONFIG, PROTECTION_RESET & ~(1u << 1));
+    write_reg(f, 1, RR_SCRATCH_REG0, 0x55);
+
+    generation = sgi_net_port_warm_reset_start();
+    sgi_net_port_warm_reset(OBJECT(f->dev), 2, generation);
+    g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0x55);
+
+    generation = sgi_net_port_warm_reset_start();
+    sgi_net_port_warm_reset(OBJECT(f->dev), 1, generation);
+    g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0);
+    g_assert_cmphex(read_reg(f, 1, RR_PROTECTION_CONFIG), ==,
+                    PROTECTION_RESET);
+
+    write_reg(f, 1, RR_SCRATCH_REG0, 0x66);
+    sgi_net_port_warm_reset(OBJECT(f->dev), 1, generation);
+    g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0x66);
+}
+
 static void test_cold_reset(Fixture *f, gconstpointer unused)
 {
     int64_t reset_time;
@@ -1534,6 +1562,7 @@ int main(int argc, char **argv)
     ADD_TEST("unsupported-operations-fail", test_unsupported_operations_fail);
     ADD_TEST("migration", test_migration);
     ADD_TEST("change-notifications", test_change_notifications);
+    ADD_TEST("warm-reset-permits", test_warm_reset_permits);
     ADD_TEST("cold-reset", test_cold_reset);
 #undef ADD_TEST
 

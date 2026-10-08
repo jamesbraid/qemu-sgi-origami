@@ -16,6 +16,7 @@
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define HUB_BY_NODE         (SPACE_IO + 0x01800000)
@@ -831,14 +832,15 @@ static void test_link_reset_software_sequences(const void *data)
 }
 
 /*
- * Bits 7 and 0 together reset the whole machine from either node of the
- * pair: the other node's programmed state returns to its reset value.
+ * Bits 7 and 0 together reset both nodes of the pair from either node: the
+ * other node's programmed state returns to its reset value.
  */
 static void test_warm_reset_resets_the_pair(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_DUAL);
     const uint64_t hubs[2] = { HUB_BY_NODE, HUB_BY_NODE + NODE_STRIDE };
     unsigned int writer;
+    SgiWait w;
 
     for (writer = 0; writer < 2; writer++) {
         sn0_program_nasid(qts, 1);
@@ -847,8 +849,10 @@ static void test_warm_reset_resets_the_pair(const void *data)
         qtest_writeq(qts, hubs[1] + NI_SCRATCH_0, 0x5151);
         qtest_writeq(qts, hubs[writer] + NI_PORT_RESET,
                      NI_PORT_RESET_WARM | NI_PORT_RESET_LOCAL);
-        qtest_qmp_eventwait(qts, "RESET");
-        g_assert_cmphex(qtest_readq(qts, hubs[0] + NI_SCRATCH_0), ==, 0);
+        sgi_wait_start(&w, "the pair's reset");
+        while (qtest_readq(qts, hubs[0] + NI_SCRATCH_0) != 0) {
+            sgi_wait_pause(&w, 1000);
+        }
     }
     qtest_quit(qts);
 }

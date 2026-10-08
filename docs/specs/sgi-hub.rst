@@ -137,24 +137,44 @@ processor B's across its own reset to learn which pass it is on.
 Timed-out-request-buffer registers read zero: nothing times out in a
 model that completes every request instantly.
 
-The port reset register carries three resets. Bit 0, the local Hub
-reset, is tested alone because the three consumers write different
-companion bits (Linux 0x81, OpenBSD 0x03, the PROM's own self-reset
-0x81, measured on both PROM images), and any write with it set resets
-the whole machine. That is exact for bits 7 and 0 together on a
-machine with no partition fences, which is what every reset path
-writes, and an approximation for bit 0 alone on a machine of several
-nodes, where the hardware resets only this node; no supported guest
-depends on the difference, because each restarts the whole machine
-afterwards. Bit 1 without bit 0 resets the network link, described
-under the network interface below. Bit 7 without bit 0 is logged as
-unimplemented and otherwise ignored: no software writes it, and what
-it does is not known. The register stores nothing and reads zero. The
-protection register is deliberately not consulted: OpenBSD arms it
-before resetting and Linux does not. The error-spool addresses keep
-bits 31:3, start at zero from construction (the datasheet's power-on
-value), and survive reset for the marker the firmware parks in
-processor B's.
+The port reset register carries three resets, each bit acting when
+written, nothing stored, and it reads zero. Bit 0 resets this Hub and
+its node's processors, and no other node: the node's processors stop at
+the write and the machine cold-starts them with the Hub from the main
+loop (:doc:`sgi-sn`, "Module power and reset"). Bit 7 sends the warm
+reset over the link. A Hub that receives one resets its node unless the
+reset bit of its protection register (``0x60_0010`` bit 0, set at
+reset) is clear; a Router resets itself if its protection configuration
+permits resets from the arriving port, and forwards the reset out each
+working port whose reset mask has that arriving port's bit set. The
+Routers' mask direction is the datasheet's working reading, with the
+opposite possible; the PROM programs them symmetrically, so software
+cannot tell. A reset reaches each device once. Every software reset path
+writes bits 7 and 0 together (Linux and the PROM's own self-reset
+0x81, IRIX the same), which resets every node reachable without
+crossing a fence, the whole machine when it is unpartitioned.
+OpenBSD writes bits 1 and 0 to each node in turn after arming the
+protection bit; the model takes that as bit 0, and the link reset
+bit alongside it is superseded. Bit 1 without bit 0 resets the network
+link, described under the network interface below. Bit 7 without bit 0
+is unknown on hardware and no software writes it: the model sends the
+warm reset and leaves the sender's node running. Nodes a warm reset
+reaches restart together. A Router that receives a reset also resets its
+own routing tables, and the Hub that sent it keeps its error-spool
+addresses with the rest: they keep bits 31:3, start at zero from
+construction (the datasheet's power-on value), and survive reset for the
+marker the firmware parks in processor B's and the operation word
+OpenBSD parks in processor A's. Memory survives as well. No controller
+is reached. The node's boot flash and the I/O it hosts restart with it, a
+model approximation described in :doc:`sgi-sn`.
+
+The Hub's per-processor triggers act on processors. A store to ``0x70``
+or ``0x78`` raises the non-maskable interrupt of processor A or B and the
+value is dropped. A store to ``0x80`` gives both of the node's enabled
+processors the soft reset entry the CPU model provides, Status.SR set and
+NMI clear, with their state kept; the register table says it resets
+"both processors on the node", which the model takes literally. The
+Hub's own state is untouched by either.
 
 .. _sgi-hub-interrupts:
 
