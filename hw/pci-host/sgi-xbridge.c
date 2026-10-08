@@ -897,7 +897,12 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         }
         return;
     case 0x108:
-        value &= 0x7ffefeff;
+        /* Rev A reserves bits 8 and 16; Rev B readback is an approximation. */
+        mask = 0x7ffefeff;
+        if ((REG(s, 0) >> 28) == 2) {
+            mask |= (1U << 8) | (1U << 16);
+        }
+        value &= mask;
         break;
     default:
         if (off >= 0x130 && off <= 0x168) {

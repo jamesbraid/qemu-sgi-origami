@@ -55,7 +55,7 @@ static void test_registers(void)
     reg_write(qts, 0x20, 0x0f00320e);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320e);
     reg_write(qts, 0x108, UINT32_MAX);
-    g_assert_cmphex(reg_read(qts, 0x108), ==, 0x7ffefeff);
+    g_assert_cmphex(reg_read(qts, 0x108), ==, 0x7fffffff);
     reg_write(qts, 0x200, UINT32_MAX);
     g_assert_cmphex(reg_read(qts, 0x200), ==, 0x1eefffff);
     /* Carried over from the Bridge: stored with their documented fields. */
@@ -769,7 +769,7 @@ static void test_migration_reset(void)
     reg_write(from, 0x30, 0x000cabf4);
     reg_write(from, 0x38, 0x8000);
     reg_write(from, 0x148, 0x4885);
-    reg_write(from, 0x108, 8);
+    reg_write(from, 0x108, 8 | (1U << 8) | (1U << 16));
     reg_write(from, 0x118, 8);
     qtest_set_irq_in(from, HEAD, NULL, 3, 1);
     qtest_writeq(from, BASE + 0x10ff8, 0x123456780021ULL);
@@ -788,6 +788,7 @@ static void test_migration_reset(void)
     card_write(to, 0x10, 0);
     g_assert_false(qtest_get_irq(to, 0));
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x0f00320e);
+    g_assert_cmphex(reg_read(to, 0x108), ==, 8 | (1U << 8) | (1U << 16));
     g_assert_cmphex(reg_read(to, 0x100) & 8, ==, 8);
     g_assert_cmphex(qtest_readl(to, BASE + 0x10ffc), ==, 0x1234);
     g_assert_cmphex(qtest_readl(to, BASE + 0x12ffc), ==, 0x56780021);
@@ -1951,13 +1952,62 @@ static void test_no_board_stays_inert(void)
 
 static char *prom_path;
 
+static uint32_t widget_reg_read(QTestState *qts, unsigned widget,
+                                uint64_t offset);
+static void widget_reg_write(QTestState *qts, unsigned widget,
+                             uint64_t offset, uint32_t value);
+
 static void test_origin300_xbridge_revisions(void)
 {
     g_autofree char *prom = g_shell_quote(prom_path);
     QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", prom);
+    const uint32_t reserved = (1U << 8) | (1U << 16);
 
     g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 4), ==, 0x2d002049);
     g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xf) + 4), ==, 0x2d002049);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    for (unsigned w = 0xe; w <= 0xf; w++) {
+        widget_reg_write(qts, w, XBRIDGE_INT_UPPER, DESTINATION_UPPER);
+        widget_reg_write(qts, w, XBRIDGE_INT_LOWER,
+                         PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+        widget_reg_write(qts, w, XBRIDGE_HOST_ERROR, w - 0xe + 5);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==, 0);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 1U << 8);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        1U << 8);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 1U << 16);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        1U << 16);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, reserved);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        reserved);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 0x7ffffffd);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        0x7ffffffd);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, reserved);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 1U << 8);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        1U << 8);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, reserved);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 1U << 16);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        1U << 16);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, reserved);
+        widget_reg_write(qts, w, XBRIDGE_INT_RESET, reserved);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==,
+                        reserved);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, 0);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==, 0);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS), ==, 0);
+    }
+    qtest_system_reset(qts);
+    for (unsigned w = 0xe; w <= 0xf; w++) {
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_ENABLE), ==, 0);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS), ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
     qtest_quit(qts);
 }
 
