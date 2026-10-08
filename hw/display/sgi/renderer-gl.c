@@ -531,17 +531,26 @@ static void renderer_gl_destroy(void *opaque)
     g_free(renderer);
 }
 
-static void *renderer_gl_create(Error **errp)
+static void *renderer_gl_create(SGIRenderCreateResult *result, Error **errp)
 {
     SGIRendererGL *renderer = g_try_new0(SGIRendererGL, 1);
     bool success;
+    QemuEGLAcquireResult acquire_result;
 
+    *result = SGI_RENDER_CREATE_HOST_ERROR;
     if (!renderer) {
+        *result = SGI_RENDER_CREATE_OOM;
         error_setg(errp, "Cannot allocate SGI GL worker");
         return NULL;
     }
-    renderer->lease = qemu_egl_display_acquire_surfaceless(errp);
+    renderer->lease = qemu_egl_display_acquire_surfaceless(
+        &acquire_result, errp);
     if (!renderer->lease) {
+        if (acquire_result == QEMU_EGL_ACQUIRE_OOM) {
+            *result = SGI_RENDER_CREATE_OOM;
+        } else if (acquire_result == QEMU_EGL_ACQUIRE_UNAVAILABLE) {
+            *result = SGI_RENDER_CREATE_UNAVAILABLE;
+        }
         g_free(renderer);
         return NULL;
     }
@@ -563,6 +572,7 @@ static void *renderer_gl_create(Error **errp)
         renderer_gl_destroy(renderer);
         return NULL;
     }
+    *result = SGI_RENDER_CREATE_OK;
     return renderer;
 }
 

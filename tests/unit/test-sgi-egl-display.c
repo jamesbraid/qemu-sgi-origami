@@ -12,6 +12,7 @@ static int native_fd;
 static EGLContext current;
 static uintptr_t next_context = 4;
 static bool fail_destroy, fail_terminate, fail_bind;
+static bool missing_platform;
 
 int qemu_drm_rendernode_open(const char *name)
 {
@@ -48,6 +49,15 @@ static EGLDisplay get_platform(EGLenum platform, void *native,
     return (EGLDisplay)(uintptr_t)1;
 }
 
+static __eglMustCastToProperFunctionPointerType get_proc(const char *name)
+{
+    if (strcmp(name, "eglGetPlatformDisplayEXT")) {
+        return NULL;
+    }
+    return missing_platform ? NULL :
+           (__eglMustCastToProperFunctionPointerType)get_platform;
+}
+
 static const char *query_string(EGLDisplay display, EGLint name)
 {
     if (name == EGL_EXTENSIONS) {
@@ -61,9 +71,19 @@ static const char *query_string(EGLDisplay display, EGLint name)
 static EGLBoolean initialize(EGLDisplay display, EGLint *major, EGLint *minor)
 {
     initialized++;
-    *major = 1;
-    *minor = 5;
+    if (major) {
+        *major = 1;
+    }
+    if (minor) {
+        *minor = 5;
+    }
     return EGL_TRUE;
+}
+
+static EGLBoolean fail_initialize(EGLDisplay display, EGLint *major,
+                                  EGLint *minor)
+{
+    return EGL_FALSE;
 }
 
 static EGLBoolean bind_api(EGLenum api)
@@ -287,6 +307,40 @@ static void test_startup_failure(gconstpointer opaque)
     }
 }
 
+static void test_surfaceless_result(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QemuEGLDisplayLease *lease;
+    QemuEGLAcquireResult result = QEMU_EGL_ACQUIRE_OK;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    install_fake_egl();
+    epoxy_eglGetProcAddress = get_proc;
+    missing_platform = mode == 1;
+    if (mode == 2) {
+        epoxy_eglInitialize = fail_initialize;
+    }
+    lease = qemu_egl_display_acquire_surfaceless(&result, &err);
+    if (mode == 3) {
+        g_assert_nonnull(lease);
+        g_assert_cmpint(result, ==, QEMU_EGL_ACQUIRE_OK);
+        g_assert_null(err);
+        qemu_egl_display_release(lease);
+    } else {
+        g_assert_null(lease);
+        g_assert_cmpint(result, ==, mode == 1 ?
+                        QEMU_EGL_ACQUIRE_UNAVAILABLE :
+                        QEMU_EGL_ACQUIRE_HOST_ERROR);
+        g_assert_nonnull(err);
+        error_free(err);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -303,5 +357,11 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(2), test_startup_failure);
     g_test_add_data_func("/sgi-egl-display/recreation-destroy-failure",
                          GUINT_TO_POINTER(3), test_startup_failure);
+    g_test_add_data_func("/sgi-egl-display/surfaceless-unavailable",
+                         GUINT_TO_POINTER(1), test_surfaceless_result);
+    g_test_add_data_func("/sgi-egl-display/surfaceless-host-error",
+                         GUINT_TO_POINTER(2), test_surfaceless_result);
+    g_test_add_data_func("/sgi-egl-display/surfaceless-success",
+                         GUINT_TO_POINTER(3), test_surfaceless_result);
     return g_test_run();
 }

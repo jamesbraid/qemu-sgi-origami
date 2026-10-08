@@ -82,8 +82,15 @@ static void test_request(void)
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
 static void test_missing_backend(void)
 {
+    SGIRenderer *renderer = (void *)1;
     Error *err = NULL;
 
+    g_assert_cmpint(sgi_renderer_create(&renderer, &err), ==,
+                    SGI_RENDER_CREATE_UNAVAILABLE);
+    g_assert_null(renderer);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
     g_assert_null(sgi_renderer_new(&err));
     g_assert_nonnull(err);
     error_free(err);
@@ -94,8 +101,9 @@ static void test_missing_backend(void)
 static unsigned draw_count;
 static bool corrupt_colour, corrupt_clip;
 
-static void *generation_create(Error **errp)
+static void *generation_create(SGIRenderCreateResult *result, Error **errp)
 {
+    *result = SGI_RENDER_CREATE_OK;
     return &draw_count;
 }
 
@@ -342,6 +350,71 @@ static void test_draw_failure_staging_precedence(void)
     sgi_renderer_free(renderer);
 }
 
+static SGIRenderCreateResult create_result;
+static bool create_return_pointer;
+
+static void *result_create(SGIRenderCreateResult *result, Error **errp)
+{
+    *result = create_result;
+    if (!create_return_pointer) {
+        error_setg(errp, "Test backend creation failed");
+        return NULL;
+    }
+    return &draw_count;
+}
+
+static const SGIRendererOps result_ops = {
+    .create = result_create,
+    .draw = test_draw,
+    .destroy = generation_destroy,
+};
+
+static void test_create_result(gconstpointer opaque)
+{
+    SGIRenderer *renderer = NULL;
+    SGIRenderCreateResult expected = GPOINTER_TO_INT(opaque);
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    create_result = expected;
+    create_return_pointer = expected == SGI_RENDER_CREATE_OK;
+    sgi_renderer_register_gl(&result_ops);
+    g_assert_cmpint(sgi_renderer_create(&renderer, &err), ==, expected);
+    if (expected == SGI_RENDER_CREATE_OK) {
+        g_assert_nonnull(renderer);
+        g_assert_null(err);
+        sgi_renderer_free(renderer);
+    } else {
+        g_assert_null(renderer);
+        g_assert_nonnull(err);
+        error_free(err);
+    }
+}
+
+static void test_create_unclassified_failure(void)
+{
+    SGIRenderer *renderer = NULL;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    create_result = SGI_RENDER_CREATE_OK;
+    create_return_pointer = false;
+    sgi_renderer_register_gl(&result_ops);
+    g_assert_cmpint(sgi_renderer_create(&renderer, &err), ==,
+                    SGI_RENDER_CREATE_HOST_ERROR);
+    g_assert_null(renderer);
+    g_assert_nonnull(err);
+    error_free(err);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -362,5 +435,19 @@ int main(int argc, char **argv)
                     test_draw_failure_order);
     g_test_add_func("/sgi-renderer/test-fault/staging-precedence",
                     test_draw_failure_staging_precedence);
+    g_test_add_data_func("/sgi-renderer/create/success",
+                         GINT_TO_POINTER(SGI_RENDER_CREATE_OK),
+                         test_create_result);
+    g_test_add_data_func("/sgi-renderer/create/unavailable",
+                         GINT_TO_POINTER(SGI_RENDER_CREATE_UNAVAILABLE),
+                         test_create_result);
+    g_test_add_data_func("/sgi-renderer/create/oom",
+                         GINT_TO_POINTER(SGI_RENDER_CREATE_OOM),
+                         test_create_result);
+    g_test_add_data_func("/sgi-renderer/create/host-error",
+                         GINT_TO_POINTER(SGI_RENDER_CREATE_HOST_ERROR),
+                         test_create_result);
+    g_test_add_func("/sgi-renderer/create/unclassified",
+                    test_create_unclassified_failure);
     return g_test_run();
 }

@@ -9,6 +9,13 @@
 
 typedef struct SGIRenderer SGIRenderer;
 
+typedef enum SGIRenderCreateResult {
+    SGI_RENDER_CREATE_OK,
+    SGI_RENDER_CREATE_UNAVAILABLE,
+    SGI_RENDER_CREATE_OOM,
+    SGI_RENDER_CREATE_HOST_ERROR,
+} SGIRenderCreateResult;
+
 typedef struct SGIRendererRequest {
     uint64_t generation;
     float vertices[3][4];
@@ -51,7 +58,7 @@ typedef struct SGIRendererClear {
 } SGIRendererClear;
 
 typedef struct SGIRendererOps {
-    void *(*create)(Error **errp);
+    void *(*create)(SGIRenderCreateResult *result, Error **errp);
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
     bool (*draw_frame)(void *opaque, SGIRendererFrame *frame, Error **errp);
     bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
@@ -59,6 +66,10 @@ typedef struct SGIRendererOps {
 } SGIRendererOps;
 
 void sgi_renderer_register_gl(const SGIRendererOps *ops);
+/* Only UNAVAILABLE permits an optional caller to choose another renderer. */
+SGIRenderCreateResult sgi_renderer_create(SGIRenderer **renderer,
+                                          Error **errp);
+/* Legacy wrapper: NULL does not distinguish absence from setup failure. */
 SGIRenderer *sgi_renderer_new(Error **errp);
 bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp);
