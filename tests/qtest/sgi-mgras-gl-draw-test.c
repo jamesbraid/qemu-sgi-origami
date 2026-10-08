@@ -344,7 +344,7 @@ static void test_gl_mesa_triangle_ordinary_readback(void)
     gl_viewport(test, 0, 0, 1280, 1024);
     gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
     gl_draw_buffer(test, 1);
-    gl_clear_color(test, 0, 0, 0, 1);
+    gl_clear_color(test, 0, 0, 1, 1);
     gl_word(test, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmpuint(mgras_qom_get_uint(test,
         "x-test-render-commits"), ==, 0);
@@ -364,9 +364,11 @@ static void test_gl_mesa_triangle_ordinary_readback(void)
     g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0xff0000);
     g_assert_cmphex(mgras_test_format(test, 100, 923), ==,
                     MGRAS_PIXEL_FORMAT_RGB);
-    g_assert_cmphex(mgras_test_pixel(test, 1100, 123), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(test, 1100, 123), ==, 0x0000ff);
     g_assert_cmphex(mgras_test_format(test, 1100, 123), ==,
                     MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_qom_get_uint(test,
+        "x-test-render-resource-pixel"), ==, 0x0000ffff);
     g_assert_cmphex(mgras_qom_get_uint(test, "x-test-back-pixel"), ==, 0);
 
     mgras_visual_select_read_buffer(test, 0, 0, 0x404);
@@ -413,9 +415,24 @@ static void test_gl_mesa_checked_failures(void)
         gl_vertex2f(test, -1, -1);
         gl_vertex2f(test, 1, -1);
         gl_vertex2f(test, -1, 1);
-        gl_word(test, GL_END_TRIANGLES);
+        if (i == 0 || i == ARRAY_SIZE(failures)) {
+            gl_word(test, GL_END_TRIANGLES);
+        }
         g_assert_cmpuint(mgras_qom_get_uint(test,
             "x-test-render-result"), ==, expected);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-failed"), ==,
+            i > 0 && i < ARRAY_SIZE(failures));
+        {
+            QDict *reply = qtest_qmp(test, "{'execute':'query-status'}");
+            const char *status = qdict_get_str(
+                qdict_get_qdict(reply, "return"), "status");
+
+            g_assert_cmpstr(status, ==,
+                i > 0 && i < ARRAY_SIZE(failures) ?
+                "internal-error" : "running");
+            qobject_unref(reply);
+        }
         g_assert_cmpuint(mgras_qom_get_uint(test,
             "x-test-render-snapshots"), ==, 0);
         g_assert_cmpuint(mgras_qom_get_uint(test,

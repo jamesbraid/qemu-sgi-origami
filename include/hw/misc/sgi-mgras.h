@@ -833,7 +833,8 @@ struct SGIMgrasState {
     /* Host Mesa worker and provider diagnostics, never migrated. */
     SGIRenderer *gl_renderer;
     bool gl_renderer_opt_in;
-    bool gl_renderer_unavailable;
+    bool gl_renderer_unavailable; /* Failure latched for this device. */
+    bool gl_render_validated; /* Current checked command only. */
     uint64_t gl_render_snapshots;
     uint64_t gl_render_commits;
     uint32_t gl_render_result;
