@@ -1484,6 +1484,116 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     return true;
 }
 
+struct SGIRasterTexture {
+    SGIRasterTarget target;
+    SGISoftDraw draw;
+    unsigned reports;
+};
+
+static SGIRasterTextureResult sgi_raster_texture_check_draw(
+    SGISoftDraw *draw)
+{
+    const SGIGLDrawState *state = draw->st;
+
+    if (!state || !sgi_soft_texture_setup(draw)) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    if (draw->texture) {
+        return SGI_RASTER_TEXTURE_READY;
+    }
+    if (state->index_bits ||
+        (!state->texture_2d && !state->texture_3d)) {
+        return SGI_RASTER_TEXTURE_DISABLED;
+    }
+    return SGI_RASTER_TEXTURE_INCOMPLETE;
+}
+
+SGIRasterTextureResult sgi_raster_texture_check(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture)
+{
+    SGIRasterTarget target = { .texture = texture };
+    unsigned reports = 0;
+    SGISoftDraw draw = {
+        .t = &target, .st = state, .texture_reports = &reports,
+    };
+
+    return sgi_raster_texture_check_draw(&draw);
+}
+
+SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture,
+    SGIRasterTexture **out, void *(*allocate)(size_t))
+{
+    SGIRasterTarget target = { .texture = texture };
+    unsigned reports = 0;
+    SGISoftDraw draw = {
+        .t = &target, .st = state, .texture_reports = &reports,
+    };
+    SGIRasterTextureResult result;
+    SGIRasterTexture *sampler;
+
+    if (!out || !allocate) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    *out = NULL;
+    result = sgi_raster_texture_check_draw(&draw);
+    if (result != SGI_RASTER_TEXTURE_READY) {
+        return result;
+    }
+    sampler = allocate(sizeof(*sampler));
+    if (!sampler) {
+        return SGI_RASTER_TEXTURE_OOM;
+    }
+    memset(sampler, 0, sizeof(*sampler));
+    sampler->target.texture = texture;
+    sampler->draw = draw;
+    sampler->draw.t = &sampler->target;
+    sampler->draw.texture_reports = &sampler->reports;
+    *out = sampler;
+    return SGI_RASTER_TEXTURE_READY;
+}
+
+SGIRasterTextureResult sgi_raster_texture_prepare(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture,
+    SGIRasterTexture **out)
+{
+    return sgi_raster_texture_prepare_with_allocator(
+        state, texture, out, g_try_malloc0);
+}
+
+SGIRasterTexture *sgi_raster_texture_new(const SGIGLDrawState *state,
+                                         const SGIGLTexImage *texture)
+{
+    SGIRasterTexture *sampler = NULL;
+
+    if (state && texture) {
+        sgi_raster_texture_prepare(state, texture, &sampler);
+    }
+    return sampler;
+}
+
+void sgi_raster_texture_free(SGIRasterTexture *texture)
+{
+    g_free(texture);
+}
+
+bool sgi_raster_texture_fragment(SGIRasterTexture *texture,
+                                 const double coord[4], double color[4])
+{
+    SGISoftFrag frag = { 0 };
+
+    if (!texture || !coord || !color) {
+        return false;
+    }
+    memcpy(frag.texcoord, coord, sizeof(frag.texcoord));
+    memcpy(frag.rgba, color, sizeof(frag.rgba));
+    if (!sgi_soft_texture(&texture->draw, &frag)) {
+        return false;
+    }
+    memcpy(color, frag.rgba, sizeof(frag.rgba));
+    return true;
+}
+
 bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
                                 const SGIGLTexImage *texture,
                                 const float coord[4], const float color[4],

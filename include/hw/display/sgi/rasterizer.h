@@ -463,6 +463,32 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
 SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
                    const SGIGLDraw *d);
 
+/* Borrowed state and image remain immutable until the sampler is freed. */
+typedef struct SGIRasterTexture SGIRasterTexture;
+typedef enum SGIRasterTextureResult {
+    SGI_RASTER_TEXTURE_READY,
+    SGI_RASTER_TEXTURE_DISABLED,
+    SGI_RASTER_TEXTURE_INCOMPLETE,
+    SGI_RASTER_TEXTURE_UNSUPPORTED,
+    SGI_RASTER_TEXTURE_OOM,
+} SGIRasterTextureResult;
+/* Validate without allocating; READY permits family-specific checks. */
+SGIRasterTextureResult sgi_raster_texture_check(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture);
+SGIRasterTextureResult sgi_raster_texture_prepare(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture,
+    SGIRasterTexture **out);
+/* An allocator argument lets unit tests force the single allocation to fail. */
+SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
+    const SGIGLDrawState *state, const SGIGLTexImage *texture,
+    SGIRasterTexture **out, void *(*allocate)(size_t));
+SGIRasterTexture *sgi_raster_texture_new(const SGIGLDrawState *state,
+                                         const SGIGLTexImage *texture);
+void sgi_raster_texture_free(SGIRasterTexture *texture);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(SGIRasterTexture, sgi_raster_texture_free)
+bool sgi_raster_texture_fragment(SGIRasterTexture *texture,
+                                 const double coord[4], double color[4]);
+
 /* A failed or disabled sample leaves out unchanged. */
 bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
                                 const SGIGLTexImage *texture,
