@@ -92,7 +92,8 @@ bool odyssey_planes_refresh(OdysseyPlanes *planes,
                   view->width != other->width ||
                   view->height != other->height ||
                   view->format != other->format ||
-                  view->bottom_origin != other->bottom_origin)) ||
+                  view->bottom_origin != other->bottom_origin ||
+                  view->storage_top_origin != other->storage_top_origin)) ||
                 (!same_backing && overlapping)) {
                 error_setg(errp, "Inconsistent synthetic Odyssey plane alias");
                 return false;
@@ -104,6 +105,7 @@ bool odyssey_planes_refresh(OdysseyPlanes *planes,
         OdysseyPlaneView *view = &planes->views[i];
 
         view->submitted_bytes = view->bytes;
+        view->submitted_storage_top_origin = view->storage_top_origin;
         view->submitted_backing_generation = view->backing_generation;
         view->submitted_view_generation = view->view_generation;
         view->expected_backing_generation = view->backing_generation;
@@ -189,6 +191,8 @@ bool odyssey_planes_swap_bindings(OdysseyPlanes *planes, Error **errp)
             return false;
         }
         if (view->bytes != view->submitted_bytes ||
+            view->storage_top_origin !=
+                view->submitted_storage_top_origin ||
             view->backing_generation != view->expected_backing_generation ||
             view->view_generation != view->expected_view_generation ||
             view->backing_id != published->backing_id ||
@@ -292,6 +296,8 @@ static OdysseyPlaneView *odyssey_plane_lookup(OdysseyPlanes *planes,
             view->backing_generation != view->expected_backing_generation ||
             view->view_generation != view->expected_view_generation ||
             view->bytes != view->submitted_bytes ||
+            view->storage_top_origin !=
+                view->submitted_storage_top_origin ||
             resource->role != view->role || resource->target != view->target ||
             resource->buffer != view->buffer || resource->eye != view->eye ||
             resource->width != view->width ||
@@ -334,6 +340,13 @@ static void odyssey_plane_invalidate_aliases(OdysseyPlanes *planes,
     }
 }
 
+static uint32_t odyssey_plane_storage_row(const OdysseyPlaneView *view,
+                                          uint32_t y)
+{
+    return view->storage_top_origin && view->bottom_origin ?
+        view->height - 1 - y : y;
+}
+
 static SGIRenderResult odyssey_plane_snapshot(void *opaque,
                                               const SGIRenderResource *resource,
                                                uint32_t slice,
@@ -351,17 +364,21 @@ static SGIRenderResult odyssey_plane_snapshot(void *opaque,
         return SGI_RENDER_RESOURCE_ERROR;
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        uint32_t row = odyssey_plane_storage_row(view, y);
+
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
-            if (!view->owns_pixel(view->opaque, x, y) ||
-                !view->is_written(view->opaque, x, y)) {
+            if (!view->owns_pixel(view->opaque, x, row) ||
+                !view->is_written(view->opaque, x, row)) {
                 error_setg(errp, "Synthetic Odyssey plane pixel unavailable");
                 return SGI_RENDER_RESOURCE_ERROR;
             }
         }
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        uint32_t row = odyssey_plane_storage_row(view, y);
+
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
-            size_t src = (size_t)y * view->stride_bytes + (size_t)x * 4;
+            size_t src = (size_t)row * view->stride_bytes + (size_t)x * 4;
             size_t dst = (size_t)(y - rect->y0) * stride_slots +
                          (size_t)(x - rect->x0) * 4;
 
@@ -391,14 +408,16 @@ static SGIRenderCommitResult odyssey_plane_commit(
         return result;
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        uint32_t row = odyssey_plane_storage_row(view, y);
+
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
             size_t src = (size_t)(y - rect->y0) * stride_slots +
                          (size_t)(x - rect->x0) * 4;
-            size_t dst = (size_t)y * view->stride_bytes + (size_t)x * 4;
+            size_t dst = (size_t)row * view->stride_bytes + (size_t)x * 4;
 
-            if (!view->owns_pixel(view->opaque, x, y) ||
+            if (!view->owns_pixel(view->opaque, x, row) ||
                 (view->channel_mask != 0xf &&
-                 !view->is_written(view->opaque, x, y))) {
+                 !view->is_written(view->opaque, x, row))) {
                 error_setg(errp, "Synthetic Odyssey plane write unavailable");
                 if (wrote) {
                     odyssey_plane_invalidate_aliases(planes, view->backing_id);
@@ -413,7 +432,7 @@ static SGIRenderCommitResult odyssey_plane_commit(
                 }
             }
             if (view->channel_mask) {
-                view->mark_written(view->opaque, x, y);
+                view->mark_written(view->opaque, x, row);
             }
             result.complete_pixels++;
         }
