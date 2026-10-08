@@ -34,6 +34,7 @@
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "system/address-spaces.h"
+#include "system/qtest.h"
 #include "system/cpus.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
@@ -1180,6 +1181,19 @@ static CPUState *sgi_hub_cpu(SGIHubState *s, unsigned int slice)
     return s->cpu[slice];
 }
 
+/*
+ * A processor that is not executing guest code: the machine is paused, as it
+ * is for a system reset, or the accelerator is qtest, which never runs
+ * any. Its state is safe to change from here under the BQL, and queued work
+ * would only run later.
+ */
+bool sgi_hub_cpu_paused(SGIHubState *s, unsigned int cpu)
+{
+    CPUState *cs = sgi_hub_cpu(s, cpu);
+
+    return !cs || cs->stopped || qtest_enabled();
+}
+
 static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
                                      bool enabled, bool synchronous)
 {
@@ -1191,21 +1205,18 @@ static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
         return;
     }
     sgi_hub_trace_kick(cs, enabled ? "cpu-enable" : "cpu-disable");
-    if (synchronous) {
+    if (synchronous && sgi_hub_cpu_paused(s, cpu)) {
         /*
          * A system reset runs with every processor paused, and a paused
          * processor's state is safe to change from here under the BQL.
-         * Waiting for its thread instead deadlocks under record/replay:
-         * that thread needs the replay lock this thread holds. Work the
-         * guest queued before the pause may still run afterwards, which
-         * is why each request checks the enable it was made for
-         * (sgi_hub_cpu_enable_stands() names the one gap left).
+         * Work the guest queued before the pause may still run afterwards,
+         * which is why each request checks the enable it was made for
+         * (sgi_hub_cpu_enable_stands() names the one gap left). A running
+         * processor is never waited for: that deadlocks under
+         * record/replay, where its thread needs the replay lock this
+         * thread holds, so the change is queued on it instead.
          */
-        if (cs->stopped) {
-            fn(cs, data);
-        } else {
-            run_on_cpu(cs, fn, data);
-        }
+        fn(cs, data);
         return;
     }
     if (enabled) {
@@ -1249,6 +1260,10 @@ void sgi_hub_power_off_cpu(SGIHubState *s, unsigned int cpu)
         return;
     }
     sgi_hub_trace_kick(cs, "power-off");
+    if (sgi_hub_cpu_paused(s, cpu)) {
+        sgi_hub_cpu_power_off(cs, RUN_ON_CPU_HOST_PTR(s));
+        return;
+    }
     async_run_on_cpu(cs, sgi_hub_cpu_power_off, RUN_ON_CPU_HOST_PTR(s));
 }
 

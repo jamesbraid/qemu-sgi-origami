@@ -825,10 +825,17 @@ halted, every part of the module is cold-reset, and the processors run
 again from the reset vector if the module has power. Memory keeps its
 bytes, which the datasheet allows as an approximation: the PROM tests and
 initialises it on a cold start. Other modules run through all of it. The
-start runs from a bottom half and not from the controller's own timer, so
-it can wait for the module's processors to stop; a start owed when a
-migration stream was taken is part of that stream and is carried out once
-the destination runs.
+start runs from a bottom half and not from the controller's own timer. It
+stops the module's processors with work queued on each of them and does not
+wait: the last completion schedules the rest of the start (the parts' reset
+and the processors' release) as a bottom half, so the start never blocks on
+a processor thread and runs under record and replay, where that thread
+needs a lock the main loop holds. A processor that runs no guest code, in a
+paused machine or under qtest, is stopped on the spot, and a start with no
+running processor to wait for goes on at once. The start is owed until that bottom half
+has run, so a start owed when a migration stream was taken, including one
+still waiting for its processors, is part of that stream and is carried out
+once the destination runs.
 
 A Hub port reset with bit 0 set restarts the whole machine, not a node
 (:doc:`sgi-hub`): every processor stops at the write, and the machine then
@@ -917,9 +924,7 @@ or a soft entry, or which Hub error registers survive it, so it resets
 every part of the module and gives the processors the cold entry. A module
 that is off keeps the register state it had, which returns on its next
 reset; the datasheet's loss of all state is only visible after power
-returns, when everything has reset. Module events under record/replay are
-not supported: the start waits for the processors through run_on_cpu, as
-the Hub's synchronous enable does, which the replay lock can deadlock. No
+returns, when everything has reset. No
 topology with more than one Origin 2000 module is built, so the
 several-module Origin 2000 path is the same code as the Origin 200 pair's
 and is only exercised there.
