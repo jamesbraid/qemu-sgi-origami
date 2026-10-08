@@ -74,6 +74,12 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MHC_MASK_INTS     0x00000040
 #define TI_MHC_CHIP_REV_MASK 0xf0000000
 
+/* Local interrupt strobes and the Bridge's live PCI pin status. */
+#define TI_MLC_INTSTATE      0x00000001
+#define TI_MLC_CLEARINT      0x00000002
+#define TI_MLC_SETINT        0x00000004
+#define BRIDGE_INT_STATUS    0x40000104ULL
+
 /* Serial-EEPROM bit-bang lines in MISC_LOCAL_CTL. */
 #define TI_MLC_EE_CLK       0x00100000
 #define TI_MLC_EE_TXEN      0x00200000
@@ -174,6 +180,12 @@ static void reg_wr(TigonTest *t, uint64_t off, uint32_t val)
 static bool irq_pending(TigonTest *t)
 {
     return (reg_rd(t, TI_MISC_HOST_CTL) & TI_MHC_INTSTATE) != 0;
+}
+
+static bool bridge_inta(TigonTest *t)
+{
+    return (qtest_readl(t->qs->qts, BRIDGE_INT_STATUS) &
+            (1u << (t->dev->devfn >> 3))) != 0;
 }
 
 /*
@@ -1016,6 +1028,43 @@ static void test_producer_index_safety(void)
 
 /* ---- interrupt controls ---- */
 
+static void test_local_interrupt_strobes(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    g_assert_false(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & TI_MLC_INTSTATE, ==, 0);
+
+    /* EEPROM lines do not drive the independent interrupt strobe. */
+    reg_wr(&t, TI_MISC_LOCAL_CTL, TI_MLC_EE_TXEN | TI_MLC_EE_DOUT);
+    g_assert_false(bridge_inta(&t));
+
+    reg_wr(&t, TI_MISC_LOCAL_CTL, TI_MLC_SETINT);
+    g_assert_true(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & 7, ==,
+                    TI_MLC_INTSTATE);
+
+    reg_wr(&t, TI_MISC_LOCAL_CTL, TI_MLC_CLEARINT);
+    g_assert_false(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & 7, ==, 0);
+
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
+    reg_wr(&t, TI_MISC_LOCAL_CTL, TI_MLC_SETINT);
+    g_assert_false(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & TI_MLC_INTSTATE, ==, 0);
+    reg_wr(&t, TI_MISC_HOST_CTL, 0);
+    g_assert_true(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & TI_MLC_INTSTATE, ==,
+                    TI_MLC_INTSTATE);
+
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_RESET);
+    g_assert_false(bridge_inta(&t));
+    g_assert_cmphex(reg_rd(&t, TI_MISC_LOCAL_CTL) & 7, ==, 0);
+
+    tigon_stop(&t);
+}
+
 static void test_interrupt_mask_ack(void)
 {
     TigonTest t;
@@ -1159,6 +1208,8 @@ int main(int argc, char **argv)
                    test_receive_clamps_to_buffer);
     qtest_add_func("tigon/producer-index-safety", test_producer_index_safety);
     qtest_add_func("tigon/interrupt-mask-ack", test_interrupt_mask_ack);
+    qtest_add_func("tigon/local-interrupt-strobes",
+                   test_local_interrupt_strobes);
     qtest_add_func("tigon/interrupt-hostintr-ack",
                    test_interrupt_hostintr_ack);
     qtest_add_func("tigon/byte-order-little-endian",

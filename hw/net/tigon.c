@@ -81,7 +81,10 @@
 #define TI_MHC_MASK_INTS        0x00000040  /* mask interrupts */
 #define TI_MHC_CHIP_REV_MASK    0xf0000000  /* chip revision (read-only) */
 
-/* MISC_LOCAL_CTL: the bit-banged serial-EEPROM lines. */
+/* MISC_LOCAL_CTL: host interrupt and bit-banged serial-EEPROM lines. */
+#define TI_MLC_INTSTATE         0x00000001  /* PCI IntA pin (read-only) */
+#define TI_MLC_CLEARINT         0x00000002  /* write to clear pending */
+#define TI_MLC_SETINT           0x00000004  /* write to set pending */
 #define TI_MLC_EE_CLK           0x00100000
 #define TI_MLC_EE_TXEN          0x00200000  /* master drives the data line */
 #define TI_MLC_EE_DOUT          0x00400000  /* data out from host to EEPROM */
@@ -345,7 +348,8 @@ static void tigon_eeprom_step(TigonState *s, uint32_t val)
 
     e->last_clk = clk;
     e->last_sda = sda;
-    s->misc_local_ctl = val & ~TI_MLC_EE_DIN;
+    s->misc_local_ctl = val & ~(TI_MLC_INTSTATE | TI_MLC_CLEARINT |
+                                TI_MLC_SETINT | TI_MLC_EE_DIN);
 }
 
 static bool tigon_irq_line(TigonState *s)
@@ -1507,7 +1511,8 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
         return ((uint32_t)s->chip_rev << 28) | s->misc_host_ctl |
                (tigon_irq_line(s) ? TI_MHC_INTSTATE : 0);
     case TI_MISC_LOCAL_CTL:
-        return s->misc_local_ctl | (s->eeprom.din ? TI_MLC_EE_DIN : 0);
+        return s->misc_local_ctl | (s->eeprom.din ? TI_MLC_EE_DIN : 0) |
+               (tigon_irq_line(s) ? TI_MLC_INTSTATE : 0);
     case TI_MISC_CONF:
         return s->misc_conf;
     case TI_PCI_STATE:
@@ -1549,6 +1554,13 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case TI_MISC_LOCAL_CTL:
         tigon_eeprom_step(s, val);
+        if (val & TI_MLC_CLEARINT) {
+            s->irq_asserted = false;
+        }
+        if (val & TI_MLC_SETINT) {
+            s->irq_asserted = true;
+        }
+        tigon_update_irq(s);
         return;
     case TI_MISC_CONF:
         s->misc_conf = val;
