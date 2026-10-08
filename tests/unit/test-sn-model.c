@@ -961,6 +961,8 @@ static void test_existing_topologies_have_no_io_peers(void)
         const SGIModelModuleList *module;
 
         if (g_str_equal(entry->value->name,
+                        "origin300-numalink-pci-expansion-experiment") ||
+            g_str_equal(entry->value->name,
                         "origin300-pci-expansion-experiment") ||
             g_str_equal(
                 entry->value->name,
@@ -1150,7 +1152,8 @@ static void test_io_peer_runtime_refusal(const void *data)
     g_assert_false(sgi_model_check_runtime_endpoints(&topology, &err));
     g_assert_nonnull(err);
     g_assert_nonnull(strstr(error_get_pretty(err), topology.name));
-    g_assert_nonnull(strstr(error_get_pretty(err), "not supported"));
+    g_assert_nonnull(strstr(error_get_pretty(err),
+                            "unsupported runtime endpoint"));
     error_free(err);
 }
 
@@ -1352,6 +1355,49 @@ static void test_io_peer_runtime_accepts_absent_and_empty(void)
         g_assert_true(sgi_model_check_runtime_endpoints(entry->value, &err));
         g_assert_null(err);
     }
+}
+
+static void test_sn1_runtime_rejects_shared_node_cable(void)
+{
+    SGIModelNode nodes[3] = { 0 };
+    SGIModelNodeList node_list[3] = {
+        { .value = &nodes[0], .next = &node_list[1] },
+        { .value = &nodes[1], .next = &node_list[2] },
+        { .value = &nodes[2] },
+    };
+    SGIModelLinkEnd ends[4] = {
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 0 },
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 1 },
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 0 },
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 2 },
+    };
+    SGIModelLinkEndList end_list[4] = {
+        { .value = &ends[0], .next = &end_list[1] },
+        { .value = &ends[1] },
+        { .value = &ends[2], .next = &end_list[3] },
+        { .value = &ends[3] },
+    };
+    SGIModelCable cables[2] = {
+        { .ends = &end_list[0] },
+        { .ends = &end_list[2] },
+    };
+    SGIModelCableList cable_list[2] = {
+        { .value = &cables[0], .next = &cable_list[1] },
+        { .value = &cables[1] },
+    };
+    SGIModelTopology topology = {
+        .name = (char *)"shared-node-cable",
+        .generation = SGI_MODEL_GENERATION_SN1,
+        .nodes = &node_list[0],
+        .cables = &cable_list[0],
+    };
+    Error *err = NULL;
+
+    g_assert_false(sgi_model_check_runtime_endpoints(&topology, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err),
+                            "unsupported runtime endpoint"));
+    error_free(err);
 }
 
 /*
@@ -1577,6 +1623,8 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(2), test_io_peer_runtime_refusal);
     g_test_add_func("/sn-model/io-peer/runtime-accepts-absent-and-empty",
                     test_io_peer_runtime_accepts_absent_and_empty);
+    g_test_add_func("/sn-model/runtime-rejects-shared-node-cable",
+                    test_sn1_runtime_rejects_shared_node_cable);
     g_test_add_func("/sn-model/resolve/every-offering",
                     test_resolve_every_offering);
     g_test_add_func("/sn-model/resolve/selection", test_resolve_selection);
