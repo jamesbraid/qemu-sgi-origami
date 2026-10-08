@@ -58,6 +58,8 @@
 #define TI_DMA_NO_MASTER       (1U << 20)
 #define TI_DMA_BYTE_BUCKET     (1U << 18)
 #define TI_DMA_HOST_OVERFLOW   (1U << 27)
+#define TI_DMA_MASTER_ABORT    (1U << 25)
+#define TI_DMA_TARGET_ABORT    (1U << 24)
 #define TI_DMA_ERRORS          (0xefU << 24)
 #define TI_DMA_FIFO_COUNT      (0x1fU << 12)
 #define TI_DMA_CLEAR_CHECKSUM  (1U << 10)
@@ -1421,6 +1423,15 @@ static void tigon_tx(TigonState *s, uint32_t prod)
     tigon_tx_finish(s, completed_bds);
 }
 
+static void tigon_host_dma_fail(TigonState *s, unsigned channel,
+                                MemTxResult result)
+{
+    /* A missing target maps to master abort; other failures lack PCI detail. */
+    s->dma_state[channel] |= result & MEMTX_DECODE_ERROR ?
+                             TI_DMA_MASTER_ABORT : TI_DMA_TARGET_ABORT;
+    s->dma_state[channel] &= ~TI_DMA_ACTIVE;
+}
+
 static void tigon_host_dma_run(TigonState *s, unsigned channel)
 {
     uint8_t data[256];
@@ -1457,6 +1468,7 @@ static void tigon_host_dma_run(TigonState *s, unsigned channel)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "tigon: host DMA read at 0x%" PRIx64
                               " failed (%d)\n", host, result);
+                tigon_host_dma_fail(s, channel, result);
                 return;
             }
         }
@@ -1486,6 +1498,7 @@ static void tigon_host_dma_run(TigonState *s, unsigned channel)
                     qemu_log_mask(LOG_GUEST_ERROR,
                                   "tigon: host DMA write at 0x%" PRIx64
                                   " failed (%d)\n", host, result);
+                    tigon_host_dma_fail(s, channel, result);
                     return;
                 }
             }
