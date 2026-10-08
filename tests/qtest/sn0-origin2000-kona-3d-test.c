@@ -4804,6 +4804,73 @@ static void test_texture_rebind_migration(void)
     g_rmdir(dir);
 }
 
+/* Change only an associated handle; the texture table still contains 17. */
+static void texture_rebind_patch_association(const char *path)
+{
+    static const uint8_t association[] = {
+        0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 17, 2, 0,
+    };
+    g_autofree char *stream = NULL;
+    gsize len, found = 0;
+    GError *err = NULL;
+
+    g_assert_true(g_file_get_contents(path, &stream, &len, &err));
+    g_assert_no_error(err);
+    for (gsize at = 0; at + sizeof(association) <= len; at++) {
+        if (!memcmp(stream + at, association, sizeof(association))) {
+            stl_be_p(stream + at + 9, 0x12345678);
+            found++;
+        }
+    }
+    g_assert_cmpuint(found, ==, 1);
+    g_assert_true(g_file_set_contents(path, stream, len, &err));
+    g_assert_no_error(err);
+}
+
+static void test_texture_rebind_migration_rejects_missing_object(void)
+{
+    QTestState *from, *to;
+    g_autofree char *dir = NULL, *stream = NULL, *uri = NULL;
+    GError *err = NULL;
+    int64_t deadline;
+    bool running;
+
+    dir = g_dir_make_tmp("sn0-kona-rebind-invalid-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(dir, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+    from = qtest_init(MACHINE_ARGS);
+    texture_rebind_uploads(from, false);
+    texture_rebind_packet(from, 1, 17);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    texture_rebind_patch_association(stream);
+    to = qtest_init(MACHINE_ARGS " -incoming defer");
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(to,
+        "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    do {
+        running = qtest_probe_child(to);
+        if (!running) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    if (running) {
+        qtest_set_expected_status(to, 0);
+        qtest_quit(to);
+    } else {
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+    }
+    g_assert_false(running);
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_texture_rebind_pending_migration(void)
 {
     QTestState *from = qtest_init(MACHINE_ARGS), *to;
@@ -15131,6 +15198,9 @@ int main(int argc, char **argv)
                    test_texture_rebind_reset);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-migration",
                    test_texture_rebind_migration);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/"
+                   "rebind-migration-missing-object",
+                   test_texture_rebind_migration_rejects_missing_object);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-pending-migration",
                    test_texture_rebind_pending_migration);
     qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-split-record",
