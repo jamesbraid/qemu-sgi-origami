@@ -1819,10 +1819,11 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         field_length = 5;
         break;
     case 0xa:
-        /* Port speeds: the model's two zero integers. */
+        /* The first integer selects a PROM display branch, not link speed. */
         field_count = 2;
         field_length = 10;
         memset(fields, 0, field_length);
+        stl_be_p(fields + 1, s->port_speed_first);
         break;
     case 0xd:
         /* No attached bricks: rack 0, bay 0, type 0 per port. */
@@ -2455,6 +2456,7 @@ static const VMStateDescription vmstate_l1 = {
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
+        VMSTATE_UINT32_EQUAL(port_speed_first, SGIL1State),
         VMSTATE_UINT64_EQUAL(power_identity, SGIL1State),
         VMSTATE_UINT64_EQUAL(power_command_identity, SGIL1State),
         VMSTATE_BOOL(power_command_reachable, SGIL1State),
@@ -2918,6 +2920,10 @@ fuel_mac_done:
         error_setg(errp, "L1 brick-type-code must be one byte");
         return;
     }
+    if (s->port_speed_first > 1) {
+        error_setg(errp, "L1 first port-speed value must be zero or one");
+        return;
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(l1_profiles); i++) {
         if (!strcmp(s->brick_type, l1_profiles[i].name)) {
             s->profile = &l1_profiles[i];
@@ -3340,6 +3346,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
     DEFINE_PROP_UINT32("brick-type-code", SGIL1State, brick_type_code, 0),
+    DEFINE_PROP_UINT32("port-speed-first", SGIL1State, port_speed_first, 0),
     /*
      * The network mode the L1 keeps in non-volatile memory. 422 is the mode
      * the Origin 300 User's Guide requires for a cabled pair; the factory

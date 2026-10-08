@@ -189,6 +189,7 @@ struct SGIL1State {
     uint32_t brick_type_code;
     const SGIL1ProductProfile *profile;
     uint32_t product_identity;
+    uint32_t port_speed_first;
     uint32_t processors;
     GString *capture;
     /* Running a command the cabled peer relayed with ctc; not migrated. */
