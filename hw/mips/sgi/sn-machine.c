@@ -3091,12 +3091,14 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
 {
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
     g_autofree const SGIModelXioAttachment **attachments = NULL;
+    g_autofree const SGIModelNode **nodes = NULL;
     const SGIModelIoBoardList *board_entry;
-    size_t host_count, attachment_count, i;
+    size_t host_count, attachment_count, node_count, i;
 
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
+    nodes = sgi_model_node_array(t->nodes, &node_count);
 
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
@@ -3211,6 +3213,11 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                                      function->clock_hz);
                 qdev_prop_set_bit(DEVICE(pci), "serial-dma-experimental",
                                   function->serial_dma_experimental);
+                qdev_prop_set_bit(
+                    DEVICE(pci), "pci-status-compat",
+                    nodes[node_index]->has_board_kind &&
+                    nodes[node_index]->board_kind ==
+                        SGI_MODEL_BOARD_KIND_IP53);
                 if (rtc_clock) {
                     object_property_set_link(OBJECT(pci), "clock",
                                              OBJECT(rtc_clock), &error_abort);
