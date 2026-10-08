@@ -16,7 +16,13 @@ Current drawing support
 ``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
 flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
 resource must have bottom-origin rows and ordered UNORM components of 1 to 16
-bits. The viewport and single clip rectangle must cover the resource.
+bits. The viewport must cover the resource.
+
+A clip list with no rectangles keeps the whole plane unless it is marked
+empty. Up to 16 inclusive plane rectangles may overlap or extend outside the
+resource. The renderer intersects them with the resource and draws once
+through their union, so overlap does not apply blending twice. If the union
+is empty, it returns without a native snapshot or commit.
 
 Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
 and these source/destination factor pairs: ``SRC_ALPHA`` with
@@ -28,10 +34,10 @@ equations, and colour layouts remain unsupported for blended draws.
 The path rejects colour-index drawing, depth and stencil tests, textures,
 client clip planes, ordered dithering, accumulation, and other draw states it
 has not mapped to Mesa. It snapshots the full colour resource and draws
-through an RGBA16 host buffer with a private stencil marker from the same
-draw. It reads back both arrays before any native commit. The shared code
-passes a bottom-origin binary write mask to ``commit_covered``. The provider
-must leave zero-mask pixels untouched.
+through an RGBA16 host buffer. Private stencil marks the clip union and
+pixels written by the same draw. It reads back colour and coverage before
+any native commit. The shared code passes the bottom-origin binary write mask
+to ``commit_covered``. The provider must leave zero-mask pixels untouched.
 Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
