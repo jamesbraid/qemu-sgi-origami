@@ -8592,9 +8592,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         }
         break;
     case ODSY_REG_DID_COMPARE:
-        /* Active comparison is unknown; only the neutral pair is accepted. */
+        /* Active comparison is unknown; leave it inactive and report it. */
         if (s->cmd_operand[0] || s->cmd_operand[1]) {
-            s->did_compare = 1;
             odyssey_query_cancel(s);
             odyssey_cmd_unimplemented(s, ODSY_CMD_REGISTER_TAG | tag);
         }
