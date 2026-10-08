@@ -333,16 +333,11 @@ static void build_gib(QTestState *qts)
     write_rcb_addr(qts, GIB_PHYS + GIB_REFRESH_STATS_PTR, STATS_PHYS);
 }
 
-/*
- * Hand the card a general-information-block address. The register window is
- * little-endian, so the half at the lower offset, the one the public header
- * calls GENINFO_HI, is the least significant one, which is where a guest
- * writing the pair puts the low half, as IRIX does.
- */
+/* The public driver writes the high word at 0x608, then low at 0x60c. */
 static void publish_gib_at(QTestState *qts, uint64_t gib)
 {
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI, (uint32_t)gib);
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, gib >> 32);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_HI, gib >> 32);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GENINFO_LO, gib);
 }
 
 static void publish_gib(QTestState *qts)

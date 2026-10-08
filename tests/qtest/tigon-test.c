@@ -273,11 +273,8 @@ static void tigon_setup_rings(TigonTest *t, bool dma_be)
 /* Publish the GIB address and release embedded CPU A -> firmware-up. */
 static void tigon_publish(TigonTest *t)
 {
-    /*
-     * The little-endian register view puts the low half at the lower offset.
-     */
-    reg_wr(t, TI_GCR_GENINFO_HI, t->gib & 0xffffffff);
-    reg_wr(t, TI_GCR_GENINFO_LO, t->gib >> 32);
+    reg_wr(t, TI_GCR_GENINFO_HI, t->gib >> 32);
+    reg_wr(t, TI_GCR_GENINFO_LO, t->gib);
     reg_wr(t, TI_CPU_STATE, 0);   /* clear the halt bit */
 }
 
