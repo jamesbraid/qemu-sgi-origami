@@ -45,10 +45,19 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_PCI_STATE        0x05c
 #define TI_WINBASE          0x068
 #define TI_DMA_WRITE_HOST_HI 0x080
+#define TI_DMA_READ_HOST_HI  0x090
+#define TI_DMA_READ_HOST_LO  0x094
+#define TI_DMA_READ_LENGTH   0x09c
+#define TI_DMA_READ_STATE    0x0b0
+#define TI_DMA_READ_LOCAL    0x0b4
 #define TI_DMA_WRITE_HOST_LO 0x084
 #define TI_DMA_WRITE_STATE  0x0a0
 #define TI_DMA_WRITE_LOCAL  0x0a4
 #define TI_DMA_WRITE_LENGTH 0x0ac
+#define TI_DMA_ACTIVE       (1U << 2)
+#define TI_DMA_RESET        (1U << 0)
+#define TI_DMA_INT_ENABLE   (1U << 21)
+#define TI_DMA_MASTER_ABORT (1U << 25)
 #define TI_CPU_STATE        0x140
 #define TI_MB_HOSTINTR      0x504
 
@@ -1171,6 +1180,39 @@ static void byte_order_golden(bool dma_be)
     tigon_stop(&t);
 }
 
+static void test_direct_dma_unmapped_host(void)
+{
+    static const struct {
+        uint32_t host_hi, host_lo, local, length, state;
+    } channel[] = {
+        { TI_DMA_READ_HOST_HI, TI_DMA_READ_HOST_LO, TI_DMA_READ_LOCAL,
+          TI_DMA_READ_LENGTH, TI_DMA_READ_STATE },
+        { TI_DMA_WRITE_HOST_HI, TI_DMA_WRITE_HOST_LO, TI_DMA_WRITE_LOCAL,
+          TI_DMA_WRITE_LENGTH, TI_DMA_WRITE_STATE },
+    };
+    TigonTest t;
+
+    tigon_boot(&t);
+    for (unsigned i = 0; i < ARRAY_SIZE(channel); i++) {
+        reg_wr(&t, channel[i].host_hi, 0);
+        reg_wr(&t, channel[i].host_lo, 0x03000000);
+        reg_wr(&t, channel[i].local, 0x2000);
+        reg_wr(&t, channel[i].length, 8);
+        reg_wr(&t, channel[i].state,
+               TI_DMA_ACTIVE | (i ? TI_DMA_INT_ENABLE : 0));
+        g_assert_cmphex(reg_rd(&t, channel[i].state) &
+                        (TI_DMA_ACTIVE | TI_DMA_MASTER_ABORT), ==,
+                        TI_DMA_MASTER_ABORT);
+        g_assert_cmphex(reg_rd(&t, channel[i].length), ==, 8);
+        g_assert_cmphex(reg_rd(&t, channel[i].host_lo), ==, 0x03000000);
+        g_assert_false(bridge_inta(&t));
+        reg_wr(&t, channel[i].state, TI_DMA_RESET);
+        g_assert_cmphex(reg_rd(&t, channel[i].state) &
+                        (TI_DMA_ACTIVE | TI_DMA_MASTER_ABORT), ==, 0);
+    }
+    tigon_stop(&t);
+}
+
 static void test_direct_dma_odd_local_address(void)
 {
     static const uint8_t source[] = {
@@ -1251,6 +1293,8 @@ int main(int argc, char **argv)
                    test_local_interrupt_strobes);
     qtest_add_func("tigon/interrupt-hostintr-ack",
                    test_interrupt_hostintr_ack);
+    qtest_add_func("tigon/direct-dma-unmapped-host",
+                   test_direct_dma_unmapped_host);
     qtest_add_func("tigon/direct-dma-odd-local-address",
                    test_direct_dma_odd_local_address);
     qtest_add_func("tigon/byte-order-little-endian",
