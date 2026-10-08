@@ -635,6 +635,22 @@ static uint64_t odsy_qom_get_uint(QTestState *qts, const char *property)
     return value;
 }
 
+static bool odsy_qom_get_bool(QTestState *qts, const char *property)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': %s}}", BOARD, property);
+    bool value;
+
+    if (!qdict_haskey(resp, "return")) {
+        g_autoptr(GString) s = qobject_to_json(QOBJECT(resp));
+        g_error("qom-get %s failed: %s", property, s->str);
+    }
+    value = qdict_get_bool(resp, "return");
+    qobject_unref(resp);
+    return value;
+}
+
 static void odsy_test_pixel_select(QTestState *qts, uint32_t x, uint32_t y)
 {
     qtest_qmp_assert_success(qts,
@@ -697,6 +713,48 @@ static void odsy_test_pixel_write(QTestState *qts, uint32_t x, uint32_t y,
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel', 'value': %u}}", BOARD, value);
+}
+
+static void test_model_did_pixel_accessors(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t x, y;
+
+    g_assert_false(odsy_qom_get_bool(qts, "x-mesa-renderer"));
+    board_quit(qts);
+
+    qts = board_start(" -global sgi-odyssey.x-mesa-renderer=on");
+    g_assert_true(odsy_qom_get_bool(qts, "x-mesa-renderer"));
+    /* Model storage only: alternate write order; no GL draw is exercised. */
+    for (y = 0; y < 4; y++) {
+        for (x = 0; x < 4; x++) {
+            uint32_t index = y * 4 + x;
+
+            if (!(index & 1)) {
+                odsy_test_pixel_write(qts, x, y, 0x11223300u + index);
+            }
+            odsy_test_pixel_select(qts, x, y);
+            qtest_qmp_assert_success(qts,
+                "{'execute': 'qom-set', 'arguments': {'path': %s, "
+                "'property': 'x-test-did', 'value': %u}}",
+                BOARD, 0x40u + index);
+            if (index & 1) {
+                odsy_test_pixel_write(qts, x, y, 0x11223300u + index);
+            }
+        }
+    }
+    for (y = 0; y < 4; y++) {
+        for (x = 0; x < 4; x++) {
+            uint32_t index = y * 4 + x;
+
+            g_assert_cmphex(odsy_test_pixel(qts, x, y), ==,
+                            0x11223300u + index);
+            odsy_test_pixel_select(qts, x, y);
+            g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-did"), ==,
+                            0x40u + index);
+        }
+    }
+    board_quit(qts);
 }
 
 static uint32_t odsy_test_display_pixel(QTestState *qts, uint32_t x,
@@ -17483,6 +17541,8 @@ int main(int argc, char **argv)
              test_buffers_read_and_draw_words_are_independent);
     add_fresh_case("sn1/odyssey/buffers-unsupported-mask-reported-once",
                    test_buffers_unsupported_mask_reported_once);
+    add_fresh_case("sn1/odyssey/mesa-selector-and-model-did",
+                   test_model_did_pixel_accessors);
     add_case("sn1/odyssey/buffers-gl-triangle-follows-mask",
              test_buffers_gl_triangle_follows_mask);
     add_fresh_case("sn1/odyssey/buffers-migration",

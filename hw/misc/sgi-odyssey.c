@@ -10108,6 +10108,41 @@ static void odyssey_test_get_pixel_row(Object *obj, Visitor *v,
     visit_type_str(v, name, &out, errp);
 }
 
+static void odyssey_test_get_did(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_ODYSSEY_WIDTH &&
+        s->test_pixel_y < SGI_ODYSSEY_HEIGHT) {
+        value = s->did[s->test_pixel_y * SGI_ODYSSEY_WIDTH + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void odyssey_test_set_did(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value;
+
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!DEVICE(obj)->realized) {
+        error_setg(errp, "sgi-odyssey: x-test-did needs a realized device");
+        return;
+    }
+    if (s->test_pixel_x >= SGI_ODYSSEY_WIDTH ||
+        s->test_pixel_y >= SGI_ODYSSEY_HEIGHT || value > UINT8_MAX) {
+        error_setg(errp, "sgi-odyssey: x-test-did is out of range");
+        return;
+    }
+    s->did[s->test_pixel_y * SGI_ODYSSEY_WIDTH + s->test_pixel_x] = value;
+    sgi_scanout_invalidate_all(&s->scanout);
+}
+
 /* Check the fallible destination callback without creating invalid draws. */
 static void odyssey_test_get_rgba_readable(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
@@ -10243,6 +10278,9 @@ static void odyssey_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-pixel-row", "str",
                         odyssey_test_get_pixel_row, NULL, NULL, NULL);
+    /* Synthetic model DID byte; this says nothing about physical WID rules. */
+    object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
+                        odyssey_test_set_did, NULL, NULL);
     object_property_add(obj, "x-test-rgba-readable", "bool",
                         odyssey_test_get_rgba_readable, NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",

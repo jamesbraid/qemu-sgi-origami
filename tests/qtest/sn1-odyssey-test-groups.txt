@@ -49,6 +49,7 @@ board /mips64/sn1/odyssey/buffers-draw-selection-keeps-clip-and-masks
 board /mips64/sn1/odyssey/buffers-read-and-draw-words-are-independent
 board /mips64/sn1/odyssey/buffers-unsupported-mask-reported-once
 board /mips64/sn1/odyssey/buffers-gl-triangle-follows-mask
+board /mips64/sn1/odyssey/mesa-selector-and-model-did
 board /mips64/sn1/odyssey/buffers-migration
 board /mips64/sn1/odyssey/buffers-transfers-follow-mask
 board /mips64/sn1/odyssey/buffers-captured-copy-preserves-both-sources
