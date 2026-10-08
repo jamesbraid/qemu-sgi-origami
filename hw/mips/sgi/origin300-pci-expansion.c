@@ -847,6 +847,8 @@ static void expansion_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_string(s->chip[i], "bus-prefix", prefix);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-e", 1);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-f", 1);
+        qdev_prop_set_uint8(s->chip[i], "req64-slots-e", BIT(1) | BIT(2));
+        qdev_prop_set_uint8(s->chip[i], "req64-slots-f", BIT(1) | BIT(2));
         qdev_prop_set_bit(s->chip[i], "superbridge", i != 0);
     }
     qdev_prop_set_uint8(s->chip[0], "host-port", 0xa);
