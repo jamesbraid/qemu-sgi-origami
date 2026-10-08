@@ -83,6 +83,11 @@ struct TigonState {
     uint32_t misc_host_ctl;
     uint32_t misc_local_ctl;
     uint32_t pci_state;
+    uint32_t dma_host_hi[2];
+    uint32_t dma_host_lo[2];
+    uint32_t dma_local[2];
+    uint32_t dma_length[2];
+    uint32_t dma_state[2];
     /*
      * Card SRAM timing configuration. Stored and returned, and nothing acts
      * on it: the bit the driver sets selects synchronous SRAM, and this
