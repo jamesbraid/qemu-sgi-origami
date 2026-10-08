@@ -4342,24 +4342,40 @@ static const uint32_t texture_source[8] = {
     0x00ffffff, 0xff00ffff, 0xffff00ff, 0x000000ff,
 };
 
+/* All staged words, eight hex digits each: x-test-gl-data-word in bulk. */
+static char *staged_words(QTestState *s)
+{
+    QDict *reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gl-data-words'}}");
+    char *words = g_strdup(qdict_get_str(reply, "return"));
+
+    qobject_unref(reply);
+    return words;
+}
+
+static uint32_t staged_word_at(const char *words, unsigned k)
+{
+    char digits[9] = { 0 };
+
+    g_assert_cmpuint(strlen(words), >=, (k + 1) * 8);
+    memcpy(digits, words + k * 8, 8);
+    return g_ascii_strtoull(digits, NULL, 16);
+}
+
 static void assert_texture_staging(QTestState *s, const uint32_t *v,
                                    unsigned n, unsigned have)
 {
     QDict *reply = qtest_qmp(s,
         "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
         "'property':'x-test-gl-data-have'}}");
+    g_autofree char *words = NULL;
 
     g_assert_cmpuint(qdict_get_int(reply, "return"), ==, have);
     qobject_unref(reply);
+    words = staged_words(s);
     for (unsigned k = 0; k < n; k++) {
-        qtest_qmp_assert_success(s,
-            "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
-            "'property':'x-test-gc-index','value':%u}}", k);
-        reply = qtest_qmp(s,
-            "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
-            "'property':'x-test-gl-data-word'}}");
-        g_assert_cmphex(qdict_get_int(reply, "return"), ==, v[k]);
-        qobject_unref(reply);
+        g_assert_cmphex(staged_word_at(words, k), ==, v[k]);
     }
 }
 
@@ -5654,20 +5670,48 @@ static const uint32_t texture_8x8_sources[][64] = {
     },
 };
 
-static char *renderer_plane_digest(QTestState *s, unsigned plane);
+/*
+ * The digests of planes 0 to 6, sixty-four hex digits a plane, in one
+ * string: the bulk form of renderer_plane_digest() over those planes.
+ */
+static char *texture_plane_digest_string(QTestState *s)
+{
+    QDict *reply;
+    char *all;
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane','value':0}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane-count','value':7}}");
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane-digests'}}");
+    all = g_strdup(qdict_get_str(reply, "return"));
+    qobject_unref(reply);
+    g_assert_cmpuint(strlen(all), ==, 7 * 64);
+    return all;
+}
 
 static void texture_plane_digests(QTestState *s, char *digests[7])
 {
+    g_autofree char *all = texture_plane_digest_string(s);
+
     for (unsigned plane = 0; plane < 7; plane++) {
-        digests[plane] = renderer_plane_digest(s, plane);
+        g_assert_cmpint(all[plane * 64], !=, '-');
+        digests[plane] = g_strndup(all + plane * 64, 64);
     }
 }
 
 static void texture_assert_planes(QTestState *s, char *digests[7])
 {
-    for (unsigned plane = 0; plane < 7; plane++) {
-        g_autofree char *after = renderer_plane_digest(s, plane);
+    g_autofree char *all = texture_plane_digest_string(s);
 
+    for (unsigned plane = 0; plane < 7; plane++) {
+        g_autofree char *after = g_strndup(all + plane * 64, 64);
+
+        g_assert_cmpint(after[0], !=, '-');
         g_assert_cmpstr(after, ==, digests[plane]);
     }
 }
@@ -5727,6 +5771,7 @@ static void test_texture_8x8_native_prefix(void)
     QTestState *s = kona_init_logged(&log);
     uint32_t staged[2][64];
     char *before[7];
+    char *words;
     unsigned configs, uploads;
 
     texture_canaries(s, before);
@@ -5737,18 +5782,11 @@ static void test_texture_8x8_native_prefix(void)
         kona_command(s, 0x174, texture_8x8_headers[image], 20);
         texture_words(s, texture_8x8_sources[image], 64, 1);
         assert_texture_staging(s, NULL, 0, 0);
+        words = staged_words(s);
         for (unsigned k = 0; k < 64; k++) {
-            QDict *reply;
-
-            qtest_qmp_assert_success(s,
-                "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
-                "'property':'x-test-gc-index','value':%u}}", k);
-            reply = qtest_qmp(s,
-                "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
-                "'property':'x-test-gl-data-word'}}");
-            staged[image][k] = qdict_get_int(reply, "return");
-            qobject_unref(reply);
+            staged[image][k] = staged_word_at(words, k);
         }
+        g_free(words);
         assert_reply_unchanged(s);
         texture_assert_planes(s, before);
         kona_command(s, 0x176, (uint32_t[]){ image }, 1);
