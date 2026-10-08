@@ -136,6 +136,7 @@ QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform;
     QemuEGLDisplayLease *lease;
     QemuEGLDisplayRecord *record;
+    const char *client_extensions;
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLConfig config;
     EGLint nconfigs;
@@ -166,16 +167,33 @@ QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(
         error_setg(errp, "Cannot allocate EGL display record");
         goto fail_lease;
     }
-    get_platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
-        eglGetProcAddress("eglGetPlatformDisplayEXT");
-    if (!get_platform) {
+    client_extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    if (!client_extensions) {
+        error_setg(errp, "eglQueryString for EGL client extensions failed: %s",
+                   qemu_egl_get_error_string());
+        goto fail_record;
+    }
+    if (!epoxy_has_egl_extension(NULL, "EGL_EXT_platform_base") ||
+        !epoxy_has_egl_extension(NULL, "EGL_MESA_platform_surfaceless")) {
         *result = QEMU_EGL_ACQUIRE_UNAVAILABLE;
         error_setg(errp, "Mesa surfaceless EGL platform is unavailable");
         goto fail_record;
     }
+    get_platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+        eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (!get_platform) {
+        error_setg(errp, "eglGetPlatformDisplayEXT is missing despite "
+                   "advertised surfaceless support");
+        goto fail_record;
+    }
     display = get_platform(EGL_PLATFORM_SURFACELESS_MESA,
                            EGL_DEFAULT_DISPLAY, NULL);
-    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
+    if (display == EGL_NO_DISPLAY) {
+        error_setg(errp, "eglGetPlatformDisplayEXT returned no display: %s",
+                   qemu_egl_get_error_string());
+        goto fail_record;
+    }
+    if (!eglInitialize(display, NULL, NULL)) {
         error_setg(errp, "Cannot initialize surfaceless EGL: %s",
                    qemu_egl_get_error_string());
         goto fail_record;
