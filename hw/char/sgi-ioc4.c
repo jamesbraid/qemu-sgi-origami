@@ -23,6 +23,7 @@
 
 #define TYPE_SGI_IOC4 "sgi-ioc4"
 #define IOC4_PORTS 4
+#define IOC4_PCI_STATUS_COMPAT 0x0220
 #define IOC4_BAR_SIZE 0x100000
 #define IOC4_UART_BASE 0x380
 #define IOC4_CLOCK_BAR 0x87ff8
@@ -114,7 +115,9 @@ struct SGIIOC4State {
     uint32_t dma_error_high;
     unsigned dma_request_depth;
     uint8_t dma_migration_mode;
+    uint8_t pci_status_compat_mode;
     bool serial_dma_experimental;
+    bool pci_status_compat;
     IRQState uart_irq[IOC4_PORTS];
     uint32_t serial_pending;
     uint32_t serial_enable;
@@ -1026,6 +1029,10 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->other_pending = 0;
     s->other_enable = 0;
     s->uart_level = 0;
+    if (s->pci_status_compat) {
+        pci_set_word(s->parent_obj.config + PCI_STATUS,
+                     IOC4_PCI_STATUS_COMPAT);
+    }
     s->dma_base[0] = s->dma_base[1] = 0;
     s->dma_ring_size[0] = s->dma_ring_size[1] = IOC4_RING_1K;
     s->dma_error_low = s->dma_error_high = 0;
@@ -1134,6 +1141,7 @@ static const VMStateDescription vmstate_ioc4 = {
     .post_load = ioc4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
+        VMSTATE_UINT8_EQUAL(pci_status_compat_mode, SGIIOC4State),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC4State),
         VMSTATE_STRUCT_ARRAY(uart, SGIIOC4State, IOC4_PORTS, 0,
                              vmstate_serial, SerialState),
@@ -1197,6 +1205,7 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
     }
 
     s->dma_migration_mode = s->serial_dma_experimental;
+    s->pci_status_compat_mode = s->pci_status_compat;
     /* Local PCI IRQ output needs a pin; IO9 board wiring is not modeled. */
     dev->config[PCI_INTERRUPT_PIN] = 1;
 
@@ -1245,12 +1254,17 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
         }
     }
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+    if (s->pci_status_compat) {
+        pci_set_word(dev->config + PCI_STATUS, IOC4_PCI_STATUS_COMPAT);
+    }
 }
 
 static const Property ioc4_properties[] = {
     DEFINE_PROP_UINT32("clock-hz", SGIIOC4State, clock_hz, 33333333),
     DEFINE_PROP_BOOL("serial-dma-experimental", SGIIOC4State,
                      serial_dma_experimental, false),
+    DEFINE_PROP_BOOL("pci-status-compat", SGIIOC4State, pci_status_compat,
+                     false),
     DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_CHR("chardev1", SGIIOC4State, uart[0].chr),

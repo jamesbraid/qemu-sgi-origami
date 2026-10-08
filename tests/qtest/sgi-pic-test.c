@@ -557,6 +557,123 @@ static QTestState *pic_runtime_actual_pio_start(int serial_fd,
     return qts;
 }
 
+static QTestState *pic_ioc4_pci_status_start(bool incoming, bool compatible)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S %s"
+        "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off "
+        "-device sgi-ioc4,bus=pic-head-0.0,addr=1%s "
+        "-device sgi-ioc4,bus=pic-head-0.0,addr=2",
+        incoming ? "-incoming defer " : "",
+        compatible ? ",pci-status-compat=on" : "");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static void test_ioc4_pci_status_compatibility(void)
+{
+    QTestState *qts = pic_ioc4_pci_status_start(false, true);
+
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1)), ==, 0x100a10a9);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 8) & 0xff, ==,
+                    0x53);
+    g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200000);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 2) + 4), ==, 0);
+
+    qtest_writew(qts, PIC_SHORT_CFG(0, 1) + 6, PCI_COMMAND_MEMORY);
+    g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200002);
+    qtest_writew(qts, PIC_SHORT_CFG(0, 1) + 4, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200002);
+    qtest_writel(qts, PIC_SHORT_CFG(0, 1) + 4, 0x00040001);
+    g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200001);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200000);
+    g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 2) + 4), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_ioc4_pci_status_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir =
+        g_dir_make_tmp("sgi-pic-ioc4-status-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_ioc4_pci_status_start(false, true);
+    QTestState *to = pic_ioc4_pci_status_start(true, true);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_writew(from, PIC_SHORT_CFG(0, 1) + 6, PCI_COMMAND_MEMORY);
+    g_assert_cmphex(qtest_readl(from, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200002);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readw(to, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(to, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200002);
+    g_assert_cmphex(qtest_readl(to, PIC_SHORT_CFG(0, 2) + 4), ==, 0);
+
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readw(to, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
+    g_assert_cmphex(qtest_readl(to, PIC_SHORT_CFG(0, 1) + 4), ==,
+                    0x02200000);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_ioc4_pci_status_migration_mode_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir =
+        g_dir_make_tmp("sgi-pic-ioc4-status-mismatch-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_ioc4_pci_status_start(false, true);
+    QTestState *to = pic_ioc4_pci_status_start(true, false);
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_cpu_pio_actual_ioc4(void)
 {
     int sockets[2];
@@ -4206,6 +4323,12 @@ int main(int argc, char **argv)
                    test_cpu_pio_order_follows_pci_mapping);
     qtest_add_func("/sgi-pic/cpu-pio-overlapping-bars-use-active-function",
                    test_cpu_pio_overlapping_bars_use_active_function);
+    qtest_add_func("/sgi-pic/ioc4-pci-status-compatibility",
+                   test_ioc4_pci_status_compatibility);
+    qtest_add_func("/sgi-pic/ioc4-pci-status-migration",
+                   test_ioc4_pci_status_migration);
+    qtest_add_func("/sgi-pic/ioc4-pci-status-migration-mode-mismatch",
+                   test_ioc4_pci_status_migration_mode_mismatch);
     qtest_add_func("/sgi-pic/cpu-pio-actual-ioc4",
                    test_cpu_pio_actual_ioc4);
     qtest_add_func("/sgi-pic/cpu-pio-isp12160",
