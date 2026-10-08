@@ -3058,9 +3058,12 @@ static void elsc_reset_exit(Object *obj, ResetType type)
 
     /*
      * The controller's own start announces it on the serial line with its
-     * version field.
+     * version field. Loading a snapshot restores state and is no start: the
+     * output would be stray, and under record/replay, whose initial snapshot
+     * load runs a reset the recording never had, it asks the replay log for
+     * a character write that was never recorded.
      */
-    if (!s->ride_through) {
+    if (!s->ride_through && type != RESET_TYPE_SNAPSHOT_LOAD) {
         elsc_serial_puts(s, "\x14MSC ");
         elsc_serial_puts(s, s->origin2000 ? SGI_ELSC_VERSION_ORIGIN2000 :
                                             SGI_ELSC_VERSION_ORIGIN200);
