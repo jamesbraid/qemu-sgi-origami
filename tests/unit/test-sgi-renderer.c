@@ -213,6 +213,135 @@ static void test_input_clip(void)
     sgi_renderer_free(renderer);
 }
 
+static bool test_draw(void *opaque, SGIRendererRequest *request, Error **errp)
+{
+    draw_count++;
+    return true;
+}
+
+static bool test_corrupt_draw(void *opaque, SGIRendererRequest *request,
+                              Error **errp)
+{
+    draw_count++;
+    request->rgba[0] = 1;
+    return true;
+}
+
+static const SGIRendererOps test_ops = {
+    .create = generation_create,
+    .draw = test_draw,
+    .destroy = generation_destroy,
+};
+
+static const SGIRendererOps test_corrupt_ops = {
+    .create = generation_create,
+    .draw = test_corrupt_draw,
+    .destroy = generation_destroy,
+};
+
+static void test_instance_draw_failure(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer, *other;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    draw_count = 0;
+    sgi_renderer_register_gl(&test_ops);
+    renderer = sgi_renderer_new(&err);
+    other = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_nonnull(other);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 2);
+
+    g_assert_true(sgi_renderer_draw(other, request, &err));
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Injected SGI renderer test draw failure");
+    g_assert_cmpuint(draw_count, ==, 3);
+    g_assert_true(sgi_renderer_staging_valid(request));
+    error_free(err);
+    err = NULL;
+
+    sgi_renderer_test_fail_draw(renderer, 0);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 3);
+    error_free(err);
+    err = NULL;
+    g_assert_true(sgi_renderer_draw(other, request, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 4);
+    sgi_renderer_free(renderer);
+    sgi_renderer_free(other);
+}
+
+static void test_draw_failure_order(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    draw_count = 0;
+    sgi_renderer_register_gl(&test_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 1);
+    request->clip[0] = -1;
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpuint(draw_count, ==, 0);
+    error_free(err);
+    err = NULL;
+    request->clip[0] = 0;
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Injected SGI renderer test draw failure");
+    g_assert_cmpuint(draw_count, ==, 1);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
+static void test_draw_failure_staging_precedence(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    draw_count = 0;
+    sgi_renderer_register_gl(&test_corrupt_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 1);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL renderer staging");
+    g_assert_cmpuint(draw_count, ==, 1);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -227,5 +356,11 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/generation", test_generation);
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
+    g_test_add_func("/sgi-renderer/test-fault/instance",
+                    test_instance_draw_failure);
+    g_test_add_func("/sgi-renderer/test-fault/order",
+                    test_draw_failure_order);
+    g_test_add_func("/sgi-renderer/test-fault/staging-precedence",
+                    test_draw_failure_staging_precedence);
     return g_test_run();
 }

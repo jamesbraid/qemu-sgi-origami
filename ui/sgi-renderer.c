@@ -8,6 +8,7 @@ struct SGIRenderer {
     const SGIRendererOps *ops;
     void *opaque;
     bool failed;
+    unsigned test_draw_countdown;
 };
 
 static const SGIRendererOps *gl_ops;
@@ -134,6 +135,11 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         error_setg(errp, "Invalid SGI OpenGL renderer staging");
         return false;
     }
+    if (renderer->test_draw_countdown && !--renderer->test_draw_countdown) {
+        renderer->failed = true;
+        error_setg(errp, "Injected SGI renderer test draw failure");
+        return false;
+    }
     return true;
 }
 
@@ -221,6 +227,11 @@ bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
         return false;
     }
     return true;
+}
+
+void sgi_renderer_test_fail_draw(SGIRenderer *renderer, unsigned nth_draw)
+{
+    renderer->test_draw_countdown = nth_draw;
 }
 
 void sgi_renderer_free(SGIRenderer *renderer)
