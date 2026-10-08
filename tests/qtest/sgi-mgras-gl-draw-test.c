@@ -356,6 +356,8 @@ static void test_gl_mesa_triangle_ordinary_readback(void)
     gl_vertex2f(test, -1, 1);
     gl_word(test, GL_END_TRIANGLES);
     g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-result"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
         "x-test-render-snapshots"), ==, 1);
     g_assert_cmpuint(mgras_qom_get_uint(test,
         "x-test-render-commits"), ==, 1);
@@ -378,6 +380,53 @@ static void test_gl_mesa_triangle_ordinary_readback(void)
     g_assert_cmpmem(got + 8, 4, poison + 8, 4);
 
     qtest_quit(test);
+}
+
+/* Checked failures on an ordinary triangle must leave native pixels alone. */
+static void test_gl_mesa_checked_failures(void)
+{
+    static const uint32_t failures[] = { 1, 2, 3, 4 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(failures) + 1; i++) {
+        QTestState *test = qtest_init(
+            MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+        uint32_t expected = i < ARRAY_SIZE(failures) ? failures[i] : 2;
+
+        mgras_reset_state(test);
+        mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+        gl_viewport(test, 0, 0, 1280, 1024);
+        gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
+        gl_draw_buffer(test, 1);
+        gl_clear_color(test, 0, 0, 0, 1);
+        gl_word(test, GL_CLEAR_COLOR_BUFFER);
+        if (i < ARRAY_SIZE(failures)) {
+            qtest_qmp_assert_success(test,
+                "{'execute': 'qom-set', 'arguments': {'path': %s, "
+                "'property': 'x-test-render-inject-result', 'value': %u}}",
+                MGRAS_QOM_PATH, expected);
+        } else {
+            gl_scissor(test, 0, 0, 1, 1);
+            gl_one(test, GL_SCISSOR_TEST_HDR, 1);
+        }
+        gl_color3f(test, 1, 0, 0);
+        gl_word(test, GL_BEGIN_TRIANGLES);
+        gl_vertex2f(test, -1, -1);
+        gl_vertex2f(test, 1, -1);
+        gl_vertex2f(test, -1, 1);
+        gl_word(test, GL_END_TRIANGLES);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-result"), ==, expected);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-snapshots"), ==, 0);
+        g_assert_cmpuint(mgras_qom_get_uint(test,
+            "x-test-render-commits"), ==, 0);
+        g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0);
+        g_assert_cmphex(mgras_test_format(test, 100, 923), ==,
+                        MGRAS_PIXEL_FORMAT_RGB);
+        g_assert_cmphex(mgras_qom_get_uint(test,
+            "x-test-back-pixel"), ==, 0);
+        qtest_quit(test);
+    }
 }
 
 static void test_gl_clear_captured_readpixels_alpha_zero(void)
@@ -3888,6 +3937,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-mesa-triangle-ordinary-readback",
         test_gl_mesa_triangle_ordinary_readback, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-checked-failures",
+        test_gl_mesa_checked_failures, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-alpha-zero",

@@ -836,6 +836,8 @@ struct SGIMgrasState {
     bool gl_renderer_unavailable;
     uint64_t gl_render_snapshots;
     uint64_t gl_render_commits;
+    uint32_t gl_render_result;
+    uint32_t gl_render_inject_result; /* Host-only qtest fault. */
     /* GE-port traffic logged since the last switch; not migrated. */
     bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
