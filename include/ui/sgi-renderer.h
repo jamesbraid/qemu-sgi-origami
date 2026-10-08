@@ -66,6 +66,11 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp);
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
+/*
+ * Test-only: fail the nth otherwise successful draw on this renderer.
+ * Zero disables injection; arming does not clear a latched failure.
+ */
+void sgi_renderer_test_fail_draw(SGIRenderer *renderer, unsigned nth_draw);
 void sgi_renderer_free(SGIRenderer *renderer);
 bool sgi_renderer_request_valid(const SGIRendererRequest *request);
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request);
