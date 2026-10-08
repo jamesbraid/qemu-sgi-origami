@@ -1416,9 +1416,10 @@ static void test_forward_retry_survives_migration(void)
  * the off module as the source did, with no processor running to prompt it:
  * the slave Hub's status reads nothing and the master sees the link lost.
  * On an Origin 200 the off controller's own load tells the machine again
- * that its module is off, which gates it; the machine's post-load sync is
- * the backstop for controllers that do not (this test passes without it, so
- * it does not exercise that hook on its own).
+ * that its module is off, which gates it, and the machine's post-load sync
+ * does the same after every device has loaded. This test passes with either
+ * alone (checked with the sync disabled), so it guards the result, not the
+ * sync.
  */
 static void test_paused_destination_is_gated(void)
 {
