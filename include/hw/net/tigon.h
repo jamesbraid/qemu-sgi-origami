@@ -83,6 +83,7 @@ struct TigonState {
     uint32_t misc_host_ctl;
     uint32_t misc_local_ctl;
     uint32_t pci_state;
+    bool req64_sampled;
     uint32_t dma_host_hi[2];
     uint32_t dma_host_lo[2];
     uint32_t dma_local[2];

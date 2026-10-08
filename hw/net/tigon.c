@@ -20,6 +20,7 @@
 #include "qapi/error.h"
 #include "hw/net/tigon.h"
 #include "hw/pci/pci.h"
+#include "hw/pci/pci-64bit.h"
 #include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "migration/vmstate.h"
@@ -36,8 +37,8 @@
 #define TI_MISC_CONF            0x050
 #define TI_PCI_STATE            0x05c
 /*
- * PCI State bit 20 reads set on a 32-bit bus (manual Table 31). The model
- * runs the card as a 32-bit agent in every slot, so the bit always reads set.
+ * PCI State bit 20 reports the sampled bus width. A Tigon revision 5 or
+ * later can also set it through a software override (Alteon Table 31).
  */
 #define TI_PCISTATE_32BIT_BUS   0x00100000u
 #define TI_DMA_WRITE_HOST_HI    0x080
@@ -1542,7 +1543,7 @@ static void tigon_host_dma_state_write(TigonState *s, unsigned channel,
     }
 }
 
-static void tigon_reset_state(TigonState *s)
+static void tigon_reset_state(TigonState *s, bool reset_pci_state)
 {
     /*
      * Modeled defaults, not confirmed silicon power-on-reset values: the
@@ -1557,7 +1558,9 @@ static void tigon_reset_state(TigonState *s)
     }
     s->misc_host_ctl = 0;
     s->misc_local_ctl = 0;
-    s->pci_state = 0;
+    if (reset_pci_state) {
+        s->pci_state = 0;
+    }
     memset(s->dma_host_hi, 0, sizeof(s->dma_host_hi));
     memset(s->dma_host_lo, 0, sizeof(s->dma_host_lo));
     memset(s->dma_local, 0, sizeof(s->dma_local));
@@ -1647,7 +1650,7 @@ static void tigon_reset_state(TigonState *s)
 static void tigon_misc_host_ctl_write(TigonState *s, uint32_t val)
 {
     if (val & TI_MHC_RESET) {
-        tigon_reset_state(s);
+        tigon_reset_state(s, false);
         return;
     }
     if (val & TI_MHC_CLEARINT) {
@@ -1673,7 +1676,7 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
     case TI_MISC_CONF:
         return s->misc_conf;
     case TI_PCI_STATE:
-        return s->pci_state | TI_PCISTATE_32BIT_BUS;
+        return s->pci_state | (s->req64_sampled ? 0 : TI_PCISTATE_32BIT_BUS);
     case TI_DMA_WRITE_HOST_HI:
         return s->dma_host_hi[TI_DMA_WRITE];
     case TI_DMA_WRITE_HOST_LO:
@@ -2475,7 +2478,7 @@ static void tigon_reset_hold(Object *obj, ResetType type)
 {
     TigonState *s = TIGON(obj);
 
-    tigon_reset_state(s);
+    tigon_reset_state(s, true);
 }
 
 static void tigon_realize(PCIDevice *dev, Error **errp)
@@ -2608,6 +2611,7 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(misc_host_ctl, TigonState),
         VMSTATE_UINT32(misc_local_ctl, TigonState),
         VMSTATE_UINT32(pci_state, TigonState),
+        VMSTATE_BOOL(req64_sampled, TigonState),
         VMSTATE_UINT32_ARRAY(dma_host_hi, TigonState, 2),
         VMSTATE_UINT32_ARRAY(dma_host_lo, TigonState, 2),
         VMSTATE_UINT32_ARRAY(dma_local, TigonState, 2),
@@ -2701,6 +2705,11 @@ static void tigon_instance_init(Object *obj)
     s->media = g_strdup("copper");
 }
 
+static void tigon_req64_sampled(PCIDevice *dev, bool asserted)
+{
+    TIGON(dev)->req64_sampled = asserted;
+}
+
 static void tigon_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2713,6 +2722,7 @@ static void tigon_class_init(ObjectClass *oc, const void *data)
     pc->device_id = TIGON_PCI_DEVICE_ID;
     pc->class_id = PCI_CLASS_NETWORK_ETHERNET;
     rc->phases.hold = tigon_reset_hold;
+    PCI_64BIT_DEVICE_CLASS(oc)->req64_sampled = tigon_req64_sampled;
     dc->vmsd = &vmstate_tigon;
     dc->desc = "Alteon Tigon 2 Gigabit Ethernet (SGI eg)";
     device_class_set_props(dc, tigon_properties);
@@ -2728,6 +2738,7 @@ static const TypeInfo tigon_types[] = {
         .class_init = tigon_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { INTERFACE_PCI_64BIT_DEVICE },
             { },
         },
     },

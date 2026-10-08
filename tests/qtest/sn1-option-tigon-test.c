@@ -35,6 +35,7 @@
 #define TI_MISC_HOST_CTL 0x040
 #define TI_PCI_STATE 0x05c
 #define TI_PCI_NO_WORD_SWAP (1U << 18)
+#define TI_PCI_32BIT_BUS (1U << 20)
 #define TI_WINBASE 0x068
 #define TI_DMA_READ_HOST_HI 0x090
 #define TI_DMA_READ_HOST_LO 0x094
@@ -805,6 +806,40 @@ static void test_traffic(const void *opaque)
     g_assert_cmpint(unlink(storage), ==, 0);
 }
 
+static void test_pci_state_width(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-width-XXXXXX", &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_32BIT_BUS);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==,
+                    TI_PCI_32BIT_BUS);
+    qtest_system_reset(t.qts);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     static Placement placements[] = {
@@ -864,6 +899,8 @@ int main(int argc, char **argv)
     }
     qtest_add_data_func("/sn1/option-tigon/geninfo-64bit", &geninfo_64bit,
                         test_traffic);
+    qtest_add_func("/sn1/option-tigon/pci-state-width",
+                   test_pci_state_width);
     qtest_add_func("/sn1/option-tigon/direct-dma-write",
                    test_direct_dma_write);
     qtest_add_func("/sn1/option-tigon/pio-sram-direct-dma-bytes",
