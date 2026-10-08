@@ -5958,6 +5958,73 @@ static uint32_t texture_rgb(double r, double g, double b)
            (uint32_t)floor(b * 255 + 0.5);
 }
 
+static void *texture_allocation_failure(size_t bytes)
+{
+    g_assert_cmpuint(bytes, >, 0);
+    return NULL;
+}
+
+static void test_texture_prepare_results(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLDrawState state = {
+        .texture_2d = true,
+        .texture_env_mode = SGI_GL_MODULATE,
+    };
+    SGIRasterTexture *sampler = NULL;
+    double coord[4] = { 0.25, 0.25, 0, 1 };
+    double rgba[4] = { 1, 1, 1, 1 };
+
+    g_assert_null(image.pyramid);
+    g_assert_cmpint(sgi_raster_texture_check(&state, &image), ==,
+                    SGI_RASTER_TEXTURE_READY);
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_READY);
+    g_assert_nonnull(sampler);
+    g_assert_true(sgi_raster_texture_fragment(sampler, coord, rgba));
+    g_assert_cmpfloat(rgba[0], ==, 1);
+    g_assert_cmpfloat(rgba[1], ==, 0);
+    g_assert_cmpfloat(rgba[2], ==, 0);
+    g_assert_cmpfloat(rgba[3], ==, 1);
+    sgi_raster_texture_free(sampler);
+    sampler = sgi_raster_texture_new(&state, &image);
+    g_assert_nonnull(sampler);
+    sgi_raster_texture_free(sampler);
+
+    sampler = (void *)1;
+    state.texture_2d = false;
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_DISABLED);
+    g_assert_null(sampler);
+
+    state.texture_2d = true;
+    image.width = 0;
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_INCOMPLETE);
+    g_assert_null(sampler);
+
+    image = texture_image(&pixels);
+    image.mag_filter = SGI_GL_LINEAR;
+    g_assert_cmpint(sgi_raster_texture_check(&state, &image), ==,
+                    SGI_RASTER_TEXTURE_UNSUPPORTED);
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_UNSUPPORTED);
+    g_assert_null(sampler);
+    g_assert_cmpint(sgi_raster_texture_prepare_with_allocator(
+                    &state, &image, &sampler, texture_allocation_failure),
+                    ==, SGI_RASTER_TEXTURE_UNSUPPORTED);
+    g_assert_null(sampler);
+
+    image = texture_image(&pixels);
+    g_assert_cmpint(sgi_raster_texture_prepare_with_allocator(
+                    &state, &image, &sampler, texture_allocation_failure),
+                    ==, SGI_RASTER_TEXTURE_OOM);
+    g_assert_null(sampler);
+}
+
 static void texture_post_filter(void *opaque, double rgba[4])
 {
     unsigned *calls = opaque;
@@ -10621,6 +10688,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/mipmap-post-filter-order",
                     test_mipmap_post_filter_order);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
+    g_test_add_func("/sgi-gl/texture-prepare-results",
+                    test_texture_prepare_results);
     g_test_add_func("/sgi-gl/texture-environment-clamp",
                     test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
