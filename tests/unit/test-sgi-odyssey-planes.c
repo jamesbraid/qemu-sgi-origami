@@ -1714,6 +1714,101 @@ static void test_origin_mismatch_rejected(void)
     g_assert_cmphex(slots[0], ==, 0xdead);
 }
 
+static void test_joint_origin_mutation_rejected(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 0 };
+    uint32_t snapshot[4] = { 0xdead };
+    uint32_t slots[4] = { 80, 81, 82, 83 };
+    uint8_t expected[sizeof(f.bytes)];
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.bottom_origin = false;
+    view.storage_top_origin = true;
+    memcpy(expected, f.bytes, sizeof(expected));
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    target = plane_target(&planes, &resource);
+    view.bottom_origin = true;
+    resource.bottom_origin = true;
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, snapshot, 4, ARRAY_SIZE(snapshot), &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmphex(snapshot[0], ==, 0xdead);
+    result = sgi_render_resource_commit(&target, &resource, 0, &rect,
+                                        slots, 4, ARRAY_SIZE(slots), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(result.complete_pixels, ==, 0);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 0);
+    g_assert_false(view.dirty);
+    g_assert_cmpuint(view.backing_generation, ==, 1);
+    g_assert_cmpuint(view.view_generation, ==, 1);
+}
+
+static void test_direct_callback_slot_bounds(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    const SGIRenderResourceOps *ops = odyssey_planes_resource_ops();
+    SGIRenderRect rect = { 0, 0, 0, 1 };
+    uint32_t out[8];
+    uint32_t slots[8] = { 80, 81, 82, 83, 90, 91, 92, 93 };
+    uint8_t coverage[1] = { 1 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = coverage, .stride_bytes = 1,
+        .capacity_bytes = sizeof(coverage),
+    };
+    uint8_t expected[sizeof(f.bytes)];
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    memcpy(expected, f.bytes, sizeof(expected));
+    for (size_t i = 0; i < ARRAY_SIZE(out); i++) {
+        out[i] = 0xdead;
+    }
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    g_assert_cmpint(ops->snapshot(&planes, &resource, 0, &rect, out, 4, 7,
+                    &err), ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    for (size_t i = 0; i < ARRAY_SIZE(out); i++) {
+        g_assert_cmphex(out[i], ==, 0xdead);
+    }
+    result = ops->commit(&planes, &resource, 0, &rect, slots, 4, 7, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(result.complete_pixels, ==, 0);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    result = ops->commit_covered(&planes, &resource, 0, &rect, slots, 4,
+                                 ARRAY_SIZE(slots), &writes, &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(result.complete_pixels, ==, 0);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 0);
+    g_assert_false(view.dirty);
+    g_assert_cmpuint(view.backing_generation, ==, 1);
+}
+
 static void test_four_eye_alias_generations(void)
 {
     PlaneFixture fixtures[4];
@@ -1950,6 +2045,31 @@ static void test_swap_rejects_changed_storage_origin(void)
     }
 }
 
+static void test_swap_rejects_joint_origin_mutation(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    odyssey_planes_end_submission(&planes);
+    views[0].bottom_origin = false;
+    resources[0].bottom_origin = false;
+    g_assert_false(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    for (size_t i = 0; i < 4; i++) {
+        g_assert_cmpint(views[i].buffer, ==,
+                        i < 2 ? SGI_RENDER_FRONT : SGI_RENDER_BACK);
+        g_assert_cmpuint(views[i].target, ==, 11 + i);
+        g_assert_cmpuint(views[i].view_generation, ==, 1);
+        g_assert_false(views[i].dirty);
+    }
+}
+
 #ifdef CONFIG_OPENGL
 static void test_checked_draw_top_first_storage(void)
 {
@@ -2116,6 +2236,10 @@ int main(int argc, char **argv)
                     test_covered_partial_prefix);
     g_test_add_func("/sgi-odyssey-planes/origin-mismatch",
                     test_origin_mismatch_rejected);
+    g_test_add_func("/sgi-odyssey-planes/joint-origin-mutation",
+                    test_joint_origin_mutation_rejected);
+    g_test_add_func("/sgi-odyssey-planes/direct-slot-bounds",
+                    test_direct_callback_slot_bounds);
     g_test_add_func("/sgi-odyssey-planes/four-eye-alias",
                     test_four_eye_alias_generations);
     g_test_add_func("/sgi-odyssey-planes/duplicate-eye-target",
@@ -2130,6 +2254,8 @@ int main(int argc, char **argv)
                     test_swap_rejects_changed_bindings_atomically);
     g_test_add_func("/sgi-odyssey-planes/swap-changed-storage-origin",
                     test_swap_rejects_changed_storage_origin);
+    g_test_add_func("/sgi-odyssey-planes/swap-joint-origin-mutation",
+                    test_swap_rejects_joint_origin_mutation);
 #ifdef CONFIG_OPENGL
     g_test_add_func("/sgi-odyssey-planes/checked-draw-top-first-storage",
                     test_checked_draw_top_first_storage);
