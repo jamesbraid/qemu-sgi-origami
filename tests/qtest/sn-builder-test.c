@@ -4823,6 +4823,21 @@ static void test_bedrock_nodes_answer_at_their_own_nasid_window(
     qtest_quit(qts);
 }
 
+static void test_bedrock_node_realize_propagates_error(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M sn-builder-bedrock-nasid-test,"
+        "construction-fault=bedrock-revision -cpu R14000 -smp 2 "
+        "-nodefaults -display none");
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':'realize-error'}}");
+
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "revision must fit four bits");
+    qtest_quit(qts);
+}
+
 /*
  * Each chassis's L1 takes an even share of every identity-record list, in
  * node order; a list that does not divide evenly names no one chassis's
@@ -7627,6 +7642,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/bedrock-nodes-answer-at-their-own-nasid-window", NULL,
         test_bedrock_nodes_answer_at_their_own_nasid_window);
+    qtest_add_data_func(
+        "sn/builder/bedrock-node-realize-propagates-error", NULL,
+        test_bedrock_node_realize_propagates_error);
     qtest_add_data_func(
         "sn/builder/origin300-two-chassis-refuses-an-uneven-record-list",
         NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
