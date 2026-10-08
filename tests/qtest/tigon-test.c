@@ -42,6 +42,13 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 /* Register offsets within BAR0 (if_tireg.h). */
 #define TI_MISC_HOST_CTL    0x040
 #define TI_MISC_LOCAL_CTL   0x044
+#define TI_PCI_STATE        0x05c
+#define TI_WINBASE          0x068
+#define TI_DMA_WRITE_HOST_HI 0x080
+#define TI_DMA_WRITE_HOST_LO 0x084
+#define TI_DMA_WRITE_STATE  0x0a0
+#define TI_DMA_WRITE_LOCAL  0x0a4
+#define TI_DMA_WRITE_LENGTH 0x0ac
 #define TI_CPU_STATE        0x140
 #define TI_MB_HOSTINTR      0x504
 
@@ -1164,6 +1171,38 @@ static void byte_order_golden(bool dma_be)
     tigon_stop(&t);
 }
 
+static void test_direct_dma_odd_local_address(void)
+{
+    static const uint8_t source[] = {
+        0x31, 0x38, 0x3f, 0x46, 0x4d, 0x54, 0x5b, 0x62,
+    };
+    TigonTest t;
+    uint8_t seen[16];
+    uint64_t host;
+
+    tigon_boot(&t);
+    host = qmalloc(t.qs, sizeof(seen));
+    qtest_memset(t.qs->qts, host, 0x96, sizeof(seen));
+    reg_wr(&t, TI_PCI_STATE, 1U << 18);
+    reg_wr(&t, TI_WINBASE, 0x2000);
+    qpci_io_writel(t.dev, t.bar, 0x800, 0x463f3831);
+    qpci_io_writel(t.dev, t.bar, 0x804, 0x625b544d);
+    for (unsigned i = 0; i < sizeof(source); i++) {
+        g_assert_cmphex(qpci_io_readb(t.dev, t.bar, 0x800 + i), ==,
+                        source[i]);
+    }
+    reg_wr(&t, TI_DMA_WRITE_HOST_HI, host >> 32);
+    reg_wr(&t, TI_DMA_WRITE_HOST_LO, host);
+    reg_wr(&t, TI_DMA_WRITE_LOCAL, 0x2001);
+    reg_wr(&t, TI_DMA_WRITE_LENGTH, 7);
+    reg_wr(&t, TI_DMA_WRITE_STATE, 0x4 | 0x2);
+    g_assert_cmphex(reg_rd(&t, TI_DMA_WRITE_STATE) & 0x4, ==, 0);
+    qtest_memread(t.qs->qts, host, seen, sizeof(seen));
+    g_assert_cmpmem(seen, 7, source + 1, 7);
+    g_assert_cmphex(seen[7], ==, 0x96);
+    tigon_stop(&t);
+}
+
 static void test_byte_order_little_endian(void)
 {
     byte_order_golden(false);
@@ -1212,6 +1251,8 @@ int main(int argc, char **argv)
                    test_local_interrupt_strobes);
     qtest_add_func("tigon/interrupt-hostintr-ack",
                    test_interrupt_hostintr_ack);
+    qtest_add_func("tigon/direct-dma-odd-local-address",
+                   test_direct_dma_odd_local_address);
     qtest_add_func("tigon/byte-order-little-endian",
                    test_byte_order_little_endian);
     qtest_add_func("tigon/byte-order-big-endian", test_byte_order_big_endian);

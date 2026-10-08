@@ -40,6 +40,37 @@
  * runs the card as a 32-bit agent in every slot, so the bit always reads set.
  */
 #define TI_PCISTATE_32BIT_BUS   0x00100000u
+#define TI_DMA_WRITE_HOST_HI    0x080
+#define TI_DMA_WRITE_HOST_LO    0x084
+#define TI_DMA_READ_HOST_HI     0x090
+#define TI_DMA_READ_HOST_LO     0x094
+#define TI_DMA_READ_LENGTH      0x09c
+#define TI_DMA_WRITE_STATE      0x0a0
+#define TI_DMA_WRITE_LOCAL      0x0a4
+#define TI_DMA_WRITE_LENGTH     0x0ac
+#define TI_DMA_READ_STATE       0x0b0
+#define TI_DMA_READ_LOCAL       0x0b4
+#define TI_DMA_READ            0
+#define TI_DMA_WRITE           1
+#define TI_DMA_ACTIVE          (1U << 2)
+#define TI_DMA_NO_SWAP         (1U << 1)
+#define TI_DMA_RESET           (1U << 0)
+#define TI_DMA_NO_MASTER       (1U << 20)
+#define TI_DMA_BYTE_BUCKET     (1U << 18)
+#define TI_DMA_HOST_OVERFLOW   (1U << 27)
+#define TI_DMA_ERRORS          (0xefU << 24)
+#define TI_DMA_FIFO_COUNT      (0x1fU << 12)
+#define TI_DMA_CLEAR_CHECKSUM  (1U << 10)
+#define TI_DMA_COMMON_RW       ((1U << 23) | (1U << 20) | \
+                                (1U << 18) | (1U << 17) | \
+                                (1U << 11) | (1U << 9) | \
+                                (0x1fU << 4) | (1U << 3) | \
+                                TI_DMA_ACTIVE | TI_DMA_NO_SWAP)
+#define TI_DMA_READ_RW         (TI_DMA_COMMON_RW | (1U << 19))
+#define TI_DMA_WRITE_RW        (TI_DMA_COMMON_RW | (1U << 21) | \
+                                (1U << 19))
+#define TI_PCISTATE_NO_WORD_SWAP (1U << 18)
+#define TI_DMA_LOCAL_MASK      0x7fffffU
 #define TI_WINBASE              0x068
 #define TI_WINDATA              0x06c
 #define TI_CPU_STATE            0x140
@@ -1390,6 +1421,111 @@ static void tigon_tx(TigonState *s, uint32_t prod)
     tigon_tx_finish(s, completed_bds);
 }
 
+static void tigon_host_dma_run(TigonState *s, unsigned channel)
+{
+    uint8_t data[256];
+    uint32_t remaining = s->dma_length[channel];
+    uint32_t local = s->dma_local[channel];
+    uint32_t low = s->dma_host_lo[channel];
+    uint32_t state = s->dma_state[channel];
+    bool write = channel == TI_DMA_WRITE;
+
+    if (state & TI_DMA_NO_MASTER) {
+        return;
+    }
+    if (remaining > s->sram_size || local > s->sram_size - remaining) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: host DMA local range exceeds card SRAM\n");
+        return;
+    }
+    if (remaining && (uint64_t)low + remaining > UINT64_C(0x100000000)) {
+        s->dma_state[channel] |= TI_DMA_HOST_OVERFLOW;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: host DMA crosses a 4 GiB boundary\n");
+        return;
+    }
+    while (remaining) {
+        uint32_t count = MIN(remaining, (uint32_t)sizeof(data));
+        uint64_t host = ((uint64_t)s->dma_host_hi[channel] << 32) | low;
+        MemTxResult result;
+
+        if (write) {
+            memcpy(data, s->sram + local, count);
+        } else {
+            result = pci_dma_read(PCI_DEVICE(s), host, data, count);
+            if (result != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "tigon: host DMA read at 0x%" PRIx64
+                              " failed (%d)\n", host, result);
+                return;
+            }
+        }
+        if (!(state & TI_DMA_NO_SWAP)) {
+            for (uint32_t i = 0; i + 4 <= count; i += 4) {
+                uint8_t a = data[i], b = data[i + 1];
+
+                data[i] = data[i + 3];
+                data[i + 1] = data[i + 2];
+                data[i + 2] = b;
+                data[i + 3] = a;
+            }
+        }
+        if (!(s->pci_state & TI_PCISTATE_NO_WORD_SWAP)) {
+            for (uint32_t i = 0; i + 8 <= count; i += 8) {
+                uint32_t a = ldl_le_p(data + i);
+                uint32_t b = ldl_le_p(data + i + 4);
+
+                stl_le_p(data + i, b);
+                stl_le_p(data + i + 4, a);
+            }
+        }
+        if (write) {
+            if (!(state & TI_DMA_BYTE_BUCKET)) {
+                result = pci_dma_write(PCI_DEVICE(s), host, data, count);
+                if (result != MEMTX_OK) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "tigon: host DMA write at 0x%" PRIx64
+                                  " failed (%d)\n", host, result);
+                    return;
+                }
+            }
+        } else if (!(state & TI_DMA_BYTE_BUCKET)) {
+            memcpy(s->sram + local, data, count);
+        }
+        local = (local + count) & TI_DMA_LOCAL_MASK;
+        low += count;
+        remaining -= count;
+        s->dma_local[channel] = local;
+        s->dma_host_lo[channel] = low;
+        s->dma_length[channel] = remaining;
+        if (!write) {
+            s->dma_state[channel] |= 1U << 23;
+        }
+    }
+    s->dma_state[channel] &= ~TI_DMA_ACTIVE;
+    if (write && (state & (1U << 21)) && s->chip_rev >= 5) {
+        s->irq_asserted = true;
+        tigon_update_irq(s);
+    }
+}
+
+static void tigon_host_dma_state_write(TigonState *s, unsigned channel,
+                                       uint32_t value)
+{
+    uint32_t read_only = s->dma_state[channel] & TI_DMA_ERRORS;
+    uint32_t writable = channel == TI_DMA_WRITE ? TI_DMA_WRITE_RW
+                                                : TI_DMA_READ_RW;
+
+    if (value & TI_DMA_RESET) {
+        s->dma_state[channel] = 0;
+        return;
+    }
+    s->dma_state[channel] = read_only | (value & writable);
+    if (value & TI_DMA_ACTIVE) {
+        tigon_host_dma_run(s, channel);
+    }
+}
+
 static void tigon_reset_state(TigonState *s)
 {
     /*
@@ -1406,6 +1542,11 @@ static void tigon_reset_state(TigonState *s)
     s->misc_host_ctl = 0;
     s->misc_local_ctl = 0;
     s->pci_state = 0;
+    memset(s->dma_host_hi, 0, sizeof(s->dma_host_hi));
+    memset(s->dma_host_lo, 0, sizeof(s->dma_host_lo));
+    memset(s->dma_local, 0, sizeof(s->dma_local));
+    memset(s->dma_length, 0, sizeof(s->dma_length));
+    memset(s->dma_state, 0, sizeof(s->dma_state));
     s->misc_conf = 0;
     s->win_base = 0;
     s->cpu_state_a = TI_CPUSTATE_HALT;
@@ -1517,6 +1658,26 @@ static uint64_t tigon_reg_read(void *opaque, hwaddr addr, unsigned size)
         return s->misc_conf;
     case TI_PCI_STATE:
         return s->pci_state | TI_PCISTATE_32BIT_BUS;
+    case TI_DMA_WRITE_HOST_HI:
+        return s->dma_host_hi[TI_DMA_WRITE];
+    case TI_DMA_WRITE_HOST_LO:
+        return s->dma_host_lo[TI_DMA_WRITE];
+    case TI_DMA_READ_HOST_HI:
+        return s->dma_host_hi[TI_DMA_READ];
+    case TI_DMA_READ_HOST_LO:
+        return s->dma_host_lo[TI_DMA_READ];
+    case TI_DMA_READ_LENGTH:
+        return s->dma_length[TI_DMA_READ];
+    case TI_DMA_WRITE_LENGTH:
+        return s->dma_length[TI_DMA_WRITE];
+    case TI_DMA_WRITE_STATE:
+        return s->dma_state[TI_DMA_WRITE];
+    case TI_DMA_READ_STATE:
+        return s->dma_state[TI_DMA_READ] | TI_DMA_FIFO_COUNT;
+    case TI_DMA_WRITE_LOCAL:
+        return s->dma_local[TI_DMA_WRITE];
+    case TI_DMA_READ_LOCAL:
+        return s->dma_local[TI_DMA_READ];
     case TI_WINBASE:
         return s->win_base;
     case TI_CPU_STATE:
@@ -1567,6 +1728,36 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case TI_PCI_STATE:
         s->pci_state = val;
+        return;
+    case TI_DMA_WRITE_HOST_HI:
+        s->dma_host_hi[TI_DMA_WRITE] = val;
+        return;
+    case TI_DMA_WRITE_HOST_LO:
+        s->dma_host_lo[TI_DMA_WRITE] = val;
+        return;
+    case TI_DMA_READ_HOST_HI:
+        s->dma_host_hi[TI_DMA_READ] = val;
+        return;
+    case TI_DMA_READ_HOST_LO:
+        s->dma_host_lo[TI_DMA_READ] = val;
+        return;
+    case TI_DMA_READ_LENGTH:
+        s->dma_length[TI_DMA_READ] = val & 0xffff;
+        return;
+    case TI_DMA_WRITE_LENGTH:
+        s->dma_length[TI_DMA_WRITE] = val & 0xffff;
+        return;
+    case TI_DMA_WRITE_STATE:
+        tigon_host_dma_state_write(s, TI_DMA_WRITE, val);
+        return;
+    case TI_DMA_READ_STATE:
+        tigon_host_dma_state_write(s, TI_DMA_READ, val);
+        return;
+    case TI_DMA_WRITE_LOCAL:
+        s->dma_local[TI_DMA_WRITE] = val & TI_DMA_LOCAL_MASK;
+        return;
+    case TI_DMA_READ_LOCAL:
+        s->dma_local[TI_DMA_READ] = val & TI_DMA_LOCAL_MASK;
         return;
     case TI_WINBASE:
         s->win_base = val;
@@ -2387,9 +2578,8 @@ static int tigon_post_load(void *opaque, int version_id)
 
 /*
  * The rings live in guest memory and migrate with it; only the model's own
- * indices into them, the parsed ring residency, and the firmware/interrupt
- * latches need saving. The SRAM backing array is deliberately not migrated:
- * it holds a never-executed firmware image a fresh download reproduces.
+ * indices into them, the parsed ring residency, the firmware/interrupt
+ * latches, and writable card SRAM need saving. Host DMA can also write SRAM.
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
@@ -2402,8 +2592,14 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(misc_host_ctl, TigonState),
         VMSTATE_UINT32(misc_local_ctl, TigonState),
         VMSTATE_UINT32(pci_state, TigonState),
+        VMSTATE_UINT32_ARRAY(dma_host_hi, TigonState, 2),
+        VMSTATE_UINT32_ARRAY(dma_host_lo, TigonState, 2),
+        VMSTATE_UINT32_ARRAY(dma_local, TigonState, 2),
+        VMSTATE_UINT32_ARRAY(dma_length, TigonState, 2),
+        VMSTATE_UINT32_ARRAY(dma_state, TigonState, 2),
         VMSTATE_UINT32(misc_conf, TigonState),
         VMSTATE_UINT32(win_base, TigonState),
+        VMSTATE_VBUFFER_UINT32(sram, TigonState, 0, NULL, sram_size),
         VMSTATE_UINT32(cpu_state_a, TigonState),
         VMSTATE_UINT32(cpu_pc_a, TigonState),
         VMSTATE_UINT32(cpu_ctl_b, TigonState),
