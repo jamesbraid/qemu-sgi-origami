@@ -853,30 +853,53 @@ Once every module's power is off with no power-up to come the machine powers
 down (:doc:`sgi-elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
 1`` to every module at ``shutdown -p``.
 
-Unpowered parts are inert. While a module is off its Hubs answer no register
-access, which gets the bus's unassigned-access result, as a gated device's
-blocked access does in ``tz_mpc_handle_block()``; the windows that reach the
-I/O they host, and so the Crossbows and boards behind them, are switched off
-the way a PCI device's BARs are with the command register
-(``pci_update_mappings()``); and its Routers answer no vector access. Their
-ports read disabled to their peers, which is the state a cable marked down
-already has: a peer Hub reads link-up zero with the down reason left clear
-(the link was up and failed, as the Hub datasheet's rule gives), a peer Router
-reads the port not working, and the claim aliases that lead to the module
-fall to the error floor, so a running module's processors and a warm reset
-cannot reach an unpowered module. The datasheets do not say whether a Router
-port facing a lost peer reads reset-failed; the model leaves it clear. Power
-returning brings the links up through the normal flood after the module's
-parts have reset and before its processors run. The state is derived from
-the controllers' power, which migrates, and is re-applied when a machine
-starts running and after the machine's own reset, so a load needs nothing of
-its own.
+Unpowered parts are inert. While a module is off:
 
-The Hub's I2C adapter window keeps answering while its module is off. On
-hardware the adapter shares the node's supply, so no host could use it; the
-model keeps it so the standby controller stays reachable over its own bus,
-which the controller tests and the Origin 200 controller's grants rely on.
-Every other register of an unpowered Hub does not answer.
+- Its Hubs refuse every register access with the bus's unassigned-access
+  result, as a gated device's blocked access does in
+  ``tz_mpc_handle_block()``, and refuse the inbound XIO packets that carry
+  its devices' DMA and interrupts the same way, so a device behind an
+  unpowered Hub cannot reach memory. The node's I/O windows, and so the
+  Crossbows and boards behind them, are switched off the way a PCI device's
+  BARs are with the command register (``pci_update_mappings()``). Its
+  Routers answer no vector access.
+- Their ports read disabled to their peers, which is the state a cable marked
+  down already has: a peer Hub reads link-up zero with the down reason left
+  clear (the link was up and failed, as the Hub datasheet's rule gives), a
+  peer Router reads the port not working, and the claim aliases that lead to
+  the module fall to the error floor. A running module's processors, a block
+  transfer and a warm reset therefore cannot reach the module's memory, its
+  registers or its Routers. The datasheets do not say whether a Router port
+  facing a lost peer reads reset-failed; the model leaves it clear.
+- Power returning brings the links up through the normal flood after the
+  module's parts have reset and before its processors run.
+
+Nothing else about an off module is inert: its memory keeps the bytes it had
+(the datasheet allows that approximation, as the PROM tests and initialises
+memory on a cold start), and its register state is kept until the reset that
+always comes first at power-up.
+
+The state is derived from the controllers' power, which migrates, so none of
+it does. It is applied when a machine starts running and after the machine's
+own reset, and by the machine's migrated section, which loads after every
+device, so a load shows the right gating even while the destination is
+paused.
+
+The Hub's I2C adapter window is the one register window that keeps answering
+while its module is off, and only from the off module's own view: a peer
+module's access to it fails like the rest of the Hub. On hardware the adapter
+shares the node's supply, so no host could use it; the model keeps it so the
+host side of the standby controller stays reachable over the module's own
+bus, which the controller tests and the Origin 200 controller's grants rely
+on. The contract (rule 7) has an operator's ``pwr u`` reach an off module's
+controller from another module's Hub over I2C, serial or a rack controller.
+In the model an operator reaches an off Origin 2000 module's controller
+through its serial line, and an off Origin 200 slave's through its master:
+the slave has no connector of its own, and a ``pwr u`` the master accepts
+while it is itself off powers the master up, whose forward then starts the
+slave (`Master and slave` in :doc:`sgi-elsc`). A ``pwr u`` sent to a master
+that is already on has nothing to power up and forwards nothing, so the
+model has no way to start only the slave from a peer's bus.
 
 A cabinet with no node or controller of its own (the GIGAchannel cabinet)
 follows the module its Crossbow's XIO link is attached to: its Crossbow and

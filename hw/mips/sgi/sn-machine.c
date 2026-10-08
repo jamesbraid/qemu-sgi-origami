@@ -329,6 +329,7 @@ struct SGIMachineState {
     /* The machine's reset is under way: an AC cycle starts every module. */
     bool ac_cycle;
     VMChangeStateEntry *module_start_vm_state;
+    bool module_starts_registered;
     /*
      * Each controller's module-management device, and the controller each
      * node's module belongs to (-1 for a node with none).
@@ -3464,10 +3465,23 @@ static const VMStateDescription vmstate_sgi_machine_module_start = {
     },
 };
 
+/*
+ * Power is derived from the controllers' state, which this section loads
+ * after: it is registered when the machine is done, so after every device,
+ * and sections load in registration order. A destination that is paused after
+ * the load already shows its modules gated as the stream had them.
+ */
+static int sgi_machine_module_starts_post_load(void *opaque, int version_id)
+{
+    sgi_machine_sync_power(opaque);
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_machine_module_starts = {
     .name = "sgi-machine/module-starts",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = sgi_machine_module_starts_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_VARRAY_POINTER_UINT32(module_start, SGIMachineState,
                                              start_count,
@@ -3655,7 +3669,6 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         s->module_start[n].machine = s;
         s->module_start[n].module = n;
     }
-    vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
     s->module_start_vm_state = qemu_add_vm_change_state_handler(
         sgi_machine_module_start_vm_state, s);
     nodes = sgi_model_node_array(t->nodes, &node_count);
@@ -5637,6 +5650,10 @@ static void sgi_machine_done(Notifier *notifier, void *data)
     g_autofree const SGIModelXioSlot **slots = NULL;
     size_t slot_count, i;
 
+    if (s->module_start) {
+        vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
+        s->module_starts_registered = true;
+    }
     slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
         if (!sgi_xio_link_complete(&s->slot_links[i])) {
@@ -6435,7 +6452,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     if (s->management_registered) {
         vmstate_unregister(NULL, &vmstate_sgi_machine_management, s);
     }
-    if (s->module_start) {
+    if (s->module_starts_registered) {
         vmstate_unregister(NULL, &vmstate_sgi_machine_module_starts, s);
         qemu_del_vm_change_state_handler(s->module_start_vm_state);
     }

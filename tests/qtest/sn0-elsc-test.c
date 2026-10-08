@@ -3777,6 +3777,10 @@ static void test_two_towers_slave_power_off(const void *data)
 #define HOLD_MARK_MAGIC     0x1e7u
 #define HOLD_ENTRY          0x800u
 #define HOLD_STATUS         (SN0_STATUS_KERNEL | 0x400u | 0x1u) /* IM2, IE */
+#define HUB_PI_INT_MODIFY   0x000090
+#define HUB_PI_INT_MASK0_A  0x0000a8
+#define HUB_INT_MODIFY_SET  0x100
+#define HOLD_INT_BIT        12
 
 static void build_hold_image(SN0Image *p)
 {
@@ -3864,14 +3868,28 @@ static void test_power_off_holds_against_interrupts(const void *data)
     }
     g_assert_cmphex(qtest_readl(qts, HOLD_COUNT), !=, 0);
 
+    /*
+     * Raise the Hub's interrupt while the module has power: the processor
+     * takes it, and the handler leaves the Hub's pending bit set. Clear the
+     * mark and cut the power with the line still asserted. An unpowered Hub
+     * takes no register write, so an interrupt can only be raised before.
+     */
+    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MASK0_A, 1ULL << HOLD_INT_BIT);
+    qtest_writeq(qts, HUB_LOCAL + HUB_PI_INT_MODIFY,
+                 HUB_INT_MODIFY_SET | HOLD_INT_BIT);
+    sgi_wait_start(&w, "the processor to take the interrupt");
+    while (qtest_readl(qts, HOLD_MARK) != HOLD_MARK_MAGIC &&
+           sgi_wait_continue(&w, 1000)) {
+        continue;
+    }
+    g_assert_cmphex(qtest_readl(qts, HOLD_MARK), ==, HOLD_MARK_MAGIC);
+    qtest_writel(qts, HOLD_MARK, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
+                    1ULL << HOLD_INT_BIT);
+
     assert_reply(qts, "pwr c 258", "ok ");
     count = hold_wait_stopped(qts);
-    /*
-     * An unpowered Hub takes no register write, so a test can no longer
-     * raise an interrupt through it while the module is off. What keeps a
-     * powered-off processor stopped, Status.ERL after the reset masking
-     * every interrupt, is the same whatever raises one.
-     */
+    /* The line is still asserted, and the processor stays stopped. */
     hold_assert_stopped(qts, count);
 
     qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
