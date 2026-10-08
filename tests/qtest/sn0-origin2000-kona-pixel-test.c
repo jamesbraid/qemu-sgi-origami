@@ -2316,6 +2316,148 @@ static void read_dma_clear_notifications(QTestState *s, uint64_t page)
     }
 }
 
+/* Dense model rows must survive both sides of the eight-pixel boundary. */
+static void test_read_width_boundaries(gconstpointer opaque)
+{
+    unsigned value = GPOINTER_TO_UINT(opaque);
+    unsigned width = 7 + value % 3, transport = value / 3;
+    const unsigned height = 3, total = width * height;
+    unsigned gap = transport == 2 ? 5 : 0, pitch = width + gap;
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    const uint32_t index = 0x13579bdf;
+    uint32_t descriptor[] = { 0, 0x9010, total,
+                             gap ? width : total, gap, 0 };
+    uint8_t page[0x4020], expected_page[0x4020];
+    uint8_t reason[0x4000], expected_reason[0x4000], hub[8];
+    g_autofree uint8_t *actual = g_malloc(0x10000);
+    g_autofree uint8_t *expected = g_malloc(0x10000);
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    const char *completion;
+    unsigned writes = 0;
+
+    read_activate(s, READ_SAVE, READ_PAGE);
+    read_write_pattern(s, 10, 20, width, height);
+    read_gc(s);
+    read_setup(s, width, height);
+    qtest_memset(s, READ_PAGE - 16, 0xa5, sizeof(page));
+    read_prepare(s, READ_PAGE);
+    memset(expected_page, 0xa5, sizeof(expected_page));
+    memset(expected_page + 16, 0, 4);
+    memset(expected, 0xa5, 0x10000);
+    qtest_memset(s, destination, 0xa5, 0x10000);
+
+    if (transport) {
+        read_gl_command(s, 0x1f1,
+                        (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3,
+                        true);
+        qtest_writel(s, KONA_REG(0x000034), 0x98000);
+        qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+        qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        read_dma_clear_notifications(s, reason_page);
+        read_gl_command(s, 0x1f5, descriptor, ARRAY_SIZE(descriptor), true);
+    }
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10 }, 1);
+    qtest_memread(s, READ_PAGE - 16, page, sizeof(page));
+    g_assert_cmpmem(page, sizeof(page), expected_page, sizeof(expected_page));
+    qtest_writel(s, REG_COMMAND_DATA, 20);
+    if (transport) {
+        qtest_memread(s, READ_PAGE - 16, page, sizeof(page));
+        g_assert_cmpmem(page, sizeof(page), expected_page,
+                        sizeof(expected_page));
+        read_gl_command(s, 0x1f6, (uint32_t[]){ 0x100 }, 1, true);
+        qtest_memread(s, destination, actual, 0x10000);
+        g_assert_cmpmem(actual, 0x10000, expected, 0x10000);
+        read_unchanged(s, reason_page);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+        g_assert_true(qtest_memread_cpu(s, 0, HUB_LOCAL + PI_INT_PEND0,
+                                       hub, sizeof(hub)));
+        g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x11), ==, 0);
+        qtest_writel(s, REG_COMMAND, index);
+    } else {
+        stl_be_p(expected_page + 16, 1);
+    }
+    for (unsigned r = 0; r < height; r++) {
+        for (unsigned c = 0; c < width; c++) {
+            if (transport) {
+                expected[16 + r * pitch + c] = read_pattern(c, r);
+            } else {
+                expected_page[24 + r * width + c] = read_pattern(c, r);
+            }
+        }
+    }
+    qtest_memread(s, READ_PAGE - 16, page, sizeof(page));
+    g_assert_cmpmem(page, sizeof(page), expected_page, sizeof(expected_page));
+    qtest_memread(s, destination, actual, 0x10000);
+    g_assert_cmpmem(actual, 0x10000, expected, 0x10000);
+    if (transport) {
+        memset(expected_reason, 0xa5, sizeof(expected_reason));
+        stl_be_p(expected_reason, 0x100);
+        stl_be_p(expected_reason + 4, index);
+        stl_be_p(expected_reason + 8, 0);
+        stl_be_p(expected_reason + 12, 0);
+        qtest_memread(s, reason_page, reason, sizeof(reason));
+        g_assert_cmpmem(reason, sizeof(reason), expected_reason,
+                        sizeof(expected_reason));
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0x20);
+        g_assert_true(qtest_memread_cpu(s, 0, HUB_LOCAL + PI_INT_PEND0,
+                                       hub, sizeof(hub)));
+        g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x11), ==,
+                        UINT64_C(1) << 0x11);
+        g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x10), ==, 0);
+    }
+
+    /* A rectangle extending beyond the source must preserve every byte. */
+    read_prepare(s, READ_PAGE);
+    memset(expected_page + 16, 0, 4);
+    memset(expected_page + 24, 0xa5, total);
+    if (transport) {
+        read_dma_clear_notifications(s, reason_page);
+        read_gl_command(s, 0x1f5, descriptor, ARRAY_SIZE(descriptor), true);
+    }
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 1279, 20 }, 2);
+    if (transport) {
+        read_gl_command(s, 0x1f6, (uint32_t[]){ 0x100, index }, 2, true);
+        read_unchanged(s, reason_page);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+    }
+    qtest_memread(s, READ_PAGE - 16, page, sizeof(page));
+    g_assert_cmpmem(page, sizeof(page), expected_page, sizeof(expected_page));
+    qtest_memread(s, destination, actual, 0x10000);
+    g_assert_cmpmem(actual, 0x10000, expected, 0x10000);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    completion = strstr(found, transport ?
+                        "sgi_kona_host_write addr 0x300000 len 0x10\n" :
+                        "sgi_kona_host_write addr 0x320000 len 0x4\n");
+    g_assert_nonnull(completion);
+    g_auto(GStrv) lines = g_strsplit(found, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *event = strstr(lines[i], "sgi_kona_host_write addr ");
+        uint64_t address;
+        unsigned len;
+
+        if (!event) {
+            continue;
+        }
+        g_assert_cmpint(sscanf(event, "sgi_kona_host_write addr 0x%" SCNx64
+                              " len 0x%x", &address, &len), ==, 2);
+        if (transport ? address >= destination &&
+                        address < destination + 0x10000 :
+                        address >= READ_PAGE + 8 &&
+                        address < READ_PAGE + 0x4000) {
+            g_assert_cmphex(address, ==, transport ?
+                            destination + 16 + writes * pitch : READ_PAGE + 8);
+            g_assert_cmpuint(len, ==, gap ? width : total);
+            g_assert_true(strstr(found, lines[i]) < completion);
+            writes++;
+        }
+    }
+    g_assert_cmpuint(writes, ==, gap ? height : 1);
+}
+
 static uint32_t read_rgb_pattern(unsigned x, unsigned y)
 {
     static const uint32_t pixels[] = {
@@ -3515,6 +3657,21 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-pixel/read-rgb/%s", read_rgb_cases[mode]);
 
         qtest_add_data_func(name, GUINT_TO_POINTER(mode), test_read_rgb);
+    }
+    static const char *read_width_transports[] = {
+        "pio", "dma-contiguous", "dma-strided",
+    };
+    for (unsigned transport = 0;
+         transport < ARRAY_SIZE(read_width_transports); transport++) {
+        for (unsigned width = 7; width <= 9; width++) {
+            g_autofree char *name = g_strdup_printf(
+                "sn0/origin2000/kona-pixel/read-width-boundaries/%s-%u",
+                read_width_transports[transport], width);
+
+            qtest_add_data_func(name,
+                                GUINT_TO_POINTER(transport * 3 + width - 7),
+                                test_read_width_boundaries);
+        }
     }
     qtest_add_func("sn0/origin2000/kona-pixel/read-shapes", test_read_shapes);
     qtest_add_func("sn0/origin2000/kona-pixel/read-write-state",
