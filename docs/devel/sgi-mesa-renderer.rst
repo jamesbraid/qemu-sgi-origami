@@ -25,6 +25,10 @@ the resource and draws once through their union, so overlap does not apply
 blending twice. If the union is empty, it returns without a native snapshot or
 commit.
 
+An enabled scissor box intersects that union in window coordinates. A box
+with zero width or height leaves no pixels to draw. Negative dimensions are
+invalid. Scissor and clip rectangles are resolved before the native snapshot.
+
 Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
 and these source/destination factor pairs: ``SRC_ALPHA`` with
 ``ONE_MINUS_SRC_ALPHA``, ``DST_ALPHA`` with ``ZERO``, ``ZERO`` with
