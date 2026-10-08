@@ -55,9 +55,12 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_DMA_WRITE_LOCAL  0x0a4
 #define TI_DMA_WRITE_LENGTH 0x0ac
 #define TI_DMA_ACTIVE       (1U << 2)
+#define TI_DMA_NO_SWAP      (1U << 1)
 #define TI_DMA_RESET        (1U << 0)
+#define TI_DMA_NO_MASTER    (1U << 20)
 #define TI_DMA_INT_ENABLE   (1U << 21)
 #define TI_DMA_MASTER_ABORT (1U << 25)
+#define TI_DMA_HOST_OVERFLOW (1U << 27)
 #define TI_CPU_STATE        0x140
 #define TI_MB_HOSTINTR      0x504
 
@@ -1182,6 +1185,9 @@ static void byte_order_golden(bool dma_be)
 
 static void test_direct_dma_unmapped_host(void)
 {
+    static const uint8_t payload[8] = {
+        0x31, 0x38, 0x3f, 0x46, 0x4d, 0x54, 0x5b, 0x62,
+    };
     static const struct {
         uint32_t host_hi, host_lo, local, length, state;
     } channel[] = {
@@ -1191,8 +1197,13 @@ static void test_direct_dma_unmapped_host(void)
           TI_DMA_WRITE_LENGTH, TI_DMA_WRITE_STATE },
     };
     TigonTest t;
+    uint8_t seen[16];
+    uint64_t host;
 
     tigon_boot(&t);
+    host = qmalloc(t.qs, sizeof(seen));
+    reg_wr(&t, TI_PCI_STATE, 1U << 18);
+    reg_wr(&t, TI_WINBASE, 0x2000);
     for (unsigned i = 0; i < ARRAY_SIZE(channel); i++) {
         reg_wr(&t, channel[i].host_hi, 0);
         reg_wr(&t, channel[i].host_lo, 0x03000000);
@@ -1206,9 +1217,142 @@ static void test_direct_dma_unmapped_host(void)
         g_assert_cmphex(reg_rd(&t, channel[i].length), ==, 8);
         g_assert_cmphex(reg_rd(&t, channel[i].host_lo), ==, 0x03000000);
         g_assert_false(bridge_inta(&t));
+
+        qtest_memset(t.qs->qts, host, 0x96, sizeof(seen));
+        for (unsigned k = 0; k < sizeof(seen); k++) {
+            qpci_io_writeb(t.dev, t.bar, 0x800 + k, 0x5a);
+        }
+        if (i) {
+            for (unsigned k = 0; k < sizeof(payload); k++) {
+                qpci_io_writeb(t.dev, t.bar, 0x804 + k, payload[k]);
+            }
+        } else {
+            qtest_memwrite(t.qs->qts, host + 4, payload,
+                           sizeof(payload));
+        }
+        reg_wr(&t, channel[i].host_hi, host >> 32);
+        reg_wr(&t, channel[i].host_lo, host + 4);
+        reg_wr(&t, channel[i].local, 0x2004);
+        reg_wr(&t, channel[i].state, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_rd(&t, channel[i].state) &
+                        (TI_DMA_ACTIVE | TI_DMA_MASTER_ABORT), ==,
+                        TI_DMA_MASTER_ABORT);
+        g_assert_cmphex(reg_rd(&t, channel[i].length), ==, 0);
+        g_assert_cmphex(reg_rd(&t, channel[i].host_lo), ==,
+                        (uint32_t)(host + 12));
+        g_assert_cmphex(reg_rd(&t, channel[i].local), ==, 0x200c);
+        if (i) {
+            qtest_memread(t.qs->qts, host, seen, sizeof(seen));
+        } else {
+            for (unsigned k = 0; k < sizeof(seen); k++) {
+                seen[k] = qpci_io_readb(t.dev, t.bar, 0x800 + k);
+            }
+        }
+        for (unsigned k = 0; k < sizeof(seen); k++) {
+            g_assert_cmphex(seen[k], ==,
+                            k >= 4 && k < 12 ? payload[k - 4] :
+                            (i ? 0x96 : 0x5a));
+        }
         reg_wr(&t, channel[i].state, TI_DMA_RESET);
         g_assert_cmphex(reg_rd(&t, channel[i].state) &
                         (TI_DMA_ACTIVE | TI_DMA_MASTER_ABORT), ==, 0);
+    }
+    tigon_stop(&t);
+}
+
+static void test_direct_dma_rejected_before_transfer(void)
+{
+    static const struct {
+        uint32_t host_hi, host_lo, local, length, state;
+    } channel[] = {
+        { TI_DMA_READ_HOST_HI, TI_DMA_READ_HOST_LO, TI_DMA_READ_LOCAL,
+          TI_DMA_READ_LENGTH, TI_DMA_READ_STATE },
+        { TI_DMA_WRITE_HOST_HI, TI_DMA_WRITE_HOST_LO, TI_DMA_WRITE_LOCAL,
+          TI_DMA_WRITE_LENGTH, TI_DMA_WRITE_STATE },
+    };
+    static const struct {
+        uint32_t host_lo, local, state, error;
+    } rejected[] = {
+        { 0, 0x7fffff, 0, 0 },
+        { 0xfffffffc, 0x2000, 0, TI_DMA_HOST_OVERFLOW },
+        { 0, 0x2000, TI_DMA_NO_MASTER, 0 },
+    };
+    static const uint8_t payload[8] = {
+        0x31, 0x38, 0x3f, 0x46, 0x4d, 0x54, 0x5b, 0x62,
+    };
+    TigonTest t;
+    uint8_t host_expected[16], local_expected[16];
+    uint8_t host_seen[16], local_seen[16];
+    uint64_t host;
+
+    tigon_boot(&t);
+    host = qmalloc(t.qs, sizeof(host_expected));
+    reg_wr(&t, TI_PCI_STATE, 1U << 18);
+    reg_wr(&t, TI_WINBASE, 0x2000);
+    for (unsigned i = 0; i < ARRAY_SIZE(channel); i++) {
+        for (unsigned j = 0; j < ARRAY_SIZE(rejected); j++) {
+            memset(host_expected, 0x96, sizeof(host_expected));
+            memset(local_expected, 0x5a, sizeof(local_expected));
+            if (i) {
+                memcpy(local_expected + 4, payload, sizeof(payload));
+            } else {
+                memcpy(host_expected + 4, payload, sizeof(payload));
+            }
+            qtest_memwrite(t.qs->qts, host, host_expected,
+                           sizeof(host_expected));
+            for (unsigned k = 0; k < sizeof(local_expected); k++) {
+                qpci_io_writeb(t.dev, t.bar, 0x800 + k, local_expected[k]);
+            }
+            reg_wr(&t, channel[i].host_hi, 0);
+            reg_wr(&t, channel[i].host_lo, rejected[j].host_lo);
+            reg_wr(&t, channel[i].local, rejected[j].local);
+            reg_wr(&t, channel[i].length, 8);
+            reg_wr(&t, channel[i].state, TI_DMA_ACTIVE | rejected[j].state);
+            g_assert_cmphex(reg_rd(&t, channel[i].state) &
+                            (TI_DMA_ACTIVE | TI_DMA_HOST_OVERFLOW), ==,
+                            rejected[j].error);
+            g_assert_cmphex(reg_rd(&t, channel[i].length), ==, 8);
+            g_assert_cmphex(reg_rd(&t, channel[i].host_lo), ==,
+                            rejected[j].host_lo);
+            g_assert_cmphex(reg_rd(&t, channel[i].local), ==,
+                            rejected[j].local);
+            qtest_memread(t.qs->qts, host, host_seen, sizeof(host_seen));
+            for (unsigned k = 0; k < sizeof(local_seen); k++) {
+                local_seen[k] = qpci_io_readb(t.dev, t.bar, 0x800 + k);
+            }
+            g_assert_cmpmem(host_seen, sizeof(host_seen), host_expected,
+                            sizeof(host_expected));
+            g_assert_cmpmem(local_seen, sizeof(local_seen), local_expected,
+                            sizeof(local_expected));
+
+            reg_wr(&t, channel[i].host_hi, host >> 32);
+            reg_wr(&t, channel[i].host_lo, host + 4);
+            reg_wr(&t, channel[i].local, 0x2004);
+            reg_wr(&t, channel[i].state, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+            g_assert_cmphex(reg_rd(&t, channel[i].state) & TI_DMA_ACTIVE,
+                            ==, 0);
+            g_assert_cmphex(reg_rd(&t, channel[i].length), ==, 0);
+            g_assert_cmphex(reg_rd(&t, channel[i].host_hi), ==, host >> 32);
+            g_assert_cmphex(reg_rd(&t, channel[i].host_lo), ==,
+                            (uint32_t)(host + 12));
+            g_assert_cmphex(reg_rd(&t, channel[i].local), ==, 0x200c);
+            if (i) {
+                memcpy(host_expected + 4, payload, sizeof(payload));
+            } else {
+                memcpy(local_expected + 4, payload, sizeof(payload));
+            }
+            qtest_memread(t.qs->qts, host, host_seen, sizeof(host_seen));
+            for (unsigned k = 0; k < sizeof(local_seen); k++) {
+                local_seen[k] = qpci_io_readb(t.dev, t.bar, 0x800 + k);
+            }
+            g_assert_cmpmem(host_seen, sizeof(host_seen), host_expected,
+                            sizeof(host_expected));
+            g_assert_cmpmem(local_seen, sizeof(local_seen), local_expected,
+                            sizeof(local_expected));
+            reg_wr(&t, channel[i].state, TI_DMA_RESET);
+            g_assert_cmphex(reg_rd(&t, channel[i].state) &
+                            (TI_DMA_ACTIVE | TI_DMA_HOST_OVERFLOW), ==, 0);
+        }
     }
     tigon_stop(&t);
 }
@@ -1295,6 +1439,8 @@ int main(int argc, char **argv)
                    test_interrupt_hostintr_ack);
     qtest_add_func("tigon/direct-dma-unmapped-host",
                    test_direct_dma_unmapped_host);
+    qtest_add_func("tigon/direct-dma-rejected-before-transfer",
+                   test_direct_dma_rejected_before_transfer);
     qtest_add_func("tigon/direct-dma-odd-local-address",
                    test_direct_dma_odd_local_address);
     qtest_add_func("tigon/byte-order-little-endian",

@@ -1442,17 +1442,20 @@ static void tigon_host_dma_run(TigonState *s, unsigned channel)
     bool write = channel == TI_DMA_WRITE;
 
     if (state & TI_DMA_NO_MASTER) {
+        s->dma_state[channel] &= ~TI_DMA_ACTIVE;
         return;
     }
     if (remaining > s->sram_size || local > s->sram_size - remaining) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "tigon: host DMA local range exceeds card SRAM\n");
+        s->dma_state[channel] &= ~TI_DMA_ACTIVE;
         return;
     }
     if (remaining && (uint64_t)low + remaining > UINT64_C(0x100000000)) {
         s->dma_state[channel] |= TI_DMA_HOST_OVERFLOW;
         qemu_log_mask(LOG_GUEST_ERROR,
                       "tigon: host DMA crosses a 4 GiB boundary\n");
+        s->dma_state[channel] &= ~TI_DMA_ACTIVE;
         return;
     }
     while (remaining) {
