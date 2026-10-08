@@ -1866,6 +1866,41 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     resources[1].border[0] = 0;
+    image.width = resources[1].width = 3;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.width = resources[1].width = 1;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 3);
+    vertices[0][SGI_GL_V_POSITION] = -2;
+    vertices[0][SGI_GL_V_TEXCOORD + 3] = 0;
+    vertices[0][SGI_GL_V_COLOR] = 0;
+    vertices[1][SGI_GL_V_COLOR] = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 8);
+    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 43);
+    state.shade_model = SGI_GL_SMOOTH;
+    state.texture_env_mode = SGI_GL_MODULATE;
+    f.texel[0] = 255;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 10);
+    g_assert_cmpuint(f.commits, ==, 5);
+    /* Pixel (0, 0) has red 7/16 after clipping; round 255 * 7/16. */
+    g_assert_cmpuint(f.colour[0][0][0], ==, 112);
+    state.shade_model = SGI_GL_FLAT;
+    state.texture_env_mode = SGI_GL_DECAL;
+    f.texel[0] = 0;
+    vertices[0][SGI_GL_V_POSITION] = -1;
     vertices[0][SGI_GL_V_TEXCOORD + 3] = 0;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
@@ -1873,17 +1908,17 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     vertices[0][SGI_GL_V_TEXCOORD + 3] = 1;
-    g_assert_cmpuint(f.snapshots, ==, 6);
-    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.snapshots, ==, 10);
+    g_assert_cmpuint(f.commits, ==, 5);
     f.fail_texture_snapshot = true;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
     error_free(err);
-    g_assert_cmpuint(f.snapshots, ==, 8);
-    g_assert_cmpuint(f.commits, ==, 3);
-    g_assert_cmpuint(f.colour[0][0][0], ==, 43);
+    g_assert_cmpuint(f.snapshots, ==, 12);
+    g_assert_cmpuint(f.commits, ==, 5);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 112);
     sgi_renderer_free(renderer);
 }
 

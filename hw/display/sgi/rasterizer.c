@@ -2093,11 +2093,9 @@ bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b)
  * the modelview and eye to clip by the projection, or by the window
  * matrix as sgi_gl_eye_to_clip() takes it.
  */
-static void sgi_soft_to_volume(const SGISoftDraw *r, const float *v,
-                               SGIVolumeVertex *out)
+void sgi_volume_from_draw_vertex(const SGIGLDrawState *st, const float *v,
+                                 SGIVolumeVertex *out)
 {
-    const SGIGLDrawState *st = r->st;
-
     for (int row = 0; row < 4; row++) {
         out->eye[row] = 0;
         for (int k = 0; k < 4; k++) {
@@ -2486,7 +2484,7 @@ static bool sgi_soft_clip_triangle(const SGISoftDraw *r, const float *va,
     SGIVolumeVertex in[3];
 
     for (int i = 0; i < 3; i++) {
-        sgi_soft_to_volume(r, verts[i], &in[i]);
+        sgi_volume_from_draw_vertex(r->st, verts[i], &in[i]);
     }
     *n = sgi_volume_clip_triangle(in, poly);
     for (unsigned i = 0; i < *n; i++) {
@@ -3025,8 +3023,8 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     if (!stipple && !sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
         return;
     }
-    sgi_soft_to_volume(r, va, &ca);
-    sgi_soft_to_volume(r, vb, &cb);
+    sgi_volume_from_draw_vertex(r->st, va, &ca);
+    sgi_volume_from_draw_vertex(r->st, vb, &cb);
     if (sgi_volume_clip_segment(&ca, &cb) &&
         sgi_soft_project(r, &ca, &a) && sgi_soft_project(r, &cb, &b)) {
         sgi_soft_line_projected(r, &a, &b, provoking, 0, stipple, true);
@@ -3103,7 +3101,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     SGIVolumeVertex cv;
     SGISoftVertex v;
 
-    sgi_soft_to_volume(r, vp, &cv);
+    sgi_volume_from_draw_vertex(r->st, vp, &cv);
     if (sgi_volume_contains(&cv) && sgi_soft_project(r, &cv, &v) &&
         !sgi_soft_clipped(r->st, v.clip)) {
         sgi_soft_point_projected(r, &v, NULL, 0);
@@ -3293,7 +3291,9 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
     /* Facing must not prevalidate texture Q and erase a valid FILL prefix. */
     positions.texture = NULL;
     for (size_t i = 0; i < count; i++) {
-        sgi_soft_to_volume(r, sgi_soft_polygon_vertex(d, indices, i), &poly[i]);
+        sgi_volume_from_draw_vertex(r->st,
+                                    sgi_soft_polygon_vertex(d, indices, i),
+                                    &poly[i]);
         for (unsigned k = 0; k < 4; k++) {
             if (!isfinite(poly[i].clip[k]) || !isfinite(poly[i].eye[k])) {
                 qemu_log_mask(LOG_UNIMP,

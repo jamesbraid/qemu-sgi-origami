@@ -429,7 +429,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glLoadMatrixf(frame->projection);
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(frame->modelview);
-    glBegin(GL_TRIANGLES);
+    glBegin(frame->texture.slots ? GL_TRIANGLE_FAN : GL_TRIANGLES);
     for (uint32_t i = 0; i < frame->count; i++) {
         const float *vertex = frame->vertices +
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;

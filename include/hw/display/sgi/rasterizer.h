@@ -135,6 +135,10 @@ typedef struct SGIVolumeVertex {
     float attr[SGI_GL_VERTEX_FLOATS];
 } SGIVolumeVertex;
 
+/* Transform one draw vertex before clipping, retaining its attributes. */
+void sgi_volume_from_draw_vertex(const SGIGLDrawState *state,
+                                 const float *vertex, SGIVolumeVertex *out);
+
 /* The most vertices clipping a triangle by the six planes leaves. */
 #define SGI_VOLUME_TRIANGLE_MAX (3 + 6)
 
