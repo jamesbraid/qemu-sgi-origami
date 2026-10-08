@@ -232,13 +232,17 @@ if have_system and opengl.found()
 endif
 
 if have_system
+  odyssey_planes_test = ['../../hw/misc/sgi-odyssey-planes.c',
+                         '../../hw/display/sgi/render-resource.c']
+  if opengl.found()
+    odyssey_planes_test = ['../../hw/misc/sgi-odyssey-planes.c'] + renderer_gl_test
+  endif
   tests += {
     'test-sgi-renderer': ['../../ui/sgi-renderer.c'],
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
     'test-sgi-bedrock-ni': ['../../hw/misc/sgi-bedrock-ni-regs.c'],
     'test-sgi-pi-gfx': ['../../hw/mips/sgi/pi-gfx.c'],
-    'test-sgi-odyssey-planes': ['../../hw/misc/sgi-odyssey-planes.c',
-                                '../../hw/display/sgi/render-resource.c'],
+    'test-sgi-odyssey-planes': odyssey_planes_test,
     'test-sgi-kona-ports': ['../../hw/misc/sgi-command-port.c',
                             '../../hw/misc/sgi-kona-ports.c'],
     'test-sgi-kona-gl-decode': ['../../hw/misc/sgi-kona-gl-decode.c'],

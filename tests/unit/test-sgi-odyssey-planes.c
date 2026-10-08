@@ -2,6 +2,64 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/misc/sgi-odyssey-planes.h"
+#ifdef CONFIG_OPENGL
+#include "qemu/module.h"
+#include "ui/egl-helpers.h"
+#include "ui/sgi-renderer.h"
+
+int display_opengl;
+
+void qemu_gl_run_texture_blit(QemuGLShader *shader, bool flip)
+{
+    g_assert_not_reached();
+}
+
+static void plane_assert_llvmpipe(void)
+{
+    const EGLint config_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE,
+    };
+    const EGLint context_attrs[] = {
+        EGL_CONTEXT_OPENGL_PROFILE_MASK,
+        EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_NONE,
+    };
+    PFNEGLGETPLATFORMDISPLAYEXTPROC platform_display;
+    EGLDisplay display;
+    EGLContext context;
+    EGLConfig config;
+    EGLint nconfigs;
+    const char *renderer;
+
+    platform_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+        eglGetProcAddress("eglGetPlatformDisplayEXT");
+    g_assert_nonnull(platform_display);
+    display = platform_display(EGL_PLATFORM_SURFACELESS_MESA,
+                               EGL_DEFAULT_DISPLAY, NULL);
+    g_assert_true(display != EGL_NO_DISPLAY);
+    g_assert_true(eglInitialize(display, NULL, NULL));
+    g_assert_true(epoxy_has_egl_extension(display,
+                                          "EGL_KHR_surfaceless_context"));
+    g_assert_true(eglBindAPI(EGL_OPENGL_API));
+    g_assert_true(eglChooseConfig(display, config_attrs, &config, 1,
+                                  &nconfigs));
+    g_assert_cmpint(nconfigs, >, 0);
+    context = eglCreateContext(display, config, EGL_NO_CONTEXT,
+                               context_attrs);
+    g_assert_true(context != EGL_NO_CONTEXT);
+    g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                 context));
+    renderer = (const char *)glGetString(GL_RENDERER);
+    g_assert_nonnull(renderer);
+    g_test_message("Mesa renderer: %s", renderer);
+    g_assert_nonnull(strstr(renderer, "llvmpipe"));
+    g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                 EGL_NO_CONTEXT));
+    g_assert_true(eglDestroyContext(display, context));
+    g_assert_true(eglTerminate(display));
+}
+#endif
 
 typedef struct PlaneFixture {
     uint8_t bytes[80];
@@ -1209,9 +1267,106 @@ static void test_swap_rejects_changed_storage_origin(void)
     }
 }
 
+#ifdef CONFIG_OPENGL
+static void test_checked_draw_top_first_storage(void)
+{
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRasterRules rules = {
+        .color_bits = 8, .alpha_bits = 8, .evidence = "synthetic",
+    };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 1, 3, 2, 3 } },
+            .front = 1,
+        },
+        .viewport = { 0, 0, 4, 4 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderRect rect = { 0, 0, 3, 3 };
+    uint8_t expected[80];
+    uint32_t slots[64];
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_test_skip("Set QEMU_TEST_SGI_REQUIRE_MESA for the Mesa adapter test");
+        return;
+    }
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
+    plane_assert_llvmpipe();
+    plane_four_row_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.height = 4;
+    view.capacity_bytes = sizeof(f.bytes);
+    view.storage_top_origin = true;
+    memcpy(expected, f.bytes, sizeof(expected));
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    target = plane_target(&planes, &resource);
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                            &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    for (unsigned x = 1; x <= 2; x++) {
+        memset(&expected[x * 4], 0, 4);
+        expected[x * 4] = expected[x * 4 + 3] = 255;
+    }
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 2);
+    g_assert_true(view.dirty);
+    g_assert_cmpuint(view.backing_generation, ==, 2);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 16, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned backing = (3 - y) * 20 + x * 4;
+            unsigned pixel = (y * 4 + x) * 4;
+
+            for (unsigned c = 0; c < 4; c++) {
+                g_assert_cmpuint(slots[pixel + c], ==, expected[backing + c]);
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+#ifdef CONFIG_OPENGL
+    module_call_init(MODULE_INIT_QOM);
+#endif
     g_test_add_func("/sgi-odyssey-planes/padded-roundtrip",
                     test_padded_roundtrip);
     g_test_add_func("/sgi-odyssey-planes/stale-generation",
@@ -1268,5 +1423,9 @@ int main(int argc, char **argv)
                     test_swap_rejects_changed_bindings_atomically);
     g_test_add_func("/sgi-odyssey-planes/swap-changed-storage-origin",
                     test_swap_rejects_changed_storage_origin);
+#ifdef CONFIG_OPENGL
+    g_test_add_func("/sgi-odyssey-planes/checked-draw-top-first-storage",
+                    test_checked_draw_top_first_storage);
+#endif
     return g_test_run();
 }
