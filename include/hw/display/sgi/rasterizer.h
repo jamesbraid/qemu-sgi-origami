@@ -472,7 +472,10 @@ typedef enum SGIRasterTextureResult {
     SGI_RASTER_TEXTURE_UNSUPPORTED,
     SGI_RASTER_TEXTURE_OOM,
 } SGIRasterTextureResult;
-/* Validate without allocating; READY permits family-specific checks. */
+/*
+ * Preflight is quiet. Callers that stop before prepare() own the draw's
+ * diagnostic for unsupported or incomplete state.
+ */
 SGIRasterTextureResult sgi_raster_texture_check(
     const SGIGLDrawState *state, const SGIGLTexImage *texture);
 SGIRasterTextureResult sgi_raster_texture_prepare(
@@ -482,8 +485,6 @@ SGIRasterTextureResult sgi_raster_texture_prepare(
 SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
     const SGIGLDrawState *state, const SGIGLTexImage *texture,
     SGIRasterTexture **out, void *(*allocate)(size_t));
-SGIRasterTexture *sgi_raster_texture_new(const SGIGLDrawState *state,
-                                         const SGIGLTexImage *texture);
 void sgi_raster_texture_free(SGIRasterTexture *texture);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(SGIRasterTexture, sgi_raster_texture_free)
 bool sgi_raster_texture_fragment(SGIRasterTexture *texture,

@@ -765,7 +765,8 @@ static bool sgi_soft_texture_border_supported(const SGIGLTexImage *im,
     return border <= 1 && (!border || callback);
 }
 
-static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
+static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
+                                     bool report)
 {
     const SGIGLTexPyramid *p = im->pyramid;
     const SGIGLTexLevel *base;
@@ -857,17 +858,21 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     return true;
 
 unsupported:
-    qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state in pyramid, "
-                  "draw dropped\n");
+    if (report) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
+                      "in pyramid, draw dropped\n");
+    }
     return false;
 incomplete:
-    qemu_log_mask(LOG_UNIMP, "sgi-gl: incomplete texture image pyramid, "
-                  "texturing disabled for draw\n");
+    if (report) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: incomplete texture image pyramid, "
+                      "texturing disabled for draw\n");
+    }
     return true;
 }
 
 /* Incomplete images disable texturing; unsupported states drop the draw. */
-static bool sgi_soft_texture_setup(SGISoftDraw *r)
+static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
 {
     const SGIGLTexImage *im = r->t->texture;
     const SGIGLDrawState *st = r->st;
@@ -876,34 +881,42 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         return true;
     }
     if (st->texture_2d && st->texture_3d) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: simultaneous 2D and 3D texturing "
-                      "is unsupported, draw dropped\n");
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: simultaneous 2D and 3D texturing "
+                          "is unsupported, draw dropped\n");
+        }
         return false;
     }
     if (st->texture_3d && im && !im->volume) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: 3D texturing requires a volume "
-                      "image, draw dropped\n");
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: 3D texturing requires a volume "
+                          "image, draw dropped\n");
+        }
         return false;
     }
     if (st->texture_env_mode != SGI_GL_REPLACE &&
         st->texture_env_mode != SGI_GL_MODULATE &&
         st->texture_env_mode != SGI_GL_DECAL &&
         st->texture_env_mode != SGI_GL_BLEND) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
-                      "environment 0x%x, draw dropped\n",
-                      st->texture_env_mode);
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
+                          "environment 0x%x, draw dropped\n",
+                          st->texture_env_mode);
+        }
         return false;
     }
     if (im && (!isfinite(im->lod_scale_s) || !isfinite(im->lod_scale_t) ||
                im->lod_scale_s < 0 || im->lod_scale_t < 0 ||
                (im->volume && (!isfinite(im->lod_scale_r) ||
                                im->lod_scale_r < 0)))) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-gl: invalid derivative scales, draw dropped\n");
+        if (report) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-gl: invalid derivative scales, draw dropped\n");
+        }
         return false;
     }
     if (im && im->pyramid) {
-        return sgi_soft_texture_pyramid(r, im);
+        return sgi_soft_texture_pyramid(r, im, report);
     }
     if (im) {
         bool border_finite = true;
@@ -922,14 +935,16 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
              im->min_filter != SGI_GL_LINEAR) ||
             (st->texture_env_mode == SGI_GL_DECAL &&
              im->base_format != SGI_GL_RGB && im->base_format != SGI_GL_RGBA)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
-                          "format 0x%x border %u filters 0x%x/0x%x "
-                          "wraps 0x%x/0x%x/0x%x environment 0x%x%s, "
-                          "draw dropped\n",
-                          im->base_format, im->border, im->min_filter,
-                          im->mag_filter, im->wrap_s, im->wrap_t, im->wrap_r,
-                          st->texture_env_mode,
-                          border_finite ? "" : " nonfinite border colour");
+            if (report) {
+                qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
+                              "format 0x%x border %u filters 0x%x/0x%x "
+                              "wraps 0x%x/0x%x/0x%x environment 0x%x%s, "
+                              "draw dropped\n",
+                              im->base_format, im->border, im->min_filter,
+                              im->mag_filter, im->wrap_s, im->wrap_t,
+                              im->wrap_r, st->texture_env_mode,
+                              border_finite ? "" : " nonfinite border colour");
+            }
             return false;
         }
     }
@@ -939,8 +954,10 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         !is_power_of_2(im->width) || !is_power_of_2(im->height) ||
         (im->volume && (!im->depth || im->depth > INT32_MAX ||
                         !is_power_of_2(im->depth)))) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: incomplete texture image, "
-                      "texturing disabled for draw\n");
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: incomplete texture image, "
+                          "texturing disabled for draw\n");
+        }
         return true;
     }
     r->texture = im;
@@ -1491,11 +1508,11 @@ struct SGIRasterTexture {
 };
 
 static SGIRasterTextureResult sgi_raster_texture_check_draw(
-    SGISoftDraw *draw)
+    SGISoftDraw *draw, bool report)
 {
     const SGIGLDrawState *state = draw->st;
 
-    if (!state || !sgi_soft_texture_setup(draw)) {
+    if (!state || !sgi_soft_texture_setup(draw, report)) {
         return SGI_RASTER_TEXTURE_UNSUPPORTED;
     }
     if (draw->texture) {
@@ -1517,7 +1534,7 @@ SGIRasterTextureResult sgi_raster_texture_check(
         .t = &target, .st = state, .texture_reports = &reports,
     };
 
-    return sgi_raster_texture_check_draw(&draw);
+    return sgi_raster_texture_check_draw(&draw, false);
 }
 
 SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
@@ -1536,7 +1553,7 @@ SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
         return SGI_RASTER_TEXTURE_UNSUPPORTED;
     }
     *out = NULL;
-    result = sgi_raster_texture_check_draw(&draw);
+    result = sgi_raster_texture_check_draw(&draw, true);
     if (result != SGI_RASTER_TEXTURE_READY) {
         return result;
     }
@@ -1559,17 +1576,6 @@ SGIRasterTextureResult sgi_raster_texture_prepare(
 {
     return sgi_raster_texture_prepare_with_allocator(
         state, texture, out, g_try_malloc0);
-}
-
-SGIRasterTexture *sgi_raster_texture_new(const SGIGLDrawState *state,
-                                         const SGIGLTexImage *texture)
-{
-    SGIRasterTexture *sampler = NULL;
-
-    if (state && texture) {
-        sgi_raster_texture_prepare(state, texture, &sampler);
-    }
-    return sampler;
 }
 
 void sgi_raster_texture_free(SGIRasterTexture *texture)
@@ -1609,7 +1615,7 @@ bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
     SGISoftFrag frag = { 0 };
 
     if (!state || !texture || !coord || !color || !out ||
-        !sgi_soft_texture_setup(&r) || !r.texture) {
+        !sgi_soft_texture_setup(&r, true) || !r.texture) {
         return false;
     }
     for (unsigned k = 0; k < 4; k++) {
@@ -3511,7 +3517,7 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
         /* Empty ownership still counts standalone geometric coverage. */
         r.win.x1 = r.win.y1 = -1;
     }
-    if (!sgi_soft_texture_setup(&r)) {
+    if (!sgi_soft_texture_setup(&r, true)) {
         return SGI_GL_DRAW_OK;
     }
     if (!sgi_soft_setup_ops(&r)) {
