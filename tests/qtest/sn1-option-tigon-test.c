@@ -27,6 +27,7 @@
 #define XBRIDGE_INT_ENABLE 0x108
 #define XBRIDGE_HOST_REGISTER (1U << 17)
 #define XBRIDGE_HOST_NASID_SHIFT 9
+#define XBRIDGE_PIO_SWAP (1U << 13)
 #define ADAPTER_MMIO 0x10000000
 #define DMA_PREFIX UINT64_C(0xa080000000000000)
 #define DMA_SWAP_CLEAR_PREFIX UINT64_C(0xa100000000000000)
@@ -344,6 +345,106 @@ static void socket_timeout(int fd)
                     ==, 0);
     g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)),
                     ==, 0);
+}
+
+static void test_pio_sram_direct_dma_bytes(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1,
+                          .swap_clear = true };
+    static const uint32_t words[2] = { 0x17395bc1, 0x2e4068af };
+    static const uint8_t card_bytes[2][8] = {
+        { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
+        { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
+    };
+    static const uint8_t host_bytes[2][8] = {
+        { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
+        { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
+    };
+    const uint8_t sentinel[8] = {
+        0xd3, 0x08, 0x95, 0x4a, 0xe1, 0x76, 0x2b, 0xbc,
+    };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint8_t seen[8];
+    uint32_t device_control;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-pio-dma-XXXXXX", &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    device_control = cpu_readl(t.qts, t.pio_cpu,
+                               t.head + 0x204 + p.device * 8);
+
+    for (unsigned swap = 0; swap < 2; swap++) {
+        uint32_t local = 0x3000 + swap * 0x100;
+        uint32_t destination = 0x2b0000 + swap * 0x100;
+        uint64_t address = dma_address(&t, destination);
+
+        reg_write(&t, TI_WINBASE, local);
+        cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+                   device_control | (swap ? XBRIDGE_PIO_SWAP : 0));
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu,
+                        t.head + 0x204 + p.device * 8) & XBRIDGE_PIO_SWAP,
+                        ==, swap ? XBRIDGE_PIO_SWAP : 0);
+        for (unsigned i = 0; i < G_N_ELEMENTS(words); i++) {
+            cpu_writel(t.qts, t.pio_cpu, t.window + 0x800 + i * 4,
+                       words[i]);
+        }
+        cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+                   device_control);
+
+        /* Clear-swap byte PIO addresses expose each card SRAM byte. */
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                          t.window + 0x800 + (i ^ 3), &seen[i], 1));
+        }
+        g_test_message("XBridge PIO swap %u: card SRAM "
+                       "%02x %02x %02x %02x %02x %02x %02x %02x",
+                       swap, seen[0], seen[1], seen[2], seen[3],
+                       seen[4], seen[5], seen[6], seen[7]);
+        g_assert_cmpmem(seen, sizeof(seen), card_bytes[swap],
+                        sizeof(card_bytes[swap]));
+
+        memory_write(&t, p.destination, destination, sentinel,
+                     sizeof(sentinel));
+        memory_write(&t, p.destination, destination + 0x6000, sentinel,
+                     sizeof(sentinel));
+        reg_write(&t, TI_DMA_WRITE_HOST_HI, address >> 32);
+        reg_write(&t, TI_DMA_WRITE_HOST_LO, address);
+        reg_write(&t, TI_DMA_WRITE_LOCAL, local);
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_NO_SWAP);
+        reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(seen));
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_ACTIVE,
+                        ==, 0);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, 0);
+        memory_read(&t, p.destination, destination, seen, sizeof(seen));
+        g_test_message("XBridge PIO swap %u: host DMA "
+                       "%02x %02x %02x %02x %02x %02x %02x %02x",
+                       swap, seen[0], seen[1], seen[2], seen[3],
+                       seen[4], seen[5], seen[6], seen[7]);
+        g_assert_cmpmem(seen, sizeof(seen), host_bytes[swap],
+                        sizeof(host_bytes[swap]));
+        memory_read(&t, p.destination, destination + 0x6000,
+                    seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+    }
+
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
 }
 
 static void test_direct_dma_write(void)
@@ -765,6 +866,8 @@ int main(int argc, char **argv)
                         test_traffic);
     qtest_add_func("/sn1/option-tigon/direct-dma-write",
                    test_direct_dma_write);
+    qtest_add_func("/sn1/option-tigon/pio-sram-direct-dma-bytes",
+                   test_pio_sram_direct_dma_bytes);
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
     g_free(prom_path);
