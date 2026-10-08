@@ -4,9 +4,9 @@
 #include "hw/misc/sgi-odyssey-planes.h"
 
 typedef struct PlaneFixture {
-    uint8_t bytes[40];
-    bool written[12];
-    bool owned[12];
+    uint8_t bytes[80];
+    bool written[16];
+    bool owned[16];
     unsigned marks;
 } PlaneFixture;
 
@@ -36,7 +36,7 @@ static OdysseyPlaneView plane_view(PlaneFixture *f, uint64_t view_id)
 {
     return (OdysseyPlaneView) {
         .bytes = f->bytes,
-        .capacity_bytes = sizeof(f->bytes),
+        .capacity_bytes = 40,
         .stride_bytes = 20,
         .width = 4, .height = 2,
         .format = ODYSSEY_PLANE_SYNTH_RGBA8,
@@ -69,6 +69,36 @@ static void plane_fixture_init(PlaneFixture *f)
             f->bytes[b + 3] = p + 30;
         }
         memset(&f->bytes[y * 20 + 16], 0xa5, 4);
+    }
+}
+
+static void plane_four_row_fixture_init(PlaneFixture *f)
+{
+    memset(f, 0, sizeof(*f));
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned p = y * 4 + x;
+            unsigned b = y * 20 + x * 4;
+
+            f->written[p] = true;
+            f->owned[p] = y == 0;
+            f->bytes[b] = p + 1;
+            f->bytes[b + 1] = p + 41;
+            f->bytes[b + 2] = p + 81;
+            f->bytes[b + 3] = p + 121;
+        }
+        memset(&f->bytes[y * 20 + 16], 0xa5, 4);
+    }
+}
+
+static void plane_four_row_views(PlaneFixture *f, OdysseyPlaneView views[2])
+{
+    plane_four_row_fixture_init(f);
+    for (unsigned i = 0; i < 2; i++) {
+        views[i] = plane_view(f, i + 1);
+        views[i].height = 4;
+        views[i].capacity_bytes = sizeof(f->bytes);
+        views[i].storage_top_origin = true;
     }
 }
 
@@ -164,7 +194,7 @@ static void test_stale_generation(void)
     g_assert_cmphex(slots[0], ==, 0xdead);
 }
 
-static void test_unwritten_and_foreign_snapshot(void)
+static void test_unwritten_and_unowned_snapshot(void)
 {
     PlaneFixture f;
     OdysseyPlaneView view;
@@ -191,10 +221,9 @@ static void test_unwritten_and_foreign_snapshot(void)
     f.owned[1] = false;
     g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
                     &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
-                    SGI_RENDER_RESOURCE_ERROR);
-    g_assert_nonnull(err);
-    error_free(err);
-    g_assert_cmphex(slots[0], ==, 0xdead);
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(slots[0], ==, 1);
 }
 
 static void test_partial_commit_invalidates_alias(void)
@@ -780,6 +809,135 @@ static void test_top_origin_with_top_first_storage(void)
     g_assert_cmpuint(f.bytes[20], ==, 4);
 }
 
+static void test_covered_top_row_and_aliases(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView views[2];
+    SGIRenderResource resources[2];
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 3, 3 };
+    uint32_t slots[64];
+    uint8_t mask[16] = { 0 }, expected[80];
+    SGIRenderWriteCoverage writes = {
+        .pixel = mask, .stride_bytes = 4, .capacity_bytes = sizeof(mask),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_four_row_views(&f, views);
+    views[0].channel_mask = 0x5;
+    memcpy(expected, f.bytes, sizeof(expected));
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 2, &err));
+    target = plane_target(&planes, resources);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resources[0], 0,
+                    &rect, slots, 16, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(slots[0], ==, 13);
+    g_assert_cmpuint(slots[48], ==, 1);
+    g_assert_cmpuint(slots[52], ==, 2);
+
+    result = sgi_render_resource_commit_covered(&target, &resources[0], 0,
+                                                &rect, slots, 16,
+                                                ARRAY_SIZE(slots), &writes,
+                                                &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 16);
+    g_assert_true(result.extent_known);
+    g_assert_false(result.partial_pixel);
+    g_assert_null(err);
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 0);
+    g_assert_false(views[0].dirty);
+    g_assert_false(views[1].dirty);
+
+    mask[13] = mask[14] = 1;
+    slots[52] = 201;
+    slots[54] = 203;
+    slots[56] = 211;
+    slots[58] = 213;
+    result = sgi_render_resource_commit_covered(&target, &resources[0], 0,
+                                                &rect, slots, 16,
+                                                ARRAY_SIZE(slots), &writes,
+                                                &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 16);
+    g_assert_true(result.extent_known);
+    g_assert_false(result.partial_pixel);
+    g_assert_null(err);
+    expected[4] = 201;
+    expected[6] = 203;
+    expected[8] = 211;
+    expected[10] = 213;
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 2);
+    for (unsigned i = 0; i < 2; i++) {
+        g_assert_true(views[i].dirty);
+        g_assert_cmpuint(views[i].backing_generation, ==, 2);
+        g_assert_cmpuint(views[i].view_generation, ==, 2);
+    }
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resources[1], 0,
+                    &rect, slots, 16, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[52], ==, 201);
+    g_assert_cmpuint(slots[54], ==, 203);
+    g_assert_cmpuint(slots[56], ==, 211);
+    g_assert_cmpuint(slots[58], ==, 213);
+}
+
+static void test_covered_partial_prefix(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView views[2];
+    SGIRenderResource resources[2];
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 3, 3 };
+    uint32_t slots[64];
+    uint8_t mask[16] = { [13] = 1, [15] = 1 }, expected[80];
+    SGIRenderWriteCoverage writes = {
+        .pixel = mask, .stride_bytes = 4, .capacity_bytes = sizeof(mask),
+    };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_four_row_views(&f, views);
+    f.owned[3] = false;
+    memcpy(expected, f.bytes, sizeof(expected));
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 2, &err));
+    target = plane_target(&planes, resources);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resources[0], 0,
+                    &rect, slots, 16, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    slots[52] = 201;
+    slots[53] = 202;
+    slots[54] = 203;
+    slots[55] = 204;
+    result = sgi_render_resource_commit_covered(&target, &resources[0], 0,
+                                                &rect, slots, 16,
+                                                ARRAY_SIZE(slots), &writes,
+                                                &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_cmpuint(result.complete_pixels, ==, 15);
+    g_assert_true(result.extent_known);
+    g_assert_false(result.partial_pixel);
+    g_assert_nonnull(err);
+    error_free(err);
+    expected[4] = 201;
+    expected[5] = 202;
+    expected[6] = 203;
+    expected[7] = 204;
+    g_assert_cmpmem(f.bytes, sizeof(f.bytes), expected, sizeof(expected));
+    g_assert_cmpuint(f.marks, ==, 1);
+    g_assert_false(planes.active);
+    for (unsigned i = 0; i < 2; i++) {
+        g_assert_true(views[i].dirty);
+        g_assert_cmpuint(views[i].backing_generation, ==, 2);
+        g_assert_cmpuint(views[i].view_generation, ==, 2);
+    }
+}
+
 static void test_origin_mismatch_rejected(void)
 {
     PlaneFixture f;
@@ -1058,8 +1216,8 @@ int main(int argc, char **argv)
                     test_padded_roundtrip);
     g_test_add_func("/sgi-odyssey-planes/stale-generation",
                     test_stale_generation);
-    g_test_add_func("/sgi-odyssey-planes/unwritten-foreign",
-                    test_unwritten_and_foreign_snapshot);
+    g_test_add_func("/sgi-odyssey-planes/unwritten-unowned",
+                    test_unwritten_and_unowned_snapshot);
     g_test_add_func("/sgi-odyssey-planes/partial-alias",
                     test_partial_commit_invalidates_alias);
     g_test_add_func("/sgi-odyssey-planes/channel-mask",
@@ -1090,6 +1248,10 @@ int main(int argc, char **argv)
                     test_top_first_storage_three_rows);
     g_test_add_func("/sgi-odyssey-planes/top-first-top-resource",
                     test_top_origin_with_top_first_storage);
+    g_test_add_func("/sgi-odyssey-planes/covered-top-row",
+                    test_covered_top_row_and_aliases);
+    g_test_add_func("/sgi-odyssey-planes/covered-partial-prefix",
+                    test_covered_partial_prefix);
     g_test_add_func("/sgi-odyssey-planes/origin-mismatch",
                     test_origin_mismatch_rejected);
     g_test_add_func("/sgi-odyssey-planes/four-eye-alias",

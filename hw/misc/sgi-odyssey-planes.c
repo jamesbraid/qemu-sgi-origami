@@ -367,8 +367,7 @@ static SGIRenderResult odyssey_plane_snapshot(void *opaque,
         uint32_t row = odyssey_plane_storage_row(view, y);
 
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
-            if (!view->owns_pixel(view->opaque, x, row) ||
-                !view->is_written(view->opaque, x, row)) {
+            if (!view->is_written(view->opaque, x, row)) {
                 error_setg(errp, "Synthetic Odyssey plane pixel unavailable");
                 return SGI_RENDER_RESOURCE_ERROR;
             }
@@ -390,10 +389,10 @@ static SGIRenderResult odyssey_plane_snapshot(void *opaque,
     return SGI_RENDER_OK;
 }
 
-static SGIRenderCommitResult odyssey_plane_commit(
+static SGIRenderCommitResult odyssey_plane_commit_pixels(
     void *opaque, const SGIRenderResource *resource, uint32_t slice,
     const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
-    size_t capacity_slots, Error **errp)
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes, Error **errp)
 {
     OdysseyPlanes *planes = opaque;
     OdysseyPlaneView *view = odyssey_plane_lookup(planes, resource, slice,
@@ -415,6 +414,12 @@ static SGIRenderCommitResult odyssey_plane_commit(
                          (size_t)(x - rect->x0) * 4;
             size_t dst = (size_t)row * view->stride_bytes + (size_t)x * 4;
 
+            if (writes &&
+                !writes->pixel[(size_t)(y - rect->y0) *
+                               writes->stride_bytes + x - rect->x0]) {
+                result.complete_pixels++;
+                continue;
+            }
             if (!view->owns_pixel(view->opaque, x, row) ||
                 (view->channel_mask != 0xf &&
                  !view->is_written(view->opaque, x, row))) {
@@ -444,11 +449,32 @@ static SGIRenderCommitResult odyssey_plane_commit(
     return result;
 }
 
+static SGIRenderCommitResult odyssey_plane_commit(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    return odyssey_plane_commit_pixels(opaque, resource, slice, rect, slots,
+                                       stride_slots, capacity_slots, NULL,
+                                       errp);
+}
+
+static SGIRenderCommitResult odyssey_plane_commit_covered(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    return odyssey_plane_commit_pixels(opaque, resource, slice, rect, slots,
+                                       stride_slots, capacity_slots, writes,
+                                       errp);
+}
+
 const SGIRenderResourceOps *odyssey_planes_resource_ops(void)
 {
     static const SGIRenderResourceOps ops = {
         .snapshot = odyssey_plane_snapshot,
         .commit = odyssey_plane_commit,
+        .commit_covered = odyssey_plane_commit_covered,
     };
 
     return &ops;
