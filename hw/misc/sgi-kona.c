@@ -55,6 +55,7 @@
 #include "qom/object.h"
 #include "system/dma.h"
 #include "system/runstate.h"
+#include "system/qtest.h"
 #include "qemu/main-loop.h"
 #include "trace.h"
 
@@ -2927,9 +2928,19 @@ static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
     return tile;
 }
 
-static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
-                                   const SGIRasterRules *rules,
-                                   const SGIRasterTarget *t, bool *out_oom)
+static void sgi_kona_renderer_arm_test_fault(SGIKonaState *s)
+{
+    if (s->test_renderer_fail_draw) {
+        sgi_renderer_test_fail_draw(s->renderer, s->test_renderer_fail_draw);
+        s->test_renderer_fail_draw = 0;
+    }
+}
+
+static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
+                                            const SGIGLDraw *d,
+                                            const SGIRasterRules *rules,
+                                            const SGIRasterTarget *t,
+                                            Error **errp)
 {
     SGIRendererRequest *requests;
     g_autofree SGIKonaRendererTriangle *triangles = NULL;
@@ -2945,32 +2956,29 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     uint32_t colour_mask;
     int bank;
     SGIGLDraw triangle = *d;
-    Error *err = NULL;
-    bool success = false;
+    SGIRenderResult result = SGI_RENDER_UNSUPPORTED;
     bool logic_op = sgi_kona_renderer_logic_op(d->state);
     bool blend = d->state->blend && !logic_op;
     SGIRasterTextureResult texture_result;
 
-    *out_oom = false;
     if (!s->host_gpu) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     assert(bql_locked());
-    s->renderer_fallbacks++;
     count = sgi_kona_renderer_count(d);
     if (s->renderer_failed || !count || count > 256 ||
         drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     target = d->state->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
                                                          drawable->back;
     bank = sgi_kona_target_bank(s, target);
     if (bank < 0) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     plane = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
     if (!plane) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     bounds = drawable->clip.r[0];
     bounds.x0 = MAX(bounds.x0, 0);
@@ -2978,14 +2986,14 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     bounds.x1 = MIN((int64_t)bounds.x1, (int64_t)plane->width - 1);
     bounds.y1 = MIN((int64_t)bounds.y1, (int64_t)plane->height - 1);
     if (bounds.x0 > bounds.x1 || bounds.y0 > bounds.y1) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     columns = DIV_ROUND_UP(bounds.x1 - bounds.x0 + 1, SGI_RENDERER_SIZE);
     rows = DIV_ROUND_UP(bounds.y1 - bounds.y0 + 1, SGI_RENDERER_SIZE);
     tile_count = (uint64_t)columns * rows;
     /* Bound staging across all triangles and tiles before allocating. */
     if (tile_count > 256 / count) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     texture_result = sgi_kona_renderer_texture(s, d, t, &texture, &sampler,
                                                 &texture_pixels);
@@ -2995,29 +3003,25 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     case SGI_RASTER_TEXTURE_INCOMPLETE:
         break;
     case SGI_RASTER_TEXTURE_UNSUPPORTED:
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     case SGI_RASTER_TEXTURE_OOM:
-        *out_oom = true;
-        s->renderer_fallbacks--;
-        return false;
+        return SGI_RENDER_OOM;
     default:
         g_assert_not_reached();
     }
     triangles = g_try_new(SGIKonaRendererTriangle, 256 / tile_count);
     if (!triangles) {
-        s->renderer_failed = true;
-        return false;
+        return SGI_RENDER_OOM;
     }
     if (!sgi_kona_renderer_triangles(d, count, triangles, 256 / tile_count,
                                     &count)) {
-        return false;
+        return SGI_RENDER_UNSUPPORTED;
     }
     tiles = tile_count;
     count *= tiles;
     requests = g_try_new0(SGIRendererRequest, count);
     if (!requests) {
-        s->renderer_failed = true;
-        return false;
+        return SGI_RENDER_OOM;
     }
     triangle.mode = SGI_GL_TRIANGLES;
     triangle.count = 3;
@@ -3034,17 +3038,28 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     }
     s->renderer_requests += count;
     if (!s->renderer) {
-        s->renderer = sgi_renderer_new(&err);
-    }
-    if (!s->renderer ||
-        !sgi_renderer_draw_batch(s->renderer, requests, count, &err)) {
-        s->renderer_failed = true;
-        if (err) {
-            error_report_err(err);
+        Error *create_err = NULL;
+
+        s->renderer = sgi_renderer_new(&create_err);
+        if (!s->renderer) {
+            /* Construction has no typed backend/setup/allocation result. */
+            s->renderer_failed = true;
+            error_report("sgi-kona: legacy renderer creation unclassified: "
+                         "%s; using scalar fallback",
+                         create_err ? error_get_pretty(create_err) :
+                                      "no diagnostic");
+            error_free(create_err);
+            goto out;
         }
+        error_free(create_err);
+    }
+    sgi_kona_renderer_arm_test_fault(s);
+    if (!sgi_renderer_draw_batch(s->renderer, requests, count, errp)) {
+        s->renderer_failed = true;
+        result = SGI_RENDER_HOST_ERROR;
         goto out;
     }
-    /* Commit only complete batches, so fallback cannot replay a prefix. */
+    /* Do not commit native pixels until every host request succeeds. */
     colour_mask = sgi_raster_colour_mask(rules,
                                          d->state->colour_mask);
     for (unsigned i = 0; i < count; i++) {
@@ -3116,11 +3131,10 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
         }
     }
     s->renderer_draws++;
-    s->renderer_fallbacks--;
-    success = true;
+    result = SGI_RENDER_OK;
 out:
     g_free(requests);
-    return success;
+    return result;
 }
 
 static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
@@ -3138,6 +3152,7 @@ static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
             return SGI_RENDER_HOST_ERROR;
         }
     }
+    sgi_kona_renderer_arm_test_fault(s);
     resources = sgi_kona_mesa_resources(s->mesa_provider, &count);
     target = (SGIRasterTarget) {
         .opaque = s->mesa_provider,
@@ -3187,7 +3202,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIGLDrawState st;
     SGIGLDraw copy;
     SGIGLDrawResult ret;
-    bool oom;
+    SGIRenderResult legacy_result;
     Error *err = NULL;
 
     if (s->mesa_failed) {
@@ -3236,6 +3251,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
             return SGI_GL_DRAW_OUT_OF_MEMORY;
         case SGI_RENDER_UNSUPPORTED:
             error_free(err);
+            err = NULL;
             break;
         case SGI_RENDER_RESOURCE_ERROR:
         case SGI_RENDER_HOST_ERROR:
@@ -3245,11 +3261,29 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
             g_assert_not_reached();
         }
     }
-    if (sgi_kona_renderer_draw(s, d, &rules, &t, &oom)) {
+    legacy_result = sgi_kona_renderer_draw(s, d, &rules, &t, &err);
+    switch (legacy_result) {
+    case SGI_RENDER_OK:
+        error_free(err);
         return SGI_GL_DRAW_OK;
-    }
-    if (oom) {
+    case SGI_RENDER_OOM:
+        error_free(err);
         return SGI_GL_DRAW_OUT_OF_MEMORY;
+    case SGI_RENDER_UNSUPPORTED:
+        error_free(err);
+        break;
+    case SGI_RENDER_RESOURCE_ERROR:
+    case SGI_RENDER_HOST_ERROR:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: legacy renderer draw "
+                      "failed: %s\n", err ? error_get_pretty(err) :
+                                           "no backend diagnostic");
+        sgi_kona_mesa_stop(s, err);
+        return SGI_GL_DRAW_OK;
+    default:
+        g_assert_not_reached();
+    }
+    if (s->host_gpu) {
+        s->renderer_fallbacks++;
     }
     ret = sgi_soft_draw(&rules, &t, d);
     if (ret != SGI_GL_DRAW_OK) {
@@ -11564,6 +11598,28 @@ static void sgi_kona_test_get_texture_curve_valid(Object *obj, Visitor *v,
     visit_type_bool(v, name, &valid, errp);
 }
 
+static void sgi_kona_test_set_renderer_failure(Object *obj, Visitor *v,
+                                               const char *name, void *opaque,
+                                               Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint32_t nth_draw;
+
+    if (!qtest_enabled() || !s->host_gpu) {
+        error_setg(errp, "KONA renderer fault requires qtest and host-gpu");
+        return;
+    }
+    if (!visit_type_uint32(v, name, &nth_draw, errp)) {
+        return;
+    }
+    if (s->renderer) {
+        sgi_renderer_test_fail_draw(s->renderer, nth_draw);
+        s->test_renderer_fail_draw = 0;
+    } else {
+        s->test_renderer_fail_draw = nth_draw;
+    }
+}
+
 static bool sgi_kona_test_get_context_alloc_fail(Object *obj, Error **errp)
 {
     return SGI_KONA(obj)->test_context_alloc_fail;
@@ -11693,6 +11749,8 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-gc", "uint32", sgi_kona_test_get_gc,
                         NULL, NULL, NULL);
+    object_property_add(obj, "x-test-gpu-fail-draw", "uint32", NULL,
+                        sgi_kona_test_set_renderer_failure, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-gpu-requests",
                                    &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
@@ -11792,6 +11850,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
     s->mesa_failed = false;
+    s->test_renderer_fail_draw = 0;
 
     s->widget_control = 0;
     s->onewire_reg = 0;
@@ -12138,6 +12197,7 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
     s->mesa_failed = false;
+    s->test_renderer_fail_draw = 0;
 
     /*
      * An open video command can hold no more data words than it takes, or
