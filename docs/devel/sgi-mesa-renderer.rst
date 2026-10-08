@@ -46,12 +46,14 @@ exactly 24 and 8 bits. Colour-index CLEAR and other raster operations remain
 unsupported. The clear masks and inclusive clip rectangles determine which
 native pixels may be written.
 
-The path resolves and snapshots every selected resource before Mesa work. It
-finishes host CLEAR and readback before committing native colour, depth, then
-stencil. The union of clipped pixels is written once per resource. A union
+The path validates selected descriptors and snapshots every resource with
+nonempty clipped coverage before Mesa work. It finishes host CLEAR and
+readback before committing native colour, depth, then stencil. On a successful
+commit, the union of clipped pixels is written once per resource. A union
 covering the full plane uses one dense commit. A later native commit failure
-retains earlier writes. A snapshot or host failure commits nothing. The family
-still owns dirty and alias updates and guest-visible completion.
+retains earlier writes, possibly including a partial pixel. A snapshot or
+host failure commits nothing. The family still owns dirty and alias updates
+and guest-visible completion.
 
 The shared type declarations cover more roles and numeric formats than the
 current Mesa draw and CLEAR paths support.
@@ -98,9 +100,12 @@ pixel count. A failed commit reports its complete pixel prefix, possible
 partial next pixel, and whether the extent is known. Native writes already
 made by the provider remain made. There is no rollback.
 
-For the checked triangle, ``commit_covered`` receives one byte of write
-coverage per pixel. The shared wrapper validates mask capacity and binary
-values before calling the provider, then checks its partial result.
+For the checked triangle, the family provider must implement
+``commit_covered``. A dense ``commit`` callback alone is insufficient: the
+draw returns ``SGI_RENDER_UNSUPPORTED`` before native snapshot. The covered
+callback receives one byte of write coverage per pixel. The shared wrapper
+validates mask capacity and binary values before calling the provider, then
+checks its partial result.
 ``complete_pixels`` counts the scanned row-major prefix, including skipped
 pixels. The family provider must preserve mask-zero native storage, apply its
 reviewed colour and coupled-plane rules to mask-one pixels, and update dirty
