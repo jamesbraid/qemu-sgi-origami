@@ -1036,7 +1036,6 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 3);
 
     state.drawable.clip.n = 0;
-    state.drawable.clip.empty = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
@@ -1052,7 +1051,6 @@ static void test_decoded_triangle_native_commit(void)
 
     state.drawable.bound = true;
     state.drawable.clip.n = 1;
-    state.drawable.clip.empty = 0;
     f.fail_commit = false;
     vertices[0][SGI_GL_V_COLOR] = NAN;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -1261,18 +1259,18 @@ static void test_decoded_triangle_clip_union(void)
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
-    g_assert_cmpuint(f.written[1][1], ==, 1);
-    g_assert_cmpuint(f.colour[1][1][0], ==, 0x40);
-    g_assert_cmpuint(f.tag[1][1], ==, 9);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+    g_assert_cmpuint(f.written[1][1], ==, 0);
+    g_assert_cmpuint(f.colour[1][1][0], ==, 0);
+    g_assert_cmpuint(f.tag[1][1], ==, 1);
 
     state.drawable.clip.empty = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 2);
-    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
     sgi_renderer_free(renderer);
 }
 

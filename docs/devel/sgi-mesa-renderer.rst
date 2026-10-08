@@ -18,11 +18,12 @@ flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
 resource must have bottom-origin rows and ordered UNORM components of 1 to 16
 bits. The viewport must cover the resource.
 
-A clip list with no rectangles keeps the whole plane unless it is marked
-empty. Up to 16 inclusive plane rectangles may overlap or extend outside the
-resource. The renderer intersects them with the resource and draws once
-through their union, so overlap does not apply blending twice. If the union
-is empty, it returns without a native snapshot or commit.
+A bound drawable with no clip rectangles owns no visible pixels. Its ``empty``
+flag does not change this draw behavior. Up to 16 inclusive plane rectangles
+may overlap or extend outside the resource. The renderer intersects them with
+the resource and draws once through their union, so overlap does not apply
+blending twice. If the union is empty, it returns without a native snapshot or
+commit.
 
 Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
 and these source/destination factor pairs: ``SRC_ALPHA`` with
