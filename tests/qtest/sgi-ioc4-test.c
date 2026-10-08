@@ -44,6 +44,8 @@
 #define SSCR_RESET (1u << 31)
 #define SSCR_DRAIN (1u << 27)
 #define SSCR_THRESHOLD(n) ((n) & 0x1ff)
+#define SDMA_SHADOW_OUTPUTS 0x1f000000
+#define SDMA_SHADOW_LOOPBACK 0x10000000
 #define SRCIR_TIMER_ARM (1u << 31)
 #define TX_VALID 0x40
 #define TX_EXPLICIT 0x20
@@ -230,6 +232,27 @@ static void ioc4_write_tx_entry(QTestState *qts, unsigned port,
 
     ioc4_dma_write(qts, ring, data, 4);
     ioc4_dma_write(qts, ring + 4, control, 4);
+}
+
+static void ioc4_fill_loopback_tx_ring(QTestState *qts,
+                                       uint8_t expected_rx[0x3f8])
+{
+    unsigned i, j;
+
+    for (i = 0; i < 127; i++) {
+        uint8_t data[4];
+        const uint8_t control[4] = {
+            TX_VALID, TX_VALID, TX_VALID, TX_VALID,
+        };
+
+        for (j = 0; j < 4; j++) {
+            data[j] = (i * 4 + j) & 0xff;
+            expected_rx[i * 8 + j] = data[j];
+            expected_rx[i * 8 + 4 + j] = RX_DATA_VALID;
+        }
+        ioc4_write_tx_entry(qts, 0, 0x400, i * 8, data, control);
+    }
+    reg_write(qts, SDMA_TX_PRODUCE(0), 0x3f8);
 }
 
 static void ioc4_expect_bytes(QTestState *qts, int fd,
@@ -599,6 +622,279 @@ static void test_dma_rx_drain_and_threshold(void)
     g_assert_nonnull(contents);
 }
 
+static void test_dma_loopback_pio_mcr(void)
+{
+    g_autofree char *control_log = ioc4_log_file_new();
+    g_autofree char *loopback_log = ioc4_log_file_new();
+    int control_sv[2], loopback_sv[2];
+    QTestState *qts;
+    const uint8_t control_data[4] = { 0x51, 0x52, 0x53, 0x54 };
+    const uint8_t valid[4] = { TX_VALID, TX_VALID, TX_VALID, TX_VALID };
+    const uint8_t expected_control[4] = { 0x51, 0x52, 0x53, 0x54 };
+    uint8_t rx_ring[0x3f8], expected_ring[0x3f8];
+    uint8_t prom_rx[8], last_rx[8];
+    struct pollfd pfd;
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(control_sv);
+    qts = ioc4_start_dma(false, true, 0, control_sv[1], control_log);
+    close(control_sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    qtest_writeb(qts, UART(0) + 4, 0);
+    ioc4_write_tx_entry(qts, 0, 0x400, 0, control_data, valid);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    ioc4_expect_bytes(qts, control_sv[0], expected_control,
+                      sizeof(expected_control));
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0x3f8, 8);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
+    qtest_quit(qts);
+    close(control_sv[0]);
+    contents = ioc4_log_file_take(control_log);
+    g_assert_nonnull(contents);
+    g_clear_pointer(&contents, g_free);
+
+    ioc4_socketpair(loopback_sv);
+    qts = ioc4_start_dma(false, true, 0, loopback_sv[1], loopback_log);
+    close(loopback_sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    qtest_writeb(qts, UART(0) + 4, 0x13);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & 0x1f000000, ==,
+                    0x13000000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    ioc4_fill_loopback_tx_ring(qts, expected_ring);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
+    ioc4_wait_rx_produce(qts, 0x3f8, loopback_log);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0x3f8);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0x3f8);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 0);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), rx_ring,
+                  sizeof(rx_ring));
+    g_assert_cmpmem(rx_ring, sizeof(rx_ring), expected_ring,
+                    sizeof(expected_ring));
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3e8,
+                  prom_rx, sizeof(prom_rx));
+    g_assert_cmpmem(prom_rx, sizeof(prom_rx),
+                    ((const uint8_t[]) {
+                        0xf4, 0xf5, 0xf6, 0xf7,
+                        RX_DATA_VALID, RX_DATA_VALID,
+                        RX_DATA_VALID, RX_DATA_VALID,
+                    }), sizeof(prom_rx));
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3f0,
+                  last_rx, sizeof(last_rx));
+    g_assert_cmpmem(last_rx, sizeof(last_rx),
+                    ((const uint8_t[]) {
+                        0xf8, 0xf9, 0xfa, 0xfb,
+                        RX_DATA_VALID, RX_DATA_VALID,
+                        RX_DATA_VALID, RX_DATA_VALID,
+                    }), sizeof(last_rx));
+    pfd = (struct pollfd) { .fd = loopback_sv[0], .events = POLLIN };
+    g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
+    qtest_quit(qts);
+    close(loopback_sv[0]);
+    contents = ioc4_log_file_take(loopback_log);
+    g_assert_nonnull(contents);
+}
+
+static void test_dma_loopback_tx_mcr(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    uint8_t data[4], control[4];
+    uint8_t rx_ring[0x3f8], expected_ring[0x3f8];
+    struct pollfd pfd;
+    unsigned i, j, rx_count = 0;
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    qtest_writeb(qts, UART(0) + 4, 0);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    memset(expected_ring, 0, sizeof(expected_ring));
+    for (i = 0; i < 127; i++) {
+        if (i == 0) {
+            data[0] = 0x13;
+            data[1] = 0;
+            data[2] = 1;
+            data[3] = 2;
+            control[0] = TX_MCR;
+            control[1] = TX_VALID;
+            control[2] = TX_VALID;
+            control[3] = TX_VALID;
+            for (j = 1; j < 4; j++) {
+                expected_ring[(rx_count / 4) * 8 + rx_count % 4] = data[j];
+                expected_ring[(rx_count / 4) * 8 + 4 + rx_count % 4] =
+                    RX_DATA_VALID;
+                rx_count++;
+            }
+        } else {
+            for (j = 0; j < 4; j++) {
+                data[j] = (i * 4 + j - 1) & 0xff;
+                control[j] = TX_VALID;
+                expected_ring[(rx_count / 4) * 8 + rx_count % 4] = data[j];
+                expected_ring[(rx_count / 4) * 8 + 4 + rx_count % 4] =
+                    RX_DATA_VALID;
+                rx_count++;
+            }
+        }
+        ioc4_write_tx_entry(qts, 0, 0x400, i * 8, data, control);
+    }
+    g_assert_cmpuint(rx_count, ==, 507);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 0x3f8);
+    ioc4_wait_reg_with_log(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8, log);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
+                    ==, 0x13000000);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f0);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1) |
+                                    SSCR_DRAIN);
+    ioc4_wait_rx_produce(qts, 0x3f8, log);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0x3f8);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0x3f8);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 0);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), rx_ring,
+                  sizeof(rx_ring));
+    g_assert_cmpmem(rx_ring, sizeof(rx_ring), expected_ring,
+                    sizeof(expected_ring));
+    pfd = (struct pollfd) { .fd = sv[0], .events = POLLIN };
+    g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_dma_loopback_shadow_reset(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+    g_autofree char *contents = NULL;
+
+    qtest_writeb(qts, UART(0) + 4, 0);
+    reg_write(qts, SDMA_SHADOW(0), SDMA_SHADOW_OUTPUTS);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
+    qtest_writeb(qts, UART(0) + 4, 0x13);
+    reg_write(qts, SDMA_SHADOW(0), 0x13000000);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
+
+    reg_write(qts, SDMA_CONTROL(0), SSCR_RESET);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
+                    ==, 0);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_dma_loopback_external_retry(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input[4] = { 0xa1, 0xa2, 0xa3, 0xa4 };
+    uint8_t entry[8];
+    struct pollfd pfd;
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    qtest_writeb(qts, UART(0) + 4, 0);
+    reg_write(qts, SDMA_SHADOW(0), SDMA_SHADOW_LOOPBACK);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
+    g_usleep(10000);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
+
+    reg_write(qts, SDMA_SHADOW(0), 0);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
+    ioc4_wait_rx_produce(qts, 8, log);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(input), input, sizeof(input));
+    g_assert_cmpmem(entry + 4, 4,
+                    ((const uint8_t[]) {
+                        RX_DATA_VALID, RX_DATA_VALID,
+                        RX_DATA_VALID, RX_DATA_VALID,
+                    }), 4);
+    pfd = (struct pollfd) { .fd = sv[0], .events = POLLIN };
+    g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+static void test_dma_loopback_full_ring_recovery(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t first_data[4] = { 0xa1, 0xa2, 0xa3, 0xa4 };
+    const uint8_t second_data[4] = { 0xb1, 0xb2, 0xb3, 0xb4 };
+    const uint8_t valid[4] = { TX_VALID, TX_VALID, TX_VALID, TX_VALID };
+    const uint8_t first_rx[8] = {
+        0xa1, 0xa2, 0xa3, 0xa4,
+        RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID,
+    };
+    const uint8_t second_rx[8] = {
+        0xb1, 0xb2, 0xb3, 0xb4,
+        RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID, RX_DATA_VALID,
+    };
+    uint8_t rx_ring[0x3f8], expected_ring[0x3f8], entry[8];
+    struct pollfd pfd;
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    reg_write(qts, SDMA_SHADOW(0), SDMA_SHADOW_LOOPBACK);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    ioc4_fill_loopback_tx_ring(qts, expected_ring);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
+    ioc4_wait_rx_produce(qts, 0x3f8, log);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), rx_ring,
+                  sizeof(rx_ring));
+    g_assert_cmpmem(rx_ring, sizeof(rx_ring), expected_ring,
+                    sizeof(expected_ring));
+
+    ioc4_write_tx_entry(qts, 0, 0x400, 0x3f8, first_data, valid);
+    ioc4_write_tx_entry(qts, 0, 0x400, 0, second_data, valid);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    ioc4_wait_reg(qts, 0x08, RX_RING_FULL(0), RX_RING_FULL(0));
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f8);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0x3f8);
+
+    reg_write(qts, SDMA_RX_CONSUME(0), 8);
+    ioc4_wait_rx_produce(qts, 0, log);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 0);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3f8,
+                  entry, sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(entry), first_rx, sizeof(first_rx));
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 8);
+
+    reg_write(qts, SDMA_RX_CONSUME(0), 16);
+    ioc4_wait_rx_produce(qts, 8, log);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), entry,
+                  sizeof(entry));
+    g_assert_cmpmem(entry, sizeof(entry), second_rx, sizeof(second_rx));
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 16);
+    pfd = (struct pollfd) { .fd = sv[0], .events = POLLIN };
+    g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
 static void test_dma_tx_wrap_1k(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -941,11 +1237,16 @@ static void test_dma_full_reset_clears_shadow(void)
     QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
     g_autofree char *contents = NULL;
 
+    qtest_writeb(qts, UART(0) + 4, 0x13);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
+                    ==, 0x13000000);
     reg_write(qts, SDMA_SHADOW(0), 0x1f000000);
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)), ==, 0x1f000000);
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     ioc4_map(qts);
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x08);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
     g_assert_nonnull(contents);
@@ -1982,6 +2283,16 @@ int main(int argc, char **argv)
                    test_dma_tx_pause_reject_preserves_delay);
     qtest_add_func("/sgi-ioc4/dma-rx-drain-threshold",
                    test_dma_rx_drain_and_threshold);
+    qtest_add_func("/sgi-ioc4/dma-loopback-pio-mcr",
+                   test_dma_loopback_pio_mcr);
+    qtest_add_func("/sgi-ioc4/dma-loopback-tx-mcr",
+                   test_dma_loopback_tx_mcr);
+    qtest_add_func("/sgi-ioc4/dma-loopback-shadow-reset",
+                   test_dma_loopback_shadow_reset);
+    qtest_add_func("/sgi-ioc4/dma-loopback-external-retry",
+                   test_dma_loopback_external_retry);
+    qtest_add_func("/sgi-ioc4/dma-loopback-full-ring-recovery",
+                   test_dma_loopback_full_ring_recovery);
     qtest_add_func("/sgi-ioc4/dma-tx-wrap-1k", test_dma_tx_wrap_1k);
     qtest_add_func("/sgi-ioc4/dma-tx-wrap-4k", test_dma_tx_wrap_4k);
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
