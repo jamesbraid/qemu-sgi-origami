@@ -198,6 +198,42 @@ static inline uint32_t mgras_test_pixel(QTestState *qts, uint32_t x, uint32_t y)
     return mgras_qom_get_uint(qts, "x-test-pixel");
 }
 
+/*
+ * The `count` pixels along line y from x, each what mgras_test_pixel()
+ * reads there, from one x-test-pixel-row command. Free the result.
+ */
+static inline uint32_t *mgras_test_pixel_row(QTestState *qts, uint32_t x,
+                                             uint32_t y, uint32_t count)
+{
+    uint32_t *row = g_new0(uint32_t, count);
+    QDict *reply;
+    const char *digits;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-count', 'value': %u}}", MGRAS_QOM_PATH,
+        count);
+    reply = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-row'}}", MGRAS_QOM_PATH);
+    digits = qdict_get_str(reply, "return");
+    g_assert_cmpuint(strlen(digits), ==, count * 8);
+    for (uint32_t i = 0; i < count; i++) {
+        char word[9] = { 0 };
+
+        memcpy(word, digits + i * 8, 8);
+        row[i] = g_ascii_strtoull(word, NULL, 16);
+    }
+    qobject_unref(reply);
+    return row;
+}
+
 static inline uint32_t mgras_test_display_pixel(QTestState *qts, uint32_t x,
                                                 uint32_t y)
 {
@@ -855,6 +891,13 @@ static inline void gl_check_spans(const uint32_t *rgb, const GlSpan *spans,
 }
 
 /* Window pixel (x, y), y counted up from the bottom of the probe window. */
+/* `count` window pixels along line y from x, as gl_window_pixel() reads. */
+static inline uint32_t *gl_window_row(QTestState *qts, int x, int y,
+                                      uint32_t count)
+{
+    return mgras_test_pixel_row(qts, 256 + x, 383 - y, count);
+}
+
 static inline uint32_t gl_window_pixel(QTestState *qts, int x, int y)
 {
     return mgras_test_pixel(qts, 256 + x, 383 - y);
