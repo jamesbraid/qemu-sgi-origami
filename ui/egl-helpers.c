@@ -126,7 +126,8 @@ void qemu_egl_display_quarantine(QemuEGLDisplayLease *lease)
     egl_record_unlock();
 }
 
-QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp)
+QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(
+    QemuEGLAcquireResult *result, Error **errp)
 {
     const EGLint attrs[] = {
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
@@ -140,6 +141,8 @@ QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp)
     EGLint nconfigs;
     bool initialized = false;
 
+    assert(result);
+    *result = QEMU_EGL_ACQUIRE_HOST_ERROR;
     egl_record_lock();
     if (egl_record && (egl_record->quarantined ||
                        egl_record->mode != DISPLAY_GL_MODE_CORE ||
@@ -149,6 +152,7 @@ QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp)
     }
     lease = g_try_new0(QemuEGLDisplayLease, 1);
     if (!lease) {
+        *result = QEMU_EGL_ACQUIRE_OOM;
         error_setg(errp, "Cannot allocate EGL display lease");
         goto fail_locked;
     }
@@ -158,12 +162,14 @@ QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp)
     }
     record = g_try_new0(QemuEGLDisplayRecord, 1);
     if (!record) {
+        *result = QEMU_EGL_ACQUIRE_OOM;
         error_setg(errp, "Cannot allocate EGL display record");
         goto fail_lease;
     }
     get_platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
         eglGetProcAddress("eglGetPlatformDisplayEXT");
     if (!get_platform) {
+        *result = QEMU_EGL_ACQUIRE_UNAVAILABLE;
         error_setg(errp, "Mesa surfaceless EGL platform is unavailable");
         goto fail_record;
     }
@@ -193,6 +199,7 @@ acquired:
     lease->record = record;
     record->references++;
     egl_record_unlock();
+    *result = QEMU_EGL_ACQUIRE_OK;
     return lease;
 fail_record:
     if (initialized && !eglTerminate(display)) {
@@ -206,6 +213,7 @@ fail_record:
         lease->quarantined = true;
         egl_record = record;
         error_report("egl: surfaceless startup quarantined");
+        *result = QEMU_EGL_ACQUIRE_HOST_ERROR;
         goto fail_locked;
     }
     g_free(record);

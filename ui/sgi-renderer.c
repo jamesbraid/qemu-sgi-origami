@@ -20,34 +20,75 @@ void sgi_renderer_register_gl(const SGIRendererOps *ops)
     gl_ops = ops;
 }
 
-SGIRenderer *sgi_renderer_new(Error **errp)
+SGIRenderCreateResult sgi_renderer_create(SGIRenderer **out, Error **errp)
 {
     Error *local_err = NULL;
+    Error *backend_err = NULL;
     SGIRenderer *renderer;
+    SGIRenderCreateResult backend_result = SGI_RENDER_CREATE_HOST_ERROR;
+    int loaded = 2;
+
+    if (!out) {
+        error_setg(errp, "Missing SGI OpenGL renderer output");
+        return SGI_RENDER_CREATE_HOST_ERROR;
+    }
+    *out = NULL;
 
     if (!gl_ops) {
-        ui_module_load("opengl", &local_err);
+        loaded = ui_module_load("opengl", &local_err);
     }
     if (!gl_ops) {
-        if (local_err) {
-            error_propagate(errp, local_err);
-        } else {
-            error_setg(errp, "SGI OpenGL renderer is unavailable");
+        bool unavailable = !local_err && loaded == 0;
+
+#if !defined(CONFIG_MODULES) && !defined(CONFIG_OPENGL)
+        unavailable = !local_err;
+#endif
+        if (!local_err) {
+            error_setg(&local_err, unavailable ?
+                       "SGI OpenGL renderer is unavailable" :
+                       "SGI OpenGL module did not register a renderer");
         }
-        return NULL;
+        error_propagate(errp, local_err);
+        return unavailable ? SGI_RENDER_CREATE_UNAVAILABLE :
+                             SGI_RENDER_CREATE_HOST_ERROR;
     }
     error_free(local_err);
     renderer = g_try_new0(SGIRenderer, 1);
     if (!renderer) {
         error_setg(errp, "Cannot allocate SGI OpenGL renderer");
-        return NULL;
+        return SGI_RENDER_CREATE_OOM;
     }
     renderer->ops = gl_ops;
-    renderer->opaque = gl_ops->create(errp);
-    if (!renderer->opaque) {
+    renderer->opaque = gl_ops->create(&backend_result, &backend_err);
+    if (!renderer->opaque || backend_result != SGI_RENDER_CREATE_OK ||
+        backend_err) {
+        bool inconsistent = renderer->opaque ||
+                            backend_result == SGI_RENDER_CREATE_OK;
+
+        if (renderer->opaque) {
+            gl_ops->destroy(renderer->opaque);
+        }
         g_free(renderer);
-        return NULL;
+        if (inconsistent || (backend_result != SGI_RENDER_CREATE_UNAVAILABLE &&
+                             backend_result != SGI_RENDER_CREATE_OOM &&
+                             backend_result != SGI_RENDER_CREATE_HOST_ERROR)) {
+            backend_result = SGI_RENDER_CREATE_HOST_ERROR;
+        }
+        if (!backend_err) {
+            error_setg(&backend_err, "SGI OpenGL backend creation failed");
+        }
+        error_propagate(errp, backend_err);
+        return backend_result;
     }
+    *out = renderer;
+    return SGI_RENDER_CREATE_OK;
+}
+
+SGIRenderer *sgi_renderer_new(Error **errp)
+{
+    SGIRenderer *renderer = NULL;
+
+    sgi_renderer_create(&renderer, errp);
     return renderer;
 }
 

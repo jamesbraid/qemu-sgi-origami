@@ -81,12 +81,21 @@ bool qemu_egl_has_dmabuf(void);
 
 typedef struct QemuEGLDisplayLease QemuEGLDisplayLease;
 
+typedef enum QemuEGLAcquireResult {
+    QEMU_EGL_ACQUIRE_OK,
+    QEMU_EGL_ACQUIRE_UNAVAILABLE,
+    QEMU_EGL_ACQUIRE_OOM,
+    QEMU_EGL_ACQUIRE_HOST_ERROR,
+} QemuEGLAcquireResult;
+
 bool egl_init_session(const char *rendernode, DisplayGLMode mode,
                       QemuEGLDisplayLease **session, Error **errp);
 void egl_cleanup_session(QemuEGLDisplayLease *session);
 QemuEGLDisplayLease *qemu_egl_display_acquire_existing(DisplayGLMode mode,
                                                      Error **errp);
-QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(Error **errp);
+/* Distinguish missing EGL support from setup and allocation failure. */
+QemuEGLDisplayLease *qemu_egl_display_acquire_surfaceless(
+    QemuEGLAcquireResult *result, Error **errp);
 bool qemu_egl_display_acquire_context(QemuEGLDisplayLease **lease,
                                       Error **errp);
 DisplayGLMode qemu_egl_display_lease_mode(const QemuEGLDisplayLease *lease);
