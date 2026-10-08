@@ -666,10 +666,11 @@ static void test_headless_display_accepts_ui_context(void)
 
 typedef struct NativeDrawFixture {
     uint32_t colour[4][4][3];
+    uint32_t texel[4];
     uint32_t tag[4][4];
     uint8_t written[4][4];
     unsigned snapshots, commits, dense_commits;
-    bool fail_snapshot, fail_commit;
+    bool fail_snapshot, fail_texture_snapshot, fail_commit;
 } NativeDrawFixture;
 
 static SGIRenderResult native_draw_snapshot(void *opaque,
@@ -684,9 +685,17 @@ static SGIRenderResult native_draw_snapshot(void *opaque,
     NativeDrawFixture *f = opaque;
 
     f->snapshots++;
-    if (f->fail_snapshot) {
+    if (f->fail_snapshot ||
+        (resource->role == SGI_RENDER_TEXTURE && f->fail_texture_snapshot)) {
         error_setg(errp, "native snapshot failed");
         return SGI_RENDER_RESOURCE_ERROR;
+    }
+    if (resource->role == SGI_RENDER_TEXTURE) {
+        g_assert_cmpuint(resource->width, ==, 1);
+        g_assert_cmpuint(resource->height, ==, 1);
+        g_assert_cmpuint(capacity_slots, ==, 4);
+        memcpy(slots, f->texel, sizeof(f->texel));
+        return SGI_RENDER_OK;
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
@@ -1697,6 +1706,187 @@ static void test_blend_without_native_alpha(void)
     sgi_renderer_free(renderer);
 }
 
+static bool unexpected_texture_read(void *opaque, uint32_t x, uint32_t y,
+                                    uint32_t *rgba)
+{
+    g_assert_not_reached();
+}
+
+static void test_typed_texture_triangle(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float xy[3][2] = {
+        { -1, -1 }, { 1, -1 }, { -1, 1 },
+    };
+    static const struct {
+        uint32_t mode;
+        float primary[3];
+        uint32_t texel[4];
+        uint8_t expected[3];
+    } cases[] = {
+        { SGI_GL_REPLACE, { 1, 1, 1 }, { 64, 128, 192, 170 },
+          { 64, 128, 192 } },
+        { SGI_GL_MODULATE, { 0.5f, 1, 0 }, { 128, 128, 128, 170 },
+          { 64, 128, 0 } },
+        { SGI_GL_DECAL, { 0.5f, 0, 0 }, { 0, 0, 255, 170 },
+          { 43, 0, 170 } },
+    };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resources[] = {
+        {
+            .backing_id = 1, .backing_generation = 1,
+            .view_id = 2, .view_generation = 1,
+            .role = SGI_RENDER_COLOUR, .target = 7,
+            .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+            .width = 4, .height = 4, .depth = 1,
+            .bottom_origin = true, .component_count = 3,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+            },
+        },
+        {
+            .backing_id = 3, .backing_generation = 1,
+            .view_id = 4, .view_generation = 1,
+            .role = SGI_RENDER_TEXTURE,
+            .buffer = SGI_RENDER_BUFFER_NONE, .eye = SGI_RENDER_MONO,
+            .width = 1, .height = 1, .depth = 1,
+            .bottom_origin = true, .component_count = 4,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+            },
+        },
+    };
+    SGIGLTexImage image = {
+        .width = 1, .height = 1, .depth = 1,
+        .base_format = SGI_GL_RGBA,
+        .min_filter = SGI_GL_NEAREST, .mag_filter = SGI_GL_NEAREST,
+        .wrap_s = SGI_GL_CLAMP_TO_EDGE, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .read_texel = unexpected_texture_read,
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit_covered = native_draw_commit_covered,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = resources, .resource_count = 2,
+        .resource_ops = &ops, .texture = &image,
+    };
+    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .texture_2d = 1,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+            .front = 7,
+        },
+        .viewport = { 0, 0, 4, 4 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+        vertices[i][SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_texture_supported(renderer, &err));
+    g_assert_null(err);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        state.texture_env_mode = cases[i].mode;
+        memcpy(f.texel, cases[i].texel, sizeof(f.texel));
+        memset(f.colour, 0, sizeof(f.colour));
+        memset(f.written, 0, sizeof(f.written));
+        for (unsigned v = 0; v < 3; v++) {
+            memcpy(&vertices[v][SGI_GL_V_COLOR], cases[i].primary,
+                   sizeof(cases[i].primary));
+        }
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_OK);
+        g_assert_null(err);
+        g_assert_cmpuint(f.snapshots, ==, (i + 1) * 2);
+        g_assert_cmpuint(f.commits, ==, i + 1);
+        for (unsigned c = 0; c < 3; c++) {
+            g_assert_cmpuint(f.colour[0][0][c], ==, cases[i].expected[c]);
+        }
+        g_assert_cmpuint(f.written[0][0], ==, 1);
+        g_assert_cmpuint(f.written[3][3], ==, 0);
+    }
+    state.texture_3d = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    state.texture_3d = 0;
+    image.min_filter = SGI_GL_LINEAR;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.min_filter = SGI_GL_NEAREST;
+    image.base_format = SGI_GL_RGB;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.base_format = SGI_GL_RGBA;
+    resources[1].border[0] = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    resources[1].border[0] = 0;
+    vertices[0][SGI_GL_V_TEXCOORD + 3] = 0;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    vertices[0][SGI_GL_V_TEXCOORD + 3] = 1;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 3);
+    f.fail_texture_snapshot = true;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.snapshots, ==, 8);
+    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 43);
+    sgi_renderer_free(renderer);
+}
+
 static void test_frame_coverage_capacity(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -2406,6 +2596,8 @@ int main(int argc, char **argv)
                     test_blend_without_native_alpha);
     g_test_add_func("/sgi-renderer-gl/frame-coverage-capacity",
                     test_frame_coverage_capacity);
+    g_test_add_func("/sgi-renderer-gl/typed-texture-triangle",
+                    test_typed_texture_triangle);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
                     test_decoded_clear_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",

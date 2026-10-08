@@ -46,6 +46,57 @@ static const SGIRenderResource *sgi_render_scalar_resource(
     return found;
 }
 
+static const SGIRenderResource *sgi_render_texture_resource(
+    const SGIRasterTarget *target, const SGIGLDrawState *st)
+{
+    const SGIGLTexImage *image = target->texture;
+    const SGIRenderResource *res = NULL;
+
+    if (!image || image->volume || image->pyramid || image->border ||
+        image->base_format != SGI_GL_RGBA ||
+        image->min_filter != SGI_GL_NEAREST ||
+        image->mag_filter != SGI_GL_NEAREST ||
+        (image->wrap_s != SGI_GL_REPEAT &&
+         image->wrap_s != SGI_GL_CLAMP_TO_EDGE) ||
+        (image->wrap_t != SGI_GL_REPEAT &&
+         image->wrap_t != SGI_GL_CLAMP_TO_EDGE) ||
+        image->post_filter || image->detail_image ||
+        image->read_filter_weight || image->lod_scale_s ||
+        image->lod_scale_t ||
+        (st->texture_env_mode != SGI_GL_REPLACE &&
+         st->texture_env_mode != SGI_GL_MODULATE &&
+         st->texture_env_mode != SGI_GL_DECAL)) {
+        return NULL;
+    }
+    for (size_t i = 0; i < target->resource_count; i++) {
+        const SGIRenderResource *candidate = &target->resources[i];
+
+        if (candidate->role == SGI_RENDER_TEXTURE) {
+            if (res) {
+                return NULL;
+            }
+            res = candidate;
+        }
+    }
+    if (!res || !res->width || !res->height || res->width > INT_MAX ||
+        res->height > INT_MAX || res->width != image->width ||
+        res->height != image->height || res->depth != 1 ||
+        res->texture_level || res->border[0] || res->border[1] ||
+        res->border[2] || !res->bottom_origin ||
+        res->buffer != SGI_RENDER_BUFFER_NONE ||
+        res->component_count != 4) {
+        return NULL;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (res->component[c].channel != SGI_RENDER_R + c ||
+            res->component[c].numeric != SGI_RENDER_UNORM ||
+            res->component[c].storage_bits != 8) {
+            return NULL;
+        }
+    }
+    return res;
+}
+
 static bool sgi_render_blend_pair_supported(const SGIGLDrawState *st)
 {
     return (st->blend_src == SGI_GL_SRC_ALPHA &&
@@ -76,7 +127,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         st->depth_test || st->stencil_test || st->blend > 1 ||
         st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
         st->color_logic_op ||
-        st->index_logic_op || st->texture_2d || st->texture_3d ||
+        st->index_logic_op || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
         !st->drawable.bound ||
         st->drawable.origin[0] || st->drawable.origin[1]) {
@@ -93,7 +144,10 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
 
         for (unsigned c = 0; c < 4; c++) {
             if (!isfinite(vertex[SGI_GL_V_POSITION + c]) ||
-                !isfinite(vertex[SGI_GL_V_COLOR + c])) {
+                !isfinite(vertex[SGI_GL_V_COLOR + c]) ||
+                (st->texture_2d &&
+                 (!isfinite(vertex[SGI_GL_V_TEXCOORD + c]) ||
+                  (c == 3 && vertex[SGI_GL_V_TEXCOORD + c] <= 0)))) {
                 return false;
             }
         }
@@ -123,6 +177,16 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
          res->component_count != 3)) {
         return false;
     }
+    if (st->texture_2d) {
+        if (st->blend) {
+            return false;
+        }
+        for (unsigned c = 0; c < res->component_count; c++) {
+            if (res->component[c].storage_bits != 8) {
+                return false;
+            }
+        }
+    }
     *result = res;
     return true;
 }
@@ -133,12 +197,14 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIGLDraw *draw, Error **errp)
 {
     const SGIRenderResource *resource;
+    const SGIRenderResource *texture_resource = NULL;
     const SGIClipList *clip;
     SGIRenderRect rect;
     SGIRendererFrame frame = { 0 };
     g_autofree uint32_t *slots = NULL;
     g_autofree uint16_t *rgba = NULL;
     g_autofree uint8_t *written = NULL;
+    g_autofree uint32_t *texture_slots = NULL;
     float vertices[3][SGI_RENDERER_FRAME_VERTEX_FLOATS];
     size_t pixels, nslots, nrgba;
     bool any_written = false;
@@ -175,6 +241,17 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     if (!sgi_render_plain_triangle(target, draw, &resource)) {
         error_setg(errp, "Unsupported SGI Mesa draw state or resource");
         return SGI_RENDER_UNSUPPORTED;
+    }
+    if (draw->state->texture_2d) {
+        texture_resource = sgi_render_texture_resource(target, draw->state);
+        if (!texture_resource) {
+            error_setg(errp,
+                       "Unsupported SGI Mesa texture resource or sampler");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        if (!sgi_renderer_texture_supported(renderer, errp)) {
+            return SGI_RENDER_UNSUPPORTED;
+        }
     }
     if (!target->resource_ops || !target->resource_ops->commit_covered) {
         error_setg(errp, "SGI Mesa draw needs a covered commit provider");
@@ -240,6 +317,50 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     if (status != SGI_RENDER_OK) {
         return status;
     }
+    if (texture_resource) {
+        size_t texels, texture_components;
+        SGIRenderRect texture_rect = {
+            .x1 = texture_resource->width - 1,
+            .y1 = texture_resource->height - 1,
+        };
+
+        if (texture_resource->width > SIZE_MAX / texture_resource->height ||
+            (uint64_t)texture_resource->width * texture_resource->height >
+                SIZE_MAX / 4) {
+            error_setg(errp, "SGI Mesa texture exceeds host address space");
+            return SGI_RENDER_RESOURCE_ERROR;
+        }
+        texels = (size_t)texture_resource->width * texture_resource->height;
+        texture_components = texels * 4;
+        texture_slots = g_try_new(uint32_t, texture_components);
+        if (!texture_slots) {
+            error_setg(errp, "Cannot allocate SGI Mesa texture snapshot");
+            return SGI_RENDER_OOM;
+        }
+        status = sgi_render_resource_snapshot(target, texture_resource, 0,
+                                              &texture_rect, texture_slots,
+                                              texture_resource->width * 4,
+                                              texture_components, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
+        }
+        for (size_t i = 0; i < texture_components; i++) {
+            if (texture_slots[i] > UINT8_MAX) {
+                error_setg(errp, "SGI Mesa texture snapshot has invalid bits");
+                return SGI_RENDER_RESOURCE_ERROR;
+            }
+        }
+        frame.texture = (SGIRendererTexture2D) {
+            .width = texture_resource->width,
+            .height = texture_resource->height,
+            .env_mode = draw->state->texture_env_mode,
+            .wrap_s = target->texture->wrap_s,
+            .wrap_t = target->texture->wrap_t,
+            .component_bits = 8,
+            .slots = texture_slots,
+            .capacity_slots = texture_components,
+        };
+    }
     for (size_t i = 0; i < pixels; i++) {
         for (unsigned c = 0; c < resource->component_count; c++) {
             unsigned bits = resource->component[c].storage_bits;
@@ -259,6 +380,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
 
         memcpy(&vertices[i][0], &src[SGI_GL_V_POSITION], 4 * sizeof(float));
         memcpy(&vertices[i][4], &src[SGI_GL_V_COLOR], 4 * sizeof(float));
+        if (texture_resource) {
+            memcpy(&vertices[i][8], &src[SGI_GL_V_TEXCOORD],
+                   4 * sizeof(float));
+        }
     }
     frame.count = 3;
     frame.vertices = &vertices[0][0];
