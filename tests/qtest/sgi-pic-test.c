@@ -27,8 +27,12 @@
 #define SERVING_REGS 0x51000000ULL
 #define CARD(n) (BASE + (n ? 0xc0000000ULL : 0x40000000ULL) + 0x01000000)
 #define IOC4_CONFIG (HEAD(0) + 0x21000)
+#define IOC4_CONFIG2 (HEAD(0) + 0x22000)
 #define IOC4_BAR 0x01000000ULL
+#define IOC4_BAR2 0x02000000ULL
 #define IOC4_MEMORY (HEAD(0) + 0x40000000ULL + IOC4_BAR)
+#define IOC4_MEMORY2 (HEAD(0) + 0x40000000ULL + IOC4_BAR2)
+#define IOC4_ATA_READBACK 0x148
 #define IOC4_UART0 (IOC4_MEMORY + 0x380)
 #define IOC4_DMA_BASE 0x300
 #define IOC4_DMA_CONTROL 0x310
@@ -566,7 +570,7 @@ static QTestState *pic_ioc4_pci_status_start(bool incoming, bool compatible)
         "-device sgi-ioc4,bus=pic-head-0.0,addr=1%s "
         "-device sgi-ioc4,bus=pic-head-0.0,addr=2",
         incoming ? "-incoming defer " : "",
-        compatible ? ",pci-status-compat=on" : "");
+        compatible ? ",pci-status-compat=on,ata-readback-compat=on" : "");
 
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
@@ -585,6 +589,20 @@ static void test_ioc4_pci_status_compatibility(void)
     g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 1) + 4), ==,
                     0x02200000);
     g_assert_cmphex(qtest_readl(qts, PIC_SHORT_CFG(0, 2) + 4), ==, 0);
+
+    qtest_writel(qts, IOC4_CONFIG + 4, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, IOC4_CONFIG + 0x10, IOC4_BAR);
+    qtest_writel(qts, IOC4_CONFIG2 + 4, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, IOC4_CONFIG2 + 0x10, IOC4_BAR2);
+    qtest_writel(qts, IOC4_MEMORY + IOC4_ATA_READBACK,
+                 bswap32(0x12345678));
+    g_assert_cmphex(bswap32(qtest_readl(
+                        qts, IOC4_MEMORY + IOC4_ATA_READBACK)), ==,
+                    0x12345678);
+    qtest_writel(qts, IOC4_MEMORY2 + IOC4_ATA_READBACK,
+                 bswap32(0xffffffff));
+    g_assert_cmphex(bswap32(qtest_readl(
+                        qts, IOC4_MEMORY2 + IOC4_ATA_READBACK)), ==, 0);
 
     qtest_writew(qts, PIC_SHORT_CFG(0, 1) + 6, PCI_COMMAND_MEMORY);
     g_assert_cmphex(qtest_readw(qts, PIC_SHORT_CFG(0, 1) + 4), ==, 0x0220);
