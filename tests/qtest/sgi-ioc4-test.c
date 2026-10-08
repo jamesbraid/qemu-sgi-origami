@@ -1618,9 +1618,19 @@ static void test_ata_readback_rejects_width(void)
     QTestState *qts = ioc4_start_readback(false, true);
 
     reg_write(qts, ATA_READBACK, 0x12345678);
+    qtest_readb(qts, BAR + ATA_READBACK);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
+    qtest_readw(qts, BAR + ATA_READBACK);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
     qtest_writeb(qts, BAR + ATA_READBACK, 0xaa);
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
     qtest_writew(qts, BAR + ATA_READBACK, 0xbbcc);
-    /* The XBridge splits 64-bit system accesses into 32-bit PCI writes. */
+    g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
+
+    g_assert_cmphex(reg_read(qts, 0x144), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x14c), ==, 0);
+    reg_write(qts, 0x144, 0xaabbccdd);
+    reg_write(qts, 0x14c, 0x55667788);
     g_assert_cmphex(reg_read(qts, ATA_READBACK), ==, 0x12345678);
     qtest_quit(qts);
 }
