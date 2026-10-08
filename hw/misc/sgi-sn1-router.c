@@ -45,8 +45,8 @@ struct SGISN1RouterState {
     uint64_t channel_test[SGI_SN1_ROUTER_PORTS];
     uint64_t remote_reset_mask[SGI_SN1_ROUTER_PORTS];
     uint64_t inactive_barrier[INACTIVE_BARRIER_CONTEXTS];
-    uint8_t local[SGI_SN1_ROUTER_PORTS][128];
-    uint8_t meta[SGI_SN1_ROUTER_PORTS][16];
+    uint64_t local[SGI_SN1_ROUTER_PORTS][128];
+    uint64_t meta[SGI_SN1_ROUTER_PORTS][16];
     uint64_t generation;
     void (*changed)(void *);
     void *changed_opaque;
@@ -131,7 +131,7 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
 {
     hwaddr address = packet->addr;
     uint64_t *storage = NULL;
-    uint8_t *table = NULL;
+    uint64_t *table = NULL;
     uint64_t mask = UINT64_MAX;
     bool write = packet->op == SGI_NET_PACKET_WRITE;
     bool notify = true;
@@ -272,7 +272,7 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     }
     if (write) {
         if (table) {
-            *table = packet->data & 7;
+            *table = packet->data;
         } else {
             *storage = packet->data & mask;
         }
@@ -295,7 +295,7 @@ bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
         return false;
     }
     *output = 1 + ((ingress - 1 + turn) % SGI_SN1_ROUTER_PORTS);
-    *next_turn = s->local[*output - 1][destination];
+    *next_turn = s->local[*output - 1][destination] & 7;
     return true;
 }
 
@@ -414,11 +414,6 @@ static int router_post_load(void *opaque, int version_id)
             s->remote_reset_mask[p] & ~REMOTE_RESET_MASK) {
             return -EINVAL;
         }
-        for (unsigned i = 0; i < 128; i++) {
-            if (s->local[p][i] > 7 || (i < 16 && s->meta[p][i] > 7)) {
-                return -EINVAL;
-            }
-        }
     }
     for (unsigned context = 0; context < INACTIVE_BARRIER_CONTEXTS; context++) {
         if (s->inactive_barrier[context] & ~INACTIVE_BARRIER_MASK) {
@@ -452,9 +447,9 @@ static const VMStateDescription vmstate_router = {
                              SGI_SN1_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(inactive_barrier, SGISN1RouterState,
                              INACTIVE_BARRIER_CONTEXTS),
-        VMSTATE_UINT8_2DARRAY(local, SGISN1RouterState,
+        VMSTATE_UINT64_2DARRAY(local, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS, 128),
-        VMSTATE_UINT8_2DARRAY(meta, SGISN1RouterState,
+        VMSTATE_UINT64_2DARRAY(meta, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS, 16),
         VMSTATE_END_OF_LIST()
     },

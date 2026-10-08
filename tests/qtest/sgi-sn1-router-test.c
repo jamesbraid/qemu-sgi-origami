@@ -472,12 +472,12 @@ static void test_registers(void)
         for (unsigned i = 0; i < 128; i++) {
             qtest_writeq(s, BASE + bank[p - 1] + 0x200 + 8 * i, i + p);
             g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 0x200 + 8 * i),
-                            ==, (i + p) & 7);
+                            ==, i + p);
         }
         for (unsigned i = 0; i < 16; i++) {
             qtest_writeq(s, BASE + bank[p - 1] + 0x100 + 8 * i, i + p);
             g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 0x100 + 8 * i),
-                            ==, (i + p) & 7);
+                            ==, i + p);
         }
         g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 8), ==, 0);
     }
@@ -1035,8 +1035,10 @@ static void test_routing(void)
 {
     QTestState *s = qtest_init(ARGS);
 
-    qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8, 7);
-    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8,
+                 UINT64_C(0xa5c3f00d17654327));
+    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8,
+                 UINT64_C(0x5a3c0ff0fedcba9a));
     set(s, "destination", 5);
     set(s, "turn", 3);
     g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
@@ -1168,6 +1170,38 @@ static void test_reset(void)
     qtest_quit(s);
 }
 
+static void test_route_table_words(void)
+{
+    QTestState *s = qtest_init(ARGS);
+    const uint64_t first = UINT64_C(0xa5c3f00d17654321);
+    const uint64_t second = UINT64_C(0x5a3c0ff0fedcba98);
+    const uint64_t global1 = BASE + bank[0] + 0x100 + 3 * 8;
+    const uint64_t local1 = BASE + bank[0] + 0x200 + 5 * 8;
+    const uint64_t global8 = BASE + bank[7] + 0x100 + 15 * 8;
+    const uint64_t local8 = BASE + bank[7] + 0x200 + 127 * 8;
+
+    qtest_writeq(s, global1, first);
+    qtest_writeq(s, local1, second);
+    qtest_writeq(s, global8, second);
+    qtest_writeq(s, local8, first);
+    g_assert_cmphex(qtest_readq(s, global1), ==, first);
+    g_assert_cmphex(qtest_readq(s, local1), ==, second);
+    g_assert_cmphex(qtest_readq(s, global8), ==, second);
+    g_assert_cmphex(qtest_readq(s, local8), ==, first);
+    g_assert_cmphex(qtest_readq(s, global1 + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, local1 + 8), ==, 0);
+    qtest_writeq(s, BASE + bank[0] + 0x180, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, global1), ==, first);
+    qtest_writeq(s, BASE + bank[7] + 0x600, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, local8), ==, first);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, global1), ==, 0);
+    g_assert_cmphex(qtest_readq(s, local1), ==, 0);
+    g_assert_cmphex(qtest_readq(s, global8), ==, 0);
+    g_assert_cmphex(qtest_readq(s, local8), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_migration(void)
 {
     g_autofree char *dir = g_dir_make_tmp("sn1-router-migrate-XXXXXX", NULL);
@@ -1179,6 +1213,10 @@ static void test_migration(void)
     qtest_writeq(from, BASE + 0x100, 0x123456789abcdef0);
     qtest_readq(from, BASE + 0x518);
     qtest_writeq(from, BASE + 0x10, 1 << 12);
+    qtest_writeq(from, BASE + bank[0] + 0x100 + 3 * 8,
+                 UINT64_C(0xa5c3f00d17654321));
+    qtest_writeq(from, BASE + bank[7] + 0x200 + 127 * 8,
+                 UINT64_C(0x5a3c0ff0fedcba98));
     for (unsigned p = 0; p < 8; p++) {
         qtest_writeq(from, BASE + bank[p] + 0x200, p);
         qtest_writeq(from, BASE + bank[p] + 0x100, 7 - p);
@@ -1197,6 +1235,10 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, BASE + 0x100), ==, 0x123456789abcdef0);
     g_assert_cmphex(qtest_readq(to, BASE + 0x518), ==, 1);
     g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 1 << 12);
+    g_assert_cmphex(qtest_readq(to, BASE + bank[0] + 0x100 + 3 * 8), ==,
+                    UINT64_C(0xa5c3f00d17654321));
+    g_assert_cmphex(qtest_readq(to, BASE + bank[7] + 0x200 + 127 * 8), ==,
+                    UINT64_C(0x5a3c0ff0fedcba98));
     for (unsigned p = 0; p < 8; p++) {
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x200), ==, p);
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x100), ==, 7 - p);
@@ -1322,6 +1364,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/silent-peer", test_silent_peer);
     qtest_add_func("/sgi/sn1-router/refusals", test_refusals);
     qtest_add_func("/sgi/sn1-router/reset", test_reset);
+    qtest_add_func("/sgi/sn1-router/route-table-words",
+                   test_route_table_words);
     qtest_add_func("/sgi/sn1-router/migration", test_migration);
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
     qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
