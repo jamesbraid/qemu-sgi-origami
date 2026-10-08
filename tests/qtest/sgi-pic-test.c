@@ -2205,22 +2205,22 @@ static void test_direct64_bedrock_high_payload_source_denial(void)
 }
 
 static void assert_pic_identity_word(uint64_t value, unsigned head,
-                                     uint32_t manufacturer)
+                                     uint32_t manufacturer, uint32_t low_bit)
 {
     g_assert_cmphex((value >> 28) & 0xf, ==, 3);
     g_assert_cmphex((value >> 12) & 0xffff, ==,
                     head ? 0xd112 : 0xd102);
     g_assert_cmphex((value & 0xffe) >> 1, ==, manufacturer);
-    g_assert_cmphex(value & 1, ==, 0);
+    g_assert_cmphex(value & 1, ==, low_bit);
 }
 
 static void assert_pic_identity(QTestState *qts, uint32_t manufacturer)
 {
     for (unsigned head = 0; head < 2; head++) {
         assert_pic_identity_word(qtest_readq(qts, HEAD(head)), head,
-                                 manufacturer);
+                                 manufacturer, 0);
         assert_pic_identity_word(qtest_readl(qts, HEAD(head) + 4), head,
-                                 manufacturer);
+                                 manufacturer, 0);
     }
 }
 
@@ -2235,6 +2235,28 @@ static void test_identity_fields(void)
     assert_pic_identity(qts, 0x24);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x20), ==, 0);
+    qtest_quit(qts);
+}
+
+static void assert_runtime_pic_identity(QTestState *qts)
+{
+    for (unsigned head = 0; head < 2; head++) {
+        assert_pic_identity_word(qtest_readq(qts, HEAD(head)), head,
+                                 0x24, 1);
+        assert_pic_identity_word(qtest_readl(qts, HEAD(head) + 4), head,
+                                 0x24, 1);
+    }
+}
+
+static void test_runtime_identity_bit(void)
+{
+    QTestState *qts = pic_runtime_start(false, NULL);
+
+    assert_runtime_pic_identity(qts);
+    qtest_writeq(qts, HEAD(0) + 0x20, 5);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    assert_runtime_pic_identity(qts);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0);
     qtest_quit(qts);
 }
 
@@ -3807,10 +3829,12 @@ static void test_runtime_profile_migration(void)
     qtest_writeq(from, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
     qtest_writel(from, CPU_HEAD(0) + 0x600024, 0x12345678);
     g_assert_cmphex(qtest_readl(from, BASE + 0x44000024), ==, 0x12345678);
+    assert_runtime_pic_identity(from);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
+    assert_runtime_pic_identity(to);
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x80), ==,
                     UINT64_C(5) << 20);
     g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x130), ==,
@@ -4396,6 +4420,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/unsupported-registers",
                    test_unsupported_registers);
     qtest_add_func("/sgi-pic/identity-fields", test_identity_fields);
+    qtest_add_func("/sgi-pic/runtime-identity-bit", test_runtime_identity_bit);
     qtest_add_func("/sgi-pic/cpu-word-view-registers",
                    test_cpu_word_view_registers);
     qtest_add_func("/sgi-pic/cpu-word-view-profile-isolation",
