@@ -896,14 +896,26 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
             REG(s, 0x170) = 0;
         }
         return;
-    case 0x108:
+    case 0x108: {
+        uint8_t newly_enabled;
+
         /* Rev A reserves bits 8 and 16; Rev B readback is an approximation. */
         mask = 0x7ffefeff;
         if ((REG(s, 0) >> 28) == 2) {
             mask |= (1U << 8) | (1U << 16);
         }
         value &= mask;
-        break;
+        /* Rev 2 approximates an enable edge on a live pin as an assertion. */
+        newly_enabled = (REG(s, 0) >> 28) == 2 ?
+            (value & ~REG(s, 0x108) & s->pins) : 0;
+        REG(s, 0x108) = value;
+        for (unsigned pin = 0; pin < 8; pin++) {
+            if (newly_enabled & (1U << pin)) {
+                xbridge_packet(s, pin, true);
+            }
+        }
+        return;
+    }
     default:
         if (off >= 0x130 && off <= 0x168) {
             value &= 0x3ffff;

@@ -604,6 +604,38 @@ static void test_interrupt_packets(void)
     qtest_quit(qts);
 }
 
+static void test_unmask_asserted_pin(void)
+{
+    QTestState *qts = transport_start("");
+    const uint64_t target = TARGET_C + SCRATCH;
+    const uint64_t untouched = 0x123456789abcdef0ULL;
+
+    reg_write(qts, 0x30, 0x000cabf4);
+    reg_write(qts, 0x38, SCRATCH);
+    reg_write(qts, 0x138, 0x4885);
+    qtest_writeq(qts, target, untouched);
+    qtest_set_irq_in(qts, HEAD, NULL, 1, 1);
+    g_assert_cmphex(reg_read(qts, 0x100) & 2, ==, 2);
+    g_assert_cmphex(qtest_readq(qts, target), ==, untouched);
+
+    qtest_writel(qts, BASE + 0x10c, 2);
+    g_assert_cmphex(qtest_readq(qts, target), ==, 0x185);
+    qtest_writeq(qts, target, untouched);
+    qtest_writel(qts, BASE + 0x10c, 2);
+    g_assert_cmphex(qtest_readq(qts, target), ==, untouched);
+    qtest_writel(qts, BASE + 0x10c, 0);
+    g_assert_cmphex(qtest_readq(qts, target), ==, untouched);
+    qtest_writel(qts, BASE + 0x10c, 2);
+    g_assert_cmphex(qtest_readq(qts, target), ==, 0x185);
+
+    qtest_writeq(qts, target, untouched);
+    qtest_set_irq_in(qts, HEAD, NULL, 1, 0);
+    g_assert_cmphex(qtest_readq(qts, target), ==, untouched);
+    qtest_set_irq_in(qts, HEAD, NULL, 1, 1);
+    g_assert_cmphex(qtest_readq(qts, target), ==, 0x185);
+    qtest_quit(qts);
+}
+
 static void test_byte_lanes(void)
 {
     QTestState *qts = transport_start("");
@@ -2234,6 +2266,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/dma-memory", test_dma_memory);
     qtest_add_func("/sn1/xbridge/dma-attributes", test_dma_attributes);
     qtest_add_func("/sn1/xbridge/interrupt-packets", test_interrupt_packets);
+    qtest_add_func("/sn1/xbridge/unmask-asserted-pin",
+                   test_unmask_asserted_pin);
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",
                    test_ioc3_pio_swap_controls);
