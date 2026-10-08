@@ -6631,8 +6631,10 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "up this many milliseconds after the machine starts, as the "
         "controller does on hardware (about 6000 on an Origin 2000; an "
         "Origin 200 master whose NVRAM says automatic power-on, and its "
-        "slave through the master's forward). Zero, the default, starts "
-        "every module powered.");
+        "slave through the master's forward). Zero, the default, powers an "
+        "Origin 2000 module up as its controller starts, through the "
+        "controller's power-up with no wait, and starts an Origin 200 "
+        "module powered.");
 
     object_class_property_add(oc, "board-id-word", "uint64",
                               sgi_machine_get_board_id_word,

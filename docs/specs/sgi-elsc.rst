@@ -485,8 +485,9 @@ Every pending event in the datasheet's rule keeps the machine alive: a
 power-cycle interval or power-up sequence, a watchdog stage that leads to
 a cycle, the controller's start-up power-up not yet run, and a master's
 power-up or power-down forward not yet delivered to its slave or dropped.
-The start-up power-up arises only with the machine's ``module-start-delay``
-(`Start-up power-up`_); by default every module starts powered.
+The start-up power-up with a delay is the machine's ``module-start-delay``
+(`Start-up power-up`_); without one an Origin 2000 module is powered in the
+controller's own start, before any processor runs.
 
 Master and slave
 ----------------
@@ -536,16 +537,24 @@ Start-up power-up
 On hardware an Origin 2000 controller powers its module up about six
 seconds after it starts, and an Origin 200 master does if its NVRAM says
 automatic power-on (``aut``); an Origin 200 slave waits for its master's
-forward. The model collapses the wait by default: every module starts
-powered, because every guest and test starts its processors at once and the
-stock PROM boots the same either way. The machine property
-``module-start-delay`` (milliseconds) models it instead: every module
-starts off, the controller counts the delay on the virtual clock, then
-runs the power-up sequence, and the machine does not end while that is
-pending. The key switch, over-temperature and a multimodule controller,
-which the datasheet says cancel the Origin 2000 power-up, are not modelled
-(the key is on, the module is cool and no multimodule controller is
-present).
+forward. An Origin 2000 module starts unpowered and its controller powers it
+up at its own start, through the same power-up that ends a power cycle: the
+cold-power latch is set and the module's power output rises, which is what
+starts it. The display keeps the version string it shows at start; whether a
+start-up power-up replaces it with a power-up message is not known. By default the model runs that
+at once, with none of the wait, inside the controller's reset (the machine's
+own reset, which stands for the cabinet's AC cycle), not on a timer, so
+power is on before any processor runs its first instruction. Every guest and
+test starts its processors at time zero, which a wait there would change. An
+Origin 200 module starts powered by default.
+
+The machine property ``module-start-delay`` (milliseconds) models the wait
+instead: every module starts off, the controller counts the delay on the
+virtual clock, then runs the whole power-up sequence, supply hold included,
+and the machine does not end while that is pending. The key switch,
+over-temperature and a multimodule controller, which the datasheet says
+cancel the Origin 2000 power-up, are not modelled (the key is on, the module
+is cool and no multimodule controller is present).
 
 Controller state across resets
 ------------------------------
@@ -568,8 +577,7 @@ replace whatever a host wrote (see `Alphanumeric display`_). Any other
 QEMU reset, such as ``system_reset`` from the monitor, stands for an AC
 cycle: it is the controller's own start and clears all of it, the other
 module's controller included on a two-module Origin 200, and the start
-powers the module up (the model does not run the few seconds before an
-Origin 2000 controller's start-up power-up).
+powers the module up (`Start-up power-up`_).
 
 Controller messages
 -------------------

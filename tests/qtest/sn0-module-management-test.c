@@ -1624,6 +1624,31 @@ static void test_module_power_cycle_holds_nodes(void)
 }
 
 /*
+ * By default the controller powers the module up at its own start, through
+ * the power-up that ends a power cycle and with none of its wait, inside the
+ * machine's reset. The module is therefore on and its processors enabled
+ * before a single clock step, the display still shows the version string,
+ * and the cold-power latch is set for the first query.
+ */
+static void test_controller_powers_the_module_up_at_reset(void)
+{
+    QTestState *qts = start_module_with(" -no-shutdown");
+    g_autofree char *info = qtest_hmp(qts, "info elsc");
+    unsigned node;
+
+    g_assert_nonnull(strstr(info, "module power: on"));
+    g_assert_nonnull(strstr(info, "display: \"VER 3.2 \""));
+    g_assert_null(strstr(info, "status message"));
+    g_assert_null(strstr(info, "start-up power-up pending"));
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_true(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr", "ok u");
+    assert_exact(qts, 0, "pwr q", "ok 1");
+    qtest_quit(qts);
+}
+
+/*
  * With a start-up delay the module starts off and its controller powers it
  * up on its own, as an Origin 2000 controller does a few seconds after it
  * starts, then runs the power-up sequence. Until then the machine does not
@@ -2352,6 +2377,8 @@ int main(int argc, char **argv)
                    test_module_power_down_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-cycle",
                    test_module_power_cycle_reaches_machine);
+    qtest_add_func("/sn0/o2000-module-management/power-up-at-reset",
+                   test_controller_powers_the_module_up_at_reset);
     qtest_add_func("/sn0/o2000-module-management/start-up-power-up",
                    test_controller_powers_the_module_up_at_start);
     qtest_add_func("/sn0/o2000-module-management/ac-cycle-powers-up",
