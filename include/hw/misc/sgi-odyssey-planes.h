@@ -31,6 +31,7 @@ typedef struct OdysseyPlaneView {
     uint8_t channel_mask;
     bool dirty;
     void *opaque;
+    /* Written pixels are readable; ownership only limits writes. */
     OdysseyPlanePredicate is_written;
     OdysseyPlanePredicate owns_pixel;
     OdysseyPlaneMarkWritten mark_written;
