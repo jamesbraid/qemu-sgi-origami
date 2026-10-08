@@ -117,9 +117,11 @@ static void kona_qom_set_uint(QTestState *s, const char *property,
 static uint32_t kona_plane_word(QTestState *s, uint32_t plane, uint32_t x,
                                 uint32_t y)
 {
-    kona_qom_set_uint(s, "x-test-plane", plane);
-    kona_qom_set_uint(s, "x-test-pixel-x", x);
-    kona_qom_set_uint(s, "x-test-pixel-y", y);
+    /* plane << 48 | y << 24 | x: one command selects the whole point. */
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-select', 'value': %" PRIu64 "}}",
+        KONA_QOM_PATH, ((uint64_t)plane << 48) | ((uint64_t)y << 24) | x);
     return kona_qom_get_uint(s, "x-test-plane-word");
 }
 
@@ -1590,18 +1592,36 @@ static uint8_t semantic_ci_result(unsigned gx, uint8_t source, uint8_t dest,
     return (result & mask) | (dest & ~mask);
 }
 
-static char *semantic_plane_digest(QTestState *s, unsigned plane)
+/*
+ * The digests of `count` planes from `first` on, sixty-four hex digits a
+ * plane, in one command; digest_at() picks one out.
+ */
+static char *sem_digests(QTestState *s, unsigned first, unsigned count)
 {
     QDict *reply;
-    char *digest;
+    char *all;
 
-    kona_qom_set_uint(s, "x-test-plane", plane);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane', 'value': %u}}", KONA_QOM_PATH, first);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-count', 'value': %u}}", KONA_QOM_PATH,
+        count);
     reply = qtest_qmp(s,
         "{'execute':'qom-get','arguments':{'path':%s,"
-        "'property':'x-test-plane-digest'}}", KONA_QOM_PATH);
-    digest = g_strdup(qdict_get_str(reply, "return"));
+        "'property':'x-test-plane-digests'}}", KONA_QOM_PATH);
+    all = g_strdup(qdict_get_str(reply, "return"));
     qobject_unref(reply);
-    return digest;
+    g_assert_cmpuint(strlen(all), ==, count * 64);
+    return all;
+}
+
+/* Plane `i` of a sem_digests() result; dashes mean no storage. */
+static char *digest_at(const char *all, unsigned i)
+{
+    g_assert_cmpint(all[i * 64], !=, '-');
+    return g_strndup(all + i * 64, 64);
 }
 
 static void semantic_rgb_gc(uint32_t *gc, uint32_t rgb, uint32_t mask,
@@ -1658,9 +1678,10 @@ static void test_semantic_ci_logic(gconstpointer opaque)
     }
 
     qtest_system_reset(qts);
+    g_autofree char *dg1680 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
-            before[plane] = semantic_plane_digest(qts, plane);
+            before[plane] = digest_at(dg1680, plane);
         }
     }
     if (rgb) {
@@ -1699,8 +1720,9 @@ static void test_semantic_ci_logic(gconstpointer opaque)
                                                expected_words, pixels * 4);
     tag_digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
                                               expected_tags, pixels);
+    g_autofree char *dg1721 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1721, plane);
         const char *expected = plane == PLANE_FRONT ? word_digest :
                               plane == PLANE_FRONT_TAG ? tag_digest :
                               before[plane];
@@ -1722,8 +1744,9 @@ static void test_semantic_ci_refusal(void)
     qtest_system_reset(qts);
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_autofree char *dg1744 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1744, plane);
     }
     /* The later destination has reset's incompatible direct tag. */
     gc[0] = 0x96000;
@@ -1731,8 +1754,9 @@ static void test_semantic_ci_refusal(void)
     gc[9] = 12; /* GXxor. */
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 21) }, 2);
+    g_autofree char *dg1753 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1753, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1758,8 +1782,9 @@ static void test_semantic_shape_refusal(gconstpointer opaque)
     qtest_system_reset(qts);
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_autofree char *dg1780 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1780, plane);
     }
     gc[0] = 0x96000;
     gc[9] = 12;
@@ -1785,8 +1810,9 @@ static void test_semantic_shape_refusal(gconstpointer opaque)
         kona_command(qts, TOKEN_BOX,
                      (uint32_t[]){ XY(30, 40), XY(31, 41) }, 2);
     }
+    g_autofree char *dg1807 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1807, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1813,8 +1839,9 @@ static void test_semantic_did(gconstpointer opaque)
     qtest_system_reset(qts);
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_autofree char *dg1835 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1835, plane);
     }
     if (low) {
         did[1] = ((value & 15) << 9) | ((value & 0xfff0) << 10);
@@ -1840,8 +1867,9 @@ static void test_semantic_did(gconstpointer opaque)
                     value & ~mask);
     g_assert_cmphex(kona_plane_word(qts, 7, 11, KONA_FB_HEIGHT - 1 - 20), ==,
                     value);
+    g_autofree char *dg1862 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1862, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1855,14 +1883,16 @@ static void test_semantic_did(gconstpointer opaque)
             refused[0] = 0x80;
             refused[1] = refused[5] = 0;
         }
+        g_autofree char *dg1877 = sem_digests(qts, 0, ARRAY_SIZE(unchanged));
         for (unsigned plane = 0; plane < ARRAY_SIZE(unchanged); plane++) {
-            unchanged[plane] = semantic_plane_digest(qts, plane);
+            unchanged[plane] = digest_at(dg1877, plane);
         }
         kona_command(qts, TOKEN_GC, refused, ARRAY_SIZE(refused));
         kona_command(qts, TOKEN_BOX,
                      (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+        g_autofree char *dg1883 = sem_digests(qts, 0, ARRAY_SIZE(unchanged));
         for (unsigned plane = 0; plane < ARRAY_SIZE(unchanged); plane++) {
-            g_autofree char *actual = semantic_plane_digest(qts, plane);
+            g_autofree char *actual = digest_at(dg1883, plane);
 
             g_assert_cmpstr(actual, ==, unchanged[plane]);
             g_free(unchanged[plane]);
@@ -1890,8 +1920,9 @@ static void test_semantic_did_map(void)
     load_x_map(qts, 0x2e00 + 0x5a, (uint32_t[]){ ENTRY_GREY_192 }, 1);
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_autofree char *dg1912 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1912, plane);
     }
     kona_command(qts, TOKEN_GC, did, ARRAY_SIZE(did));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
@@ -1907,8 +1938,9 @@ static void test_semantic_did_map(void)
     kona_command(qts, 0x132,
                  (uint32_t[]){ 1, (0x7fff << 7) | (7 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    g_autofree char *dg1929 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg1929, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -1933,8 +1965,9 @@ static void test_semantic_ancillary(void)
     load_x_map(qts, 0x2f00 + 3, (uint32_t[]){ 0x3ff }, 1);
     kona_command(qts, TOKEN_GC, main_gc, ARRAY_SIZE(main_gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_autofree char *dg1955 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(qts, plane);
+        before[plane] = digest_at(dg1955, plane);
     }
     kona_command(qts, 0x132, (uint32_t[]){ 0x40,
                  (0x2e00 << 7) | (7 << 3) }, 2);
@@ -1986,8 +2019,9 @@ static void test_semantic_ancillary(void)
     kona_command(qts, TOKEN_GC, overlay, ARRAY_SIZE(overlay));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xfe0000);
+    g_autofree char *dg2008 = sem_digests(qts, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        g_autofree char *actual = digest_at(dg2008, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
@@ -2082,12 +2116,14 @@ static void test_semantic_desktop_migration(gconstpointer opaque)
     did[0] = 0x12300;
     kona_command(to, TOKEN_GC, did, ARRAY_SIZE(did));
     kona_command(to, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_autofree char *dg2104 = sem_digests(from, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        before[plane] = semantic_plane_digest(from, plane);
+        before[plane] = digest_at(dg2104, plane);
     }
     sgi_migrate_stopped(from, uri);
+    g_autofree char *dg2108 = sem_digests(to, 0, ARRAY_SIZE(before));
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
-        g_autofree char *actual = semantic_plane_digest(to, plane);
+        g_autofree char *actual = digest_at(dg2108, plane);
 
         g_assert_cmpstr(actual, ==, before[plane]);
         g_free(before[plane]);
