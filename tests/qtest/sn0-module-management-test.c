@@ -2204,6 +2204,39 @@ static void test_load_is_not_a_power_return(void)
     qtest_quit(to);
 }
 
+/*
+ * Power gating is derived from the controller, not carried in the stream,
+ * so a destination that loads an off module and stays stopped must already
+ * show it gated: the mark that was in the Hub reads nothing before the
+ * destination runs. The module management device drives its power output
+ * again on load, which gates the module; the machine's post-load sync does
+ * the same after every device has loaded. This test passes with either
+ * alone (checked with the sync disabled), so it guards the result, not the
+ * sync.
+ */
+static void test_paused_destination_keeps_module_off(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = start_module_with(" -S -incoming defer");
+    g_autoptr(QDict) status = NULL;
+
+    node_mark(from, 1);
+    assert_exact(from, 0, "pwr c 258", "ok ");
+    qtest_clock_step(from, 1);
+    assert_exact(from, 1, "pwr", "ok d");
+    g_assert_cmphex(node_mark_value(from, 1), ==, 0);
+
+    migrate_module(from, to);
+    status = qtest_qmp_assert_success_ref(to,
+                                          "{'execute':'query-status'}");
+    g_assert_false(qdict_get_bool(status, "running"));
+    g_assert_cmphex(node_mark_value(to, 1), ==, 0);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    g_assert_cmphex(node_mark_value(to, 1), ==, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 static void test_module_serial_migration_in_progress(void)
 {
     QTestState *from = start_module();
@@ -2289,6 +2322,8 @@ int main(int argc, char **argv)
                    test_initial_identity_on_every_node);
     qtest_add_func("/sn0/o2000-module-management/identity-reset",
                    test_identity_survives_reset);
+    qtest_add_func("/sn0/o2000-module-management/paused-destination-off",
+                   test_paused_destination_keeps_module_off);
     qtest_add_func("/sn0/o2000-module-management/power-cycle-holds-nodes",
                    test_module_power_cycle_holds_nodes);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display-status",
