@@ -294,6 +294,16 @@ static const char *const elsc_message_text[SGI_ELSC_MESSAGE_COUNT] = {
 
 /* "nmi" pulses a second after the request, for 100 ms. */
 #define ELSC_NMI_WAIT_MS   1000
+
+/*
+ * A master's forward is tried when it holds the bus grant, which comes round
+ * once per revolution of the five-position ring (five one-millisecond
+ * ticks), at most five times, and then dropped.
+ */
+#define ELSC_FORWARD_RETRY_MS   5
+#define ELSC_FORWARD_TRIES      5
+
+static void elsc_forward(SGIElscState *s, SGIElscForward command);
 #define ELSC_NMI_PULSE_MS  100
 
 /*
@@ -1139,6 +1149,10 @@ static void elsc_handle_fan(SGIElscState *s, ElscRequest *r)
         return;
     }
     s->fan_high = c == 'h';
+    if (s->slave_link) {
+        elsc_forward(s, c == 'h' ? SGI_ELSC_FORWARD_FAN_HIGH :
+                                   SGI_ELSC_FORWARD_FAN_NORMAL);
+    }
     /* On the serial line the request is also kept in the NVRAM. */
     if (s->serial_running) {
         uint8_t config = 0;
@@ -1350,6 +1364,7 @@ static void elsc_handle_nmi(SGIElscState *s, ElscRequest *r)
     timer_mod(s->nmi_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
               ELSC_NMI_WAIT_MS);
     elsc_status(s, SGI_ELSC_STATUS_NMI);
+    elsc_forward(s, SGI_ELSC_FORWARD_NMI);
     elsc_frame_ok(s);
 }
 
@@ -1365,7 +1380,12 @@ static int64_t elsc_power_up_hold_ms(SGIElscState *s)
 
 bool sgi_elsc_power_return_pending(SGIElscState *s)
 {
-    if (timer_pending(s->power_up_timer)) {
+    if (timer_pending(s->power_up_timer) || timer_pending(s->start_timer)) {
+        return true;
+    }
+    /* A power-up or power-down still on its way to the slave. */
+    if (s->forward == SGI_ELSC_FORWARD_POWER_UP ||
+        s->forward == SGI_ELSC_FORWARD_POWER_DOWN) {
         return true;
     }
     if (!timer_pending(s->hbt_timer)) {
@@ -1434,6 +1454,8 @@ static void elsc_remove_power(SGIElscState *s)
         i2c_end_transfer(s->bus);
     }
     qemu_set_irq(s->power_out, 0);
+    /* Whenever a master removes its own power, its slave's goes too. */
+    elsc_forward(s, SGI_ELSC_FORWARD_POWER_DOWN);
 }
 
 /*
@@ -1459,6 +1481,8 @@ static void elsc_power_up_expired(void *opaque)
         s->module_off = false;
         qemu_set_irq(s->power_out, 1);
     }
+    /* A master that has powered up tells its slave to. */
+    elsc_forward(s, SGI_ELSC_FORWARD_POWER_UP);
 }
 
 /*
@@ -1474,6 +1498,134 @@ static void elsc_power_cycle(SGIElscState *s, unsigned seconds)
 }
 
 /*
+ * The master controller's link to its slave. A forward is the command the
+ * master sends the slave over I2C as bus master, and the slave treats it as
+ * an ordinary command. Only one can be pending: a later one replaces an
+ * earlier one not yet sent. It is attempted when the master holds the bus
+ * grant, at most five times, and then dropped; the master has already done
+ * its own part either way.
+ *
+ * An attempt fails when the slave does not answer, which in the model is
+ * only while it waits out its power-up sequence: the firmware processes no
+ * command then. Failures of the bus grant itself are not modelled. This
+ * is a direct call between the two controllers, as the datasheet gives them
+ * a link of their own and the machine joins the pair the way it already
+ * joins the master's grant ring to the slave's adapter (arb_peer).
+ */
+static bool elsc_peer_busy(SGIElscState *peer)
+{
+    return peer->power_sequence && timer_pending(peer->power_up_timer);
+}
+
+static void elsc_peer_deliver(SGIElscState *peer, SGIElscForward command)
+{
+    switch (command) {
+    case SGI_ELSC_FORWARD_POWER_DOWN:
+        elsc_remove_power(peer);
+        break;
+    case SGI_ELSC_FORWARD_POWER_UP:
+        if (!elsc_module_powered(peer)) {
+            elsc_power_sequence(peer);
+        }
+        break;
+    case SGI_ELSC_FORWARD_NMI:
+        if (elsc_module_powered(peer)) {
+            timer_mod(peer->nmi_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      ELSC_NMI_WAIT_MS);
+            elsc_status(peer, SGI_ELSC_STATUS_NMI);
+        }
+        break;
+    case SGI_ELSC_FORWARD_FAN_HIGH:
+        peer->fan_high = true;
+        break;
+    case SGI_ELSC_FORWARD_FAN_NORMAL:
+        peer->fan_high = false;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void elsc_forward_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+    SGIElscState *peer = s->arb_peer;
+    SGIElscForward command = s->forward;
+
+    if (command == SGI_ELSC_FORWARD_NONE) {
+        return;
+    }
+    if (!peer) {
+        s->forward = SGI_ELSC_FORWARD_NONE;
+        return;
+    }
+    s->forward_tries++;
+    if (elsc_peer_busy(peer)) {
+        if (s->forward_tries >= ELSC_FORWARD_TRIES) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-elsc: the slave controller did not answer %u "
+                          "attempts at a forward; dropped\n",
+                          s->forward_tries);
+            s->forward = SGI_ELSC_FORWARD_NONE;
+            elsc_recheck_shutdown(s);
+        } else {
+            timer_mod(s->forward_timer,
+                      qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      ELSC_FORWARD_RETRY_MS);
+        }
+        return;
+    }
+    /* Delivered: nothing is pending when the slave acts on it. */
+    s->forward = SGI_ELSC_FORWARD_NONE;
+    elsc_peer_deliver(peer, command);
+    elsc_recheck_shutdown(s);
+}
+
+static void elsc_forward(SGIElscState *s, SGIElscForward command)
+{
+    if (s->origin2000 || !s->arbitration || !s->arb_peer) {
+        return;
+    }
+    s->forward = command;
+    s->forward_tries = 0;
+    timer_mod(s->forward_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+              ELSC_FORWARD_RETRY_MS);
+}
+
+/*
+ * The controller's own start-up power-up: an Origin 2000 controller powers
+ * its module up on its own after a delay, and an Origin 200 master does if
+ * its NVRAM says automatic power-on. A slave waits for its master's forward.
+ * The delay is start-delay-ms (the datasheet gives about six seconds for the
+ * Origin 2000). Only a controller that was told to wait does so; the
+ * others start powered, which is how every guest and test has always
+ * started.
+ */
+static void elsc_start_expired(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    if (elsc_module_powered(s)) {
+        return;
+    }
+    if (!s->origin2000) {
+        uint8_t config = 0;
+
+        if (!elsc_nvram_access(s, ELSC_NVRAM_CONFIG, &config, false) ||
+            !(config & ELSC_CONFIG_AUTO_POWER)) {
+            elsc_recheck_shutdown(s);
+            return;
+        }
+    }
+    elsc_power_sequence(s);
+}
+
+bool sgi_elsc_start_delayed(SGIElscState *s)
+{
+    return s->start_delay_ms != 0;
+}
+
+/*
  * The watchdog's timer ran out. Waiting: warn, and give the host five more
  * seconds. Warned: pulse the NMI at once, with no wait and no message for
  * the Hubs, and start the delay. Cycling: power the module off and on and go
@@ -1482,8 +1634,8 @@ static void elsc_power_cycle(SGIElscState *s, unsigned seconds)
  * power, so an armed watchdog brings back a module "pwr d" turned off.
  *
  * The power comes back five seconds after the power-off, through the
- * power-up sequence, as for "pwr c". An Origin 200 master's forwarding to
- * its slave is not modelled.
+ * power-up sequence, as for "pwr c". An Origin 200 master forwards both
+ * edges to its slave (elsc_forward).
  */
 static void elsc_hbt_expired(void *opaque)
 {
@@ -1497,6 +1649,10 @@ static void elsc_hbt_expired(void *opaque)
         break;
     case SGI_ELSC_HEARTBEAT_WARNED:
         elsc_pulse_nmi(s);
+        /* The slave gets the NMI only once the link to it is up. */
+        if (s->slave_link) {
+            elsc_forward(s, SGI_ELSC_FORWARD_NMI);
+        }
         s->hbt_stage = SGI_ELSC_HEARTBEAT_CYCLING;
         if (s->hbt_delay) {
             elsc_hbt_arm(s, s->hbt_delay);
@@ -2817,8 +2973,23 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->serial_echo = true;
     s->supervisor = false;
     timer_del(s->power_up_timer);
+    timer_del(s->forward_timer);
+    timer_del(s->start_timer);
+    s->forward = SGI_ELSC_FORWARD_NONE;
+    s->forward_tries = 0;
     s->module_off = false;
     s->power_sequence = false;
+    if (s->start_delay_ms) {
+        /*
+         * The module starts off. A controller that powers it up on its own
+         * counts the delay; an Origin 200 slave waits for its master.
+         */
+        s->module_off = !s->origin2000;
+        if (s->origin2000 || s->arbitration) {
+            timer_mod(s->start_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      s->start_delay_ms);
+        }
+    }
     s->cycle_seconds = ELSC_CYCLE_DEFAULT_SECONDS;
     s->status = SGI_ELSC_STATUS_NONE;
     timer_del(s->rst_timer);
@@ -2949,6 +3120,9 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->power_up_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                      elsc_power_up_expired, s);
     s->serial_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_serial_poll, s);
+    s->forward_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_forward_expired,
+                                    s);
+    s->start_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, elsc_start_expired, s);
     s->serial_echo = true;
 
     qemu_chr_fe_set_handlers(&s->chr, elsc_can_receive, elsc_receive,
@@ -2978,6 +3152,10 @@ static void elsc_unrealize(DeviceState *dev)
     s->power_up_timer = NULL;
     timer_free(s->serial_timer);
     s->serial_timer = NULL;
+    timer_free(s->forward_timer);
+    s->forward_timer = NULL;
+    timer_free(s->start_timer);
+    s->start_timer = NULL;
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
 }
@@ -3058,6 +3236,45 @@ static int elsc_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/*
+ * The master's forward to its slave and the controller's start-up power-up,
+ * while either is waiting. A subsection, so a stream without either is the
+ * stream it always was.
+ */
+static bool elsc_forward_needed(void *opaque)
+{
+    SGIElscState *s = opaque;
+
+    return s->forward != SGI_ELSC_FORWARD_NONE ||
+           timer_pending(s->start_timer);
+}
+
+static int elsc_forward_post_load(void *opaque, int version_id)
+{
+    SGIElscState *s = opaque;
+
+    if (s->forward >= SGI_ELSC_FORWARD_COUNT ||
+        s->forward_tries > ELSC_FORWARD_TRIES) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_elsc_forward = {
+    .name = "sgi-elsc/forward",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = elsc_forward_needed,
+    .post_load = elsc_forward_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(forward, SGIElscState),
+        VMSTATE_UINT8(forward_tries, SGIElscState),
+        VMSTATE_TIMER_PTR(forward_timer, SGIElscState),
+        VMSTATE_TIMER_PTR(start_timer, SGIElscState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
     .version_id = 16,
@@ -3131,6 +3348,10 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_TIMER_PTR(serial_timer, SGIElscState),
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_elsc_forward,
+        NULL
+    },
     .post_load = elsc_post_load,
 };
 
@@ -3141,6 +3362,7 @@ static const Property sgi_elsc_properties[] = {
     /* Only the master module controller publishes arbitration grants. */
     DEFINE_PROP_BOOL("arbitration", SGIElscState, arbitration, true),
     DEFINE_PROP_STRING("build", SGIElscState, build),
+    DEFINE_PROP_UINT32("start-delay-ms", SGIElscState, start_delay_ms, 0),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
 
@@ -3211,6 +3433,22 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
                            s->power_sequence ? "off, powering up" :
                            timer_pending(s->power_up_timer) ?
                            "off, power-up counting down" : "off");
+    if (s->forward != SGI_ELSC_FORWARD_NONE) {
+        static const char *const names[] = {
+            [SGI_ELSC_FORWARD_POWER_DOWN] = "pwr d 0",
+            [SGI_ELSC_FORWARD_POWER_UP] = "pwr u",
+            [SGI_ELSC_FORWARD_NMI] = "nmi",
+            [SGI_ELSC_FORWARD_FAN_HIGH] = "fan h",
+            [SGI_ELSC_FORWARD_FAN_NORMAL] = "fan n",
+        };
+
+        g_string_append_printf(buf, "  forward to slave: \"%s\", %u "
+                               "attempt(s) made\n", names[s->forward],
+                               s->forward_tries);
+    }
+    if (timer_pending(s->start_timer)) {
+        g_string_append(buf, "  start-up power-up pending\n");
+    }
     g_string_append_printf(buf,
                            "  rx queue: %u byte(s) waiting for \"get\"\n",
                            s->rx_queue_len);

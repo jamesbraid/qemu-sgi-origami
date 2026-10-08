@@ -824,6 +824,267 @@ static void test_nmi_sources_merge(void)
     qtest_quit(qts);
 }
 
+#define MS(n)   ((int64_t)(n) * 1000 * 1000)
+
+static bool powered_down(QTestState *qts);
+
+/* What the two controllers say about themselves, as the monitor shows it. */
+static char *controllers_info(QTestState *qts)
+{
+    return qtest_hmp(qts, "info elsc");
+}
+
+/*
+ * The master controller tells its slave, over their own link, what it does
+ * to its module. A forward goes out at the master's next turn on the bus,
+ * five milliseconds on, and the slave takes it like any command.
+ */
+static void test_forward_power_down(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+    g_autofree char *info = NULL;
+
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    /* The master's own module is off; the slave's has not heard yet. */
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 0"));
+    g_assert_false(powered_down(qts));
+
+    qtest_clock_step(qts, MS(5));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/*
+ * The master's own countdown expiring removes its power the same way, so
+ * it forwards a power-down then too. IRIX's power-off sends "pwr d 1" to
+ * the lowest-numbered module's controller, which is the master here: both
+ * towers go off and the emulator ends.
+ */
+static void test_forward_countdown_expiry_ends_the_machine(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, MASTER_HUB, "pwr d 1", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND - MS(10));
+    g_assert_false(powered_down(qts));
+    /* The expiry's work runs in the main loop; give the forward its turn. */
+    qtest_clock_step(qts, MS(20));
+    qtest_clock_step(qts, MS(20));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/* A slave's own countdown, or its own "pwr c", is its own business. */
+static void test_slave_countdown_and_cycle_stay_local(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, SLAVE_HUB, "pwr d 1", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND + MS(20));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    assert_reply(qts, SLAVE_HUB, "pwr u", "ok");
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+
+    assert_reply(qts, SLAVE_HUB, "pwr c 5", "ok");
+    qtest_clock_step(qts, MS(20));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    qtest_clock_step(qts, ELSC_CYCLE_NS);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
+/*
+ * A master's power cycle takes its slave off with it and, once its own
+ * power-up is done, back on: the "pwr u" waits behind the master's local
+ * power-up timer, so the slave stays off through the interval and the
+ * master's own sequence.
+ */
+static void test_forward_power_up_waits_for_the_master(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, MASTER_HUB, "pwr c 5", "ok");
+    qtest_clock_step(qts, MS(20));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 8 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    g_assert_false(powered_down(qts));
+
+    /* The master is up at nine seconds; its forward starts the slave's. */
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
+/* "rst" is never forwarded: the slave keeps its lock. */
+static void test_rst_is_not_forwarded(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, SLAVE_HUB, "tas A", "ok 0");
+    assert_reply(qts, MASTER_HUB, "tas B", "ok 0");
+    assert_reply(qts, MASTER_HUB, "rst", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND + MS(20));
+    assert_reply(qts, MASTER_HUB, "tas", "ok 0");
+    assert_reply(qts, SLAVE_HUB, "tas", "ok A");
+    qtest_quit(qts);
+}
+
+/*
+ * "nmi" is forwarded on every command, so the slave's processors take the
+ * NMI a second after its master's accept it. The heartbeat's NMI goes only
+ * once the link to the slave is up, which the slave's "sla" report makes so.
+ */
+static void test_nmi_is_forwarded(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    qtest_irq_intercept_out(qts, "/machine/node1/nmi-or0");
+    assert_reply(qts, MASTER_HUB, "nmi", "ok");
+    qtest_clock_step(qts, MS(20));
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_heartbeat_nmi_waits_for_the_link(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    qtest_irq_intercept_out(qts, "/machine/node1/nmi-or0");
+    assert_reply(qts, MASTER_HUB, "hbt 5 30", "ok");
+    qtest_clock_step(qts, 11 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    assert_reply(qts, MASTER_HUB, "hbt 0", "ok");
+
+    assert_reply(qts, MASTER_HUB, "sla \x07", "ok");
+    assert_reply(qts, MASTER_HUB, "hbt 5 30", "ok");
+    qtest_clock_step(qts, 13 * NANOSECONDS_PER_SECOND);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_quit(qts);
+}
+
+/* "fan" is forwarded only while the link to the slave is up. */
+static void test_fan_is_forwarded_with_the_link(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, MASTER_HUB, "fan h", "ok");
+    qtest_clock_step(qts, MS(20));
+    assert_reply(qts, SLAVE_HUB, "fan", "ok n");
+    assert_reply(qts, MASTER_HUB, "sla \x07", "ok");
+    assert_reply(qts, MASTER_HUB, "fan n", "ok");
+    assert_reply(qts, MASTER_HUB, "fan h", "ok");
+    qtest_clock_step(qts, MS(20));
+    assert_reply(qts, SLAVE_HUB, "fan", "ok h");
+    qtest_quit(qts);
+}
+
+/*
+ * A forward is tried five times and then dropped. A slave in its power-up
+ * sequence answers no command, so a power-down that finds it there is
+ * retried every five milliseconds, and dropped after the fifth. The master
+ * has still powered itself off, and the machine does not end while the
+ * slave comes up on its own.
+ */
+static void test_forward_retries_and_drops(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+    g_autofree char *info = NULL;
+
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    assert_reply(qts, SLAVE_HUB, "pwr u", "ok");
+    qtest_clock_step(qts, MS(100));
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    qtest_clock_step(qts, MS(5));
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 1 "));
+    qtest_clock_step(qts, MS(15));
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 4 "));
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, MS(5));
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_null(strstr(info, "forward to slave"));
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    g_assert_false(powered_down(qts));
+
+    /* The slave finishes powering up on its own. */
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
+/*
+ * With the slave already off, the master's power-down still has a forward to
+ * deliver: the machine does not end until it is delivered or dropped.
+ */
+static void test_shutdown_waits_for_a_forward(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, MS(5));
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+}
+
+/*
+ * With a start-up delay the modules start off. The master, whose NVRAM says
+ * automatic power-on, powers up after the delay and its sequence, and then
+ * its forward starts the slave, which waits for it. The machine does not end
+ * while either is pending, with every module off.
+ */
+static void test_start_waits_and_the_master_starts_the_slave(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS
+                                 " -machine module-start-delay=2000");
+
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    /* An off module's "clr" asks the machine whether anything is left. */
+    assert_reply(qts, SLAVE_HUB, "clr", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 3 * NANOSECONDS_PER_SECOND + MS(500));
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
 static bool powered_down(QTestState *qts)
 {
     QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
@@ -956,10 +1217,13 @@ static void test_shutdown_ends_when_all_off(void)
     QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
 
     sn0_program_nasid(qts, 1);
-    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    /* A slave's own power-off is local; the master is still on. */
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
     g_assert_false(powered_down(qts));
-    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    /* The forward to the already-off slave is a no-op once sent. */
+    qtest_clock_step(qts, MS(10));
     qtest_qmp_eventwait(qts, "SHUTDOWN");
     qtest_quit(qts);
 }
@@ -987,6 +1251,27 @@ int main(int argc, char **argv)
                    test_cabinet_follows_its_module);
     qtest_add_func("/sn0/module-domain/nmi-sources-merge",
                    test_nmi_sources_merge);
+    qtest_add_func("/sn0/module-domain/forward-power-down",
+                   test_forward_power_down);
+    qtest_add_func("/sn0/module-domain/forward-countdown-ends-machine",
+                   test_forward_countdown_expiry_ends_the_machine);
+    qtest_add_func("/sn0/module-domain/slave-countdown-and-cycle-local",
+                   test_slave_countdown_and_cycle_stay_local);
+    qtest_add_func("/sn0/module-domain/forward-power-up",
+                   test_forward_power_up_waits_for_the_master);
+    qtest_add_func("/sn0/module-domain/rst-not-forwarded",
+                   test_rst_is_not_forwarded);
+    qtest_add_func("/sn0/module-domain/forward-nmi", test_nmi_is_forwarded);
+    qtest_add_func("/sn0/module-domain/forward-heartbeat-nmi",
+                   test_heartbeat_nmi_waits_for_the_link);
+    qtest_add_func("/sn0/module-domain/forward-fan",
+                   test_fan_is_forwarded_with_the_link);
+    qtest_add_func("/sn0/module-domain/forward-retry-and-drop",
+                   test_forward_retries_and_drops);
+    qtest_add_func("/sn0/module-domain/shutdown-waits-for-forward",
+                   test_shutdown_waits_for_a_forward);
+    qtest_add_func("/sn0/module-domain/start-delay-and-forwarded-start",
+                   test_start_waits_and_the_master_starts_the_slave);
     qtest_add_func("/sn0/module-domain/slave-power-cycle",
                    test_slave_power_cycle_stops_only_the_slave);
     qtest_add_func("/sn0/module-domain/shutdown-waits-for-power-up",

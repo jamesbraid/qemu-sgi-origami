@@ -1624,6 +1624,44 @@ static void test_module_power_cycle_holds_nodes(void)
 }
 
 /*
+ * With a start-up delay the module starts off and its controller powers it
+ * up on its own, as an Origin 2000 controller does a few seconds after it
+ * starts, then runs the power-up sequence. Until then the machine does not
+ * end although every module is off: the power-up is still to come.
+ */
+static void test_controller_powers_the_module_up_at_start(void)
+{
+    QTestState *qts = start_module_with(
+        " -no-shutdown -machine module-start-delay=6000");
+    g_autofree char *info = NULL;
+    unsigned node;
+
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_false(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr", "ok d");
+    /* An off module's "clr" has the machine ask whether anything is left. */
+    assert_exact(qts, 0, "clr", "ok ");
+    qtest_clock_step(qts, 3 * NANOSECONDS_PER_SECOND);
+    g_assert_false(powered_down(qts));
+    assert_exact(qts, 0, "pwr", "ok d");
+
+    qtest_clock_step(qts, 4 * NANOSECONDS_PER_SECOND);
+    info = qtest_hmp(qts, "info elsc");
+    g_assert_nonnull(strstr(info, "powering up"));
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    for (node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+        g_assert_true(node_cpu_enabled(qts, node));
+    }
+    assert_exact(qts, 0, "pwr", "ok u");
+    assert_exact(qts, 0, "pwr q", "ok 1");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+}
+
+/*
  * The machine's own reset stands for an AC cycle, which restarts the
  * controller too, and the controller's start powers the module up: a module
  * left unpowered by a long power cycle is powered again, with its nodes
@@ -2279,6 +2317,8 @@ int main(int argc, char **argv)
                    test_module_power_down_reaches_machine);
     qtest_add_func("/sn0/o2000-module-management/module-power-cycle",
                    test_module_power_cycle_reaches_machine);
+    qtest_add_func("/sn0/o2000-module-management/start-up-power-up",
+                   test_controller_powers_the_module_up_at_start);
     qtest_add_func("/sn0/o2000-module-management/ac-cycle-powers-up",
                    test_ac_cycle_powers_the_module_up);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
