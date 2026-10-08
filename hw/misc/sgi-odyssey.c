@@ -138,7 +138,11 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-odyssey.h"
+#include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
+#include "qemu/error-report.h"
+#include "system/runstate.h"
+#include "ui/sgi-renderer.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -4920,10 +4924,76 @@ static void odyssey_gl_draw(void *opaque, const SGIGLDraw *d)
  * out-of-memory signal from GL_POLYGON's dynamic vertex assembly back to
  * the shared context synchronously instead of dropping it.
  */
+static void odyssey_mesa_invalidate_scanout_all(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    sgi_scanout_invalidate_all(&s->scanout);
+}
+
 static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
                                                const SGIGLDraw *d)
 {
-    return odyssey_gl_draw_result(opaque, d);
+    SGIOdysseyState *s = opaque;
+    SGIGLDrawState state;
+    SGIGLDraw draw;
+    SGIRasterRules rules;
+    OdysseyNativeMesa native;
+    SGIRenderResult result;
+    Error *err = NULL;
+
+    if (!s->mesa_renderer_enabled) {
+        return odyssey_gl_draw_result(opaque, d);
+    }
+    if (odyssey_gl_index_mode(s)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: Mesa colour-index draw "
+                      "unsupported\n");
+        return SGI_GL_DRAW_UNSUPPORTED;
+    }
+    if (!odyssey_native_mesa_bind(&native, &s->mem,
+            sgi_board_memory_plane(&s->mem, s->colour_plane),
+            &s->buffer1_mem,
+            sgi_board_memory_plane(&s->buffer1_mem, s->buffer1_plane),
+            odyssey_mesa_invalidate_scanout_all, s, &err)) {
+        error_report_err(err);
+        return SGI_GL_DRAW_RESOURCE_ERROR;
+    }
+    state = *d->state;
+    state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
+                        ODSY_WRITE_COLOUR_MASK;
+    draw = *d;
+    draw.state = &state;
+    rules = odyssey_gl_operation_rules(s);
+    result = odyssey_native_mesa_draw(&native, s->mesa_renderer, &rules,
+                                     &draw, odyssey_draw_buffers(s),
+                                     SGI_RENDER_MONO, s->did_compare, &err);
+    if (err) {
+        error_report_err(err);
+    }
+    switch (result) {
+    case SGI_RENDER_OK:
+        return SGI_GL_DRAW_OK;
+    case SGI_RENDER_OOM:
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    case SGI_RENDER_UNSUPPORTED:
+        return SGI_GL_DRAW_UNSUPPORTED;
+    case SGI_RENDER_RESOURCE_ERROR:
+        return SGI_GL_DRAW_RESOURCE_ERROR;
+    case SGI_RENDER_HOST_ERROR:
+        return SGI_GL_DRAW_HOST_ERROR;
+    default:
+        return SGI_GL_DRAW_HOST_ERROR;
+    }
+}
+
+static bool odyssey_mesa_recreate(SGIOdysseyState *s, Error **errp)
+{
+    if (!s->mesa_renderer_enabled) {
+        return true;
+    }
+    sgi_renderer_free(s->mesa_renderer);
+    s->mesa_renderer = sgi_renderer_new(errp);
+    return s->mesa_renderer != NULL;
 }
 
 /* glClear's raster op: not on the first-triangle path, wired for later. */
@@ -4940,7 +5010,7 @@ static void odyssey_gl_raster(void *opaque, const SGIRasterOp *op)
 static SGIGLSink odyssey_gl_sink(SGIOdysseyState *s)
 {
     return (SGIGLSink) {
-        .draw = odyssey_gl_draw,
+        .draw = s->mesa_renderer_enabled ? NULL : odyssey_gl_draw,
         .draw_checked = odyssey_gl_draw_checked,
         .raster = odyssey_gl_raster,
         .fence = NULL,
@@ -5005,9 +5075,18 @@ static void odyssey_gl_feed(SGIOdysseyState *s, uint16_t op,
 {
     SGIGLSink sink = odyssey_gl_sink(s);
     SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
+    SGIGLDrawResult result;
 
     odyssey_gl_bind(s);
-    sgi_gl_command(&s->gl_ctx, &sink, &cmd);
+    if (!s->mesa_renderer_enabled) {
+        sgi_gl_command(&s->gl_ctx, &sink, &cmd);
+        return;
+    }
+    result = sgi_gl_command_checked(&s->gl_ctx, &sink, &cmd);
+    if (result == SGI_GL_DRAW_RESOURCE_ERROR ||
+        result == SGI_GL_DRAW_HOST_ERROR) {
+        qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+    }
 }
 
 /*
@@ -9816,6 +9895,11 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
         address_space_destroy(&s->fabric_as);
         return;
     }
+    if (!odyssey_mesa_recreate(s, &local_err)) {
+        address_space_destroy(&s->fabric_as);
+        error_propagate(errp, local_err);
+        return;
+    }
 
     /*
      * Fixed-size and not property-dependent, so realize-time allocation
@@ -9923,6 +10007,8 @@ static void odyssey_unrealize(DeviceState *dev)
 
     oc->parent_unrealize(dev);
     sgi_gl_cleanup(&s->gl_ctx);
+    sgi_renderer_free(s->mesa_renderer);
+    s->mesa_renderer = NULL;
     address_space_destroy(&s->fabric_as);
     sgi_scanout_cleanup(&s->scanout);
     g_free(s->did);
@@ -9936,8 +10022,13 @@ static void odyssey_unrealize(DeviceState *dev)
 static void odyssey_reset_hold(Object *obj, ResetType type)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    Error *local_err = NULL;
 
     odyssey_reset_registers(s);
+    if (!odyssey_mesa_recreate(s, &local_err)) {
+        error_report_err(local_err);
+        qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+    }
     odyssey_update_irq(s);
     /*
      * odyssey_build_widget() also calls odyssey_reset_registers() above,
@@ -10197,6 +10288,8 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_UINT64("nic-serial", SGIOdysseyState, nic_serial,
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),
+    DEFINE_PROP_BOOL("x-mesa-renderer", SGIOdysseyState,
+                     mesa_renderer_enabled, false),
     DEFINE_PROP_LINK("fabric", SGIOdysseyState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
 };
@@ -10332,6 +10425,7 @@ static int odyssey_pre_load(void *opaque)
 static int odyssey_post_load(void *opaque, int version_id)
 {
     SGIOdysseyState *s = opaque;
+    Error *local_err = NULL;
 
     if (s->gl_program_half >= ODSY_PROG_ENTRY_HALFWORDS) {
         return -EINVAL;
@@ -10366,6 +10460,10 @@ static int odyssey_post_load(void *opaque, int version_id)
     odyssey_gl_program(s);
     /* The shared context's current colour restarts white: restore gl_colour. */
     s->gl_colour_overridden = true;
+    if (!odyssey_mesa_recreate(s, &local_err)) {
+        error_report_err(local_err);
+        return -1;
+    }
     return 0;
 }
 

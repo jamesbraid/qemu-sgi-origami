@@ -19,6 +19,7 @@
 
 #define TYPE_SGI_ODYSSEY "sgi-odyssey"
 OBJECT_DECLARE_TYPE(SGIOdysseyState, SGIOdysseyClass, SGI_ODYSSEY)
+typedef struct SGIRenderer SGIRenderer;
 
 /*
  * Distinct unimplemented offsets reported before the device falls silent
@@ -115,6 +116,8 @@ struct SGIOdysseyState {
     char *profile;
     uint64_t nic_serial;
     char *nic_record;
+    /* Host selector; source and destination must match for migration. */
+    bool mesa_renderer_enabled;
 
     /* Composed at realize from the properties above. */
     uint32_t memory_config;
@@ -426,6 +429,7 @@ struct SGIOdysseyState {
      * 0x00).
      */
     SGIGLContext gl_ctx;
+    SGIRenderer *mesa_renderer;
     bool gl_in_prim;
     bool gl_begin_open;
     bool gl_integer_prim;

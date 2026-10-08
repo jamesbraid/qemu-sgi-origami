@@ -47,7 +47,8 @@ system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_ODYSSEY',
-              if_true: files('sgi-odyssey.c', 'sgi-odyssey-planes.c'))
+              if_true: files('sgi-odyssey.c', 'sgi-odyssey-planes.c',
+                             'sgi-odyssey-native-mesa.c'))
 system_ss.add(when: 'CONFIG_SGI_MGRAS',
               if_true: files('sgi-mgras.c', 'sgi-mgras-raster.c',
                              'sgi-mgras-display.c', 'sgi-mgras-gl.c',
