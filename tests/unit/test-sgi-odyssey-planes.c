@@ -5,8 +5,8 @@
 
 typedef struct PlaneFixture {
     uint8_t bytes[40];
-    bool written[8];
-    bool owned[8];
+    bool written[12];
+    bool owned[12];
     unsigned marks;
 } PlaneFixture;
 
@@ -98,6 +98,7 @@ static void test_padded_roundtrip(void)
 
     plane_fixture_init(&f);
     view = plane_view(&f, 1);
+    g_assert_false(view.storage_top_origin);
     g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
     g_assert_null(err);
     target = plane_target(&planes, &resource);
@@ -348,6 +349,13 @@ static void test_false_alias_rejected(void)
     plane_fixture_init(&second);
     views[0] = plane_view(&first, 1);
     views[1] = plane_view(&second, 2);
+    g_assert_false(odyssey_planes_init(&planes, views, resources, 2, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+
+    err = NULL;
+    views[1] = plane_view(&first, 2);
+    views[1].storage_top_origin = true;
     g_assert_false(odyssey_planes_init(&planes, views, resources, 2, &err));
     g_assert_nonnull(err);
     error_free(err);
@@ -640,6 +648,138 @@ static void test_top_origin_uses_plane_rows(void)
     g_assert_cmpuint(f.bytes[36], ==, 0xa5);
 }
 
+static void test_bottom_origin_with_top_first_storage(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect first = { 0, 0, 0, 0 };
+    SGIRenderRect both = { 0, 0, 3, 1 };
+    uint32_t slots[40], pixel[4] = { 201, 202, 203, 204 };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.storage_top_origin = true;
+    f.owned[0] = false;
+    f.written[0] = false;
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    g_assert_true(resource.bottom_origin);
+    target = plane_target(&planes, &resource);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &first, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[0], ==, 4);
+
+    f.owned[0] = true;
+    f.written[0] = true;
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &both, slots, 20, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[0], ==, 4);
+    g_assert_cmpuint(slots[20], ==, 0);
+    f.owned[0] = false;
+    f.written[0] = false;
+    f.written[4] = false;
+    result = sgi_render_resource_commit(&target, &resource, 0, &first,
+                                        pixel, 4, ARRAY_SIZE(pixel), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.bytes[0], ==, 0);
+    g_assert_cmpuint(f.bytes[20], ==, 201);
+    g_assert_false(f.written[0]);
+    g_assert_true(f.written[4]);
+    g_assert_cmpuint(f.marks, ==, 1);
+    g_assert_cmpuint(f.bytes[16], ==, 0xa5);
+    g_assert_cmpuint(f.bytes[36], ==, 0xa5);
+}
+
+static void test_top_first_storage_three_rows(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 2 };
+    uint32_t slots[12];
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    memset(f.bytes, 0xa5, sizeof(f.bytes));
+    for (unsigned y = 0; y < 3; y++) {
+        f.bytes[y * 8] = 10 * (y + 1);
+        f.owned[y * 4] = f.written[y * 4] = true;
+    }
+    view = plane_view(&f, 1);
+    view.width = 1;
+    view.height = 3;
+    view.stride_bytes = 8;
+    view.storage_top_origin = true;
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    target = plane_target(&planes, &resource);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[0], ==, 30);
+    g_assert_cmpuint(slots[4], ==, 20);
+    g_assert_cmpuint(slots[8], ==, 10);
+
+    slots[0] = 101;
+    slots[4] = 102;
+    slots[8] = 103;
+    result = sgi_render_resource_commit(&target, &resource, 0, &rect,
+                                        slots, 4, ARRAY_SIZE(slots), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_cmpuint(result.complete_pixels, ==, 3);
+    g_assert_null(err);
+    g_assert_cmpuint(f.bytes[0], ==, 103);
+    g_assert_cmpuint(f.bytes[8], ==, 102);
+    g_assert_cmpuint(f.bytes[16], ==, 101);
+    g_assert_cmpuint(f.bytes[4], ==, 0xa5);
+    g_assert_cmpuint(f.bytes[12], ==, 0xa5);
+    g_assert_cmpuint(f.bytes[20], ==, 0xa5);
+    g_assert_cmpuint(f.marks, ==, 3);
+}
+
+static void test_top_origin_with_top_first_storage(void)
+{
+    PlaneFixture f;
+    OdysseyPlaneView view;
+    SGIRenderResource resource;
+    OdysseyPlanes planes = { 0 };
+    SGIRasterTarget target;
+    SGIRenderRect rect = { 0, 0, 0, 1 };
+    uint32_t slots[8], pixel[4] = { 210, 211, 212, 213 };
+    SGIRenderCommitResult result;
+    Error *err = NULL;
+
+    plane_fixture_init(&f);
+    view = plane_view(&f, 1);
+    view.bottom_origin = false;
+    view.storage_top_origin = true;
+    g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
+    g_assert_false(resource.bottom_origin);
+    target = plane_target(&planes, &resource);
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_cmpuint(slots[0], ==, 0);
+    g_assert_cmpuint(slots[4], ==, 4);
+
+    rect.y1 = 0;
+    result = sgi_render_resource_commit(&target, &resource, 0, &rect,
+                                        pixel, 4, ARRAY_SIZE(pixel), &err);
+    g_assert_cmpint(result.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.bytes[0], ==, 210);
+    g_assert_cmpuint(f.bytes[20], ==, 4);
+}
+
 static void test_origin_mismatch_rejected(void)
 {
     PlaneFixture f;
@@ -657,6 +797,16 @@ static void test_origin_mismatch_rejected(void)
     g_assert_true(odyssey_planes_init(&planes, &view, &resource, 1, &err));
     target = plane_target(&planes, &resource);
     resource.bottom_origin = true;
+    g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
+                    &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmphex(slots[0], ==, 0xdead);
+
+    err = NULL;
+    resource.bottom_origin = false;
+    view.storage_top_origin = true;
     g_assert_cmpint(sgi_render_resource_snapshot(&target, &resource, 0,
                     &rect, slots, 4, ARRAY_SIZE(slots), &err), ==,
                     SGI_RENDER_RESOURCE_ERROR);
@@ -877,6 +1027,30 @@ static void test_swap_rejects_changed_bindings_atomically(void)
     }
 }
 
+static void test_swap_rejects_changed_storage_origin(void)
+{
+    PlaneFixture fixtures[4];
+    OdysseyPlaneView views[4];
+    SGIRenderResource resources[4];
+    OdysseyPlanes planes = { 0 };
+    Error *err = NULL;
+
+    plane_four_eyes(fixtures, views);
+    g_assert_true(odyssey_planes_init(&planes, views, resources, 4, &err));
+    odyssey_planes_end_submission(&planes);
+    views[0].storage_top_origin = true;
+    g_assert_false(odyssey_planes_swap_bindings(&planes, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpint(views[i].buffer, ==,
+                        i < 2 ? SGI_RENDER_FRONT : SGI_RENDER_BACK);
+        g_assert_cmpuint(views[i].target, ==, 11 + i);
+        g_assert_cmpuint(views[i].view_generation, ==, 1);
+        g_assert_false(views[i].dirty);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -910,6 +1084,12 @@ int main(int argc, char **argv)
                     test_four_eye_isolation);
     g_test_add_func("/sgi-odyssey-planes/top-origin-rows",
                     test_top_origin_uses_plane_rows);
+    g_test_add_func("/sgi-odyssey-planes/top-first-storage",
+                    test_bottom_origin_with_top_first_storage);
+    g_test_add_func("/sgi-odyssey-planes/top-first-three-rows",
+                    test_top_first_storage_three_rows);
+    g_test_add_func("/sgi-odyssey-planes/top-first-top-resource",
+                    test_top_origin_with_top_first_storage);
     g_test_add_func("/sgi-odyssey-planes/origin-mismatch",
                     test_origin_mismatch_rejected);
     g_test_add_func("/sgi-odyssey-planes/four-eye-alias",
@@ -924,5 +1104,7 @@ int main(int argc, char **argv)
                     test_swap_uses_declared_positions);
     g_test_add_func("/sgi-odyssey-planes/swap-changed-bindings",
                     test_swap_rejects_changed_bindings_atomically);
+    g_test_add_func("/sgi-odyssey-planes/swap-changed-storage-origin",
+                    test_swap_rejects_changed_storage_origin);
     return g_test_run();
 }

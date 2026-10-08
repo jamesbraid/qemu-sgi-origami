@@ -12,7 +12,7 @@ typedef enum OdysseyPlaneFormat {
 typedef bool (*OdysseyPlanePredicate)(void *opaque, uint32_t x, uint32_t y);
 typedef void (*OdysseyPlaneMarkWritten)(void *opaque, uint32_t x, uint32_t y);
 
-/* The caller assigns targets for one drawable; plane coordinates never flip. */
+/* The caller assigns targets; resource rows follow bottom_origin. */
 typedef struct OdysseyPlaneView {
     uint8_t *bytes;
     size_t capacity_bytes;
@@ -24,6 +24,8 @@ typedef struct OdysseyPlaneView {
     SGIRenderBuffer buffer;
     SGIRenderEye eye;
     bool bottom_origin;
+    /* Top-first backing rows and callbacks; false keeps plane row order. */
+    bool storage_top_origin;
     uint64_t backing_id, backing_generation;
     uint64_t view_id, view_generation;
     uint8_t channel_mask;
@@ -34,6 +36,7 @@ typedef struct OdysseyPlaneView {
     OdysseyPlaneMarkWritten mark_written;
     /* Set by the provider for one synchronous submission. */
     uint8_t *submitted_bytes;
+    bool submitted_storage_top_origin;
     uint64_t submitted_backing_generation, submitted_view_generation;
     uint64_t expected_backing_generation, expected_view_generation;
 } OdysseyPlaneView;
