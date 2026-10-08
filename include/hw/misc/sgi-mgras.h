@@ -623,6 +623,7 @@ struct SGIMgrasState {
     uint32_t test_slot;
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
+    uint32_t test_pixel_count;
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
     uint32_t test_dma_map_slot;
