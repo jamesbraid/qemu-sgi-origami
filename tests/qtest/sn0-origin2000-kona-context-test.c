@@ -1063,7 +1063,15 @@ static void test_migration_unknown_selection(void)
                       0x9000, 0xedededed }, 4);
     guest_fill_word(from, RETURN_A, 0);
     guest_fill_word(from, RETURN_B, 0);
+    kona_register_return_page(from, RETURN_BASE);
+    guest_fill_word(from, RETURN_BASE + 8, 0x5a5a5a5a);
     sgi_migrate_stopped(from, uri);
+    kona_command(to, 0x3e, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(guest_word(to, RETURN_BASE), ==, 0);
+    g_assert_cmphex(guest_word(to, RETURN_BASE + 8), ==, 0x5a5a5a5a);
+    x_initialise(to, 640);
+    g_assert_cmphex(guest_word(to, RETURN_BASE), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_BASE + 8), ==, 640);
     kona_command(to, 0x4c, (uint32_t[]){ 0xba2 }, 1);
     g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
     g_assert_cmphex(guest_word(to, RETURN_B), ==, 0);
@@ -1286,7 +1294,7 @@ static void corrupt_context_stream(const char *path, unsigned kind)
     g_assert_cmpuint(ldl_be_p(name + sizeof(contexts) - 1), ==, 7);
     /* Version, partial-table count and generation clock precede the records. */
     records = name + sizeof(contexts) - 1 + 4 + 4 + 8;
-    g_assert_cmpuint(ldl_be_p(records), ==, 2);
+    g_assert_cmpuint(ldl_be_p(records), ==, kind == 5 ? 0 : 2);
     switch (kind) {
     case 0:
         stl_be_p(records, 65);
@@ -1313,6 +1321,14 @@ static void corrupt_context_stream(const char *path, unsigned kind)
         /* Version, tag, valid flag and sequence precede the generation. */
         stq_be_p(name + sizeof(retrace) - 1 + 4 + 4 + 1 + 8, UINT64_MAX);
         break;
+    case 5:
+        g_assert_cmpuint(records[4], ==, 1);
+        g_assert_cmpuint(records[5], ==, 1);
+        g_assert_cmpuint(records[5 + 9], ==, 0);
+        /* Pipe-only registration cannot give the transient record a page. */
+        records[5 + 9] = 1;
+        stq_be_p(records + 5 + 10, RETURN_A);
+        break;
     default:
         g_assert_not_reached();
     }
@@ -1321,7 +1337,7 @@ static void corrupt_context_stream(const char *path, unsigned kind)
 
 static void test_migration_rejects_context_stream(void)
 {
-    for (unsigned kind = 0; kind < 5; kind++) {
+    for (unsigned kind = 0; kind < 7; kind++) {
         g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
         g_autofree char *path = g_build_filename(dir, "stream", NULL);
         g_autofree char *uri = g_strdup_printf("file:%s", path);
@@ -1330,14 +1346,24 @@ static void test_migration_rejects_context_stream(void)
         QTestState *from = qtest_init(MIGRATION_ARGS);
         QTestState *to;
 
-        context_first_physical(from, SAVE_A, RETURN_A);
-        context_deactivate(from, 1);
-        context_first_physical(from, SAVE_B, RETURN_B);
-        kona_command_kicked(from, 0x1e7, (uint32_t[]){ 7 }, 1);
+        if (kind < 5) {
+            context_first_physical(from, SAVE_A, RETURN_A);
+            context_deactivate(from, 1);
+            context_first_physical(from, SAVE_B, RETURN_B);
+            kona_command_kicked(from, 0x1e7, (uint32_t[]){ 7 }, 1);
+        } else {
+            kona_command_kicked(from, 0x1f9,
+                (uint32_t[]){ SAVE_MARKER, physical_page_word(SAVE_A),
+                              0x9000, 0xedededed }, 4);
+            kona_register_return_page(from, RETURN_A);
+            if (kind == 6) {
+                context_deactivate(from, 1);
+            }
+        }
         sgi_migrate_stopped(from, uri);
         qtest_quit(from);
-        if (kind < 4) {
-            corrupt_context_stream(path, kind);
+        if (kind != 4) {
+            corrupt_context_stream(path, kind < 4 ? kind : 5);
         }
         to = kona_init_logged_args(MIGRATION_ARGS " -incoming defer", &log);
         if (kind == 4) {

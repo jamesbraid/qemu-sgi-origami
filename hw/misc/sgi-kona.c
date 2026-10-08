@@ -13401,6 +13401,7 @@ static bool sgi_kona_logical_records_load(QEMUFile *f, void *pv, size_t size,
         if (!vmstate_load_vmsd(f, &vmstate_sgi_kona_context, c, 1, errp) ||
             !c->valid || !c->generation || c->generation > s->context_clock ||
             c->save_offset > 0xfff ||
+            (i == SGI_KONA_CONTEXT_TRANSIENT && c->return_page_valid) ||
             !vmstate_load_vmsd(f, &vmstate_sgi_kona_gl_state,
                                s->state[i], 1, errp)) {
             if (!errp || !*errp) {
