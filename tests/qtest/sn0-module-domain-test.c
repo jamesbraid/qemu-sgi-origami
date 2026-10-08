@@ -19,6 +19,7 @@
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 #define MACHINE_ARGS \
     "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY \
@@ -1284,6 +1285,170 @@ static void test_shutdown_ends_when_all_off(void)
     qtest_quit(qts);
 }
 
+/*
+ * Move a stopped source to a fresh destination started with @args and
+ * return it once it has loaded the stream. @paused starts the destination
+ * with -S, so it stays stopped until the caller says "cont".
+ */
+static QTestState *migrate_hop(QTestState *from, const char *tmpfs,
+                               unsigned int hop, const char *args,
+                               bool paused)
+{
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate%u.sock", tmpfs,
+                                           hop);
+    g_autofree char *cmdline = g_strdup_printf(IDLE_MACHINE_ARGS " %s %s"
+                                               "-incoming %s", args,
+                                               paused ? "-S " : "", uri);
+    QTestState *to = qtest_init(cmdline);
+    int64_t now = qtest_clock_step(from, 1);
+
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    /*
+     * A fresh instance starts its virtual clock at zero; carry the time
+     * across so the migrated deadlines keep their distance.
+     */
+    qtest_clock_set(to, now);
+    sgi_wait_migration(to, "completed");
+    return to;
+}
+
+/*
+ * A start-up power-up still waiting, and then a forward still to be sent,
+ * each survive a migration and finish on the destination: the master starts
+ * on time and starts the slave through its forward, and a master's
+ * power-down queued for the slave reaches it and ends the machine.
+ */
+static void test_start_and_forward_survive_migration(void)
+{
+    const char *args = "-machine module-start-delay=2000";
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *info = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+
+    tmpfs = g_dir_make_tmp("sn0-module-domain-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    qts = qtest_init(IDLE_MACHINE_ARGS " -machine module-start-delay=2000");
+    assert_reply(qts, SLAVE_HUB, "clr", "ok");
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "start-up power-up pending"));
+
+    /* One second before the delay ends. */
+    qts = migrate_hop(qts, tmpfs, 0, args, false);
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "start-up power-up pending"));
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 2 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, MASTER_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 3 * NANOSECONDS_PER_SECOND + MS(500));
+    assert_reply(qts, MASTER_HUB, "pwr", "ok u");
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok d");
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+
+    /* The master's power-down is queued for the slave, not yet sent. */
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 0 "));
+    qts = migrate_hop(qts, tmpfs, 1, args, false);
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 0 "));
+    g_assert_false(powered_down(qts));
+    qtest_clock_step(qts, MS(5));
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    qtest_quit(qts);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * A forward in the middle of its retries keeps its count across a
+ * migration and is dropped on the fifth try, as without one.
+ */
+static void test_forward_retry_survives_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *info = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+
+    tmpfs = g_dir_make_tmp("sn0-module-domain-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    qts = qtest_init(IDLE_MACHINE_ARGS);
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    assert_reply(qts, SLAVE_HUB, "pwr u", "ok");
+    qtest_clock_step(qts, MS(100));
+    assert_reply(qts, MASTER_HUB, "pwr d 0", "ok");
+    qtest_clock_step(qts, MS(15));
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 3 "));
+
+    qts = migrate_hop(qts, tmpfs, 0, "", false);
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 3 "));
+    qtest_clock_step(qts, MS(5));
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_nonnull(strstr(info, "forward to slave: \"pwr d 0\", 4 "));
+    qtest_clock_step(qts, MS(5));
+    g_free(info);
+    info = controllers_info(qts);
+    g_assert_null(strstr(info, "forward to slave"));
+    g_assert_false(powered_down(qts));
+
+    /* The slave finishes powering up on its own. */
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    assert_reply(qts, SLAVE_HUB, "pwr", "ok u");
+    g_assert_false(powered_down(qts));
+    qtest_quit(qts);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * The power gating is derived from the controllers, not carried in the
+ * stream, so a destination that loads and stays stopped must already show
+ * the off module as the source did, with no processor running to prompt it:
+ * the slave Hub's status reads nothing and the master sees the link lost.
+ * On an Origin 200 the off controller's own load tells the machine again
+ * that its module is off, which gates it; the machine's post-load sync is
+ * the backstop for controllers that do not (this test passes without it, so
+ * it does not exercise that hook on its own).
+ */
+static void test_paused_destination_is_gated(void)
+{
+    g_autofree char *tmpfs = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    QDict *rsp;
+
+    tmpfs = g_dir_make_tmp("sn0-module-domain-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    qts = qtest_init(IDLE_MACHINE_ARGS);
+    g_assert_cmphex(ni_status(qts, 2) & NI_STATUS_LINK_UP, ==,
+                    NI_STATUS_LINK_UP);
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    g_assert_cmphex(ni_status(qts, 2), ==, 0);
+
+    qts = migrate_hop(qts, tmpfs, 0, "", true);
+    rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(rsp, "return"), "status"),
+                    ==, "paused");
+    qobject_unref(rsp);
+    g_assert_cmphex(ni_status(qts, 2), ==, 0);
+    g_assert_cmphex(ni_status(qts, 0) &
+                    (NI_STATUS_LINK_UP | NI_STATUS_DOWN_REASON), ==, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    g_assert_cmphex(ni_status(qts, 2), ==, 0);
+    qtest_quit(qts);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1342,6 +1507,12 @@ int main(int argc, char **argv)
                    test_countdown_expiry_powers_off_one_module);
     qtest_add_func("/sn0/module-domain/each-power-up-sets-latch",
                    test_each_power_up_sets_the_latch);
+    qtest_add_func("/sn0/module-domain/start-and-forward-survive-migration",
+                   test_start_and_forward_survive_migration);
+    qtest_add_func("/sn0/module-domain/forward-retry-survives-migration",
+                   test_forward_retry_survives_migration);
+    qtest_add_func("/sn0/module-domain/paused-destination-is-gated",
+                   test_paused_destination_is_gated);
     qtest_add_func("/sn0/module-domain/shutdown-when-all-off",
                    test_shutdown_ends_when_all_off);
     return g_test_run();

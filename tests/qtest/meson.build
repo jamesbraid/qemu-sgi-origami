@@ -58,7 +58,7 @@ slow_qtests = {
   'sn0-menet-test': 150,
   'sn0-migration-test': 190,
   'sn0-module-management-test': 500,
-  'sn0-module-domain-test': 200,
+  'sn0-module-domain-test': 600,
   'sn0-mscsi-test': 130,
   'sn0-mttcg-test': 390,
   'sn0-origin2000-kona-3d-test': 990,
