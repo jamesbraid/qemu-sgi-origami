@@ -14,10 +14,18 @@ Current drawing support
 -----------------------
 
 ``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
-smooth-shaded triangle and one front RGB or RGBA colour resource. The resource
-must have bottom-origin rows and ordered UNORM components of 1 to 16 bits.
-The viewport and single clip rectangle must cover the resource. The path
-rejects colour-index drawing, depth and stencil tests, blending, textures,
+flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
+resource must have bottom-origin rows and ordered UNORM components of 1 to 16
+bits. The viewport and single clip rectangle must cover the resource.
+
+Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
+and these source/destination factor pairs: ``SRC_ALPHA`` with
+``ONE_MINUS_SRC_ALPHA``, ``DST_ALPHA`` with ``ZERO``, ``ZERO`` with
+``ONE_MINUS_DST_ALPHA``, and ``SRC_ALPHA_SATURATE`` with ``ONE``. The worker
+imports missing native destination alpha as one. Other factor pairs,
+equations, and colour layouts remain unsupported for blended draws.
+
+The path rejects colour-index drawing, depth and stencil tests, textures,
 client clip planes, ordered dithering, accumulation, and other draw states it
 has not mapped to Mesa. It snapshots the full colour resource and draws
 through an RGBA16 host buffer with a private stencil marker from the same
