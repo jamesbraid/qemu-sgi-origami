@@ -64,6 +64,7 @@
 /* IEEE single-precision 0.0 and 1.0, as the client stores them. */
 #define F0 0x00000000u
 #define F1 0x3f800000u
+#define XY(x, y) (((uint32_t)(x) << 16) | (uint32_t)(y))
 
 static QTestState *qts;
 
@@ -97,6 +98,15 @@ static uint32_t shown_pixel(QTestState *s, uint32_t x, uint32_t y)
     kona_qom_set_uint(s, "x-test-pixel-x", x);
     kona_qom_set_uint(s, "x-test-pixel-y", y);
     return kona_qom_get_uint(s, "x-test-pixel") & 0xffffff;
+}
+
+static uint32_t bank_word(QTestState *s, unsigned bank, uint32_t x,
+                          uint32_t y)
+{
+    kona_qom_set_uint(s, "x-test-plane", bank);
+    kona_qom_set_uint(s, "x-test-pixel-x", x);
+    kona_qom_set_uint(s, "x-test-pixel-y", y);
+    return kona_qom_get_uint(s, "x-test-plane-word");
 }
 
 /* One command on the +0xc10000 port, as the GL client's doorbell sends. */
@@ -431,6 +441,69 @@ static void test_swap_exchanges_banks(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0x00ff00);
 }
 
+/* Selector 3's bounded RGB geometry policy must cover both colour banks. */
+static void test_x_rgb_op3_both_banks(void)
+{
+    static const uint32_t green_gc[] = {
+        0x0000007f, 0xf8001ffe, 0, 0x1ffe, 0xffffff, 0xffffff,
+        4, 3, 1, 6, 0, 0, 0,
+    };
+    static const uint32_t observed_gc[] = {
+        0x00056540, 0x42ae9ffe, 0, 0x1ffe, 0xffffff, 0xffffff,
+        4, 3, 1, 6, 0, 0, 0,
+    };
+    static const uint32_t unsupported_gc[] = {
+        0x00012000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 3, 1, 6, 0, 1, 1,
+    };
+    const uint32_t x = PROBE_X + 40;
+    const uint32_t line = 320;
+    const uint32_t y = FB_HEIGHT - 1 - line;
+
+    gl_reset();
+    gl_make_current(qts, true);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(qts, F0, F0, F1);
+    gl_swap(qts, 1);
+    qtest_clock_step(qts, RETRACE_STEP_NS);
+    g_assert_cmphex(shown_pixel(qts, x, y), ==, 0x0000ff);
+    gl_clear(qts, F1, F0, F0);
+    g_assert_cmphex(bank_word(qts, 0, x, y), ==, 0xff0000);
+    g_assert_cmphex(bank_word(qts, 1, x, y), ==, 0x0000ff);
+
+    kona_command(qts, 0x12b,
+                 (uint32_t[]){ 1, 288, 312, 304, 328 }, 5);
+    kona_command(qts, 0x12a,
+                 (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(qts, 0x12d,
+                 (uint32_t[]){ 288, 312, 16, 16 }, 4);
+    kona_command(qts, 0x129, green_gc, ARRAY_SIZE(green_gc));
+    kona_command(qts, 0x154,
+                 (uint32_t[]){ XY(288, 312), XY(304, 328) }, 2);
+    g_assert_cmphex(bank_word(qts, 0, x, y), ==, 0x00ff00);
+    g_assert_cmphex(bank_word(qts, 1, x, y), ==, 0x00ff00);
+    g_assert_cmphex(shown_pixel(qts, x, y), ==, 0x00ff00);
+    g_assert_cmphex(bank_word(qts, 0, 286, y), ==, 0xff0000);
+    g_assert_cmphex(bank_word(qts, 1, 286, y), ==, 0x0000ff);
+
+    gl_swap(qts, 2);
+    qtest_clock_step(qts, RETRACE_STEP_NS);
+    g_assert_cmphex(shown_pixel(qts, x, y), ==, 0x00ff00);
+
+    kona_command(qts, 0x129, observed_gc, ARRAY_SIZE(observed_gc));
+    kona_command(qts, 0x154,
+                 (uint32_t[]){ XY(288, 312), XY(304, 328) }, 2);
+    g_assert_cmphex(bank_word(qts, 0, x, y), ==, 0x5680ab);
+    g_assert_cmphex(bank_word(qts, 1, x, y), ==, 0x5680ab);
+    g_assert_cmphex(shown_pixel(qts, x, y), ==, 0x5680ab);
+
+    kona_command(qts, 0x129, unsupported_gc, ARRAY_SIZE(unsupported_gc));
+    kona_command(qts, 0x154,
+                 (uint32_t[]){ XY(288, 312), XY(304, 328) }, 2);
+    g_assert_cmphex(bank_word(qts, 0, x, y), ==, 0x5680ab);
+    g_assert_cmphex(bank_word(qts, 1, x, y), ==, 0x5680ab);
+}
+
 /* A depth-only clear must preserve every colour sample. */
 static void test_depth_clear_keeps_colour(void)
 {
@@ -683,6 +756,8 @@ int main(int argc, char **argv)
                    test_window_needed_and_moved);
     qtest_add_func("sn0/origin2000/kona-gl/swap-exchanges-banks",
                    test_swap_exchanges_banks);
+    qtest_add_func("sn0/origin2000/kona-gl/x-rgb-op3-both-banks",
+                   test_x_rgb_op3_both_banks);
     qtest_add_func("sn0/origin2000/kona-gl/probe-clear", test_probe_clear);
     qtest_add_func("sn0/origin2000/kona-gl/probe-triangle",
                    test_probe_triangle);

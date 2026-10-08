@@ -162,7 +162,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
             return SGI_X_GC_BAD_FIELDS;
         }
         if (geometry) {
-            if (w[7] != 1) {
+            if (w[7] != 1 && !(rgb && w[6] == 4 && w[7] == 3)) {
                 return SGI_X_GC_BAD_FIELDS;
             }
         } else if (w[10] != (rgb ? 8 : 5) ||
