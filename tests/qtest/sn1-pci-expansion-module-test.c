@@ -193,6 +193,44 @@ static void test_failed_dma(void)
     qtest_quit(qts);
 }
 
+static void test_slot_width(void)
+{
+    for (unsigned wide_slot = 1; wide_slot <= 2; wide_slot++) {
+        g_autoptr(GString) devices = g_string_new("");
+        QTestState *qts;
+
+        for (unsigned head = 0; head < 6; head++) {
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                g_string_append_printf(devices,
+                    " -device sgi-bridge-dma-test%s,bus=synthetic-u%u-head-%c.0,addr=%u",
+                    slot == wide_slot ? "-64bit" : "", head / 2,
+                    head % 2 ? 'f' : 'e', slot);
+            }
+        }
+        qts = chassis_start(POPULATION PAIRING, devices->str);
+        for (unsigned head = 0; head < 6; head++) {
+            uint64_t base = VIEW(head);
+
+            /* The narrow function is a 33 MHz peer on the 66 MHz head. */
+            g_assert_cmphex(qtest_readl(qts, base + 0x24) & 0x30, ==, 0x10);
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                uint64_t config = base + 0x20000 + slot * 0x1000;
+                uint64_t card = base + 0x40000000 +
+                                (slot == 1 ? 0x01200000 : 0x01400000);
+
+                g_assert_cmphex(qtest_readl(qts, config + 4) & 0x200000,
+                                ==, 0);
+                qtest_writel(qts, config + 0x10,
+                             slot == 1 ? 0x01200000 : 0x01400000);
+                qtest_writel(qts, config + 4, 6);
+                g_assert_cmphex(qtest_readl(qts, card + 0x38), ==,
+                                slot == wide_slot ? 1 : 0);
+            }
+        }
+        qtest_quit(qts);
+    }
+}
+
 static void test_reset(void)
 {
     QTestState *qts = chassis_start(POPULATION PAIRING, "");
@@ -369,6 +407,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/pci-expansion/explicit-pairing",
                    test_explicit_pairing);
     qtest_add_func("/sn1/pci-expansion/failed-dma", test_failed_dma);
+    qtest_add_func("/sn1/pci-expansion/slot-width", test_slot_width);
     qtest_add_func("/sn1/pci-expansion/reset", test_reset);
     qtest_add_func("/sn1/pci-expansion/migration", test_migration);
     qtest_add_func("/sn1/pci-expansion/invalid-revision",
