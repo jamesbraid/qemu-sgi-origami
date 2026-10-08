@@ -160,10 +160,13 @@ test_mips64_timeouts = {
   'irix_installed_boot' : 960,
   # Power off the installed IRIX disk on the Origin 200, the two-module
   # Origin 200 and the Origin 2000 and require QEMU to exit with status 0,
-  # then reboot the pair and the Origin 2000 to a login prompt: two boots
-  # of up to 900s each for the reboots (a boot to login took 265s to 400s
-  # when measured, the Origin 2000 the longest) and three for the power-offs.
-  'irix_installed_power' : 6600,
+  # then reboot the pair and the Origin 2000 to a login prompt. The worst
+  # case of the bounds in test_irix_installed_power.py is what this covers:
+  # three power-offs at 900s to boot plus 150s to exit (3150s), two reboots
+  # at 1800s each (3600s) and up to 30s of VM cleanup after each of the five
+  # (150s), 6900s, with 300s of margin. Measured, a boot to login took 265s
+  # to 400s, so a run on a healthy host is far shorter.
+  'irix_installed_power' : 7200,
   # Record and replay an installed IRIX boot with disk and network traffic.
   # Each run took about a minute when measured; the script bounds each at
   # 900s for a heavily loaded host.
