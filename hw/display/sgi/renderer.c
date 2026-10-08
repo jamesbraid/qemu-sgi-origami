@@ -154,8 +154,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                       "dropped\n");
         return SGI_RENDER_OK;
     }
-    if (!draw->state->drawable.clip.n &&
-        draw->state->drawable.clip.empty) {
+    if (!draw->state->drawable.clip.n) {
         return SGI_RENDER_OK;
     }
     if (draw->state->drawable.clip.n > SGI_CLIP_MAX) {
