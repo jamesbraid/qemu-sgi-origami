@@ -268,8 +268,25 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glStencilMask(0xff);
     glClearStencil(0);
     glClear(GL_STENCIL_BUFFER_BIT);
-    glStencilFunc(GL_ALWAYS, 1, 0xff);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    if (frame->clip_count) {
+        /* Stencil 1 marks the clip union; one triangle draw changes it to 2. */
+        glClearStencil(1);
+        glEnable(GL_SCISSOR_TEST);
+        for (unsigned i = 0; i < frame->clip_count; i++) {
+            const SGIRendererClearRect *rect = &frame->clips[i];
+
+            glScissor(rect->x0, rect->y0,
+                      rect->x1 - rect->x0 + 1,
+                      rect->y1 - rect->y0 + 1);
+            glClear(GL_STENCIL_BUFFER_BIT);
+        }
+        glDisable(GL_SCISSOR_TEST);
+        glStencilFunc(GL_EQUAL, 1, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+    } else {
+        glStencilFunc(GL_ALWAYS, 1, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    }
     glShadeModel(frame->shade_model);
     glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
     glMatrixMode(GL_PROJECTION);
@@ -303,8 +320,20 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     if (error != GL_NO_ERROR) {
         error_setg(&renderer->error, "SGI renderer native draw failed: "
                    "GL error 0x%x", error);
+    } else if (frame->clip_count) {
+        size_t pixels = (size_t)frame->width * frame->height;
+
+        for (size_t i = 0; i < pixels; i++) {
+            if (frame->written[i] > 2) {
+                error_setg(&renderer->error,
+                           "SGI renderer native clip coverage is invalid");
+                break;
+            }
+            frame->written[i] = frame->written[i] == 2;
+        }
     }
 out:
+    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_STENCIL_TEST);
     glStencilMask(0xff);
     glStencilFunc(GL_ALWAYS, 0, 0xff);

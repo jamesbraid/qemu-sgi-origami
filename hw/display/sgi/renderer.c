@@ -63,7 +63,6 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
 {
     const SGIGLDrawState *st = draw->state;
     const SGIRenderResource *res;
-    const SGIClipList *clip = &st->drawable.clip;
 
     if (draw->mode != SGI_GL_TRIANGLES || draw->count != 3 ||
         draw->back_colors || draw->polygon_modes ||
@@ -79,7 +78,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         st->scissor_test || st->color_logic_op ||
         st->index_logic_op || st->texture_2d || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
-        !st->drawable.bound || clip->n != 1 || clip->empty ||
+        !st->drawable.bound ||
         st->drawable.origin[0] || st->drawable.origin[1]) {
         return false;
     }
@@ -106,10 +105,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         (res->component_count != 3 && res->component_count != 4) ||
         st->viewport[0] || st->viewport[1] ||
         st->viewport[2] != res->width ||
-        st->viewport[3] != res->height ||
-        clip->r[0].x0 || clip->r[0].y0 ||
-        clip->r[0].x1 != (int32_t)res->width - 1 ||
-        clip->r[0].y1 != (int32_t)res->height - 1) {
+        st->viewport[3] != res->height) {
         return false;
     }
     for (unsigned c = 0; c < res->component_count; c++) {
@@ -158,8 +154,13 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                       "dropped\n");
         return SGI_RENDER_OK;
     }
-    if (!draw->state->drawable.clip.n) {
+    if (!draw->state->drawable.clip.n &&
+        draw->state->drawable.clip.empty) {
         return SGI_RENDER_OK;
+    }
+    if (draw->state->drawable.clip.n > SGI_CLIP_MAX) {
+        error_setg(errp, "Invalid SGI Mesa clip rectangle count");
+        return SGI_RENDER_RESOURCE_ERROR;
     }
     if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
         error_setg(errp, "SGI Mesa ordered dithering is unsupported");
@@ -172,6 +173,23 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     if (!target->resource_ops || !target->resource_ops->commit_covered) {
         error_setg(errp, "SGI Mesa draw needs a covered commit provider");
         return SGI_RENDER_UNSUPPORTED;
+    }
+    frame.width = resource->width;
+    frame.height = resource->height;
+    for (unsigned i = 0; i < draw->state->drawable.clip.n; i++) {
+        const SGIClipRect *clip = &draw->state->drawable.clip.r[i];
+        int32_t x0 = MAX(clip->x0, 0);
+        int32_t y0 = MAX(clip->y0, 0);
+        int32_t x1 = MIN(clip->x1, (int32_t)resource->width - 1);
+        int32_t y1 = MIN(clip->y1, (int32_t)resource->height - 1);
+
+        if (x0 <= x1 && y0 <= y1) {
+            frame.clips[frame.clip_count++] =
+                (SGIRendererClearRect) { x0, y0, x1, y1 };
+        }
+    }
+    if (draw->state->drawable.clip.n && !frame.clip_count) {
+        return SGI_RENDER_OK;
     }
     if (resource->width > SIZE_MAX / resource->height ||
         (uint64_t)resource->width * resource->height >
@@ -225,8 +243,6 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         memcpy(&vertices[i][0], &src[SGI_GL_V_POSITION], 4 * sizeof(float));
         memcpy(&vertices[i][4], &src[SGI_GL_V_COLOR], 4 * sizeof(float));
     }
-    frame.width = resource->width;
-    frame.height = resource->height;
     frame.count = 3;
     frame.vertices = &vertices[0][0];
     frame.shade_model = draw->state->shade_model;

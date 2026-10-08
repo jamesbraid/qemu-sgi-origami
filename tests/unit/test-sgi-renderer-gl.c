@@ -1036,6 +1036,7 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 3);
 
     state.drawable.clip.n = 0;
+    state.drawable.clip.empty = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
@@ -1051,6 +1052,7 @@ static void test_decoded_triangle_native_commit(void)
 
     state.drawable.bound = true;
     state.drawable.clip.n = 1;
+    state.drawable.clip.empty = 0;
     f.fail_commit = false;
     vertices[0][SGI_GL_V_COLOR] = NAN;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -1134,6 +1136,143 @@ static void test_decoded_triangle_native_commit(void)
     error_free(err);
     g_assert_cmpuint(f.snapshots, ==, 8);
     g_assert_cmpuint(f.commits, ==, 3);
+    sgi_renderer_free(renderer);
+}
+
+static void test_decoded_triangle_clip_union(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float xy[3][2] = {
+        { -1, -1 }, { 1, -1 }, { -1, 1 },
+    };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = 4, .height = 4, .depth = 1,
+        .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit_covered = native_draw_commit_covered,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .blend = 1,
+        .blend_src = SGI_GL_SRC_ALPHA,
+        .blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA,
+        .blend_equation = SGI_GL_FUNC_ADD,
+        .drawable = {
+            .bound = true,
+            .clip = {
+                .n = 2,
+                .r = {
+                    { 0, 0, 1, 0 },
+                    { 0, 0, 0, 1 },
+                },
+            },
+            .front = 7,
+        },
+        .viewport = { 0, 0, 4, 4 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 0.25f;
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][2] = 255;
+            f.tag[y][x] = 1;
+        }
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 0x40);
+    g_assert_cmpuint(f.colour[0][1][0], ==, 0x40);
+    g_assert_cmpuint(f.colour[1][0][0], ==, 0x40);
+    g_assert_cmpuint(f.colour[1][1][0], ==, 0);
+    g_assert_cmpuint(f.colour[1][1][2], ==, 255);
+    g_assert_cmpuint(f.tag[0][0], ==, 9);
+    g_assert_cmpuint(f.tag[0][1], ==, 9);
+    g_assert_cmpuint(f.tag[1][0], ==, 9);
+    g_assert_cmpuint(f.tag[1][1], ==, 1);
+    g_assert_cmpuint(f.written[0][0], ==, 1);
+    g_assert_cmpuint(f.written[0][1], ==, 1);
+    g_assert_cmpuint(f.written[1][0], ==, 1);
+    g_assert_cmpuint(f.written[1][1], ==, 0);
+
+    state.drawable.clip.n = 1;
+    state.drawable.clip.r[0] = (SGIClipRect) { 5, 5, 6, 6 };
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            f.colour[y][x][0] = 0;
+            f.colour[y][x][1] = 0;
+            f.colour[y][x][2] = 255;
+            f.tag[y][x] = 1;
+            f.written[y][x] = 0;
+        }
+    }
+    state.drawable.clip.n = 0;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
+    g_assert_cmpuint(f.written[1][1], ==, 1);
+    g_assert_cmpuint(f.colour[1][1][0], ==, 0x40);
+    g_assert_cmpuint(f.tag[1][1], ==, 9);
+
+    state.drawable.clip.empty = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.snapshots, ==, 2);
+    g_assert_cmpuint(f.commits, ==, 2);
     sgi_renderer_free(renderer);
 }
 
@@ -1522,6 +1661,23 @@ static void test_frame_coverage_capacity(void)
     err = NULL;
     frame.written_capacity = sizeof(written);
     frame.written = NULL;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    frame.written = written;
+    frame.clip_count = SGI_RENDERER_CLEAR_RECTS + 1;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    frame.clip_count = 1;
+    frame.clips[0] = (SGIRendererClearRect) { 2, 0, 1, 0 };
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    frame.clips[0] = (SGIRendererClearRect) { 0, 0, 4, 0 };
     g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
     g_assert_nonnull(err);
     error_free(err);
@@ -2179,6 +2335,8 @@ int main(int argc, char **argv)
                     test_headless_display_accepts_ui_context);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-native-commit",
                     test_decoded_triangle_native_commit);
+    g_test_add_func("/sgi-renderer-gl/decoded-triangle-clip-union",
+                    test_decoded_triangle_clip_union);
     g_test_add_func("/sgi-renderer-gl/flat-triangle-alpha-blend",
                     test_flat_triangle_alpha_blend);
     g_test_add_func("/sgi-renderer-gl/blend-without-native-alpha",

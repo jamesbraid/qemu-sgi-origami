@@ -146,9 +146,19 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         frame->height > INT_MAX || frame->count != 3 ||
         frame->width > SIZE_MAX / frame->height / 4 /
                        sizeof(*frame->rgba) ||
-        frame->written_capacity < (size_t)frame->width * frame->height) {
+        frame->written_capacity < (size_t)frame->width * frame->height ||
+        frame->clip_count > SGI_RENDERER_CLEAR_RECTS) {
         error_setg(errp, "Invalid SGI OpenGL frame request");
         return false;
+    }
+    for (unsigned i = 0; i < frame->clip_count; i++) {
+        const SGIRendererClearRect *rect = &frame->clips[i];
+
+        if (rect->x0 > rect->x1 || rect->y0 > rect->y1 ||
+            rect->x1 >= frame->width || rect->y1 >= frame->height) {
+            error_setg(errp, "Invalid SGI OpenGL frame clip rectangle");
+            return false;
+        }
     }
     if (renderer->failed) {
         error_setg(errp, "SGI OpenGL renderer has failed");
