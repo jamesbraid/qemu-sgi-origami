@@ -10,6 +10,7 @@ fork_unit_tests = [
   'test-sgi-machine-init', 'test-sgi-synthetic-serial',
   'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
   'test-sgi-rad1-audio-pcm', 'test-sgi-odyssey-planes',
+  'test-sgi-odyssey-native-mesa',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
   'test-sgi-gl-vmstate', 'test-sgi-kona-texture',
@@ -229,6 +230,13 @@ if have_system and opengl.found()
     }
   endif
   tests += {'test-sgi-renderer-gl': renderer_gl_test}
+  tests += {
+    'test-sgi-odyssey-native-mesa': [
+      '../../hw/misc/sgi-odyssey-native-mesa.c',
+      '../../hw/display/sgi/board-memory.c',
+      migration, io,
+    ] + renderer_gl_test,
+  }
 endif
 
 if have_system
