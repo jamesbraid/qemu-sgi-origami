@@ -30,6 +30,7 @@
 #include <math.h>
 #include "qemu/bitops.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "ui/sgi-renderer.h"
@@ -1233,6 +1234,11 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
                                    &s->gl_render_snapshots, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-render-commits",
                                    &s->gl_render_commits, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(OBJECT(s), "x-test-render-result",
+                                   &s->gl_render_result, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(OBJECT(s), "x-test-render-inject-result",
+                                   &s->gl_render_inject_result,
+                                   OBJ_PROP_FLAG_READWRITE);
     object_property_add(OBJECT(s), "x-test-render-resource-pixel", "uint32",
                         mgras_gl_test_get_resource,
                         mgras_gl_test_set_resource, NULL, NULL);
@@ -1261,6 +1267,8 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->gl_renderer_unavailable = false;
     s->gl_render_snapshots = 0;
     s->gl_render_commits = 0;
+    s->gl_render_result = SGI_GL_DRAW_OK;
+    s->gl_render_inject_result = 0;
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
@@ -3094,10 +3102,10 @@ static SGIRenderResult mgras_gl_render_snapshot(
     return SGI_RENDER_OK;
 }
 
-static SGIRenderCommitResult mgras_gl_render_commit(
+static SGIRenderCommitResult mgras_gl_render_commit_pixels(
     void *opaque, const SGIRenderResource *resource, uint32_t slice,
     const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
-    size_t capacity_slots, Error **errp)
+    const SGIRenderWriteCoverage *writes, Error **errp)
 {
     SGIMgrasState *s = opaque;
     SGIRenderCommitResult result = {
@@ -3106,6 +3114,7 @@ static SGIRenderCommitResult mgras_gl_render_commit(
     };
     uint32_t *pixels;
     uint8_t *alpha, *format;
+    bool wrote = false;
 
     if (slice || !mgras_gl_render_bank(s, resource, &pixels, &alpha, &format)) {
         error_setg(errp, "MGRAS colour resource has no ordinary bank");
@@ -3113,8 +3122,13 @@ static SGIRenderCommitResult mgras_gl_render_commit(
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            size_t row = y - rect->y0;
+            size_t col = x - rect->x0;
             size_t idx = (s->height - 1 - y) * s->width + x;
 
+            if (writes && !writes->pixel[row * writes->stride_bytes + col]) {
+                continue;
+            }
             if (format[idx] != SGI_MGRAS_PIXEL_FORMAT_RGB ||
                 (resource->target == 2 && s->slot[0] &&
                  (s->slot[0][idx] & SGI_MGRAS_SLOT_WRITTEN))) {
@@ -3127,25 +3141,50 @@ static SGIRenderCommitResult mgras_gl_render_commit(
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
-            size_t src = (y - rect->y0) * stride_slots +
-                         (x - rect->x0) * 4;
-            SGIRasterColour colour = { .component = {
-                slots[src], slots[src + 1], slots[src + 2], slots[src + 3],
-            } };
+            size_t row = y - rect->y0;
+            size_t col = x - rect->x0;
+            size_t src = row * stride_slots + col * 4;
+            SGIRasterColour colour;
 
-            mgras_gl_store_rgba(s, resource->target, x, y, &colour);
+            if (!writes || writes->pixel[row * writes->stride_bytes + col]) {
+                colour = (SGIRasterColour) { .component = {
+                    slots[src], slots[src + 1], slots[src + 2],
+                    slots[src + 3],
+                } };
+                mgras_gl_store_rgba(s, resource->target, x, y, &colour);
+                wrote = true;
+            }
             result.complete_pixels++;
         }
     }
     s->gl_render_commits++;
-    s->dirty = true;
+    s->dirty |= wrote;
     result.status = SGI_RENDER_OK;
     return result;
+}
+
+static SGIRenderCommitResult mgras_gl_render_commit(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    return mgras_gl_render_commit_pixels(opaque, resource, slice, rect,
+                                         slots, stride_slots, NULL, errp);
+}
+
+static SGIRenderCommitResult mgras_gl_render_commit_covered(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    return mgras_gl_render_commit_pixels(opaque, resource, slice, rect,
+                                         slots, stride_slots, writes, errp);
 }
 
 static const SGIRenderResourceOps mgras_gl_render_ops = {
     .snapshot = mgras_gl_render_snapshot,
     .commit = mgras_gl_render_commit,
+    .commit_covered = mgras_gl_render_commit_covered,
 };
 
 static SGIRenderResource mgras_gl_render_resource(const SGIMgrasState *s,
@@ -3535,73 +3574,97 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
     SGIGLTexImage image;
-    SGIGLDrawResult result;
+    SGIGLDraw render_draw = *d;
+    SGIRenderResource resource;
+    SGIRenderResult status;
+    Error *err = NULL;
 
-    if (s->gl_selection[s->gl_current].active) {
-        return mgras_gl_selection_draw(s, d);
+    if (!s->gl_renderer_opt_in) {
+        SGIGLDrawResult result;
+
+        if (s->gl_selection[s->gl_current].active) {
+            return mgras_gl_selection_draw(s, d);
+        }
+        t.opaque = s;
+        t.texture = sgi_mgras_texture_image(s, &image);
+        result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+        s->dirty = true;
+        return result;
     }
+    if (s->gl_selection[s->gl_current].active ||
+        !d->state->drawable.bound || d->mode != SGI_GL_TRIANGLES ||
+        d->count != 3 || d->state->drawable.origin[0] ||
+        d->state->drawable.origin[1] ||
+        (d->state->drawable.front != 1 &&
+         d->state->drawable.front != 2) ||
+        d->state->drawable.clip.n != 1 ||
+        d->state->drawable.clip.r[0].x0 != 0 ||
+        d->state->drawable.clip.r[0].y0 != 0 ||
+        d->state->drawable.clip.r[0].x1 != s->width - 1 ||
+        d->state->drawable.clip.r[0].y1 != s->height - 1) {
+        return SGI_GL_DRAW_UNSUPPORTED;
+    }
+    if (s->gl_render_inject_result) {
+        uint32_t injected = s->gl_render_inject_result;
+
+        s->gl_render_inject_result = 0;
+        return injected <= SGI_GL_DRAW_HOST_ERROR ? injected :
+                                                   SGI_GL_DRAW_RESOURCE_ERROR;
+    }
+    if (s->gl_renderer_unavailable) {
+        return SGI_GL_DRAW_HOST_ERROR;
+    }
+    if (d->polygon_modes &&
+        d->polygon_modes[0] == SGI_GL_FILL &&
+        d->polygon_modes[1] == SGI_GL_FILL) {
+        render_draw.polygon_modes = NULL;
+    }
+    resource = mgras_gl_render_resource(s, d->state->drawable.front);
     t.opaque = s;
-    t.texture = sgi_mgras_texture_image(s, &image);
-    if (s->gl_renderer_opt_in && d->state->drawable.bound &&
-        d->mode == SGI_GL_TRIANGLES &&
-        d->count == 3 && !d->state->drawable.origin[0] &&
-        !d->state->drawable.origin[1] &&
-        (d->state->drawable.front == 1 ||
-         d->state->drawable.front == 2) &&
-        d->state->drawable.clip.n == 1 &&
-        d->state->drawable.clip.r[0].x0 == 0 &&
-        d->state->drawable.clip.r[0].y0 == 0 &&
-        d->state->drawable.clip.r[0].x1 == s->width - 1 &&
-        d->state->drawable.clip.r[0].y1 == s->height - 1 &&
-        !s->gl_renderer_unavailable) {
-        SGIRenderResource resource = mgras_gl_render_resource(
-            s, d->state->drawable.front);
-        SGIGLDraw render_draw = *d;
-        Error *err = NULL;
-        SGIRenderResult status;
-
-        if (d->polygon_modes &&
-            d->polygon_modes[0] == SGI_GL_FILL &&
-            d->polygon_modes[1] == SGI_GL_FILL) {
-            render_draw.polygon_modes = NULL;
-        }
-        t.resources = &resource;
-        t.resource_count = 1;
-        t.resource_ops = &mgras_gl_render_ops;
+    t.resources = &resource;
+    t.resource_count = 1;
+    t.resource_ops = &mgras_gl_render_ops;
+    if (!s->gl_renderer) {
+        s->gl_renderer = sgi_renderer_new(&err);
         if (!s->gl_renderer) {
-            s->gl_renderer = sgi_renderer_new(&err);
-            if (!s->gl_renderer) {
-                s->gl_renderer_unavailable = true;
-            }
-        }
-        if (s->gl_renderer) {
-            status = sgi_render_draw_checked(s->gl_renderer,
-                                             &mgras_gl_raster_rules,
-                                             &t, &render_draw, &err);
-            if (status == SGI_RENDER_OK) {
-                s->dirty = true;
-                return SGI_GL_DRAW_OK;
-            }
-            if (status == SGI_RENDER_OOM) {
+            s->gl_renderer_unavailable = true;
+            if (err) {
+                error_report("sgi-mgras: Mesa renderer: %s",
+                             error_get_pretty(err));
                 error_free(err);
-                return SGI_GL_DRAW_OUT_OF_MEMORY;
             }
-            if (status == SGI_RENDER_HOST_ERROR ||
-                status == SGI_RENDER_RESOURCE_ERROR) {
-                sgi_renderer_free(s->gl_renderer);
-                s->gl_renderer = NULL;
-                s->gl_renderer_unavailable = true;
-            }
-        }
-        if (err) {
-            qemu_log_mask(LOG_UNIMP, "sgi-mgras: Mesa draw fell back to "
-                          "software: %s\n", error_get_pretty(err));
-            error_free(err);
+            return SGI_GL_DRAW_HOST_ERROR;
         }
     }
-    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
-    s->dirty = true;
-    return result;
+    status = sgi_render_draw_checked(s->gl_renderer, &mgras_gl_raster_rules,
+                                     &t, &render_draw, &err);
+    if (status == SGI_RENDER_OK) {
+        s->dirty = true;
+    } else if (status == SGI_RENDER_HOST_ERROR ||
+               status == SGI_RENDER_RESOURCE_ERROR) {
+        sgi_renderer_free(s->gl_renderer);
+        s->gl_renderer = NULL;
+        s->gl_renderer_unavailable = true;
+    }
+    if (err) {
+        error_report("sgi-mgras: Mesa checked draw: %s",
+                     error_get_pretty(err));
+        error_free(err);
+    }
+    switch (status) {
+    case SGI_RENDER_OK:
+        return SGI_GL_DRAW_OK;
+    case SGI_RENDER_OOM:
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    case SGI_RENDER_UNSUPPORTED:
+        return SGI_GL_DRAW_UNSUPPORTED;
+    case SGI_RENDER_RESOURCE_ERROR:
+        return SGI_GL_DRAW_RESOURCE_ERROR;
+    case SGI_RENDER_HOST_ERROR:
+        return SGI_GL_DRAW_HOST_ERROR;
+    default:
+        return SGI_GL_DRAW_RESOURCE_ERROR;
+    }
 }
 
 static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
@@ -3664,8 +3727,26 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
 {
     SGIGLSink sink = mgras_gl_sink(s);
     SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
+    SGIGLDrawResult checked = SGI_GL_DRAW_OK;
 
+    if (s->gl_renderer_opt_in) {
+        sink.result = &checked;
+    }
+    if (op == SGI_GL_OP_BEGIN) {
+        s->gl_render_result = SGI_GL_DRAW_OK;
+    }
     sgi_gl_command(mgras_gl(s), &sink, &cmd);
+    if (s->gl_renderer_opt_in && checked != SGI_GL_DRAW_OK) {
+        s->gl_render_result = checked;
+        static const char *const failures[] = {
+            "ok", "out of memory", "unsupported state",
+            "resource failure", "host failure",
+        };
+        const char *failure = checked <= SGI_GL_DRAW_HOST_ERROR ?
+                              failures[checked] : "invalid result";
+
+        error_report("sgi-mgras: Mesa checked draw %s", failure);
+    }
     if (mgras_gl(s)->polygon.error == SGI_GL_OUT_OF_MEMORY &&
         !s->gl_oom_logged) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL draw allocation "
