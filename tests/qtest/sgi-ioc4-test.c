@@ -1741,6 +1741,21 @@ static void test_dma_chardev_reconnect(void)
     g_assert_nonnull(contents);
 }
 
+static void test_uart_rejects_aligned_wide_write(void)
+{
+    QTestState *qts = ioc4_start(33333333);
+
+    qtest_writeb(qts, UART(0) + 4, 0x10);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x10);
+    qtest_writel(qts, UART(0), 0x5a5a5a5a);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 5) & 1, ==, 0);
+
+    qtest_writeb(qts, UART(0), 0x5a);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 5) & 1, ==, 1);
+    g_assert_cmphex(qtest_readb(qts, UART(0)), ==, 0x5a);
+    qtest_quit(qts);
+}
+
 static void test_xbridge_unaligned_split(void)
 {
     QTestState *qts = ioc4_start(33333333);
@@ -2328,6 +2343,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);
     qtest_add_func("/sgi-ioc4/dma-chardev-reconnect",
                    test_dma_chardev_reconnect);
+    qtest_add_func("/sgi-ioc4/uart-rejects-aligned-wide-write",
+                   test_uart_rejects_aligned_wide_write);
     qtest_add_func("/sgi-ioc4/xbridge-unaligned-split",
                    test_xbridge_unaligned_split);
     qtest_add_func("/sgi-ioc4/rtc-absent", test_rtc_absent);
