@@ -1000,8 +1000,10 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
     /*
      * Only the cabinet's own start resets this device: a module's reset or
      * power cycle leaves the controller alone. The start powers the module
-     * up, which stands for the controller's start-up power-up (the model
-     * does not run its few-second delay).
+     * up at once, which stands for the controller's start-up power-up with
+     * no delay. That holds only while start-delay-ms is zero, the default:
+     * with a delay set the module starts off and the controller powers it up
+     * when the delay ends.
      */
     s->power_on = !sgi_elsc_start_delayed(s->msc);
     s->publication_enabled = s->power_on;
