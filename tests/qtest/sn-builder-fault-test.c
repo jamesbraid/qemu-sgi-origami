@@ -1813,6 +1813,7 @@ static void routed_memory_class_init(ObjectClass *oc, const void *data)
     const SGIModelTopology *source = sgi_model_find_topology(
         "origin300-numalink-pci-expansion-experiment");
     SGIModelTopology *t = g_memdup2(source, sizeof(*t));
+    SGIModelNodeList **node_tail = &t->nodes;
     SGIModelModuleList **module_tail = &t->modules;
     SGIModelControllerList **controller_tail = &t->controllers;
     SGIModelRouterList **router_tail = &t->routers;
@@ -1832,6 +1833,15 @@ static void routed_memory_class_init(ObjectClass *oc, const void *data)
     static const unsigned cables[] = { 0, 1, 2, 3 };
 
     t->name = (char *)"sn-builder-routed-memory-test";
+    t->nodes = NULL;
+    for (const SGIModelNodeList *entry = source->nodes;
+         entry; entry = entry->next) {
+        SGIModelNode *node = g_memdup2(entry->value, sizeof(*node));
+
+        node->has_option_intx_map = false;
+        node->option_intx_map = NULL;
+        QAPI_LIST_APPEND(node_tail, node);
+    }
     t->modules = NULL;
     t->controllers = NULL;
     t->routers = NULL;
