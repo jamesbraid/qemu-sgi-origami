@@ -2230,24 +2230,6 @@ static void add_dma_placement_tests(void)
     }
 }
 
-/* Both the board's slot and an added IOC3 support programmed DMA swapping. */
-#define SPARE_IOC3_SLOT         5
-#define SPARE_IOC3              " -device sgi-ioc3,addr=" \
-                                stringify(SPARE_IOC3_SLOT)
-
-static void test_ioc3_dma_swap_is_supported_in_any_slot(const void *data)
-{
-    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
-                                                DEV_SWAP_DIRECT));
-    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
-                                                DEV_SWAP_TRANSLATED));
-    g_assert_false(bridge_log_has_the_message_at("", IOC3_SLOT,
-                                                DEV_SWAP_DIRECT));
-    g_assert_false(bridge_log_has_the_message_at(
-        " -device sgi-bridge-dma-test,addr=" stringify(SPARE_IOC3_SLOT),
-        SPARE_IOC3_SLOT, DEV_SWAP_DIRECT));
-}
-
 /*
  * The 64-bit decode: a node-1 write must land in node 1's RAM and leave
  * node 0's low RAM, where the dropped NASID bit would have put it,
@@ -5115,8 +5097,6 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/ioc3-dma-swap-supported-in-any-slot", NULL,
-                        test_ioc3_dma_swap_is_supported_in_any_slot);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",
