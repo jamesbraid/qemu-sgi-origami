@@ -300,6 +300,39 @@ static int hex2nib(char ch)
     }
 }
 
+static bool qtest_parse_debug_u64(const char *str, uint64_t *value)
+{
+    const char *end;
+
+    return qemu_strtou64(str, &end, 0, value) == 0 && *end == '\0';
+}
+
+static bool qtest_parse_debug_data(const char *str, uint64_t len,
+                                   uint8_t **data)
+{
+    size_t data_len = strlen(str);
+    uint64_t i;
+
+    if (data_len < 2 || str[0] != '0' || str[1] != 'x' ||
+        len > (SIZE_MAX - 2) / 2 || data_len != 2 + len * 2) {
+        return false;
+    }
+
+    for (i = 0; i < len; i++) {
+        if (hex2nib(str[2 + i * 2]) < 0 ||
+            hex2nib(str[3 + i * 2]) < 0) {
+            return false;
+        }
+    }
+
+    *data = g_malloc(len);
+    for (i = 0; i < len; i++) {
+        (*data)[i] = (hex2nib(str[2 + i * 2]) << 4) |
+                    hex2nib(str[3 + i * 2]);
+    }
+    return true;
+}
+
 static void qtest_log_timestamp(void)
 {
     if (!qtest_log_fp || !qtest_opened) {
@@ -692,19 +725,19 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         g_autoptr(GString) enc = NULL;
         uint64_t addr, len;
         uint8_t *data;
-        int ret;
         CPUState *cpu = qtest_memory_cpu(chr, words, 3);
 
         if (!cpu) {
             return;
         }
 
-        g_assert(words[1] && words[2]);
-        ret = qemu_strtou64(words[1], NULL, 0, &addr);
-        g_assert(ret == 0);
-        ret = qemu_strtou64(words[2], NULL, 0, &len);
-        g_assert(ret == 0);
-        g_assert(len);
+        if (!words[1] || !words[2] ||
+            !qtest_parse_debug_u64(words[1], &addr) ||
+            !qtest_parse_debug_u64(words[2], &len) || !len ||
+            len > INT_MAX) {
+            qtest_send(chr, "FAIL invalid virtual debug read arguments\n");
+            return;
+        }
 
         data = g_malloc(len);
         if (cpu_memory_rw_debug(cpu, addr, data, len, false) < 0) {
@@ -773,34 +806,23 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
 
         qtest_send(chr, "OK\n");
     } else if (strcmp(words[0], "write-debug") == 0) {
-        uint64_t addr, len, i;
+        uint64_t addr, len;
         uint8_t *data;
-        size_t data_len;
-        int ret;
         CPUState *cpu = qtest_memory_cpu(chr, words, 4);
 
         if (!cpu) {
             return;
         }
 
-        g_assert(words[1] && words[2] && words[3]);
-        ret = qemu_strtou64(words[1], NULL, 0, &addr);
-        g_assert(ret == 0);
-        ret = qemu_strtou64(words[2], NULL, 0, &len);
-        g_assert(ret == 0);
-        data_len = strlen(words[3]);
-        if (data_len < 3) {
-            qtest_send(chr, "FAIL invalid argument size\n");
+        if (!words[1] || !words[2] || !words[3] ||
+            !qtest_parse_debug_u64(words[1], &addr) ||
+            !qtest_parse_debug_u64(words[2], &len) || len > INT_MAX) {
+            qtest_send(chr, "FAIL invalid virtual debug write arguments\n");
             return;
         }
-        data = g_malloc(len);
-        for (i = 0; i < len; i++) {
-            if ((i * 2 + 4) <= data_len) {
-                data[i] = hex2nib(words[3][i * 2 + 2]) << 4;
-                data[i] |= hex2nib(words[3][i * 2 + 3]);
-            } else {
-                data[i] = 0;
-            }
+        if (!qtest_parse_debug_data(words[3], len, &data)) {
+            qtest_send(chr, "FAIL invalid virtual debug write data\n");
+            return;
         }
         if (cpu_memory_rw_debug(cpu, addr, data, len, true) < 0) {
             qtest_send(chr, "FAIL virtual debug write failed\n");

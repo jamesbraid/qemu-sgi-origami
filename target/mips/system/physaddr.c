@@ -262,7 +262,7 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                                           segctl, 0x1FFFFFFF, attrs);
     } else if (address < KSEG2_BASE) {
         /* Preserve the segment origin separately from its cache algorithm. */
-        attrs->mips_kseg1 = env->cfg.uncached_attribute;
+        attrs->mips_kseg1 = true;
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
                                           env->CP0_SegCtl1, 0x1FFFFFFF,

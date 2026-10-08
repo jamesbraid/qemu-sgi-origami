@@ -11,6 +11,7 @@
 
 #define TEST_PHYS_ADDR 0x2000
 #define MIPS_KSEG0_BASE UINT64_C(0xffffffff80000000)
+#define MIPS_KSEG1_BASE UINT64_C(0xffffffffa0000000)
 
 static void test_virtual_memory_access(void)
 {
@@ -22,6 +23,10 @@ static void test_virtual_memory_access(void)
     qtest_memwrite(qts, TEST_PHYS_ADDR, initial, sizeof(initial));
     g_assert_true(qtest_memread_cpu_debug(qts, 0,
                                           MIPS_KSEG0_BASE + TEST_PHYS_ADDR,
+                                          actual, sizeof(actual)));
+    g_assert_cmpmem(actual, sizeof(actual), initial, sizeof(initial));
+    g_assert_true(qtest_memread_cpu_debug(qts, 0,
+                                          MIPS_KSEG1_BASE + TEST_PHYS_ADDR,
                                           actual, sizeof(actual)));
     g_assert_cmpmem(actual, sizeof(actual), initial, sizeof(initial));
 
@@ -43,9 +48,40 @@ static void test_virtual_memory_access(void)
     qtest_quit(qts);
 }
 
+static void test_invalid_debug_commands(void)
+{
+    static const uint8_t initial[] = { 0x12, 0x34 };
+    uint8_t actual[sizeof(initial)];
+    QTestState *qts = qtest_init("-M malta -m 64M");
+
+    qtest_memwrite(qts, TEST_PHYS_ADDR, initial, sizeof(initial));
+    g_assert_true(qtest_command_expect_fail(qts, "read-debug invalid 1 0"));
+    g_assert_true(qtest_command_expect_fail(qts, "read-debug 0x2000 1x 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "read-debug 0x2000 0x80000000 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug invalid 1 0x11 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug 0x2000 1x 0x11 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug 0x2000 "
+                                           "0x80000000 0x11 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug 0x2000 1 0x0g 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug 0x2000 2 0x11 0"));
+    g_assert_true(qtest_command_expect_fail(qts,
+                                           "write-debug 0x2000 1 0x1122 0"));
+
+    qtest_memread(qts, TEST_PHYS_ADDR, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), initial, sizeof(initial));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("virtual-memory-access", test_virtual_memory_access);
+    qtest_add_func("invalid-debug-commands", test_invalid_debug_commands);
     return g_test_run();
 }

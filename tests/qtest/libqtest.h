@@ -240,6 +240,15 @@ void qtest_qmp_send_raw(QTestState *s, const char *fmt, ...)
     G_GNUC_PRINTF(2, 3);
 
 /**
+ * qtest_command_expect_fail:
+ * @s: #QTestState instance to operate on.
+ * @command: Raw qtest command without a trailing newline.
+ *
+ * Send a raw qtest command and return whether it replies with FAIL.
+ */
+bool qtest_command_expect_fail(QTestState *s, const char *command);
+
+/**
  * qtest_socket_server:
  * @socket_path: the UNIX domain socket path
  *

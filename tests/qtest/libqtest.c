@@ -809,6 +809,19 @@ static void qtest_rsp(QTestState *s)
     g_strfreev(words);
 }
 
+bool qtest_command_expect_fail(QTestState *s, const char *command)
+{
+    gchar **words;
+
+    qtest_sendf(s, "%s\n", command);
+    words = qtest_rsp_args_full(s, 0, true);
+    if (!words) {
+        return true;
+    }
+    g_strfreev(words);
+    return false;
+}
+
 static int qtest_query_target_endianness(QTestState *s)
 {
     gchar **args;
