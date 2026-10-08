@@ -420,7 +420,7 @@ static QTestState *board_start(const char *extra)
 {
     static const char *const selectors[] = {
         "x-test-pixel-x", "x-test-pixel-y", "x-test-pixel-buffer",
-        "x-test-object-base",
+        "x-test-object-base", "x-test-pixel-count",
     };
 
     if (!shared_case || *extra || shared_in_use) {
@@ -653,37 +653,40 @@ static uint32_t odsy_test_pixel(QTestState *qts, uint32_t x, uint32_t y)
 
 /*
  * The w x h block of plane pixels at (x, y), row-major into @out: the probe
- * odsy_test_pixel() makes, cheaper. The row is selected once rather than per
- * pixel, so a pixel takes two QMP commands instead of three, and a row's
- * commands all go out before any reply is read, so QEMU works through them
- * without waiting on this side. QMP commands are nearly all a scan costs.
+ * odsy_test_pixel() makes, cheaper. Each row is one QMP read of the device's
+ * x-test-pixel-row bulk property, a string of eight hex digits per pixel,
+ * where odsy_test_pixel() takes three commands a pixel. QMP commands are
+ * nearly all a scan costs.
  */
 static void odsy_test_pixels(QTestState *qts, uint32_t x, uint32_t y,
                              uint32_t w, uint32_t h, uint32_t *out)
 {
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", BOARD, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-count', 'value': %u}}", BOARD, w);
     for (uint32_t row = 0; row < h; row++) {
+        QDict *resp;
+        const char *hex;
+
         qtest_qmp_assert_success(qts,
             "{'execute': 'qom-set', 'arguments': {'path': %s, "
             "'property': 'x-test-pixel-y', 'value': %u}}", BOARD, y + row);
+        resp = qtest_qmp(qts,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-row'}}", BOARD);
+        g_assert_true(qdict_haskey(resp, "return"));
+        hex = qdict_get_str(resp, "return");
+        g_assert_cmpuint(strlen(hex), ==, (size_t)w * 8);
         for (uint32_t col = 0; col < w; col++) {
-            qtest_qmp_send(qts,
-                "{'execute': 'qom-set', 'arguments': {'path': %s, "
-                "'property': 'x-test-pixel-x', 'value': %u}}", BOARD,
-                x + col);
-            qtest_qmp_send(qts,
-                "{'execute': 'qom-get', 'arguments': {'path': %s, "
-                "'property': 'x-test-pixel'}}", BOARD);
-        }
-        for (uint32_t col = 0; col < w; col++) {
-            QDict *set = qtest_qmp_receive(qts);
-            QDict *get = qtest_qmp_receive(qts);
+            char word[9] = { 0 };
 
-            g_assert_true(qdict_haskey(set, "return"));
-            g_assert_true(qdict_haskey(get, "return"));
-            out[row * w + col] = qdict_get_int(get, "return");
-            qobject_unref(set);
-            qobject_unref(get);
+            memcpy(word, hex + col * 8, 8);
+            out[row * w + col] = g_ascii_strtoull(word, NULL, 16);
         }
+        qobject_unref(resp);
     }
 }
 

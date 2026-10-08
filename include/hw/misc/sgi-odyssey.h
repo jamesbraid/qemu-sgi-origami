@@ -671,6 +671,7 @@ struct SGIOdysseyState {
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
     uint32_t test_pixel_buffer;
+    uint32_t test_pixel_count;
     uint32_t test_object_base;
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
