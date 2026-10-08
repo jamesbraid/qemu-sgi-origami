@@ -273,6 +273,19 @@ struct SGIHubState {
      */
     qemu_irq rt_irq[SGI_HUB_PROCESSORS];
 
+    /*
+     * One edge per processor for the Hub's non-maskable interrupt and soft
+     * reset triggers (the named GPIO outputs "nmi" and "soft-reset"), and
+     * one for a reset of this Hub's node (the output "node-reset"), which
+     * the machine carries out. A reset can come from the port reset
+     * register or arrive over the link.
+     */
+    qemu_irq nmi_irq[SGI_HUB_PROCESSORS];
+    qemu_irq soft_reset_irq[SGI_HUB_PROCESSORS];
+    qemu_irq node_reset_irq;
+    /* The last warm reset this Hub took part in. Not migrated. */
+    uint64_t warm_generation;
+
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
 

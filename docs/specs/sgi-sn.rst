@@ -811,8 +811,8 @@ connects; an Origin 200 controller drives its own power and reset outputs
 for its module the same way. Each event acts on the one module whose
 controller raised it, and the machine derives which parts belong to that
 module from the topology it built: the module's node boards with their Hubs
-and everything below them (the Hub's adapter and identity parts, the
-Bridge and the PCI devices behind it), the Routers, Crossbows and I/O
+and everything below them (the Hub's adapter and identity parts, the Bridge
+and the PCI devices behind it) and their boot flash, the Routers, Crossbows and I/O
 boards the topology puts in it, and a board plugged into one of its XIO
 slots. The controller is in none of it.
 
@@ -830,9 +830,25 @@ it can wait for the module's processors to stop; a start owed when a
 migration stream was taken is part of that stream and is carried out once
 the destination runs.
 
-The machine's own reset, ``system_reset`` or a Hub port reset, is an AC
-cycle: every module and every controller starts over, and a controller's
-start powers its module up. Once every module's power is off with no
+A Hub port reset starts nodes, not modules (:doc:`sgi-hub`): the node's
+processors stop at the write, and the machine then resets the Hub and what
+hangs off it (its adapter and identity parts), the node's boot flash, and the
+I/O the node hosts, and runs the processors again, the same way a module is
+started. Nodes one warm reset reaches start together. The reset reaches no
+controller and no Router apart from the warm reset's own flood, so a reboot
+leaves ``pwr q`` at zero and the PROM sees a warm start.
+
+The I/O is an approximation. On hardware a node's reset leaves a Crossbow
+and the boards behind it to the firmware's own warm reset down the XIO link,
+which the PROM sends on every cold entry. That reset does not reach the
+Bridge's PCI side in the model, and a PROM started over a Bridge that kept
+IRIX's configuration took a bus error reading it, so the start also resets
+every Crossbow the node's XIO links reach, every board on those Crossbows
+and every board the node hosts directly. A Crossbow two nodes share is
+therefore reset when either restarts.
+
+The machine's own reset, ``system_reset``, is an AC cycle: every module and
+every controller starts over, and a controller's start powers its module up. Once every module's power is off with no
 power-up to come the machine powers down (:doc:`sgi-elsc` says when it
 decides this); IRIX 6.5.30 sends ``pwr d 1`` to every module at ``shutdown
 -p``.
@@ -844,11 +860,9 @@ every part of the module and gives the processors the cold entry. An
 unpowered module's parts are not inert: its Hub, Routers and links still
 answer, a peer's links do not read down, and on a machine of several
 modules a running module's processors could write an unpowered module's
-processor enables and restart them. A Hub port reset, and the per-processor
-NMI and soft-reset registers, still reset the whole machine or do nothing.
-A cabinet module with no node or controller of its own (the GIGAchannel
-cabinet) has its Crossbow and board in that topology module, which is in no
-power domain here, so a power event of the module it is attached to does not
+processor enables and restart them. A cabinet module with no node or
+controller of its own (the GIGAchannel cabinet) has its Crossbow and board in
+that topology module, which is in no power domain here, so a power event of the module it is attached to does not
 reach them although the datasheet has the cabinet follow it. Module events
 under record/replay are not supported: the start waits for the processors
 through run_on_cpu, as the Hub's synchronous enable does, which the replay

@@ -45,6 +45,8 @@
 /* Per-processor words in the processor's own node: starts and progress. */
 #define START_COUNT         0x3000u
 #define PROGRESS_COUNT      0x3100u
+/* The Status register as the processor's latest start found it. */
+#define ENTRY_STATUS        0x3200u
 
 /* "pwr c 5": five seconds off, then the four-second power-up hold. */
 #define ELSC_CYCLE_NS       (9 * NANOSECONDS_PER_SECOND)
@@ -68,10 +70,15 @@ static void build_counting_image(SN0Image *p)
     unsigned int loop;
 
     stub_exception_vectors(p, 0x800);
+    sn0_emit_mfc0(p, SN0_R_S2, SN0_CP0_STATUS);
     sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
     sn0_emit_cpu_number(p, SN0_R_T2);
     sn0_emit_sll(p, SN0_R_T1, SN0_R_T2, 3);
+
+    sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(ENTRY_STATUS));
+    sn0_emit_addu(p, SN0_R_S0, SN0_R_S0, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_S0, SN0_R_S2, 0);
 
     sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(START_COUNT));
     sn0_emit_addu(p, SN0_R_S0, SN0_R_S0, SN0_R_T1);
@@ -118,6 +125,11 @@ static void cpu_write_dword(QTestState *qts, unsigned int cpu, uint64_t addr,
 static uint32_t starts(QTestState *qts, unsigned int cpu)
 {
     return cpu_word(qts, cpu, START_COUNT + 8 * (cpu & 1));
+}
+
+static uint32_t entry_status(QTestState *qts, unsigned int cpu)
+{
+    return cpu_word(qts, cpu, ENTRY_STATUS + 8 * (cpu & 1));
 }
 
 static uint32_t progress(QTestState *qts, unsigned int cpu)
@@ -393,6 +405,231 @@ static void test_slave_power_cycle_stops_only_the_slave(void)
     qtest_quit(qts);
 }
 
+#define HUB_PI_NMI_A        0x000070
+#define HUB_PI_NMI_B        0x000078
+#define HUB_PI_SOFT_RESET   0x000080
+#define HUB_PI_ERR_SPOOL_A  0x000418
+#define HUB_PI_ERR_SPOOL_B  0x000420
+#define HUB_NI_PORT_RESET   0x600008
+#define HUB_NI_PROTECTION   0x600010
+#define PORT_RESET_LINK     (1u << 1)
+#define PORT_RESET_WARM     (1u << 7)
+#define PORT_RESET_LOCAL    (1u << 0)
+#define SPOOL_MARKER        0x52737430u
+#define SPOOL_PROM_OP       0x0ead0030u
+#define STATUS_SR           (1u << 20)
+#define STATUS_NMI          (1u << 19)
+
+static void hub_write(QTestState *qts, unsigned int cpu, uint64_t off,
+                      uint64_t value)
+{
+    cpu_write_dword(qts, cpu, SN0_HUB_LOCAL + off, value);
+}
+
+static uint64_t hub_read(QTestState *qts, unsigned int cpu, uint64_t off)
+{
+    return cpu_dword(qts, cpu, SN0_HUB_LOCAL + off);
+}
+
+/*
+ * Plant what a node reset must leave alone (the two error-spool addresses
+ * the PROM keeps across its own reset) and what it must clear (a scratch
+ * register), in the node whose first processor is @cpu.
+ */
+static void plant_node(QTestState *qts, unsigned int cpu)
+{
+    hub_write(qts, cpu, HUB_PI_ERR_SPOOL_A, SPOOL_PROM_OP);
+    hub_write(qts, cpu, HUB_PI_ERR_SPOOL_B, SPOOL_MARKER);
+    hub_write(qts, cpu, HUB_NI_SCRATCH_0, SCRATCH_MARK);
+}
+
+static void assert_spool_kept(QTestState *qts, unsigned int cpu)
+{
+    g_assert_cmphex(hub_read(qts, cpu, HUB_PI_ERR_SPOOL_A), ==,
+                    SPOOL_PROM_OP);
+    g_assert_cmphex(hub_read(qts, cpu, HUB_PI_ERR_SPOOL_B), ==, SPOOL_MARKER);
+}
+
+/* Time for a wrongly scheduled restart to have happened. */
+static void settle(void)
+{
+    g_usleep(400 * 1000);
+}
+
+/*
+ * Port reset bit 0 resets this node and no other: its processors start
+ * again and its Hub returns to reset, while the error-spool addresses the
+ * firmware keeps across a reset survive; the other node runs on untouched,
+ * and neither controller notices.
+ */
+static void test_port_reset_bit0_resets_one_node(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+    plant_node(qts, 0);
+    plant_node(qts, 2);
+    assert_reply(qts, MASTER_HUB, "sel none", "ok");
+    assert_reply(qts, SLAVE_HUB, "sel none", "ok");
+
+    hub_write(qts, 2, HUB_NI_PORT_RESET, PORT_RESET_LOCAL);
+    wait_starts(qts, 2, 2);
+    wait_starts(qts, 3, 2);
+    settle();
+    number_slave(qts);
+
+    g_assert_cmpuint(starts(qts, 0), ==, 1);
+    g_assert_cmpuint(starts(qts, 1), ==, 1);
+    assert_hub_reset(qts, 0, false);
+    assert_hub_reset(qts, 2, true);
+    assert_spool_kept(qts, 0);
+    assert_spool_kept(qts, 2);
+    g_assert_cmphex(entry_status(qts, 2) & (STATUS_SR | STATUS_NMI), ==, 0);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        assert_running(qts, cpu);
+    }
+    assert_controllers_kept_state(qts);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * Bits 7 and 0 send the warm reset over the link to the node across it,
+ * which resets unless its protection register's reset bit is clear.
+ */
+static void test_port_reset_bit7_reaches_unfenced_node(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+    plant_node(qts, 0);
+    plant_node(qts, 2);
+
+    hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM | PORT_RESET_LOCAL);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        wait_starts(qts, cpu, 2);
+    }
+    settle();
+    number_slave(qts);
+    assert_hub_reset(qts, 0, true);
+    assert_hub_reset(qts, 2, true);
+    assert_spool_kept(qts, 0);
+    assert_spool_kept(qts, 2);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
+/* A node that opted out of resets from the link keeps running. */
+static void test_port_reset_bit7_stops_at_the_fence(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+    plant_node(qts, 0);
+    plant_node(qts, 2);
+    hub_write(qts, 2, HUB_NI_PROTECTION, 0);
+
+    hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM | PORT_RESET_LOCAL);
+    wait_starts(qts, 0, 2);
+    wait_starts(qts, 1, 2);
+    settle();
+    g_assert_cmpuint(starts(qts, 2), ==, 1);
+    g_assert_cmpuint(starts(qts, 3), ==, 1);
+    assert_hub_reset(qts, 0, true);
+    assert_hub_reset(qts, 2, false);
+    assert_running(qts, 2);
+    assert_running(qts, 3);
+
+    /*
+     * The warm reset alone, with the fence open again, resets the far node
+     * and leaves the sender running: the model's choice for a write no
+     * software makes.
+     */
+    hub_write(qts, 2, HUB_NI_PROTECTION, 1);
+    hub_write(qts, 0, HUB_NI_PORT_RESET, PORT_RESET_WARM);
+    wait_starts(qts, 2, 2);
+    wait_starts(qts, 3, 2);
+    settle();
+    g_assert_cmpuint(starts(qts, 0), ==, 2);
+    g_assert_cmpuint(starts(qts, 1), ==, 2);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
+/* The Hub's NMI register for a processor raises that processor's NMI. */
+static void test_hub_nmi_reaches_one_processor(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+
+    hub_write(qts, 0, HUB_PI_NMI_A, 1);
+    wait_starts(qts, 0, 2);
+    settle();
+    g_assert_cmphex(entry_status(qts, 0) & (STATUS_SR | STATUS_NMI), ==,
+                    STATUS_SR | STATUS_NMI);
+    g_assert_cmpuint(starts(qts, 1), ==, 1);
+    g_assert_cmpuint(starts(qts, 2), ==, 1);
+    g_assert_cmpuint(starts(qts, 3), ==, 1);
+
+    hub_write(qts, 2, HUB_PI_NMI_B, 1);
+    wait_starts(qts, 3, 2);
+    settle();
+    g_assert_cmphex(entry_status(qts, 3) & (STATUS_SR | STATUS_NMI), ==,
+                    STATUS_SR | STATUS_NMI);
+    g_assert_cmpuint(starts(qts, 0), ==, 2);
+    g_assert_cmpuint(starts(qts, 1), ==, 1);
+    g_assert_cmpuint(starts(qts, 2), ==, 1);
+    qtest_quit(qts);
+}
+
+/*
+ * The soft reset register gives both of its node's processors the soft
+ * reset entry, Status.SR set and NMI clear, and leaves the other node and
+ * the Hub's state alone.
+ */
+static void test_hub_soft_reset_takes_the_node_s_processors(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start_counting();
+    plant_node(qts, 0);
+
+    hub_write(qts, 0, HUB_PI_SOFT_RESET, 1);
+    wait_starts(qts, 0, 2);
+    wait_starts(qts, 1, 2);
+    settle();
+    for (unsigned int cpu = 0; cpu < 2; cpu++) {
+        g_assert_cmphex(entry_status(qts, cpu) & (STATUS_SR | STATUS_NMI), ==,
+                        STATUS_SR);
+    }
+    g_assert_cmpuint(starts(qts, 2), ==, 1);
+    g_assert_cmpuint(starts(qts, 3), ==, 1);
+    assert_hub_reset(qts, 0, false);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
 static bool powered_down(QTestState *qts)
 {
     QDict *rsp = qtest_qmp(qts, "{ 'execute': 'query-status' }");
@@ -540,6 +777,16 @@ int main(int argc, char **argv)
                    test_slave_reset_restarts_only_the_slave);
     qtest_add_func("/sn0/module-domain/master-reset",
                    test_master_reset_restarts_only_the_master);
+    qtest_add_func("/sn0/module-domain/port-reset-bit0",
+                   test_port_reset_bit0_resets_one_node);
+    qtest_add_func("/sn0/module-domain/port-reset-bit7",
+                   test_port_reset_bit7_reaches_unfenced_node);
+    qtest_add_func("/sn0/module-domain/port-reset-fence",
+                   test_port_reset_bit7_stops_at_the_fence);
+    qtest_add_func("/sn0/module-domain/hub-nmi",
+                   test_hub_nmi_reaches_one_processor);
+    qtest_add_func("/sn0/module-domain/hub-soft-reset",
+                   test_hub_soft_reset_takes_the_node_s_processors);
     qtest_add_func("/sn0/module-domain/slave-power-cycle",
                    test_slave_power_cycle_stops_only_the_slave);
     qtest_add_func("/sn0/module-domain/shutdown-waits-for-power-up",

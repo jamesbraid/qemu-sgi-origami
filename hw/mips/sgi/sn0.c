@@ -24,6 +24,7 @@
 #include "system/qtest.h"
 #include "exec/cpu-common.h"
 #include "hw/core/cpu.h"
+#include "accel/tcg/cpu-ops.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/split-irq.h"
 #include "hw/core/sysbus.h"
@@ -1067,6 +1068,26 @@ static uint8_t sn0_node_hub_slot_bits(const SGIModelNode *model_node)
                             : SGI_HUB_SLOT_BITS_UNDRIVEN;
 }
 
+/*
+ * A soft reset takes the processor's own warm entry: Status.SR set and NMI
+ * clear, state preserved, as the R10000 does (the exception is the CPU
+ * model's, so nothing here touches the target). It runs on the processor's
+ * thread; a processor stopped in wait is woken to take it.
+ */
+static void sn0_cpu_soft_reset_work(CPUState *cs, run_on_cpu_data data)
+{
+    cs->exception_index = EXCP_SRESET;
+    CPU_GET_CLASS(cs)->tcg_ops->do_interrupt(cs);
+    cs->halted = 0;
+}
+
+static void sn0_cpu_soft_reset(void *opaque, int n, int level)
+{
+    if (level) {
+        async_run_on_cpu(CPU(opaque), sn0_cpu_soft_reset_work, RUN_ON_CPU_NULL);
+    }
+}
+
 static void sn0_node_create_hub(SN0NodeState *node)
 {
     const SGIModelAsicIdentity *identity = node->model_node->identity;
@@ -1236,6 +1257,20 @@ static void sn0_node_create_hub(SN0NodeState *node)
                                   qdev_get_gpio_in_named(
                                       DEVICE(node->cpu[slice]), "nmi", 0));
         }
+    }
+
+    /*
+     * The Hub's per-processor triggers reach one processor each: the
+     * non-maskable interrupt to its NMI pin, and the soft reset as the
+     * processor's own soft-reset entry.
+     */
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        qdev_connect_gpio_out_named(DEVICE(&node->hub), "nmi", slice,
+                                    qdev_get_gpio_in_named(
+                                        DEVICE(node->cpu[slice]), "nmi", 0));
+        qdev_connect_gpio_out_named(
+            DEVICE(&node->hub), "soft-reset", slice,
+            qemu_allocate_irq(sn0_cpu_soft_reset, node->cpu[slice], 0));
     }
 }
 
