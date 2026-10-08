@@ -826,12 +826,68 @@ static void test_nmi_sources_merge(void)
 
 #define MS(n)   ((int64_t)(n) * 1000 * 1000)
 
+#define HUB_BTE_LENGTH      0x410000
+#define HUB_BTE_SOURCE      0x410008
+#define HUB_BTE_DEST        0x410010
+#define HUB_BTE_CONTROL     0x410018
+#define BTE_BUSY            (1ULL << 20)
+#define BTE_ERROR           (1ULL << 16)
+#define NODE1_MEMORY        UINT64_C(0x100000000)
+#define MEMORY_MARK         UINT64_C(0x600df00d1badcafe)
+
 static bool powered_down(QTestState *qts);
 
 /* What the two controllers say about themselves, as the monitor shows it. */
 static char *controllers_info(QTestState *qts)
 {
     return qtest_hmp(qts, "info elsc");
+}
+
+/* One BTE line from @source to @dest through @cpu's own Hub; its status. */
+static uint64_t bte_copy(QTestState *qts, unsigned int cpu, uint64_t source,
+                         uint64_t dest)
+{
+    hub_write(qts, cpu, HUB_BTE_LENGTH, BTE_BUSY | 1);
+    hub_write(qts, cpu, HUB_BTE_SOURCE, source);
+    hub_write(qts, cpu, HUB_BTE_DEST, dest);
+    hub_write(qts, cpu, HUB_BTE_CONTROL, 0);
+    return hub_read(qts, cpu, HUB_BTE_LENGTH);
+}
+
+/*
+ * An unpowered module's memory is as gone as its registers. Its peer's
+ * loads and stores find nothing at the node's address and neither lands, and
+ * a block transfer aimed at it fails with the error bit and moves nothing,
+ * where it copied the line while the module had power. The bytes are there
+ * again when power returns, which the model allows (the datasheet's loss of
+ * memory is an approximation it leaves to the PROM's own test).
+ */
+static void test_off_module_memory_is_unreachable(void)
+{
+    QTestState *qts = qtest_init(IDLE_MACHINE_ARGS);
+    const uint64_t remote = NODE1_MEMORY + 0x3000;
+
+    sn0_program_nasid(qts, 1);
+    cpu_write_dword(qts, 2, 0x3000, MEMORY_MARK);
+    g_assert_cmphex(cpu_dword(qts, 0, remote), ==, MEMORY_MARK);
+    cpu_write_dword(qts, 0, 0x4000, 0);
+    g_assert_cmphex(bte_copy(qts, 0, remote, 0x4000), ==, 0);
+    g_assert_cmphex(cpu_dword(qts, 0, 0x4000), ==, MEMORY_MARK);
+
+    assert_reply(qts, SLAVE_HUB, "pwr d 0", "ok");
+    g_assert_cmphex(cpu_dword(qts, 0, remote), ==, 0);
+    cpu_write_dword(qts, 0, remote, 0xdead);
+    cpu_write_dword(qts, 0, 0x4000, 0);
+    g_assert_cmphex(bte_copy(qts, 0, remote, 0x4000), ==,
+                    BTE_BUSY | BTE_ERROR | 1);
+    g_assert_cmphex(cpu_dword(qts, 0, 0x4000), ==, 0);
+
+    assert_reply(qts, SLAVE_HUB, "pwr u", "ok");
+    qtest_clock_step(qts, 5 * NANOSECONDS_PER_SECOND);
+    g_assert_cmphex(cpu_dword(qts, 2, 0x3000), ==, MEMORY_MARK);
+    number_slave(qts);
+    g_assert_cmphex(cpu_dword(qts, 0, remote), ==, MEMORY_MARK);
+    qtest_quit(qts);
 }
 
 /*
@@ -1251,6 +1307,8 @@ int main(int argc, char **argv)
                    test_cabinet_follows_its_module);
     qtest_add_func("/sn0/module-domain/nmi-sources-merge",
                    test_nmi_sources_merge);
+    qtest_add_func("/sn0/module-domain/off-module-memory",
+                   test_off_module_memory_is_unreachable);
     qtest_add_func("/sn0/module-domain/forward-power-down",
                    test_forward_power_down);
     qtest_add_func("/sn0/module-domain/forward-countdown-ends-machine",

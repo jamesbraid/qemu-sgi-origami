@@ -4920,6 +4920,9 @@ static MemTxResult sgi_hub_ii_packet_read(void *opaque, hwaddr addr,
 
     trace_sgi_hub_ii_packet_access(addr, size, false);
     *data = 0;
+    if (s->unpowered) {
+        return MEMTX_DECODE_ERROR;
+    }
     if (size == 8 && addr == (SGI_HUB_XIO_IO_VIEW | SGI_HUB_XIO_IDENTITY)) {
         space = &s->ii_local_registers_as;
         target = 0;
@@ -4940,6 +4943,9 @@ static MemTxResult sgi_hub_ii_packet_write(void *opaque, hwaddr addr,
     hwaddr target;
 
     trace_sgi_hub_ii_packet_access(addr, size, true);
+    if (s->unpowered) {
+        return MEMTX_DECODE_ERROR;
+    }
     if (!sgi_hub_ii_inbound_target(s, addr, size, true, &target)) {
         return MEMTX_ERROR;
     }
