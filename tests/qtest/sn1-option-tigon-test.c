@@ -71,6 +71,7 @@ typedef struct {
     unsigned destination;
     bool swap_clear;
     unsigned payload_offset;
+    uint32_t gib_offset;
 } Placement;
 
 typedef struct {
@@ -255,9 +256,9 @@ static void setup_card(Tigon *t)
                1U << device);
 }
 
-static void setup_rings(Tigon *t)
+static void setup_rings(Tigon *t, uint32_t gib)
 {
-    zero_region(t, GIB, 0x490);
+    zero_region(t, gib, 0x490);
     zero_region(t, EVENT_RING, 256 * 8);
     zero_region(t, EVENT_PROD, 8);
     zero_region(t, TX_CONS, 8);
@@ -266,15 +267,15 @@ static void setup_rings(Tigon *t)
     zero_region(t, STD_RX_RING, 512 * 32);
     zero_region(t, TX_RING, 512 * 16);
     zero_region(t, RX_BUF, 2048);
-    host_address(t, GIB + 0x400, EVENT_RING);
-    host_address(t, GIB + 0x420, TX_RING);
-    memory_word(t, GIB + 0x428, (512U << 16) | TI_RCB_FLAG_HOST_RING);
-    host_address(t, GIB + 0x430, STD_RX_RING);
-    host_address(t, GIB + 0x460, RETURN_RING);
-    memory_word(t, GIB + 0x468, 2048U << 16);
-    host_address(t, GIB + 0x470, EVENT_PROD);
-    host_address(t, GIB + 0x478, RETURN_PROD);
-    host_address(t, GIB + 0x480, TX_CONS);
+    host_address(t, gib + 0x400, EVENT_RING);
+    host_address(t, gib + 0x420, TX_RING);
+    memory_word(t, gib + 0x428, (512U << 16) | TI_RCB_FLAG_HOST_RING);
+    host_address(t, gib + 0x430, STD_RX_RING);
+    host_address(t, gib + 0x460, RETURN_RING);
+    memory_word(t, gib + 0x468, 2048U << 16);
+    host_address(t, gib + 0x470, EVENT_PROD);
+    host_address(t, gib + 0x478, RETURN_PROD);
+    host_address(t, gib + 0x480, TX_CONS);
     reg_write(t, TI_GCR_OPMODE,
               t->placement->swap_clear ? TI_OPMODE_SWAP_CLEAR : TI_OPMODE_BE);
 }
@@ -342,6 +343,7 @@ static void test_traffic(const void *opaque)
     unsigned rx_buf = RX_BUF + p->payload_offset;
     uint32_t length;
     uint64_t address;
+    uint32_t gib = p->gib_offset ? p->gib_offset : GIB;
     int fd, sv[2];
     unsigned other = 1 - p->destination;
 
@@ -363,15 +365,18 @@ static void test_traffic(const void *opaque)
     socket_timeout(sv[0]);
     setup_routes(&t);
     setup_card(&t);
-    setup_rings(&t);
+    setup_rings(&t, gib);
     memset(sentinel, 0x96, sizeof(sentinel));
     for (unsigned i = 0; i < G_N_ELEMENTS(checked); i++) {
         memory_write(&t, other, checked[i], sentinel, sizeof(sentinel));
     }
 
-    address = dma_address(&t, GIB);
-    reg_write(&t, TI_GCR_GENINFO_HI, address);
-    reg_write(&t, TI_GCR_GENINFO_LO, address >> 32);
+    address = dma_address(&t, gib);
+    if (p->gib_offset) {
+        g_assert_cmphex(address, ==, UINT64_C(0xa100000001a00000));
+    }
+    reg_write(&t, TI_GCR_GENINFO_HI, address >> 32);
+    reg_write(&t, TI_GCR_GENINFO_LO, address);
     reg_write(&t, TI_CPU_STATE, 0);
     memory_read(&t, p->destination, EVENT_RING, seen, 8);
     g_assert_cmphex(ldl_be_p(seen), ==, 0x01000000);
@@ -458,6 +463,12 @@ int main(int argc, char **argv)
         { .head = 7, .device = 2, .destination = 0 },
     };
     static Placement swap_clear[2][2];
+    static Placement geninfo_64bit = {
+        .head = 0,
+        .device = 1,
+        .swap_clear = true,
+        .gib_offset = 0x01a00000,
+    };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
     int fd, result;
@@ -496,6 +507,8 @@ int main(int argc, char **argv)
             qtest_add_data_func(name, p, test_traffic);
         }
     }
+    qtest_add_data_func("/sn1/option-tigon/geninfo-64bit", &geninfo_64bit,
+                        test_traffic);
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
     g_free(prom_path);

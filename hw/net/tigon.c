@@ -1692,28 +1692,13 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                 return;
             }
             /*
-             * The two general-information registers hold one 64-bit address.
-             * This window is little-endian, so the half at the lower offset
-             * is the least significant one, whether the guest writes the
-             * pair as two words or as a single 64-bit store that is split on
-             * the way in. The public header's names read from the other
-             * convention, so TI_GCR_GENINFO_HI is the offset of the *low*
-             * half here; taking the names literally builds the address
-             * backwards.
-             *
-             * IRIX's eg gives it as 0x00f80000 then 0xa3000000, which
-             * assembled this way is 0xa300000000f80000: a target widget of
-             * 0xa and an offset inside memory, matching what every working
-             * device on this machine puts on the bus. Assembled the other way
-             * it names widget 0 and an offset past the end of memory, and
-             * every ring the card reads through it comes back zero.
-             *
-             * The address is completed by the write to the upper half, which
-             * is where the card is handed a usable block.
+             * The public ti drivers write the high address word to GENINFO_HI
+             * at 0x608 and the low word to GENINFO_LO at 0x60c. The latter
+             * write completes the address and hands the card its ring set.
              */
             if (addr == TI_GCR_GENINFO_HI || addr == TI_GCR_GENINFO_LO) {
-                uint32_t low = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
-                uint32_t high = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_LO)];
+                uint32_t high = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
+                uint32_t low = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_LO)];
 
                 s->gib_base = ((uint64_t)high << 32) | low;
                 if (addr == TI_GCR_GENINFO_LO) {
