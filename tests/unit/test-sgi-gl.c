@@ -5990,9 +5990,6 @@ static void test_texture_prepare_results(void)
     g_assert_cmpfloat(rgba[2], ==, 0);
     g_assert_cmpfloat(rgba[3], ==, 1);
     sgi_raster_texture_free(sampler);
-    sampler = sgi_raster_texture_new(&state, &image);
-    g_assert_nonnull(sampler);
-    sgi_raster_texture_free(sampler);
 
     sampler = (void *)1;
     state.texture_2d = false;
@@ -6003,6 +6000,15 @@ static void test_texture_prepare_results(void)
     state.texture_2d = true;
     image.width = 0;
     g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_INCOMPLETE);
+    g_assert_null(sampler);
+
+    image = texture_image(&pixels);
+    image.read_texel = NULL;
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                    ==, SGI_RASTER_TEXTURE_INCOMPLETE);
+    g_assert_null(sampler);
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, NULL, &sampler),
                     ==, SGI_RASTER_TEXTURE_INCOMPLETE);
     g_assert_null(sampler);
 
@@ -6023,6 +6029,55 @@ static void test_texture_prepare_results(void)
                     &state, &image, &sampler, texture_allocation_failure),
                     ==, SGI_RASTER_TEXTURE_OOM);
     g_assert_null(sampler);
+}
+
+static bool texture_report_incomplete;
+static bool texture_report_prepare;
+
+static void texture_probe_reports(void)
+{
+    TexturePixels pixels = { 0 };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLDrawState state = {
+        .texture_2d = true,
+        .texture_env_mode = SGI_GL_MODULATE,
+    };
+    SGIRasterTextureResult expected = texture_report_incomplete ?
+        SGI_RASTER_TEXTURE_INCOMPLETE : SGI_RASTER_TEXTURE_UNSUPPORTED;
+    SGIRasterTexture *sampler = NULL;
+
+    if (texture_report_incomplete) {
+        image.width = 0;
+    } else {
+        image.mag_filter = SGI_GL_LINEAR;
+    }
+    g_assert_cmpint(sgi_raster_texture_check(&state, &image), ==, expected);
+    if (texture_report_prepare) {
+        g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler),
+                        ==, expected);
+        g_assert_null(sampler);
+    }
+}
+
+static void test_texture_prepare_reports_once(void)
+{
+    for (unsigned i = 0; i < 2; i++) {
+        g_autofree char *log = NULL;
+        const char *reason = i ? "incomplete texture image" :
+                                 "unsupported texture state format";
+        const char *first;
+
+        texture_report_incomplete = i;
+        texture_report_prepare = false;
+        log = logged_by(texture_probe_reports);
+        g_assert_cmpstr(log, ==, "");
+        g_clear_pointer(&log, g_free);
+        texture_report_prepare = true;
+        log = logged_by(texture_probe_reports);
+        first = strstr(log, reason);
+        g_assert_nonnull(first);
+        g_assert_null(strstr(first + strlen(reason), reason));
+    }
 }
 
 static void texture_post_filter(void *opaque, double rgba[4])
@@ -10690,6 +10745,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
     g_test_add_func("/sgi-gl/texture-prepare-results",
                     test_texture_prepare_results);
+    g_test_add_func("/sgi-gl/texture-prepare-reports-once",
+                    test_texture_prepare_reports_once);
     g_test_add_func("/sgi-gl/texture-environment-clamp",
                     test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
