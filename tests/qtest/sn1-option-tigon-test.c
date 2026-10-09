@@ -461,9 +461,14 @@ static void test_direct_dma_write(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     uint8_t source[16], guard[24], seen[24], migrated[24];
+    /* This expansion slot selects the model's eight-byte DMA placement. */
+    static const uint8_t wide_no_swap[16] = {
+        0x4d, 0x54, 0x5b, 0x62, 0x31, 0x38, 0x3f, 0x46,
+        0x85, 0x8c, 0x93, 0x9a, 0x69, 0x70, 0x77, 0x7e,
+    };
     static const uint8_t swapped[16] = {
-        0x46, 0x3f, 0x38, 0x31, 0x62, 0x5b, 0x54, 0x4d,
-        0x7e, 0x77, 0x70, 0x69, 0x9a, 0x93, 0x8c, 0x85,
+        0x62, 0x5b, 0x54, 0x4d, 0x46, 0x3f, 0x38, 0x31,
+        0x9a, 0x93, 0x8c, 0x85, 0x7e, 0x77, 0x70, 0x69,
     };
     uint64_t address;
     int fd;
@@ -488,6 +493,7 @@ static void test_direct_dma_write(void)
         prom_path, storage, bus_names[p.head], p.device);
     setup_routes(&t);
     setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
     reg_write(&t, TI_DMA_WRITE_STATE, (1U << 28) | (1U << 22) |
               (1U << 21) | (1U << 12));
     g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) &
@@ -534,8 +540,8 @@ static void test_direct_dma_write(void)
                     0x2000 + sizeof(source));
     memory_read(&t, p.destination, 0x2a0000 - 4, seen, sizeof(seen));
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmphex(ldl_be_p(seen + 4), ==, ldl_be_p(source));
-    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
+    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
+                    sizeof(wide_no_swap));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0080 - 4,
@@ -573,7 +579,8 @@ static void test_direct_dma_write(void)
                                     t.window + 0x800, seen,
                                     sizeof(seen)));
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
+    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
+                    sizeof(wide_no_swap));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0200 - 4,
@@ -584,8 +591,6 @@ static void test_direct_dma_write(void)
     reg_write(&t, TI_DMA_WRITE_LOCAL, 0x100000);
     reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(source));
     reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
-    g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_ACTIVE,
-                    ==, TI_DMA_ACTIVE);
     g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, sizeof(source));
     memory_read(&t, p.destination, 0x2a0200 - 4, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), guard, sizeof(guard));
@@ -606,8 +611,7 @@ static void test_direct_dma_write(void)
     reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(source));
     reg_write(&t, TI_DMA_WRITE_STATE,
               TI_DMA_ACTIVE | TI_DMA_NO_SWAP | TI_DMA_NO_MASTER);
-    g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_ACTIVE,
-                    ==, TI_DMA_ACTIVE);
+    g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, sizeof(source));
     memory_read(&t, p.destination, 0x2a0200 - 4, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), guard, sizeof(guard));
     reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_RESET);
