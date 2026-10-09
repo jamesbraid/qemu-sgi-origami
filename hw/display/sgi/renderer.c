@@ -699,8 +699,15 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     frame.viewport_given = true;
     memcpy(frame.viewport, draw->state->viewport, sizeof(frame.viewport));
     if (upside_down) {
-        frame.viewport[1] = (int64_t)resource->height - frame.viewport[1] -
-                            frame.viewport[3];
+        int64_t y = (int64_t)resource->height - frame.viewport[1] -
+                    frame.viewport[3];
+
+        /* Refuse rather than wrap a mirrored origin GL cannot take. */
+        if (y < INT32_MIN || y > INT32_MAX) {
+            error_setg(errp, "SGI Mesa viewport origin is out of range");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        frame.viewport[1] = y;
     }
     for (unsigned i = 0; i < clip->n; i++) {
         int64_t x0 = clip->r[i].x0;

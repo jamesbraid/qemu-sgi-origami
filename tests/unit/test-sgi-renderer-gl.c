@@ -4939,6 +4939,40 @@ static void test_lines_refused(void)
     }
 }
 
+/*
+ * A viewport whose origin cannot be mirrored for the upside-down triangle
+ * frame within 32 bits is refused rather than wrapped.
+ */
+static void test_viewport_mirror_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    prim_vertex_n(p, 1, 1);
+    prim_vertex_n(p, 14, 2);
+    prim_vertex_n(p, 3, 13);
+    memcpy(p->state.viewport, (int32_t[4]) { 0, INT32_MIN, 16, 16 },
+           sizeof(p->state.viewport));
+    prim_expect_refused(renderer, "mirrored origin past 32 bits", p,
+                        &failures);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 /* Other subpixel precision, tie rules or arithmetic refuse before snapshot. */
 static void test_raster_rules_refused(void)
 {
@@ -5511,6 +5545,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
+    g_test_add_func("/sgi-renderer-gl/viewport-mirror-refused",
+                    test_viewport_mirror_refused);
     g_test_add_func("/sgi-renderer-gl/raster-rules-refused",
                     test_raster_rules_refused);
     g_test_add_func("/sgi-renderer-gl/scalar-match-polygons",
