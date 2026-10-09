@@ -522,22 +522,31 @@ static void test_native_mesa_preserves_tags(void)
     native_fixture_cleanup(&f);
 }
 
+typedef struct ScalarRows {
+    uint8_t mask[4][4];
+    unsigned dropped;
+    /* Of those, the stores past the right edge on a plane row. */
+    unsigned dropped_right;
+} ScalarRows;
+
 /*
  * The scalar rasterizer stores Odyssey window pixel (x, y) at plane pixel
- * (x, y): the device's scalar path writes plane row origin + y, so window
- * row 0 is the top plane row. Record which plane pixels it covers.
+ * (origin x + x, origin y + y): window row 0 is the drawable's top plane
+ * row. Record which plane pixels it covers. The device drops a store
+ * outside the plane (odyssey_pixel_in_bounds()), so count those instead.
  */
 static void scalar_rows_store(void *opaque, SGIColourTarget target,
                               int x, int y, uint32_t colour)
 {
-    uint8_t (*mask)[4] = opaque;
+    ScalarRows *rows = opaque;
 
     g_assert_cmpint(target, ==, 0);
-    g_assert_cmpint(x, >=, 0);
-    g_assert_cmpint(x, <, 4);
-    g_assert_cmpint(y, >=, 0);
-    g_assert_cmpint(y, <, 4);
-    mask[y][x] = 1;
+    if (x < 0 || x >= 4 || y < 0 || y >= 4) {
+        rows->dropped++;
+        rows->dropped_right += x >= 4 && y >= 0 && y < 4;
+        return;
+    }
+    rows->mask[y][x] = 1;
 }
 
 static void native_rows_draw_init(SGIGLDrawState *state, SGIGLDraw *draw,
@@ -584,10 +593,15 @@ static SGIGLDrawState native_rows_state(void)
 /*
  * Run one draw through the scalar rasterizer and through the adapter's
  * checked Mesa path, and require the same native plane rows from both.
+ * dropped and dropped_right are how many stores the scalar path must drop
+ * outside the plane, and how many of those lie past its right edge alone,
+ * which proves which resource edges the case reaches past.
  */
-static void native_rows_match_scalar(const SGIGLDrawState *in,
-                                     const float xy[3][2],
-                                     const uint8_t expected[4][4])
+static void native_rows_compare(const SGIGLDrawState *in,
+                                const float xy[3][2],
+                                const uint8_t expected[4][4],
+                                unsigned dropped,
+                                unsigned dropped_right)
 {
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
@@ -599,9 +613,10 @@ static void native_rows_match_scalar(const SGIGLDrawState *in,
     SGIGLDrawState state = *in;
     float vertices[3][SGI_GL_VERTEX_FLOATS];
     SGIGLDraw draw;
-    uint8_t scalar[4][4] = { 0 };
+    ScalarRows rows = { 0 };
+    uint8_t (*scalar)[4] = rows.mask;
     SGIRasterTarget scalar_target = {
-        .store_colour = scalar_rows_store, .opaque = scalar,
+        .store_colour = scalar_rows_store, .opaque = &rows,
     };
     NativeFixture f;
     SGIRenderer *renderer;
@@ -616,7 +631,13 @@ static void native_rows_match_scalar(const SGIGLDrawState *in,
         g_test_message("scalar plane row %u: %u%u%u%u", y, scalar[y][0],
                        scalar[y][1], scalar[y][2], scalar[y][3]);
     }
-    g_assert_cmpmem(scalar, sizeof(scalar), expected, sizeof(scalar));
+    g_test_message("scalar stores dropped outside the plane: %u, "
+                   "past the right edge only: %u", rows.dropped,
+                   rows.dropped_right);
+    g_assert_cmpmem(rows.mask, sizeof(rows.mask), expected,
+                    sizeof(rows.mask));
+    g_assert_cmpuint(rows.dropped, ==, dropped);
+    g_assert_cmpuint(rows.dropped_right, ==, dropped_right);
 
     native_fixture_init(&f);
     memcpy(before, f.memory[0].bytes, sizeof(before));
@@ -656,6 +677,13 @@ static void native_rows_match_scalar(const SGIGLDrawState *in,
     assert_tag_sentinels(&f);
     sgi_renderer_free(renderer);
     native_fixture_cleanup(&f);
+}
+
+static void native_rows_match_scalar(const SGIGLDrawState *in,
+                                     const float xy[3][2],
+                                     const uint8_t expected[4][4])
+{
+    native_rows_compare(in, xy, expected, 0, 0);
 }
 
 static bool native_rows_require_mesa(void)
@@ -760,9 +788,262 @@ static void test_native_rows_scissor(void)
     native_rows_match_scalar(&state, xy, expected);
 }
 
+/* The reach viewport, whose matrix makes x_w and y_w the vertex's x, y. */
+static void native_rows_reach(SGIGLDrawState *state)
+{
+    state->viewport[0] = -8192;
+    state->viewport[1] = -8192;
+    state->viewport[2] = 16384;
+    state->viewport[3] = 16384;
+    state->projection[0] = 1.0f / 8192;
+    state->projection[5] = 1.0f / 8192;
+}
+
 /*
- * Only the observed profile is mapped: no window matrix, rows-down flag or
- * drawable origin. Each is refused before any snapshot.
+ * A right triangle in window rows 0 to 2 at origin (1,2), under a clip that
+ * crosses the plane's right and bottom edges. Window row 0 covers column 0,
+ * row 1 columns 0 to 2 and row 2 columns 0 to 4; the scalar path drops what
+ * lands past the plane, and the shared renderer must clamp the clip to
+ * the target the same way.
+ */
+static void test_native_rows_origin_edge(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { 0.25f, 0.25f }, { 0.25f, 2.75f }, { 5.25f, 2.75f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 0, 0, 0, 0 },
+        { 0, 0, 0, 0 },
+        { 0, 1, 0, 0 },
+        { 0, 1, 1, 1 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    native_rows_reach(&state);
+    state.drawable.origin[0] = 1;
+    state.drawable.origin[1] = 2;
+    state.drawable.clip.r[0] = (SGIClipRect) { 1, 2, 6, 7 };
+    state.scissor[2] = 8;
+    state.scissor[3] = 8;
+    native_rows_compare(&state, xy, expected, 5, 0);
+}
+
+/*
+ * Origin (1,1) and a clip that crosses only the plane's right edge. Window
+ * row 0 covers columns 0 to 3, which land on plane row 1 at columns 1 to
+ * 4: plane column 4 lies past the right edge and is dropped. Window row 1
+ * covers column 0, plane pixel (1,2).
+ */
+static void test_native_rows_origin_right_edge(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { 0.2f, 0.2f }, { 4.8f, 0.2f }, { 0.2f, 1.9f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 0, 0, 0, 0 },
+        { 0, 1, 1, 1 },
+        { 0, 1, 0, 0 },
+        { 0, 0, 0, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    native_rows_reach(&state);
+    state.drawable.origin[0] = 1;
+    state.drawable.origin[1] = 1;
+    state.drawable.clip.r[0] = (SGIClipRect) { 1, 1, 6, 2 };
+    state.scissor[2] = 8;
+    state.scissor[3] = 8;
+    native_rows_compare(&state, xy, expected, 1, 1);
+}
+
+/*
+ * A negative origin (-2,-1) under a clip that crosses the plane's top, left
+ * and bottom edges: window row 1 lands on plane row 0 and window row 2 on
+ * plane row 1, two columns to the left.
+ */
+static void test_native_rows_origin_negative(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { 0.25f, 0.25f }, { 0.25f, 2.75f }, { 5.25f, 2.75f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 1, 0, 0, 0 },
+        { 1, 1, 1, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    native_rows_reach(&state);
+    state.drawable.origin[0] = -2;
+    state.drawable.origin[1] = -1;
+    state.drawable.clip.r[0] = (SGIClipRect) { -2, -2, 2, 5 };
+    state.scissor[2] = 8;
+    state.scissor[3] = 8;
+    native_rows_compare(&state, xy, expected, 5, 0);
+}
+
+/*
+ * The offset viewport at origin (1,2), a clip touching the plane's right
+ * and bottom edges, and a window-relative scissor that keeps window row 1
+ * from column 1 on. Window rows 0 and 1 cover columns 0-2 and 0-1 without
+ * the scissor, so only plane pixel (2,3) remains.
+ */
+static void test_native_rows_origin_clip_scissor(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    /* x_w = 4 * x_ndc + 2, y_w = 4 * y_ndc + 3. */
+    static const float xy[3][2] = {
+        { -0.475f, -0.7f }, { 0.45f, -0.7f }, { -0.475f, -0.075f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 0, 0, 0, 0 },
+        { 0, 0, 0, 0 },
+        { 0, 0, 0, 0 },
+        { 0, 0, 1, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.viewport[0] = -2;
+    state.viewport[1] = -1;
+    state.viewport[2] = 8;
+    state.viewport[3] = 8;
+    state.drawable.origin[0] = 1;
+    state.drawable.origin[1] = 2;
+    state.drawable.clip.r[0] = (SGIClipRect) { 1, 2, 3, 3 };
+    state.scissor[0] = 1;
+    state.scissor[1] = 1;
+    state.scissor[2] = 7;
+    state.scissor[3] = 1;
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/* The same draw with a known 3 by 2 drawable extent that holds the clip. */
+static void test_native_rows_origin_known_extent(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { -0.475f, -0.7f }, { 0.45f, -0.7f }, { -0.475f, -0.075f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 0, 0, 0, 0 },
+        { 0, 0, 0, 0 },
+        { 1, 1, 1, 0 },
+        { 1, 1, 0, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.viewport[0] = -2;
+    state.viewport[1] = -1;
+    state.viewport[2] = 8;
+    state.viewport[3] = 8;
+    state.drawable.origin[0] = 0;
+    state.drawable.origin[1] = 2;
+    state.drawable.width = 3;
+    state.drawable.height = 2;
+    state.drawable.clip.r[0] = (SGIClipRect) { 0, 2, 2, 3 };
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/*
+ * Run a draw the adapter must refuse before any snapshot, and require its
+ * own message rather than the shared renderer's.
+ */
+static void native_rows_refused(NativeFixture *f, SGIRenderer *renderer,
+                                SGIGLDraw *draw, const char *message)
+{
+    SGIRasterRules rules = native_rules;
+    uint64_t saved_size = f->memory[0].size;
+    uint8_t before[64];
+    Error *err = NULL;
+
+    memcpy(before, f->memory[0].bytes, sizeof(before));
+    /* An attempted snapshot would report a resource failure here. */
+    f->memory[0].size = 0;
+    g_assert_cmpint(odyssey_native_mesa_draw(&f->native, renderer, &rules,
+                    draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    f->memory[0].size = saved_size;
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), message));
+    error_free(err);
+    g_assert_cmpmem(f->memory[0].bytes, sizeof(before), before,
+                    sizeof(before));
+    g_assert_cmpuint(f->invalidations, ==, 0);
+}
+
+/*
+ * A half-specified extent, and a known extent that does not hold the clip,
+ * are refused before any snapshot.
+ */
+static void test_native_rows_extent_refused(void)
+{
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS];
+    SGIGLDrawState state;
+    SGIGLDraw draw;
+    NativeFixture f;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    native_fixture_init(&f);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    for (unsigned rejected = 0; rejected < 6; rejected++) {
+        state = native_rows_state();
+        native_rows_draw_init(&state, &draw, vertices, xy);
+        state.drawable.origin[0] = 1;
+        state.drawable.origin[1] = 2;
+        state.drawable.width = 2;
+        state.drawable.height = 2;
+        state.drawable.clip.r[0] = (SGIClipRect) { 1, 2, 2, 3 };
+        switch (rejected) {
+        case 0:
+            state.drawable.height = 0;
+            break;
+        case 1:
+            state.drawable.width = 0;
+            break;
+        case 2:
+            state.drawable.clip.r[0].x0 = 0;
+            break;
+        case 3:
+            state.drawable.clip.r[0].y0 = 1;
+            break;
+        case 4:
+            state.drawable.clip.r[0].x1 = 3;
+            break;
+        default:
+            state.drawable.clip.r[0].y1 = 4;
+            break;
+        }
+        native_rows_refused(&f, renderer, &draw, "drawable extent");
+    }
+    sgi_renderer_free(renderer);
+    native_fixture_cleanup(&f);
+}
+
+/*
+ * Only the observed profile is mapped: no window matrix or rows-down flag,
+ * and origin-shifted viewport and scissor values inside 32 bits. Each other
+ * case is refused before any snapshot.
  */
 static void test_native_rows_unsupported_profile(void)
 {
@@ -786,7 +1067,7 @@ static void test_native_rows_unsupported_profile(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
-    for (unsigned rejected = 0; rejected < 4; rejected++) {
+    for (unsigned rejected = 0; rejected < 6; rejected++) {
         uint64_t saved_size = f.memory[0].size;
 
         state = native_rows_state();
@@ -798,11 +1079,24 @@ static void test_native_rows_unsupported_profile(void)
         case 1:
             state.window_matrix_given = 1;
             break;
+        /* Each case leaves 32 bits in exactly one mapped value. */
         case 2:
+            /* Viewport x plus origin x; scissor x is 0 + origin x. */
+            state.drawable.origin[0] = INT32_MAX;
+            state.viewport[0] = 1;
+            break;
+        case 3:
+            /* Height minus viewport y and height. */
+            state.viewport[1] = INT32_MIN;
+            break;
+        case 4:
+            /* Scissor x plus origin x; viewport x is 0 + origin x. */
             state.drawable.origin[0] = 1;
+            state.scissor[0] = INT32_MAX;
             break;
         default:
-            state.drawable.origin[1] = 1;
+            /* Height minus scissor y and height. */
+            state.scissor[1] = INT32_MIN;
             break;
         }
         /* An attempted snapshot would report a resource failure here. */
@@ -852,6 +1146,18 @@ int main(int argc, char **argv)
                     test_native_rows_clip_scissor);
     g_test_add_func("/sgi-odyssey-native/mesa-rows-scissor",
                     test_native_rows_scissor);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-edge",
+                    test_native_rows_origin_edge);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-right-edge",
+                    test_native_rows_origin_right_edge);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-negative",
+                    test_native_rows_origin_negative);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-clip-scissor",
+                    test_native_rows_origin_clip_scissor);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-known-extent",
+                    test_native_rows_origin_known_extent);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-extent-refused",
+                    test_native_rows_extent_refused);
     g_test_add_func("/sgi-odyssey-native/mesa-rows-unsupported-profile",
                     test_native_rows_unsupported_profile);
 #endif
