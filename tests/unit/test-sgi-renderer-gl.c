@@ -1875,6 +1875,51 @@ static void test_typed_texture_triangle(void)
     image.width = resources[1].width = 1;
     g_assert_cmpuint(f.snapshots, ==, 6);
     g_assert_cmpuint(f.commits, ==, 3);
+    state.drawable.clip.r[0] = (SGIClipRect) { 5, 5, 6, 6 };
+    /* Nearest power-of-two shapes below, at, and above 16 MiB of slots. */
+    image.width = resources[1].width = 1024;
+    image.height = resources[1].height = 512;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    image.height = resources[1].height = 1024;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    image.width = resources[1].width = 2048;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err),
+                            "host staging budget"));
+    g_clear_pointer(&err, error_free);
+    image.height = resources[1].height = 1;
+    state.drawable.clip.r[0] = (SGIClipRect) { 0, 0, 3, 3 };
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 3);
+    /* A legal power-of-two width whose four-slot stride wraps uint32_t. */
+    image.width = resources[1].width = 1u << 30;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    sizeof(size_t) == 4 ? SGI_RENDER_RESOURCE_ERROR :
+                                          SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    if (sizeof(size_t) > 4) {
+        g_assert_nonnull(strstr(error_get_pretty(err),
+                                "host staging budget"));
+    }
+    g_clear_pointer(&err, error_free);
+    image.height = resources[1].height = 1u << 30;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.width = resources[1].width = 1;
+    image.height = resources[1].height = 1;
+    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.commits, ==, 3);
     vertices[0][SGI_GL_V_POSITION] = -2;
     vertices[0][SGI_GL_V_TEXCOORD + 3] = 0;
     vertices[0][SGI_GL_V_COLOR] = 0;
