@@ -28,6 +28,14 @@ typedef struct SGIRendererRequest {
 #define SGI_RENDERER_FRAME_VERTICES_MAX 9
 #define SGI_RENDERER_CLEAR_RECTS 16
 
+/* OpenGL wrap values accepted at the direct renderer-frame boundary. */
+typedef enum SGIRendererTextureWrap {
+    SGI_RENDERER_WRAP_REPEAT = 0x2901,
+    SGI_RENDERER_WRAP_CLAMP = 0x2900,
+    SGI_RENDERER_WRAP_EDGE = 0x812f,
+    SGI_RENDERER_WRAP_BORDER = 0x812d,
+} SGIRendererTextureWrap;
+
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
     uint32_t env_mode, wrap_s, wrap_t;

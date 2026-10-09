@@ -13,6 +13,14 @@ struct SGIRenderer {
 
 static const SGIRendererOps *gl_ops;
 
+static bool sgi_renderer_texture_wrap_valid(uint32_t wrap)
+{
+    return wrap == SGI_RENDERER_WRAP_REPEAT ||
+           wrap == SGI_RENDERER_WRAP_CLAMP ||
+           wrap == SGI_RENDERER_WRAP_EDGE ||
+           wrap == SGI_RENDERER_WRAP_BORDER;
+}
+
 void sgi_renderer_register_gl(const SGIRendererOps *ops)
 {
     assert(ops && ops->create && ops->draw && ops->destroy);
@@ -217,6 +225,21 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
              (size_t)frame->texture.width * frame->texture.height * 4)) {
         error_setg(errp, "Invalid SGI OpenGL texture request");
         return false;
+    }
+    if (frame->texture.slots) {
+        if (!sgi_renderer_texture_wrap_valid(frame->texture.wrap_s) ||
+            !sgi_renderer_texture_wrap_valid(frame->texture.wrap_t)) {
+            error_setg(errp, "Invalid SGI OpenGL texture wrap");
+            return false;
+        }
+        for (unsigned c = 0; c < 4; c++) {
+            double value = frame->texture.border_bytes[c];
+
+            if (!isfinite(value) || value < 0 || value > 255) {
+                error_setg(errp, "Invalid SGI OpenGL texture border colour");
+                return false;
+            }
+        }
     }
     for (unsigned i = 0; i < frame->clip_count; i++) {
         const SGIRendererClearRect *rect = &frame->clips[i];
