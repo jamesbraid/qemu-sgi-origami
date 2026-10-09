@@ -2026,6 +2026,10 @@ void qtest_cb_for_every_machine(void (*cb)(const char *machine),
             g_str_equal("xenpv", machines[i].name) ||
             g_str_equal("xenpvh", machines[i].name) ||
             g_str_equal("origin300", machines[i].name) ||
+            g_str_equal("origin350", machines[i].name) ||
+            g_str_equal("onyx350", machines[i].name) ||
+            g_str_equal("onyx4-host", machines[i].name) ||
+            g_str_equal("tezro", machines[i].name) ||
             g_str_equal("octane", machines[i].name) ||
             g_str_equal("octane2", machines[i].name) ||
             g_str_equal("fuel", machines[i].name) ||
