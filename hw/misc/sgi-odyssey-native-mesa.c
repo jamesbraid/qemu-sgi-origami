@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qapi/error.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "trace.h"
@@ -256,6 +257,66 @@ SGIRasterTarget odyssey_native_mesa_target(OdysseyNativeMesa *native)
     };
 }
 
+static void native_trace_draw(OdysseyNativeMesa *native,
+                              const SGIGLDraw *draw)
+{
+    const SGIGLDrawState *st = draw->state;
+    const SGIRenderResource *resource;
+    uint32_t draw_flags, state_flags;
+    bool finite_matrices = true, finite_vertices;
+
+    resource = st->drawable.front < ARRAY_SIZE(native->resources) ?
+               &native->resources[st->drawable.front] : NULL;
+    draw_flags = (!!draw->back_colors) |
+                 (!!draw->polygon_modes << 1) |
+                 (!!draw->polygon_stipple_enabled << 2) |
+                 (!!draw->point_smooth << 3) |
+                 (!!draw->line_smooth << 4) |
+                 (!!draw->polygon_smooth << 5) |
+                 (!!draw->line_stipple_enabled << 6);
+    state_flags = (!!st->depth_test) |
+                  (!!st->stencil_test << 1) |
+                  (!!st->blend << 2) |
+                  (!!st->alpha_test << 3) |
+                  (!!st->fog << 4) |
+                  (!!st->cull_face << 5) |
+                  (!!st->clip_planes << 6) |
+                  (!!st->color_logic_op << 7) |
+                  (!!st->index_logic_op << 8) |
+                  (!!st->texture_3d << 9) |
+                  (!!st->polygon_offset << 10) |
+                  (!!st->window_matrix_given << 11) |
+                  (!!st->drawable.bound << 12);
+    for (unsigned i = 0; i < 16; i++) {
+        finite_matrices &= isfinite(st->modelview[i]) &&
+                           isfinite(st->projection[i]);
+    }
+    finite_vertices = draw->vertices && draw->count >= 3;
+    if (finite_vertices) {
+        for (unsigned i = 0; i < 3; i++) {
+            const float *vertex = draw->vertices + i * SGI_GL_VERTEX_FLOATS;
+
+            for (unsigned c = 0; c < 4; c++) {
+                finite_vertices &= isfinite(vertex[SGI_GL_V_POSITION + c]) &&
+                                   isfinite(vertex[SGI_GL_V_COLOR + c]);
+            }
+        }
+    }
+    trace_sgi_odyssey_mesa_draw_input(
+        draw->mode, draw->count, draw_flags, state_flags, st->shade_model,
+        st->index_bits, st->draw_buffers, st->colour_mask,
+        st->drawable.front, st->blend);
+    trace_sgi_odyssey_mesa_draw_window(
+        st->drawable.origin[0], st->drawable.origin[1],
+        st->drawable.width, st->drawable.height,
+        st->viewport[0], st->viewport[1], st->viewport[2], st->viewport[3],
+        resource ? resource->width : 0, resource ? resource->height : 0);
+    trace_sgi_odyssey_mesa_draw_resource(
+        finite_matrices, finite_vertices, resource != NULL,
+        resource ? resource->buffer : 0, resource ? resource->depth : 0,
+        resource ? resource->component_count : 0);
+}
+
 SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
                                          SGIRenderer *renderer,
                                          const SGIRasterRules *rules,
@@ -278,6 +339,11 @@ SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
     }
     native->clip = draw->state->drawable.clip;
     target = odyssey_native_mesa_target(native);
+    if (trace_event_get_state_backends(TRACE_SGI_ODYSSEY_MESA_DRAW_INPUT) ||
+        trace_event_get_state_backends(TRACE_SGI_ODYSSEY_MESA_DRAW_WINDOW) ||
+        trace_event_get_state_backends(TRACE_SGI_ODYSSEY_MESA_DRAW_RESOURCE)) {
+        native_trace_draw(native, draw);
+    }
     result = sgi_render_draw_checked(renderer, rules, &target, draw, errp);
     trace_sgi_odyssey_mesa_renderer_result(result);
     return result;
