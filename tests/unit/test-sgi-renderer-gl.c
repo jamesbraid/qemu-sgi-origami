@@ -2163,14 +2163,20 @@ static void test_typed_texture_multi_texel(void)
     };
     static const struct {
         float s, t;
-        uint32_t wrap;
+        uint32_t filter, wrap;
         uint8_t rgb[3];
     } samples[] = {
-        { -0.25f, 0.25f, SGI_GL_REPEAT, { 0, 255, 0 } },
-        { -0.25f, 0.25f, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
-        { 0.25f, 0.75f, SGI_GL_CLAMP_TO_EDGE, { 0, 0, 255 } },
-        { 0.25f, -0.25f, SGI_GL_REPEAT, { 0, 0, 255 } },
-        { 0.25f, -0.25f, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
+        { -0.25f, 0.25f, SGI_GL_NEAREST, SGI_GL_REPEAT, { 0, 255, 0 } },
+        { -0.25f, 0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_EDGE,
+          { 255, 0, 0 } },
+        { 0.25f, 0.75f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_EDGE,
+          { 0, 0, 255 } },
+        { 0.25f, -0.25f, SGI_GL_NEAREST, SGI_GL_REPEAT, { 0, 0, 255 } },
+        { 0.25f, -0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_EDGE,
+          { 255, 0, 0 } },
+        { 0.375f, 0.625f, SGI_GL_LINEAR, SGI_GL_REPEAT, { 96, 64, 191 } },
+        { 0, 0, SGI_GL_LINEAR, SGI_GL_REPEAT, { 128, 128, 128 } },
+        { 0, 0, SGI_GL_LINEAR, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
     };
     static const struct {
         float s1, t2;
@@ -2274,6 +2280,7 @@ static void test_typed_texture_multi_texel(void)
     g_assert_null(err);
     for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
         native_draw_fill_sentinel(&f);
+        image.min_filter = image.mag_filter = samples[i].filter;
         image.wrap_s = image.wrap_t = samples[i].wrap;
         for (unsigned v = 0; v < 3; v++) {
             vertices[v][SGI_GL_V_TEXCOORD] = samples[i].s;
@@ -2296,6 +2303,7 @@ static void test_typed_texture_multi_texel(void)
         g_assert_cmpuint(f.tag[0][0], ==, 9);
         g_assert_cmpuint(f.tag[3][3], ==, 1);
     }
+    image.min_filter = image.mag_filter = SGI_GL_NEAREST;
     image.wrap_s = image.wrap_t = SGI_GL_REPEAT;
     vertices[0][SGI_GL_V_POSITION] = -2;
     vertices[1][SGI_GL_V_POSITION] = 2;
