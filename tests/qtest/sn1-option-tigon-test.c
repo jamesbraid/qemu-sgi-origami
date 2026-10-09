@@ -296,7 +296,8 @@ static void setup_routes(Tigon *t)
     t->head = SPACE_IO + (index < 2 ? NODE(index * 2) : NODE(7)) +
               ((uint64_t)(index < 2 ? 0xe :
                           expansion_widgets[index - 2]) << 24);
-    t->window = t->head + (t->placement->device == 1 ? 0x400000 : 0x600000);
+    t->window = t->head + (t->placement->device == 1 ? 0x400000 :
+                           0x600000 + (t->placement->device - 2) * 0x100000);
 }
 
 static void setup_card(Tigon *t)
@@ -396,18 +397,22 @@ static void socket_timeout(int fd)
                     ==, 0);
 }
 
-static void test_pio_sram_direct_dma_bytes(void)
+static void test_pio_sram_direct_dma_bytes_one(unsigned device)
 {
-    const Placement p = { .head = 2, .device = 1, .destination = 1,
+    const Placement p = { .head = 2, .device = device, .destination = 1,
                           .swap_clear = true };
     static const uint32_t words[2] = { 0x17395bc1, 0x2e4068af };
     static const uint8_t card_bytes[2][8] = {
         { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
         { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
     };
-    static const uint8_t host_bytes[2][8] = {
+    static const uint8_t narrow_host_bytes[2][8] = {
         { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
         { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
+    };
+    static const uint8_t wide_host_bytes[2][8] = {
+        { 0x2e, 0x40, 0x68, 0xaf, 0x17, 0x39, 0x5b, 0xc1 },
+        { 0xaf, 0x68, 0x40, 0x2e, 0xc1, 0x5b, 0x39, 0x17 },
     };
     const uint8_t sentinel[8] = {
         0xd3, 0x08, 0x95, 0x4a, 0xe1, 0x76, 0x2b, 0xbc,
@@ -433,6 +438,8 @@ static void test_pio_sram_direct_dma_bytes(void)
         prom_path, storage, bus_names[p.head], p.device);
     setup_routes(&t);
     setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==,
+                    device == 1 ? 0 : TI_PCI_32BIT_BUS);
     reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
     device_control = cpu_readl(t.qts, t.pio_cpu,
                                t.head + 0x204 + p.device * 8);
@@ -485,8 +492,13 @@ static void test_pio_sram_direct_dma_bytes(void)
                        "%02x %02x %02x %02x %02x %02x %02x %02x",
                        swap, seen[0], seen[1], seen[2], seen[3],
                        seen[4], seen[5], seen[6], seen[7]);
-        g_assert_cmpmem(seen, sizeof(seen), host_bytes[swap],
-                        sizeof(host_bytes[swap]));
+        if (device == 1) {
+            g_assert_cmpmem(seen, sizeof(seen), wide_host_bytes[swap],
+                            sizeof(wide_host_bytes[swap]));
+        } else {
+            g_assert_cmpmem(seen, sizeof(seen), narrow_host_bytes[swap],
+                            sizeof(narrow_host_bytes[swap]));
+        }
         memory_read(&t, p.destination, destination + 0x6000,
                     seen, sizeof(seen));
         g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
@@ -494,6 +506,12 @@ static void test_pio_sram_direct_dma_bytes(void)
 
     qtest_quit(t.qts);
     g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_pio_sram_direct_dma_bytes(void)
+{
+    test_pio_sram_direct_dma_bytes_one(1);
+    test_pio_sram_direct_dma_bytes_one(3);
 }
 
 static void test_direct_dma_write(void)
