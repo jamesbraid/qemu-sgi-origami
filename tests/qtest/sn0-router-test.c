@@ -524,6 +524,13 @@ static void test_migration(void)
 typedef struct NIC {
     QTestState *qts;
     unsigned int node;
+    /*
+     * The fixture's arrival port as this NIC last set it, 0 if it has not.
+     * The port is plain fixture state that a machine reset leaves alone, so
+     * a NIC need not select it again before each request. Two NICs on one
+     * router must not interleave, or this goes stale.
+     */
+    unsigned int selected_port;
 } NIC;
 
 static const char *nic_fixture_path(NIC *nic)
@@ -534,9 +541,15 @@ static const char *nic_fixture_path(NIC *nic)
 
 static void nic_select_port(NIC *nic)
 {
+    unsigned int port = nic->node == 1 ? 4 : 5;
+
+    if (nic->selected_port == port) {
+        return;
+    }
     qtest_qmp_assert_success(nic->qts,
         "{'execute':'qom-set','arguments':{'path':%s,'property':'port',"
-        "'value':%u}}", nic_fixture_path(nic), nic->node == 1 ? 4 : 5);
+        "'value':%u}}", nic_fixture_path(nic), port);
+    nic->selected_port = port;
 }
 
 static uint64_t nic_read(NIC *nic)
