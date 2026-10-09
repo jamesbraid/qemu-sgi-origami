@@ -547,12 +547,27 @@ static void test_worker_fault(gconstpointer opaque)
         request->clip[2] = request->clip[3] = 127;
         request->rgb[0] = 255;
         if (failure == 4) {
-            g_assert_false(sgi_renderer_draw(renderer, request, &err));
-            g_assert_nonnull(err);
-            error_free(err);
-            err = NULL;
-            g_assert_false(sgi_renderer_draw(renderer, request, &err));
-            error_free(err);
+            /*
+             * A readback that silently returns zeros raises no GL error.
+             * Staging validation cannot tell it from a precision
+             * difference, so it refuses the draw; that is safe because
+             * the caller's software draw is exact. Neither refusal
+             * latches, and the next correct readback draws.
+             */
+            for (unsigned i = 0; i < 2; i++) {
+                g_assert_cmpint(sgi_renderer_draw_checked(renderer, request,
+                                                          &err), ==,
+                                SGI_RENDER_DRAW_REFUSED);
+                g_assert_cmpstr(error_get_pretty(err), ==,
+                                "Invalid SGI OpenGL renderer staging");
+                g_clear_pointer(&err, error_free);
+            }
+            epoxy_glReadPixels = saved_read_pixels;
+            g_assert_cmpint(sgi_renderer_draw_checked(renderer, request,
+                                                      &err), ==,
+                            SGI_RENDER_DRAW_OK);
+            g_assert_null(err);
+            g_assert_true(sgi_renderer_staging_valid(request));
         } else {
             if (!sgi_renderer_draw(renderer, request, &err)) {
                 g_error("Renderer draw failed: %s",
@@ -6201,7 +6216,7 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(2), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/framebuffer-failure",
                          GUINT_TO_POINTER(3), test_worker_fault);
-    g_test_add_data_func("/sgi-renderer-gl/readback-validation-failure",
+    g_test_add_data_func("/sgi-renderer-gl/zero-readback-refusal",
                          GUINT_TO_POINTER(4), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/unbind-failure",
                          GUINT_TO_POINTER(5), test_worker_fault);
