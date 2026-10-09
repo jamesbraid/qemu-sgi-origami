@@ -805,6 +805,7 @@ struct SGIKonaState {
     bool mesa_failed;
     /* Pending host-only test arm; cleared on reset/load, not migrated. */
     uint32_t test_renderer_fail_draw;
+    uint32_t test_renderer_fail_create;
     uint64_t renderer_generation;
     uint64_t renderer_requests;
     uint64_t renderer_draws;

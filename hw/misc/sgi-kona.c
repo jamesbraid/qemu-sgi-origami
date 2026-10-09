@@ -2936,6 +2936,37 @@ static void sgi_kona_renderer_arm_test_fault(SGIKonaState *s)
     }
 }
 
+static SGIRenderResult sgi_kona_renderer_create(SGIKonaState *s,
+                                                Error **errp)
+{
+    SGIRenderCreateResult created;
+
+    if (s->test_renderer_fail_create) {
+        created = s->test_renderer_fail_create;
+        s->test_renderer_fail_create = 0;
+        error_setg(errp, "Injected SGI renderer creation failure");
+    } else {
+        created = sgi_renderer_create(&s->renderer, errp);
+    }
+    switch (created) {
+    case SGI_RENDER_CREATE_OK:
+        assert(s->renderer);
+        return SGI_RENDER_OK;
+    case SGI_RENDER_CREATE_UNAVAILABLE:
+        s->renderer_failed = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: OpenGL renderer unavailable; "
+                      "using scalar fallback\n");
+        return SGI_RENDER_UNSUPPORTED;
+    case SGI_RENDER_CREATE_OOM:
+        return SGI_RENDER_OOM;
+    case SGI_RENDER_CREATE_HOST_ERROR:
+        s->renderer_failed = true;
+        return SGI_RENDER_HOST_ERROR;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                                             const SGIGLDraw *d,
                                             const SGIRasterRules *rules,
@@ -3040,15 +3071,9 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
     if (!s->renderer) {
         Error *create_err = NULL;
 
-        s->renderer = sgi_renderer_new(&create_err);
-        if (!s->renderer) {
-            /* Construction has no typed backend/setup/allocation result. */
-            s->renderer_failed = true;
-            error_report("sgi-kona: legacy renderer creation unclassified: "
-                         "%s; using scalar fallback",
-                         create_err ? error_get_pretty(create_err) :
-                                      "no diagnostic");
-            error_free(create_err);
+        result = sgi_kona_renderer_create(s, &create_err);
+        if (result != SGI_RENDER_OK) {
+            error_propagate(errp, create_err);
             goto out;
         }
         error_free(create_err);
@@ -3147,9 +3172,9 @@ static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
     size_t count;
 
     if (!s->renderer) {
-        s->renderer = sgi_renderer_new(errp);
-        if (!s->renderer) {
-            return SGI_RENDER_HOST_ERROR;
+        result = sgi_kona_renderer_create(s, errp);
+        if (result != SGI_RENDER_OK) {
+            return result;
         }
     }
     sgi_kona_renderer_arm_test_fault(s);
@@ -11620,6 +11645,29 @@ static void sgi_kona_test_set_renderer_failure(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_kona_test_set_renderer_create_failure(Object *obj, Visitor *v,
+                                                      const char *name,
+                                                      void *opaque,
+                                                      Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint32_t result;
+
+    if (!qtest_enabled() || !s->host_gpu || s->renderer) {
+        error_setg(errp, "KONA renderer creation fault requires an uncreated "
+                   "host-gpu renderer in qtest");
+        return;
+    }
+    if (!visit_type_uint32(v, name, &result, errp)) {
+        return;
+    }
+    if (result > SGI_RENDER_CREATE_HOST_ERROR) {
+        error_setg(errp, "Invalid SGI renderer creation result %u", result);
+        return;
+    }
+    s->test_renderer_fail_create = result;
+}
+
 static bool sgi_kona_test_get_context_alloc_fail(Object *obj, Error **errp)
 {
     return SGI_KONA(obj)->test_context_alloc_fail;
@@ -11751,6 +11799,9 @@ static void sgi_kona_instance_init(Object *obj)
                         NULL, NULL, NULL);
     object_property_add(obj, "x-test-gpu-fail-draw", "uint32", NULL,
                         sgi_kona_test_set_renderer_failure, NULL, NULL);
+    object_property_add(obj, "x-test-gpu-fail-create", "uint32", NULL,
+                        sgi_kona_test_set_renderer_create_failure,
+                        NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-gpu-requests",
                                    &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
@@ -11851,6 +11902,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->renderer_failed = false;
     s->mesa_failed = false;
     s->test_renderer_fail_draw = 0;
+    s->test_renderer_fail_create = 0;
 
     s->widget_control = 0;
     s->onewire_reg = 0;
@@ -12198,6 +12250,7 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
     s->renderer_failed = false;
     s->mesa_failed = false;
     s->test_renderer_fail_draw = 0;
+    s->test_renderer_fail_create = 0;
 
     /*
      * An open video command can hold no more data words than it takes, or
