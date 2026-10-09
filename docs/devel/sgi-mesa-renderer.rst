@@ -48,8 +48,11 @@ staging above 16 MiB returns ``SGI_RENDER_UNSUPPORTED``.
 Equal ``NEAREST`` or equal ``LINEAR`` minification and magnification filters
 are supported. S and T independently accept ``REPEAT``, ``CLAMP``,
 ``CLAMP_TO_EDGE``, and ``CLAMP_TO_BORDER``. The worker filters raw integer
-RGBA8 texels before ``REPLACE``, ``MODULATE``, or ``DECAL``. For ``LINEAR``,
-it combines four taps with double-precision weights. The finite border
+RGBA8 texels before ``REPLACE``, ``MODULATE``, ``DECAL``, or ``BLEND``. For
+``LINEAR``, it combines four taps with double-precision weights. ``BLEND``
+mixes primary and environment RGB using filtered texture RGB as a per-channel
+weight. It multiplies primary alpha by filtered texture alpha. The current
+environment colour is clamped to [0,1] before the mix. The finite border
 colour is clamped to [0,1] and supplies out-of-range taps. It is separate
 from stored image-border texels. Mixed or mipmap filters, stored borders,
 other texture formats, and other environment modes remain unsupported.
