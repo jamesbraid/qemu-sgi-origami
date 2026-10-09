@@ -924,9 +924,11 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
                 }
                 tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                        0x4040845, 0x4040844);
+                uint32_t got[4];
+
+                gl_window_quad(t, got);
                 for (int i = 0; i < 4; i++) {
-                    g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
-                                    expected[z][i]);
+                    g_assert_cmphex(got[i], ==, expected[z][i]);
                 }
             }
 
@@ -934,8 +936,11 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
             tex_records(t, (const uint32_t[]){ TEX_TXSIZE, 0x81112 }, 1);
             tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                    0x4040845, 0x4040844);
+            uint32_t got[4];
+
+            gl_window_quad(t, got);
             for (int i = 0; i < 4; i++) {
-                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                g_assert_cmphex(got[i], ==,
                                 pixels[4 * i] << 16 |
                                 pixels[4 * i + 1] << 8 |
                                 pixels[4 * i + 2]);
@@ -1277,14 +1282,16 @@ static void test_gl_texture_captured_boundary_volumes_pixel(gconstpointer data)
             tex_boundary_volume_state(t, c);
             tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                    enabled, disabled);
+            uint32_t got[4];
+
+            gl_window_quad(t, got);
             for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
                 uint32_t x = coordinates[i][0] * volume->width / 256;
                 uint32_t y = coordinates[i][1] * volume->height / 256;
                 uint32_t expected = (0x10 + x) << 16 |
                                     (0x20 + y) << 8 | (0x30 + z);
 
-                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
-                                expected);
+                g_assert_cmphex(got[i], ==, expected);
             }
         }
         g_free(image);
@@ -1399,14 +1406,16 @@ static void test_gl_texture_captured_deep_volume_pixel(gconstpointer data)
             }
             tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                    enabled, disabled);
+            uint32_t got[4];
+
+            gl_window_quad(t, got);
             for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
                 uint32_t x = coordinates[i][0] * 8 / 256;
                 uint32_t y = coordinates[i][1] * 8 / 256;
                 uint32_t expected = (16 + 20 * x) << 16 |
                                     (24 + 24 * y) << 8 | (32 + z);
 
-                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
-                                expected);
+                g_assert_cmphex(got[i], ==, expected);
             }
         }
 
@@ -1420,11 +1429,14 @@ static void test_gl_texture_captured_deep_volume_pixel(gconstpointer data)
         }
         tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                enabled ^ 2u, disabled ^ 2u);
+        uint32_t got[4];
+
+        gl_window_quad(t, got);
         for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
             uint32_t source = pixels[4 * i] << 16 |
                               pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
 
-            g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+            g_assert_cmphex(got[i], ==, source);
         }
 
         /* A different clamp extent must also leave the source pixels visible. */
@@ -1432,11 +1444,12 @@ static void test_gl_texture_captured_deep_volume_pixel(gconstpointer data)
         tex_record(t, TEX_TXCLAMPSIZE, 0x10004);
         tex_volume_pixels_data(t, true, 0x00020002, pixels, enabled,
                                disabled);
+        gl_window_quad(t, got);
         for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
             uint32_t source = pixels[4 * i] << 16 |
                               pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
 
-            g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+            g_assert_cmphex(got[i], ==, source);
         }
     }
     g_free(image);
@@ -1549,14 +1562,15 @@ static void test_gl_texture_ordinary_rectangular_volume(void)
             tex_captured_rect_volume_state(t, width, height, depth);
             tex_quad_volume_z(t, (z + 0.5f) / depth);
             for (uint32_t y = 0; y < height; y++) {
+                uint32_t py = 16 + (2 * y + 1) * 8 / height;
+                g_autofree uint32_t *got = gl_window_row(t, 16, py, 32);
+
                 for (uint32_t x = 0; x < width; x++) {
                     uint32_t px = 16 + (2 * x + 1) * 16 / width;
-                    uint32_t py = 16 + (2 * y + 1) * 8 / height;
                     uint32_t expected = (40 + x * 24) << 16 |
                                         (16 + y * 32) << 8 | (20 + z * 50);
 
-                    g_assert_cmphex(gl_window_pixel(t, px, py), ==,
-                                    expected);
+                    g_assert_cmphex(got[px - 16], ==, expected);
                 }
             }
         }
@@ -1752,6 +1766,9 @@ static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
             }
             tex_volume_pixels_data(t, true, 0x00020002, pixels,
                                    enabled, disabled);
+            uint32_t got[4];
+
+            gl_window_quad(t, got);
             for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
                 uint32_t x = coordinates[i][0] * width / 256;
                 uint32_t y = coordinates[i][1] * height / 256;
@@ -1759,8 +1776,7 @@ static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
                 uint32_t expected = ((16 + 20 * x) & 0xff) << 16 |
                                     ((24 + 24 * y) & 0xff) << 8 | blue;
 
-                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
-                                expected);
+                g_assert_cmphex(got[i], ==, expected);
             }
         }
     }
@@ -1776,22 +1792,26 @@ static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
     }
     tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040845,
                            0x4040844);
+    uint32_t got[4];
+
+    gl_window_quad(t, got);
     for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
         uint32_t source = pixels[4 * i] << 16 |
                           pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
 
-        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+        g_assert_cmphex(got[i], ==, source);
     }
 
     /* The complete raw pixel control must match the captured value. */
     tex_captured_rect_volume_state(t, 8, 2, 4);
     tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040847,
                            0x4040846);
+    gl_window_quad(t, got);
     for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
         uint32_t source = pixels[4 * i] << 16 |
                           pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
 
-        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+        g_assert_cmphex(got[i], ==, source);
     }
 
     /* A nonmatching clamp extent cannot select the stored volume. */
@@ -1799,11 +1819,12 @@ static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
     tex_record(t, TEX_TXCLAMPSIZE, 0x10004);
     tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040845,
                            0x4040844);
+    gl_window_quad(t, got);
     for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
         uint32_t source = pixels[4 * i] << 16 |
                           pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
 
-        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+        g_assert_cmphex(got[i], ==, source);
     }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
@@ -1905,13 +1926,15 @@ static void test_gl_texture_rectangular_volume_migration(void)
         tex_captured_rect_volume_state(to, 4, 2, 2);
         tex_quad_volume_z(to, z ? 0.75f : 0.25f);
         for (uint32_t y = 0; y < 2; y++) {
+            uint32_t py = 16 + (2 * y + 1) * 8 / 2;
+            g_autofree uint32_t *got = gl_window_row(to, 16, py, 32);
+
             for (uint32_t x = 0; x < 4; x++) {
                 uint32_t px = 16 + (2 * x + 1) * 16 / 4;
-                uint32_t py = 16 + (2 * y + 1) * 8 / 2;
                 uint32_t expected = (32 + x * 48) << 16 |
                                     (48 + y * 128) << 8 | (64 + z * 128);
 
-                g_assert_cmphex(gl_window_pixel(to, px, py), ==, expected);
+                g_assert_cmphex(got[px - 16], ==, expected);
             }
         }
     }

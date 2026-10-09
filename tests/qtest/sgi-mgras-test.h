@@ -960,6 +960,20 @@ static inline uint32_t *gl_window_row(QTestState *qts, int x, int y,
     return mgras_test_pixel_row(qts, 256 + x, 383 - y, count);
 }
 
+/*
+ * Window pixels (0, 0), (1, 0), (0, 1) and (1, 1) as got[0..3], each what
+ * gl_window_pixel() reads there, from two row reads.
+ */
+static inline void gl_window_quad(QTestState *qts, uint32_t got[4])
+{
+    for (int y = 0; y < 2; y++) {
+        g_autofree uint32_t *row = gl_window_row(qts, 0, y, 2);
+
+        got[2 * y] = row[0];
+        got[2 * y + 1] = row[1];
+    }
+}
+
 static inline uint32_t gl_window_pixel(QTestState *qts, int x, int y)
 {
     return mgras_test_pixel(qts, 256 + x, 383 - y);
