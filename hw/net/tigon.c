@@ -659,7 +659,7 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
 /*
  * Frame payload DMA. The chip's data byte swap (OPMODE BYTESWAP_DATA)
  * decides how a frame crosses the bus: set, a byte stream; clear, each
- * aligned 32-bit word reversed. The Tigon manual says data is normally
+ * aligned 32-bit word reversed in the ordinary mode. The Tigon manual says
  * byte-swapped in groups of four bytes, with a per-operation No Swap bit, and
  * public Linux acenic sets BYTESWAP_DATA on both byte orders to get frames in
  * order; how the firmware maps that flag onto No Swap is not documented, so
@@ -667,7 +667,10 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
  * intact only if the Bridge then reverses each 32-bit word, its 32-bit
  * swap-clear placement. IRIX also sets PciState bit 18, which turns the
  * card's DMA word swap off; the model applies no word swap. A transfer's lane
- * in its word is its bus address modulo 4.
+ * in its word is its bus address modulo 4. On a sampled wide, swap-clear
+ * slot, this model instead reverses complete eight-byte units and relocates
+ * each edge byte to the opposite lane. This compensates for the current
+ * XBridge placement; physical Tigon/XBridge placement remains unknown.
  *
  * Like every other transfer here it goes through pci_dma_*; what the host
  * bridge does to the bytes is the bridge's business. A write touches only the
@@ -680,8 +683,56 @@ static MemTxResult tigon_dma_frame_xfer(TigonState *s, uint64_t addr,
     PCIDevice *pdev = PCI_DEVICE(s);
     bool bswap = s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] &
                  TI_OPMODE_BYTESWAP_DATA;
+    bool wide = s->req64_sampled &&
+                (s->pci_state & TI_PCISTATE_NO_WORD_SWAP) &&
+                !(s->pci_state & TI_PCISTATE_32BIT_BUS) && !bswap;
     uint32_t i = 0, j;
     MemTxResult res;
+
+    if (wide) {
+        while (i < len) {
+            uint64_t a = addr + i;
+
+            if (!(a & 7) && len - i >= 8) {
+                uint8_t bytes[8];
+
+                if (is_write) {
+                    for (j = 0; j < 8; j++) {
+                        bytes[j] = buf[i + 7 - j];
+                    }
+                }
+                res = is_write ? pci_dma_write(pdev, a, bytes, 8)
+                               : pci_dma_read(pdev, a, bytes, 8);
+                trace_tigon_dma(is_write ? "frame write" : "frame read",
+                                a, 8, res);
+                if (res != MEMTX_OK) {
+                    return res;
+                }
+                if (!is_write) {
+                    for (j = 0; j < 8; j++) {
+                        buf[i + j] = bytes[7 - j];
+                    }
+                }
+                i += 8;
+            } else {
+                uint8_t byte = is_write ? buf[i] : 0;
+                uint64_t pci_addr = a ^ 7;
+
+                res = is_write ? pci_dma_write(pdev, pci_addr, &byte, 1)
+                               : pci_dma_read(pdev, pci_addr, &byte, 1);
+                trace_tigon_dma(is_write ? "frame write" : "frame read",
+                                pci_addr, 1, res);
+                if (res != MEMTX_OK) {
+                    return res;
+                }
+                if (!is_write) {
+                    buf[i] = byte;
+                }
+                i++;
+            }
+        }
+        return MEMTX_OK;
+    }
 
     if (bswap) {
         return is_write ? pci_dma_write(pdev, addr, buf, len)
