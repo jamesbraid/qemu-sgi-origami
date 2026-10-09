@@ -97,6 +97,13 @@ typedef struct {
     unsigned payload_offset;
     uint32_t gib_offset;
     bool rx_descriptor_only;
+    bool tx_only;
+    unsigned payload_length;
+    bool trace_dma;
+    bool data_byteswap;
+    bool pci_bit20;
+    bool clear_desc_word_swap;
+    bool set_desc_byte_swap;
 } Placement;
 
 typedef struct {
@@ -204,6 +211,34 @@ static void host_address(Tigon *t, uint32_t field, uint32_t offset)
 
     memory_word(t, field, address >> 32);
     memory_word(t, field + 4, address);
+}
+
+static void legacy_tx_descriptor(Tigon *t, uint32_t offset,
+                                 uint32_t buf, uint32_t word,
+                                 bool bigendian)
+{
+    uint8_t pci[12], host[8], tail[4];
+    uint64_t address = dma_address(t, buf);
+
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t value = i == 0 ? address >> 32 :
+                         i == 1 ? address : word;
+
+        if (bigendian) {
+            stl_be_p(pci + i * 4, value);
+        } else {
+            stl_le_p(pci + i * 4, value);
+        }
+    }
+    for (unsigned i = 0; i < sizeof(host); i++) {
+        host[i] = pci[7 - i];
+    }
+    for (unsigned i = 0; i < sizeof(tail); i++) {
+        tail[i] = pci[11 - i];
+    }
+    memory_write(t, t->placement->destination, offset, host, sizeof(host));
+    memory_write(t, t->placement->destination, offset + 12, tail,
+                 sizeof(tail));
 }
 
 static void zero_region(Tigon *t, uint32_t offset, size_t size)
@@ -699,16 +734,24 @@ static void test_traffic(const void *opaque)
 {
     const Placement *p = opaque;
     g_autofree char *storage = NULL;
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_arg = NULL;
     g_autoptr(GError) error = NULL;
     Tigon t = { .placement = p };
     uint8_t tx[60], rx[64], received[64], sentinel[64], seen[64];
     uint8_t guarded[80];
     const uint8_t mac[] = { 0x52, 0x54, 0, 0x12, 0x34, 0x56 };
+    const uint8_t tx_before[8] = { 0xd1, 0xc2, 0xb3, 0xa4,
+                                   0x95, 0x86, 0x77, 0x68 };
+    const uint8_t tx_after[8] = { 0x19, 0x2a, 0x3b, 0x4c,
+                                  0x5d, 0x6e, 0x7f, 0x80 };
     const uint32_t checked[] = {
         EVENT_RING, EVENT_PROD, TX_CONS, RETURN_RING, RETURN_PROD, RX_BUF,
     };
-    unsigned tx_len = p->swap_clear ? 42 : sizeof(tx);
-    unsigned rx_len = p->swap_clear ? 42 : sizeof(rx);
+    unsigned tx_len = p->payload_length ? p->payload_length :
+                      p->swap_clear ? 42 : sizeof(tx);
+    unsigned rx_len = p->payload_length ? p->payload_length :
+                      p->swap_clear ? 42 : sizeof(rx);
     unsigned tx_buf = TX_BUF + p->payload_offset;
     unsigned rx_buf = RX_BUF + p->payload_offset;
     uint32_t length;
@@ -723,14 +766,24 @@ static void test_traffic(const void *opaque)
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    if (p->trace_dma) {
+        fd = g_file_open_tmp("sn1-option-tigon-trace-XXXXXX", &trace_path,
+                             &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        trace_arg = g_strdup_printf("-trace enable=tigon_dma,file=%s",
+                                    trace_path);
+    }
     t.qts = qtest_initf(
         "-M origin300,topology=" TOPOLOGY
         ",expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-netdev socket,id=n0,fd=%d -device tigon,bus=%s,addr=%u,"
-        "netdev=n0,mac=" MAC,
-        prom_path, storage, sv[1], bus_names[p->head], p->device);
+        "netdev=n0,mac=" MAC " %s",
+        prom_path, storage, sv[1], bus_names[p->head], p->device,
+        trace_arg ? trace_arg : "");
     close(sv[1]);
     socket_timeout(sv[0]);
     setup_routes(&t);
@@ -772,20 +825,52 @@ static void test_traffic(const void *opaque)
     expect_interrupt(&t, true);
     reg_write(&t, TI_GCR_EVENTCONS_IDX, 1);
     acknowledge(&t);
+    if (p->data_byteswap || p->pci_bit20 || p->clear_desc_word_swap ||
+        p->set_desc_byte_swap) {
+        uint32_t opmode = TI_OPMODE_SWAP_CLEAR;
+
+        if (p->data_byteswap) {
+            opmode |= 0x10;
+        }
+        if (p->clear_desc_word_swap) {
+            opmode &= ~4U;
+        }
+        if (p->set_desc_byte_swap) {
+            opmode |= 2;
+        }
+        reg_write(&t, TI_GCR_OPMODE, opmode);
+        if (p->pci_bit20) {
+            reg_write(&t, TI_PCI_STATE,
+                      TI_PCI_NO_WORD_SWAP | TI_PCI_32BIT_BUS);
+        }
+    }
 
     if (p->rx_descriptor_only) {
         goto receive;
     }
     for (unsigned i = 0; i < sizeof(tx); i++) {
-        tx[i] = i ^ (0x35 + p->head + p->device + p->destination);
+        tx[i] = p->payload_length ? 0x20 + i :
+                i ^ (0x35 + p->head + p->device + p->destination);
     }
-    memset(tx, 0xff, 6);
-    memcpy(tx + 6, mac, sizeof(mac));
-    tx[12] = 8;
-    tx[13] = 6;
+    if (!p->payload_length) {
+        memset(tx, 0xff, 6);
+        memcpy(tx + 6, mac, sizeof(mac));
+        tx[12] = 8;
+        tx[13] = 6;
+    }
+    memory_write(&t, p->destination, tx_buf - 8, tx_before,
+                 sizeof(tx_before));
     memory_write(&t, p->destination, tx_buf, tx, tx_len);
-    host_address(&t, TX_RING, tx_buf);
-    memory_word(&t, TX_RING + 8, (tx_len << 16) | TI_BDFLAG_END);
+    memory_write(&t, p->destination, tx_buf + tx_len, tx_after,
+                 sizeof(tx_after));
+    if (p->pci_bit20 || p->clear_desc_word_swap || p->set_desc_byte_swap) {
+        legacy_tx_descriptor(&t, TX_RING, tx_buf,
+                             (tx_len << 16) | TI_BDFLAG_END,
+                             p->set_desc_byte_swap);
+    } else {
+        host_address(&t, TX_RING, tx_buf);
+        memory_word(&t, TX_RING + 8, (tx_len << 16) | TI_BDFLAG_END);
+    }
     reg_write(&t, TI_MB_SENDPROD_IDX, 1);
     g_assert_cmpint(recv(sv[0], &length, sizeof(length), MSG_WAITALL), ==, 4);
     g_assert_cmpuint(ntohl(length), ==, tx_len);
@@ -806,20 +891,48 @@ static void test_traffic(const void *opaque)
         g_test_message("TX expected %s", expected->str);
         g_test_message("TX observed %s", actual->str);
     }
-    g_assert_cmpmem(received, tx_len, tx, tx_len);
-    g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 1);
+    if (p->data_byteswap || p->pci_bit20) {
+        for (unsigned i = 0; i < tx_len; i++) {
+            unsigned source = p->data_byteswap ? 7 - i : i ^ 4;
+
+            g_assert_cmphex(received[i], ==, tx[source]);
+        }
+    } else {
+        g_assert_cmpmem(received, tx_len, tx, tx_len);
+    }
+    memory_read(&t, p->destination, tx_buf - 8, seen, sizeof(tx_before));
+    g_assert_cmpmem(seen, sizeof(tx_before), tx_before, sizeof(tx_before));
+    memory_read(&t, p->destination, tx_buf + tx_len, seen,
+                sizeof(tx_after));
+    g_assert_cmpmem(seen, sizeof(tx_after), tx_after, sizeof(tx_after));
+    if (p->pci_bit20 || p->clear_desc_word_swap || p->set_desc_byte_swap) {
+        g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 0);
+    } else {
+        g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 1);
+    }
     expect_interrupt(&t, true);
     acknowledge(&t);
+    if (p->tx_only) {
+        qtest_quit(t.qts);
+        close(sv[0]);
+        g_assert_cmpint(unlink(storage), ==, 0);
+        return;
+    }
 
 receive:
     for (unsigned i = 0; i < sizeof(rx); i++) {
-        rx[i] = (i * 13) ^ (0xa7 + p->head + p->device + p->destination);
+        rx[i] = p->payload_length ? 0x80 + i :
+                (i * 13) ^ (0xa7 + p->head + p->device + p->destination);
     }
     memcpy(rx, mac, sizeof(mac));
-    rx[12] = 8;
-    rx[13] = 6;
-    memset(guarded, 0x96, sizeof(guarded));
-    memory_write(&t, p->destination, RX_BUF - 4, guarded, sizeof(guarded));
+    if (!p->payload_length) {
+        rx[12] = 8;
+        rx[13] = 6;
+    }
+    for (unsigned i = 0; i < sizeof(guarded); i++) {
+        guarded[i] = 0x80 + i;
+    }
+    memory_write(&t, p->destination, rx_buf - 8, guarded, sizeof(guarded));
     memory_word(&t, RETURN_RING - 4, 0x395a7b9c);
     memory_word(&t, RETURN_RING + 32, 0x1d3e5f70);
     memory_word(&t, RETURN_PROD - 4, 0x738495a6);
@@ -867,13 +980,17 @@ receive:
         return;
     }
     memory_read(&t, p->destination, rx_buf, received, rx_len);
-    g_assert_cmpmem(received, rx_len, rx, rx_len);
-    memory_read(&t, p->destination, RX_BUF - 4, seen,
-                4 + p->payload_offset);
-    g_assert_cmpmem(seen, 4 + p->payload_offset, guarded,
-                    4 + p->payload_offset);
-    memory_read(&t, p->destination, rx_buf + rx_len, seen, 2);
-    g_assert_cmpmem(seen, 2, guarded, 2);
+    if (p->data_byteswap) {
+        for (unsigned i = 0; i < rx_len; i++) {
+            g_assert_cmphex(received[i], ==, rx[7 - i]);
+        }
+    } else {
+        g_assert_cmpmem(received, rx_len, rx, rx_len);
+    }
+    memory_read(&t, p->destination, rx_buf - 8, seen, 8);
+    g_assert_cmpmem(seen, 8, guarded, 8);
+    memory_read(&t, p->destination, rx_buf + rx_len, seen, 8);
+    g_assert_cmpmem(seen, 8, guarded + 8 + rx_len, 8);
     expect_interrupt(&t, true);
     acknowledge(&t);
     for (unsigned i = 0; i < G_N_ELEMENTS(checked); i++) {
@@ -884,6 +1001,21 @@ receive:
                    "IRQ isolation OK",
                    bus_names[p->head], p->device, p->destination * 2);
     qtest_quit(t.qts);
+    if (p->trace_dma) {
+        g_autofree char *trace = NULL;
+
+        g_assert_true(g_file_get_contents(trace_path, &trace, NULL, &error));
+        g_assert_no_error(error);
+        g_assert_nonnull(strstr(trace,
+            "frame read 0xa100000000290000 1 bytes result 0"));
+        g_assert_nonnull(strstr(trace,
+            "frame read 0xa100000000290008 8 bytes result 0"));
+        g_assert_nonnull(strstr(trace,
+            "frame write 0xa100000000280000 1 bytes result 0"));
+        g_assert_nonnull(strstr(trace,
+            "frame write 0xa100000000280008 8 bytes result 0"));
+        g_assert_cmpint(unlink(trace_path), ==, 0);
+    }
     close(sv[0]);
     g_assert_cmpint(unlink(storage), ==, 0);
 }
@@ -1132,6 +1264,23 @@ int main(int argc, char **argv)
         .gib_offset = 0x01a00000,
         .rx_descriptor_only = true,
     };
+    static Placement payload_cases[22];
+    static Placement payload_controls[] = {
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 8, .data_byteswap = true },
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 8, .pci_bit20 = true, .tx_only = true },
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 8, .clear_desc_word_swap = true,
+          .tx_only = true },
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 8, .set_desc_byte_swap = true,
+          .tx_only = true },
+    };
+    static const char *payload_control_names[] = {
+        "data-byteswap-set", "pci-bit20", "no-desc-bit2",
+        "desc-byte-bit1",
+    };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
     int fd, result;
@@ -1172,6 +1321,48 @@ int main(int argc, char **argv)
     }
     qtest_add_data_func("/sn1/option-tigon/geninfo-64bit", &geninfo_64bit,
                         test_traffic);
+    for (unsigned i = 0; i < G_N_ELEMENTS(payload_cases); i++) {
+        Placement *p = &payload_cases[i];
+        unsigned offset, length;
+        g_autofree char *name = NULL;
+
+        if (i < 8) {
+            offset = i;
+            length = 42;
+        } else if (i < 17) {
+            offset = (i - 8) & 7;
+            length = i - 7;
+        } else if (i < 19) {
+            offset = i == 17 ? 3 : 5;
+            length = i == 17 ? 41 : 43;
+        } else if (i < 21) {
+            offset = i == 19 ? 0xffc : 0xfff;
+            length = i == 19 ? 41 : 43;
+        } else {
+            offset = 7;
+            length = 9;
+        }
+        *p = (Placement) {
+            .head = 0,
+            .device = 1,
+            .swap_clear = true,
+            .payload_offset = offset,
+            .payload_length = length,
+            .tx_only = length < 6,
+            .trace_dma = i == 21,
+        };
+        name = g_strdup_printf(
+            "/sn1/option-tigon/wide-payload/offset%u-length%u",
+            offset, length);
+        qtest_add_data_func(name, p, test_traffic);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(payload_controls); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "/sn1/option-tigon/wide-payload-control/%s",
+            payload_control_names[i]);
+
+        qtest_add_data_func(name, &payload_controls[i], test_traffic);
+    }
     qtest_add_data_func("/sn1/option-tigon/wide-rx-descriptor", &wide_rx,
                         test_traffic);
     qtest_add_func("/sn1/option-tigon/wide-faulted-tail",
