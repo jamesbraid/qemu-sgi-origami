@@ -464,11 +464,10 @@ static void test_vector_registers(void)
                     0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_DATA), ==,
                     0x1020304050607080ULL);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS) & 7, ==, 5);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR) & 7, ==,
-                    5);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR), ==, 0);
     qtest_writeq(s, LB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
     qtest_writeq(s, LB_BASE + VECTOR_STATUS, UINT64_MAX);
     qtest_writeq(s, LB_BASE + VECTOR_PARAMS, SCRATCH(0) | 1);
@@ -484,6 +483,8 @@ static void test_vector_registers(void)
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
     g_assert_nonnull(strstr(found, "vector write of 0x"));
     g_assert_nonnull(strstr(found, "reached no device"));
+    g_assert_nonnull(strstr(found, "vector request type 3 refused "
+                                   "(command error 5)"));
     g_assert_nonnull(strstr(found, "nonzero write 0xffffffffffffffff to "
                                    "the vector status is ignored"));
     g_assert_null(strstr(found, "unsupported write at 0xc000"));
