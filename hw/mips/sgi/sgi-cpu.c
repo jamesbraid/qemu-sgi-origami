@@ -37,13 +37,15 @@ bool sgi_cpu_set_prid(DeviceState *dev, uint32_t prid, Error **errp)
 /*
  * An R12000 has no default profile, so the catalogue supplies all of it:
  * PRId and FPU identification, the reset-mode word, and the secondary
- * cache that word's SS and SB fields select.
+ * cache that word's SS and SB fields select. Only the word's bits 24:0
+ * reach Config; an IP27 flash word also carries the cache clock tap above
+ * them.
  */
 static bool sgi_cpu_apply_r12000(DeviceState *dev,
                                  const SGIModelProcessor *processor,
                                  Error **errp)
 {
-    uint32_t mode = processor->mode_bits;
+    uint32_t mode = processor->mode_bits & 0x01ffffff;
     const struct {
         const char *name;
         uint32_t value;

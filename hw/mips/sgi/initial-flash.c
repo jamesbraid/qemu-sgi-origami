@@ -82,11 +82,14 @@ static uint8_t sgi_ip27_config_byte_sum(const uint8_t *config)
 }
 
 /*
- * The flasher's contract: the three product values in, every other field
- * and the old block sum preserved; no IP27 signature, no touch. Runs
- * whether the configuration block present is the default template's or a
- * real PROM image's -- every stock PROM image carries one at this same
- * offset with this same magic.
+ * The flasher's contract: the three product values and the fitted
+ * processor's mode word and clock in, every other field and the old block
+ * sum preserved; no IP27 signature, no touch. Runs whether the
+ * configuration block present is the default template's or a real PROM
+ * image's -- every stock PROM image carries one at this same offset with
+ * this same magic. A stock image is built for 180 MHz with 1 MiB of cache,
+ * so the processor fields are those the PROM's own reconfiguration writes
+ * for any other module.
  */
 static void sgi_ip27_flash_configure(uint8_t *flash,
                                      const SGIIP27FlashValues *values)
@@ -102,6 +105,8 @@ static void sgi_ip27_flash_configure(uint8_t *flash,
 
     old_sum = sgi_ip27_config_byte_sum(config);
     stl_be_p(config + SGI_IP27_CONFIG_CHECKSUM_OFFSET, 0);
+    stl_be_p(config + 0x04, values->cpu_mode_bits);
+    stq_be_p(config + 0x10, values->cpu_clock_hz);
     stl_be_p(config + SGI_IP27_CONFIG_FPROM_CYC_OFFSET, values->read_cycles);
     stl_be_p(config + SGI_IP27_CONFIG_MACHINE_TYPE_OFFSET,
              values->machine_type);

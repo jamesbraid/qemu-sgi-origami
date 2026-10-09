@@ -100,15 +100,23 @@ void sgi_model_module_nvram_seed(const SGIModelTopology *t,
 
 /*
  * The offering a -M option string selects: "<machine>[,topology=T]
- * [,nodes=N]", resolved as the machine resolves it, with the product's
- * default topology from its offerings when topology= is absent. Any other
- * option is refused, since the catalogue does not describe it. Offerings
- * of one topology and node count differ only in CPU population, so this
- * returns the first; its storage and init-inputs describe them all.
+ * [,nodes=N][,processor=P]", resolved as the machine resolves it, with the
+ * product's default topology from its offerings when topology= is absent
+ * and the nodes' own part when processor= is. Any other option is
+ * refused, since the catalogue does not describe it. Offerings of one
+ * topology, node count and processor differ only in CPU population, so
+ * this returns the first; its storage and init-inputs describe them all.
  */
 const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
                                                   const char *options,
                                                   Error **errp);
+
+/*
+ * The processor option @t offers under catalogue id @id, or NULL with
+ * @errp naming the ids it does offer.
+ */
+const SGIModelProcessorOption *sgi_model_find_processor_option(
+    const SGIModelTopology *t, const char *id, Error **errp);
 
 /* @t's node-population row fitting exactly @nodes node boards, or NULL. */
 const SGIModelNodePopulation *sgi_model_find_population(

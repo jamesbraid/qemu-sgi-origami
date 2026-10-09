@@ -100,6 +100,7 @@
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
+        "id": "r14000-500mhz-2mb",
         "part": "R14000"
       },
       "product": "origin300",
@@ -324,6 +325,7 @@
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
+        "id": "r14000-500mhz-2mb",
         "part": "R14000"
       },
       "product": "origin300",
@@ -548,6 +550,7 @@
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
+        "id": "r14000-500mhz-2mb",
         "part": "R14000"
       },
       "product": "origin300",
@@ -772,6 +775,7 @@
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
+        "id": "r14000-500mhz-2mb",
         "part": "R14000"
       },
       "product": "origin300",
@@ -1140,7 +1144,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1154,7 +1158,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1168,7 +1172,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1182,7 +1186,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1235,7 +1239,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1249,7 +1253,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1263,7 +1267,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876
@@ -1277,7 +1281,7 @@
                 "cache-mib": 2,
                 "clock-hz": 500000000,
                 "fpu-prid": 0,
-                "id": "r14000-500mhz",
+                "id": "r14000-500mhz-2mb",
                 "kind": "R14000",
                 "mode-bits": 10135941,
                 "prid": 3876

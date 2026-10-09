@@ -85,6 +85,27 @@
             '*mode-bits': 'uint32' } }
 
 ##
+# @SGIModelProcessorOption:
+#
+# One processor module a launch may select with `processor=`, in place
+# of the topology's default part.
+#
+# @assembly: the processor every fitted slot then holds; its @id is
+#     the `processor=` value
+#
+# @accepted-memory-mib: the per-node memory sizes accepted with it,
+#     which replace each node's @accepted-memory-mib
+#
+# @cpus-per-node: the processor counts a node may fit with it
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelProcessorOption',
+  'data': { 'assembly': 'SGIModelProcessor',
+            'accepted-memory-mib': ['uint64'],
+            'cpus-per-node': ['uint32'] } }
+
+##
 # @SGIModelCpuSlot:
 #
 # One processor-interface slot on a node board.
@@ -1435,6 +1456,10 @@
 # @ip35-firmware: the product values for the IP35 flash configuration
 #     block; present exactly when the node boards are SN1
 #
+# @processor-options: the processor modules `processor=` may select,
+#     the nodes' own part first; absent where the topology offers no
+#     choice
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -1459,7 +1484,8 @@
             'junk-uart': 'int',
             'node-populations': ['SGIModelNodePopulation'],
             '*ip27-firmware': 'SGIModelIp27FirmwareConfig',
-            '*ip35-firmware': 'SGIModelIp35FirmwareConfig' } }
+            '*ip35-firmware': 'SGIModelIp35FirmwareConfig',
+            '*processor-options': ['SGIModelProcessorOption'] } }
 
 ##
 # @SGIModelConsole:
@@ -1710,6 +1736,8 @@
 #
 # The processor an offering's accepted population is built from.
 #
+# @id: catalogue id of the processor assembly
+#
 # @part: processor family name
 #
 # @clock-hz: core clock
@@ -1722,7 +1750,8 @@
 # Since: 11.2
 ##
 { 'struct': 'SGIModelOfferingProcessor',
-  'data': { 'part': 'str',
+  'data': { 'id': 'str',
+            'part': 'str',
             'clock-hz': 'uint64',
             'cache-mib': 'uint16',
             '*required-properties': ['str'] } }

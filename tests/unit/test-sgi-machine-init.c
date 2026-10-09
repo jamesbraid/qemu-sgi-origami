@@ -422,6 +422,41 @@ static void test_origin200(void)
     remove_tree(dir);
 }
 
+/*
+ * A processor= offering's flash carries that module's mode word and clock,
+ * here the R12000's: 4 MiB, cache clock divided by 1.5, system clock by 3,
+ * tap 9, at 270 MHz. A name the topology does not offer is refused.
+ */
+static void test_origin200_processor(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 }, { "module0-nvram", 2048 },
+    };
+    g_autofree char *dir = create_and_check(
+        "o200-r12k",
+        "origin200,topology=origin200,nodes=1,processor=r12000-270mhz-4mb",
+        false, stores, ARRAY_SIZE(stores));
+    g_autofree char *refused = scratch_path("o200-refused");
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
+    ToolRun run;
+
+    g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==, 0x1213ab85);
+    g_assert_cmpuint(ldq_be_p(flash + IP27_CONFIG + 0x10), ==, 270000000);
+    g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x30), ==, 1);
+
+    run = run_tool("--machine",
+                   "origin200,topology=origin200,nodes=1,"
+                   "processor=r12000-300mhz-8mb",
+                   "--boot-prom", "prom", refused, NULL);
+    assert_refused(&run, "topology 'origin200' offers no processor "
+                   "'r12000-300mhz-8mb'");
+    tool_run_clear(&run);
+    g_assert_false(g_file_test(refused, G_FILE_TEST_EXISTS));
+    remove_tree(dir);
+}
+
 static void test_origin2000(void)
 {
     static const StoreSize stores[] = {
@@ -774,6 +809,8 @@ int main(int argc, char **argv)
                     test_unknown_machine);
     g_test_add_func("/sgi-machine-init/inputs-checked", test_inputs_checked);
     g_test_add_func("/sgi-machine-init/origin200", test_origin200);
+    g_test_add_func("/sgi-machine-init/origin200-processor",
+                    test_origin200_processor);
     g_test_add_func("/sgi-machine-init/origin2000", test_origin2000);
     g_test_add_func("/sgi-machine-init/origin200-gigachannel",
                     test_origin200_gigachannel);

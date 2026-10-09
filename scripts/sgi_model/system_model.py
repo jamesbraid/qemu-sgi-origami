@@ -50,7 +50,8 @@ def _attach_cpu_selection(
     if selection is None:
         return
     if not isinstance(selection, dict) or set(selection) - CPU_SELECTION_FIELDS:
-        raise ResolutionError("cpu_selection must contain only default and slots")
+        raise ResolutionError(
+            "cpu_selection must contain only default, slots and offered")
     default = _cpu_variant_pair(selection.get("default"), "cpu_selection default")
     slots = selection.get("slots", [])
     if (not isinstance(slots, list) or
@@ -159,6 +160,69 @@ def _attach_processor_reset_mode(
         )
 
 
+def _attach_processor_options(
+        resolved: dict[str, Any], catalogue: list[Any],
+        selection: dict[str, Any] | None) -> None:
+    """Record the processor modules a launch may select for this product.
+
+    `cpu_selection.offered` lists them, the product's default first. Each
+    must name a catalogued part and clock/cache variant, so the compiler
+    finds its identity registers and reset mode in the catalogue rather
+    than in a second copy here.
+    """
+    if not isinstance(selection, dict) or "offered" not in selection:
+        return
+    offered = selection["offered"]
+    if not isinstance(offered, list) or not offered:
+        raise ResolutionError("cpu_selection offered must be a non-empty list")
+    variants = {
+        (entry.get("part"), item.get("clock_mhz"), item.get("cache_mib"))
+        for entry in catalogue if isinstance(entry, dict)
+        for item in entry.get("variants", []) if isinstance(item, dict)
+    }
+    by_id = {
+        component.get("id"): component
+        for component in resolved.get("components", [])
+        if isinstance(component, dict)
+    }
+    parts = {by_id[slot].get("hardware_kind")
+             for slot in selection.get("slots", []) if slot in by_id}
+    options = []
+    for item in offered:
+        if (not isinstance(item, dict) or
+                set(item) != {"part", "clock_mhz", "cache_mib",
+                              "processors_per_node"} or
+                not isinstance(item["part"], str) or
+                not isinstance(item["clock_mhz"], int) or
+                not isinstance(item["cache_mib"], int) or
+                not isinstance(item["processors_per_node"], list) or
+                not item["processors_per_node"] or
+                not all(isinstance(count, int) and count > 0
+                        for count in item["processors_per_node"])):
+            raise ResolutionError(
+                "cpu_selection offered entries must name part, clock_mhz, "
+                "cache_mib and processors_per_node")
+        key = (item["part"], item["clock_mhz"], item["cache_mib"])
+        if key not in variants:
+            raise ResolutionError(
+                f"cpu_selection offers {item['part']} {item['clock_mhz']} MHz/"
+                f"{item['cache_mib']} MiB, which is not a catalogued variant")
+        if any((option["part"], option["clock_mhz"], option["cache_mib"]) ==
+               key for option in options):
+            raise ResolutionError(
+                f"cpu_selection offers {item['part']} {item['clock_mhz']} MHz/"
+                f"{item['cache_mib']} MiB twice")
+        options.append(copy.deepcopy(item))
+    default = selection.get("default") or {}
+    first = options[0]
+    if ((first["clock_mhz"], first["cache_mib"]) !=
+            (default.get("clock_mhz"), default.get("cache_mib")) or
+            (parts and parts != {first["part"]})):
+        raise ResolutionError(
+            "cpu_selection offered must list the default processor first")
+    resolved.setdefault("machine", {})["processor_options"] = options
+
+
 REQUIRED_KINDS = {"architecture", "assembly", "product"}
 KNOWN_KINDS = REQUIRED_KINDS | {"module"}
 MODULE_GRAPH_FIELDS = (
@@ -172,7 +236,7 @@ MODULE_INSTANCE_FIELDS = {
 }
 NESTED_MODULE_INSTANCE_FIELDS = {"model", "id", "parent", "physical_slot"}
 OBSERVED_HARDWARE_FIELDS = {"mode", "sources", "note"}
-CPU_SELECTION_FIELDS = {"default", "slots"}
+CPU_SELECTION_FIELDS = {"default", "slots", "offered"}
 CPU_VARIANT_FIELDS = {"clock_mhz", "cache_mib"}
 
 
@@ -1059,6 +1123,10 @@ def resolve_system_model(
         selected["product"].get("cpu_selection"),
     )
     _attach_processor_reset_mode(
+        resolved, resolved.get("processors", []),
+        selected["product"].get("cpu_selection"),
+    )
+    _attach_processor_options(
         resolved, resolved.get("processors", []),
         selected["product"].get("cpu_selection"),
     )

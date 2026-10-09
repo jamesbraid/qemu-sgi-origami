@@ -275,7 +275,10 @@ algorithm.
 IP27 product values
 ^^^^^^^^^^^^^^^^^^^
 
-The machine patches three fields into every node's block, from the
+The machine patches five fields into every node's block: the fitted
+processor module's mode word (offset 0x04) and clock (offset 0x10),
+from the processor ``processor=`` selects
+(:ref:`sgi-sn-origin200-processors`), and three product values from the
 topology's ``ip27-firmware`` record in ``query-sgi-machines``:
 
 .. list-table::
@@ -300,7 +303,13 @@ dialogue on an Origin 200 that offers ``(0) SN0 (1) Sn00``
 stock IP27 image's own values (measured from the stock image), so the
 machine leaves a stock block unchanged there. Origin 200's 15 and 4
 flash cycles have no public source (unknown); they are the emulator's
-long-standing values.
+long-standing values. The stock image's block is built for a 180 MHz
+processor with 1 MiB of cache (mode word ``0x1211a785``), so an
+Origin 2000 or a default Origin 200 keeps its processor fields too; any
+other module gets the values the PROM's own reconfiguration dialogue
+writes for it, which asks for the processor clock, cache size and mode
+bits (strings in the stock image), as a field upgrade of the module
+requires.
 
 .. _sgi-prom-image-ip35-values:
 

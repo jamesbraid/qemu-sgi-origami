@@ -160,6 +160,13 @@ typedef struct SN0NodeState {
     const SGIModelNode *model_node;
 
     /*
+     * The processor part every fitted slot holds, set by the machine
+     * before realize when processor= replaces the record's own; NULL
+     * keeps the record's.
+     */
+    const SGIModelProcessor *processor;
+
+    /*
      * The node board's bank wiring and sizes, set by the machine before
      * realize; NULL keeps the Origin 200 board's.
      */

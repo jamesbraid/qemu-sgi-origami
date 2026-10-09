@@ -81,6 +81,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -252,6 +253,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -423,6 +425,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -594,6 +597,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -765,6 +769,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -934,6 +939,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1097,6 +1103,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1260,6 +1267,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1423,6 +1431,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1584,6 +1593,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1739,6 +1749,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -1894,6 +1905,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -2047,6 +2059,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -2194,6 +2207,7 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
       },
       "product": "onyx2",
@@ -2771,7 +2785,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2785,7 +2799,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2832,7 +2846,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2846,7 +2860,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2893,7 +2907,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2907,7 +2921,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2954,7 +2968,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -2968,7 +2982,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342

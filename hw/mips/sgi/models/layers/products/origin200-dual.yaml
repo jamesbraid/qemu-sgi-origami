@@ -20,6 +20,14 @@ layer:
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu0, node0-cpu1, node1-cpu1]
+    # Every processor module this board takes: SGI fitted these to real
+    # Origin 200s (docs/specs/sgi-sn.rst, Origin 200 processor options).
+    # processors_per_node lists the PIMM sizes a real machine shows.
+    offered:
+      - {part: r10000, clock_mhz: 180, cache_mib: 1, processors_per_node: [1, 2]}
+      - {part: r10000, clock_mhz: 180, cache_mib: 2, processors_per_node: [1, 2]}
+      - {part: r10000, clock_mhz: 225, cache_mib: 2, processors_per_node: [2]}
+      - {part: r12000, clock_mhz: 270, cache_mib: 4, processors_per_node: [2]}
   memory_kits_per_node: [kit-64, kit-64]
   data:
     machine:

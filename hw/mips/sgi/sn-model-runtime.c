@@ -491,6 +491,8 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->l1_management = t->l1_management;
     view->ip27_firmware = t->ip27_firmware;
     view->ip35_firmware = t->ip35_firmware;
+    view->has_processor_options = t->has_processor_options;
+    view->processor_options = t->processor_options;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;
@@ -796,6 +798,32 @@ const SGIModelTopology *sgi_model_resolve_population(
     return sgi_model_population_view(chassis, row, errp);
 }
 
+const SGIModelProcessorOption *sgi_model_find_processor_option(
+    const SGIModelTopology *t, const char *id, Error **errp)
+{
+    const SGIModelProcessorOptionList *entry;
+    GString *ids;
+
+    for (entry = t->processor_options; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->assembly->id, id)) {
+            return entry->value;
+        }
+    }
+    if (!t->processor_options) {
+        error_setg(errp, "topology '%s' offers no processor choice", t->name);
+        return NULL;
+    }
+    ids = g_string_new(NULL);
+    for (entry = t->processor_options; entry; entry = entry->next) {
+        g_string_append_printf(ids, "%s%s", ids->len ? ", " : "",
+                               entry->value->assembly->id);
+    }
+    error_setg(errp, "topology '%s' offers no processor '%s'; it offers %s",
+               t->name, id, ids->str);
+    g_string_free(ids, true);
+    return NULL;
+}
+
 /* The topology @product builds with no topology=, as its offerings name. */
 static const char *sgi_model_offered_default(const SGIMachines *machines,
                                              const char *product)
@@ -818,7 +846,7 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
     const SGIModelOfferingList *entry;
     const SGIModelTopology *chassis, *view;
     const QDictEntry *option;
-    const char *product, *name, *nodes_text;
+    const char *product, *name, *nodes_text, *processor;
     uint64_t nodes = 0;
 
     if (!args) {
@@ -829,10 +857,10 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         const char *key = qdict_entry_key(option);
 
         if (!g_str_equal(key, "type") && !g_str_equal(key, "topology") &&
-            !g_str_equal(key, "nodes")) {
+            !g_str_equal(key, "nodes") && !g_str_equal(key, "processor")) {
             error_setg(errp, "machine option '%s' is not part of a "
                        "catalogue selection; give only the machine, "
-                       "topology= and nodes=", key);
+                       "topology=, nodes= and processor=", key);
             return NULL;
         }
     }
@@ -866,12 +894,21 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
     if (!view) {
         return NULL;
     }
+    processor = qdict_get_try_str(args, "processor");
+    if (processor) {
+        if (!sgi_model_find_processor_option(view, processor, errp)) {
+            return NULL;
+        }
+    } else {
+        processor = view->nodes->value->cpu_slots->value->assembly->id;
+    }
     for (entry = machines->offerings; entry; entry = entry->next) {
         const SGIModelOffering *offering = entry->value;
 
         if (g_str_equal(offering->product, product) &&
             g_str_equal(offering->topology, chassis->name) &&
-            offering->nodes == QAPI_LIST_LENGTH(view->nodes)) {
+            offering->nodes == QAPI_LIST_LENGTH(view->nodes) &&
+            g_str_equal(offering->processor->id, processor)) {
             return offering;
         }
     }

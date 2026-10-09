@@ -247,6 +247,15 @@ struct SGIMachineState {
      */
     char *population;
     /*
+     * processor=: the catalogue id of one of the topology's processor
+     * options, the module every node fits. NULL fits the nodes' own part.
+     */
+    char *processor_name;
+    /* The processor every node fits, resolved at realize. */
+    const SGIModelProcessor *processor;
+    /* Its option record, or NULL where the topology offers no choice. */
+    const SGIModelProcessorOption *processor_option;
+    /*
      * nodes=: how many node boards the chassis fits, in SGI's fill
      * order; 0 until set, which fits the topology's largest row.
      */
@@ -552,10 +561,11 @@ static bool sgi_machine_topology_is_ip29(const SGIModelTopology *t)
 /*
  * The Origin 200 PIMM each processor population is, as real inventories
  * print its name, part and revision; the Hub's one-wire part carries its
- * record. Both are the 180 MHz R10000 with 1 MiB of secondary cache the
- * catalogue fits. Each is the module and revision a published dual-module
+ * record. The 180 MHz 1 MiB modules are the ones a published dual-module
  * Origin 200 inventory lists in both its modules: 013-1895-001 revision C
- * for one processor, 013-1896-001 revision D for two.
+ * for one processor, 013-1896-001 revision D for two. The 180 MHz 2 MiB
+ * single and 225 MHz dual are as published inventories print them; no
+ * inventory gives the 180 MHz 2 MiB dual's or the R12000's record.
  */
 static const struct {
     uint32_t processors;
@@ -567,6 +577,8 @@ static const struct {
 } sgi_ip29_pimms[] = {
     { 1, 180, 1, "PIMM_1XT5_1MB", "013-1895-001", "C" },
     { 2, 180, 1, "PIMM_2XT5_1MB", "013-1896-001", "D" },
+    { 1, 180, 2, "PIMM_1XT5_2MB", "013-2285-002", "A" },
+    { 2, 225, 2, "PIMM_225_2M_2P", "013-2382-002", "B" },
 };
 
 /*
@@ -577,11 +589,10 @@ static const struct {
  * page data.
  */
 static void sgi_machine_attach_ip29_pimm(SN0NodeState *node,
+                                         const SGIModelProcessor *cpu,
                                          uint32_t processors,
                                          uint64_t part_serial)
 {
-    const SGIModelCpuSlotList *slots = node->model_node->cpu_slots;
-    const SGIModelProcessor *cpu = slots ? slots->value->assembly : NULL;
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
 
     if (!cpu) {
@@ -1531,15 +1542,20 @@ static char *sgi_machine_accepted_totals(const SGIModelTopology *t)
  * SGIModelNode.accepted-memory-mib: a present list is the DIMM kit
  * sizes the node accepts, and an absent one means the node's own
  * shipped bank-mib total is the only accepted size, not an open
- * fitting rule.
+ * fitting rule. A selected processor @option replaces either with its
+ * own list, since the processor clock decides which banks the PROM keeps.
  */
-static uint64_t *sgi_machine_node_accepted_mib(const SGIModelNode *node,
-                                               size_t *count)
+static uint64_t *sgi_machine_node_accepted_mib(
+    const SGIModelNode *node, const SGIModelProcessorOption *option,
+    size_t *count)
 {
     g_autofree uint64_t *bank_mib = NULL;
     uint64_t *shipped;
     size_t bank_count, bank;
 
+    if (option) {
+        return sgi_model_array_uint64(option->accepted_memory_mib, count);
+    }
     if (node->accepted_memory_mib) {
         return sgi_model_array_uint64(node->accepted_memory_mib, count);
     }
@@ -1557,7 +1573,8 @@ static uint64_t *sgi_machine_node_accepted_mib(const SGIModelNode *node,
  * evenly across every node), or NULL when every node accepts it.
  */
 static const SGIModelNode *sgi_machine_refuse_memory_population(
-    const SGIModelTopology *t, uint64_t per_node_mib)
+    const SGIModelTopology *t, const SGIModelProcessorOption *option,
+    uint64_t per_node_mib)
 {
     g_autofree const SGIModelNode **nodes = NULL;
     size_t node_count, node_index;
@@ -1566,7 +1583,8 @@ static const SGIModelNode *sgi_machine_refuse_memory_population(
     for (node_index = 0; node_index < node_count; node_index++) {
         size_t accepted_count, i;
         g_autofree uint64_t *accepted =
-            sgi_machine_node_accepted_mib(nodes[node_index], &accepted_count);
+            sgi_machine_node_accepted_mib(nodes[node_index], option,
+                                          &accepted_count);
         bool found = false;
 
         for (i = 0; i < accepted_count; i++) {
@@ -1583,12 +1601,13 @@ static const SGIModelNode *sgi_machine_refuse_memory_population(
 }
 
 /* "64, 128 or 256": a node's accepted memory sizes, for a refusal message. */
-static char *sgi_machine_accepted_memory(const SGIModelNode *node)
+static char *sgi_machine_accepted_memory(
+    const SGIModelNode *node, const SGIModelProcessorOption *option)
 {
     GString *out = g_string_new(NULL);
     size_t count, i;
     g_autofree uint64_t *accepted =
-        sgi_machine_node_accepted_mib(node, &count);
+        sgi_machine_node_accepted_mib(node, option, &count);
 
     for (i = 0; i < count; i++) {
         g_string_append_printf(out, "%s%" PRIu64,
@@ -5369,7 +5388,7 @@ static bool sgi_machine_load_flash(MachineState *machine,
         payload = g_bytes_get_data(image->payload, &length);
     }
 
-    cpu = sgi_machine_topology_node0(t)->cpu_slots->value->assembly;
+    cpu = s->processor;
     values = (SGIIP27FlashValues) {
         .machine_type = firmware->machine_type,
         .read_cycles = firmware->flash_read_cycles,
@@ -6122,6 +6141,68 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
     return true;
 }
 
+/*
+ * The processor every node fits: processor='s option, or the nodes' own
+ * part. Where the topology offers a choice, -cpu must name the chosen
+ * module's part, since the catalogue profile and the flash configuration
+ * block both describe that part.
+ */
+static bool sgi_machine_resolve_processor(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          Error **errp)
+{
+    MachineState *machine = MACHINE(s);
+    const char *name = MACHINE_GET_CLASS(s)->name;
+    const SGIModelCpuSlotList *slots = sgi_machine_topology_node0(t)->cpu_slots;
+    g_autofree char *cpu_model = NULL;
+
+    s->processor = slots ? slots->value->assembly : NULL;
+    s->processor_option = t->processor_options ?
+                          t->processor_options->value : NULL;
+    if (s->processor_name) {
+        s->processor_option = sgi_model_find_processor_option(
+            t, s->processor_name, errp);
+        if (!s->processor_option) {
+            error_prepend(errp, "%s: ", name);
+            return false;
+        }
+        s->processor = s->processor_option->assembly;
+    }
+    if (!s->processor_option) {
+        return true;
+    }
+    cpu_model = cpu_model_from_type(machine->cpu_type);
+    if (!g_str_equal(cpu_model, s->processor->kind)) {
+        error_setg(errp, "%s: processor '%s' is an %s, but -cpu names %s; "
+                   "pass -cpu %s, or name a module of that part with "
+                   "processor=", name, s->processor->id, s->processor->kind,
+                   cpu_model, s->processor->kind);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Whether processor='s module comes with @cpus processors on a node: a
+ * real Origin 200 shows each module only in the sizes its option lists.
+ */
+static bool sgi_machine_processor_fits(const SGIMachineState *s,
+                                       unsigned int cpus)
+{
+    const uint32List *entry;
+
+    if (!s->processor_option) {
+        return true;
+    }
+    for (entry = s->processor_option->cpus_per_node; entry;
+         entry = entry->next) {
+        if (entry->value == cpus) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -6187,7 +6268,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
     s->ip53_fingerprint_enabled = sgi_machine_topology_has_ip53(t);
     if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
-        !sgi_machine_validate_expansion_storage(s, t, errp)) {
+        !sgi_machine_validate_expansion_storage(s, t, errp) ||
+        !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
     }
     if (sgi_machine_has_identity_records(s)) {
@@ -6285,6 +6367,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         for (node_index = 0; node_index < node_count &&
              node_index < population_node_count; node_index++) {
             requested[node_index] = cpus_per_node[node_index];
+            if (!sgi_machine_processor_fits(s, requested[node_index])) {
+                error_setg(errp, "%s: no %u-processor module of processor "
+                          "'%s' is known; give -smp a population its "
+                          "modules make", mc->name, requested[node_index],
+                          s->processor->id);
+                return false;
+            }
         }
     }
 
@@ -6295,9 +6384,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     refused = sgi_machine_refuse_memory_population(
-        t, machine->ram_size / node_count / MiB);
+        t, s->processor_option, machine->ram_size / node_count / MiB);
     if (refused) {
-        g_autofree char *accepted = sgi_machine_accepted_memory(refused);
+        g_autofree char *accepted =
+            sgi_machine_accepted_memory(refused, s->processor_option);
 
         error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
                   " MiB per node, only %s MiB%s", mc->name, t->name,
@@ -6332,8 +6422,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     /* One clock per processor entry; both node kinds share this rate rule. */
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk,
-                sgi_machine_topology_node0(t)->cpu_slots->value->assembly->clock_hz);
+    clock_set_hz(s->cpu_refclk, s->processor->clock_hz);
 
     sgi_machine_build_module_containers(machine, t);
 
@@ -6765,8 +6854,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[node_index]);
         qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
+        node->processor = s->processor;
         if (sgi_machine_topology_is_ip29(t)) {
-            sgi_machine_attach_ip29_pimm(node, requested[node_index],
+            sgi_machine_attach_ip29_pimm(node, s->processor,
+                                         requested[node_index],
                                          model_node->identity->serial);
         } else {
             sgi_machine_attach_ip27_node(node, model_node->identity->serial);
@@ -7312,6 +7403,24 @@ static void sgi_machine_set_population(Object *obj, const char *value,
     s->population = *value ? g_strdup(value) : NULL;
 }
 
+static char *sgi_machine_get_processor(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->processor_name ?
+                    SGI_MACHINE(obj)->processor_name : "");
+}
+
+static void sgi_machine_set_processor(Object *obj, const char *value,
+                                      Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    if (sgi_machine_built("processor", errp)) {
+        return;
+    }
+    g_free(s->processor_name);
+    s->processor_name = *value ? g_strdup(value) : NULL;
+}
+
 static char *sgi_machine_get_topology(Object *obj, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
@@ -7845,6 +7954,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->slot_claimed);
     g_free(s->topology_name);
     g_free(s->population);
+    g_free(s->processor_name);
     g_free(s->baseio_preset);
     g_free(s->io_prom);
     if (s->storage) {
@@ -7919,6 +8029,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Per-node processor counts in node order, colon-separated (4:2), "
         "naming one of the topology's accepted populations. Needed only "
         "where -smp alone matches more than one.");
+
+    object_class_property_add_str(oc, "processor", sgi_machine_get_processor,
+                                  sgi_machine_set_processor);
+    object_class_property_set_description(oc, "processor",
+        "The processor module every node board fits, by catalogue id "
+        "(r12000-270mhz-4mb), one of the topology's processor options; "
+        "-cpu must name its part. Defaults to the product's shipped "
+        "module.");
 
     object_class_property_add_str(oc, "io-prom", sgi_machine_get_io_prom,
                                   sgi_machine_set_io_prom);
@@ -8042,6 +8160,40 @@ static const char * const sgi_sn0_r10000_cpu_types[] = {
     NULL,
 };
 
+/* The Origin 200 takes R12000 modules too, through processor=. */
+static const char * const sgi_origin200_cpu_types[] = {
+    MIPS_CPU_TYPE_NAME("R10000"),
+    MIPS_CPU_TYPE_NAME("R12000"),
+    NULL,
+};
+
+/*
+ * With no -cpu, the part of the processor module processor= names, so the
+ * option alone selects an R12000 module; an unknown name falls back to the
+ * shipped R10000 and realize refuses it with the names it accepts.
+ */
+static const char *origin200_get_default_cpu_type(const MachineState *ms)
+{
+    SGIMachineState *s = SGI_MACHINE(ms);
+    const SGIModelTopology *t;
+    const SGIModelProcessorOptionList *entry;
+
+    if (!s->processor_name) {
+        return sgi_origin200_cpu_types[0];
+    }
+    t = sgi_model_product_topology(sgi_machines(), "origin200",
+                                   s->topology_name ? s->topology_name :
+                                   "origin200");
+    for (entry = t ? t->processor_options : NULL; entry;
+         entry = entry->next) {
+        if (g_str_equal(entry->value->assembly->id, s->processor_name) &&
+            g_str_equal(entry->value->assembly->kind, "R12000")) {
+            return sgi_origin200_cpu_types[1];
+        }
+    }
+    return sgi_origin200_cpu_types[0];
+}
+
 static void origin200_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -8053,7 +8205,8 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     smc->default_topology = "origin200";
     smc->node_memory = &sn0_hub_memory;
     mc->desc = t->description;
-    mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
+    mc->valid_cpu_types = sgi_origin200_cpu_types;
+    mc->get_default_cpu_type = origin200_get_default_cpu_type;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->max_cpus = sgi_machine_product_max_cpus("origin200");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);

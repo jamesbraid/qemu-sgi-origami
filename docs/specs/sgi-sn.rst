@@ -390,8 +390,100 @@ sizes -- ``origin200-dual`` accepts the same per-node sizes
 size. A refused size is reported with the per-node sizes that are
 accepted. ``nodes`` is part of the machine configuration: a snapshot
 restores only into a machine with the same value. ``origin300`` accepts
-only R14000 for ``-cpu``; the other two accept only R10000, the default
-and the only member of their own ``valid_cpu_types``.
+only R14000 for ``-cpu``; ``origin2000`` and ``onyx2`` accept only
+R10000, the default and the only member of their own
+``valid_cpu_types``; ``origin200`` accepts R10000 and R12000, as its
+``processor=`` option below selects.
+
+.. _sgi-sn-origin200-processors:
+
+Origin 200 processor options
+----------------------------
+
+An Origin 200 node fits one processor module (PIMM) of one or two
+processors (SGI 007-3708-002, Table 1-1, printed page 5: "MIPS R10000 or
+MIPS R12000", one or two processors per module). ``processor=`` selects
+the module every node of an ``origin200`` topology fits, by catalogue
+id; ``query-sgi-machines`` lists each topology's choices as its
+``processor-options``. ``-cpu`` defaults to the module's part and must
+name it when given.
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``processor=``
+     - Part, PRId
+     - Secondary cache
+     - Processors per module
+     - Mode word
+   * - ``r10000-180mhz-1mb`` (default)
+     - R10000 rev 2.6, ``0x0926``
+     - 1 MiB at 120 MHz, tap 9
+     - 1 or 2
+     - ``0x1211a785``
+   * - ``r10000-180mhz-2mb``
+     - R10000 rev 2.6, ``0x0926``
+     - 2 MiB at 180 MHz, tap 8
+     - 1 or 2
+     - ``0x100aa785``
+   * - ``r10000-225mhz-2mb``
+     - R10000 rev 3.4, ``0x0934``
+     - 2 MiB at 225 MHz, tap 9
+     - 2
+     - ``0x120aa985``
+   * - ``r12000-270mhz-4mb``
+     - R12000 rev 2.3, ``0x0e23``
+     - 4 MiB at 180 MHz, tap 9
+     - 2
+     - ``0x1213ab85``
+
+Every Origin 200 inventory shows a 90 MHz Hub. Real machines'
+inventories establish the clock, cache size, cache clock, tap and chip
+revision of each module:
+
+* 180 MHz with 1 MiB: the stock PROM image's own configuration block
+  (mode word ``0x1211a785``, 180 MHz) and published inventories of one-
+  and two-processor machines (PIMM_1XT5_1MB 013-1895-001,
+  PIMM_2XT5_1MB 013-1896-001).
+* 180 MHz with 2 MiB: a two-processor machine's PROM inventory,
+  "Processor A: 180 MHz R10000 Rev 2.6" and "Secondary Cache 2MB 180MHz
+  Tap 0x8" (Nekochan forum archive thread 16729597); the single module
+  is PIMM_1XT5_2MB, 013-2285-002 (comp.sys.sgi.hardware, 17 January
+  2003).
+* 225 MHz: three machines' IRIX inventories print revision 3.4 and
+  "Scache: Size 2 MB Speed 225 Mhz Tap 0x9", the module
+  PIMM_225_2M_2P, 013-2382-002 revision B (Nekochan threads 16727211,
+  17238 and 16731033).
+* 270 MHz: two four-processor machines print "270 MHz R12000 Rev 2.3"
+  and "Secondary Cache 4MB 180MHz Tap 0x9" (Nekochan threads 16726704
+  and 16724631).
+
+The remaining facts are *inferred*. The system clock divisor is the
+processor clock over the Hub's 90 MHz, and the cache clock divisor the
+processor clock over the printed cache speed. The PRId's low byte is
+the printed revision. The FPU identification is ``0x0900`` for every
+module; on this PROM IRIX then prints the FPU at the processor's own
+revision, as real machines with PROM 6.156 do (one 270 MHz machine with
+PROM 6.27 prints 0.0). Every other mode field
+(kseg0 algorithm, device number, request limits, 32-word cache blocks,
+error correction, endianness) is the 180 MHz 1 MiB word's, and the
+R12000's delayed speculative dirty bit is clear. The R12000 divisor
+codes are NEC's (U10278EJ4V0UM, Table 8-1, printed pages 180-182). No
+source shows a one-processor 225 or 270 MHz module, so those offer two
+processors per module only; no inventory gives the 180 MHz 2 MiB dual
+module's or the R12000 module's board record, so their Hub one-wire
+part is left unprogrammed. No Origin 200 is known with a 195 or 250 MHz
+R10000 or a 300 MHz R12000.
+
+Each module's clock and mode word reach the guest the way the
+hardware's do. The machine writes them into every node's flash
+configuration block (processor clock at 0x10, mode word at 0x04;
+:ref:`sgi-prom-image-ip27-values`), the mode word's bits 24:0 become
+each processor's Config at cold reset, the clock drives CP0 Count, and
+the PRId and secondary cache size are the CPU model's. The stock PROM
+reads the block to report the processors and build their KLCONFIG
+entries, and refuses to start a processor whose Config disagrees with
+the block's word.
 
 An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
 starting at bank 0 with no empty bank between two populated ones (SGI
@@ -401,14 +493,13 @@ still lets the remaining banks hold the rest, with bank 0 capped at
 128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives the 20
 accepted sizes from 64 to 1664 MiB. The board also takes 256 MB banks,
 but the stock IP27 PROM 6.156 disables a 256 MB bank whenever the
-configuration block gives a processor clock of 180 or 195 MHz, the only
-SN0 processor options here, so QEMU never builds one (*established*,
-from disassembly of the PROM's memory test). A 512 MB bank 0 is real
-hardware too, but it is an unsupported configuration here: the PROM
-fails its memory test at the boot flash's reset address, where QEMU's
-flash overlay covers the RAM. The cause is *inferred*: real firmware
-appears to expect RAM behind a cached access there. 1024, 1536 and
-2048 MiB need such a bank and are refused.
+configuration block gives a processor clock of 180 or 195 MHz, so QEMU
+never builds one (*established*, from disassembly of the PROM's memory
+test). A 512 MB bank 0 is real hardware too, but it is an unsupported
+configuration here: the PROM fails its memory test at the boot flash's
+reset address, where QEMU's flash overlay covers the RAM. The cause is
+*inferred*: real firmware appears to expect RAM behind a cached access
+there. 1024, 1536 and 2048 MiB need such a bank and are refused.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within

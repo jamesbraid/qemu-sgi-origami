@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "f5f60e886c1c31f902a815aebcfc5f33a025ee53130bee6265f49e5c8f0ef9fd"
+    "0247ad3e3b2a64bbdc008e41968044cde9e4650b101334a209b6be9e18f61265"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -122,16 +122,28 @@ class GeneratorTests(unittest.TestCase):
             set(IMPLEMENTED_TOPOLOGIES))
         expected_offerings = []
         for topology in catalogue["topologies"]:
+            # One offering per processor option and accepted population
+            # its modules make, or per population where there is no choice.
+            options = [(option["assembly"]["id"], option["cpus-per-node"])
+                       for option in topology.get("processor-options", [])]
+            if not options:
+                options = [(topology["nodes"][0]["cpu-slots"][0]["assembly"]
+                            ["id"], None)]
             for row in topology["node-populations"]:
                 if row["grade"] == "unknown":
                     continue
                 for population in row["supported-cpu-populations"]:
-                    expected_offerings.append((
-                        topology["product"], topology["name"],
-                        len(row["nodes"]), tuple(population["cpus-per-node"])))
+                    counts = population["cpus-per-node"]
+                    for processor, fits in options:
+                        if fits is not None and not set(counts) <= set(fits):
+                            continue
+                        expected_offerings.append((
+                            topology["product"], topology["name"],
+                            len(row["nodes"]), tuple(counts), processor))
         actual_offerings = [(
             item["product"], item["topology"], item["nodes"],
-            tuple(item["cpus-per-node"])) for item in catalogue["offerings"]]
+            tuple(item["cpus-per-node"]), item["processor"]["id"])
+            for item in catalogue["offerings"]]
         self.assertEqual(sorted(actual_offerings), sorted(expected_offerings))
         self.assertEqual(manifest["format"], 4)
         self.assertEqual(manifest["format_key"], "sgi-sn")
@@ -255,13 +267,23 @@ class StorageTests(unittest.TestCase):
         cls.catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
 
+    def default_processor(self, name):
+        topology = next(item for item in self.catalogue["topologies"]
+                        if item["name"] == name)
+        return topology["nodes"][0]["cpu-slots"][0]["assembly"]["id"]
+
     def test_every_offering_lists_consistent_storage(self):
         for offering in self.catalogue["offerings"]:
             with self.subTest(options=offering["machine-options"]):
+                # processor= appears only where the module is not the
+                # topology's own, so the default keeps its old spelling.
+                processor = ("" if offering["processor"]["id"] ==
+                             self.default_processor(offering["topology"])
+                             else f",processor={offering['processor']['id']}")
                 self.assertEqual(
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
-                    f",nodes={offering['nodes']}")
+                    f",nodes={offering['nodes']}{processor}")
                 if offering.get("launch-recipe") == "ip53-discovery":
                     self.assertEqual(offering["firmware"]["kind"], "ip35-prom")
                 else:
@@ -511,10 +533,14 @@ class FuelTests(unittest.TestCase):
             "octane": (["flash-select", "flash-strap", "mac"],
                        ["r10000-prid"]),
         }
+        r12000 = ["r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
+                  "r12000-scache-bytes", "r12000-scache-block-words"]
         for row in catalogue["offerings"]:
             if row["product"] not in expected:
                 continue
             machine, cpu = expected[row["product"]]
+            if row["processor"]["part"] == "R12000":
+                cpu = r12000
             with self.subTest(offering=row["machine-options"]):
                 self.assertEqual(
                     [o["property"] for o in row["overrides"]

@@ -172,12 +172,12 @@ static bool check_inputs(const SGIModelOffering *offering,
  * The IP27 configuration-block values the machine patches into node
  * flash built for @t: the product values from the topology's
  * ip27-firmware record, which the catalogue compiler requires on every
- * SN0 topology, and the processor values from its first node, as the
- * machine takes them.
+ * SN0 topology, and the processor values from @cpu, the part the
+ * offering fits, as the machine takes them.
  */
-static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t)
+static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t,
+                                            const SGIModelProcessor *cpu)
 {
-    const SGIModelProcessor *cpu = t->nodes->value->cpu_slots->value->assembly;
     const SGIModelIp27FirmwareConfig *firmware = t->ip27_firmware;
 
     g_assert(firmware);
@@ -250,6 +250,7 @@ static const SGIModelModule *nvram_module(const SGIModelTopology *t,
 static void build_item(const SGIModelStorageItem *item,
                        const SGIModelInitInput *input,
                        const SGIPromImage *image, const SGIModelTopology *t,
+                       const SGIModelProcessor *cpu,
                        const struct tm *now, uint8_t *buf)
 {
     const uint8_t *data;
@@ -287,7 +288,7 @@ static void build_item(const SGIModelStorageItem *item,
     data = g_bytes_get_data(image->payload, &length);
     switch (input->kind) {
     case SGI_MODEL_INIT_INPUT_KIND_IP27_PROM:
-        values = ip27_flash_values(t);
+        values = ip27_flash_values(t, cpu);
         sgi_ip27_initial_flash(buf, item->size, &values, data, length);
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP35_PROM:
@@ -459,6 +460,7 @@ static bool create_machine(const SGIModelOffering *offering,
     g_autofree char *tmp = NULL;
     const SGIModelStorageItemList *entry;
     const SGIModelTopology *chassis, *t;
+    const SGIModelProcessor *cpu;
     bool published = false, ok = false;
     time_t seconds = time(NULL);
     struct tm now;
@@ -474,6 +476,16 @@ static bool create_machine(const SGIModelOffering *offering,
                        offering->topology);
         }
         return false;
+    }
+    cpu = t->nodes->value->cpu_slots->value->assembly;
+    if (t->processor_options) {
+        const SGIModelProcessorOption *option =
+            sgi_model_find_processor_option(t, offering->processor->id, errp);
+
+        if (!option) {
+            return false;
+        }
+        cpu = option->assembly;
     }
     if (!check_absent(dir, errp)) {
         return false;
@@ -546,7 +558,7 @@ static bool create_machine(const SGIModelOffering *offering,
         g_autofree char *file = g_strdup_printf("%s.raw", item->name);
 
         build_item(item, find_input(offering, initial),
-                   g_hash_table_lookup(images, initial), t, &now, buf);
+                   g_hash_table_lookup(images, initial), t, cpu, &now, buf);
         if (!write_store(tmp, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
             goto out;

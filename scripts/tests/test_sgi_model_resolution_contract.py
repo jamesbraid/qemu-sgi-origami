@@ -144,9 +144,46 @@ class SystemModelResolutionTests(unittest.TestCase):
                 "variants": [
                     {"clock_mhz": 180, "cache_mib": 1},
                     {"clock_mhz": 195, "cache_mib": 4},
+                    {"clock_mhz": 180, "cache_mib": 2},
+                    {"clock_mhz": 225, "cache_mib": 2},
                 ],
             },
         )
+
+    def test_cpu_selection_offered_lists_the_selectable_modules(self):
+        model = self.real_model("origin200")
+        self.assertEqual(
+            [(option["part"], option["clock_mhz"], option["cache_mib"],
+              option["processors_per_node"])
+             for option in model["machine"]["processor_options"]],
+            [("r10000", 180, 1, [1, 2]), ("r10000", 180, 2, [1, 2]),
+             ("r10000", 225, 2, [2]), ("r12000", 270, 4, [2])],
+        )
+
+    def test_cpu_selection_offered_rejects_an_uncatalogued_module(self):
+        def edit(document):
+            document["layer"]["cpu_selection"]["offered"].append(
+                {"part": "r12000", "clock_mhz": 300, "cache_mib": 8,
+                 "processors_per_node": [2]})
+
+        with self.assertRaisesRegex(
+                self.resolver.ResolutionError,
+                "r12000 300 MHz/8 MiB, which is not a catalogued variant"):
+            self.load_layer_changes([
+                ("layers/products/origin200.yaml", edit),
+            ])
+
+    def test_cpu_selection_offered_must_start_with_the_default(self):
+        def edit(document):
+            offered = document["layer"]["cpu_selection"]["offered"]
+            offered.append(offered.pop(0))
+
+        with self.assertRaisesRegex(
+                self.resolver.ResolutionError,
+                "list the default processor first"):
+            self.load_layer_changes([
+                ("layers/products/origin200.yaml", edit),
+            ])
 
     def test_cpu_selection_fills_identity_registers_from_the_catalogue(self):
         # origin2000-rack's CPU components author no identity at all

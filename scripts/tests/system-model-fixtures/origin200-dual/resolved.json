@@ -305,6 +305,14 @@
           {
             "cache_mib": 4,
             "clock_mhz": 195
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 225
           }
         ]
       },
@@ -333,6 +341,14 @@
           {
             "cache_mib": 4,
             "clock_mhz": 195
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 225
           }
         ]
       },
@@ -441,6 +457,14 @@
           {
             "cache_mib": 4,
             "clock_mhz": 195
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 225
           }
         ]
       },
@@ -1231,6 +1255,14 @@
           {
             "cache_mib": 4,
             "clock_mhz": 195
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 2,
+            "clock_mhz": 225
           }
         ]
       },
@@ -3267,7 +3299,43 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Dual-module Origin 200",
-    "notes": "The default configuration is the implemented four-CPU, two-node form. The Owner's Guide (007-3708-002-tab1-1) also documents a three-CPU dual-module form with one one-CPU and one two-CPU PIMM in either module; this emulation target does not compile that population, so supported_cpu_populations names only the shipped [2, 2] form. Both node-local configuration graphs retain the base model's unnamed Hub port descriptor. That value names no Router or Crossbow port; the direct peer CrayLink does not supply such a name. This is a model decision, not a claim about the unresolved hardware meaning of that field for a directly linked pair."
+    "notes": "The default configuration is the implemented four-CPU, two-node form. The Owner's Guide (007-3708-002-tab1-1) also documents a three-CPU dual-module form with one one-CPU and one two-CPU PIMM in either module; this emulation target does not compile that population, so supported_cpu_populations names only the shipped [2, 2] form. Both node-local configuration graphs retain the base model's unnamed Hub port descriptor. That value names no Router or Crossbow port; the direct peer CrayLink does not supply such a name. This is a model decision, not a claim about the unresolved hardware meaning of that field for a directly linked pair.",
+    "processor_options": [
+      {
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "part": "r10000",
+        "processors_per_node": [
+          1,
+          2
+        ]
+      },
+      {
+        "cache_mib": 2,
+        "clock_mhz": 180,
+        "part": "r10000",
+        "processors_per_node": [
+          1,
+          2
+        ]
+      },
+      {
+        "cache_mib": 2,
+        "clock_mhz": 225,
+        "part": "r10000",
+        "processors_per_node": [
+          2
+        ]
+      },
+      {
+        "cache_mib": 4,
+        "clock_mhz": 270,
+        "part": "r12000",
+        "processors_per_node": [
+          2
+        ]
+      }
+    ]
   },
   "model_version": 1,
   "open_questions": [],
@@ -3277,7 +3345,8 @@
       "provenance": "vendor-document",
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
-        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+        "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly",
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
       ],
       "variants": [
         {
@@ -3323,6 +3392,87 @@
             "secondary_cache_error_correction": "retry-access-through-corrector",
             "secondary_cache_size_kib": 4096,
             "system_clock_divisor": 2
+          }
+        },
+        {
+          "cache_clock_mhz": 180,
+          "cache_mib": 2,
+          "clock_mhz": 180,
+          "fpu_identification": "0x0900",
+          "notes": "The 2 MiB 180 MHz Origin 200 module. A real two-processor machine prints Rev 2.6, \"Secondary Cache 2MB 180MHz Tap 0x8\" and a 90 MHz Hub, which give the cache size, its 1:1 clock and tap 8; the other mode fields are the 1 MiB word's (inferred).",
+          "processor_identification": "0x0926",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1,
+            "secondary_cache_clock_tap": 8,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 2048,
+            "system_clock_divisor": 2
+          }
+        },
+        {
+          "cache_clock_mhz": 225,
+          "cache_mib": 2,
+          "clock_mhz": 225,
+          "fpu_identification": "0x0900",
+          "notes": "The 225 MHz Origin 200 module, PIMM_225_2M_2P. Real machines print Rev 3.4, \"Scache: Size 2 MB Speed 225 Mhz Tap 0x9\" and a 90 MHz Hub, which give the cache size, its 1:1 clock, tap 9 and the 2.5 system-clock divisor; the other mode fields are the 180 MHz word's (inferred). FPU identification follows the 180 MHz variant (inferred).",
+          "processor_identification": "0x0934",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 2048,
+            "system_clock_divisor": 2.5
+          }
+        }
+      ]
+    },
+    {
+      "part": "r12000",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the module and its evidence"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 180,
+          "cache_mib": 4,
+          "clock_mhz": 270,
+          "fpu_identification": "0x0900",
+          "notes": "The 270 MHz R12000 Origin 200 module. Real four-processor machines print Rev 2.3, \"Secondary Cache 4MB 180MHz Tap 0x9\", an R12010 FPU revision 0.0 under IRIX and a 90 MHz Hub, which give the cache size, its 1.5 divisor, tap 9 and the 3 system-clock divisor. The other mode fields are the R10000 180 MHz word's and delayed speculative dirty is off (inferred).",
+          "processor_identification": "0x0e23",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1.5,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 4096,
+            "system_clock_divisor": 3
           }
         }
       ]

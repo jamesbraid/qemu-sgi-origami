@@ -391,6 +391,8 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
         result["ip27-firmware"] = _kebab_keys(topology["ip27_firmware"])
     if "ip35_firmware" in topology:
         result["ip35-firmware"] = _kebab_keys(topology["ip35_firmware"])
+    if "processor_options" in topology:
+        result["processor-options"] = _kebab_keys(topology["processor_options"])
     return result
 
 def _node_population(raw: dict) -> dict:
@@ -905,10 +907,10 @@ _CPU_OVERRIDES = {
 }
 
 
-def _overrides(topology: dict) -> list[dict]:
+def _overrides(topology: dict, part: str) -> list[dict]:
     """Every catalogue identity or board value this configuration lets a
     launch override, and where: a `-M` property, or a `-cpu` property of
-    its processor part. The machine refuses a board override its
+    its processor part @part. The machine refuses a board override its
     configuration does not bind, so each is listed only where one is."""
     machine = ["mac"]
     if any(node["asic_kind"] == "BEDROCK" for node in topology["nodes"]):
@@ -920,17 +922,33 @@ def _overrides(topology: dict) -> list[dict]:
         machine += ["ioc3-subsystem-id"]
     if topology["generation"] == "IP30":
         machine += ["flash-select", "flash-strap"]
-    part = topology["nodes"][0]["cpu_slots"][0]["assembly"]["kind"]
     return ([{"property": name, "target": "machine"}
              for name in sorted(machine)] +
             [{"property": name, "target": "cpu"}
              for name in _CPU_OVERRIDES[part]])
 
 
-def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
+def _machine_options(machine_name: str, topology: dict, nodes: int,
+                     processor: str | None = None) -> str:
     """The `-M` value selecting one offering: product, topology and node
-    count, the same three for every machine."""
-    return f"{machine_name},topology={topology['name']},nodes={nodes}"
+    count, the same three for every machine, and the processor module
+    where it is not the topology's default."""
+    options = f"{machine_name},topology={topology['name']},nodes={nodes}"
+    return options if processor is None else f"{options},processor={processor}"
+
+
+def _processor_choices(topology: dict) -> list[dict]:
+    """Every processor a launch of @topology may select, the default first,
+    each with the per-node memory totals and processor counts it allows.
+    A topology with no processor options offers only its nodes' own part.
+    """
+    if "processor_options" in topology:
+        return [{**option, "default": index == 0}
+                for index, option in enumerate(topology["processor_options"])]
+    node = topology["nodes"][0]
+    return [{"assembly": node["cpu_slots"][0]["assembly"],
+             "accepted_memory_mib": node["accepted_memory_mib"],
+             "cpus_per_node": None, "default": True}]
 
 
 def _is_ip53_runtime_profile(model: dict) -> bool:
@@ -1045,7 +1063,6 @@ def _offerings_for(model: dict, topology: dict,
     population = model["composition"]["population"]
     dimms_per_node = tuple(population["dimms_per_node"])
     node = topology["nodes"][0]
-    assembly = node["cpu_slots"][0]["assembly"]
     default_memory = tuple(population["memory_mib_per_node"])
     if len(set(default_memory)) != 1:
         raise ValueError(
@@ -1101,7 +1118,13 @@ def _offerings_for(model: dict, topology: dict,
             if launch_recipe == "ip53-discovery"
             else _consoles_for(topology, harness)
         )
-        for cpu_population in row["supported_cpu_populations"]:
+        for choice, cpu_population in (
+                (choice, cpu_population)
+                for choice in _processor_choices(topology)
+                for cpu_population in row["supported_cpu_populations"]
+                if choice["cpus_per_node"] is None or
+                set(cpu_population) <= set(choice["cpus_per_node"])):
+            assembly = choice["assembly"]
             offerings.append({
                 "product": machine_name,
                 "topology": configuration_name,
@@ -1111,15 +1134,17 @@ def _offerings_for(model: dict, topology: dict,
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
                 "machine-options": _machine_options(
-                    machine_name, topology, nodes),
+                    machine_name, topology, nodes,
+                    None if choice["default"] else assembly["id"]),
                 "cpus-per-node": list(cpu_population),
                 "dimms-per-node": list(dimms_per_node[:nodes]),
                 "smp": sum(cpu_population),
                 "memory-per-node-mib": {
                     "default": default_memory[0],
-                    "accepted": list(node["accepted_memory_mib"]),
+                    "accepted": list(choice["accepted_memory_mib"]),
                 },
                 "processor": {
+                    "id": assembly["id"],
                     "part": assembly["kind"], "clock-hz": assembly["clock_hz"],
                     "cache-mib": assembly["cache_mib"],
                     **({"required-properties": list(assembly["required_properties"])}
@@ -1141,11 +1166,13 @@ def _offerings_for(model: dict, topology: dict,
                 "netboot-adapter": harness["netboot_adapter"],
                 "identity-inputs": list(identity_inputs),
                 "hardware-inputs": _hardware_inputs(topology),
-                "overrides": _overrides(topology),
+                "overrides": _overrides(topology, assembly["kind"]),
                 **diagnostic,
                 "supported-guests": list(harness["supported_guests"]),
                 "install-media": list(harness["install_media"]),
-                "default-cpu-model": harness["default_cpu_model"],
+                "default-cpu-model": (harness["default_cpu_model"]
+                                      if choice["default"]
+                                      else assembly["kind"]),
                 "synthesized-firmware-toggle": harness.get(
                     "has_synthesized_firmware_toggle", False),
                 "needs-debug-leds-off": harness.get(

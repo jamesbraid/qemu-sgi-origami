@@ -46,9 +46,8 @@
 #define SGI_IP35_LABEL_GENERATION       1
 
 /*
- * What a product and its processor put into the IP27 configuration block.
- * The processor values only reach the default template; a supplied PROM
- * image keeps its own.
+ * What a product and its fitted processor put into the IP27 configuration
+ * block, the default template's or a supplied PROM image's alike.
  */
 typedef struct SGIIP27FlashValues {
     uint32_t machine_type;
@@ -61,8 +60,8 @@ typedef struct SGIIP27FlashValues {
 /*
  * Fill @flash_size bytes at @flash: the default template, then the first
  * @payload_size bytes of @payload over it (none when @payload is NULL),
- * then the product's three configuration-block values patched into
- * whichever configuration block is present.
+ * then the product's and processor's configuration-block values patched
+ * into whichever configuration block is present.
  */
 void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
                             const SGIIP27FlashValues *values,

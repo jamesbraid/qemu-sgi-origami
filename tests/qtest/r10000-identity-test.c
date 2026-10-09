@@ -144,6 +144,50 @@ static void test_origin200_prid(gconstpointer data)
     qtest_quit(qts);
 }
 
+typedef struct Origin200Processor {
+    const char *options;
+    const char *prid_property;
+    uint32_t prid;
+    const char *mode_property;
+    uint32_t mode;
+} Origin200Processor;
+
+/*
+ * Each Origin 200 processor module brings its own part: the PRId its
+ * inventory prints (revision 2.6, 3.4 or 2.3) and Config0 bits 24:0 of
+ * its mode word, which select the cache size (SS, bits 18:16) and clock
+ * divisors the module's inventory reports. Expected words are written
+ * from those fields, not read back from the catalogue.
+ */
+static const Origin200Processor origin200_processors[] = {
+    /* SS=2 (2 MiB), cache clock 1:1, system clock divided by 2. */
+    { "origin200,processor=r10000-180mhz-2mb -cpu R10000",
+      "r10000-prid", 0x926, "reset-mode", 0x0aa785 },
+    /* SS=2, cache clock 1:1, system clock divided by 2.5. */
+    { "origin200,processor=r10000-225mhz-2mb -cpu R10000 -smp 2",
+      "r10000-prid", 0x934, "reset-mode", 0x0aa985 },
+    /* SS=3 (4 MiB), cache clock divided by 1.5, system clock by 3. */
+    { "origin200,processor=r12000-270mhz-4mb -cpu R12000 -smp 2",
+      "r12000-prid", 0xe23, "r12000-reset-mode", 0x13ab85 },
+};
+
+static void test_origin200_processor(gconstpointer data)
+{
+    const Origin200Processor *p = data;
+    QTestState *qts = qtest_initf("-M %s -S", p->options);
+
+    g_assert_cmphex(cpu_property(qts, p->prid_property), ==, p->prid);
+    g_assert_cmphex(cpu_property(qts, p->mode_property), ==, p->mode);
+    if (g_str_equal(p->prid_property, "r12000-prid")) {
+        g_assert_cmphex(cpu_property(qts, "r12000-fpu-id"), ==, 0x900);
+        g_assert_cmpuint(cpu_property(qts, "r12000-scache-bytes"), ==,
+                         4 * 1024 * 1024);
+        g_assert_cmpuint(cpu_property(qts, "r12000-scache-block-words"), ==,
+                         32);
+    }
+    qtest_quit(qts);
+}
+
 /*
  * Fuel's catalogue part is R14000 revision 2.3 and Origin 300's the
  * model's 0x0f24, each applied through r14000-prid, which -cpu
@@ -415,6 +459,13 @@ int main(int argc, char **argv)
                         test_origin200_prid);
     qtest_add_data_func("/r10000/identity/origin200-override",
                         GINT_TO_POINTER(1), test_origin200_prid);
+    for (size_t i = 0; i < G_N_ELEMENTS(origin200_processors); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "/r10000/identity/origin200-processor/%zu", i);
+
+        qtest_add_data_func(name, &origin200_processors[i],
+                            test_origin200_processor);
+    }
     qtest_add_data_func("/r10000/identity/octane2", GINT_TO_POINTER(0),
                         test_octane2_identity);
     qtest_add_data_func("/r10000/identity/octane2-override",

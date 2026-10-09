@@ -20,6 +20,8 @@
 #define CONFIG              0x60
 #define CONFIG_SIZE         0x50
 #define CONFIG_MAGIC        0x69703237636f6e66ULL
+#define CONFIG_MODE         0x04
+#define CONFIG_CPU_CLOCK    0x10
 #define CONFIG_FPROM_CYC    0x2c
 #define CONFIG_MACHINE_TYPE 0x30
 #define CONFIG_CHECKSUM     0x34
@@ -53,8 +55,9 @@ static uint8_t byte_sum(const uint8_t *data, size_t size)
 }
 
 /*
- * A payload whose configuration block carries a stock image's machine
- * type 0, 8 read cycles and 1 write cycle, plus bytes the patch must keep.
+ * A payload whose configuration block carries a stock image's 180 MHz
+ * mode word and clock, machine type 0, 8 read cycles and 1 write cycle,
+ * plus bytes the patch must keep.
  */
 static uint8_t *make_payload(size_t size)
 {
@@ -64,7 +67,9 @@ static uint8_t *make_payload(size_t size)
     for (i = 0; i < size; i++) {
         payload[i] = i * 37 + 11;
     }
+    stl_be_p(payload + CONFIG + CONFIG_MODE, 0x1211a785);
     stq_be_p(payload + CONFIG + 0x08, CONFIG_MAGIC);
+    stq_be_p(payload + CONFIG + CONFIG_CPU_CLOCK, 180000000);
     stl_be_p(payload + CONFIG + CONFIG_FPROM_CYC, 8);
     stl_be_p(payload + CONFIG + CONFIG_MACHINE_TYPE, 0);
     stl_be_p(payload + CONFIG + CONFIG_FPROM_WR, 1);
@@ -87,19 +92,31 @@ static void assert_ip27_log(const uint8_t *flash)
 }
 
 /*
- * Origin 200's values replace the payload's own, the block's byte sum
- * stays where the payload left it, and nothing else in the payload moves.
- * The template shows through past the payload's end.
+ * Origin 200's values replace the payload's own, the processor's mode word
+ * and clock among them, the block's byte sum stays where the payload left
+ * it, and nothing else in the payload moves. The template shows through
+ * past the payload's end. A 270 MHz processor differs from the payload's
+ * 180 MHz in both fields, so leaving either alone fails.
  */
 static void test_ip27_payload(void)
 {
     const size_t size = 0x400;
+    const SGIIP27FlashValues fast = {
+        .machine_type = 1,
+        .read_cycles = 15,
+        .write_cycles = 4,
+        .cpu_mode_bits = 0x1213ab85,
+        .cpu_clock_hz = 270000000,
+    };
     g_autofree uint8_t *payload = make_payload(size);
     g_autofree uint8_t *flash = g_malloc(IP27_FLASH_SIZE);
     size_t i;
 
-    sgi_ip27_initial_flash(flash, IP27_FLASH_SIZE, &origin200, payload, size);
+    sgi_ip27_initial_flash(flash, IP27_FLASH_SIZE, &fast, payload, size);
 
+    g_assert_cmphex(ldl_be_p(flash + CONFIG + CONFIG_MODE), ==, 0x1213ab85);
+    g_assert_cmpuint(ldq_be_p(flash + CONFIG + CONFIG_CPU_CLOCK), ==,
+                     270000000);
     g_assert_cmphex(ldl_be_p(flash + CONFIG + CONFIG_MACHINE_TYPE), ==, 1);
     g_assert_cmphex(ldl_be_p(flash + CONFIG + CONFIG_FPROM_CYC), ==, 15);
     g_assert_cmphex(ldl_be_p(flash + CONFIG + CONFIG_FPROM_WR), ==, 4);
@@ -110,7 +127,9 @@ static void test_ip27_payload(void)
         size_t field = i - CONFIG;
 
         if (i >= CONFIG && field < CONFIG_SIZE &&
-            ((field >= CONFIG_FPROM_CYC && field < CONFIG_CHECKSUM + 4) ||
+            ((field >= CONFIG_MODE && field < CONFIG_MODE + 4) ||
+             (field >= CONFIG_CPU_CLOCK && field < CONFIG_CPU_CLOCK + 8) ||
+             (field >= CONFIG_FPROM_CYC && field < CONFIG_CHECKSUM + 4) ||
              (field >= CONFIG_FPROM_WR && field < CONFIG_FPROM_WR + 4))) {
             continue;
         }
