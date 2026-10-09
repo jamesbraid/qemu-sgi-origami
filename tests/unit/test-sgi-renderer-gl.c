@@ -2535,6 +2535,7 @@ static void test_frame_texture_validation(void)
 
     frame.texture.environment_bytes[1] = 63.75;
     frame.texture.environment_bytes[2] = 127.5;
+    frame.texture.environment_bytes[3] = 255;
     texels[0] = 128;
     texels[1] = 64;
     texels[2] = 192;
