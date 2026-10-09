@@ -13,10 +13,34 @@ device calls the checked Mesa draw path yet.
 Current drawing support
 -----------------------
 
-``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
-flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
-resource has ordered UNORM components of 1 to 16 bits. Its rows may
-start at either edge.
+``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts points
+and every polygon mode: separate triangles, triangle strips and fans,
+quadrilaterals, quad strips and polygons, flat or smooth shaded, into one front
+RGB or RGBA colour resource. The resource has ordered UNORM components of 1 to
+16 bits. Its rows may start at either edge. A textured draw is still one
+separate triangle.
+
+The checked draw requires the raster rules every family uses and the scalar
+comparisons establish: 8 subpixel bits, ``SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN``
+and ``SGI_ARITH_DOUBLE``. Other rules return ``SGI_RENDER_UNSUPPORTED``
+before the native snapshot.
+
+The renderer splits each draw into independent points or triangles exactly as
+the scalar rasterizer does. It keeps the scalar path's order, swaps the first
+two vertices of odd strip triangles, draws quadrilaterals and polygons as fans
+from their first vertex, and uses the same provoking vertex for flat shading.
+A point's size is rounded as the scalar path rounds it: to the nearest integer
+and at least one, with zero meaning one. The worker reads
+``GL_ALIASED_POINT_SIZE_RANGE`` when it creates its context. A size outside
+that range returns ``SGI_RENDER_UNSUPPORTED`` before the native snapshot.
+
+Lines, line strips and line loops remain unsupported, whatever their width or
+stipple. Point, line and polygon smoothing remain unsupported. Each smoothing
+enable refuses only its own class of primitive, so a filled triangle drawn
+with line smoothing enabled is an ordinary aliased triangle. Polygon modes
+likewise apply only to polygons, so points ignore them. The refusal is
+stricter than the scalar rasterizer, which draws smoothed primitives aliased,
+and logs it, when its rules do not smooth.
 
 Callers supply OpenGL window coordinates: window row 0 is the bottom
 display row, and the scissor box is in those rows. A resource's
@@ -52,12 +76,15 @@ with zero width or height leaves no pixels to draw. For a visible drawable,
 negative dimensions return a resource error. Scissor and clip rectangles are
 resolved before the native snapshot.
 
-Blending is limited to an RGB8 resource without stored alpha, ``FUNC_ADD``,
-and these source/destination factor pairs: ``SRC_ALPHA`` with
-``ONE_MINUS_SRC_ALPHA``, ``DST_ALPHA`` with ``ZERO``, ``ZERO`` with
-``ONE_MINUS_DST_ALPHA``, and ``SRC_ALPHA_SATURATE`` with ``ONE``. The worker
-imports missing native destination alpha as one. Other factor pairs,
-equations, and colour layouts remain unsupported for blended draws.
+Blending accepts ``FUNC_ADD``, ``FUNC_SUBTRACT``, ``FUNC_REVERSE_SUBTRACT``,
+``MIN`` and ``MAX`` with every OpenGL 1.2 factor except the four
+constant-colour factors. ``SRC_ALPHA_SATURATE`` is accepted as a source factor
+only. A blended draw must be a single point or triangle, and the resource and
+rules must use 8-bit colour components. An RGB resource needs rules without
+stored alpha, and the worker imports its missing destination alpha as one. An
+RGBA resource needs 8-bit stored alpha and rules with 8 alpha bits. The worker
+rounds the source colour to those steps before blending, as the scalar path
+does. The ``LOGIC_OP`` equation and the logic operations remain unsupported.
 
 A textured draw requires ``GL_TEXTURE_2D``, a front RGB8 or RGBA8 colour
 resource, and one ``SGI_RENDER_TEXTURE`` resource matching a level-zero
@@ -81,14 +108,87 @@ other texture formats, and other environment modes remain unsupported.
 
 The path also rejects colour-index drawing, depth and stencil tests, client
 clip planes, ordered dithering, accumulation, and other draw states it has
-not mapped to Mesa. It snapshots the full colour resource and draws through
-an RGBA16 host buffer. Private stencil marks the clip union and pixels
-written by the same draw. It reads back colour and coverage before any
+not mapped to Mesa. It snapshots the full colour resource. An untextured draw
+renders into a 32-bit float host buffer, which is rounded to the native steps
+only at readback. That is why a blended draw is limited to one primitive. A
+textured draw uses an RGBA8 buffer. One private stencil bit marks the clip
+union and another marks written pixels, so primitives of one draw that
+overlap each still draw. The worker reads back colour and coverage before any
 native commit. The shared code passes the bottom-origin binary write mask
 to ``commit_covered``. The provider must leave zero-mask pixels untouched.
 Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
+
+Open feature rows
+-----------------
+
+Two features the shared design requires stay unsupported. In each, Mesa
+differs from the scalar rasterizer, and the scalar rule is the reviewed
+family contract. Each refusal returns ``SGI_RENDER_UNSUPPORTED`` before the
+native snapshot. The ``lines-refused`` and ``scalar-match-blend`` unit cases
+keep the vectors that showed the differences.
+
+Aliased lines differ from the scalar diamond-exit rule:
+
+- At width one, llvmpipe omits a start pixel that lies exactly on a diamond
+  boundary. For the segment from (2.75, 14.25) to (7.5, 11) in a 16 by 16
+  window, the scalar path draws pixel (2, 14) and llvmpipe leaves it
+  unchanged. Endpoints moved off the boundary give identical pixels at
+  widths one and three.
+- At even widths, the ends differ by a row or column even off the boundary.
+  At width two, with every endpoint offset by (3/256, 6/256):
+
+  - llvmpipe draws pixels (2, 13) and (2, 14) at the start of the segment from
+    (2.75, 14.25) to (7.5, 11), and the scalar path does not.
+  - The scalar path draws (1, 8) and (2, 8) at the end of the vertical segment
+    from (1.5, 3) to (1.5, 8.5), and llvmpipe does not.
+  - Pixels (11, 6) and (12, 6) take a different segment's colour.
+
+  Width four differs at the same places, four pixels wide.
+
+A reviewed decision to draw lines by the wide-primitive contract's rule, the
+shifted width-one diamond-exit line replicated along the minor axis, or to
+change that contract, would settle this.
+
+Constant-colour blend factors, ``CONSTANT_COLOR``, ``ONE_MINUS_CONSTANT_COLOR``,
+``CONSTANT_ALPHA`` and ``ONE_MINUS_CONSTANT_ALPHA``, round exact half steps
+the other way:
+
+- In 293 of 2100 factor and equation cases, results differ by one step in one
+  component.
+- With blend colour 0.9 and a stored blue of 195, the exact result is 175.5.
+  The scalar path computes in double from the float 0.9 and stores 175.
+  llvmpipe computes in float32 and stores 176.
+- For one primitive at 8 bits, every other factor matches the scalar path
+  pixel for pixel.
+
+Evidence of how the hardware rounds a blended result at a half step would
+settle this. It would decide whether to round the constant colour to the
+colour steps in both paths or to accept llvmpipe's rounding.
+
+Blending is also limited to one primitive per draw and to 8-bit components:
+
+- **Overlap.** The scalar path stores each primitive's result clamped and
+  rounded, so the next primitive blends against the stored value. The float
+  host buffer rounds only at readback. Two coincident triangles blending black
+  at alpha 1/255 over a stored 64 give 63.749 twice. The scalar path stores 64
+  both times, but the float buffer reads back 63. Rendering blended draws into
+  an RGBA8 buffer instead rounds each primitive. llvmpipe's 8-bit blend then
+  differs from the scalar path by one step, even for a single primitive, in
+  320 of 2100 factor and equation cases.
+- **Widths other than 8 bits.** The destination crosses the worker as 16-bit
+  UNORM, which cannot hold every other width exactly. With 10-bit components,
+  black at alpha 1/1023 over a stored 504 is 503.507. The scalar path stores
+  504 and the worker 503.
+
+Rounding each primitive's result to the native steps before the next
+primitive blends would settle the first. Carrying the destination at its own
+width would settle the second.
+
+Untextured draws need a small colour program that the worker builds when it
+creates its context. If that program fails to compile, renderer creation
+fails, so clears through the same renderer are unavailable too.
 
 Decoded CLEAR
 -------------
@@ -161,7 +261,7 @@ pixel count. A failed commit reports its complete pixel prefix, possible
 partial next pixel, and whether the extent is known. Native writes already
 made by the provider remain made. There is no rollback.
 
-For the checked triangle, the family provider must implement
+For a checked draw, the family provider must implement
 ``commit_covered``. A dense ``commit`` callback alone is insufficient: the
 draw returns ``SGI_RENDER_UNSUPPORTED`` before native snapshot. The covered
 callback receives one byte of write coverage per pixel. The shared wrapper
