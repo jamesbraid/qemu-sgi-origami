@@ -214,6 +214,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
     bool direct_window = false;
+    bool wide_64bit = false;
     SGIDMAPlacement placement;
 
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
@@ -248,6 +249,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         widget = addr >> 60;
         destination = addr & 0x0000ffffffffffffULL;
         swap = addr & (1ULL << 55);
+        wide_64bit = true;
     } else if (addr >= 0x80000000 && addr <= UINT32_MAX) {
         uint32_t direct = REG(s, 0x80);
 
@@ -273,8 +275,11 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     }
     placement = sgi_dma_placement_select(
         swap, s->dma_64bit & (1U << dma->slot));
-    if (s->packet_sender && rev2 && direct_window && swap &&
-        (s->wide_slot_mask & BIT(dma->slot))) {
+    if (s->packet_sender && rev2 && swap &&
+        (s->wide_slot_mask & BIT(dma->slot)) &&
+        (direct_window ||
+         (wide_64bit &&
+          (REG(s, 0x200 + dma->slot * 8) & (1U << 19))))) {
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;
     }
     entry.translated_addr = destination & ~entry.addr_mask;
