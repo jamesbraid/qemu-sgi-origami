@@ -288,7 +288,7 @@ static SGIModelNodePopulationList *node0_row(SGIModelNodePopulationList *rows,
  * "sn-builder-console-test" exercises the real builder, not a stand-in.
  */
 static SGIModelProcessor console_test_r10000_180mhz = {
-    .id = (char *)"r10000-180mhz",
+    .id = (char *)"r10000-180mhz-1mb",
     .kind = (char *)"R10000",
     .prid = 0x926,
     .fpu_prid = 0x900,

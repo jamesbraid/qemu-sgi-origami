@@ -3120,7 +3120,7 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
     def test_processor(self):
         assembly = self.entry["nodes"][0]["cpu_slots"][0]["assembly"]
         self.assertEqual(assembly, {
-            "id": "r10000-180mhz", "kind": "R10000",
+            "id": "r10000-180mhz-1mb", "kind": "R10000",
             "prid": 0x926, "fpu_prid": 0x900,
             "clock_hz": 0xaba9500, "cache_clock_hz": 0x7270e00,
             "cache_mib": 1, "mode_bits": 0x1211a785,
@@ -3584,20 +3584,52 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(set(population), {"cpus-per-node"})
         self.assertIsInstance(population["cpus-per-node"], list)
 
-    def test_origin_200_has_two_offerings_for_its_accepted_populations(self):
+    def test_origin_200_offers_each_population_of_each_processor(self):
+        # A module offered only as a dual (225 and 270 MHz) has no
+        # one-processor offering; only the default spells no processor=.
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
         self.assertEqual(
-            sorted((o["smp"], o["cpus-per-node"]) for o in catalogue["offerings"]),
-            [(1, [1]), (2, [2])],
+            sorted((o["processor"]["id"], o["smp"], o["cpus-per-node"],
+                    o["machine-options"], o["default-cpu-model"])
+                   for o in catalogue["offerings"]),
+            [("r10000-180mhz-1mb", 1, [1],
+              "origin200,topology=origin200,nodes=1", "R10000"),
+             ("r10000-180mhz-1mb", 2, [2],
+              "origin200,topology=origin200,nodes=1", "R10000"),
+             ("r10000-180mhz-2mb", 1, [1], "origin200,topology=origin200,"
+              "nodes=1,processor=r10000-180mhz-2mb", "R10000"),
+             ("r10000-180mhz-2mb", 2, [2], "origin200,topology=origin200,"
+              "nodes=1,processor=r10000-180mhz-2mb", "R10000"),
+             ("r10000-225mhz-2mb", 2, [2], "origin200,topology=origin200,"
+              "nodes=1,processor=r10000-225mhz-2mb", "R10000"),
+             ("r12000-270mhz-4mb", 2, [2], "origin200,topology=origin200,"
+              "nodes=1,processor=r12000-270mhz-4mb", "R12000")],
+        )
+
+    def test_origin_200_processor_options_carry_each_mode_word(self):
+        # Expected words assembled by hand from the SysAD fields: tap,
+        # cache clock divisor, cache size, system clock divisor.
+        topology = compile_model(_resolved("origin200"))
+        self.assertEqual(
+            [(option["assembly"]["id"], option["assembly"]["kind"],
+              option["assembly"]["prid"], option["assembly"]["mode_bits"],
+              option["assembly"]["cache_clock_hz"])
+             for option in topology["processor_options"]],
+            [("r10000-180mhz-1mb", "R10000", 0x926, 0x1211a785, 120_000_000),
+             ("r10000-180mhz-2mb", "R10000", 0x926, 0x100aa785, 180_000_000),
+             ("r10000-225mhz-2mb", "R10000", 0x934, 0x120aa985, 225_000_000),
+             ("r12000-270mhz-4mb", "R12000", 0xe23, 0x1213ab85,
+              180_000_000)],
         )
 
     def test_origin_200_dual_smp_is_four(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200-dual")]))
         offerings = catalogue["offerings"]
-        self.assertEqual(len(offerings), 1)
-        self.assertEqual(offerings[0]["smp"], 4)
-        self.assertEqual(offerings[0]["cpus-per-node"], [2, 2])
-        self.assertEqual(offerings[0]["product"], "origin200")
+        self.assertEqual(len(offerings), 4)
+        for offering in offerings:
+            self.assertEqual(offering["smp"], 4)
+            self.assertEqual(offering["cpus-per-node"], [2, 2])
+            self.assertEqual(offering["product"], "origin200")
 
     def test_origin_2000_rack_default_offering_is_four_nodes_of_two(self):
         # One offering per row and population, the largest row first:

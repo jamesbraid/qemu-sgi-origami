@@ -1449,7 +1449,7 @@ static void test_resolve_refusals(void)
     assert_refused("origin2000,baseio-preset=io6g",
                    "machine option 'baseio-preset' is not part of a "
                    "catalogue selection; give only the machine, "
-                   "topology= and nodes=");
+                   "topology=, nodes= and processor=");
     assert_refused("topology=origin200",
                    "no machine named in 'topology=origin200'");
 }

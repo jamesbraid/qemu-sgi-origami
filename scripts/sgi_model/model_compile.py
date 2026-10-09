@@ -927,49 +927,6 @@ def _processor(model: dict, cpu: dict) -> dict:
     """
     part = _required(cpu, "hardware_kind", cpu["id"])
     identity = cpu.get("identity") or {}
-    if part == "r10000":
-        clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
-        cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
-        cache_clock_mhz = _integer(identity, "cache_clock_mhz", f"CPU '{cpu['id']}'", 32)
-        for field in ("processor_identification", "fpu_identification"):
-            if field not in identity:
-                raise CompileError(
-                    f"CPU '{cpu['id']}' authors no {field}; format 2 needs an "
-                    "identity register this catalogue does not yet carry for "
-                    "this product (the vocabulary step's processors catalogue "
-                    "is the planned home for it)"
-                )
-        return {
-            "id": f"r10000-{clock_mhz}mhz",
-            "kind": "R10000",
-            "prid": num(identity["processor_identification"]),
-            "fpu_prid": num(identity["fpu_identification"]),
-            "clock_hz": clock_mhz * 1_000_000,
-            "cache_clock_hz": cache_clock_mhz * 1_000_000,
-            "cache_mib": cache_mib,
-            # mode_bits is filled in by the caller, once per configuration:
-            # the reset-mode word is a property of the machine's firmware
-            # configuration, not of one processor's identity.
-        }
-    if part == "r14000":
-        clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
-        cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
-        cache_clock_mhz = _integer(identity, "cache_clock_mhz", f"CPU '{cpu['id']}'", 32)
-        if "processor_identification" not in identity:
-            raise CompileError(
-                f"CPU '{cpu['id']}' authors no processor_identification; "
-                "format 2 needs this identity register"
-            )
-        return {
-            "id": f"r14000-{clock_mhz}mhz",
-            "kind": "R14000",
-            "prid": num(identity["processor_identification"]),
-            "fpu_prid": num(identity.get("fpu_identification", 0)),
-            "clock_hz": clock_mhz * 1_000_000,
-            "cache_clock_hz": cache_clock_mhz * 1_000_000,
-            "cache_mib": cache_mib,
-            # mode_bits filled in by the caller, as above.
-        }
     if part == "r16000":
         product = model.get("composition", {}).get("product")
         profile = {
@@ -1064,10 +1021,87 @@ def _processor(model: dict, cpu: dict) -> dict:
             "mode_bits": reset_mode,
             "required_properties": expected_properties,
         }
-    raise CompileError(
-        f"CPU '{cpu['id']}' names unsupported part '{part}' "
-        "(no reset-mode projection is available)"
-    )
+    return _processor_record(part, identity, f"CPU '{cpu['id']}'")
+
+
+def _processor_record(part: str, identity: dict, label: str) -> dict:
+    """The catalogue record for one fitted part with @identity's clock,
+    cache and identity registers; mode_bits is the caller's."""
+    if part not in ("r10000", "r12000", "r14000"):
+        raise CompileError(
+            f"{label} names unsupported part '{part}' "
+            "(no reset-mode projection is available)"
+        )
+    clock_mhz = _integer(identity, "clock_mhz", label, 32)
+    cache_mib = _integer(identity, "cache_mib", label, 16)
+    cache_clock_mhz = _integer(identity, "cache_clock_mhz", label, 32)
+    required = ("processor_identification",) + (
+        () if part == "r14000" else ("fpu_identification",))
+    for field in required:
+        if field not in identity:
+            raise CompileError(
+                f"{label} authors no {field}; format 2 needs an identity "
+                "register this catalogue does not yet carry for this product"
+            )
+    return {
+        # The cache is part of the name: one clock can come with more than
+        # one cache size (the Origin 200's 180 MHz modules).
+        "id": f"{part}-{clock_mhz}mhz-{cache_mib}mb",
+        "kind": part.upper(),
+        "prid": num(identity["processor_identification"]),
+        # No held source gives Origin 300's R14000 FPU identification, so
+        # an absent one is zero.
+        "fpu_prid": num(identity.get("fpu_identification", 0)),
+        "clock_hz": clock_mhz * 1_000_000,
+        "cache_clock_hz": cache_clock_mhz * 1_000_000,
+        "cache_mib": cache_mib,
+        # mode_bits is filled in by the caller, once per configuration:
+        # the reset-mode word is a property of the machine's firmware
+        # configuration, not of one processor's identity.
+    }
+
+
+def _processor_options(model: dict, hub: dict, default: dict) -> list[dict]:
+    """Every processor module a launch may select, the default first.
+
+    Each is compiled from its catalogued variant: identity registers, cache
+    clock and reset mode all come from the processors catalogue.
+    """
+    firmware = model["machine"].get("firmware_config") or {}
+    hub_clock_hz = firmware.get("hub_clock_hz",
+                                (hub.get("identity") or {}).get("clock_hz"))
+    options = []
+    for option in model["machine"]["processor_options"]:
+        label = (f"offered {option['part']} {option['clock_mhz']} MHz/"
+                 f"{option['cache_mib']} MiB")
+        variant = next(
+            (item for entry in model.get("processors", [])
+             if entry.get("part") == option["part"]
+             for item in entry.get("variants", [])
+             if item.get("clock_mhz") == option["clock_mhz"]
+             and item.get("cache_mib") == option["cache_mib"]), None)
+        if variant is None or "reset_mode" not in variant:
+            raise CompileError(f"{label} has no catalogued reset mode")
+        assembly = _processor_record(option["part"], variant, label)
+        divisor = variant["reset_mode"].get("secondary_cache_clock_divisor")
+        if (not isinstance(divisor, (int, float)) or
+                assembly["cache_clock_hz"] * divisor != assembly["clock_hz"]):
+            raise CompileError(
+                f"{label} names a {assembly['cache_clock_hz'] // 1_000_000} "
+                "MHz cache clock its reset mode's cache clock divisor does "
+                "not give")
+        assembly["mode_bits"] = _compile_r10000_reset_mode(
+            {"processor_reset_mode": variant["reset_mode"]},
+            assembly["clock_hz"], hub_clock_hz, option["part"])
+        options.append({
+            "assembly": assembly,
+            "accepted_memory_mib": _accepted_memory_mib(model),
+            "cpus_per_node": list(option["processors_per_node"]),
+        })
+    if options[0]["assembly"] != default:
+        raise CompileError(
+            "the first offered processor is not the node's default assembly")
+    return options
 
 
 def _mode_bits(model: dict, node: dict, processor: dict) -> int:
@@ -3133,6 +3167,10 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
         topology["l1_management"] = management
     if generation == "SN0":
         topology["ip27_firmware"] = _compile_ip27_firmware(model)
+        if machine.get("processor_options"):
+            topology["processor_options"] = _processor_options(
+                model, graph["nodes"][0]["component"],
+                nodes[0]["cpu_slots"][0]["assembly"])
     if generation == "SN1":
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
     if pci_host_bridges:

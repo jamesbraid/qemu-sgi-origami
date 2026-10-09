@@ -52,12 +52,27 @@ def _mode_field(mode, field, encodings):
     )
 
 
-def _compile_r10000_reset_mode(firmware: dict, cpu_clock_hz: int, hub_clock_hz: int) -> int:
+# The divisor codes the R12000 and R12000L define where they differ from the
+# R10000's (NEC U10278EJ4V0UM, Table 8-1, printed pages 180-182): system
+# clock divisors from 2 to 6, and secondary-cache divisors 1.5 to 4 with no
+# 1:1 setting. Divide-by-7 is R12000A only and is left out.
+_R12000_SYSTEM_CLOCK_DIVISORS = (
+    (2, 3), (2.5, 4), (3, 5), (3.5, 6), (4, 7), (4.5, 8), (5, 9),
+    (5.5, 10), (6, 11))
+_R12000_SECONDARY_CACHE_CLOCK_DIVISORS = (
+    (1.5, 2), (2, 3), (2.5, 4), (3, 5), (4, 7))
+
+
+def _compile_r10000_reset_mode(firmware: dict, cpu_clock_hz: int,
+                               hub_clock_hz: int, part: str = "r10000") -> int:
     """Pack the R10000's structured reset-mode fields into SysAD bits 31:0.
 
-    One table per part, as the component taxonomy names it (this generation
-    ships only r10000).
+    One table per part, as the component taxonomy names it: the R12000
+    shares the R10000's field positions and differs only in which divisor
+    codes it defines.
     """
+    if part not in ("r10000", "r12000"):
+        raise ValueError(f"part '{part}' has no structured reset-mode encoding")
     mode = _required(firmware, "processor_reset_mode", "firmware configuration")
     if not isinstance(mode, dict):
         raise ValueError("firmware configuration processor_reset_mode is not a mapping")
@@ -106,6 +121,13 @@ def _compile_r10000_reset_mode(firmware: dict, cpu_clock_hz: int, hub_clock_hz: 
         ("open_drain_system_interface", 30, ((False, 0), (True, 1))),
         ("cache_test_mode", 31, ((False, 0), (True, 1))),
     )
+    if part == "r12000":
+        settings = tuple(
+            (field, shift,
+             _R12000_SYSTEM_CLOCK_DIVISORS if field == "system_clock_divisor"
+             else _R12000_SECONDARY_CACHE_CLOCK_DIVISORS
+             if field == "secondary_cache_clock_divisor" else values)
+            for field, shift, values in settings)
     encoded = {}
     result = 0
     for field, shift, values in settings:

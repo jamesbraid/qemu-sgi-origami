@@ -101,7 +101,687 @@
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
+        "id": "r10000-180mhz-1mb",
         "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.2",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.3",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module1-nvram",
+          "read-only": false,
+          "size": 2048
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-dual"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Dual-module Origin 200",
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "machine-options": "origin200,topology=origin200-dual,nodes=2,processor=r10000-180mhz-2mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          64,
+          128,
+          192,
+          256,
+          320,
+          384,
+          448,
+          512,
+          576,
+          640,
+          704,
+          768,
+          832,
+          896,
+          1088,
+          1152,
+          1216,
+          1280,
+          1600,
+          1664
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 180000000,
+        "id": "r10000-180mhz-2mb",
+        "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.2",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.3",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module1-nvram",
+          "read-only": false,
+          "size": 2048
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-dual"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Dual-module Origin 200",
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "machine-options": "origin200,topology=origin200-dual,nodes=2,processor=r10000-225mhz-2mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          64,
+          128,
+          192,
+          256,
+          320,
+          384,
+          448,
+          512,
+          576,
+          640,
+          704,
+          768,
+          832,
+          896,
+          1088,
+          1152,
+          1216,
+          1280,
+          1600,
+          1664
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 225000000,
+        "id": "r10000-225mhz-2mb",
+        "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.2",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.3",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "ip27-nvram",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module0-nvram",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "controller-nvram",
+          "name": "module1-nvram",
+          "read-only": false,
+          "size": 2048
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-dual"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R12000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Dual-module Origin 200",
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "machine-options": "origin200,topology=origin200-dual,nodes=2,processor=r12000-270mhz-4mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          64,
+          128,
+          192,
+          256,
+          320,
+          384,
+          448,
+          512,
+          576,
+          640,
+          704,
+          768,
+          832,
+          896,
+          1088,
+          1152,
+          1216,
+          1280,
+          1600,
+          1664
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r12000-prid",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-fpu-id",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-scache-bytes",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-scache-block-words",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 4,
+        "clock-hz": 270000000,
+        "id": "r12000-270mhz-4mb",
+        "part": "R12000"
       },
       "product": "origin200",
       "prom-dialogue": "ip27-menu",
@@ -367,7 +1047,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -381,7 +1061,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -447,7 +1127,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -461,7 +1141,7 @@
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
-                "id": "r10000-180mhz",
+                "id": "r10000-180mhz-1mb",
                 "kind": "R10000",
                 "mode-bits": 303146885,
                 "prid": 2342
@@ -485,6 +1165,158 @@
           "module-index": 1,
           "slave-role": true,
           "slot": 0
+        }
+      ],
+      "processor-options": [
+        {
+          "accepted-memory-mib": [
+            64,
+            128,
+            192,
+            256,
+            320,
+            384,
+            448,
+            512,
+            576,
+            640,
+            704,
+            768,
+            832,
+            896,
+            1088,
+            1152,
+            1216,
+            1280,
+            1600,
+            1664
+          ],
+          "assembly": {
+            "cache-clock-hz": 120000000,
+            "cache-mib": 1,
+            "clock-hz": 180000000,
+            "fpu-prid": 2304,
+            "id": "r10000-180mhz-1mb",
+            "kind": "R10000",
+            "mode-bits": 303146885,
+            "prid": 2342
+          },
+          "cpus-per-node": [
+            1,
+            2
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            64,
+            128,
+            192,
+            256,
+            320,
+            384,
+            448,
+            512,
+            576,
+            640,
+            704,
+            768,
+            832,
+            896,
+            1088,
+            1152,
+            1216,
+            1280,
+            1600,
+            1664
+          ],
+          "assembly": {
+            "cache-clock-hz": 180000000,
+            "cache-mib": 2,
+            "clock-hz": 180000000,
+            "fpu-prid": 2304,
+            "id": "r10000-180mhz-2mb",
+            "kind": "R10000",
+            "mode-bits": 269133701,
+            "prid": 2342
+          },
+          "cpus-per-node": [
+            1,
+            2
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            64,
+            128,
+            192,
+            256,
+            320,
+            384,
+            448,
+            512,
+            576,
+            640,
+            704,
+            768,
+            832,
+            896,
+            1088,
+            1152,
+            1216,
+            1280,
+            1600,
+            1664
+          ],
+          "assembly": {
+            "cache-clock-hz": 225000000,
+            "cache-mib": 2,
+            "clock-hz": 225000000,
+            "fpu-prid": 2304,
+            "id": "r10000-225mhz-2mb",
+            "kind": "R10000",
+            "mode-bits": 302688645,
+            "prid": 2356
+          },
+          "cpus-per-node": [
+            2
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            64,
+            128,
+            192,
+            256,
+            320,
+            384,
+            448,
+            512,
+            576,
+            640,
+            704,
+            768,
+            832,
+            896,
+            1088,
+            1152,
+            1216,
+            1280,
+            1600,
+            1664
+          ],
+          "assembly": {
+            "cache-clock-hz": 180000000,
+            "cache-mib": 4,
+            "clock-hz": 270000000,
+            "fpu-prid": 2304,
+            "id": "r12000-270mhz-4mb",
+            "kind": "R12000",
+            "mode-bits": 303278981,
+            "prid": 3619
+          },
+          "cpus-per-node": [
+            2
+          ]
         }
       ],
       "product": "origin200",

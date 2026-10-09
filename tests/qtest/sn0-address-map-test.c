@@ -84,6 +84,7 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
     "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4"
 
+#define FIELD_MODE      0x04
 #define FIELD_MAGIC     0x08
 #define FIELD_CPU_FREQ  0x10
 #define FIELD_HUB_FREQ  0x18
@@ -150,9 +151,10 @@ static void test_flash_three_views(const void *data)
 
 /*
  * A supplied -bios image carrying the real config block (the pattern
- * every stock PROM image carries at flash offset 0x60) gets three fields
- * patched to this product's own values (sn0-origin200-model.c: 15 read
- * cycles, machine type 1, 4 write cycles) while the block's total byte sum
+ * every stock PROM image carries at flash offset 0x60) gets its fields
+ * patched to this product's own values (15 read cycles, machine type 1,
+ * 4 write cycles, the processor's mode word and clock) while the block's
+ * total byte sum
  * stays exactly where the supplied image left it. That is the flasher's
  * whole contract, and it runs whether the image is a synthesized template or
  * a real one; sn0_load_flash must keep applying it after -bios loads a real
@@ -206,9 +208,10 @@ static void test_flash_configure_patches_model_fields(const void *data)
 
 /*
  * A configuration block as a stock PROM image ships it: the magic, the
- * stock image's own values (machine type 0, 8 read and 1 write cycles),
- * a nonzero checksum adjustment and a filler pattern in every other
- * field, so a patch that touched anything else would show.
+ * stock image's own values (180 MHz mode word 0x1211a785 and clock,
+ * machine type 0, 8 read and 1 write cycles), a nonzero checksum
+ * adjustment and a filler pattern in every other field, so a patch that
+ * touched anything else would show.
  */
 static void fill_stock_config_block(uint8_t *config)
 {
@@ -217,7 +220,9 @@ static void fill_stock_config_block(uint8_t *config)
     for (i = 0; i < CONFIG_SIZE; i++) {
         config[i] = 0xa0 + i;
     }
+    stl_be_p(config + FIELD_MODE, 0x1211a785);
     stq_be_p(config + FIELD_MAGIC, CONFIG_MAGIC);
+    stq_be_p(config + FIELD_CPU_FREQ, 180000000);
     stl_be_p(config + FIELD_FPROM_CYC, 8);
     stl_be_p(config + FIELD_MACHTYPE, 0);
     stl_be_p(config + FIELD_CHECKSUM, 0x5a);
@@ -235,19 +240,45 @@ static uint8_t config_block_sum(const uint8_t *config)
     return sum;
 }
 
+typedef struct FlashConfigureCase {
+    const char *machine;
+    uint32_t machine_type, read_cycles, write_cycles;
+    uint32_t mode;
+    uint64_t clock_hz;
+} FlashConfigureCase;
+
 /*
- * Each product patches its own catalogue values into a stock block and
- * nothing else: Origin 2000 carries the stock image's machine type 0,
- * 8 read and 1 write cycles, so its block comes back byte for byte as
- * supplied; Origin 200 carries machine type 1, 15 and 4, and the checksum
- * adjustment absorbs the difference so the block's byte sum is kept.
+ * Each product patches its own catalogue values and its processor's mode
+ * word and clock into a stock block and nothing else. Origin 2000 carries
+ * the stock image's machine type 0, 8 read and 1 write cycles and its
+ * 180 MHz processor, so its block comes back byte for byte as supplied.
+ * Origin 200 carries machine type 1, 15 and 4, and each processor module
+ * its own word and clock, expected here as the SysAD fields the evidence
+ * gives them; the checksum adjustment absorbs the difference so the
+ * block's byte sum is kept.
  */
+static const FlashConfigureCase flash_configure_cases[] = {
+    { "origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 256M",
+      0, 8, 1, 0x1211a785, 180000000 },
+    { "origin200", 1, 15, 4, 0x1211a785, 180000000 },
+    /* Tap 8, 1:1 cache clock, 2 MiB. */
+    { "origin200,processor=r10000-180mhz-2mb",
+      1, 15, 4, 0x100aa785, 180000000 },
+    /* Tap 9, 1:1 cache clock, 2 MiB, system clock divided by 2.5. */
+    { "origin200,processor=r10000-225mhz-2mb -smp 2",
+      1, 15, 4, 0x120aa985, 225000000 },
+    /* Tap 9, cache clock divided by 1.5, 4 MiB, system clock by 3. */
+    { "origin200,processor=r12000-270mhz-4mb -cpu R12000 -smp 2",
+      1, 15, 4, 0x1213ab85, 270000000 },
+};
+
 static void test_flash_configure_product_values(const void *data)
 {
-    bool origin200 = !strcmp(data, "origin200");
+    const FlashConfigureCase *c = data;
     g_autoptr(GError) error = NULL;
     uint8_t image[CONFIG_OFFSET + CONFIG_SIZE] = { 0 };
     uint8_t expected[CONFIG_SIZE];
+    uint8_t old_sum;
     g_autofree char *path = NULL;
     QTestState *qts;
     int fd;
@@ -255,17 +286,18 @@ static void test_flash_configure_product_values(const void *data)
 
     fill_stock_config_block(image + CONFIG_OFFSET);
     memcpy(expected, image + CONFIG_OFFSET, CONFIG_SIZE);
-    if (origin200) {
-        uint8_t old_sum = config_block_sum(expected);
-
+    old_sum = config_block_sum(expected);
+    if (c->machine_type || c->mode != 0x1211a785) {
         stl_be_p(expected + FIELD_CHECKSUM, 0);
-        stl_be_p(expected + FIELD_FPROM_CYC, 15);
-        stl_be_p(expected + FIELD_MACHTYPE, 1);
-        stl_be_p(expected + FIELD_FPROM_WR, 4);
+        stl_be_p(expected + FIELD_MODE, c->mode);
+        stq_be_p(expected + FIELD_CPU_FREQ, c->clock_hz);
+        stl_be_p(expected + FIELD_FPROM_CYC, c->read_cycles);
+        stl_be_p(expected + FIELD_MACHTYPE, c->machine_type);
+        stl_be_p(expected + FIELD_FPROM_WR, c->write_cycles);
         stl_be_p(expected + FIELD_CHECKSUM,
                  (uint8_t)(old_sum - config_block_sum(expected)));
-        g_assert_cmphex(config_block_sum(expected), ==, old_sum);
     }
+    g_assert_cmphex(config_block_sum(expected), ==, old_sum);
 
     fd = g_file_open_tmp("sn0-address-map-stock-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
@@ -273,9 +305,7 @@ static void test_flash_configure_product_values(const void *data)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), &error));
     g_assert_no_error(error);
-    qts = qtest_initf("%s -bios %s", origin200 ? "-M origin200" :
-                      "-M origin2000,topology=origin2000-deskside,nodes=1 "
-                      "-smp 2 -m 256M", path);
+    qts = qtest_initf("-M %s -bios %s", c->machine, path);
     unlink(path);
 
     for (i = 0; i < CONFIG_SIZE; i++) {
@@ -1739,10 +1769,13 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/address-map/flash-configure-patches-container-payload",
         "container", test_flash_configure_patches_model_fields);
-    qtest_add_data_func("sn0/address-map/flash-configure-origin2000-values",
-                        "origin2000", test_flash_configure_product_values);
-    qtest_add_data_func("sn0/address-map/flash-configure-origin200-values",
-                        "origin200", test_flash_configure_product_values);
+    for (i = 0; i < ARRAY_SIZE(flash_configure_cases); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/address-map/flash-configure-values/%zu", i);
+
+        qtest_add_data_func(name, &flash_configure_cases[i],
+                            test_flash_configure_product_values);
+    }
     qtest_add_data_func("sn0/address-map/dual-node-boot-windows", NULL,
                         test_dual_node_boot_windows);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,

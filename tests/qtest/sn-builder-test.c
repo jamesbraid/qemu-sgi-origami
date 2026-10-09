@@ -7096,6 +7096,59 @@ static void test_unbuildable_rows_rejected(const void *data)
                         "its wiring; it is not built");
 }
 
+/*
+ * processor= names one of the topology's own modules, and -cpu, if given,
+ * its part; without -cpu the module's part is the default. A
+ * module comes only in the processor counts real ones show.
+ */
+static void test_origin200_processor_choices(const void *data)
+{
+    const char *unknown[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,processor=r12000-300mhz-8mb",
+        "-display", "none", NULL
+    };
+    const char *wrong_cpu[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,processor=r12000-270mhz-4mb",
+        "-cpu", "R10000", "-smp", "2", "-display", "none", NULL
+    };
+    const char *default_wrong_cpu[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-cpu", "R12000",
+        "-display", "none", NULL
+    };
+    const char *one_cpu[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,processor=r10000-225mhz-2mb",
+        "-smp", "1", "-display", "none", NULL
+    };
+    const char *no_choice[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "origin2000,topology=origin2000-deskside,nodes=1,"
+        "processor=r10000-180mhz-1mb", "-smp", "2", "-m", "256M",
+        "-display", "none", NULL
+    };
+    QTestState *qts;
+
+    assert_qemu_rejects(unknown, "topology 'origin200' offers no processor "
+                        "'r12000-300mhz-8mb'; it offers r10000-180mhz-1mb, "
+                        "r10000-180mhz-2mb, r10000-225mhz-2mb, "
+                        "r12000-270mhz-4mb");
+    assert_qemu_rejects(wrong_cpu, "processor 'r12000-270mhz-4mb' is an "
+                        "R12000, but -cpu names R10000");
+    assert_qemu_rejects(default_wrong_cpu, "processor 'r10000-180mhz-1mb' is "
+                        "an R10000, but -cpu names R12000");
+    assert_qemu_rejects(one_cpu, "no 1-processor module of processor "
+                        "'r10000-225mhz-2mb' is known");
+    assert_qemu_rejects(no_choice, "topology 'origin2000-deskside' offers no "
+                        "processor choice");
+
+    qts = qtest_init("-M origin200,processor=r10000-225mhz-2mb -smp 2 "
+                     "-m 512M -display none");
+    qtest_quit(qts);
+    qts = qtest_init("-M origin200,topology=origin200-dual,"
+                     "processor=r12000-270mhz-4mb -smp 4 -m 1024M "
+                     "-display none");
+    qtest_quit(qts);
+}
+
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
@@ -7594,6 +7647,8 @@ int main(int argc, char **argv)
                         NULL, test_node_without_xio_attachment_rejected);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
+    qtest_add_data_func("sn/builder/origin200-processor-choices",
+                        NULL, test_origin200_processor_choices);
     qtest_add_data_func("sn/builder/unbuildable-rows-rejected", NULL,
                         test_unbuildable_rows_rejected);
     qtest_add_data_func("sn/builder/bedrock-topology-accepts-two-nodes",
