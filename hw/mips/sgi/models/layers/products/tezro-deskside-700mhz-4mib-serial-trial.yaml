@@ -2,8 +2,8 @@
 # Explicit software-only Tezro deskside serial trial.
 layer_version: 1
 sources:
-  tezro-deskside-trial: "docs/datasheets/tezro-deskside-compatibility-trial.md: cleared software-only runtime tuple"
-  tezro-deskside-trial-review: "docs/reviews/chimera-tezro-deskside-trial-evidence-review-20261006.md: cleared trial inputs and limitations"
+  tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
 layer:
   kind: product
   id: tezro-deskside-700mhz-4mib-serial-trial
@@ -64,8 +64,8 @@ layer:
             provenance: derived
             sources: [tezro-deskside-trial, tezro-deskside-trial-review]
             notes: >-
-              Board word 0x2001 is a trial software input cleared for local
-              use. It is not established as the physical Tezro board value.
+              Board word 0x2001 is a software input selected for this
+              trial. It is not established as the physical Tezro board value.
         l1_controllers:
           l1:
             reported_type: 55
@@ -90,7 +90,7 @@ layer:
           provenance: derived
           sources: [tezro-deskside-trial]
           notes: >-
-            Origami applies the Tezro row-17 seed to this selected base payload.
+            The launch recipe applies the Tezro row-17 seed to this selected base payload.
             The payload and seed are software inputs; their hashes do not
             establish installed Tezro firmware or flash wiring.
       harness:

@@ -2,9 +2,9 @@
 # Captured module 001c01 from a customized multi-module Onyx 350.
 layer_version: 1
 sources:
-  onyx350-observed-module: "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: reviewed capture and guide evidence; see direct source records below"
-  living-raptor-01: "docs/library/hinv/living-raptor/01.hinv, SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad; public 2021 Onyx 350 inventory, `hinv -mv`, module 001c01; reports IP53_4CPU 030-2013-001 rev D, four 800 MHz R16000 rev 3.0 with 8 MiB cache, 8192 MiB across logical banks 0-7, IO9 030-1771-006 rev A, 2U_INT_53 030-1809-006 rev D, and IP35prom 6.211"
-  onyx350-guide: "SGI, Onyx 350 Visualization System User's Guide, 007-4632-001, retained Library PDF techpubs:library/manuals/4000/007-4632-001/pdf/007-4632-001.pdf; printed pages 48, 50, 53, 55, 57: base module, distinct L1 and Serial 0 connectors, component block diagram, 4 MiB L2 statement, and IO9 location"
+  onyx350-observed-module: "web:living-raptor-onyx350-hinv  captured Onyx 350 module 001c01 inventory"
+  living-raptor-01: "web:living-raptor-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad; public 2021 Onyx 350 inventory, `hinv -mv`, module 001c01; reports IP53_4CPU 030-2013-001 rev D, four 800 MHz R16000 rev 3.0 with 8 MiB cache, 8192 MiB across logical banks 0-7, IO9 030-1771-006 rev A, 2U_INT_53 030-1809-006 rev D, and IP35prom 6.211"
+  onyx350-guide: "007-4632-001 printed pages 48, 50, 53, 55, 57: base module, distinct L1 and Serial 0 connectors, component block diagram, 4 MiB L2 statement, and IO9 location"
 layer:
   kind: product
   id: onyx350-observed-module

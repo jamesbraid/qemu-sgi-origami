@@ -2,8 +2,9 @@
 # Onyx 4 host serial trial using the IP53 runtime compatibility path.
 layer_version: 1
 sources:
-  ip53-origin350-profile-closure: "docs/research/chimera-origin350-profile-closure-20261002.md: selected multi-node Origin 350 profile reports IP53-C part 030-1868-001 revision C, IO9 030-1771-005 revision A and 2U_INT_53 030-1809-003 revision B at widget 15"
-  sn-family-closure-origin350: "docs/research/sn-family-closure-20260913.md family table, Origin 350 row: Bedrock rev 2 (O); NUMAlink 3, one port; PIC, two heads on one widget (0xF; second head at +0x800000); IO9 in bus 1 slot 1: IOC4 config dev 1, ISP12160 dev 3, BCM5701 dev 4; L1 with display; L2 with the NUMAlink module"
+  ip53-host-compatibility-mapping: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected IP53 guest-board mapping for the Onyx 4 host candidate"
+  onyx4-host-hinv: "web:irixnet-thread-2263  module 001c01 IP59_4CPU, widget 15 carrier, IO9 and HUB inventory in the Onyx 350-labelled system"
+  sn-family-closure-origin350: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 module topology and explicit physical limits"
 layer:
   kind: module
   id: ip53-onyx4-host-compat-module
@@ -26,20 +27,18 @@ layer:
         parent: ip53-board
         identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
         provenance: derived
-        sources: ["https://nekonomicon.irixnet.org/forum/14/16729141/1.html: Origin 350 hinv -v reports ASIC BEDROCK Rev 2, 200 MHz"]
+        sources: [onyx4-host-hinv, "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  inherited Bedrock identity for the IP59 host compatibility mapping"]
         notes: >-
-          hardware_revision 2 is the Bedrock ASIC revision printed by the
-          Origin 350 inventory. ni_revision 2 and widget_revision 2 are
-          separate software experiment inputs; the inventory does not establish
-          either register identity. They do not describe the printed ASIC
-          revision.
+          The public inventory reports HUB revision 2 at 200 MHz for module
+          001c01. Mapping that report to Bedrock revision 2 is a compatibility
+          input; NI and widget register identities remain unmeasured.
       - id: ip53-board
         name: IP53 software compatibility mapping
         kind: board
         hardware_kind: ip53
 
         provenance: derived
-        sources: [ip53-origin350-profile-closure]
+        sources: [ip53-host-compatibility-mapping]
         notes: >-
           This IP53 board kind selects the existing runtime compatibility path.
           The captured candidate is labelled IP59_4CPU; this mapping does not
@@ -51,11 +50,11 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: [ip53-runtime-review]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
         notes: >-
           The clock, secondary-cache capacity, reset mode and required QOM
-          properties are software experiment inputs from the reviewed runtime
-          contract. The reset word is not a measured electrical input.
+          properties are software experiment inputs from the selected runtime
+          profile. The reset word is not a measured electrical input.
       - id: cpu1
         name: R16000
         kind: cpu
@@ -63,7 +62,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: [ip53-runtime-review]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: cpu2
         name: R16000
         kind: cpu
@@ -71,7 +70,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: [ip53-runtime-review]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: cpu3
         name: R16000
         kind: cpu
@@ -79,7 +78,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: [ip53-runtime-review]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: node-memory
         name: node memory
         kind: memory
@@ -94,9 +93,10 @@ layer:
         parent: ip53-board
         identity: {notes: "IP53 compatibility carrier selection; the Onyx 4 host carrier identity is unknown."}
         provenance: observed-hardware
-        sources: [ip53-origin350-profile-closure]
+        sources: [onyx4-host-hinv, ip53-host-compatibility-mapping]
         notes: >-
-          The profile capture places this board at XIO widget 15. Its physical
+          The public inventory places 2U_INT_53 at XIO widget 15 of module
+          001c01 in an Onyx 350-labelled system. Its physical
           connection to Bedrock is not established; widget 15 is selected as an
           explicit software experiment attachment.
       - id: io9
@@ -106,9 +106,10 @@ layer:
         parent: ip53-board
         identity: {part: "030-1771-006", notes: "Public HINV reports this IO9 part and revision A for module 001c01; assignment of that module to the Onyx 4 host remains inferred."}
         provenance: observed-hardware
-        sources: [ip53-origin350-profile-closure]
+        sources: [onyx4-host-hinv, ip53-host-compatibility-mapping]
         notes: >-
-          Selected IO9 board identity from the Origin 350 profile capture.
+          The public inventory places this IO9 under module 001c01 in an
+          Onyx 350-labelled system; its Onyx 4 host assignment is inferred.
           Device 2 remains unspecified. IOC4, storage and Ethernet model
           selection and routes are explicit experiment inputs below.
       - id: pic
@@ -121,7 +122,7 @@ layer:
         parent: pic-board
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
         provenance: public-header
-        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
+        sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
         notes: Two heads share this one widget number (0xF); the second head's registers sit at offset +0x800000 within it. The cited sources do not establish a complete PIC programming contract.
       - id: ioc4
         name: IOC4
@@ -133,12 +134,12 @@ layer:
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
         ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
         provenance: derived
-        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
         notes: >-
           PCI revision 0x53 is the existing QEMU IOC4 interface value, not a
           measured Origin 350 PCI revision. The 33,333,333 Hz clock and enabled
           serial DMA are selected software inputs; serial DMA follows the
-          reviewed experimental IOC4 policy.
+          selected IOC4 compatibility policy.
       - id: scsi
         name: QLogic ISP12160
         kind: storage-hba
@@ -147,7 +148,7 @@ layer:
         parent: io9
         identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
         provenance: derived
-        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
         notes: >-
           PCI revision 6 is selected because the existing QEMU ISP12160 class
           reports revision 0x06. This is not a measured IO9 PCI revision.
@@ -159,7 +160,7 @@ layer:
         parent: io9
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
         provenance: derived
-        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+        sources: [sn-family-closure-origin350, "linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
         notes: >-
           PCI revision 0 is the selected existing BCM570x model value when
           configured as BCM5701. It is not an observed Origin 350 card revision.
@@ -173,9 +174,9 @@ layer:
         parent: io9
         provenance: derived
         ds1742_fresh_year_base: 1968
-        sources: [ip53-runtime-review, ip53-clock-year-review]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
         notes: >-
-          Synthetic linked IOC4 clock resource selected by the reviewed software
+          Synthetic linked IOC4 clock resource selected by the selected software
           construction contract. The link does not assert physical address lines
           or a board-specific guest-visible mapping.
       - id: l1
@@ -197,23 +198,23 @@ layer:
       - {kind: ioc4-clock, source: ds1742, target: ioc4}
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [sn-family-closure-origin350]}
-      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
       - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-origin350], notes: Cabled to nothing on a single compute module.}
       - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [sn-family-closure-origin350]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: [ip53-runtime-review]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: [ip53-runtime-review]}
-      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: [ip53-runtime-review]}
-      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: [ip53-runtime-review]}
+      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
-      - {component: bedrock, bus: xio, role: master, widget: 10, provenance: derived, sources: [ip53-origin350-profile-closure], notes: "Widget 10 is an explicit Bedrock XIO master choice; the physical Bedrock-to-PIC route remains unknown."}
+      - {component: bedrock, bus: xio, role: master, widget: 10, provenance: derived, sources: [ip53-host-compatibility-mapping], notes: "Widget 10 is an explicit Bedrock XIO master choice; the physical Bedrock-to-PIC route remains unknown."}
       - component: pic
         bus: xio
         role: bridge-upstream
         widget: 15
         controlled_by: bedrock
         provenance: derived
-        sources: [ip53-origin350-profile-closure]
+        sources: [ip53-host-compatibility-mapping]
         xio:
           physical_attachment: direct-link
           enumerated_widget: 15
@@ -227,6 +228,6 @@ layer:
       - {component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: pic, bus: io9-bus, role: bridge-downstream, pci_head: 0, provenance: derived, sources: [sn-family-closure-origin350]}
-      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, pci_function: 0, intx_pin: inta, pic_input: 0, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
-      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, pci_function: 0, intx_pin: inta, pic_input: 2, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
-      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, pci_function: 0, intx_pin: inta, pic_input: 3, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
+      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, pci_function: 0, intx_pin: inta, pic_input: 0, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
+      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, pci_function: 0, intx_pin: inta, pic_input: 2, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}
+      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, pci_function: 0, intx_pin: inta, pic_input: 3, provenance: derived, sources: ["sn-family-closure-origin350", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 51, 53-100, 383-413", "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridge.c lines 1220-1290, 1367-1417"], notes: "The INTA-only experiment applies the public Linux device-minus-one input convention. Physical IO9 routing is unmeasured."}

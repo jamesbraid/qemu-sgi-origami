@@ -30,7 +30,7 @@ layer:
       banks: [1024, 1024, 512, 512, 512, 512]
       bank_positions: [0, 1, 2, 3, 4, 5]
       provenance: derived
-      sources: [tezro-deskside-review]
+      sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected logical bank placement for Tezro"]
       notes: >-
         Logical bank placement selected for the compatibility composition.
         It does not identify physical DIMM slots.

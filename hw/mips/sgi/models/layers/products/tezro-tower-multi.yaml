@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 sources:
-  tezro-deskside-trial: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/datasheets/tezro-deskside-compatibility-trial.md, SHA-256 10610817dce8ba94ead45e44fb0dc25faa6a389bc1df86ef8535570446354979: selected deskside software tuple'
-  tezro-deskside-trial-review: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-trial-evidence-review-20261006.md, SHA-256 6029aea835f7315f5f9ff357b2ae4a682582d41a3136a5001a43a1f0482b5715: clears only the deskside tuple as local software inputs'
+  tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
-  tezro-software-choice-limit: 'Origami revision 6db3a6cbfacec3b02f81e9e6b28e70bed50149f5, docs/reviews/chimera-tezro-deskside-compatibility-review-20261006.md, SHA-256 64528fa4b1acad7d73e5cbaf0f195ec42f14dd360b6adbd86149fb08f9ba8fd7: selected tuple values cleared only as software choices; does not clear
-    tower or rack configuration'
+  tezro-software-choice-limit: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
   id: tezro-tower-multi
@@ -45,7 +44,7 @@ layer:
       name: Tezro tower, two/four-processor serial compatibility profile
       model_role: emulation-target
       notes: Software-only Tezro compatibility profile. The manual supports the selected processor population and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and interrupt
-        routes are emulator choices adapted from the separately reviewed deskside software inputs. They do not describe a measured tower or rack configuration. Graphics and the rack second enclosure are omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
+        routes are emulator choices adapted from the deskside software inputs. They do not describe a measured tower or rack configuration. Graphics and the rack second enclosure are omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
         slot layout shows four; this software profile selects two PICs and four buses.
       firmware_config:
         processor_reset_mode: 0x009bad85
@@ -82,7 +81,7 @@ layer:
             sources:
             - tezro-deskside-trial
             - tezro-deskside-trial-review
-            notes: Board word 0x2001 is a trial software input cleared for local use. It is not established as the physical Tezro board value.
+            notes: Board word 0x2001 is a trial software input selected for this trial. It is not established as the physical Tezro board value.
         l1_controllers:
           l1:
             reported_type: 55
@@ -112,7 +111,7 @@ layer:
           provenance: derived
           sources:
           - tezro-deskside-trial
-          notes: Origami applies the Tezro row-17 seed to this selected base payload. The payload and seed are software inputs; their hashes do not establish installed Tezro firmware or flash wiring.
+          notes: The launch recipe applies the Tezro row-17 seed to this selected base payload. The payload and seed are software inputs; their hashes do not establish installed Tezro firmware or flash wiring.
       harness:
         console: l1-uart
         console_records:

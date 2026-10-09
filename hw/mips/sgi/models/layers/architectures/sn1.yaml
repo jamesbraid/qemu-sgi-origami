@@ -60,7 +60,7 @@ layer:
               the product component; processor identification and reset Config0
               remain unknown.
         provenance: derived
-        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected Origin 350 software profile and explicit unknowns", "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: captured 800 MHz/8 MiB CPU tuple and standalone-operation limit", "https://forums.irixnet.org/thread-2263.html: cute-shrimp/02.hinv module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"]
+        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs", "web:living-raptor-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified", "web:irixnet-thread-2263  cute-shrimp/02.hinv module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"]
 
     address_spaces:
       - id: cached
