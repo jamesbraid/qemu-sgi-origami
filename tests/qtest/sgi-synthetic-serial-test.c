@@ -236,6 +236,18 @@ static void check_object(Inventory *inv, const char *path,
 }
 
 /*
+ * Memory regions and interrupt lines make up nearly all of a machine's QOM
+ * objects. Neither carries a part serial, a barcode or a board identity,
+ * and every request byte costs the emulator two main-loop wakeups, so the
+ * walk does not ask for their properties.
+ */
+static bool is_leaf_child(const char *type)
+{
+    return !strcmp(type, "child<memory-region>") ||
+           !strcmp(type, "child<irq>");
+}
+
+/*
  * Check the whole QOM tree, one level per request. Asking for every
  * object's properties and values at once, instead of listing an object
  * and then reading each property it carries, costs a few round trips a
@@ -274,7 +286,8 @@ static void walk(QTestState *qts, Inventory *inv, const char *root)
                 QDict *prop = qobject_to(QDict, qlist_entry_obj(p));
 
                 if (g_str_has_prefix(qdict_get_str(prop, "type"),
-                                     "child<")) {
+                                     "child<") &&
+                    !is_leaf_child(qdict_get_str(prop, "type"))) {
                     g_ptr_array_add(next, g_strdup_printf(
                         "%s/%s", path, qdict_get_str(prop, "name")));
                 }
