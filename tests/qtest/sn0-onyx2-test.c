@@ -25,6 +25,9 @@
 
 #define KONA_PART     0xc102
 #define KONA_MFG      0x2aa
+#define KONA_WIDGET_CONTROL 0x24
+#define KONA_COMMAND_PORT   0xc10000
+#define KONA_RETURN_PAGE    UINT64_C(0x10000)
 #define BRIDGE_PART   0xc002
 #define BRIDGE_MFG    0x036
 
@@ -235,6 +238,78 @@ static void test_deskside_chain_holds_ge14_alone(void)
     qtest_quit(qts);
 }
 
+static void test_kona_reset(const char *args, unsigned int widget,
+                            const char *geometry_part, bool has_ktown)
+{
+    QTestState *qts = qtest_init(args);
+    uint64_t base = SPACE_IO + widget * WIDGET_SIZE;
+    uint64_t command = base + KONA_COMMAND_PORT;
+    uint32_t id = widget_id(qts, widget);
+    uint8_t geometry_before[64], geometry_after[64];
+    uint8_t ktown_before[64], ktown_after[64];
+
+    g_assert_cmphex(WIDGET_PART(id), ==, KONA_PART);
+    g_assert_cmphex(WIDGET_MFG(id), ==, KONA_MFG);
+    g_assert_true(kona_read_part(qts, widget, GEOMETRY_SERIAL,
+                                 geometry_before));
+    assert_record_part(geometry_before, geometry_part);
+    if (has_ktown) {
+        g_assert_true(kona_read_part(qts, widget, KTOWN_SERIAL,
+                                     ktown_before));
+        assert_record_part(ktown_before, "030-1067-001");
+    } else {
+        g_assert_false(kona_read_part(qts, widget, KTOWN_SERIAL,
+                                      ktown_before));
+    }
+
+    qtest_writel(qts, base + KONA_WIDGET_CONTROL, 0x5a5a5a5a);
+    g_assert_cmphex(qtest_readl(qts, base + KONA_WIDGET_CONTROL), ==,
+                    0x5a5a5a5a);
+    qtest_writel(qts, command, 0x1f2);
+    qtest_writel(qts, command,
+                 0x10000000u | (uint32_t)(KONA_RETURN_PAGE >> 12));
+    qtest_writel(qts, command, 0);
+    qtest_writel(qts, command, 0x1000);
+    qtest_writel(qts, KONA_RETURN_PAGE, 0);
+    qtest_writel(qts, command, 0x1e9);
+    qtest_writel(qts, command, 0);
+    g_assert_cmphex(qtest_readl(qts, KONA_RETURN_PAGE), ==, 1);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, base + KONA_WIDGET_CONTROL), ==, 0);
+    /* The reply must have worked before reset, then leave this page alone. */
+    qtest_writel(qts, KONA_RETURN_PAGE, 0x5a5a5a5a);
+    qtest_writel(qts, command, 0x1e9);
+    qtest_writel(qts, command, 0);
+    g_assert_cmphex(qtest_readl(qts, KONA_RETURN_PAGE), ==, 0x5a5a5a5a);
+
+    g_assert_cmphex(widget_id(qts, widget), ==, id);
+    g_assert_true(kona_read_part(qts, widget, GEOMETRY_SERIAL,
+                                 geometry_after));
+    g_assert_cmpmem(geometry_after, sizeof(geometry_after),
+                    geometry_before, sizeof(geometry_before));
+    if (has_ktown) {
+        g_assert_true(kona_read_part(qts, widget, KTOWN_SERIAL,
+                                     ktown_after));
+        g_assert_cmpmem(ktown_after, sizeof(ktown_after),
+                        ktown_before, sizeof(ktown_before));
+    } else {
+        g_assert_false(kona_read_part(qts, widget, KTOWN_SERIAL,
+                                      ktown_after));
+    }
+    qtest_quit(qts);
+}
+
+static void test_rack_kona_reset(void)
+{
+    test_kona_reset(RACK_ARGS, 15, "030-1398-001", true);
+}
+
+static void test_deskside_kona_reset(void)
+{
+    test_kona_reset(DESKSIDE_ARGS, 8, "030-1129-002", false);
+}
+
 static void test_rack_places_kona_at_io3(void)
 {
     QTestState *qts = qtest_init(RACK_ARGS);
@@ -275,5 +350,9 @@ int main(int argc, char **argv)
                    test_rack_chain_holds_ge16_and_ktown);
     qtest_add_func("sn0/onyx2/deskside-chain-holds-ge14-alone",
                    test_deskside_chain_holds_ge14_alone);
+    qtest_add_func("sn0/onyx2/rack-kona-reset-clears-state-keeps-identity",
+                   test_rack_kona_reset);
+    qtest_add_func("sn0/onyx2/deskside-kona-reset-clears-state-keeps-identity",
+                   test_deskside_kona_reset);
     return g_test_run();
 }

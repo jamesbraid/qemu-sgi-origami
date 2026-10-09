@@ -13027,6 +13027,193 @@ static void test_renderer_legacy_failure(void)
     g_assert_null(strstr(found, "sgi_kona_return_post token 0xc6 "));
 }
 
+static void assert_native_error(QTestState *s, uint32_t error);
+static void renderer_assert_image(QTestState *s);
+static void renderer_assert_image_colour(QTestState *s, uint32_t rgb);
+
+static void renderer_create_triangle(QTestState *s, bool typed)
+{
+    if (typed) {
+        gl_begin(s, 4);
+        gl_vertex2f(s, -0.5, -0.5);
+        gl_vertex2f(s, 0.5, -0.5);
+        gl_vertex2f(s, 0, 0.5);
+        gl_end(s);
+    } else {
+        renderer_triangle(s);
+    }
+}
+
+/* The one-shot constructor result is host-only and requires no host OOM. */
+static void test_renderer_create_failure(gconstpointer opaque)
+{
+    unsigned variant = GPOINTER_TO_UINT(opaque);
+    bool typed = variant > 3;
+    unsigned failure = typed ? variant - 4 : variant;
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged_args(&log,
+                                         " -global sgi-kona.host-gpu=on");
+    char *planes[7];
+    uint64_t requests, draws, fallbacks, completions;
+    uint32_t causes;
+    QDict *status;
+
+    if (typed) {
+        renderer_typed_setup(s);
+    } else {
+        renderer_fixture(s);
+        kona_command(s, 0x2e, (uint32_t[]){ 0x1506 }, 1);
+        kona_command(s, 0x24, (uint32_t[]){ 0xbf2 }, 1);
+    }
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    texture_plane_digests(s, planes);
+    prepare_refused_reply(s);
+    requests = renderer_counter(s, "x-test-gpu-requests");
+    draws = renderer_counter(s, "x-test-gpu-draws");
+    fallbacks = renderer_counter(s, "x-test-gpu-fallbacks");
+    completions = renderer_counter(s, "x-test-dma-completions");
+    causes = qtest_readl(s, REG_INT_CAUSE) & (INT_CAUSE_MAILBOX | 0x20);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-fail-create','value':%u}}", failure);
+    renderer_create_triangle(s, typed);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     requests + (typed ? 0 : 1));
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws);
+
+    if (failure == 1) {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                         fallbacks + 1);
+        g_assert_cmphex(renderer_plane_at(s, 0,
+                                          typed ? 640 : PROBE_X + 32,
+                                          typed ? 512 : PROBE_Y + 32), ==,
+                        typed ? 0xff0000 : 0x00ffff);
+        if (!typed) {
+            renderer_assert_image_colour(s, 0x00ffff);
+        }
+    } else {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                         fallbacks);
+        texture_assert_planes(s, planes);
+        assert_reply_unchanged(s);
+        g_assert_cmpuint(renderer_counter(s, "x-test-dma-completions"), ==,
+                         completions);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) &
+                        (INT_CAUSE_MAILBOX | 0x20), ==, causes);
+        if (failure == 2) {
+            assert_native_error(s, 0x505);
+            assert_native_error(s, 0);
+            renderer_create_triangle(s, typed);
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                             requests + (typed ? 1 : 2));
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                             draws + 1);
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                             fallbacks);
+            if (typed) {
+                g_assert_cmphex(renderer_plane_at(s, 0, 640, 512), ==,
+                                0xff0000);
+                g_assert_cmphex(renderer_plane_at(s, 0, 900, 700), ==, 0);
+            } else {
+                renderer_assert_image_colour(s, 0x00ffff);
+            }
+            assert_native_error(s, 0);
+        } else {
+            status = qtest_qmp_assert_success_ref(s,
+                                                  "{'execute':'query-status'}");
+            g_assert_cmpstr(qdict_get_str(status, "status"), ==,
+                            "internal-error");
+            qobject_unref(status);
+            renderer_create_triangle(s, typed);
+            kona_command(s, 0xc6, (uint32_t[]){ 1 }, 1);
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                             draws);
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                             fallbacks);
+            g_assert_cmpuint(renderer_counter(s, "x-test-dma-completions"), ==,
+                             completions);
+            texture_assert_planes(s, planes);
+            assert_reply_unchanged(s);
+        }
+    }
+    texture_free_digests(planes);
+    qtest_system_reset(s);
+    if (typed) {
+        renderer_typed_setup(s);
+    } else {
+        renderer_fixture(s);
+        kona_command(s, 0x2e, (uint32_t[]){ 0x1506 }, 1);
+        kona_command(s, 0x24, (uint32_t[]){ 0xbf2 }, 1);
+    }
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    draws = renderer_counter(s, "x-test-gpu-draws");
+    renderer_create_triangle(s, typed);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws + 1);
+    if (!typed) {
+        renderer_assert_image_colour(s, 0x00ffff);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    if (failure == 3 && !typed) {
+        g_assert_nonnull(strstr(found,
+            "sgi-kona: legacy renderer draw failed: "
+            "Injected SGI renderer creation failure"));
+    }
+}
+
+static void test_renderer_create_arm_cleared_on_load(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL;
+    char *planes[7];
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint64_t requests, draws, fallbacks;
+
+    dir = g_dir_make_tmp("sn0-kona-create-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    renderer_fixture(from);
+    kona_command(from, 0x2e, (uint32_t[]){ 0x1506 }, 1);
+    kona_command(from, 0x24, (uint32_t[]){ 0xbf2 }, 1);
+    kona_command_f(from, 0x63, (float[]){ 1, 0, 0 }, 3);
+    requests = renderer_counter(from, "x-test-gpu-requests");
+    draws = renderer_counter(from, "x-test-gpu-draws");
+    fallbacks = renderer_counter(from, "x-test-gpu-fallbacks");
+    texture_plane_digests(from, planes);
+    qtest_qmp_assert_success(from,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-fail-create','value':2}}");
+
+    to = qtest_initf(MACHINE_ARGS " -incoming %s"
+                     " -global sgi-kona.host-gpu=on", uri);
+    qtest_qmp_assert_success(to,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-fail-create','value':2}}");
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    texture_assert_planes(to, planes);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-requests"), ==, 0);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-fallbacks"), ==, 0);
+    renderer_triangle(to);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-requests"), ==, 1);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-draws"), ==, 1);
+    g_assert_cmpuint(renderer_counter(to, "x-test-gpu-fallbacks"), ==, 0);
+    renderer_assert_image_colour(to, 0x00ffff);
+    assert_native_error(to, 0);
+    g_assert_cmpuint(renderer_counter(from, "x-test-gpu-requests"), ==,
+                     requests);
+    g_assert_cmpuint(renderer_counter(from, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(from, "x-test-gpu-fallbacks"), ==,
+                     fallbacks);
+    texture_assert_planes(from, planes);
+    texture_free_digests(planes);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 static void test_renderer_typed_ortho_excluded(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
@@ -13092,7 +13279,7 @@ static void test_renderer_typed_failure_reset(void)
     qtest_quit(s);
 }
 
-static void renderer_assert_image(QTestState *s)
+static void renderer_assert_image_colour(QTestState *s, uint32_t rgb)
 {
     g_autofree Expected *expected = g_new(Expected, 1);
 
@@ -13101,12 +13288,18 @@ static void renderer_assert_image(QTestState *s)
         for (unsigned x = 16; x < 128; x++) {
             if (x + y <= 126) {
                 unsigned offset = ((127 - y) * 128 + x) * 3;
-                expected->rgb[offset] = 255;
-                expected->rgb[offset + 1] = expected->rgb[offset + 2] = 0;
+                expected->rgb[offset] = rgb >> 16;
+                expected->rgb[offset + 1] = rgb >> 8;
+                expected->rgb[offset + 2] = rgb;
             }
         }
     }
     assert_window_matches(s, expected);
+}
+
+static void renderer_assert_image(QTestState *s)
+{
+    renderer_assert_image_colour(s, 0xff0000);
 }
 
 static char *renderer_expected_tags(void)
@@ -15567,6 +15760,25 @@ int main(int argc, char **argv)
                    test_renderer_typed_failure_reset);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
                    test_renderer_legacy_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "create-legacy-unavailable",
+                        GUINT_TO_POINTER(1), test_renderer_create_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/create-legacy-oom",
+                        GUINT_TO_POINTER(2), test_renderer_create_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "create-legacy-host-error",
+                        GUINT_TO_POINTER(3), test_renderer_create_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "create-typed-unavailable",
+                        GUINT_TO_POINTER(5), test_renderer_create_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/create-typed-oom",
+                        GUINT_TO_POINTER(6), test_renderer_create_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "create-typed-host-error",
+                        GUINT_TO_POINTER(7), test_renderer_create_failure);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/"
+                   "create-arm-cleared-on-load",
+                   test_renderer_create_arm_cleared_on_load);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
                         GUINT_TO_POINTER(1), test_renderer_fixture);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
