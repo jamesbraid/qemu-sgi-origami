@@ -4137,6 +4137,14 @@ static void test_gl_readpixels_dma_bounded_rgba(void)
                     sizeof(unbracketed));
 }
 
+/*
+ * Float RGBA readback has no reviewed contract, so the model must not
+ * accept it. The height-one pass uses the withdrawn 8x1 candidate's
+ * signature (128 bytes, 0x00010008, 0x00c00083, 0xa, one 128-byte
+ * descriptor) and pins that it writes nothing. It does not tell the
+ * bracketed refusal from an unclaimed read: both leave the destination
+ * untouched.
+ */
 static void test_gl_readpixels_dma_unsupported_float_rgba(void)
 {
     enum { WIDTH = 8, HEIGHT = 8, PAGE_BYTES = 4096, FLOAT_OFFSET = 0x800,
