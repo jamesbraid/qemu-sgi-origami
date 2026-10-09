@@ -47,6 +47,12 @@ typedef enum SGIRendererTextureEnvironment {
     SGI_RENDERER_ENV_BLEND = 0x0be2,
 } SGIRendererTextureEnvironment;
 
+/* What an untextured frame's vertices draw; zero keeps triangles. */
+typedef enum SGIRendererPrimitive {
+    SGI_RENDERER_TRIANGLES,
+    SGI_RENDERER_POINTS,
+} SGIRendererPrimitive;
+
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
     uint32_t env_mode, wrap_s, wrap_t;
@@ -63,10 +69,12 @@ typedef struct SGIRendererClearRect {
 } SGIRendererClearRect;
 
 typedef struct SGIRendererFrame {
-    /* A textured frame is a clipped fan, others independent triangles. */
+    /* A textured frame is a clipped fan, others independent primitives. */
     uint32_t width, height, count;
     const float *vertices; /* position xyzw, colour rgba, texcoord strq */
     SGIRendererTexture2D texture;
+    uint32_t primitive; /* SGIRendererPrimitive; textured frames are fans */
+    float point_size; /* Aliased integer size; zero means one. */
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
     bool viewport_given;
@@ -99,6 +107,8 @@ typedef struct SGIRendererOps {
     bool (*supports_texture)(void *opaque, Error **errp);
     bool (*supports_viewport)(void *opaque, const int32_t viewport[4],
                               Error **errp);
+    bool (*supports_primitive)(void *opaque, uint32_t primitive, float size,
+                               Error **errp);
     bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
     void (*destroy)(void *opaque);
 } SGIRendererOps;
@@ -117,6 +127,10 @@ bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp);
 /* False when the host cannot map a viewport exactly; no failure latches. */
 bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
                                      const int32_t viewport[4], Error **errp);
+/* False when the host's aliased point range excludes the size. */
+bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
+                                      uint32_t primitive, float size,
+                                      Error **errp);
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
 /*

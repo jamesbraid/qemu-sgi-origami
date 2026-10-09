@@ -3776,6 +3776,46 @@ static void prim_expect_refused(SGIRenderer *renderer, const char *name,
     }
 }
 
+static void test_scalar_match_points(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float centres[][2] = {
+        { 2.5f, 2.5f }, { 6.25f, 3.75f }, { 10, 4 }, { 13.75f, 2.5f },
+        { 3, 9.5f }, { 7.5f, 10.25f }, { 11.0f, 11.0f }, { 13.5f, 8 },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned size = 1; size <= 4; size++) {
+        g_autofree char *name = g_strdup_printf("points size %u", size);
+
+        prim_case_init(p, SGI_GL_POINTS, 4);
+        p->draw.point_size = size;
+        for (unsigned i = 0; i < G_N_ELEMENTS(centres); i++) {
+            prim_vertex_n(p, centres[i][0], centres[i][1]);
+        }
+        prim_expect(renderer, name, p, &failures);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * With offset zero several endpoints sit exactly on a pixel's diamond
+ * boundary; a small offset on the 1/256 grid moves every endpoint off it.
+ */
 static void prim_lines(PrimCase *p, uint32_t mode, float width, float offset)
 {
     static const float ends[][4] = {
@@ -3996,6 +4036,8 @@ int main(int argc, char **argv)
                     test_typed_texture_triangle);
     g_test_add_func("/sgi-renderer-gl/typed-texture-multi-texel",
                     test_typed_texture_multi_texel);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-points",
+                    test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
     g_test_add_func("/sgi-renderer-gl/raster-rules-refused",
                     test_raster_rules_refused);

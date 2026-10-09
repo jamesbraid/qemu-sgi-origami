@@ -35,6 +35,7 @@ typedef struct SGIRendererGL {
     GLint texture_wrap_t, texture_shade, texture_linear;
     GLint texture_border, texture_environment;
     GLint max_viewport[2];
+    GLfloat point_range[2];
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -309,6 +310,7 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         return false;
     }
     glGetIntegerv(GL_MAX_VIEWPORT_DIMS, renderer->max_viewport);
+    glGetFloatv(GL_ALIASED_POINT_SIZE_RANGE, renderer->point_range);
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
     if (major > 4 || (major == 4 && minor >= 5)) {
@@ -417,6 +419,10 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glViewport(0, 0, frame->width, frame->height);
     }
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glPointSize(frame->point_size ? frame->point_size : 1);
+    glDisable(GL_POINT_SMOOTH);
+    glDisable(GL_POINT_SPRITE);
+    glDisable(GL_PROGRAM_POINT_SIZE);
     glUseProgram(0);
     glDisable(GL_MULTISAMPLE);
     glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
@@ -503,7 +509,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glLoadMatrixf(frame->projection);
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(frame->modelview);
-    glBegin(frame->texture.slots ? GL_TRIANGLE_FAN : GL_TRIANGLES);
+    glBegin(frame->texture.slots ? GL_TRIANGLE_FAN :
+            frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS : GL_TRIANGLES);
     for (uint32_t i = 0; i < frame->count; i++) {
         const float *vertex = frame->vertices +
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
@@ -890,6 +897,22 @@ static bool renderer_gl_supports_viewport(void *opaque,
     return true;
 }
 
+static bool renderer_gl_supports_primitive(void *opaque, uint32_t primitive,
+                                           float size, Error **errp)
+{
+    SGIRendererGL *renderer = opaque;
+
+    if (primitive != SGI_RENDERER_POINTS ||
+        !(size >= renderer->point_range[0] &&
+          size <= renderer->point_range[1])) {
+        error_setg(errp, "SGI renderer host aliased point size range is "
+                   "%g to %g", renderer->point_range[0],
+                   renderer->point_range[1]);
+        return false;
+    }
+    return true;
+}
+
 static bool renderer_gl_clear(void *opaque, SGIRendererClear *clear,
                               Error **errp)
 {
@@ -919,6 +942,7 @@ static const SGIRendererOps renderer_gl_ops = {
     .draw_frame = renderer_gl_draw_frame,
     .supports_texture = renderer_gl_supports_texture,
     .supports_viewport = renderer_gl_supports_viewport,
+    .supports_primitive = renderer_gl_supports_primitive,
     .clear = renderer_gl_clear,
     .destroy = renderer_gl_destroy,
 };
