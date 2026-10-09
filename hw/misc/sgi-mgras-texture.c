@@ -3008,8 +3008,8 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 13,
-    .minimum_version_id = 13,
+    .version_id = 15,
+    .minimum_version_id = 15,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),

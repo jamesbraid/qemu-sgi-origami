@@ -5043,6 +5043,49 @@ static void test_gl_texture_stored_border_file_migration(void)
     g_rmdir(tmpfs);
 }
 
+static void test_gl_texture_stored_border_vmstate_version(void)
+{
+    static const char id[] = "sgi-mgras";
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *stream = NULL;
+    gsize length;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t image[64], core[16];
+    unsigned found = 0;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-border-version-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    from = tex_start(TEX_ARGS);
+    tex_sb_upload_complete(from, 0, 4, 0, image, core);
+    tex_sb_expect_nearest(from, image, -0.25f, 0.25f);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    g_assert_true(g_file_get_contents(path, &stream, &length, &err));
+    g_assert_no_error(err);
+    for (gsize i = 0; i + sizeof(id) + 8 <= length; i++) {
+        if ((uint8_t)stream[i] != sizeof(id) - 1 ||
+            memcmp(stream + i + 1, id, sizeof(id) - 1)) {
+            continue;
+        }
+        g_assert_cmphex(ldl_be_p(stream + i + sizeof(id) + 4), ==, 35);
+        found++;
+    }
+    g_assert_cmpuint(found, ==, 1);
+
+    to = qtest_initf("%s -incoming %s", TEX_ARGS, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    tex_sb_expect_nearest(to, image, -0.25f, 0.25f);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
 static void tex_sb_fill_uncached_image(uint8_t image[64],
                                        const uint8_t core[16])
 {
@@ -5264,6 +5307,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-file-migration",
                    test_gl_texture_stored_border_file_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-vmstate-version",
+                   test_gl_texture_stored_border_vmstate_version);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-empty-file-migration",
                    test_gl_texture_stored_border_empty_file_migration);
