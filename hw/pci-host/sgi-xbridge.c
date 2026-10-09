@@ -214,6 +214,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
     bool direct_window = false;
+    bool page_window = false;
     bool wide_64bit = false;
     SGIDMAPlacement placement;
 
@@ -241,6 +242,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
             goto out;
         }
         ate = s->ate[index];
+        page_window = true;
         widget = (ate >> 8) & 15;
         destination = ate & 0x0000fffffffff000ULL;
         /* The rev-2 bit-29 path follows public software, not a rev-B spec. */
@@ -277,7 +279,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         swap, s->dma_64bit & (1U << dma->slot));
     if (s->packet_sender && rev2 && swap &&
         (s->wide_slot_mask & BIT(dma->slot)) &&
-        (direct_window ||
+        (direct_window || page_window ||
          (wide_64bit &&
           (REG(s, 0x200 + dma->slot * 8) & (1U << 19))))) {
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;

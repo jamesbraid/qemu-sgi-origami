@@ -778,6 +778,27 @@ static void test_standalone_wide_slot_keeps_direct_dma(void)
     }
 }
 
+static void test_standalone_wide_slot_keeps_page_dma(void)
+{
+    QTestState *qts = transport_start_card_slot("sgi-bridge-dma-test", "",
+                                                1, 1U << 1);
+    uint8_t actual[8];
+    const uint8_t expected[] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    };
+
+    reg_write(qts, 0x208, 0x1010);
+    qtest_writeq(qts, BASE + 0x10000, 0x8a21);
+    option_card_write(qts, 1, 0, 0x40000000);
+    option_card_write(qts, 1, 4, sizeof(actual));
+    option_card_write(qts, 1, 8, 0x10);
+    option_card_write(qts, 1, 0xc, 1);
+    g_assert_cmphex(option_card_read(qts, 1, 0x28), ==, MEMTX_OK);
+    qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    qtest_quit(qts);
+}
+
 /* IOC3's fixed PCI placement must not suppress the host's PIO swap bit. */
 static void test_ioc3_pio_swap_controls(void)
 {
@@ -2383,6 +2404,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
     qtest_add_func("/sn1/xbridge/standalone-wide-slot-direct-dma",
                    test_standalone_wide_slot_keeps_direct_dma);
+    qtest_add_func("/sn1/xbridge/standalone-wide-slot-page-dma",
+                   test_standalone_wide_slot_keeps_page_dma);
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",
                    test_ioc3_pio_swap_controls);
     qtest_add_func("/sn1/xbridge/dma-swap-controls", test_dma_swap_controls);
