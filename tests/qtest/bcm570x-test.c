@@ -5805,13 +5805,15 @@ static void test_interrupt_mailbox(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
     g_assert_false(intr_line_up(b.dev));
 
-    /* A completion posted while masked remains pending across the unmask. */
+    /* A completion posted while masked is cleared by the mailbox write. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    g_assert_true(intr_line_up(b.dev));
+    g_assert_false(intr_line_up(b.dev));
 
-    /* The IRIX write-0-only acknowledgement clears that pending update. */
+    /* The IRIX write-0-only acknowledgement clears a fresh completion. */
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
