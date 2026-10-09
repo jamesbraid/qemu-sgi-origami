@@ -2082,6 +2082,7 @@ static void test_checked_draw_top_first_storage(void)
     SGIRasterTarget target;
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
