@@ -21,6 +21,7 @@
 #define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
 #define REMOTE_RESET_MASK UINT64_C(0xff)
 #define GLOBAL_PORT_DEF_MASK UINT64_C(0xffff)
+#define GLOBAL_TABLE_DIAGNOSTIC_MASK UINT64_C(0xf)
 #define LOCAL_TABLE_DIAGNOSTIC_MASK UINT64_C(0xfff)
 #define INACTIVE_BARRIER_CONTEXTS 32
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
@@ -270,6 +271,8 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
             if (address >= bank[p] + 0x100 &&
                 address < bank[p] + 0x180) {
                 table = &s->meta[p][(address - bank[p] - 0x100) / 8];
+                mask = s->synthetic_diagnostics ? GLOBAL_TABLE_DIAGNOSTIC_MASK :
+                       UINT64_MAX;
             } else if (address >= bank[p] + 0x200 &&
                        address < bank[p] + 0x600) {
                 table = &s->local[p][(address - bank[p] - 0x200) / 8];

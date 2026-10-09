@@ -152,8 +152,10 @@ static void test_experimental_status_write(void)
     uint64_t port_reset_before;
     const uint64_t local0 = bank[0] + 0x200;
     const uint64_t global0 = bank[0] + 0x100;
-    const uint64_t patterns[] = { 0x8, 0x800, 0x1000 };
-    const uint64_t expected[] = { 0x8, 0x800, 0 };
+    const uint64_t global1 = bank[0] + 0x108;
+    const uint64_t global8 = bank[7] + 0x178;
+    const uint64_t patterns[] = { 0x8, 0x10, 0x800, 0x1000 };
+    const uint64_t expected[] = { 0x8, 0x10, 0x800, 0 };
     QDict *mode_reply;
     uint8_t l1_before[131], l1_after[131];
     size_t l1_size;
@@ -212,13 +214,39 @@ static void test_experimental_status_write(void)
     }
     experimental_status_vector(s, global0, 0, true, UINT64_MAX, true);
     g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
-                                               true), ==, UINT64_MAX);
-    experimental_status_vector(s, global0, 0, true, 0, true);
+                                               true), ==, 0xf);
+    for (unsigned i = 0; i < G_N_ELEMENTS(patterns); i++) {
+        experimental_status_vector(s, global0, 0, true, patterns[i], true);
+        g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
+                                                   true), ==,
+                        patterns[i] & 0xf);
+    }
+    experimental_status_vector(s, global0, 0, true, 0x3, true);
+    experimental_status_vector(s, global1, 0, true, 0x123a, true);
+    experimental_status_vector(s, global8, 0, true, 0x100d, true);
+    g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
+                                               true), ==, 3);
+    g_assert_cmphex(experimental_status_vector(s, global1, 0, false, 0,
+                                               true), ==, 0xa);
+    g_assert_cmphex(experimental_status_vector(s, global8, 0, false, 0,
+                                               true), ==, 0xd);
+    g_assert_cmphex(experimental_status_vector(s, bank[7] + 0x170, 0,
+                                               false, 0, true), ==, 0);
     experimental_status_vector(s, local0, 0, true, 0, true);
     qtest_readl(s, BASE + local0);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
     qtest_readq(s, BASE + local0 + 1);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_readl(s, BASE + global0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_readq(s, BASE + global0 + 1);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writel(s, BASE + global0, UINT32_MAX);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writeq(s, BASE + global0 + 1, UINT64_MAX);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
+                                               true), ==, 3);
     mode_reply = qtest_qmp(s,
         "{'execute':'qom-set','arguments':{"
         "'path':'/machine/module3/router',"
@@ -401,6 +429,12 @@ static void test_experimental_status_write(void)
                     ==, 0);
     g_assert_cmphex(experimental_status_vector(s, bank[0] + 0x200, 0,
                                                false, 0, true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, global1, 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, global8, 0, false, 0,
+                                               true), ==, 0);
     g_assert_cmphex(experimental_status_vector(s,
                     bank[7] + 0x200 + 127 * 8, 0, false, 0, true), ==, 0);
     experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
@@ -424,6 +458,9 @@ static void test_experimental_status_write(void)
                                UINT64_C(0xa5c3000000000803), true);
     experimental_status_vector(s, bank[7] + 0x200 + 127 * 8, 0, true,
                                UINT64_C(0x5a3c000000000bbb), true);
+    experimental_status_vector(s, global0, 0, true, UINT64_MAX, true);
+    experimental_status_vector(s, global1, 0, true, 0x123a, true);
+    experimental_status_vector(s, global8, 0, true, 0x100d, true);
     fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
                          &to_image, &error);
     g_assert_no_error(error);
@@ -462,6 +499,12 @@ static void test_experimental_status_write(void)
                                                false, 0, true), ==, 0);
     g_assert_cmphex(experimental_status_vector(to, bank[0] + 0x200, 0,
                                                false, 0, true), ==, 0x803);
+    g_assert_cmphex(experimental_status_vector(to, global0, 0, false, 0,
+                                               true), ==, 0xf);
+    g_assert_cmphex(experimental_status_vector(to, global1, 0, false, 0,
+                                               true), ==, 0xa);
+    g_assert_cmphex(experimental_status_vector(to, global8, 0, false, 0,
+                                               true), ==, 0xd);
     g_assert_cmphex(experimental_status_vector(to,
                     bank[7] + 0x200 + 127 * 8, 0, false, 0, true), ==, 0xbbb);
     experimental_status_vector(to, bank[0] + 8, 0, true, 0, true);
