@@ -4833,10 +4833,8 @@ static RoutedMemoryResult routed_memory_request(QTestState *qts,
     return routed_memory_request_cpu(qts, address, size, value, mode, cca, 2);
 }
 
-static QTestState *routed_memory_start_machine(const char *prom,
-                                               const char *image,
-                                               const char *extra,
-                                               bool two_routers)
+static QTestState *routed_memory_start_machine_type(const char *prom,
+    const char *image, const char *extra, bool two_routers, bool public_ports)
 {
     QTestState *qts = qtest_initf(
         "-M %s,activate=on,topology=origin300-numalink-pci-expansion-experiment,"
@@ -4845,6 +4843,7 @@ static QTestState *routed_memory_start_machine(const char *prom,
         "-drive if=none,id=cfg,file=%s,format=%s "
         "-device sgi-board-test-fixture,id=probe,board-type=sn1-memory "
         "-no-shutdown -nodefaults -display none -S %s",
+        public_ports ? "sn-builder-routed-memory-public-test" :
         two_routers ? "sn-builder-routed-memory-test" : "sn1-memory-test",
         prom, image,
         g_str_has_suffix(image, ".qcow2") ? "qcow2" : "raw", extra);
@@ -4858,10 +4857,28 @@ static QTestState *routed_memory_start_machine(const char *prom,
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_NI + 0x1010, 5);
     routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
     if (two_routers) {
-        routed_memory_request(qts, 0x30a10, 8, 5, 4, 5);
-        routed_memory_request(qts, 0x10200, 8, 3, 5, 5);
+        if (public_ports) {
+            routed_memory_writeq(qts, 0,
+                BEDROCK_LOCAL + BEDROCK_NI + 0x1010, 3);
+            routed_memory_writeq(qts, 2,
+                BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 4);
+            routed_memory_request(qts, 0x30210, 8, 4, 4, 5);
+            routed_memory_request(qts, 0x40200, 8, 5, 5, 5);
+        } else {
+            routed_memory_request(qts, 0x30a10, 8, 5, 4, 5);
+            routed_memory_request(qts, 0x10200, 8, 3, 5, 5);
+        }
     }
     return qts;
+}
+
+static QTestState *routed_memory_start_machine(const char *prom,
+                                               const char *image,
+                                               const char *extra,
+                                               bool two_routers)
+{
+    return routed_memory_start_machine_type(prom, image, extra, two_routers,
+                                             false);
 }
 
 static QTestState *routed_memory_start(const char *prom, const char *image,
@@ -4967,6 +4984,7 @@ static void routed_memory_plant_loop(QTestState *qts)
 static void test_routed_memory_cached_refusal(const void *data)
 {
     unsigned mutation = GPOINTER_TO_UINT(data);
+    bool protection_only = mutation == 1 || mutation == 7;
     g_autofree char *prom = NULL;
     g_autofree char *image = NULL;
     QTestState *qts;
@@ -5044,8 +5062,12 @@ static void test_routed_memory_cached_refusal(const void *data)
     g_test_message("mutation%u: Cause 0x%" PRIx32 " invocations %" PRIu64,
                    mutation, cpu_cause(qts, 2), cpu_gpr(qts, 2, "s8"));
     g_assert_cmphex(cpu_gpr(qts, 2, "s2"), ==, 2);
-    g_assert_cmphex(cpu_gpr(qts, 2, "s8"), ==, 1);
-    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 6 << 2);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s8"), ==, protection_only ? 2 : 1);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==,
+                    protection_only ? 0 : 6 << 2);
+    if (protection_only) {
+        g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, 0x1100);
+    }
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(prom), ==, 0);
     g_assert_cmpint(g_unlink(image), ==, 0);
@@ -5767,8 +5789,9 @@ static void test_routed_memory_notifications(const void *data)
     routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
     routed_memory_request(qts, 0x10, 8, UINT64_C(1) << 8, 4, 5);
     result = routed_memory_request(qts, page, 8, 0, 0, 5);
-    g_assert_cmpuint(result.result, !=, 0);
-    g_assert_cmpuint(result.ram, ==, 0);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+    g_assert_cmpuint(result.ram, ==, 1);
     routed_memory_request(qts, 0x10, 8, 0, 4, 5);
     for (unsigned i = 0; i < ARRAY_SIZE(cables) - !two_routers; i++) {
         g_autofree char *path = g_strdup_printf("/machine/%s", cables[i]);
@@ -5809,6 +5832,60 @@ static void test_routed_memory_notifications(const void *data)
                                     8, 0, 0, 5);
     g_assert_cmpuint(result.result, !=, 0);
     g_assert_cmpuint(result.ram, ==, 0);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_two_router_tables(void)
+{
+    g_autofree char *image = create_sized_flash_image(16 * MiB);
+    QTestState *qts = routed_memory_start_machine_type(prom_path, image, "",
+                                                       true, true);
+    const uint64_t page = 0x400000;
+    const uint64_t marker = UINT64_C(0x123456789abcdef0);
+    const uint64_t local_marker = UINT64_C(0xfedcba9876543210);
+    RoutedMemoryResult result;
+
+    routed_memory_writeq(qts, 0, page, local_marker);
+    routed_memory_writeq(qts, 2, (UINT64_C(2) << 33) + page, marker);
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_NI + 0x1010, 3);
+    routed_memory_request(qts, 0x30210, 8, 4, 4, 5);
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+
+    routed_memory_request(qts, 0x30210, 8, 1, 4, 5);
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    routed_memory_request(qts, 0x30210, 8, 0, 4, 5);
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    routed_memory_request(qts, 0x30210, 8, 4, 4, 5);
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+
+    routed_memory_request(qts, 0x30110, 8, UINT64_MAX, 4, 5);
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/inter-router',"
+        "'property':'down','value':true}}");
+    result = routed_memory_request_cpu(qts, (UINT64_C(2) << 33) + page,
+                                       8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    result = routed_memory_request_cpu(qts, page, 8, 0, 0, 5, 0);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, local_marker);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
@@ -7011,6 +7088,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn1/address-map/routed-memory/notifications-two-routers",
                        GUINT_TO_POINTER(1), test_routed_memory_notifications);
+    qtest_add_func("sn1/address-map/routed-memory/two-router-tables",
+                   test_routed_memory_two_router_tables);
     qtest_add_data_func("sn1/address-map/routed-instruction-translation/local",
                         GUINT_TO_POINTER(0),
                         test_routed_instruction_translation);
