@@ -149,6 +149,8 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.cull_face_mode = other ? SGI_GL_FRONT : SGI_GL_FRONT_AND_BACK;
     c->cur.front_face = other ? SGI_GL_CCW : SGI_GL_CW;
     c->cur.drawable.bound = !other;
+    c->cur.drawable.width = other ? 0 : 128;
+    c->cur.drawable.height = other ? 0 : 96;
     c->cur.drawable.clip.empty = !other;
     c->cur.drawable.clip.n = other ? 3 : SGI_CLIP_MAX;
     c->cur.drawable.extra[0] = other ? 0x11 : 0x22;
@@ -423,6 +425,26 @@ static void test_round_trip(void)
     }
 }
 
+static void test_unknown_extent_replaces_known(void)
+{
+    g_autofree TestHead *src = g_new0(TestHead, 1);
+    g_autofree TestHead *dst = g_new0(TestHead, 1);
+    SGIGLDrawable known = { .bound = true, .width = 6, .height = 5 };
+    GByteArray *stream;
+
+    for (int i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src->gl[i], i);
+        sgi_gl_init(&dst->gl[i], i);
+    }
+    g_assert_true(sgi_gl_set_drawable(&dst->gl[1], &known));
+    stream = save_head(src);
+    g_assert_cmpint(load_head(stream, dst, NULL), ==, 0);
+    g_assert_cmpuint(dst->gl[1].cur.drawable.bound, ==, 0);
+    g_assert_cmpuint(dst->gl[1].cur.drawable.width, ==, 0);
+    g_assert_cmpuint(dst->gl[1].cur.drawable.height, ==, 0);
+    g_byte_array_unref(stream);
+}
+
 static void assert_not_needed(const VMStateDescription *sub, size_t base,
                               void *opaque)
 {
@@ -468,6 +490,12 @@ static void trip_one_element(const VMStateDescription *sub, size_t base,
         return;
     }
     memcpy(field, (const uint8_t *)moved + at, size);
+    if (at == offsetof(SGIGLContext, cur.drawable.width) ||
+        at == offsetof(SGIGLContext, cur.drawable.height)) {
+        src->gl[1].cur.drawable.bound = moved->cur.drawable.bound;
+        src->gl[1].cur.drawable.width = moved->cur.drawable.width;
+        src->gl[1].cur.drawable.height = moved->cur.drawable.height;
+    }
     g_assert_true(sgi_gl_context_valid(&src->gl[1], &error_abort));
     if (!sub->needed((uint8_t *)&src->gl[1] + base)) {
         g_test_message("%s is not needed with byte %zu moved", sub->name,
@@ -769,6 +797,9 @@ static const Corruption corruptions[] = {
     BAD(strip_prev, 2, "strip_prev"),
     BAD(strip_swap, 2, "strip_swap"),
     BAD(cur.drawable.bound, 2, "drawable.bound"),
+    BAD(cur.drawable.bound, 0, "unbound drawable extent"),
+    BAD(cur.drawable.width, 0, "drawable extent"),
+    BAD(cur.drawable.height, 0, "drawable extent"),
     BAD(cur.drawable.clip.empty, 2, "drawable.clip.empty"),
     BAD(cur.window_matrix_given, 2, "window_matrix_given"),
     BAD(cur.window_rows_down, 2, "window_rows_down"),
@@ -1812,6 +1843,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl-vmstate/polygon-stipple-restore",
                     test_polygon_stipple_restore);
     g_test_add_func("/sgi-gl-vmstate/round-trip", test_round_trip);
+    g_test_add_func("/sgi-gl-vmstate/unknown-extent-replaces-known",
+                    test_unknown_extent_replaces_known);
     g_test_add_func("/sgi-gl-vmstate/initial-needs-no-subsection",
                     test_initial_needs_no_subsection);
     g_test_add_func("/sgi-gl-vmstate/each-optional-field-travels",

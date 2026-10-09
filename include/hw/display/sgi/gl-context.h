@@ -484,6 +484,9 @@ typedef struct SGIGLDrawable {
      * top-left under a window matrix whose rows run down the display.
      */
     int32_t origin[2];
+    /* 0/0 until the family supplies a validated drawable extent. */
+    uint32_t width;
+    uint32_t height;
     /*
      * The pixels the window owns. A bound window with no rectangle is one
      * other windows wholly cover, a normal state: nothing draws and
@@ -986,9 +989,11 @@ bool sgi_gl_get_polygon_stipple(const SGIGLContext *c, uint32_t rows[32]);
 /*
  * Point the context at a drawable. The family calls it at each context
  * switch and whenever its window or buffer selection changes; sgi_gl_init()
- * leaves the context unbound.
+ * leaves the context unbound. A bound half-known extent is refused without
+ * changing the current drawable; a producer that supplies one must check the
+ * result. Unbinding clears both dimensions.
  */
-void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
+bool sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
 /*
  * Load m, column-major, as the current matrix of the stack slot names:
  * SGI_GL_MODELVIEW, SGI_GL_PROJECTION or SGI_GL_TEXTURE, whatever the
