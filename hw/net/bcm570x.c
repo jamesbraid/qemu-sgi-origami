@@ -1676,22 +1676,12 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
                       off);
         return;
     case BCM570X_MBX_IRQ0_LO:
-        /*
-         * Writing 1 masks and acknowledges the current update. A later update
-         * posted while masked remains pending, so writing 0 to re-enable
-         * makes the level reassert. The IRIX driver also uses a write-0-only
-         * runtime acknowledgement; when already unmasked, retain that
-         * observed path by clearing the pending update.
-         */
+        /* Every mailbox write clears the pending update; bit 0 masks. */
+        s->irq_pending = false;
         if (val & 1) {
-            s->irq_pending = false;
             s->irq_masked = true;
         } else {
-            if (s->irq_masked) {
-                s->irq_masked = false;
-            } else {
-                s->irq_pending = false;
-            }
+            s->irq_masked = false;
             bcm570x_retry_rx_flush(s);
         }
         bcm570x_regfile_write(s, off, val);
