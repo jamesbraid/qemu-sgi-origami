@@ -667,10 +667,12 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
  * intact only if the Bridge then reverses each 32-bit word, its 32-bit
  * swap-clear placement. IRIX also sets PciState bit 18, which turns the
  * card's DMA word swap off; the model applies no word swap. A transfer's lane
- * in its word is its bus address modulo 4. On a sampled wide, swap-clear
- * slot, this model instead reverses complete eight-byte units and relocates
- * each edge byte to the opposite lane. This compensates for the current
- * XBridge placement; physical Tigon/XBridge placement remains unknown.
+ * in its word is its bus address modulo 4. On a sampled wide slot using
+ * XBridge's 64-bit direct swap-clear address class, this model instead
+ * reverses complete eight-byte units and relocates each edge byte to the
+ * opposite lane. This compensates for the current XBridge placement;
+ * physical Tigon/XBridge placement remains unknown. Other DMA address
+ * classes do not expose their bridge placement to the PCI device here.
  *
  * Like every other transfer here it goes through pci_dma_*; what the host
  * bridge does to the bytes is the bridge's business. A write touches only the
@@ -683,7 +685,8 @@ static MemTxResult tigon_dma_frame_xfer(TigonState *s, uint64_t addr,
     PCIDevice *pdev = PCI_DEVICE(s);
     bool bswap = s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] &
                  TI_OPMODE_BYTESWAP_DATA;
-    bool wide = s->req64_sampled &&
+    bool wide = addr >= UINT64_C(0x1000000000000000) &&
+                !(addr & (UINT64_C(1) << 55)) && s->req64_sampled &&
                 (s->pci_state & TI_PCISTATE_NO_WORD_SWAP) &&
                 !(s->pci_state & TI_PCISTATE_32BIT_BUS) && !bswap;
     uint32_t i = 0, j;

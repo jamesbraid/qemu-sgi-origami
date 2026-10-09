@@ -104,6 +104,7 @@ typedef struct {
     bool pci_bit20;
     bool clear_desc_word_swap;
     bool set_desc_byte_swap;
+    bool payload_identity;
 } Placement;
 
 typedef struct {
@@ -173,7 +174,10 @@ static uint64_t memory_address(unsigned node, uint32_t offset)
 
 static uint64_t dma_address(Tigon *t, uint32_t offset)
 {
-    uint64_t prefix = t->placement->swap_clear ?
+    bool payload = offset == TX_BUF + t->placement->payload_offset ||
+                   offset == RX_BUF + t->placement->payload_offset;
+    uint64_t prefix = t->placement->swap_clear &&
+                      !(t->placement->payload_identity && payload) ?
                       DMA_SWAP_CLEAR_PREFIX : DMA_PREFIX;
 
     return prefix | memory_address(t->placement->destination, offset);
@@ -891,11 +895,14 @@ static void test_traffic(const void *opaque)
         g_test_message("TX expected %s", expected->str);
         g_test_message("TX observed %s", actual->str);
     }
-    if (p->data_byteswap || p->pci_bit20) {
+    if (p->data_byteswap || p->pci_bit20 || p->payload_identity) {
         for (unsigned i = 0; i < tx_len; i++) {
-            unsigned source = p->data_byteswap ? 7 - i : i ^ 4;
+            unsigned source = p->data_byteswap ? 7 - i :
+                              p->payload_identity ? i ^ 3 : i ^ 4;
+            uint8_t expected = p->payload_identity && tx_len == 9 && i == 8 ?
+                               tx_after[2] : tx[source];
 
-            g_assert_cmphex(received[i], ==, tx[source]);
+            g_assert_cmphex(received[i], ==, expected);
         }
     } else {
         g_assert_cmpmem(received, tx_len, tx, tx_len);
@@ -980,9 +987,14 @@ receive:
         return;
     }
     memory_read(&t, p->destination, rx_buf, received, rx_len);
-    if (p->data_byteswap) {
+    if (p->data_byteswap || p->payload_identity) {
         for (unsigned i = 0; i < rx_len; i++) {
-            g_assert_cmphex(received[i], ==, rx[7 - i]);
+            uint8_t expected = p->payload_identity && rx_len == 9 && i == 8 ?
+                               guarded[16] :
+                               rx[p->payload_identity ? i ^ 3 : 7 - i];
+
+            g_assert_cmphex(received[i], ==,
+                            expected);
         }
     } else {
         g_assert_cmpmem(received, rx_len, rx, rx_len);
@@ -990,7 +1002,15 @@ receive:
     memory_read(&t, p->destination, rx_buf - 8, seen, 8);
     g_assert_cmpmem(seen, 8, guarded, 8);
     memory_read(&t, p->destination, rx_buf + rx_len, seen, 8);
-    g_assert_cmpmem(seen, 8, guarded + 8 + rx_len, 8);
+    if (p->payload_identity && rx_len == 9) {
+        uint8_t expected[8];
+
+        memcpy(expected, guarded + 8 + rx_len, sizeof(expected));
+        expected[2] = rx[8];
+        g_assert_cmpmem(seen, sizeof(expected), expected, sizeof(expected));
+    } else {
+        g_assert_cmpmem(seen, 8, guarded + 8 + rx_len, 8);
+    }
     expect_interrupt(&t, true);
     acknowledge(&t);
     for (unsigned i = 0; i < G_N_ELEMENTS(checked); i++) {
@@ -1276,10 +1296,14 @@ int main(int argc, char **argv)
         { .head = 0, .device = 1, .swap_clear = true,
           .payload_length = 8, .set_desc_byte_swap = true,
           .tx_only = true },
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 8, .payload_identity = true },
+        { .head = 0, .device = 1, .swap_clear = true,
+          .payload_length = 9, .payload_identity = true },
     };
     static const char *payload_control_names[] = {
         "data-byteswap-set", "pci-bit20", "no-desc-bit2",
-        "desc-byte-bit1",
+        "desc-byte-bit1", "payload-identity", "payload-identity-edge",
     };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
