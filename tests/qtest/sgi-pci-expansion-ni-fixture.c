@@ -1085,14 +1085,15 @@ static void fixture_build(DeviceState *dev, Error **errp)
         sgi_net_cable_set_end(SGI_NET_CABLE(s->cable), 0, OBJECT(compute), 0);
         sgi_net_cable_set_end(SGI_NET_CABLE(s->cable), 1,
             s->routed ? OBJECT(s->route_chip) : OBJECT(bic_endpoint->bedrock),
-            s->routed ? 1 : 0);
+            s->routed ? (s->routed_pair ? 2 : 1) : 0);
         if (!qdev_realize(s->cable, NULL, errp) ||
             !object_property_set_link(OBJECT(compute), "net-cable",
                                       OBJECT(s->cable), errp) ||
             !object_property_set_link(
                 s->routed ? OBJECT(s->route_chip) :
                             OBJECT(bic_endpoint->bedrock),
-                s->routed ? "port1-cable" : "net-cable",
+                s->routed ? (s->routed_pair ? "port2-cable" : "port1-cable") :
+                            "net-cable",
                 OBJECT(s->cable), errp)) {
             return;
         }
@@ -1107,15 +1108,15 @@ static void fixture_build(DeviceState *dev, Error **errp)
             object_property_add_child(OBJECT(s), "route-middle-cable",
                                       OBJECT(s->route_middle_cable));
             sgi_net_cable_set_end(SGI_NET_CABLE(s->route_middle_cable), 0,
-                                 OBJECT(s->route_chip), 4);
+                                 OBJECT(s->route_chip), 5);
             sgi_net_cable_set_end(SGI_NET_CABLE(s->route_middle_cable), 1,
-                                 OBJECT(s->route_chip_next), 2);
+                                 OBJECT(s->route_chip_next), 7);
             if (!qdev_realize(s->route_middle_cable, NULL, errp) ||
-                !object_property_set_link(OBJECT(s->route_chip), "port4-cable",
+                !object_property_set_link(OBJECT(s->route_chip), "port5-cable",
                                           OBJECT(s->route_middle_cable),
                                           errp) ||
                 !object_property_set_link(OBJECT(s->route_chip_next),
-                                          "port2-cable",
+                                          "port7-cable",
                                           OBJECT(s->route_middle_cable),
                                           errp)) {
                 return;
@@ -1128,14 +1129,14 @@ static void fixture_build(DeviceState *dev, Error **errp)
             sgi_net_cable_set_end(SGI_NET_CABLE(s->route_cable), 0,
                                  s->routed_pair ? OBJECT(s->route_chip_next) :
                                                   OBJECT(s->route_chip),
-                                 s->routed_pair ? 7 : 4);
+                                 s->routed_pair ? 3 : 4);
             sgi_net_cable_set_end(SGI_NET_CABLE(s->route_cable), 1,
                                  OBJECT(bic_endpoint->bedrock), 0);
             if (!qdev_realize(s->route_cable, NULL, errp) ||
                 !object_property_set_link(
                     s->routed_pair ? OBJECT(s->route_chip_next) :
                                      OBJECT(s->route_chip),
-                    s->routed_pair ? "port7-cable" : "port4-cable",
+                    s->routed_pair ? "port3-cable" : "port4-cable",
                     OBJECT(s->route_cable), errp) ||
                 !object_property_set_link(OBJECT(bic_endpoint->bedrock),
                                           "net-cable",
