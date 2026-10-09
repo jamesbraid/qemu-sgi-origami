@@ -490,14 +490,24 @@ static void tigon_completion_irq(TigonState *s, bool rx,
  * the register header's descriptor structs change field order under the same
  * condition. This model honours it rather than assuming a fixed order. The
  * swap bit selects big-endian words on the bus, little-endian when clear. The
- * word-swap-descriptor bit is not modelled: the model reads each 64-bit host
- * address high word first, the layout both public drivers and IRIX write with
- * it set. What the bit does to other descriptor words, and how wide it acts,
- * is not recorded anywhere held.
+ * In the wide, swap-clear Origin 300 experiment, an aligned pair of words
+ * crosses XBridge in the opposite order. This is a synthetic composition of
+ * the current models, not a claim about physical Tigon/XBridge placement.
  */
 static bool tigon_bd_bigendian(TigonState *s)
 {
     return (s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)] & TI_OPMODE_BYTESWAP_BD) != 0;
+}
+
+static bool tigon_bd_wide_swap_clear(TigonState *s)
+{
+    uint32_t opmode = s->gcr[TIGON_GCR_IDX(TI_GCR_OPMODE)];
+
+    return s->req64_sampled &&
+           (s->pci_state & TI_PCISTATE_NO_WORD_SWAP) &&
+           !(s->pci_state & TI_PCISTATE_32BIT_BUS) &&
+           (opmode & TI_OPMODE_WORDSWAP_BD) &&
+           !(opmode & TI_OPMODE_BYTESWAP_BD);
 }
 
 enum {
@@ -505,37 +515,67 @@ enum {
 };
 
 /*
- * Keep each descriptor in one ordered DMA request. Completion and producer
- * words use the single-word helper so a complete descriptor is visible first.
+ * Keep normal descriptors in one ordered DMA request. Wide swap-clear
+ * descriptors use eight-byte pairs and a relocated four-byte tail. Decode
+ * into a temporary buffer so a failed segment cannot publish partial fields.
  */
 static MemTxResult tigon_dma_read_words(TigonState *s, uint64_t addr,
                                         uint32_t *words, size_t count)
 {
     bool bigendian = tigon_bd_bigendian(s);
+    bool wide = tigon_bd_wide_swap_clear(s) &&
+                (count == 1 || !(addr & 7));
+    uint32_t raw[TIGON_MAX_BD_WORDS];
     MemTxResult result;
     size_t bytes;
     size_t i;
 
     assert(count > 0 && count <= TIGON_MAX_BD_WORDS);
     bytes = count * sizeof(*words);
-    result = pci_dma_read(PCI_DEVICE(s), addr, words, bytes);
-    trace_tigon_dma("read", addr, bytes, result);
-    if (result != MEMTX_OK) {
-        memset(words, 0, bytes);
-        return result;
+    if (wide) {
+        for (i = 0; i + 1 < count; i += 2) {
+            result = pci_dma_read(PCI_DEVICE(s), addr + i * 4, &raw[i], 8);
+            trace_tigon_dma("read", addr + i * 4, 8, result);
+            if (result != MEMTX_OK) {
+                goto failed;
+            }
+        }
+        if (count & 1) {
+            uint64_t tail = (addr + (count - 1) * 4) ^ 4;
+
+            result = pci_dma_read(PCI_DEVICE(s), tail, &raw[count - 1], 4);
+            trace_tigon_dma("read", tail, 4, result);
+            if (result != MEMTX_OK) {
+                goto failed;
+            }
+        }
+    } else {
+        result = pci_dma_read(PCI_DEVICE(s), addr, raw, bytes);
+        trace_tigon_dma("read", addr, bytes, result);
+        if (result != MEMTX_OK) {
+            goto failed;
+        }
     }
 
     for (i = 0; i < count; i++) {
-        words[i] = bigendian ? be32_to_cpu(words[i])
-                             : le32_to_cpu(words[i]);
+        size_t source = wide && (i ^ 1) < count ? i ^ 1 : i;
+
+        words[i] = bigendian ? be32_to_cpu(raw[source])
+                             : le32_to_cpu(raw[source]);
     }
     return MEMTX_OK;
+
+failed:
+    memset(words, 0, bytes);
+    return result;
 }
 
 static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
                                          const uint32_t *words, size_t count)
 {
     bool bigendian = tigon_bd_bigendian(s);
+    bool wide = tigon_bd_wide_swap_clear(s) &&
+                (count == 1 || !(addr & 7));
     uint32_t raw[TIGON_MAX_BD_WORDS];
     MemTxResult result;
     size_t bytes;
@@ -544,8 +584,27 @@ static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
     assert(count > 0 && count <= ARRAY_SIZE(raw));
     bytes = count * sizeof(*words);
     for (i = 0; i < count; i++) {
-        raw[i] = bigendian ? cpu_to_be32(words[i])
-                           : cpu_to_le32(words[i]);
+        size_t source = wide && (i ^ 1) < count ? i ^ 1 : i;
+
+        raw[i] = bigendian ? cpu_to_be32(words[source])
+                           : cpu_to_le32(words[source]);
+    }
+    if (wide) {
+        for (i = 0; i + 1 < count; i += 2) {
+            result = pci_dma_write(PCI_DEVICE(s), addr + i * 4, &raw[i], 8);
+            trace_tigon_dma("write", addr + i * 4, 8, result);
+            if (result != MEMTX_OK) {
+                return result;
+            }
+        }
+        if (count & 1) {
+            uint64_t tail = (addr + (count - 1) * 4) ^ 4;
+
+            result = pci_dma_write(PCI_DEVICE(s), tail, &raw[count - 1], 4);
+            trace_tigon_dma("write", tail, 4, result);
+            return result;
+        }
+        return MEMTX_OK;
     }
     result = pci_dma_write(PCI_DEVICE(s), addr, raw, bytes);
     trace_tigon_dma("write", addr, bytes, result);

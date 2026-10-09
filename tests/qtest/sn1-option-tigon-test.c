@@ -79,6 +79,7 @@
 #define TX_RING 0x270000
 #define RX_BUF 0x280000
 #define TX_BUF 0x290000
+#define TX_FAULT_DESC 0x0ffffff8
 
 static const char *bus_names[] = {
     "head-e.0", "node1-head-e.0",
@@ -95,6 +96,7 @@ typedef struct {
     bool swap_clear;
     unsigned payload_offset;
     uint32_t gib_offset;
+    bool rx_descriptor_only;
 } Placement;
 
 typedef struct {
@@ -104,6 +106,12 @@ typedef struct {
     uint64_t head;
     uint64_t window;
 } Tigon;
+
+typedef struct {
+    uint32_t pci_state;
+    uint32_t opmode;
+    bool expect_event;
+} WideSelector;
 
 static char *prom_path;
 
@@ -728,6 +736,15 @@ static void test_traffic(const void *opaque)
     setup_routes(&t);
     setup_card(&t);
     setup_rings(&t, gib);
+    if (p->swap_clear) {
+        g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS,
+                        ==, 0);
+        reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    }
+    memory_word(&t, EVENT_RING - 4, 0x5a6b7c8d);
+    memory_word(&t, EVENT_RING + 8, 0x1728394a);
+    memory_word(&t, EVENT_PROD - 4, 0x4a392817);
+    memory_word(&t, EVENT_PROD + 4, 0x8d7c6b5a);
     memset(sentinel, 0x96, sizeof(sentinel));
     for (unsigned i = 0; i < G_N_ELEMENTS(checked); i++) {
         memory_write(&t, other, checked[i], sentinel, sizeof(sentinel));
@@ -736,17 +753,29 @@ static void test_traffic(const void *opaque)
     address = dma_address(&t, gib);
     if (p->gib_offset) {
         g_assert_cmphex(address, ==, UINT64_C(0xa100000001a00000));
+        g_assert_cmphex(read_memory_word(&t, gib + 0x400), ==,
+                        UINT64_C(0xa1000000));
+        g_assert_cmphex(read_memory_word(&t, gib + 0x404), ==,
+                        EVENT_RING);
     }
     reg_write(&t, TI_GCR_GENINFO_HI, address >> 32);
     reg_write(&t, TI_GCR_GENINFO_LO, address);
     reg_write(&t, TI_CPU_STATE, 0);
     memory_read(&t, p->destination, EVENT_RING, seen, 8);
     g_assert_cmphex(ldl_be_p(seen), ==, 0x01000000);
+    g_assert_cmphex(ldl_be_p(seen + 4), ==, 0);
+    g_assert_cmphex(read_memory_word(&t, EVENT_RING - 4), ==, 0x5a6b7c8d);
+    g_assert_cmphex(read_memory_word(&t, EVENT_RING + 8), ==, 0x1728394a);
     g_assert_cmphex(read_memory_word(&t, EVENT_PROD), ==, 1);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD - 4), ==, 0x4a392817);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD + 4), ==, 0x8d7c6b5a);
     expect_interrupt(&t, true);
     reg_write(&t, TI_GCR_EVENTCONS_IDX, 1);
     acknowledge(&t);
 
+    if (p->rx_descriptor_only) {
+        goto receive;
+    }
     for (unsigned i = 0; i < sizeof(tx); i++) {
         tx[i] = i ^ (0x35 + p->head + p->device + p->destination);
     }
@@ -761,11 +790,28 @@ static void test_traffic(const void *opaque)
     g_assert_cmpint(recv(sv[0], &length, sizeof(length), MSG_WAITALL), ==, 4);
     g_assert_cmpuint(ntohl(length), ==, tx_len);
     g_assert_cmpint(recv(sv[0], received, tx_len, MSG_WAITALL), ==, tx_len);
+    if (memcmp(received, tx, tx_len)) {
+        g_autoptr(GString) expected = g_string_new(NULL);
+        g_autoptr(GString) actual = g_string_new(NULL);
+
+        for (unsigned i = 0; i < tx_len; i++) {
+            g_string_append_printf(expected, "%02x", tx[i]);
+            g_string_append_printf(actual, "%02x", received[i]);
+        }
+        g_test_message("TX controls: PCI State 0x%08x, OPMODE 0x%08x, "
+                       "DMA address 0x%016" PRIx64,
+                       reg_read(&t, TI_PCI_STATE),
+                       reg_read(&t, TI_GCR_OPMODE),
+                       dma_address(&t, tx_buf));
+        g_test_message("TX expected %s", expected->str);
+        g_test_message("TX observed %s", actual->str);
+    }
     g_assert_cmpmem(received, tx_len, tx, tx_len);
     g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 1);
     expect_interrupt(&t, true);
     acknowledge(&t);
 
+receive:
     for (unsigned i = 0; i < sizeof(rx); i++) {
         rx[i] = (i * 13) ^ (0xa7 + p->head + p->device + p->destination);
     }
@@ -774,6 +820,10 @@ static void test_traffic(const void *opaque)
     rx[13] = 6;
     memset(guarded, 0x96, sizeof(guarded));
     memory_write(&t, p->destination, RX_BUF - 4, guarded, sizeof(guarded));
+    memory_word(&t, RETURN_RING - 4, 0x395a7b9c);
+    memory_word(&t, RETURN_RING + 32, 0x1d3e5f70);
+    memory_word(&t, RETURN_PROD - 4, 0x738495a6);
+    memory_word(&t, RETURN_PROD + 4, 0xb6c7d8e9);
     host_address(&t, STD_RX_RING, rx_buf);
     memory_word(&t, STD_RX_RING + 8, 2048);
     memory_word(&t, STD_RX_RING + 12, TI_BDTYPE_RECV_BD << 16);
@@ -790,6 +840,32 @@ static void test_traffic(const void *opaque)
     }
     g_assert_cmphex(read_memory_word(&t, RETURN_PROD), ==, 1);
     g_assert_cmphex(read_memory_word(&t, RETURN_RING + 8), ==, rx_len);
+    if (p->rx_descriptor_only) {
+        const uint32_t expected[8] = {
+            dma_address(&t, rx_buf) >> 32,
+            dma_address(&t, rx_buf),
+            rx_len,
+            (TI_BDTYPE_RECV_BD << 16) | TI_BDFLAG_END | 0x20,
+            0, 0, 0, 0,
+        };
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(expected); i++) {
+            g_assert_cmphex(read_memory_word(&t, RETURN_RING + i * 4), ==,
+                            expected[i]);
+        }
+        g_assert_cmphex(read_memory_word(&t, RETURN_RING - 4), ==,
+                        0x395a7b9c);
+        g_assert_cmphex(read_memory_word(&t, RETURN_RING + 32), ==,
+                        0x1d3e5f70);
+        g_assert_cmphex(read_memory_word(&t, RETURN_PROD - 4), ==,
+                        0x738495a6);
+        g_assert_cmphex(read_memory_word(&t, RETURN_PROD + 4), ==,
+                        0xb6c7d8e9);
+        qtest_quit(t.qts);
+        close(sv[0]);
+        g_assert_cmpint(unlink(storage), ==, 0);
+        return;
+    }
     memory_read(&t, p->destination, rx_buf, received, rx_len);
     g_assert_cmpmem(received, rx_len, rx, rx_len);
     memory_read(&t, p->destination, RX_BUF - 4, seen,
@@ -809,6 +885,114 @@ static void test_traffic(const void *opaque)
                    bus_names[p->head], p->device, p->destination * 2);
     qtest_quit(t.qts);
     close(sv[0]);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_wide_selector(const void *opaque)
+{
+    const WideSelector *selector = opaque;
+    const Placement p = { .head = 0, .device = 1, .destination = 0,
+                          .swap_clear = true, .gib_offset = 0x01a00000 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint8_t event[8];
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-selector-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    setup_rings(&t, p.gib_offset);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_PCI_STATE, selector->pci_state);
+    reg_write(&t, TI_GCR_OPMODE, selector->opmode);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE), ==, selector->pci_state);
+    g_assert_cmphex(reg_read(&t, TI_GCR_OPMODE), ==, selector->opmode);
+    g_assert_cmphex(read_memory_word(&t, p.gib_offset + 0x400), ==,
+                    UINT32_C(0xa1000000));
+    g_assert_cmphex(read_memory_word(&t, p.gib_offset + 0x404), ==,
+                    EVENT_RING);
+    memory_word(&t, EVENT_RING - 4, 0x5a6b7c8d);
+    memory_word(&t, EVENT_RING + 8, 0x1728394a);
+    memory_word(&t, EVENT_PROD - 4, 0x4a392817);
+    memory_word(&t, EVENT_PROD + 4, 0x8d7c6b5a);
+    reg_write(&t, TI_GCR_GENINFO_HI, dma_address(&t, p.gib_offset) >> 32);
+    reg_write(&t, TI_GCR_GENINFO_LO, dma_address(&t, p.gib_offset));
+    reg_write(&t, TI_CPU_STATE, 0);
+    memory_read(&t, p.destination, EVENT_RING, event, sizeof(event));
+    g_assert_cmphex(ldl_be_p(event), ==,
+                    selector->expect_event ? 0x01000000 : 0);
+    g_assert_cmphex(ldl_be_p(event + 4), ==, 0);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD), ==,
+                    selector->expect_event ? 1 : 0);
+    g_assert_cmphex(read_memory_word(&t, EVENT_RING - 4), ==, 0x5a6b7c8d);
+    g_assert_cmphex(read_memory_word(&t, EVENT_RING + 8), ==, 0x1728394a);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD - 4), ==, 0x4a392817);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD + 4), ==, 0x8d7c6b5a);
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_wide_faulted_tail(void)
+{
+    const Placement p = { .head = 0, .device = 1, .destination = 0,
+                          .swap_clear = true };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-tail-XXXXXX", &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    setup_rings(&t, GIB);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE), ==, TI_PCI_NO_WORD_SWAP);
+    host_address(&t, GIB + 0x420, TX_FAULT_DESC);
+    {
+        uint8_t words[8];
+
+        stl_be_p(words, UINT32_C(0xa1000000));
+        stl_be_p(words + 4, TX_BUF);
+        qtest_memwrite(t.qts, TX_FAULT_DESC, words, sizeof(words));
+        memset(words, 0, sizeof(words));
+        qtest_memread(t.qts, TX_FAULT_DESC, words, sizeof(words));
+        g_assert_cmphex((uint32_t)ldl_be_p(words), ==,
+                        UINT32_C(0xa1000000));
+        g_assert_cmphex((uint32_t)ldl_be_p(words + 4), ==, TX_BUF);
+    }
+    reg_write(&t, TI_GCR_GENINFO_HI, dma_address(&t, GIB) >> 32);
+    reg_write(&t, TI_GCR_GENINFO_LO, dma_address(&t, GIB));
+    reg_write(&t, TI_CPU_STATE, 0);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD), ==, 1);
+    g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 0);
+    reg_write(&t, TI_MB_SENDPROD_IDX, 1);
+    g_assert_cmphex(read_memory_word(&t, TX_CONS), ==, 0);
+    g_assert_cmphex(read_memory_word(&t, EVENT_PROD), ==, 1);
+    qtest_quit(t.qts);
     g_assert_cmpint(unlink(storage), ==, 0);
 }
 
@@ -912,6 +1096,18 @@ static void test_pci_state_width(void)
 
 int main(int argc, char **argv)
 {
+    static const WideSelector selectors[] = {
+        { TI_PCI_NO_WORD_SWAP, TI_OPMODE_SWAP_CLEAR, true },
+        { 0, TI_OPMODE_SWAP_CLEAR, false },
+        { TI_PCI_NO_WORD_SWAP | TI_PCI_32BIT_BUS,
+          TI_OPMODE_SWAP_CLEAR, false },
+        { TI_PCI_NO_WORD_SWAP, TI_OPMODE_SWAP_CLEAR & ~4U, false },
+        { TI_PCI_NO_WORD_SWAP, TI_OPMODE_SWAP_CLEAR | 2U, false },
+    };
+    static const char *selector_names[] = {
+        "selected", "no-pci-bit18", "pci-bit20", "no-opmode-bit2",
+        "opmode-bit1",
+    };
     static Placement placements[] = {
         { .head = 0, .device = 1, .destination = 0 },
         { .head = 1, .device = 2, .destination = 1 },
@@ -928,6 +1124,13 @@ int main(int argc, char **argv)
         .device = 1,
         .swap_clear = true,
         .gib_offset = 0x01a00000,
+    };
+    static Placement wide_rx = {
+        .head = 0,
+        .device = 1,
+        .swap_clear = true,
+        .gib_offset = 0x01a00000,
+        .rx_descriptor_only = true,
     };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
@@ -969,6 +1172,16 @@ int main(int argc, char **argv)
     }
     qtest_add_data_func("/sn1/option-tigon/geninfo-64bit", &geninfo_64bit,
                         test_traffic);
+    qtest_add_data_func("/sn1/option-tigon/wide-rx-descriptor", &wide_rx,
+                        test_traffic);
+    qtest_add_func("/sn1/option-tigon/wide-faulted-tail",
+                   test_wide_faulted_tail);
+    for (unsigned i = 0; i < G_N_ELEMENTS(selectors); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "/sn1/option-tigon/wide-selector/%s", selector_names[i]);
+
+        qtest_add_data_func(name, &selectors[i], test_wide_selector);
+    }
     qtest_add_func("/sn1/option-tigon/pci-state-width",
                    test_pci_state_width);
     qtest_add_func("/sn1/option-tigon/pci-state-width-migration",
