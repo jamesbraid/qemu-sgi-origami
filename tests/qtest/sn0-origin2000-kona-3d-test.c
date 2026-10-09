@@ -13512,6 +13512,15 @@ static void test_renderer_fixture(gconstpointer opaque)
                      using_gpu ? 2 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
                      using_gpu ? 1 : 3);
+    /* So does one-dimensional texturing, which the host path lacks. */
+    qtest_system_reset(s);
+    renderer_fixture(s);
+    kona_command(s, 0x24, (uint32_t[]){ 0xde0 }, 1);
+    renderer_triangle(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                     using_gpu ? 2 : 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                     using_gpu ? 2 : 4);
     qtest_system_reset(s);
     renderer_fixture(s);
     renderer_triangle(s);

@@ -2496,6 +2496,15 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     state.texture_3d = 0;
+    /* One-dimensional texturing has no host path; the scalar path owns it. */
+    state.texture_1d = 1;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases));
+    state.texture_1d = 0;
     image.min_filter = SGI_GL_LINEAR;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,

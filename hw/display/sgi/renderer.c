@@ -248,7 +248,9 @@ static bool sgi_render_mode_lines(uint32_t mode)
  * under rules that smooth. Under rules that do not, sgi_soft_draw()
  * ignores the enables and draws aliased, and so does this path. Each
  * enable and the polygon modes apply only to their own class of primitive
- * (OpenGL 1.2.1, 3.3 to 3.5).
+ * (OpenGL 1.2.1, 3.3 to 3.5). One- and three-dimensional texturing have
+ * no host path yet and are refused, so the scalar path keeps their
+ * dimensionality checks.
  */
 static bool sgi_render_draw_supported(const SGIRasterRules *rules,
                                       const SGIRasterTarget *target,
@@ -283,7 +285,7 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
         st->depth_test || st->stencil_test || st->blend > 1 ||
         st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
         st->color_logic_op ||
-        st->index_logic_op || st->texture_3d ||
+        st->index_logic_op || st->texture_1d || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
         !st->drawable.bound ||
         st->drawable.origin[0] || st->drawable.origin[1] ||
