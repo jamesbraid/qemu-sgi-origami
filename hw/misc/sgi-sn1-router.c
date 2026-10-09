@@ -256,8 +256,13 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
                 notify = false;
                 break;
             }
-            if (!write && (address == bank[p] + 8 ||
-                           address == bank[p] + 0x88)) {
+            if (address == bank[p] + 8 || address == bank[p] + 0x88) {
+                if (write) {
+                    if (s->synthetic_diagnostics && !packet->data) {
+                        return SGI_NET_PACKET_OK;
+                    }
+                    return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
+                }
                 packet->value = 0;
                 return SGI_NET_PACKET_OK;
             }
