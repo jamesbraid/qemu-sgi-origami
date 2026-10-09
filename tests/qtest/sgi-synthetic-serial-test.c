@@ -342,8 +342,9 @@ static void test_machine_serials(const void *data)
     qtest_quit(qts);
 
     /*
-     * Every machine has something to check: one-wire parts, or on a Fuel,
-     * whose identity lives in its L1, the system board's areas.
+     * Earlier profiles expose a synthetic one-wire or L1 board identity.
+     * An IP53 IO9 profile can expose neither; the walk still checks any
+     * matching identity properties it does expose.
      */
     if (!c->io9) {
         g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances),
