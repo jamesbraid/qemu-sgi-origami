@@ -453,16 +453,24 @@ static void test_router_table_vector_words(void)
 static void test_unsupported_vector_type(void)
 {
     QTestState *s = routers_start();
-    uint64_t params = 0x10100 | REQUEST_ID(0x155) | WRITE_ID(0x5a) | 2;
-    uint64_t status = vector_launch(s, A_BASE, 0, params, UINT64_MAX);
+    const uint64_t baseline = UINT64_C(0x123456789abcdef0);
+    uint64_t status = vector_launch(s, A_BASE, 0, 0x10100 | TYPE_WRITE,
+                                    baseline);
 
-    g_assert_cmphex(status, ==, STATUS_VALID | (params & STATUS_ECHO) | 5);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==,
-                    SENTINEL);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
-    status = vector_launch(s, A_BASE, 0, 0x10100, 0);
-    assert_good_reply(status, 0x10100);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0);
+    assert_good_reply(status, 0x10100 | TYPE_WRITE);
+    for (unsigned type = 2; type <= 3; type++) {
+        uint64_t params = 0x10100 | REQUEST_ID(0x155) |
+                          WRITE_ID(0x5a) | type;
+
+        status = vector_launch(s, A_BASE, 0, params, UINT64_MAX);
+        g_assert_cmphex(status, ==, STATUS_VALID | (params & STATUS_ECHO) | 5);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==,
+                        SENTINEL);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
+        status = vector_launch(s, A_BASE, 0, 0x10100, 0);
+        assert_good_reply(status, 0x10100);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, baseline);
+    }
     qtest_quit(s);
 }
 

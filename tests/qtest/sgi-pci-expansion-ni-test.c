@@ -169,27 +169,36 @@ static void test_routed_two_hops(void)
 
     qtest_sysbus_mmio_map(qts, PATH, 6, second);
     qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 3);
-    /* The first router's output-four bank carries the next turn. */
-    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 5);
-    qtest_writeq(qts, ROUTER + 0x10200 + 7 * 8, 0);
+    /* Ingress 2 + turn 3 selects A port 5; B ingress 7 + turn 4 selects 3. */
+    qtest_writeq(qts, ROUTER + 0x30200 + 7 * 8, 4);
+    qtest_writeq(qts, ROUTER + 0x30100 + 7 * 8, 0);
     qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
     result(qts, 0, MEMTX_OK);
-    qtest_writeq(qts, ROUTER + 0x10200 + 7 * 8, 7);
+    /* Turn zero sends B back to A, then repeats the middle cable. */
+    qtest_writeq(qts, ROUTER + 0x30200 + 7 * 8, 0);
+    qtest_writeq(qts, second + 0x40200 + 7 * 8, 0);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_writeq(qts, ROUTER + 0x30200 + 7 * 8, 4);
     qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
     result(qts, 0, MEMTX_OK);
-    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 0);
+    /* Changing only the global word cannot redirect this model route. */
+    qtest_writeq(qts, ROUTER + 0x30100 + 7 * 8, 7);
     qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
-    result(qts, 0, MEMTX_DECODE_ERROR);
-    /* Both zero turns now send traffic repeatedly across the same cable. */
-    qtest_writeq(qts, second + 0x10a00 + 7 * 8, 0);
-    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
-    result(qts, 0, MEMTX_DECODE_ERROR);
-    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 5);
+    result(qts, 0, MEMTX_OK);
     qtest_writeq(qts, second + 0x10, UINT64_C(1) << 8);
     qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':{"
+        "'path':%s,'property':'down','value':true}}",
+        PATH "/route-middle-cable");
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
     result(qts, 0, MEMTX_DECODE_ERROR);
-    qtest_writeq(qts, second + 0x10,
-                 (UINT64_C(1) << 8) | (UINT64_C(1) << 12));
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':{"
+        "'path':%s,'property':'down','value':false}}",
+        PATH "/route-middle-cable");
+    qtest_readq(qts, REQUESTER(0) + HUB + NODE(6) + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
     qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
     result(qts, 0, MEMTX_OK);
     qtest_quit(qts);
@@ -3537,7 +3546,7 @@ int main(int argc, char **argv)
                    test_routed_migration);
     qtest_add_func("/sgi/pci-expansion-ni/routed/interrupt-permission",
                    test_routed_interrupt);
-    qtest_add_func("/sgi/pci-expansion-ni/routed/two-hops-loop-meta",
+    qtest_add_func("/sgi/pci-expansion-ni/routed/two-hops-local-global-cycle",
                    test_routed_two_hops);
     qtest_add_func("/sgi/pci-expansion-ni/routed/processor-route",
                    test_routed_processor);

@@ -272,7 +272,8 @@ static void test_experimental_status_write(void)
     g_assert_cmphex(experimental_status_vector(s, 0x10, 0, false, 0, true),
                     ==, 0x1a6b);
     experimental_status_vector(s, 0x10, 0, true, 1 << 8, true);
-    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    /* Protection bits are stored but do not alter the bounded route. */
+    g_assert_cmphex(get(s, "route"), ==, route_before);
     experimental_status_vector(s, 0x10, 0, true,
                                (1 << 8) | (1 << 12), true);
     g_assert_cmphex(get(s, "route"), ==, route_before);
@@ -671,7 +672,7 @@ static void test_experimental_local_reset(void)
         experimental_status_vector(s, bank[p] + 0x200 + 5 * 8, 0,
                                    true, 2 + i, true);
     }
-    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
     experimental_status_vector(s, 0x8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(s, 0x10, 0,
                                                false, 0, true), ==, 0x100);
@@ -688,7 +689,7 @@ static void test_experimental_local_reset(void)
     g_assert_cmpuint(get(s, "failure"), ==, 4);
     qtest_writeq(s, BASE + 0x9, 1);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
-    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
     experimental_status_vector(s, 0x8, 0, true, 1, true);
     assert_local_reset_state(s, status);
     g_assert_cmphex(experimental_status_vector(s, 0x518, 0, false, 0,
@@ -1522,7 +1523,7 @@ static void test_routing(void)
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
     set(s, "destination", 5);
     qtest_writeq(s, BASE + 0x10, 1 << 8);
-    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
     qtest_writeq(s, BASE + 0x10, (1 << 8) | (1 << 12));
     g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
     qtest_writeq(s, BASE + 0x10, UINT64_MAX);
@@ -1880,6 +1881,18 @@ static void test_revision_range(void)
                           "-device sgi-sn1-router,chip-revision=255"));
 }
 
+static void test_revision_overflow(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 5 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*uint8_t*");
+        return;
+    }
+    qtest_quit(qtest_init("-M none -cpu R10000 "
+                          "-device sgi-sn1-router,chip-revision=256"));
+}
+
 static void test_uart(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 "
@@ -2002,6 +2015,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sgi/sn1-router/migration-profile/synthetic-destination",
                         GINT_TO_POINTER(true), test_migration_profile_mismatch);
     qtest_add_func("/sgi/sn1-router/revision-range", test_revision_range);
+    qtest_add_func("/sgi/sn1-router/revision-overflow",
+                   test_revision_overflow);
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
     qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
                    test_uart_adjacent_registers);

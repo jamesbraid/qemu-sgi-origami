@@ -14,8 +14,6 @@
 #include "system/reset.h"
 
 #define ROUTER_SIZE 0x600008
-#define FORCE_LOCAL (UINT64_C(1) << 12)
-#define META_ID_MASK (UINT64_C(15) << 8)
 #define PROTECTION_CONFIG_MASK UINT64_C(0x3fff)
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
 #define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
@@ -310,8 +308,7 @@ bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
     uint8_t turn, uint8_t destination, unsigned *output, uint8_t *next_turn)
 {
     if (ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS || turn > 7 ||
-        destination > 127 ||
-        ((s->protection & META_ID_MASK) && !(s->protection & FORCE_LOCAL))) {
+        destination > 127) {
         return false;
     }
     *output = 1 + ((ingress - 1 + turn) % SGI_SN1_ROUTER_PORTS);
