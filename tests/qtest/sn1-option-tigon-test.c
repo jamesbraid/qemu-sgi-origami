@@ -474,7 +474,11 @@ static void test_pio_sram_direct_dma_bytes_one(unsigned device)
         g_assert_cmpmem(seen, sizeof(seen), card_bytes[swap],
                         sizeof(card_bytes[swap]));
 
+        memory_write(&t, p.destination, destination - sizeof(sentinel),
+                     sentinel, sizeof(sentinel));
         memory_write(&t, p.destination, destination, sentinel,
+                     sizeof(sentinel));
+        memory_write(&t, p.destination, destination + sizeof(seen), sentinel,
                      sizeof(sentinel));
         memory_write(&t, p.destination, destination + 0x6000, sentinel,
                      sizeof(sentinel));
@@ -499,6 +503,12 @@ static void test_pio_sram_direct_dma_bytes_one(unsigned device)
             g_assert_cmpmem(seen, sizeof(seen), narrow_host_bytes[swap],
                             sizeof(narrow_host_bytes[swap]));
         }
+        memory_read(&t, p.destination, destination - sizeof(sentinel),
+                    seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+        memory_read(&t, p.destination, destination + sizeof(seen),
+                    seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
         memory_read(&t, p.destination, destination + 0x6000,
                     seen, sizeof(seen));
         g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
@@ -642,7 +652,7 @@ static void test_direct_dma_write(void)
             g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
                           t.window + 0x800 + (i ^ 3), &chunk_raw[i], 1));
             g_assert_cmphex(chunk_raw[i], ==, chunk_source[i ^ 3]);
-            chunk_expected[i] = chunk_source[i ^ (direct_swap ? 3 : 4)];
+            chunk_expected[i] = chunk_source[i ^ (direct_swap ? 7 : 4)];
         }
         g_assert_cmphex(reg_read(&t, TI_PCI_STATE) &
                         (TI_PCI_NO_WORD_SWAP | TI_PCI_32BIT_BUS), ==,
