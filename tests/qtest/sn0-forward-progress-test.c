@@ -130,17 +130,23 @@ typedef struct {
     size_t image_size;      /* the only size the machine accepts, or 0 */
     void (*prepare)(QTestState *qts);
     uint32_t view_phys;     /* 0 uses VIEW_PHYS */
+    bool io9;              /* needs DS1742 backends */
 } Recipe;
 
-#define ORIGIN300_BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x20001f80008)
+#define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x20001f80008)
 #define ORIGIN300_MD_INSTALLED_SELECT2 \
     ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 
 static void prepare_origin300(QTestState *qts)
 {
     /* Map the installed banks over the synthetic guest's low-memory state. */
-    qtest_writeq(qts, ORIGIN300_BEDROCK_MD_MEMORY_CONFIG,
+    qtest_writeq(qts, BEDROCK_MD_MEMORY_CONFIG,
                  ORIGIN300_MD_INSTALLED_SELECT2);
+}
+
+static void prepare_ip53(QTestState *qts)
+{
+    qtest_writeq(qts, BEDROCK_MD_MEMORY_CONFIG, 0x53);
 }
 
 /* Test-owned R12000 configuration, as in octane-test.c. */
@@ -150,7 +156,7 @@ static void prepare_origin300(QTestState *qts)
 
 static void prepare_fuel(QTestState *qts)
 {
-    qtest_writeq(qts, ORIGIN300_BEDROCK_MD_MEMORY_CONFIG, 0x33);
+    qtest_writeq(qts, BEDROCK_MD_MEMORY_CONFIG, 0x33);
 }
 
 /*
@@ -164,6 +170,14 @@ static const Recipe recipes[] = {
     { "origin2000", "-M origin2000", 0 },
     { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
+    { "origin350", "-M origin350,topology=origin350,ip53-experimental=on",
+      16 * 1024 * 1024, prepare_ip53, 0, true },
+    { "onyx350", "-M onyx350,topology=onyx350-compat,"
+      "ip53-experimental=on", 16 * 1024 * 1024, prepare_ip53, 0, true },
+    { "tezro", "-M tezro,topology=tezro-tower-multi,ip53-experimental=on",
+      16 * 1024 * 1024, prepare_ip53, 0, true },
+    { "onyx4-host", "-M onyx4-host,topology=onyx4-host-serial-compat,"
+      "ip53-experimental=on", 16 * 1024 * 1024, prepare_ip53, 0, true },
     /* IP30 has only 16 KiB of low RAM; the SN state address is unmapped. */
     { "octane", "-M octane -m 128M -cpu R10000", 0, NULL, 0x3000 },
     { "octane2", "-M octane2 -m 256M -cpu " OCTANE2_CPU,
@@ -875,17 +889,50 @@ static uint64_t check_delivery(Run *r, unsigned int go, unsigned int ip,
     return worst;
 }
 
+static char *blank_io9_backend(size_t size)
+{
+    GError *error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn0-forward-progress-io9-XXXXXX", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
 static void boot(Run *r, const Recipe *recipe, Program program)
 {
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
+    g_autofree char *prom_option = NULL;
+    g_autofree char *io9_data = NULL;
+    g_autofree char *io9_clock = NULL;
+    g_autofree char *io9_drives = NULL;
 
     r->view_phys = recipe->view_phys ? recipe->view_phys : VIEW_PHYS;
     build_image(image, program, r->view_phys);
     path = write_image(image, recipe->image_size);
-    r->qts = qtest_initf("%s -bios %s -accel tcg,thread=multi -S",
-                         recipe->args, path);
+    prom_option = recipe->io9 ?
+        g_strdup_printf("-drive if=pflash,index=0,file=%s,format=raw", path) :
+        g_strdup_printf("-bios %s", path);
+    if (recipe->io9) {
+        io9_data = blank_io9_backend(0x800);
+        io9_clock = blank_io9_backend(16);
+        io9_drives = g_strdup_printf(
+            "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+            io9_data, io9_clock);
+    }
+    r->qts = qtest_initf("%s %s %s -accel tcg,thread=multi -S",
+                         recipe->args, prom_option,
+                         io9_drives ? io9_drives : "");
     unlink(path);
+    if (io9_data) {
+        unlink(io9_data);
+        unlink(io9_clock);
+    }
 
     r->cpus = count_cpus(r->qts);
     g_assert_cmpuint(r->cpus, >=, 1);
