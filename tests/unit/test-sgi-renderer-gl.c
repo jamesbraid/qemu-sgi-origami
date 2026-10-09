@@ -3920,6 +3920,177 @@ static void prim_expect_refused(SGIRenderer *renderer, const char *name,
     }
 }
 
+/* A vertex at window (x, y) under the case's viewport and identity matrices. */
+static void prim_vertex_window(PrimCase *p, float x, float y)
+{
+    const int32_t *vp = p->state.viewport;
+    float *v;
+
+    prim_vertex_n(p, 0, 0);
+    v = p->vertices[p->draw.count - 1];
+    v[SGI_GL_V_POSITION] = (x - vp[0]) * 2.0 / vp[2] - 1;
+    v[SGI_GL_V_POSITION + 1] = (y - vp[1]) * 2.0 / vp[3] - 1;
+}
+
+/* A triangle reaching past every edge of the 16x16 window. */
+static void prim_cover(PrimCase *p)
+{
+    prim_vertex_window(p, -3.25f, -2.5f);
+    prim_vertex_window(p, 30.75f, 1.5f);
+    prim_vertex_window(p, 2.5f, 29.25f);
+}
+
+static void prim_set_clips(PrimCase *p, const SGIClipRect *r, unsigned n)
+{
+    p->state.drawable.clip.n = n;
+    memcpy(p->state.drawable.clip.r, r, n * sizeof(*r));
+}
+
+/* Column-major matrices, as the draw state holds them. */
+static void prim_matrices(PrimCase *p, bool perspective)
+{
+    static const float modelview[16] = {
+        0.8660254f, 0.5f, 0, 0,
+        -0.5f, 0.8660254f, 0, 0,
+        0, 0, 1, 0,
+        0.13f, -0.21f, -2.5f, 1,
+    };
+    static const float ortho[16] = {
+        0.9f, 0, 0, 0,
+        0, 1.1f, 0, 0,
+        0, 0, -0.5f, 0,
+        0.05f, -0.07f, -0.25f, 1,
+    };
+    /* Near 1, far 10, a 90 degree field of view. */
+    static const float frustum[16] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, -11.0f / 9, -1,
+        0, 0, -20.0f / 9, 0,
+    };
+
+    memcpy(p->state.modelview, modelview, sizeof(modelview));
+    memcpy(p->state.projection, perspective ? frustum : ortho,
+           sizeof(ortho));
+}
+
+static void test_scalar_match_state(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect disjoint[] = {
+        { 1, 1, 5, 4 }, { 9, 2, 14, 6 }, { 3, 10, 6, 15 },
+    };
+    static const SGIClipRect touching[] = {
+        { 0, 0, 7, 15 }, { 8, 0, 15, 7 },
+    };
+    static const SGIClipRect overlapping[] = {
+        { 2, 2, 10, 10 }, { 6, 6, 13, 13 }, { -4, 12, 20, 30 },
+    };
+    static const int32_t scissors[][4] = {
+        { 3, 2, 6, 8 },         /* inside */
+        { -4, 10, 16, 10 },     /* crossing two edges */
+        { 5, 5, 0, 4 },         /* empty */
+    };
+    static const int32_t viewports[][4] = {
+        { 3, -2, 10, 12 },
+        { -8, -8, 40, 40 },
+        { -8192, -8192, 16384, 16384 },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    /*
+     * Flat only: smooth interpolation rounds float32 against the scalar
+     * path's double, so a value within about 0.001 of a half step can
+     * round the other way (the renderer guide's open feature rows).
+     */
+    for (unsigned top = 0; top < 2; top++) {
+        const char *rows = top & 1 ? "top-origin" : "bottom-origin";
+        uint32_t shade = SGI_GL_FLAT;
+        g_autofree char *name = NULL;
+
+#define STATE_CASE(fmt, ...) do { \
+            p->top_origin = top & 1; \
+            p->state.shade_model = shade; \
+            name = g_strdup_printf("%s %s " fmt, rows, \
+                                   shade == SGI_GL_FLAT ? "flat" : "smooth", \
+                                   __VA_ARGS__); \
+            prim_expect(renderer, name, p, &failures); \
+            g_clear_pointer(&name, g_free); \
+        } while (0)
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        prim_cover(p);
+        prim_set_clips(p, disjoint, ARRAY_SIZE(disjoint));
+        STATE_CASE("%s", "disjoint clips");
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        prim_cover(p);
+        prim_set_clips(p, touching, ARRAY_SIZE(touching));
+        STATE_CASE("%s", "touching clips");
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 3);
+        prim_cover(p);
+        prim_set_clips(p, overlapping, ARRAY_SIZE(overlapping));
+        STATE_CASE("%s", "overlapping clips");
+
+        for (unsigned i = 0; i < ARRAY_SIZE(scissors); i++) {
+            prim_case_init(p, SGI_GL_TRIANGLES, 4);
+            prim_cover(p);
+            prim_set_clips(p, disjoint, ARRAY_SIZE(disjoint) - 1);
+            p->state.scissor_test = 1;
+            memcpy(p->state.scissor, scissors[i], sizeof(scissors[i]));
+            STATE_CASE("scissor %d,%d %dx%d", scissors[i][0],
+                       scissors[i][1], scissors[i][2], scissors[i][3]);
+        }
+
+        for (unsigned i = 0; i < ARRAY_SIZE(viewports); i++) {
+            prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+            memcpy(p->state.viewport, viewports[i], sizeof(viewports[i]));
+            prim_vertex_window(p, 1.25f, 0.75f);
+            prim_vertex_window(p, 14.5f, 2.125f);
+            prim_vertex_window(p, 12.75f, 13.5f);
+            prim_vertex_window(p, 2.375f, 11.25f);
+            STATE_CASE("viewport %d,%d %dx%d", viewports[i][0],
+                       viewports[i][1], viewports[i][2], viewports[i][3]);
+        }
+
+        for (unsigned perspective = 0; perspective < 2; perspective++) {
+            static const float object[][3] = {
+                { -0.83f, -0.61f, 0.37f }, { 0.77f, -0.29f, -0.42f },
+                { 0.18f, 0.93f, 0.11f }, { -0.55f, 0.47f, -0.66f },
+            };
+
+            prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+            prim_matrices(p, perspective);
+            for (unsigned v = 0; v < ARRAY_SIZE(object); v++) {
+                float *vertex;
+
+                prim_vertex_n(p, 0, 0);
+                vertex = p->vertices[p->draw.count - 1];
+                memcpy(&vertex[SGI_GL_V_POSITION], object[v],
+                       sizeof(object[v]));
+            }
+            STATE_CASE("%s matrices",
+                       perspective ? "perspective" : "orthographic");
+        }
+#undef STATE_CASE
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -4582,6 +4753,8 @@ int main(int argc, char **argv)
                     test_typed_texture_triangle);
     g_test_add_func("/sgi-renderer-gl/typed-texture-multi-texel",
                     test_typed_texture_multi_texel);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-state",
+                    test_scalar_match_state);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
