@@ -1896,7 +1896,7 @@ static void test_flat_triangle_alpha_blend(void)
     error_free(err);
     err = NULL;
     state.blend_src = SGI_GL_SRC_ALPHA;
-    state.blend_equation = SGI_GL_FUNC_REVERSE_SUBTRACT;
+    state.blend_equation = SGI_GL_LOGIC_OP;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
                     SGI_RENDER_UNSUPPORTED);
@@ -2097,8 +2097,9 @@ static void test_blend_without_native_alpha(void)
         unsigned commits = f.commits;
         unsigned dense_commits = f.dense_commits;
 
+        /* A refused constant factor takes no snapshot, changes nothing. */
         state.blend_src = SGI_GL_DST_ALPHA;
-        state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+        state.blend_dst = SGI_GL_ONE_MINUS_CONSTANT_ALPHA;
         g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                                  &draw, &err), ==,
                         SGI_RENDER_UNSUPPORTED);
@@ -3571,6 +3572,9 @@ typedef struct PrimCase {
     unsigned components;
     /* Nonzero selects one unsupported raster rule for the Mesa path. */
     unsigned rules_case;
+    /* Nonzero fills every destination component with dest_value - 1. */
+    uint32_t dest_value;
+    unsigned bits; /* Colour, alpha and storage bits; zero means 8. */
 } PrimCase;
 
 static void prim_case_init(PrimCase *p, uint32_t mode, unsigned components)
@@ -3647,9 +3651,10 @@ static void prim_destination(PrimFixture *f, unsigned components)
 static unsigned prim_compare(SGIRenderer *renderer, const char *name,
                              PrimCase *p, bool refused)
 {
+    unsigned bits = p->bits ? p->bits : 8;
     SGIRasterRules rules = {
-        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
-        .alpha_bits = p->components == 4 ? 8 : 0,
+        .subpixel_bits = 8, .color_bits = bits, .depth_bits = 24,
+        .alpha_bits = p->components == 4 ? bits : 0,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
@@ -3663,10 +3668,10 @@ static unsigned prim_compare(SGIRenderer *renderer, const char *name,
         .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
         .bottom_origin = true, .component_count = p->components,
         .component = {
-            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
-            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
-            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
-            { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_R, SGI_RENDER_UNORM, bits },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, bits },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, bits },
+            { SGI_RENDER_A, SGI_RENDER_UNORM, bits },
         },
     };
     SGIRenderResourceOps ops = {
@@ -3689,6 +3694,16 @@ static unsigned prim_compare(SGIRenderer *renderer, const char *name,
 
     prim_destination(scalar, p->components);
     prim_destination(mesa, p->components);
+    if (p->dest_value) {
+        for (unsigned y = 0; y < PRIM_SIZE; y++) {
+            for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                for (unsigned c = 0; c < 4; c++) {
+                    scalar->rgba[y][x][c] = p->dest_value - 1;
+                    mesa->rgba[y][x][c] = p->dest_value - 1;
+                }
+            }
+        }
+    }
     g_assert_true(sgi_raster_rules_supported(&rules));
     g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &p->draw), ==,
                     SGI_GL_DRAW_OK);
@@ -4140,6 +4155,272 @@ static void test_smoothing_refused(void)
     }
 }
 
+/*
+ * The constant-colour factors stay unsupported: llvmpipe's float32 blend
+ * and the scalar double-precision blend round exact half steps in
+ * opposite directions, for example blend colour 0.9 on a stored 195.
+ */
+static bool prim_blend_factor_constant(uint32_t factor)
+{
+    return factor == SGI_GL_CONSTANT_COLOR ||
+           factor == SGI_GL_ONE_MINUS_CONSTANT_COLOR ||
+           factor == SGI_GL_CONSTANT_ALPHA ||
+           factor == SGI_GL_ONE_MINUS_CONSTANT_ALPHA;
+}
+
+static const uint32_t prim_blend_factors[] = {
+    0, 1, SGI_GL_SRC_COLOR, SGI_GL_ONE_MINUS_SRC_COLOR, SGI_GL_DST_COLOR,
+    SGI_GL_ONE_MINUS_DST_COLOR, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+    SGI_GL_DST_ALPHA, SGI_GL_ONE_MINUS_DST_ALPHA, SGI_GL_CONSTANT_COLOR,
+    SGI_GL_ONE_MINUS_CONSTANT_COLOR, SGI_GL_CONSTANT_ALPHA,
+    SGI_GL_ONE_MINUS_CONSTANT_ALPHA, SGI_GL_SRC_ALPHA_SATURATE,
+};
+
+static const uint32_t prim_blend_equations[] = {
+    SGI_GL_FUNC_ADD, SGI_GL_FUNC_SUBTRACT, SGI_GL_FUNC_REVERSE_SUBTRACT,
+    SGI_GL_MIN, SGI_GL_MAX,
+};
+
+/*
+ * Every factor pair and equation, flat and smooth, RGBA8 and RGB8. A pair
+ * with a constant-colour factor must be refused before the snapshot.
+ */
+/*
+ * Pieces of one blended draw that overlap: each blends against the value
+ * the previous one stored, clamped and rounded to the storage steps.
+ */
+static void prim_blend_overlap_case(PrimCase *p, unsigned components,
+                                    uint32_t mode, uint32_t src, uint32_t dst,
+                                    uint32_t equation)
+{
+    prim_case_init(p, mode, components);
+    p->state.blend = 1;
+    p->state.blend_src = src;
+    p->state.blend_dst = dst;
+    p->state.blend_equation = equation;
+}
+
+/*
+ * A blended draw that splits into several primitives is refused; the same
+ * vectors drawn as one primitive must still match.
+ */
+static void test_blend_overlap_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned components = 3; components <= 4; components++) {
+        g_autofree char *name = NULL;
+
+        /* 64 blended with black at alpha 1/255 is 63.749 each time. */
+        prim_blend_overlap_case(p, components, SGI_GL_TRIANGLES,
+                                SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+                                SGI_GL_FUNC_ADD);
+        p->dest_value = 64 + 1;
+        for (unsigned i = 0; i < 2; i++) {
+            prim_vertex(p, -1, -1, 0, 0, 0, 1 / 255.0f);
+            prim_vertex(p, 3 * PRIM_SIZE, -1, 0, 0, 0, 1 / 255.0f);
+            prim_vertex(p, -1, 3 * PRIM_SIZE, 0, 0, 0, 1 / 255.0f);
+        }
+        name = g_strdup_printf("coincident triangles %u", components);
+        prim_expect_refused(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+        p->draw.count = 3;
+        name = g_strdup_printf("one of the triangles %u", components);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_blend_overlap_case(p, components, SGI_GL_POINTS,
+                                SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+                                SGI_GL_FUNC_ADD);
+        p->draw.point_size = 3;
+        for (unsigned i = 0; i < 4; i++) {
+            prim_vertex(p, 5.5f + (i & 1), 7.5f, 0.1f, 0.9f, 0.5f, 0.3f);
+        }
+        name = g_strdup_printf("repeated points %u", components);
+        prim_expect_refused(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        /* A concave polygon's fan triangles cover some pixels twice. */
+        prim_blend_overlap_case(p, components, SGI_GL_POLYGON,
+                                SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+                                SGI_GL_FUNC_ADD);
+        p->state.shade_model = SGI_GL_SMOOTH;
+        prim_vertex_n(p, 1, 1);
+        prim_vertex_n(p, 15, 2);
+        prim_vertex_n(p, 4.5f, 6.25f);
+        prim_vertex_n(p, 14, 14.5f);
+        prim_vertex_n(p, 2, 13);
+        name = g_strdup_printf("concave polygon %u", components);
+        prim_expect_refused(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_blend_overlap_case(p, components, SGI_GL_QUADS,
+                                SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+                                SGI_GL_FUNC_ADD);
+        prim_vertex(p, 1, 1, 0.8f, 0.2f, 0.1f, 0.6f);
+        prim_vertex(p, 11, 1.5f, 0.8f, 0.2f, 0.1f, 0.6f);
+        prim_vertex(p, 10.5f, 11, 0.8f, 0.2f, 0.1f, 0.6f);
+        prim_vertex(p, 1.25f, 10, 0.8f, 0.2f, 0.1f, 0.6f);
+        prim_vertex(p, 5, 4.5f, 0.1f, 0.3f, 0.9f, 0.45f);
+        prim_vertex(p, 15, 5, 0.1f, 0.3f, 0.9f, 0.45f);
+        prim_vertex(p, 14.5f, 15, 0.1f, 0.3f, 0.9f, 0.45f);
+        prim_vertex(p, 5.5f, 14, 0.1f, 0.3f, 0.9f, 0.45f);
+        name = g_strdup_printf("overlapping quads %u", components);
+        prim_expect_refused(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        /* The first result is below zero and stored as zero. */
+        for (unsigned e = 0; e < 2; e++) {
+            prim_blend_overlap_case(p, components, SGI_GL_TRIANGLES, 1, 1,
+                                    e ? SGI_GL_FUNC_REVERSE_SUBTRACT :
+                                        SGI_GL_FUNC_SUBTRACT);
+            for (unsigned i = 0; i < 2; i++) {
+                float c = e ? 0.8f : 0.2f;
+
+                prim_vertex(p, -1, -1, c, c, c, c);
+                prim_vertex(p, 3 * PRIM_SIZE, -1, c, c, c, c);
+                prim_vertex(p, -1, 3 * PRIM_SIZE, c, c, c, c);
+            }
+            name = g_strdup_printf("%s out of range %u",
+                                   e ? "reverse subtract" : "subtract",
+                                   components);
+            prim_expect_refused(renderer, name, p, &failures);
+            g_clear_pointer(&name, g_free);
+            p->draw.count = 3;
+            name = g_strdup_printf("%s once %u",
+                                   e ? "reverse subtract" : "subtract",
+                                   components);
+            prim_expect(renderer, name, p, &failures);
+            g_clear_pointer(&name, g_free);
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * 10-bit storage crosses the worker as 16-bit UNORM, which cannot hold
+ * every 10-bit value exactly: 504 blended with black at alpha 1/1023 is
+ * 503.507, stored as 504 by the scalar path and 503 through the worker.
+ */
+static void test_blend_10_bit_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned components = 3; components <= 4; components++) {
+        g_autofree char *name = g_strdup_printf("10-bit blend %u",
+                                                components);
+
+        prim_case_init(p, SGI_GL_TRIANGLES, components);
+        p->bits = 10;
+        p->dest_value = 504 + 1;
+        p->state.blend = 1;
+        p->state.blend_src = SGI_GL_SRC_ALPHA;
+        p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+        p->state.blend_equation = SGI_GL_FUNC_ADD;
+        prim_vertex(p, -1, -1, 0, 0, 0, 1 / 1023.0f);
+        prim_vertex(p, 3 * PRIM_SIZE, -1, 0, 0, 0, 1 / 1023.0f);
+        prim_vertex(p, -1, 3 * PRIM_SIZE, 0, 0, 0, 1 / 1023.0f);
+        prim_expect_refused(renderer, name, p, &failures);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+static void test_scalar_match_blend(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned components = 3; components <= 4; components++) {
+        for (unsigned e = 0; e < G_N_ELEMENTS(prim_blend_equations); e++) {
+            for (unsigned s = 0; s < G_N_ELEMENTS(prim_blend_factors); s++) {
+                /* Source alpha saturate is a source factor only. */
+                for (unsigned d = 0;
+                     d + 1 < G_N_ELEMENTS(prim_blend_factors); d++) {
+                    g_autofree char *name = NULL;
+
+                    prim_case_init(p, SGI_GL_TRIANGLES, components);
+                    p->state.shade_model = (s + d) & 1 ? SGI_GL_SMOOTH :
+                                                         SGI_GL_FLAT;
+                    p->state.blend = 1;
+                    p->state.blend_src = prim_blend_factors[s];
+                    p->state.blend_dst = prim_blend_factors[d];
+                    p->state.blend_equation = prim_blend_equations[e];
+                    p->state.blend_color[0] = 0.2f;
+                    p->state.blend_color[1] = 0.6f;
+                    p->state.blend_color[2] = 0.9f;
+                    p->state.blend_color[3] = 0.35f;
+                    prim_vertex(p, -1, -1, 0.31f, 0.77f, 0.05f, 0.43f);
+                    prim_vertex(p, 3 * PRIM_SIZE, -1, 0.9f, 0.12f, 0.55f,
+                                0.8f);
+                    prim_vertex(p, -1, 3 * PRIM_SIZE, 0.6f, 0.4f, 0.98f,
+                                0.17f);
+                    name = g_strdup_printf("blend rgb%s %s src 0x%x dst "
+                                           "0x%x eq 0x%x",
+                                           components == 4 ? "a" : "",
+                                           p->state.shade_model ==
+                                           SGI_GL_FLAT ? "flat" : "smooth",
+                                           p->state.blend_src,
+                                           p->state.blend_dst,
+                                           p->state.blend_equation);
+                    if (prim_blend_factor_constant(p->state.blend_src) ||
+                        prim_blend_factor_constant(p->state.blend_dst)) {
+                        prim_expect_refused(renderer, name, p, &failures);
+                    } else {
+                        prim_expect(renderer, name, p, &failures);
+                    }
+                    cases++;
+                }
+            }
+        }
+    }
+    g_test_message("blend: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4181,6 +4462,12 @@ int main(int argc, char **argv)
                     test_scalar_match_polygons);
     g_test_add_func("/sgi-renderer-gl/points-ignore-polygon-modes",
                     test_points_ignore_polygon_modes);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-blend",
+                    test_scalar_match_blend);
+    g_test_add_func("/sgi-renderer-gl/blend-overlap-refused",
+                    test_blend_overlap_refused);
+    g_test_add_func("/sgi-renderer-gl/blend-10-bit-refused",
+                    test_blend_10_bit_refused);
     g_test_add_func("/sgi-renderer-gl/smoothing-refused",
                     test_smoothing_refused);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",

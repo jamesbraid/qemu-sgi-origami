@@ -146,15 +146,64 @@ static SGIRenderResult sgi_render_texture_span(const SGIRenderResource *res,
     return SGI_RENDER_OK;
 }
 
-static bool sgi_render_blend_pair_supported(const SGIGLDrawState *st)
+/*
+ * Every OpenGL 1.2 factor except the constant colour ones, whose half-step
+ * results llvmpipe's float32 blend rounds the other way from the scalar
+ * rasterizer. Source alpha saturate is a source factor only.
+ */
+static bool sgi_render_blend_factor_supported(uint32_t factor, bool source)
 {
-    return (st->blend_src == SGI_GL_SRC_ALPHA &&
-            st->blend_dst == SGI_GL_ONE_MINUS_SRC_ALPHA) ||
-           (st->blend_src == SGI_GL_DST_ALPHA && st->blend_dst == 0) ||
-           (st->blend_src == 0 &&
-            st->blend_dst == SGI_GL_ONE_MINUS_DST_ALPHA) ||
-           (st->blend_src == SGI_GL_SRC_ALPHA_SATURATE &&
-            st->blend_dst == 1);
+    switch (factor) {
+    case 0:
+    case 1:
+    case SGI_GL_SRC_COLOR:
+    case SGI_GL_ONE_MINUS_SRC_COLOR:
+    case SGI_GL_DST_COLOR:
+    case SGI_GL_ONE_MINUS_DST_COLOR:
+    case SGI_GL_SRC_ALPHA:
+    case SGI_GL_ONE_MINUS_SRC_ALPHA:
+    case SGI_GL_DST_ALPHA:
+    case SGI_GL_ONE_MINUS_DST_ALPHA:
+        return true;
+    case SGI_GL_SRC_ALPHA_SATURATE:
+        return source;
+    default:
+        return false;
+    }
+}
+
+/*
+ * The worker rounds the source colour to the rules' colour steps and its
+ * alpha to the scalar rasterizer's incoming alpha steps before blending,
+ * so the native components must hold exactly those steps. Blending is
+ * limited to 8-bit components: the destination crosses the worker as
+ * 16-bit UNORM, which holds a b-bit value exactly only when 2^b - 1
+ * divides 65535, and only 8 bits is tested.
+ */
+static bool sgi_render_blend_supported(const SGIRasterRules *rules,
+                                       const SGIGLDrawState *st,
+                                       const SGIRenderResource *res)
+{
+    if (rules->color_bits != 8 ||
+        (st->blend_equation != SGI_GL_FUNC_ADD &&
+         st->blend_equation != SGI_GL_FUNC_SUBTRACT &&
+         st->blend_equation != SGI_GL_FUNC_REVERSE_SUBTRACT &&
+         st->blend_equation != SGI_GL_MIN &&
+         st->blend_equation != SGI_GL_MAX) ||
+        !sgi_render_blend_factor_supported(st->blend_src, true) ||
+        !sgi_render_blend_factor_supported(st->blend_dst, false)) {
+        return false;
+    }
+    for (unsigned c = 0; c < 3; c++) {
+        if (res->component[c].storage_bits != rules->color_bits) {
+            return false;
+        }
+    }
+    if (res->component_count == 3) {
+        return !rules->alpha_bits;
+    }
+    /* Stored alpha has the scalar path's incoming alpha precision. */
+    return rules->alpha_bits == 8 && res->component[3].storage_bits == 8;
 }
 
 static bool sgi_render_mode_polygons(uint32_t mode)
@@ -171,7 +220,8 @@ static bool sgi_render_mode_polygons(uint32_t mode)
  * polygons. The refusal is stricter than the scalar path, which draws
  * aliased and logs when its rules do not smooth.
  */
-static bool sgi_render_draw_supported(const SGIRasterTarget *target,
+static bool sgi_render_draw_supported(const SGIRasterRules *rules,
+                                      const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
                                       const SGIRenderResource **result)
 {
@@ -232,15 +282,11 @@ static bool sgi_render_draw_supported(const SGIRasterTarget *target,
         if (res->component[c].channel != SGI_RENDER_R + c ||
             res->component[c].numeric != SGI_RENDER_UNORM ||
             !res->component[c].storage_bits ||
-            res->component[c].storage_bits > 16 ||
-            (st->blend && res->component[c].storage_bits != 8)) {
+            res->component[c].storage_bits > 16) {
             return false;
         }
     }
-    if (st->blend &&
-        (st->blend_equation != SGI_GL_FUNC_ADD ||
-         !sgi_render_blend_pair_supported(st) ||
-         res->component_count != 3)) {
+    if (st->blend && !sgi_render_blend_supported(rules, st, res)) {
         return false;
     }
     if (st->texture_2d) {
@@ -445,7 +491,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "Unsupported SGI Mesa raster rules");
         return SGI_RENDER_UNSUPPORTED;
     }
-    if (!sgi_render_draw_supported(target, draw, &resource)) {
+    if (!sgi_render_draw_supported(rules, target, draw, &resource)) {
         error_setg(errp, "Unsupported SGI Mesa draw state or resource");
         return SGI_RENDER_UNSUPPORTED;
     }
@@ -456,6 +502,19 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         if (piece_vertices > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX) {
             error_setg(errp, "SGI Mesa draw has too many vertices");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        /*
+         * The float target rounds only at readback, so a second
+         * overlapping primitive would blend against an unrounded value
+         * where the scalar path blends against the stored one. An 8-bit
+         * target rounds per primitive but llvmpipe's fixed-point blend
+         * then differs from the scalar path for single primitives.
+         */
+        if (draw->state->blend &&
+            piece_vertices > (draw->mode == SGI_GL_POINTS ? 1 : 3)) {
+            error_setg(errp, "SGI Mesa blending of more than one primitive "
+                       "in a draw is unsupported");
             return SGI_RENDER_UNSUPPORTED;
         }
         if (draw->mode == SGI_GL_POINTS) {
@@ -685,6 +744,18 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         assert(pieces.count == piece_vertices);
         frame.primitive = pieces.primitive;
         frame.point_size = point_size;
+        for (unsigned c = 0; c < resource->component_count; c++) {
+            frame.colour_steps[c] =
+                (1u << resource->component[c].storage_bits) - 1;
+        }
+        if (draw->state->blend) {
+            /* sgi_render_blend_supported() matched these to the storage. */
+            for (unsigned c = 0; c < 3; c++) {
+                frame.colour_steps[c] = (1u << rules->color_bits) - 1;
+            }
+            frame.colour_steps[3] =
+                (1u << MAX(2, MAX(rules->color_bits, rules->alpha_bits))) - 1;
+        }
         frame.count = pieces.count;
         frame.vertices = piece_storage;
     }

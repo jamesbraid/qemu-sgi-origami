@@ -36,6 +36,8 @@ typedef struct SGIRendererGL {
     GLint texture_border, texture_environment;
     GLint max_viewport[2];
     GLfloat point_range[2];
+    GLuint colour_program;
+    GLint colour_steps, colour_flat;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -222,6 +224,73 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
     return true;
 }
 
+/*
+ * Untextured frames: the fragment colour is clamped and rounded to the
+ * frame's component steps before blending, as the scalar rasterizer
+ * rounds a source colour before it blends.
+ */
+static bool renderer_gl_colour_program(SGIRendererGL *renderer)
+{
+    static const char *vertex_source =
+        "#version 330 compatibility\n"
+        "out vec4 smooth_colour;\n"
+        "flat out vec4 flat_colour;\n"
+        "void main() {\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+        "  smooth_colour = gl_Color; flat_colour = gl_Color;\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 330 compatibility\n"
+        "uniform vec4 steps;\n"
+        "uniform int flat_shade;\n"
+        "in vec4 smooth_colour;\n"
+        "flat in vec4 flat_colour;\n"
+        "layout(location=0) out vec4 pixel;\n"
+        "void main() {\n"
+        "  vec4 c = clamp(flat_shade != 0 ? flat_colour : smooth_colour,\n"
+        "                 0.0, 1.0);\n"
+        "  for (int k = 0; k < 4; k++) {\n"
+        "    if (steps[k] > 0.0) c[k] = floor(c[k] * steps[k] + 0.5) /\n"
+        "                              steps[k];\n"
+        "  }\n"
+        "  pixel = c;\n"
+        "}\n";
+    GLuint vertex, fragment;
+    GLint linked;
+    char log[512];
+
+    vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
+    if (!vertex) {
+        return false;
+    }
+    fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return false;
+    }
+    renderer->colour_program = glCreateProgram();
+    glAttachShader(renderer->colour_program, vertex);
+    glAttachShader(renderer->colour_program, fragment);
+    glLinkProgram(renderer->colour_program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    glGetProgramiv(renderer->colour_program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        glGetProgramInfoLog(renderer->colour_program, sizeof(log), NULL, log);
+        error_setg(&renderer->error, "SGI colour program failed: %s", log);
+        return false;
+    }
+    renderer->colour_steps = glGetUniformLocation(renderer->colour_program,
+                                                  "steps");
+    renderer->colour_flat = glGetUniformLocation(renderer->colour_program,
+                                                 "flat_shade");
+    if (renderer->colour_steps < 0 || renderer->colour_flat < 0) {
+        error_setg(&renderer->error, "SGI colour program is missing a uniform");
+        return false;
+    }
+    return true;
+}
+
 static bool renderer_gl_start(SGIRendererGL *renderer)
 {
     static const char *vertex_source =
@@ -311,6 +380,9 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     }
     glGetIntegerv(GL_MAX_VIEWPORT_DIMS, renderer->max_viewport);
     glGetFloatv(GL_ALIASED_POINT_SIZE_RANGE, renderer->point_range);
+    if (!renderer_gl_colour_program(renderer)) {
+        return false;
+    }
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
     if (major > 4 || (major == 4 && minor >= 5)) {
@@ -389,8 +461,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    /*
+     * Float storage keeps untextured blending free of intermediate fixed
+     * point rounding; readback clamps as a native store does.
+     */
     glTexImage2D(GL_TEXTURE_2D, 0,
-                 frame->texture.slots ? GL_RGBA8 : GL_RGBA16,
+                 frame->texture.slots ? GL_RGBA8 : GL_RGBA32F,
                  frame->width, frame->height,
                  0, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -474,6 +550,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform1i(renderer->texture_shade,
                     frame->shade_model == GL_FLAT);
         glUniform1i(renderer->texture_linear, frame->texture.linear_filter);
+    } else {
+        glUseProgram(renderer->colour_program);
+        glUniform4f(renderer->colour_steps, frame->colour_steps[0],
+                    frame->colour_steps[1], frame->colour_steps[2],
+                    frame->colour_steps[3]);
+        glUniform1i(renderer->colour_flat, frame->shade_model == GL_FLAT);
     }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glStencilMask(0xff);
@@ -682,6 +764,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
             glDeleteVertexArrays(1, &renderer->vao);
             glDeleteProgram(renderer->program);
             glDeleteProgram(renderer->texture_program);
+            glDeleteProgram(renderer->colour_program);
             clean = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                     EGL_NO_CONTEXT);
         }
