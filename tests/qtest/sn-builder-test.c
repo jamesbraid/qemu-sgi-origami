@@ -2553,6 +2553,8 @@ static void test_ip53_runtime_permission_refusals(void)
         { "origin300,ip53-experimental=on", "512M", "2", "R14000",
           "ip53-experimental=on requires a registered IP53 runtime "
           "profile", false },
+        { "onyx4-host,topology=onyx4-host-g2n,ip53-experimental=on",
+          "8G", "4", "R16000", "unknown topology", false },
         { "origin350,topology=origin300-pci-expansion-experiment,"
           "ip53-experimental=on", "2G", "4", "R16000",
           "unknown topology", false },
@@ -2837,7 +2839,9 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     g_autoptr(GError) err = NULL;
     g_autofree char *arguments = NULL;
     const char *scache_bytes = g_str_has_prefix(
-        machine, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial")
+        machine, "onyx4-host,") ? "0x1000000" :
+        g_str_has_prefix(
+            machine, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial")
         ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int flash_fd, data_fd, clock_fd;
@@ -2880,6 +2884,47 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start(const char *machine,
 }
 
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture);
+
+static void test_onyx4_host_ip53_compatibility_construction(void)
+{
+    IP53RuntimeTestFixture *fixture = ip53_runtime_test_start_with_binary_profile(
+        NULL, "onyx4-host,ip53-experimental=on", NULL, "8G", "0x009dad85");
+    QTestState *qts = fixture->qts;
+    g_autofree char *pic = qom_child_type(qts, "/machine", "pic-pic");
+    g_autofree char *ioc4 = qom_child_type(
+        qts, "/machine", "io9-io9-d1-f0");
+    g_autoptr(QDict) response = NULL;
+    QList *cpus;
+    const QListEntry *entry;
+    unsigned int cpu_count = 0;
+
+    g_assert_true(qom_get_bool(qts, "/machine", "ip53-experimental"));
+    g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "board-id-word"),
+                    ==, 0x2001);
+    g_assert_cmpstr(pic, ==, "sgi-pic");
+    g_assert_cmpstr(ioc4, ==, "sgi-ioc4");
+    g_assert_null(qom_child_type(qts, "/machine", "node1"));
+    g_assert_null(qom_child_type(qts, "/machine", "router0"));
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
+                                  "qtest-clock-period"), ==,
+                     CLOCK_PERIOD_FROM_HZ(1000000000));
+
+    response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    cpus = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(cpus); entry; entry = qlist_next(entry)) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *path = qdict_get_str(cpu, "qom-path");
+
+        g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
+        g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+                        0x009dad85);
+        g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
+                        0x1000000);
+        cpu_count++;
+    }
+    g_assert_cmpuint(cpu_count, ==, 4);
+    ip53_runtime_test_stop(fixture);
+}
 
 static void test_tezro_trial_builds_two_pic_hosts(void)
 {
@@ -7587,6 +7632,8 @@ int main(int argc, char **argv)
         test_ip53_runtime_permission_defaults_false_and_immutable);
     qtest_add_func("sn/builder/ip53-runtime-construction",
                    test_ip53_runtime_construction);
+    qtest_add_func("sn/builder/onyx4-host-ip53-compatibility-construction",
+                   test_onyx4_host_ip53_compatibility_construction);
     qtest_add_func("sn/builder/tezro-trial-builds-two-pic-hosts",
                    test_tezro_trial_builds_two_pic_hosts);
     qtest_add_func(

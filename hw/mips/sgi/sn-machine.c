@@ -1091,11 +1091,14 @@ static bool sgi_machine_ip53_experiment_policy(
     bool origin350 = g_strcmp0(smc->product, "origin350") == 0;
     bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0;
     bool tezro = g_strcmp0(smc->product, "tezro") == 0;
+    bool onyx4_host = g_strcmp0(smc->product, "onyx4-host") == 0;
     bool origin350_topology = g_strcmp0(t->name, "origin350") == 0;
     bool onyx350_topology = g_strcmp0(t->name, "onyx350-compat") == 0;
     const SGIModelPciHostBridgeList *host_entry;
     bool tezro_runtime_profile = g_strcmp0(
         t->name, "tezro-deskside-700mhz-4mib-serial-trial") == 0;
+    bool onyx4_host_runtime_profile = g_strcmp0(
+        t->name, "onyx4-host-serial-compat") == 0;
 
     for (host_entry = t->pci_host_bridges; host_entry;
          host_entry = host_entry->next) {
@@ -1110,7 +1113,8 @@ static bool sgi_machine_ip53_experiment_policy(
     }
     bool registered_ip53_product =
         (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
-        (tezro && tezro_runtime_profile);
+        (tezro && tezro_runtime_profile) ||
+        (onyx4_host && onyx4_host_runtime_profile);
 
     if (onyx350 && !s->topology_name) {
         error_setg(errp, "Onyx 350 runtime trial requires explicit "
@@ -7941,8 +7945,9 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                                    sgi_machine_get_ip53_experimental,
                                    sgi_machine_set_ip53_experimental);
     object_class_property_set_description(oc, "ip53-experimental",
-        "Permit the registered Origin 350 IP53 software experiment. "
-        "Off by default and cannot change after the machine is built.");
+        "Permit a registered IP53-backed software experiment. The Onyx 4 "
+        "host serial trial uses IP53 guest compatibility behavior. Off by "
+        "default and immutable after the machine is built.");
 
     object_class_property_add(oc, "elsc-dip-switches", "uint8",
                               sgi_machine_get_elsc_dip_switches,

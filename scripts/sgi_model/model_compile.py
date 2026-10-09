@@ -975,6 +975,9 @@ def _processor(model: dict, cpu: dict) -> dict:
         profile = {
             "origin350": ("origin350", 700, 0x009cad85,
                           "ip53-origin350"),
+            "onyx4-host-serial-compat": (
+                "onyx4-host", 1000, 0x009dad85,
+                "ip53-onyx4-host-serial-compat"),
             "onyx350-compat": ("onyx350", 800, 0x009caf85,
                         "ip53-onyx350-compat"),
             "tezro-deskside-700mhz-4mib-serial-trial": (
@@ -1038,7 +1041,8 @@ def _processor(model: dict, cpu: dict) -> dict:
             "r16000-experimental", "r16000-reset-mode",
             "r16000-scache-bytes",
         ]
-        expected_cache_mib = (4 if product in {
+        expected_cache_mib = (16 if product == "onyx4-host-serial-compat" else
+                              4 if product in {
             "tezro-deskside-700mhz-4mib-serial-trial",
             "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
         } else 8)
@@ -3145,7 +3149,7 @@ def _compile_ip35_firmware(model: dict) -> dict:
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
     ip53_products = {
-        "origin350", "onyx350-compat",
+        "origin350", "onyx4-host-serial-compat", "onyx350-compat",
         "tezro-deskside-700mhz-4mib-serial-trial",
         "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
     }

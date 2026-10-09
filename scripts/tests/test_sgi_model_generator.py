@@ -68,6 +68,30 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(processor["cache_clock_hz"], 350000000)
         self.assertNotIn("mode_bits", processor)
 
+    def test_onyx4_host_serial_profile_names_its_ip53_compatibility(self):
+        catalogue = json.loads(
+            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
+        topology = next(
+            item for item in catalogue["topologies"]
+            if item["name"] == "onyx4-host-serial-compat")
+
+        self.assertEqual(topology["product"], "onyx4-host")
+        self.assertIn("IP53-backed", topology["description"])
+        self.assertEqual(len(topology["nodes"]), 1)
+        node = topology["nodes"][0]
+        self.assertEqual(node["board-kind"], "ip53")
+        self.assertEqual(sum(node["bank-mib"]), 8192)
+        self.assertEqual(len(node["cpu-slots"]), 4)
+        cpu = node["cpu-slots"][0]["assembly"]
+        self.assertEqual(cpu["kind"], "R16000")
+        self.assertEqual(cpu["clock-hz"], 1000000000)
+        self.assertEqual(cpu["cache-mib"], 16)
+        self.assertEqual(len(topology["io-boards"]), 1)
+        self.assertEqual(topology["io-boards"][0]["id"], "io9")
+        self.assertEqual(topology["cables"], [])
+        self.assertEqual(topology["routers"], [])
+        self.assertEqual(topology["crossbars"], [])
+
     def test_reference_models_are_public_without_runtime_offerings(self):
         catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
@@ -188,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 121)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 39)
-        self.assertEqual(len(layers), 81)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 124)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 40)
+        self.assertEqual(len(layers), 83)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {
