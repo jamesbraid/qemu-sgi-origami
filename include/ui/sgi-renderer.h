@@ -51,7 +51,29 @@ typedef enum SGIRendererTextureEnvironment {
 typedef enum SGIRendererPrimitive {
     SGI_RENDERER_TRIANGLES,
     SGI_RENDERER_POINTS,
+    SGI_RENDERER_WINDOW_TRIANGLES,
 } SGIRendererPrimitive;
+
+/*
+ * Window triangle frames draw in window pixels mapped through the fixed
+ * viewport (-SGI_RENDERER_WINDOW_REACH, -reach, 4 * reach, 4 * reach),
+ * whose power-of-two scale keeps every vertex on the 1/256 grid exact.
+ * Rows are mapped as the frame's other rows are, top first.
+ */
+#define SGI_RENDERER_WINDOW_REACH 4096
+#define SGI_RENDERER_WINDOW_TRIANGLES_MAX 65536
+
+/*
+ * One triangle as the scalar rasterizer scans it: snapped window positions
+ * in 1/256 subpixels, wound counter-clockwise, each vertex's 1 / clip w and
+ * clamped colour. Each fragment's colour comes from its centre's
+ * barycentric weights, corrected by 1 / w, computed in double.
+ */
+typedef struct SGIRendererTriangle {
+    double x[3], y[3];
+    double inv_w[3];
+    float colour[3][4];
+} SGIRendererTriangle;
 
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
@@ -75,6 +97,8 @@ typedef struct SGIRendererFrame {
     SGIRendererTexture2D texture;
     uint32_t primitive; /* SGIRendererPrimitive; textured frames are fans */
     float point_size; /* Aliased integer size; zero means one. */
+    /* A window triangle frame's triangles, count of them. */
+    const SGIRendererTriangle *triangles;
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
     /*

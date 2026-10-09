@@ -1106,13 +1106,17 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.commits, ==, 3);
     state.dither = 0;
     rules.dither = SGI_DITHER_NONE;
+    /*
+     * Wholly outside the view volume, the smooth triangle leaves the scalar
+     * path nothing to scan, so the draw finishes before any snapshot.
+     */
     for (unsigned i = 0; i < 3; i++) {
         vertices[i][SGI_GL_V_POSITION] += 3;
     }
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==, SGI_RENDER_OK);
     g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 5);
+    g_assert_cmpuint(f.snapshots, ==, 4);
     g_assert_cmpuint(f.commits, ==, 3);
     g_assert_cmpuint(f.dense_commits, ==, 0);
     for (unsigned i = 0; i < 3; i++) {
@@ -1132,7 +1136,7 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_nonnull(err);
     error_free(err);
     err = NULL;
-    g_assert_cmpuint(f.snapshots, ==, 6);
+    g_assert_cmpuint(f.snapshots, ==, 5);
     g_assert_cmpuint(f.commits, ==, 3);
     sgi_renderer_free(renderer);
 
@@ -1148,7 +1152,7 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_nonnull(err);
     error_free(err);
     err = NULL;
-    g_assert_cmpuint(f.snapshots, ==, 7);
+    g_assert_cmpuint(f.snapshots, ==, 6);
     g_assert_cmpuint(f.commits, ==, 3);
     sgi_renderer_free(renderer);
 
@@ -1163,7 +1167,7 @@ static void test_decoded_triangle_native_commit(void)
     epoxy_glReadPixels = saved_read_pixels;
     g_assert_nonnull(err);
     error_free(err);
-    g_assert_cmpuint(f.snapshots, ==, 8);
+    g_assert_cmpuint(f.snapshots, ==, 7);
     g_assert_cmpuint(f.commits, ==, 3);
     sgi_renderer_free(renderer);
 }
@@ -4066,14 +4070,9 @@ static void test_scalar_match_state(void)
     }
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
-    /*
-     * Flat only: smooth interpolation rounds float32 against the scalar
-     * path's double, so a value within about 0.001 of a half step can
-     * round the other way (the renderer guide's open feature rows).
-     */
-    for (unsigned top = 0; top < 2; top++) {
+    for (unsigned top = 0; top < 4; top++) {
         const char *rows = top & 1 ? "top-origin" : "bottom-origin";
-        uint32_t shade = SGI_GL_FLAT;
+        uint32_t shade = top & 2 ? SGI_GL_SMOOTH : SGI_GL_FLAT;
         g_autofree char *name = NULL;
 
 #define STATE_CASE(fmt, ...) do { \
@@ -4269,11 +4268,12 @@ static void test_scalar_match_shared_edges(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     for (unsigned i = 0; i < ARRAY_SIZE(edges); i++) {
-        for (unsigned variant = 0; variant < 4; variant++) {
+        for (unsigned variant = 0; variant < 8; variant++) {
             bool top = variant & 1, mesa_first = variant & 2;
+            bool smooth = variant & 4;
             g_autofree char *name = g_strdup_printf(
-                "%s edge, %s, Mesa draws %s", edges[i].name,
-                top ? "top-origin" : "bottom-origin",
+                "%s %s edge, %s, Mesa draws %s", smooth ? "smooth" : "flat",
+                edges[i].name, top ? "top-origin" : "bottom-origin",
                 mesa_first ? "the first" : "the second");
             unsigned differences, twice = 0;
 
@@ -4282,9 +4282,12 @@ static void test_scalar_match_shared_edges(void)
             a->top_origin = b->top_origin = top;
             for (unsigned v = 0; v < 3; v++) {
                 prim_vertex(a, edges[i].a[v][0], edges[i].a[v][1],
-                            0.9f, 0.1f, 0.2f, 1);
+                            0.9f, 0.1f + v * 0.3f, 0.2f, 1);
                 prim_vertex(b, edges[i].b[v][0], edges[i].b[v][1],
-                            0.1f, 0.8f, 0.3f, 1);
+                            0.1f, 0.8f, 0.3f + v * 0.25f, 1);
+            }
+            if (smooth) {
+                a->state.shade_model = b->state.shade_model = SGI_GL_SMOOTH;
             }
             prim_destination(expected, a);
             prim_destination(mixed, a);
@@ -4361,11 +4364,16 @@ static void test_scalar_match_widths(void)
             prim_vertex_n(p, 13, 13.75f);
             prim_vertex_n(p, 2.25f, 12);
             prim_vertex(p, 0.5f, 6, 0.9f, 0.1f, 0.3f, 0.7f);
-            name = g_strdup_printf("%u-bit %s flat fan", widths[w], rgb);
-            if (widths[w] == 1 && components == 4) {
-                prim_expect_refused(renderer, name, p, &failures);
-            } else {
-                prim_expect(renderer, name, p, &failures);
+            for (unsigned smooth = 0; smooth < 2; smooth++) {
+                p->state.shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+                g_clear_pointer(&name, g_free);
+                name = g_strdup_printf("%u-bit %s %s fan", widths[w], rgb,
+                                       smooth ? "smooth" : "flat");
+                if (widths[w] == 1 && components == 4) {
+                    prim_expect_refused(renderer, name, p, &failures);
+                } else {
+                    prim_expect(renderer, name, p, &failures);
+                }
             }
             g_clear_pointer(&name, g_free);
 

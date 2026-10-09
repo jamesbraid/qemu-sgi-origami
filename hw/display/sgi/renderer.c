@@ -357,6 +357,13 @@ typedef struct SGIRenderPieces {
     uint32_t primitive;
     bool flat;
     const uint32_t *steps; /* The frame's colour steps, red to alpha. */
+    /*
+     * With window set, triangles become the scalar path's own clipped
+     * triangles in window coordinates instead of vertices.
+     */
+    SGIRendererTriangle *window;
+    uint32_t window_count, window_capacity;
+    const SGIRasterRules *rules;
 } SGIRenderPieces;
 
 /*
@@ -372,6 +379,32 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
                           SGI_GL_V_COLOR;
     float rounded[4];
 
+    if (p->window) {
+        SGIRasterTriangle t[SGI_VOLUME_TRIANGLE_MAX - 2];
+        unsigned count = sgi_raster_triangle_pieces(p->rules, draw->state,
+            draw->vertices + (size_t)index[0] * SGI_GL_VERTEX_FLOATS,
+            draw->vertices + (size_t)index[1] * SGI_GL_VERTEX_FLOATS,
+            draw->vertices + (size_t)index[2] * SGI_GL_VERTEX_FLOATS, t);
+
+        for (unsigned i = 0; i < count; i++) {
+            SGIRendererTriangle *out;
+
+            if (p->window_count == p->window_capacity) {
+                p->window_count++;
+                return;
+            }
+            out = &p->window[p->window_count++];
+            for (unsigned v = 0; v < 3; v++) {
+                out->x[v] = t[i].x[v];
+                out->y[v] = t[i].y[v];
+                out->inv_w[v] = t[i].inv_w[v];
+                for (unsigned c = 0; c < 4; c++) {
+                    out->colour[v][c] = t[i].rgba[v][c];
+                }
+            }
+        }
+        return;
+    }
     /*
      * A constant colour is rounded here in double, as the scalar path
      * rounds it, so a product exactly on a half step in float32, such as
@@ -480,6 +513,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     uint64_t piece_vertices = 0;
     SGIRenderPieces pieces = { 0 };
     g_autofree float *piece_storage = NULL;
+    g_autofree SGIRendererTriangle *window_storage = NULL;
+    bool window = false;
     float point_size = 0;
     bool any_written = false;
     bool upside_down;
@@ -553,6 +588,56 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                 return SGI_RENDER_UNSUPPORTED;
             }
         }
+        /*
+         * Smooth colour comes from the scalar path's own clipped triangles,
+         * drawn at its window positions and interpolated in double.
+         */
+        window = draw->mode != SGI_GL_POINTS &&
+                 draw->state->shade_model == SGI_GL_SMOOTH;
+    }
+    if (window) {
+        const double reach = (double)SGI_RENDERER_WINDOW_REACH * 256;
+
+        if (!sgi_renderer_primitive_supported(renderer,
+                                              SGI_RENDERER_WINDOW_TRIANGLES,
+                                              1, errp)) {
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        pieces.window_capacity = MIN(piece_vertices / 3 *
+                                     (SGI_VOLUME_TRIANGLE_MAX - 2),
+                                     SGI_RENDERER_WINDOW_TRIANGLES_MAX);
+        window_storage = g_try_new(SGIRendererTriangle,
+                                   pieces.window_capacity);
+        if (!window_storage) {
+            error_setg(errp, "Cannot allocate SGI Mesa draw triangles");
+            return SGI_RENDER_OOM;
+        }
+        pieces.window = window_storage;
+        pieces.rules = rules;
+        sgi_render_decompose(&pieces, draw);
+        if (pieces.window_count > pieces.window_capacity) {
+            error_setg(errp, "SGI Mesa draw has too many triangles");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        if (!pieces.window_count) {
+            return SGI_RENDER_OK;
+        }
+        /* Every vertex inside the fixed viewport, rows either way up. */
+        for (uint32_t i = 0; i < pieces.window_count; i++) {
+            const SGIRendererTriangle *t = &window_storage[i];
+
+            for (unsigned v = 0; v < 3; v++) {
+                double y = resource->height * 256.0 - t->y[v];
+
+                if (!(t->x[v] > -reach && t->x[v] < 3 * reach &&
+                      t->y[v] > -reach && t->y[v] < 3 * reach &&
+                      y > -reach && y < 3 * reach)) {
+                    error_setg(errp, "SGI Mesa triangle lies outside the "
+                               "window viewport");
+                    return SGI_RENDER_UNSUPPORTED;
+                }
+            }
+        }
     }
     if (draw->state->texture_2d) {
         texture_resource = sgi_render_texture_resource(target, draw->state);
@@ -619,6 +704,15 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             y0 = MAX(y0, s[1]);
             x1 = MIN(x1, (int64_t)s[0] + s[2] - 1);
             y1 = MIN(y1, (int64_t)s[1] + s[3] - 1);
+        }
+        if (window) {
+            /* The scalar path bounds triangle fragments by the viewport. */
+            const int32_t *v = draw->state->viewport;
+
+            x0 = MAX(x0, v[0]);
+            y0 = MAX(y0, v[1]);
+            x1 = MIN(x1, (int64_t)v[0] + v[2] - 1);
+            y1 = MIN(y1, (int64_t)v[1] + v[3] - 1);
         }
         if (x0 <= x1 && y0 <= y1) {
             if (upside_down) {
@@ -778,6 +872,22 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         frame.count = polygon_count;
         frame.vertices = &vertices[0][0];
+    } else if (window) {
+        for (unsigned c = 0; c < resource->component_count; c++) {
+            frame.colour_steps[c] =
+                (1u << resource->component[c].storage_bits) - 1;
+        }
+        if (draw->state->blend) {
+            /* sgi_render_blend_supported() matched these to the storage. */
+            for (unsigned c = 0; c < 3; c++) {
+                frame.colour_steps[c] = (1u << rules->color_bits) - 1;
+            }
+            frame.colour_steps[3] =
+                (1u << MAX(2, MAX(rules->color_bits, rules->alpha_bits))) - 1;
+        }
+        frame.primitive = SGI_RENDERER_WINDOW_TRIANGLES;
+        frame.triangles = window_storage;
+        frame.count = pieces.window_count;
     } else {
         piece_storage = g_try_new(float, piece_vertices *
                                          SGI_RENDERER_FRAME_VERTEX_FLOATS);

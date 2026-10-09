@@ -2541,6 +2541,54 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     }
 }
 
+unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
+                                    const SGIGLDrawState *st,
+                                    const float *va, const float *vb,
+                                    const float *vc,
+                                    SGIRasterTriangle
+                                    out[SGI_VOLUME_TRIANGLE_MAX - 2])
+{
+    SGISoftDraw r = { .rules = rules, .st = st };
+    SGIVolumeVertex poly[SGI_VOLUME_TRIANGLE_MAX];
+    unsigned n, count = 0;
+
+    if (!sgi_soft_clip_triangle(&r, va, vb, vc, poly, &n)) {
+        return 0;
+    }
+    for (unsigned i = 1; i + 1 < n; i++) {
+        const SGIVolumeVertex *verts[3] = {
+            &poly[0], &poly[i], &poly[i + 1],
+        };
+        SGISoftVertex v[3];
+        SGIRasterTriangle *t = &out[count];
+        int64_t area;
+        bool ok = true;
+
+        for (int j = 0; j < 3; j++) {
+            ok &= sgi_soft_project(&r, verts[j], &v[j]);
+        }
+        area = ok ? sgi_soft_edge(&v[0], &v[1], v[2].x, v[2].y) : 0;
+        if (!area) {
+            continue;
+        }
+        if (area < 0) {
+            /* sgi_soft_clipped_triangle() scans this winding. */
+            SGISoftVertex swap = v[1];
+
+            v[1] = v[2];
+            v[2] = swap;
+        }
+        for (int j = 0; j < 3; j++) {
+            t->x[j] = v[j].x;
+            t->y[j] = v[j].y;
+            t->inv_w[j] = v[j].inv_w;
+            memcpy(t->rgba[j], v[j].rgba, sizeof(t->rgba[j]));
+        }
+        count++;
+    }
+    return count;
+}
+
 /* Sign of v + e1 * epsilon + e2 * epsilon squared as epsilon -> 0+. */
 static int sgi_soft_limit_sign(int64_t v, int64_t e1, int64_t e2)
 {

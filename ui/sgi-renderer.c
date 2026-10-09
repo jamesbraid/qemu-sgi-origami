@@ -37,7 +37,28 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
                frame->count >= 3 &&
                frame->count <= SGI_RENDERER_FRAME_VERTICES_MAX;
     }
-    if (!frame->count ||
+    if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
+        const double reach = (double)SGI_RENDERER_WINDOW_REACH * 256;
+
+        if (!frame->triangles || !frame->count ||
+            frame->count > SGI_RENDERER_WINDOW_TRIANGLES_MAX) {
+            return false;
+        }
+        /* Inside the fixed viewport, whichever way the rows run. */
+        for (uint32_t i = 0; i < frame->count; i++) {
+            const SGIRendererTriangle *t = &frame->triangles[i];
+
+            for (unsigned v = 0; v < 3; v++) {
+                double y = frame->height * 256.0 - t->y[v];
+
+                if (!(t->x[v] > -reach && t->x[v] < 3 * reach &&
+                      t->y[v] > -reach && t->y[v] < 3 * reach &&
+                      y > -reach && y < 3 * reach)) {
+                    return false;
+                }
+            }
+        }
+    } else if (!frame->vertices || !frame->count ||
         frame->count > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX ||
         !isfinite(frame->point_size) || frame->point_size < 0) {
         return false;
@@ -51,6 +72,7 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
     case SGI_RENDERER_TRIANGLES:
         return frame->count % 3 == 0;
     case SGI_RENDERER_POINTS:
+    case SGI_RENDERER_WINDOW_TRIANGLES:
         return true;
     default:
         return false;
@@ -237,8 +259,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp)
 {
-    if (!renderer || !frame || !frame->vertices || !frame->rgba ||
-        !frame->written ||
+    if (!renderer || !frame || !frame->rgba || !frame->written ||
         !frame->width || !frame->height || frame->width > INT_MAX ||
         frame->height > INT_MAX || !sgi_renderer_frame_count_valid(frame) ||
         frame->width > SIZE_MAX / frame->height / 4 /
@@ -254,7 +275,8 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         !sgi_renderer_viewport_supported(renderer, frame->viewport, errp)) {
         return false;
     }
-    if (frame->primitive == SGI_RENDERER_POINTS &&
+    if ((frame->primitive == SGI_RENDERER_POINTS ||
+         frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) &&
         !sgi_renderer_primitive_supported(renderer, frame->primitive,
                                           frame->point_size, errp)) {
         return false;
