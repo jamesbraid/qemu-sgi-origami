@@ -482,7 +482,7 @@ class FuelTests(unittest.TestCase):
             "hw/mips/sgi/sgi-machines.json"])
         for topology in catalogue["topologies"]:
             if topology["product"] not in ("origin300", "fuel", "origin350",
-                                           "onyx350", "tezro"):
+                                           "onyx350", "tezro", "onyx4-host"):
                 self.assertNotIn("ip35-firmware", topology)
                 continue
             with self.subTest(topology=topology["name"]):

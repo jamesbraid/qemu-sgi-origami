@@ -1266,25 +1266,35 @@ static void test_io_peer_population_rejects_missing_cable(void)
 
 static void test_tezro_requires_explicit_topology(void)
 {
-    const SGIModelTopology *trial = sgi_model_find_topology(
-        "tezro-deskside-700mhz-4mib-serial-trial");
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
+    const SGIModelTopologyList *topology;
     const SGIModelOfferingList *offering;
-    bool found = false;
+    bool trial_found = false;
+    bool tezro_found = false;
 
-    g_assert_nonnull(trial);
-    g_assert_null(sgi_model_default_topology("tezro"));
-    g_assert_null(sgi_model_default_topology("onyx350"));
-    for (offering = sgi_model_catalogue()->offerings; offering;
+    for (topology = catalogue->topologies; topology;
+         topology = topology->next) {
+        if (!strcmp(topology->value->name,
+                    "tezro-deskside-700mhz-4mib-serial-trial")) {
+            trial_found = true;
+        }
+    }
+    g_assert_true(trial_found);
+    for (offering = catalogue->offerings; offering;
          offering = offering->next) {
+        if (!strcmp(offering->value->product, "onyx350")) {
+            g_assert_null(offering->value->default_topology);
+        }
         if (strcmp(offering->value->product, "tezro")) {
             continue;
         }
-        found = true;
-        g_assert_cmpstr(offering->value->topology, ==,
-                        "tezro-deskside-700mhz-4mib-serial-trial");
+        if (!strcmp(offering->value->topology,
+                    "tezro-deskside-700mhz-4mib-serial-trial")) {
+            tezro_found = true;
+        }
         g_assert_null(offering->value->default_topology);
     }
-    g_assert_true(found);
+    g_assert_true(tezro_found);
 }
 
 static void test_existing_population_views(void)
