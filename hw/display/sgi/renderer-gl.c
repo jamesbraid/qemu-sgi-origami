@@ -38,6 +38,10 @@ typedef struct SGIRendererGL {
     GLfloat point_range[2];
     GLuint colour_program;
     GLint colour_steps, colour_flat;
+    GLuint window_program;
+    Error *window_error;
+    GLint window_height, window_x, window_y, window_inv_w;
+    GLint window_c0, window_c1, window_c2, window_steps;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -291,6 +295,109 @@ static bool renderer_gl_colour_program(SGIRendererGL *renderer)
     return true;
 }
 
+/*
+ * Window triangle frames: each triangle arrives at the scalar rasterizer's
+ * snapped window positions, mapped through a power-of-two viewport and
+ * turned upside down as triangle frames are, so GL covers exactly the
+ * scalar path's pixels. The fragment program recomputes the scalar path's
+ * integer edge functions, barycentric weights and 1 / w correction in
+ * double, in its order of operations, and rounds to the native steps.
+ */
+static bool renderer_gl_window_program(SGIRendererGL *renderer)
+{
+    static const char *vertex_source =
+        "#version 450 compatibility\n"
+        "uniform float height;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(gl_Vertex.x, height - gl_Vertex.y);\n"
+        "  gl_Position = vec4((p + "
+        G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0) / "
+        G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0 * 0.5 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 450 compatibility\n"
+        "uniform float height;\n"
+        "uniform dvec3 vx, vy, inv_w;\n"
+        "uniform dvec4 c0, c1, c2, steps;\n"
+        "layout(location=0) out vec4 pixel;\n"
+        "double channel(double c, double s) {\n"
+        "  if (s <= 0.0) return c;\n"
+        "  if (!(c > 0.0)) return 0.0;\n"
+        "  if (c >= 1.0) return 1.0;\n"
+        "  return floor(c * s + 0.5) / s;\n"
+        "}\n"
+        "double edge(int a, int b, double px, double py) {\n"
+        "  precise double e = (vx[b] - vx[a]) * (py - vy[a]) -\n"
+        "                     (vy[b] - vy[a]) * (px - vx[a]);\n"
+        "  return e;\n"
+        "}\n"
+        "void main() {\n"
+        "  int px = int(floor(gl_FragCoord.x));\n"
+        "  int py = int(height) - 1 - int(floor(gl_FragCoord.y));\n"
+        "  double cx = double(px) * 256.0 + 128.0;\n"
+        "  double cy = double(py) * 256.0 + 128.0;\n"
+        "  precise double area = edge(0, 1, vx[2], vy[2]);\n"
+        "  precise double b1 = edge(2, 0, cx, cy) / area;\n"
+        "  precise double b2 = edge(0, 1, cx, cy) / area;\n"
+        "  precise double w0 = (1.0 - b1 - b2) * inv_w[0];\n"
+        "  precise double w1 = b1 * inv_w[1];\n"
+        "  precise double w2 = b2 * inv_w[2];\n"
+        "  precise double sum = w0 + w1 + w2;\n"
+        "  precise dvec4 rgba = (w0 * c0 + w1 * c1 + w2 * c2) / sum;\n"
+        "  pixel = vec4(channel(rgba.r, steps.r), channel(rgba.g, steps.g),\n"
+        "               channel(rgba.b, steps.b), channel(rgba.a, steps.a));\n"
+        "}\n";
+    GLuint vertex, fragment;
+    GLint linked;
+    char log[512];
+    struct {
+        GLint *location;
+        const char *name;
+    } uniforms[] = {
+        { &renderer->window_height, "height" },
+        { &renderer->window_x, "vx" },
+        { &renderer->window_y, "vy" },
+        { &renderer->window_inv_w, "inv_w" },
+        { &renderer->window_c0, "c0" },
+        { &renderer->window_c1, "c1" },
+        { &renderer->window_c2, "c2" },
+        { &renderer->window_steps, "steps" },
+    };
+
+    vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
+    if (!vertex) {
+        return false;
+    }
+    fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return false;
+    }
+    renderer->window_program = glCreateProgram();
+    glAttachShader(renderer->window_program, vertex);
+    glAttachShader(renderer->window_program, fragment);
+    glLinkProgram(renderer->window_program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    glGetProgramiv(renderer->window_program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        glGetProgramInfoLog(renderer->window_program, sizeof(log), NULL, log);
+        error_setg(&renderer->error, "SGI window program failed: %s", log);
+        return false;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(uniforms); i++) {
+        *uniforms[i].location = glGetUniformLocation(renderer->window_program,
+                                                     uniforms[i].name);
+        if (*uniforms[i].location < 0) {
+            error_setg(&renderer->error,
+                       "SGI window program is missing uniform %s",
+                       uniforms[i].name);
+            return false;
+        }
+    }
+    return !renderer_gl_error(renderer, "window program setup");
+}
+
 static bool renderer_gl_start(SGIRendererGL *renderer)
 {
     static const char *vertex_source =
@@ -390,9 +497,16 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
             renderer->texture_error = renderer->error;
             renderer->error = NULL;
         }
+        if (!renderer_gl_window_program(renderer)) {
+            renderer->window_error = renderer->error;
+            renderer->error = NULL;
+        }
     } else {
         error_setg(&renderer->texture_error,
                    "SGI typed textures require OpenGL 4.5, host has %d.%d",
+                   major, minor);
+        error_setg(&renderer->window_error,
+                   "SGI smooth triangles require OpenGL 4.5, host has %d.%d",
                    major, minor);
     }
     return !renderer_gl_error(renderer, "startup");
@@ -487,7 +601,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     }
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
-    if (frame->viewport_given) {
+    if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
+        /* The window program maps window pixels through this viewport. */
+        glViewport(-SGI_RENDERER_WINDOW_REACH, -SGI_RENDERER_WINDOW_REACH,
+                   4 * SGI_RENDERER_WINDOW_REACH,
+                   4 * SGI_RENDERER_WINDOW_REACH);
+    } else if (frame->viewport_given) {
         /* sgi_renderer_draw_frame() has checked the host viewport limit. */
         glViewport(frame->viewport[0], frame->viewport[1],
                    frame->viewport[2], frame->viewport[3]);
@@ -550,6 +669,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform1i(renderer->texture_shade,
                     frame->shade_model == GL_FLAT);
         glUniform1i(renderer->texture_linear, frame->texture.linear_filter);
+    } else if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
+        glUseProgram(renderer->window_program);
+        glUniform1f(renderer->window_height, frame->height);
+        glUniform4d(renderer->window_steps, frame->colour_steps[0],
+                    frame->colour_steps[1], frame->colour_steps[2],
+                    frame->colour_steps[3]);
     } else {
         glUseProgram(renderer->colour_program);
         glUniform4f(renderer->colour_steps, frame->colour_steps[0],
@@ -591,9 +716,35 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glLoadMatrixf(frame->projection);
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(frame->modelview);
-    glBegin(frame->texture.slots ? GL_TRIANGLE_FAN :
-            frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS : GL_TRIANGLES);
-    for (uint32_t i = 0; i < frame->count; i++) {
+    for (uint32_t i = 0; frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES &&
+                         i < frame->count; i++) {
+        const SGIRendererTriangle *t = &frame->triangles[i];
+        const GLint colours[3] = {
+            renderer->window_c0, renderer->window_c1, renderer->window_c2,
+        };
+
+        glUniform3d(renderer->window_x, t->x[0], t->x[1], t->x[2]);
+        glUniform3d(renderer->window_y, t->y[0], t->y[1], t->y[2]);
+        glUniform3d(renderer->window_inv_w, t->inv_w[0], t->inv_w[1],
+                    t->inv_w[2]);
+        for (unsigned v = 0; v < 3; v++) {
+            glUniform4d(colours[v], t->colour[v][0], t->colour[v][1],
+                        t->colour[v][2], t->colour[v][3]);
+        }
+        glBegin(GL_TRIANGLES);
+        for (unsigned v = 0; v < 3; v++) {
+            glVertex2f(t->x[v] / 256.0, t->y[v] / 256.0);
+        }
+        glEnd();
+    }
+    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES) {
+        glBegin(frame->texture.slots ? GL_TRIANGLE_FAN :
+                frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS :
+                GL_TRIANGLES);
+    }
+    for (uint32_t i = 0;
+         frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
+         i < frame->count; i++) {
         const float *vertex = frame->vertices +
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
 
@@ -603,7 +754,9 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         }
         glVertex4fv(vertex);
     }
-    glEnd();
+    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES) {
+        glEnd();
+    }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
@@ -765,6 +918,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
             glDeleteProgram(renderer->program);
             glDeleteProgram(renderer->texture_program);
             glDeleteProgram(renderer->colour_program);
+            glDeleteProgram(renderer->window_program);
             clean = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                     EGL_NO_CONTEXT);
         }
@@ -837,6 +991,7 @@ static void renderer_gl_destroy(void *opaque)
     qemu_thread_join(&renderer->thread);
     error_free(renderer->error);
     error_free(renderer->texture_error);
+    error_free(renderer->window_error);
     qemu_cond_destroy(&renderer->condition);
     qemu_mutex_destroy(&renderer->mutex);
     g_free(renderer);
@@ -985,6 +1140,21 @@ static bool renderer_gl_supports_primitive(void *opaque, uint32_t primitive,
 {
     SGIRendererGL *renderer = opaque;
 
+    if (primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
+        if (!renderer->window_program || renderer->window_error) {
+            error_setg(errp, "%s", renderer->window_error ?
+                       error_get_pretty(renderer->window_error) :
+                       "SGI window program is unavailable");
+            return false;
+        }
+        if (renderer->max_viewport[0] < 4 * SGI_RENDERER_WINDOW_REACH ||
+            renderer->max_viewport[1] < 4 * SGI_RENDERER_WINDOW_REACH) {
+            error_setg(errp, "SGI renderer window triangles need a %d-pixel "
+                       "viewport", 4 * SGI_RENDERER_WINDOW_REACH);
+            return false;
+        }
+        return true;
+    }
     if (primitive != SGI_RENDERER_POINTS ||
         !(size >= renderer->point_range[0] &&
           size <= renderer->point_range[1])) {

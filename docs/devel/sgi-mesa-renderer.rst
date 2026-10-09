@@ -35,8 +35,28 @@ from their first vertex, and uses the same provoking vertex for flat shading.
 A constant colour, that of a flat-shaded piece or a point, is rounded to the
 native steps on the CPU in double, as the scalar path rounds it, so that a
 product exactly on a half step in float32, such as 0.9 times 255, is not
-rounded the other way by the worker. Smooth-shaded colours are interpolated
-and rounded by the worker in float32. A triangle frame is drawn upside down,
+rounded the other way by the worker.
+
+An untextured smooth-shaded draw goes through the scalar path's own
+triangles:
+
+- The CPU clips each triangle, splits it into the scalar path's fan and
+  projects and snaps it with the scalar functions
+  (``sgi_raster_triangle_pieces()``).
+- The worker draws each resulting triangle at those snapped window positions,
+  through the fixed viewport (-4096, -4096, 16384, 16384). Its power-of-two
+  scale keeps the vertices exact, so GL covers the scalar path's pixels. A
+  vertex outside that viewport returns ``SGI_RENDER_UNSUPPORTED`` before the
+  snapshot.
+- The fragment program recomputes the scalar path's edge functions,
+  barycentric weights and 1 / w correction in double, in its order of
+  operations, before rounding to the native steps.
+- Fragments are bounded by the viewport, as the scalar path bounds them.
+
+Smooth textured triangles still interpolate the primary colour in float32 and
+are unproven.
+
+A triangle frame is drawn upside down,
 because llvmpipe applies its top-left rule with rows running down. Drawing it
 upside down gives a pixel centre on a horizontal edge to the same triangle as
 the scalar path's top-left rule in OpenGL's upward rows. Point frames keep
@@ -147,20 +167,21 @@ with the rules named above. Any other driver is unproven.
   identity matrices, a viewport equal to the resource and one full clip.
 - ``scalar-match-blend``: one separate triangle, 8-bit RGB and RGBA, every
   accepted blend equation and factor.
-- ``scalar-match-state``: flat-shaded draws with disjoint, touching and
-  overlapping clip rectangles, scissor boxes inside, crossing and empty,
-  offset and oversized viewports including the 16384-pixel reach viewport,
-  and orthographic and perspective matrices with non-integer vertices, each
-  on a bottom-origin resource and on a top-origin resource whose rows the
-  family maps into OpenGL rows.
+- ``scalar-match-state``: flat- and smooth-shaded draws with disjoint,
+  touching and overlapping clip rectangles, scissor boxes inside, crossing
+  and empty, offset and oversized viewports including the 16384-pixel reach
+  viewport, and orthographic and perspective matrices with non-integer
+  vertices, each on a bottom-origin resource and on a top-origin resource
+  whose rows the family maps into OpenGL rows.
 - ``scalar-match-colour-ties``: flat fans and points whose colours are exact
   half steps in float32.
 - ``scalar-match-shared-edges``: two triangles sharing a horizontal,
   vertical, diagonal or steep edge through pixel centres, one drawn through
-  each path in either order, on both row origins. The image equals the
-  all-scalar image and no pixel is written twice.
-- ``scalar-match-widths``: unblended flat fans and points at 1, 2, 4, 5, 6
-  and 10 bits per component, RGB and RGBA, with rules of the same width.
+  each path in either order, flat and smooth, on both row origins. The image
+  equals the all-scalar image and no pixel is written twice.
+- ``scalar-match-widths``: unblended flat and smooth fans and points at 1, 2,
+  4, 5, 6 and 10 bits per component, RGB and RGBA, with rules of the same
+  width.
 - ``scalar-match-texture``: flat-shaded textured triangles for the four
   environments, both filters, every accepted wrap mode, 2 by 2 and 4 by 4
   images, and RGB8 and RGBA8 targets.
@@ -179,19 +200,6 @@ each, Mesa differs from the scalar rasterizer, and the scalar rule is the
 reviewed family contract. Each refusal returns ``SGI_RENDER_UNSUPPORTED``
 before the native snapshot. The ``lines-refused`` and ``scalar-match-blend``
 unit cases keep the vectors that showed the differences.
-
-Smooth shading is accepted but is not proven identical in general. The worker
-interpolates and rounds in float32; the scalar path works in double. A value
-within about a thousandth of a half step can round the other way:
-
-- Viewport (3, -2, 10, 12): pixel (4, 5) has exact alpha 125.499; the scalar
-  path stores 126 and llvmpipe 125.
-- An orthographic and a perspective matrix give one-step alpha differences at
-  pixels (7, 10) and (8, 8).
-
-Coverage and the other components match in those cases. Doing the
-interpolation in double the scalar path's way would settle this, or a family
-mixing paths can keep smooth-shaded draws on the scalar path.
 
 Components wider than 10 bits have no scalar comparison, because the scalar
 rules stop at 10 bits. Unblended draws at 12 and 16 bits are accepted but
