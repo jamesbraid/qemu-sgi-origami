@@ -936,11 +936,12 @@ static void test_intx_masked(void)
     intx_state(qts, 0, 2, 0);
     g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
     qtest_writel(qts, h + 0x10c, 2);
-    intx_state(qts, 0, 2, 0);
-    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
-    /* Unmasking alone emits no packet; the existing head force does. */
+    intx_state(qts, 0, 2, UINT64_C(1) << 16);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 1);
+    /* Force sends another packet while the pin remains asserted. */
     qtest_writel(qts, h + 0x1cc, 1);
     intx_state(qts, 0, 2, UINT64_C(1) << 16);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 2);
     card_pin(qts, 0, 1, 0, false);
     intx_state(qts, 0, 0, 0);
     qtest_writel(qts, h + 0x11c, 0);
@@ -2592,17 +2593,19 @@ static void test_power_dma_irq(void)
     power_set(qts, true);
     g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 5);
     qtest_writel(qts, head(0, 5) + 0x10c, 2);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 6);
+    pending |= UINT64_C(1) << 21;
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
     power_set(qts, false);
     power_set(qts, true);
-    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
-    pending |= UINT64_C(1) << 21;
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 12);
     power_set(qts, false);
     for (unsigned i = 0; i < 6; i++) {
         qtest_writeq(qts, MANAGEMENT + 0x100 + i * 0x40 + 32, 0);
     }
-    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 12);
     power_set(qts, true);
-    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 12);
     g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
     for (unsigned i = 0; i < 6; i++) {
         dma(qts, i, 0x40000000, sentinel + i, true, MEMTX_OK);
