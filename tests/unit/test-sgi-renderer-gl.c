@@ -3474,41 +3474,59 @@ static void test_decoded_clear_depth_stencil(void)
 
 /*
  * Scalar comparison: one draw through sgi_soft_draw() and through the
- * checked Mesa path, from the same 16x16 bottom-origin native image, must
- * leave the same component values and coverage. Differences are reported
- * per pixel so that every case in a test runs before it fails.
+ * checked Mesa path, from the same 16x16 native image, must leave the same
+ * component values and coverage. Differences are reported per pixel so
+ * that every case in a test runs before it fails.
  */
 #define PRIM_SIZE 16
 
 typedef struct PrimFixture {
     uint32_t rgba[PRIM_SIZE][PRIM_SIZE][4];
     uint8_t written[PRIM_SIZE][PRIM_SIZE];
+    uint32_t texels[4][4][4];
     unsigned components;
     unsigned snapshots, commits;
+    /*
+     * Native rows run down the display: the scalar path's window row y is
+     * native row PRIM_SIZE - 1 - y, as a top-origin family maps it.
+     */
+    bool top_origin;
 } PrimFixture;
 
+static unsigned prim_native_row(const PrimFixture *f, int y)
+{
+    return f->top_origin ? PRIM_SIZE - 1 - y : y;
+}
+
+/* Out-of-plane stores are dropped, as board memory drops them. */
 static void prim_scalar_store(void *opaque, SGIColourTarget target, int x,
                               int y, const SGIRasterColour *colour)
 {
     PrimFixture *f = opaque;
+    unsigned row;
 
-    g_assert_cmpint(x, >=, 0);
-    g_assert_cmpint(x, <, PRIM_SIZE);
-    g_assert_cmpint(y, >=, 0);
-    g_assert_cmpint(y, <, PRIM_SIZE);
-    for (unsigned c = 0; c < f->components; c++) {
-        f->rgba[y][x][c] = colour->component[c];
+    if (x < 0 || x >= PRIM_SIZE || y < 0 || y >= PRIM_SIZE) {
+        return;
     }
-    f->written[y][x] = 1;
+    row = prim_native_row(f, y);
+    for (unsigned c = 0; c < f->components; c++) {
+        f->rgba[row][x][c] = colour->component[c];
+    }
+    f->written[row][x] = 1;
 }
 
 static bool prim_scalar_load(void *opaque, SGIColourTarget target, int x,
                              int y, SGIRasterColour *colour)
 {
     PrimFixture *f = opaque;
+    unsigned row;
 
+    if (x < 0 || x >= PRIM_SIZE || y < 0 || y >= PRIM_SIZE) {
+        return false;
+    }
+    row = prim_native_row(f, y);
     for (unsigned c = 0; c < 4; c++) {
-        colour->component[c] = c < f->components ? f->rgba[y][x][c] : 0;
+        colour->component[c] = c < f->components ? f->rgba[row][x][c] : 0;
     }
     return true;
 }
@@ -3520,13 +3538,15 @@ static SGIRenderResult prim_snapshot(void *opaque,
                                      size_t capacity_slots, Error **errp)
 {
     PrimFixture *f = opaque;
+    unsigned n = resource->role == SGI_RENDER_TEXTURE ? 4 : f->components;
 
     f->snapshots++;
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
-            for (unsigned c = 0; c < f->components; c++) {
-                slots[(y - rect->y0) * stride_slots +
-                      (x - rect->x0) * f->components + c] = f->rgba[y][x][c];
+            for (unsigned c = 0; c < n; c++) {
+                slots[(y - rect->y0) * stride_slots + (x - rect->x0) * n + c] =
+                    resource->role == SGI_RENDER_TEXTURE ?
+                    f->texels[y][x][c] : f->rgba[y][x][c];
             }
         }
     }
@@ -3547,8 +3567,9 @@ static SGIRenderCommitResult prim_commit_covered(
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
             /* Every pixel of the rectangle is accounted for, written or not. */
             complete++;
-            if (!writes->pixel[(y - rect->y0) * writes->stride_bytes +
-                               x - rect->x0]) {
+            if (writes && !writes->pixel[(y - rect->y0) *
+                                         writes->stride_bytes +
+                                         x - rect->x0]) {
                 continue;
             }
             for (unsigned c = 0; c < f->components; c++) {
@@ -3565,6 +3586,19 @@ static SGIRenderCommitResult prim_commit_covered(
     };
 }
 
+/* Decoded CLEAR commits each clipped rectangle densely. */
+static SGIRenderCommitResult prim_commit(void *opaque,
+                                         const SGIRenderResource *res,
+                                         uint32_t slice,
+                                         const SGIRenderRect *rect,
+                                         const uint32_t *slots,
+                                         size_t stride_slots,
+                                         size_t capacity_slots, Error **errp)
+{
+    return prim_commit_covered(opaque, res, slice, rect, slots, stride_slots,
+                               capacity_slots, NULL, errp);
+}
+
 typedef struct PrimCase {
     SGIGLDrawState state;
     SGIGLDraw draw;
@@ -3575,7 +3609,22 @@ typedef struct PrimCase {
     /* Nonzero fills every destination component with dest_value - 1. */
     uint32_t dest_value;
     unsigned bits; /* Colour, alpha and storage bits; zero means 8. */
+    /* Native rows run down; see PrimFixture. Clips stay in window rows. */
+    bool top_origin;
+    /* With state.texture_2d: a level-zero RGBA8 image, rows from T zero. */
+    SGIGLTexImage image;
+    uint32_t texels[4][4][4];
 } PrimCase;
+
+static bool prim_read_texel(void *opaque, uint32_t x, uint32_t y,
+                            uint32_t *rgba)
+{
+    const PrimCase *p = opaque;
+    const uint32_t *t = p->texels[y][x];
+
+    *rgba = t[0] << 24 | t[1] << 16 | t[2] << 8 | t[3];
+    return true;
+}
 
 static void prim_case_init(PrimCase *p, uint32_t mode, unsigned components)
 {
@@ -3629,44 +3678,57 @@ static void prim_vertex_n(PrimCase *p, float x, float y)
                 (200 + 29 * n) % 256 / 255.0f);
 }
 
-static void prim_destination(PrimFixture *f, unsigned components)
+static void prim_destination(PrimFixture *f, const PrimCase *p)
 {
+    unsigned bits = p->bits ? p->bits : 8;
+    uint32_t max = (1u << bits) - 1;
+
     memset(f, 0, sizeof(*f));
-    f->components = components;
+    f->components = p->components;
+    f->top_origin = p->top_origin;
+    memcpy(f->texels, p->texels, sizeof(f->texels));
     for (unsigned y = 0; y < PRIM_SIZE; y++) {
         for (unsigned x = 0; x < PRIM_SIZE; x++) {
-            f->rgba[y][x][0] = (x * 17 + y * 3) & 255;
-            f->rgba[y][x][1] = (y * 15 + x * 5 + 40) & 255;
-            f->rgba[y][x][2] = (x * y * 7 + 90) & 255;
-            f->rgba[y][x][3] = (x * 11 + y * 13 + 7) & 255;
+            uint32_t v[4] = {
+                x * 17 + y * 3, y * 15 + x * 5 + 40, x * y * 7 + 90,
+                x * 11 + y * 13 + 7,
+            };
+
+            for (unsigned c = 0; c < 4; c++) {
+                /* Spread the 8-bit pattern over the whole width. */
+                f->rgba[y][x][c] = p->dest_value ? p->dest_value - 1 :
+                                   (v[c] & 255) * max / 255;
+            }
         }
     }
 }
 
-/*
- * Returns the number of differing pixels and logs each one. A refused
- * draw instead counts one failure unless it is UNSUPPORTED before any
- * snapshot.
- */
-static unsigned prim_compare(SGIRenderer *renderer, const char *name,
-                             PrimCase *p, bool refused)
+static void prim_rules(const PrimCase *p, SGIRasterRules *rules)
 {
     unsigned bits = p->bits ? p->bits : 8;
-    SGIRasterRules rules = {
+
+    *rules = (SGIRasterRules) {
         .subpixel_bits = 8, .color_bits = bits, .depth_bits = 24,
         .alpha_bits = p->components == 4 ? bits : 0,
+        .stencil_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
         .evidence = "synthetic",
     };
-    SGIRenderResource resource = {
+}
+
+static void prim_resources(const PrimCase *p, SGIRenderResource res[2])
+{
+    unsigned bits = p->bits ? p->bits : 8;
+
+    res[0] = (SGIRenderResource) {
         .backing_id = 1, .backing_generation = 1,
         .view_id = 2, .view_generation = 1,
         .role = SGI_RENDER_COLOUR, .target = 7,
         .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
         .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
-        .bottom_origin = true, .component_count = p->components,
+        .bottom_origin = !p->top_origin, .component_count = p->components,
         .component = {
             { SGI_RENDER_R, SGI_RENDER_UNORM, bits },
             { SGI_RENDER_G, SGI_RENDER_UNORM, bits },
@@ -3674,69 +3736,101 @@ static unsigned prim_compare(SGIRenderer *renderer, const char *name,
             { SGI_RENDER_A, SGI_RENDER_UNORM, bits },
         },
     };
-    SGIRenderResourceOps ops = {
-        .snapshot = prim_snapshot,
-        .commit_covered = prim_commit_covered,
+    res[1] = (SGIRenderResource) {
+        .backing_id = 3, .backing_generation = 1,
+        .view_id = 4, .view_generation = 1,
+        .role = SGI_RENDER_TEXTURE,
+        .buffer = SGI_RENDER_BUFFER_NONE, .eye = SGI_RENDER_MONO,
+        .width = p->image.width, .height = p->image.height, .depth = 1,
+        .bottom_origin = true, .component_count = 4,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+        },
     };
-    g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
-    g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
-    SGIRasterTarget scalar_target = {
-        .opaque = scalar,
-        .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
-    };
-    SGIRasterTarget mesa_target = {
-        .opaque = mesa, .resources = &resource, .resource_count = 1,
-        .resource_ops = &ops,
-    };
-    SGIRenderResult result;
-    Error *err = NULL;
-    unsigned differences = 0;
+}
 
-    prim_destination(scalar, p->components);
-    prim_destination(mesa, p->components);
-    if (p->dest_value) {
-        for (unsigned y = 0; y < PRIM_SIZE; y++) {
-            for (unsigned x = 0; x < PRIM_SIZE; x++) {
-                for (unsigned c = 0; c < 4; c++) {
-                    scalar->rgba[y][x][c] = p->dest_value - 1;
-                    mesa->rgba[y][x][c] = p->dest_value - 1;
-                }
-            }
+static const SGIRenderResourceOps prim_ops = {
+    .snapshot = prim_snapshot,
+    .commit = prim_commit,
+    .commit_covered = prim_commit_covered,
+};
+
+/* Draw through the scalar path into f, as a family's planes would. */
+static void prim_scalar_draw(PrimCase *p, PrimFixture *f)
+{
+    SGIRasterRules rules;
+    SGIRasterTarget target = {
+        .opaque = f,
+        .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
+        .texture = p->state.texture_2d ? &p->image : NULL,
+    };
+
+    prim_rules(p, &rules);
+    p->image.read_texel = prim_read_texel;
+    p->image.opaque = p;
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    g_assert_cmpint(sgi_soft_draw(&rules, &target, &p->draw), ==,
+                    SGI_GL_DRAW_OK);
+}
+
+/*
+ * Draw through the checked Mesa path into f. Its drawable clip arrives in
+ * native rows, so a top-origin case flips the window-row clips.
+ */
+static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
+                                      PrimFixture *f, Error **errp)
+{
+    SGIRenderResource res[2];
+    SGIRasterRules rules;
+    SGIGLDrawState state = p->state;
+    SGIGLDraw draw = p->draw;
+    SGIRasterTarget target = {
+        .opaque = f, .resources = res,
+        .resource_count = p->state.texture_2d ? 2 : 1,
+        .resource_ops = &prim_ops,
+        .texture = p->state.texture_2d ? &p->image : NULL,
+    };
+
+    prim_rules(p, &rules);
+    prim_resources(p, res);
+    p->image.read_texel = prim_read_texel;
+    p->image.opaque = p;
+    if (p->top_origin) {
+        for (unsigned i = 0; i < state.drawable.clip.n; i++) {
+            SGIClipRect *r = &state.drawable.clip.r[i];
+            int32_t y0 = r->y0;
+
+            r->y0 = PRIM_SIZE - 1 - r->y1;
+            r->y1 = PRIM_SIZE - 1 - y0;
         }
     }
-    g_assert_true(sgi_raster_rules_supported(&rules));
-    g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &p->draw), ==,
-                    SGI_GL_DRAW_OK);
+    draw.state = &state;
     if (p->rules_case == 1) {
         rules.subpixel_bits = 4;
     } else if (p->rules_case == 2) {
         rules.tie_rule = SGI_TIE_TOP_LEFT;
     } else if (p->rules_case == 3) {
         rules.arith = SGI_ARITH_FIXED16;
+    } else if (p->rules_case == 4) {
+        rules.rounding = SGI_ROUND_HALF_EVEN;
     }
-    result = sgi_render_draw_checked(renderer, &rules, &mesa_target,
-                                     &p->draw, &err);
-    if (refused) {
-        if (result == SGI_RENDER_UNSUPPORTED && err && !mesa->snapshots) {
-            g_clear_pointer(&err, error_free);
-            return 0;
-        }
-        g_test_message("%s: expected a refusal, got %d after %u snapshots",
-                       name, result, mesa->snapshots);
-        g_clear_pointer(&err, error_free);
-        return 1;
-    }
-    if (result != SGI_RENDER_OK) {
-        g_test_message("%s: checked draw returned %d: %s", name, result,
-                       err ? error_get_pretty(err) : "(no error)");
-        g_clear_pointer(&err, error_free);
-        return PRIM_SIZE * PRIM_SIZE;
-    }
+    return sgi_render_draw_checked(renderer, &rules, &target, &draw, errp);
+}
+
+/* Returns the number of differing pixels and logs each one. */
+static unsigned prim_report(const char *name, const PrimFixture *scalar,
+                            const PrimFixture *mesa)
+{
+    unsigned differences = 0;
+
     for (int y = PRIM_SIZE - 1; y >= 0; y--) {
         for (unsigned x = 0; x < PRIM_SIZE; x++) {
             bool same = scalar->written[y][x] == mesa->written[y][x];
 
-            for (unsigned c = 0; c < p->components; c++) {
+            for (unsigned c = 0; c < scalar->components; c++) {
                 same &= scalar->rgba[y][x][c] == mesa->rgba[y][x][c];
             }
             if (!same) {
@@ -3770,6 +3864,41 @@ static unsigned prim_compare(SGIRenderer *renderer, const char *name,
         g_string_free(rows, true);
     }
     return differences;
+}
+
+/*
+ * Returns the number of differing pixels. A refused draw instead counts
+ * one failure unless it is UNSUPPORTED before any snapshot.
+ */
+static unsigned prim_compare(SGIRenderer *renderer, const char *name,
+                             PrimCase *p, bool refused)
+{
+    g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+    SGIRenderResult result;
+    Error *err = NULL;
+
+    prim_destination(scalar, p);
+    prim_destination(mesa, p);
+    prim_scalar_draw(p, scalar);
+    result = prim_mesa_draw(renderer, p, mesa, &err);
+    if (refused) {
+        if (result == SGI_RENDER_UNSUPPORTED && err && !mesa->snapshots) {
+            g_clear_pointer(&err, error_free);
+            return 0;
+        }
+        g_test_message("%s: expected a refusal, got %d after %u snapshots",
+                       name, result, mesa->snapshots);
+        g_clear_pointer(&err, error_free);
+        return 1;
+    }
+    if (result != SGI_RENDER_OK) {
+        g_test_message("%s: checked draw returned %d: %s", name, result,
+                       err ? error_get_pretty(err) : "(no error)");
+        g_clear_pointer(&err, error_free);
+        return PRIM_SIZE * PRIM_SIZE;
+    }
+    return prim_report(name, scalar, mesa);
 }
 
 static void prim_expect(SGIRenderer *renderer, const char *name, PrimCase *p,
@@ -4127,8 +4256,8 @@ static void test_smoothing_refused(void)
         };
         SGIRenderResult result, expected;
 
-        prim_destination(&f, 4);
         prim_case_init(p, smoothing[i].mode, 4);
+        prim_destination(&f, p);
         for (unsigned v = 0; v < 4; v++) {
             prim_vertex_n(p, v & 1 ? 12 : 3, v & 2 ? 12 : 3.5f);
         }
