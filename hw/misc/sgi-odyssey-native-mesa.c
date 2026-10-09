@@ -320,42 +320,92 @@ static void native_trace_draw(OdysseyNativeMesa *native,
 /*
  * Odyssey's window rows run down the display. Its combined matrix and
  * reach viewport give window row 0 the drawable's top plane row, which is
- * where the scalar rasterizer stores it, and its 0x81d scissor box counts
- * rows down from the window's top. The shared renderer reads window row 0
- * as the resource's bottom display row. Map a submission-local copy so
- * that GL row = height - Odyssey row: mirror clip-space y, which the
- * clip volume is symmetric in, and move the viewport and scissor boxes to
- * the mirrored rows. The mirror reverses winding, so the front face swaps
- * with it. Native clips are plane rows already and pass through.
+ * where the scalar rasterizer stores it, at the drawable origin plus the
+ * window position, and its 0x81d scissor box counts rows down from the
+ * window's top. The shared renderer reads window row 0 as the resource's
+ * bottom display row and refuses a drawable origin. Map a
+ * submission-local copy whose window is the whole resource, so that GL
+ * column = origin x + Odyssey column and GL row = height - (origin y +
+ * Odyssey row): mirror clip-space y, which the clip volume is symmetric
+ * in, and move the viewport and scissor boxes by the origin to the
+ * mirrored rows. The mirror reverses winding, so the front face swaps with
+ * it. Native clips are plane rows already and pass through; the shared
+ * renderer clamps them to the resource, as the scalar path drops a pixel
+ * outside the plane. The guest's library folds the window height into its
+ * combined matrix, so no drawable extent is needed.
  *
- * Only the drawable at origin zero without a window matrix or rows-down
- * flag is mapped; every other row convention stays unsupported.
+ * Only drawables without a window matrix or rows-down flag are mapped,
+ * and only while every mapped value fits 32 bits; every other row
+ * convention stays unsupported.
  */
 static bool native_map_rows(const SGIGLDrawState *in, uint32_t height,
                             SGIGLDrawState *out)
 {
-    int64_t viewport_y, scissor_y;
+    int64_t ox = in->drawable.origin[0];
+    int64_t top = (int64_t)height - in->drawable.origin[1];
+    int64_t viewport_x, viewport_y, scissor_x, scissor_y;
 
-    if (in->window_matrix_given || in->window_rows_down ||
-        in->drawable.origin[0] || in->drawable.origin[1]) {
+    if (in->window_matrix_given || in->window_rows_down) {
         return false;
     }
-    viewport_y = (int64_t)height - in->viewport[1] - in->viewport[3];
-    scissor_y = (int64_t)height - in->scissor[1] - in->scissor[3];
-    if (viewport_y < INT32_MIN || viewport_y > INT32_MAX ||
+    viewport_x = in->viewport[0] + ox;
+    viewport_y = top - in->viewport[1] - in->viewport[3];
+    scissor_x = in->scissor[0] + ox;
+    scissor_y = top - in->scissor[1] - in->scissor[3];
+    if (viewport_x < INT32_MIN || viewport_x > INT32_MAX ||
+        viewport_y < INT32_MIN || viewport_y > INT32_MAX ||
         (in->scissor_test &&
-         (scissor_y < INT32_MIN || scissor_y > INT32_MAX))) {
+         (scissor_x < INT32_MIN || scissor_x > INT32_MAX ||
+          scissor_y < INT32_MIN || scissor_y > INT32_MAX))) {
         return false;
     }
     *out = *in;
+    out->drawable.origin[0] = 0;
+    out->drawable.origin[1] = 0;
+    /* Checked by native_extent_valid(); not meaningful at the new origin. */
+    out->drawable.width = 0;
+    out->drawable.height = 0;
+    out->viewport[0] = viewport_x;
     out->viewport[1] = viewport_y;
     if (in->scissor_test) {
+        out->scissor[0] = scissor_x;
         out->scissor[1] = scissor_y;
     }
     for (unsigned c = 0; c < 4; c++) {
         out->projection[c * 4 + 1] = -in->projection[c * 4 + 1];
     }
     out->front_face = in->front_face == SGI_GL_CW ? SGI_GL_CCW : SGI_GL_CW;
+    return true;
+}
+
+/*
+ * An unknown extent (both zero) bounds nothing: the resource does. A
+ * half-specified one is invalid, and a known one must hold every
+ * non-empty native clip, in plane pixels from the drawable origin.
+ */
+static bool native_extent_valid(const SGIGLDrawable *d)
+{
+    int64_t x1, y1;
+
+    if (!d->width && !d->height) {
+        return true;
+    }
+    if (!d->width || !d->height || d->clip.n > SGI_CLIP_MAX) {
+        return false;
+    }
+    x1 = (int64_t)d->origin[0] + d->width - 1;
+    y1 = (int64_t)d->origin[1] + d->height - 1;
+    for (uint32_t i = 0; i < d->clip.n; i++) {
+        const SGIClipRect *r = &d->clip.r[i];
+
+        if (r->x0 > r->x1 || r->y0 > r->y1) {
+            continue;
+        }
+        if (r->x0 < d->origin[0] || r->y0 < d->origin[1] ||
+            r->x1 > x1 || r->y1 > y1) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -387,6 +437,12 @@ SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
         trace_event_get_state_backends(TRACE_SGI_ODYSSEY_MESA_DRAW_WINDOW) ||
         trace_event_get_state_backends(TRACE_SGI_ODYSSEY_MESA_DRAW_RESOURCE)) {
         native_trace_draw(native, draw);
+    }
+    if (!native_extent_valid(&draw->state->drawable)) {
+        error_setg(errp, "Unsupported Odyssey native Mesa drawable extent");
+        result = SGI_RENDER_UNSUPPORTED;
+        trace_sgi_odyssey_mesa_renderer_result(result);
+        return result;
     }
     if (!native_map_rows(draw->state, native->resources[0].height, &state)) {
         error_setg(errp, "Unsupported Odyssey native Mesa row convention");
