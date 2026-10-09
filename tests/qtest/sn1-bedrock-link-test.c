@@ -9,6 +9,8 @@
 #include "qobject/qdict.h"
 
 #define A_PATH      "/machine/peripheral/a"
+#define RA_PATH     "/machine/peripheral/ra"
+#define RB_PATH     "/machine/peripheral/rb"
 #define B_PATH      "/machine/peripheral/b"
 #define CABLE_PATH  "/machine/peripheral/cable"
 #define A_BASE      UINT64_C(0x10000000)
@@ -62,6 +64,47 @@ static void wire(QTestState *s, const char *bedrock)
         "{'execute':'qom-set','arguments':"
         "{'path':%s,'property':'net-cable','value':%s}}",
         bedrock, CABLE_PATH);
+}
+
+static void attach(QTestState *s, const char *path, const char *property,
+                   const char *cable)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':%s,'value':%s}}",
+        path, property, cable);
+}
+
+static void cable_down(QTestState *s, const char *path, bool down)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'down','value':%i}}", path, down);
+}
+
+static QTestState *routers_start(void)
+{
+    QTestState *s = qtest_init(MACHINE_BASE
+        "-device sgi-l1,id=l1,brick-type=router "
+        "-device sgi-l1-uart,id=uart,controller=l1 "
+        "-device sgi-sn1-router,id=ra,l1-uart=uart "
+        "-device sgi-sn1-router,id=rb "
+        "-device sgi-net-cable,id=source,end0=" A_PATH
+        ",end1=" RA_PATH ",end1-index=2 "
+        "-device sgi-net-cable,id=middle,end0=" RA_PATH
+        ",end0-index=5,end1=" RB_PATH ",end1-index=7 "
+        "-device sgi-net-cable,id=target,end0=" RB_PATH
+        ",end0-index=4,end1=" B_PATH " -S");
+
+    attach(s, A_PATH, "net-cable", "/machine/peripheral/source");
+    attach(s, B_PATH, "net-cable", "/machine/peripheral/target");
+    attach(s, RA_PATH, "port2-cable", "/machine/peripheral/source");
+    attach(s, RA_PATH, "port5-cable", "/machine/peripheral/middle");
+    attach(s, RB_PATH, "port7-cable", "/machine/peripheral/middle");
+    attach(s, RB_PATH, "port4-cable", "/machine/peripheral/target");
+    qtest_sysbus_mmio_map(s, A_PATH, 0, A_BASE);
+    qtest_sysbus_mmio_map(s, B_PATH, 0, B_BASE);
+    return s;
 }
 
 static void set_down(QTestState *s, bool down)
@@ -158,7 +201,7 @@ static void test_route_zero_reads_the_peer(void)
 {
     QTestState *s = pair_start("");
     const uint64_t params = HUB_SCRATCH(0) | REQUEST_ID(0x1c8);
-    uint64_t status;
+    uint64_t status, retained;
 
     qtest_writeq(s, LB(A_BASE, SCRATCH(0)), 0xaaaa0000aaaa0000ULL);
     qtest_writeq(s, LB(B_BASE, SCRATCH(0)), 0xbbbb0000bbbb0000ULL);
@@ -187,18 +230,22 @@ static void test_route_zero_reads_the_peer(void)
     g_assert_cmphex(status & (STATUS_VALID | STATUS_OVERRUN), ==,
                     STATUS_VALID | STATUS_OVERRUN);
 
-    /*
-     * A write to status clear clears a valid reply too, the model's choice.
-     */
+    /* A zero write to status clear clears a valid reply too. */
     qtest_writeq(s, LB(A_BASE, VECTOR_STATUS_CLEAR), 0);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)), ==, 0);
     /* So does a write of zero to status itself; a nonzero write does not. */
     qtest_writeq(s, LB(A_BASE, VECTOR_PARAMS), params);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)) & STATUS_VALID,
                     ==, STATUS_VALID);
+    qtest_writeq(s, LB(A_BASE, VECTOR_RETURN), SENTINEL);
+    qtest_writeq(s, LB(A_BASE, VECTOR_READ), SENTINEL);
+    retained = qtest_readq(s, LB(A_BASE, VECTOR_STATUS));
+
     qtest_writeq(s, LB(A_BASE, VECTOR_STATUS), UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)) & STATUS_VALID,
-                    ==, STATUS_VALID);
+    qtest_writeq(s, LB(A_BASE, VECTOR_STATUS_CLEAR), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)), ==, retained);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
     qtest_writeq(s, LB(A_BASE, VECTOR_STATUS), 0);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)), ==, 0);
     qtest_quit(s);
@@ -340,6 +387,113 @@ static void test_peer_scratch1_write_follows_withheld_posts(void)
     qtest_quit(s);
 }
 
+static void test_two_router_vector_reply(void)
+{
+    QTestState *s = routers_start();
+    const uint64_t params = HUB_SCRATCH(0) | REQUEST_ID(0x1c8);
+    uint64_t status;
+
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), UINT64_C(0x123456789abcdef0));
+    status = vector_launch(s, A_BASE, 0x45, params, 0);
+    assert_good_reply(status, params);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
+                    UINT64_C(0x123456789abcdef0));
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0x27);
+
+    cable_down(s, "/machine/peripheral/source", true);
+    g_assert_cmphex(vector_launch(s, A_BASE, 0x45, params, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
+    cable_down(s, "/machine/peripheral/source", false);
+
+    cable_down(s, "/machine/peripheral/middle", true);
+    status = vector_launch(s, A_BASE, 0x45, params, 0);
+    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
+                    STATUS_VALID | STATUS_ADDR_ERROR);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0);
+    cable_down(s, "/machine/peripheral/middle", false);
+
+    cable_down(s, "/machine/peripheral/target", true);
+    status = vector_launch(s, A_BASE, 0x45, params, 0);
+    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
+                    STATUS_VALID | STATUS_ADDR_ERROR);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0x2);
+    qtest_quit(s);
+}
+
+static void test_router_table_vector_words(void)
+{
+    QTestState *s = routers_start();
+    const uint64_t addresses[] = { 0x10118, 0x10228, 0x40968, 0x40de8 };
+    const uint64_t values[] = {
+        UINT64_C(0xa5c3f00d17654321), UINT64_C(0x5a3c0ff0fedcba98),
+        UINT64_C(0x12345678abcdef09), UINT64_C(0xfedcba9876543210),
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        uint64_t params = addresses[i] | TYPE_WRITE | REQUEST_ID(i + 1);
+        uint64_t status = vector_launch(s, A_BASE, 0, params, values[i]);
+
+        assert_good_reply(status, params);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        uint64_t params = addresses[i] | REQUEST_ID(i + 1);
+        uint64_t status = vector_launch(s, A_BASE, 0, params, 0);
+
+        assert_good_reply(status, params);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
+                        values[i]);
+        status = vector_launch(s, A_BASE, 0, params + 8, 0);
+        assert_good_reply(status, params + 8);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0);
+    }
+    qtest_quit(s);
+}
+
+static void test_unsupported_vector_type(void)
+{
+    QTestState *s = routers_start();
+    uint64_t params = 0x10100 | REQUEST_ID(0x155) | WRITE_ID(0x5a) | 2;
+    uint64_t status = vector_launch(s, A_BASE, 0, params, UINT64_MAX);
+
+    g_assert_cmphex(status, ==, STATUS_VALID | (params & STATUS_ECHO) | 5);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==,
+                    SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
+    status = vector_launch(s, A_BASE, 0, 0x10100, 0);
+    assert_good_reply(status, 0x10100);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_router_uart_vector(void)
+{
+    QTestState *s = routers_start();
+    uint64_t status;
+
+    status = vector_launch(s, A_BASE, 0, 0x258 | TYPE_WRITE, 0x80);
+    assert_good_reply(status, 0x258 | TYPE_WRITE);
+    status = vector_launch(s, A_BASE, 0, 0x240 | TYPE_WRITE, 0x12ab);
+    assert_good_reply(status, 0x240 | TYPE_WRITE);
+    status = vector_launch(s, A_BASE, 0, 0x248 | TYPE_WRITE, 0x34cd);
+    assert_good_reply(status, 0x248 | TYPE_WRITE);
+    status = vector_launch(s, A_BASE, 0, 0x240, 0);
+    assert_good_reply(status, 0x240);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0xab);
+    status = vector_launch(s, A_BASE, 0, 0x248, 0);
+    assert_good_reply(status, 0x248);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0xcd);
+    status = vector_launch(s, A_BASE, 0x5, 0x240, 0);
+    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
+                    STATUS_VALID | STATUS_ADDR_ERROR);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0x2);
+    status = vector_launch(s, A_BASE, 0, 0x240, 0);
+    assert_good_reply(status, 0x240);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0xab);
+    qtest_quit(s);
+}
+
 #define NI_PORT_RESET  0x0008
 #define NI_RESET_ENABLE 0x0010
 
@@ -378,6 +532,14 @@ int main(int argc, char **argv)
                    test_link_follows_the_cable);
     qtest_add_func("sn1/bedrock-link/unwired-port-has-no-link",
                    test_unwired_port_has_no_link);
+    qtest_add_func("sn1/bedrock-link/router-table-vector-words",
+                   test_router_table_vector_words);
+    qtest_add_func("sn1/bedrock-link/unsupported-vector-type",
+                   test_unsupported_vector_type);
+    qtest_add_func("sn1/bedrock-link/two-router-vector-reply",
+                   test_two_router_vector_reply);
+    qtest_add_func("sn1/bedrock-link/router-uart-vector",
+                   test_router_uart_vector);
     qtest_add_func("sn1/bedrock-link/route-zero-reads-the-peer",
                    test_route_zero_reads_the_peer);
     qtest_add_func("sn1/bedrock-link/peer-scratch1-write-follows-withheld-"

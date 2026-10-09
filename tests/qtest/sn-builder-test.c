@@ -6637,7 +6637,7 @@ static void test_routed_synthetic_diagnostics(void)
                                      expected);
         }
     }
-    routed_diagnostic_vector(qts, 0x30, true, 0, 0, 0);
+    routed_diagnostic_vector(qts, 0x30, true, 0, 5, 0);
     routed_diagnostic_vector(qts, 0x30, true, 1, 5, 0);
     routed_diagnostic_vector(qts, 0x30, false, 0, 0, 0);
     routed_diagnostic_vector(qts, 0x10030, false, 0, 4, 0);

@@ -21,8 +21,6 @@
 #define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
 #define REMOTE_RESET_MASK UINT64_C(0xff)
 #define GLOBAL_PORT_DEF_MASK UINT64_C(0xffff)
-#define GLOBAL_TABLE_DIAGNOSTIC_MASK UINT64_C(0xf)
-#define LOCAL_TABLE_DIAGNOSTIC_MASK UINT64_C(0xfff)
 #define INACTIVE_BARRIER_CONTEXTS 32
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
 #define DEBUG_ADDRESS_MASK ((UINT64_C(1) << 10) - 1)
@@ -158,9 +156,6 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     }
     if (!address || address == 0x600000) {
         if (write) {
-            if (!address && ingress && s->synthetic_diagnostics) {
-                return SGI_NET_PACKET_OK;
-            }
             return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
         }
         packet->value = router_status(s, ingress);
@@ -168,7 +163,7 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     }
     if (s->synthetic_diagnostics && address >= 0x30 && address <= 0x48) {
         if (address == 0x30) {
-            if (write && packet->data) {
+            if (write) {
                 return refuse(packet, SGI_NET_PACKET_FAILURE_COMMAND);
             }
             packet->value = 0;
@@ -195,9 +190,6 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         return SGI_NET_PACKET_OK;
     }
     if (address == 0x8 && write && s->synthetic_diagnostics) {
-        if (!packet->data) {
-            return SGI_NET_PACKET_OK;
-        }
         if (packet->data == 1) {
             router_reset_local(s);
             sgi_net_port_flood_start();
@@ -279,9 +271,6 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
             }
             if (address == bank[p] + 8 || address == bank[p] + 0x88) {
                 if (write) {
-                    if (s->synthetic_diagnostics && !packet->data) {
-                        return SGI_NET_PACKET_OK;
-                    }
                     return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
                 }
                 packet->value = 0;
@@ -290,13 +279,11 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
             if (address >= bank[p] + 0x100 &&
                 address < bank[p] + 0x180) {
                 table = &s->meta[p][(address - bank[p] - 0x100) / 8];
-                mask = s->synthetic_diagnostics ? GLOBAL_TABLE_DIAGNOSTIC_MASK :
-                       UINT64_MAX;
+                mask = UINT64_MAX;
             } else if (address >= bank[p] + 0x200 &&
                        address < bank[p] + 0x600) {
                 table = &s->local[p][(address - bank[p] - 0x200) / 8];
-                mask = s->synthetic_diagnostics ? LOCAL_TABLE_DIAGNOSTIC_MASK :
-                       UINT64_MAX;
+                mask = UINT64_MAX;
             }
         }
     }
