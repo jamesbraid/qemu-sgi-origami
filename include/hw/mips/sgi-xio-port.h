@@ -70,6 +70,11 @@ typedef struct SGIXioSource {
     uint8_t device;
 } SGIXioSource;
 
+/* Model-only metadata for one packet, separate from source identity. */
+typedef struct SGIXioPacketAttrs {
+    bool half_write_requested;
+} SGIXioPacketAttrs;
+
 struct SGIXioPortClass {
     InterfaceClass parent_class;
 
@@ -87,7 +92,8 @@ struct SGIXioPortClass {
     /* Explicit-source packets never fall back to an unqualified face. */
     MemTxResult (*packet_rw)(Object *port, unsigned int index, hwaddr address,
                              void *buffer, size_t size, bool write,
-                             const SGIXioSource *source);
+                             const SGIXioSource *source,
+                             SGIXioPacketAttrs packet_attrs);
 
     /* Whether this port's faces carry the destination widget. */
     bool (*switched)(Object *port, unsigned int index);
@@ -142,10 +148,12 @@ static inline bool sgi_xio_llp_reset_accepted(int64_t *quiet_until,
 
 MemTxResult sgi_xio_port_packet_rw(Object *port, unsigned int index,
                                    hwaddr address, void *buffer, size_t size,
-                                   bool write, const SGIXioSource *source);
+                                   bool write, const SGIXioSource *source,
+                                   SGIXioPacketAttrs packet_attrs);
 MemTxResult sgi_xio_peer_packet_rw(const SGIXioPeer *peer, hwaddr address,
                                    void *buffer, size_t size, bool write,
-                                   const SGIXioSource *source);
+                                   const SGIXioSource *source,
+                                   SGIXioPacketAttrs packet_attrs);
 
 const char *sgi_xio_port_describe(Object *port, unsigned int index);
 MemoryRegion *sgi_xio_port_cpu_face(Object *port, unsigned int index);

@@ -21,6 +21,7 @@ static const unsigned sgi_dma_placement_unit[SGI_DMA_PLACEMENTS] = {
     [SGI_DMA_PLACEMENT_IDENTITY] = 1,
     [SGI_DMA_PLACEMENT_WORD] = 4,
     [SGI_DMA_PLACEMENT_DOUBLEWORD] = 8,
+    [SGI_DMA_PLACEMENT_HALF_WRITE] = 8,
 };
 
 /*
@@ -34,8 +35,10 @@ static MemTxResult sgi_dma_placement_access(SGIDMAPlacementTarget *t,
                                             MemTxAttrs attrs)
 {
     SGIDMAPlacementSet *set = t->set;
-    unsigned lane = MIN(size, t->unit) - 1;
-    hwaddr host = size < t->unit ? addr ^ (t->unit - size) : addr;
+    unsigned lane = t->placement == SGI_DMA_PLACEMENT_HALF_WRITE ? 0 :
+                    MIN(size, t->unit) - 1;
+    hwaddr host = t->placement == SGI_DMA_PLACEMENT_HALF_WRITE ? addr :
+                  size < t->unit ? addr ^ (t->unit - size) : addr;
     uint8_t bytes[8] = { 0 };
     MemTxResult result;
     unsigned i;
@@ -49,7 +52,8 @@ static MemTxResult sgi_dma_placement_access(SGIDMAPlacementTarget *t,
         }
     }
     if (set->send) {
-        result = set->send(set->opaque, host, bytes, size, is_write, attrs);
+        result = set->send(set->opaque, host, bytes, size, is_write, attrs,
+                           t->placement);
     } else {
         result = address_space_rw(set->onward, host, attrs, bytes, size,
                                   is_write);
@@ -121,7 +125,8 @@ static void sgi_dma_placement_reverse(uint8_t *dst, const uint8_t *src,
 static bool sgi_dma_placement_buffer_ok(SGIDMAPlacementTarget *t, hwaddr addr,
                                         hwaddr len)
 {
-    return !t->set->send && t->unit > 1 && !(addr & (t->unit - 1)) &&
+    return t->placement != SGI_DMA_PLACEMENT_HALF_WRITE &&
+           !t->set->send && t->unit > 1 && !(addr & (t->unit - 1)) &&
            len >= t->unit;
 }
 
@@ -221,12 +226,14 @@ static void sgi_dma_placement_init_target(SGIDMAPlacementSet *set,
         [SGI_DMA_PLACEMENT_IDENTITY] = "identity",
         [SGI_DMA_PLACEMENT_WORD] = "word",
         [SGI_DMA_PLACEMENT_DOUBLEWORD] = "doubleword",
+        [SGI_DMA_PLACEMENT_HALF_WRITE] = "half-write",
     };
     SGIDMAPlacementTarget *t = &set->target[placement];
     g_autofree char *target_name = g_strdup_printf("%s.%s", name,
                                                    suffix[placement]);
 
     t->set = set;
+    t->placement = placement;
     t->unit = sgi_dma_placement_unit[placement];
     memory_region_init_io(&t->mr, owner, &sgi_dma_placement_ops, t,
                           target_name, size);

@@ -295,35 +295,76 @@ static void test_config_type1(void)
 #define TARGET_C 0x123400000000ULL
 #define SCRATCH 0x8000
 
-static QTestState *transport_start_card(const char *card, const char *extra)
+static QTestState *transport_start_card_slot(const char *card,
+                                             const char *extra,
+                                             unsigned slot,
+                                             uint8_t wide_slot_mask)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
         "-device sgi-xio-test-target,id=targeta "
         "-device sgi-xio-test-target,id=targetb "
         "-device sgi-xio-test-target,id=targetc "
-        "-device sgi-xbridge-head,id=head,"
+        "-device sgi-xbridge-head,id=head,wide-slot-mask=0x%x,"
         "target-0=/machine/peripheral/targeta/targeta.ram[0],"
         "target-a=/machine/peripheral/targeta/targeta.ram[0],"
         "target-b=/machine/peripheral/targetb/targetb.ram[0],"
         "target-c=/machine/unattached/system[0] "
-        "-device %s,id=card,bus=head.0,addr=0,multifunction=on "
-        "%s", card, extra);
+        "-device %s,id=card,bus=head.0,addr=%u,multifunction=on "
+        "%s", wide_slot_mask, card, slot, extra);
 
     qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 0, TARGET_A);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/targetb", 0, TARGET_B);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/targetc", 0, TARGET_C);
-    qtest_writel(qts, BASE + 0x20010, 0x01000000);
-    qtest_writel(qts, BASE + 0x20004, 6);
-    reg_write(qts, 0x200, 0x83010);
+    qtest_writel(qts, BASE + 0x20010 + slot * 0x1000, 0x01000000);
+    qtest_writel(qts, BASE + 0x20004 + slot * 0x1000, 6);
+    reg_write(qts, 0x200 + slot * 8, 0x83010);
     return qts;
+}
+
+static QTestState *transport_start_card(const char *card, const char *extra)
+{
+    return transport_start_card_slot(card, extra, 0, 0);
 }
 
 static QTestState *transport_start(const char *extra)
 {
     return transport_start_card("sgi-bridge-dma-test", extra);
 }
+
+static void option_card_write(QTestState *qts, unsigned slot,
+                              unsigned reg, uint32_t value)
+{
+    uint32_t off = 0x200 + slot * 8;
+    uint32_t dev = reg_read(qts, off);
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, off, dev & ~(1U << 13));
+    }
+    qtest_writel(qts, BASE + (slot ? 0x400000 : 0x200000) + reg, value);
+    if (dev & (1U << 13)) {
+        reg_write(qts, off, dev);
+    }
+}
+
+static uint32_t option_card_read(QTestState *qts, unsigned slot, unsigned reg)
+{
+    uint32_t off = 0x200 + slot * 8;
+    uint32_t dev = reg_read(qts, off);
+    uint32_t value;
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, off, dev & ~(1U << 13));
+    }
+    value = qtest_readl(qts, BASE + (slot ? 0x400000 : 0x200000) + reg);
+    if (dev & (1U << 13)) {
+        reg_write(qts, off, dev);
+    }
+    return value;
+}
+
+>>>>>>> 95d3d8e9dc (hw/pci-host/sgi-xbridge: approximate wide direct DMA RAM writes)
 /*
  * The card's own scalar fields (address, count, seed, trigger) need
  * value-preserving placement through the slot's PIO window regardless of what
@@ -664,6 +705,78 @@ static void test_byte_lanes(void)
     g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x88);
     g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0x11);
     qtest_quit(qts);
+}
+
+static void test_standalone_wide_slot_keeps_direct_dma(void)
+{
+    const unsigned lengths[] = { 8, 16, 256 };
+    const uint8_t source[8] = { 0x10, 0x21, 0x32, 0x43,
+                                0x54, 0x65, 0x76, 0x87 };
+
+    for (unsigned wide = 0; wide < 2; wide++) {
+        unsigned slot = wide ? 1 : 0;
+        QTestState *qts = transport_start_card_slot("sgi-bridge-dma-test", "",
+                                                    slot, 1U << 1);
+
+        g_assert_cmphex(reg_read(qts, 0) >> 28, ==, 2);
+        reg_write(qts, 0x80, 0xa00000);
+        for (unsigned swap = 0; swap < 2; swap++) {
+            reg_write(qts, 0x200 + slot * 8,
+                      0x3010 | (swap ? 1U << 19 : 0));
+            for (unsigned n = 0; n < G_N_ELEMENTS(lengths); n++) {
+                uint8_t actual[256];
+                unsigned len = lengths[n];
+
+                qtest_memset(qts, TARGET_A + SCRATCH, 0, len);
+                option_card_write(qts, slot, 0, 0x80008000);
+                option_card_write(qts, slot, 0x18, 0);
+                option_card_write(qts, slot, 4, len);
+                option_card_write(qts, slot, 8, 0x10);
+                option_card_write(qts, slot, 0xc, 1);
+                g_assert_cmphex(option_card_read(qts, slot, 0x28), ==,
+                                MEMTX_OK);
+                qtest_memread(qts, TARGET_A + SCRATCH, actual, len);
+                for (unsigned i = 0; i < len; i++) {
+                    unsigned lane = !swap ? i ^ 3 : i;
+
+                    g_assert_cmphex(actual[i], ==, (uint8_t)(0x10 + lane));
+                }
+            }
+        }
+
+        if (wide) {
+            uint8_t actual[8];
+
+            reg_write(qts, 0x208, 0x83010);
+            option_card_write(qts, slot, 0, 0x80008000);
+            option_card_write(qts, slot, 4, 4);
+            option_card_write(qts, slot, 8, 0x10);
+            option_card_write(qts, slot, 0xc, 1);
+            qtest_memread(qts, TARGET_A + SCRATCH, actual, 4);
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmphex(actual[i], ==, 0x10 + i);
+            }
+
+            option_card_write(qts, slot, 0, 0x80008001);
+            option_card_write(qts, slot, 4, 8);
+            option_card_write(qts, slot, 0xc, 1);
+            qtest_memread(qts, TARGET_A + SCRATCH + 1, actual, 8);
+            for (unsigned i = 0; i < 8; i++) {
+                g_assert_cmphex(actual[i], ==, 0x10 + i);
+            }
+
+            qtest_memwrite(qts, TARGET_A + SCRATCH, source, sizeof(source));
+            option_card_write(qts, slot, 0x14, 0x80008000);
+            option_card_write(qts, slot, 0, 0x80008100);
+            option_card_write(qts, slot, 4, sizeof(source));
+            option_card_write(qts, slot, 0xc, 2);
+            g_assert_cmphex(option_card_read(qts, slot, 0x2c), ==,
+                            0x43322110);
+            g_assert_cmphex(option_card_read(qts, slot, 0x30), ==,
+                            0x87766554);
+        }
+        qtest_quit(qts);
+    }
 }
 
 /* IOC3's fixed PCI placement must not suppress the host's PIO swap bit. */
@@ -2269,6 +2382,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/unmask-asserted-pin",
                    test_unmask_asserted_pin);
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
+    qtest_add_func("/sn1/xbridge/standalone-wide-slot-direct-dma",
+                   test_standalone_wide_slot_keeps_direct_dma);
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",
                    test_ioc3_pio_swap_controls);
     qtest_add_func("/sn1/xbridge/dma-swap-controls", test_dma_swap_controls);

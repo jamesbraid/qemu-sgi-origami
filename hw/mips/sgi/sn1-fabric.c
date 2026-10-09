@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Cabled Bedrock endpoints, independent of processor population. */
 #include "qemu/osdep.h"
+#include "qemu/rcu.h"
 #include "qemu/log.h"
 #include "qemu/bswap.h"
 #include "qemu/module.h"
@@ -206,8 +207,40 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
                                  write, attrs);
 }
 
+MemTxResult sn1_fabric_packet_target_rw(AddressSpace *as, hwaddr offset,
+    void *buffer, size_t size, bool write, SGIXioPacketAttrs packet_attrs)
+{
+    if (write && packet_attrs.half_write_requested && size == 8 &&
+        !(offset & 7)) {
+        hwaddr xlat, span = size;
+        uint8_t swapped[8];
+        MemoryRegion *leaf;
+        MemTxResult result;
+
+        rcu_read_lock();
+        leaf = address_space_translate(as, offset, &xlat, &span, true,
+                                       MEMTXATTRS_UNSPECIFIED);
+        if (span == size && leaf && memory_region_is_ram(leaf) &&
+            !memory_region_is_ram_device(leaf) &&
+            !memory_region_is_rom(leaf)) {
+            memcpy(swapped, (uint8_t *)buffer + 4, 4);
+            memcpy(swapped + 4, buffer, 4);
+            buffer = swapped;
+        }
+        result = address_space_write(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                     buffer, size);
+        rcu_read_unlock();
+        return result;
+    }
+    return write ? address_space_write(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                      buffer, size) :
+                   address_space_read(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                     buffer, size);
+}
+
 MemTxResult sn1_fabric_destination_rw(void *opaque, const SGIXioSource *source,
-    hwaddr address, void *buffer, size_t size, bool write)
+    hwaddr address, void *buffer, size_t size, bool write,
+    SGIXioPacketAttrs packet_attrs)
 {
     SN1FabricEndpoint *endpoint = opaque;
     SN1FabricEndpoint *target;
@@ -253,7 +286,8 @@ MemTxResult sn1_fabric_destination_rw(void *opaque, const SGIXioSource *source,
         }
     }
     MemTxResult result = target->destination_rw(target, source, address,
-                                               buffer, size, write);
+                                               buffer, size, write,
+                                               packet_attrs);
 
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,

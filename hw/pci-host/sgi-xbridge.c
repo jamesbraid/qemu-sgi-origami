@@ -62,7 +62,8 @@ static MemTxResult xbridge_send_interrupt(SGIXBridgeHeadState *s,
     stq_be_p(bytes, number | (set ? SGI_XIO_INTERRUPT_SET : 0));
     return s->packet_sender(s->packet_opaque, s,
                             ((hwaddr)dest.widget << 48) | dest.address,
-                            bytes, sizeof(bytes), true, &source);
+                            bytes, sizeof(bytes), true, &source,
+                            (SGIXioPacketAttrs) { 0 });
 }
 
 static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
@@ -171,7 +172,8 @@ static const MemoryRegionOps xbridge_flush_ops = {
 /* A packet-mode leg: the packet names this head and the requesting slot. */
 static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
                                        void *buffer, unsigned size,
-                                       bool write, MemTxAttrs attrs)
+                                       bool write, MemTxAttrs attrs,
+                                       SGIDMAPlacement placement)
 {
     struct XBridgeDMA *dma = opaque;
     SGIXBridgeHeadState *s = dma->head;
@@ -181,10 +183,14 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
         .widget = REG(s, 0x20) & 15,
         .device = dma->slot,
     };
+    SGIXioPacketAttrs packet_attrs = {
+        .half_write_requested = placement == SGI_DMA_PLACEMENT_HALF_WRITE &&
+                                write && size == 8 && !(address & 7),
+    };
     MemTxResult result;
 
     result = s->packet_sender(s->packet_opaque, s, address, buffer, size,
-                              write, &source);
+                              write, &source, packet_attrs);
     if (trace_event_get_state_backends(TRACE_SGI_XBRIDGE_DMA_PACKET)) {
         trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                                      source.widget, source.device, address,
@@ -207,6 +213,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     uint64_t destination;
     bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
+    bool direct_window = false;
     SGIDMAPlacement placement;
 
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
@@ -251,6 +258,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
             destination += 0x20000000;
         }
         swap = REG(s, 0x200 + dma->slot * 8) & (1U << 19);
+        direct_window = true;
     } else {
         qemu_log_mask(addr >= 0x40000000 && addr < 0x80000000 ?
                       LOG_UNIMP : LOG_GUEST_ERROR,
@@ -265,6 +273,10 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     }
     placement = sgi_dma_placement_select(
         swap, s->dma_64bit & (1U << dma->slot));
+    if (s->packet_sender && rev2 && direct_window && swap &&
+        (s->wide_slot_mask & BIT(dma->slot))) {
+        placement = SGI_DMA_PLACEMENT_HALF_WRITE;
+    }
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
         entry.target_as = sgi_dma_placement_as(&dma->source, placement);
@@ -1062,7 +1074,9 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
                                         SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE,
                                         BIT(SGI_DMA_PLACEMENT_IDENTITY) |
                                         sgi_dma_placement_needed(
-                                            s->req64_slots & BIT(i)),
+                                            s->req64_slots & BIT(i)) |
+                                        ((s->wide_slot_mask & BIT(i)) ?
+                                         BIT(SGI_DMA_PLACEMENT_HALF_WRITE) : 0),
                                         xbridge_source_send, &s->dma[i]);
         }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
@@ -1169,6 +1183,7 @@ static const Property xbridge_properties[] = {
     DEFINE_PROP_STRING("bus-name", SGIXBridgeHeadState, bus_name),
     /* As on the Bridge: slots whose REQ64# the board drives at reset. */
     DEFINE_PROP_UINT8("req64-slots", SGIXBridgeHeadState, req64_slots, 0),
+    DEFINE_PROP_UINT8("wide-slot-mask", SGIXBridgeHeadState, wide_slot_mask, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIXBridgeHeadState, onewire_serial,
                        SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
@@ -1281,6 +1296,7 @@ struct SGIXBridgeState {
     uint8_t xio_port;
     uint8_t pci_speed[2];
     uint8_t req64_slots[2];
+    uint8_t wide_slot_mask_e;
     char *board_part[2];
     /*
      * Prefixed to each head's bus name, so a second chip in one machine (a
@@ -1510,7 +1526,8 @@ bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp)
 
 static MemTxResult chip_peer_rw(SGIXBridgeState *s, const SGIXioPeer *peer,
                                  hwaddr address, void *buffer, size_t size,
-                                 bool write, const SGIXioSource *source)
+                                 bool write, const SGIXioSource *source,
+                                 SGIXioPacketAttrs packet_attrs)
 {
     SGIXBridgePacketFrame frame = { source, s->active_packet };
     MemTxResult result;
@@ -1524,14 +1541,16 @@ static MemTxResult chip_peer_rw(SGIXBridgeState *s, const SGIXioPeer *peer,
         }
     }
     s->active_packet = &frame;
-    result = sgi_xio_peer_packet_rw(peer, address, buffer, size, write, source);
+    result = sgi_xio_peer_packet_rw(peer, address, buffer, size, write,
+                                    source, packet_attrs);
     s->active_packet = frame.previous;
     return result;
 }
 
 static MemTxResult chip_source_send(void *opaque, SGIXBridgeHeadState *head,
                                      hwaddr address, void *buffer, size_t size,
-                                     bool write, const SGIXioSource *source)
+                                     bool write, const SGIXioSource *source,
+                                     SGIXioPacketAttrs packet_attrs)
 {
     SGIXBridgeState *s = opaque;
     unsigned widget = address >> 48;
@@ -1546,7 +1565,8 @@ static MemTxResult chip_source_send(void *opaque, SGIXBridgeHeadState *head,
     } else {
         return MEMTX_DECODE_ERROR;
     }
-    return chip_peer_rw(s, peer, address, buffer, size, write, source);
+    return chip_peer_rw(s, peer, address, buffer, size, write, source,
+                        packet_attrs);
 }
 
 static void chip_build(DeviceState *dev, Error **errp)
@@ -1661,6 +1681,10 @@ static void chip_build(DeviceState *dev, Error **errp)
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "req64-slots",
                             s->req64_slots[i]);
+        if (!i) {
+            qdev_prop_set_uint8(DEVICE(&s->head[i]), "wide-slot-mask",
+                                s->wide_slot_mask_e);
+        }
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
                                  s->board_part[i]);
@@ -1874,6 +1898,8 @@ static const Property chip_properties[] = {
     DEFINE_PROP_UINT8("pci-speed-f", SGIXBridgeState, pci_speed[1], 0),
     DEFINE_PROP_UINT8("req64-slots-e", SGIXBridgeState, req64_slots[0], 0),
     DEFINE_PROP_UINT8("req64-slots-f", SGIXBridgeState, req64_slots[1], 0),
+    DEFINE_PROP_UINT8("wide-slot-mask-e", SGIXBridgeState, wide_slot_mask_e,
+                      0),
     /*
      * A head's own MicroLAN board-identity NIC (BRIDGE_NIC, offset 0xb0):
      * unset leaves that head's register inert, matching a widget with no
@@ -2040,7 +2066,8 @@ static bool chip_xio_port_connect(Object *port, unsigned int index,
 static MemTxResult chip_xio_packet_rw(Object *port, unsigned int index,
                                        hwaddr address, void *buffer,
                                        size_t size, bool write,
-                                       const SGIXioSource *source)
+                                       const SGIXioSource *source,
+                                       SGIXioPacketAttrs packet_attrs)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
     unsigned widget = address >> 48;
@@ -2070,7 +2097,8 @@ static MemTxResult chip_xio_packet_rw(Object *port, unsigned int index,
     } else {
         return MEMTX_DECODE_ERROR;
     }
-    return chip_peer_rw(s, peer, address, buffer, size, write, source);
+    return chip_peer_rw(s, peer, address, buffer, size, write, source,
+                        packet_attrs);
 }
 
 static void chip_class_init(ObjectClass *oc, const void *data)

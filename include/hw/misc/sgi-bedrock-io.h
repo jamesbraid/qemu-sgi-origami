@@ -28,7 +28,7 @@ typedef struct SGIBedrockIOBTE {
 
 typedef MemTxResult (*SGIBedrockIODestinationRW)(void *opaque,
     const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
-    bool write);
+    bool write, SGIXioPacketAttrs packet_attrs);
 
 typedef bool (*SGIBedrockIOBTELocalRW)(void *opaque, hwaddr address,
     void *buffer, size_t size, bool write, MemTxResult *result);
@@ -134,7 +134,8 @@ MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
 MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
                                     const SGIXioSource *source,
                                     hwaddr address, void *buffer, size_t size,
-                                    bool write);
+                                    bool write,
+                                    SGIXioPacketAttrs packet_attrs);
 void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
                                     unsigned device);
 

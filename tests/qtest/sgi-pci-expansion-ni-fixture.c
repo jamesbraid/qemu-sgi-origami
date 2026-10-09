@@ -38,6 +38,7 @@ struct NICardState {
     MemoryRegion bar;
     uint64_t address;
     uint64_t payload;
+    uint32_t transfer_length;
     uint32_t result;
     uint32_t signature;
     uint8_t pin;
@@ -71,7 +72,7 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
                        unsigned size)
 {
     NICardState *s = opaque;
-    uint8_t buffer[8];
+    uint8_t buffer[256];
 
     switch (offset) {
     case 8:
@@ -90,10 +91,15 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case 24:
         stq_be_p(buffer, s->payload);
+        for (unsigned i = 8; i < s->transfer_length; i++) {
+            buffer[i] = 0x10 + i;
+        }
         if (value == 1) {
-            s->result = pci_dma_write(PCI_DEVICE(s), s->address, buffer, 8);
+            s->result = pci_dma_write(PCI_DEVICE(s), s->address, buffer,
+                                      s->transfer_length);
         } else if (value == 2) {
-            s->result = pci_dma_read(PCI_DEVICE(s), s->address, buffer, 8);
+            s->result = pci_dma_read(PCI_DEVICE(s), s->address, buffer,
+                                     s->transfer_length);
             if (s->result == MEMTX_OK) {
                 s->payload = ldq_be_p(buffer);
             }
@@ -171,6 +177,11 @@ static void card_realize(PCIDevice *dev, Error **errp)
         error_setg(errp, "NI card needs an interrupt pin from 1 to 4");
         return;
     }
+    if (s->transfer_length != 8 && s->transfer_length != 16 &&
+        s->transfer_length != 256) {
+        error_setg(errp, "NI card transfer length must be 8, 16 or 256");
+        return;
+    }
     dev->config[PCI_INTERRUPT_PIN] = s->interrupt_pin;
     memory_region_init_io(&s->bar, OBJECT(s), &card_ops, s,
                           "ni-card.bar", 4096);
@@ -182,6 +193,7 @@ static const Property card_properties[] = {
     DEFINE_PROP_UINT32("signature", NICardState, signature, 0),
     DEFINE_PROP_UINT64("dma-address", NICardState, address, 0),
     DEFINE_PROP_UINT64("dma-payload", NICardState, payload, 0),
+    DEFINE_PROP_UINT32("transfer-length", NICardState, transfer_length, 8),
 };
 
 static void card_class_init(ObjectClass *oc, const void *data)
@@ -263,6 +275,13 @@ struct NIFixtureState {
     SGIL1QueryRouter router;
     SN1FabricEndpoint endpoint;
     MemoryRegion ram;
+    MemoryRegion ram_overlay;
+    bool ram_overlay_enabled;
+    uint64_t ram_overlay_value;
+    uint64_t ram_overlay_writes;
+    uint64_t packet_write_8;
+    uint64_t packet_write_other;
+    uint64_t packet_reads;
     MemoryRegion ram_observation;
     MemoryRegion compute_observation;
     AddressSpace ram_as;
@@ -315,11 +334,21 @@ static MemTxResult fixture_processor_rw(SN1FabricEndpoint *endpoint,
 
 static MemTxResult fixture_destination_rw(SN1FabricEndpoint *endpoint,
     const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
-    bool write)
+    bool write, SGIXioPacketAttrs packet_attrs)
 {
     NIFixtureState *s = NI_FIXTURE(endpoint->owner);
     AddressSpace *as;
     hwaddr offset;
+
+    if (write) {
+        if (size == 8) {
+            s->packet_write_8++;
+        } else {
+            s->packet_write_other++;
+        }
+    } else {
+        s->packet_reads++;
+    }
 
     if (address & (UINT64_C(1) << 47)) {
         hwaddr window = address & ((UINT64_C(1) << 39) - 1);
@@ -348,10 +377,8 @@ static MemTxResult fixture_destination_rw(SN1FabricEndpoint *endpoint,
         }
         as = &s->ram_as;
     }
-    return write ? address_space_write(as, offset, MEMTXATTRS_UNSPECIFIED,
-                                      buffer, size) :
-                   address_space_read(as, offset, MEMTXATTRS_UNSPECIFIED,
-                                     buffer, size);
+    return sn1_fabric_packet_target_rw(as, offset, buffer, size, write,
+                                       packet_attrs);
 }
 
 static MemTxResult requester_read(void *opaque, hwaddr address, uint64_t *value,
@@ -445,6 +472,16 @@ static uint64_t status_read(void *opaque, hwaddr offset, unsigned size)
         return s->active_capture_result;
     case 12:
         return s->bte_queued;
+    case 13:
+        return s->ram_overlay_value;
+    case 14:
+        return s->ram_overlay_writes;
+    case 15:
+        return s->packet_write_8;
+    case 16:
+        return s->packet_write_other;
+    case 17:
+        return s->packet_reads;
     default:
         return 0;
     }
@@ -455,6 +492,22 @@ static const MemoryRegionOps status_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 4, .max_access_size = 8 },
     .impl = { .min_access_size = 4, .max_access_size = 8 },
+};
+
+static void ram_overlay_write(void *opaque, hwaddr offset, uint64_t value,
+                              unsigned size)
+{
+    NIFixtureState *s = opaque;
+
+    s->ram_overlay_value = value;
+    s->ram_overlay_writes++;
+}
+
+static const MemoryRegionOps ram_overlay_ops = {
+    .write = ram_overlay_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
 static void fixture_place_claims(SN1FabricEndpoint *endpoint)
@@ -694,7 +747,7 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
 
         s->storage_direct_result = sn1_fabric_destination_rw(&s->endpoint,
             value == 3 ? NULL : &source, s->storage_direct_address,
-            bytes, sizeof(bytes), true);
+            bytes, sizeof(bytes), true, (SGIXioPacketAttrs) { 0 });
     } else if (offset == 120) {
         Error *error = NULL;
 
@@ -916,8 +969,8 @@ static void fixture_build(DeviceState *dev, Error **errp)
                    "management=false");
         return;
     }
-    if (s->card_device < 1 || s->card_device > 2) {
-        error_setg(errp, "Card device must be 1 or 2");
+    if (s->card_device > 2) {
+        error_setg(errp, "Card device must be 0, 1 or 2");
         return;
     }
     if (s->isp_head != UINT8_MAX && s->isp_head >= SGI_ORIGIN300_PCI_HEADS) {
@@ -927,6 +980,13 @@ static void fixture_build(DeviceState *dev, Error **errp)
     if (!memory_region_init_ram(&s->ram, OBJECT(s), "ni-fixture.ram",
                                 RAM_BYTES, errp)) {
         return;
+    }
+    if (s->ram_overlay_enabled) {
+        memory_region_init_io(&s->ram_overlay, OBJECT(s), &ram_overlay_ops, s,
+                              "ni-fixture.ram-overlay", 8);
+        s->ram_overlay.disable_reentrancy_guard = true;
+        memory_region_add_subregion_overlap(&s->ram, 0x9000,
+                                            &s->ram_overlay, 1);
     }
     address_space_init(&s->ram_as, &s->ram, "ni-fixture.ram");
     s->compute = qdev_new(TYPE_SGI_BEDROCK);
@@ -1213,7 +1273,7 @@ static void fixture_build(DeviceState *dev, Error **errp)
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &r->view);
     }
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "ni-fixture.status", 104);
+                          "ni-fixture.status", 144);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
         "ni-fixture.ram-observation", &s->ram, 0, RAM_BYTES);
@@ -1313,6 +1373,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_BOOL("ram-overlay", NIFixtureState, ram_overlay_enabled, false),
     DEFINE_PROP_UINT32("compute-origins", NIFixtureState, compute_origins, 2),
     DEFINE_PROP_UINT32("uart-origins", NIFixtureState,
                        uart_origins, UINT32_MAX),

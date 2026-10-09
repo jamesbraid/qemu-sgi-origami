@@ -756,7 +756,8 @@ void sgi_bedrock_io_set_destination(SGIBedrockIOState *s,
 MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
                                     const SGIXioSource *source,
                                     hwaddr address, void *buffer, size_t size,
-                                    bool write)
+                                    bool write,
+                                    SGIXioPacketAttrs packet_attrs)
 {
     SGIBedrockIOState *target = s;
     unsigned first, last;
@@ -808,7 +809,7 @@ MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
     DEVICE(target)->mem_reentrancy_guard.engaged_in_io = true;
     if (s->destination_rw) {
         result = s->destination_rw(s->destination_opaque, source, address,
-                                    buffer, size, write);
+                                    buffer, size, write, packet_attrs);
     } else {
         result = sgi_bedrock_io_inbound_rw(s, source->widget, first, address,
                                           buffer, size, write);
@@ -1421,10 +1422,11 @@ static MemoryRegion *ii_xio_port_packet_face(Object *port,
 
 static MemTxResult ii_xio_packet_rw(Object *port, unsigned int index,
                                      hwaddr address, void *buffer, size_t size,
-                                     bool write, const SGIXioSource *source)
+                                     bool write, const SGIXioSource *source,
+                                     SGIXioPacketAttrs packet_attrs)
 {
     return sgi_bedrock_io_source_rw(SGI_BEDROCK_IO(port), source, address,
-                                    buffer, size, write);
+                                    buffer, size, write, packet_attrs);
 }
 
 static void ii_class_init(ObjectClass *klass, const void *data)

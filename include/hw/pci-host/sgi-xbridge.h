@@ -152,6 +152,7 @@ struct SGIXBridgeHeadState {
     uint8_t pins;
     /* Slots the board wires to the 64-bit data path (REQ64# at reset). */
     uint8_t req64_slots;
+    uint8_t wide_slot_mask;
     /* Slots whose DMA runs 64-bit data phases, settled at each reset. */
     uint8_t dma_64bit;
     /*
@@ -169,7 +170,8 @@ struct SGIXBridgeHeadState {
     uint32_t pci_levels;
     MemTxResult (*packet_sender)(void *opaque, SGIXBridgeHeadState *head,
                                  hwaddr address, void *buffer, size_t size,
-                                 bool write, const SGIXioSource *source);
+                                 bool write, const SGIXioSource *source,
+                                 SGIXioPacketAttrs packet_attrs);
     void *packet_opaque;
     MemoryRegion *target[16];
     struct XBridgeTarget {

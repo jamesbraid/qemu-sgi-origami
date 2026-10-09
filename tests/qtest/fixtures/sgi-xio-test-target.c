@@ -325,7 +325,8 @@ static MemTxResult source_access(SGIXioTestTargetState *s, hwaddr address,
     };
 
     s->result = sgi_xio_port_packet_rw(s->target_port, s->target_index,
-                                       address, buffer, size, write, &source);
+                                       address, buffer, size, write, &source,
+                                       (SGIXioPacketAttrs) { 0 });
     return s->result;
 }
 
@@ -393,7 +394,7 @@ static SGIBedrockIOState *source_claimant(void *opaque, unsigned number)
 
 static MemTxResult source_destination(void *opaque,
     const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
-    bool write)
+    bool write, SGIXioPacketAttrs packet_attrs)
 {
     SGIXioTestTargetState *s = opaque;
 
