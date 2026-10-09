@@ -54,11 +54,20 @@ typedef struct TopologyExtra {
     const char *topology;
     const char *machine_options;   /* appended to -M */
     bool storage;                  /* binds the expansion configuration */
+    bool io9;                      /* needs DS1742 backends */
 } TopologyExtra;
 
 static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
     { "fuel-vpro", FUEL_IDENTITY },
+    { "origin350", ",ip53-experimental=on", .io9 = true },
+    { "onyx350-compat", ",ip53-experimental=on", .io9 = true },
+    { "onyx4-host-serial-compat", ",ip53-experimental=on", .io9 = true },
+    { "tezro-deskside-700mhz-4mib-serial-trial",
+      ",ip53-experimental=on", .io9 = true },
+    { "tezro-rack-base", ",ip53-experimental=on", .io9 = true },
+    { "tezro-tower-multi", ",ip53-experimental=on", .io9 = true },
+    { "tezro-tower-one", ",ip53-experimental=on", .io9 = true },
     { "origin300-pci-expansion-configuration-storage-experiment",
       STORAGE_BINDING, true },
     { "origin300-pci-expansion-pending-register-experiment",
@@ -72,6 +81,7 @@ typedef struct MachineCase {
     char *args;            /* -M and its options, -cpu, -smp, -m, -device */
     bool ip35;             /* takes the IP35 PROM size */
     bool storage;          /* binds the expansion configuration storage */
+    bool io9;              /* needs DS1742 backends */
 } MachineCase;
 
 /* What one machine's walk collected. */
@@ -295,6 +305,9 @@ static void test_machine_serials(const void *data)
     g_autofree char *prom = NULL;
     g_autofree char *storage = NULL;
     g_autofree char *drive = NULL;
+    g_autofree char *io9_data = NULL;
+    g_autofree char *io9_clock = NULL;
+    g_autofree char *io9_drives = NULL;
     Inventory inv = {
         .roms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                       g_free),
@@ -315,8 +328,16 @@ static void test_machine_serials(const void *data)
         drive = g_strdup_printf("-drive if=none,id=cfg,file=%s,format=raw",
                                 storage);
     }
-    qts = qtest_initf("-M %s -bios %s %s -display none -S", c->args, prom,
-                      drive ? drive : "");
+    if (c->io9) {
+        io9_data = blank_image(0x800);
+        io9_clock = blank_image(16);
+        io9_drives = g_strdup_printf(
+            "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+            io9_data, io9_clock);
+    }
+    qts = qtest_initf("-M %s -bios %s %s %s -display none -S", c->args, prom,
+                      drive ? drive : "", io9_drives ? io9_drives : "");
     walk(qts, &inv, "/machine");
     qtest_quit(qts);
 
@@ -324,11 +345,18 @@ static void test_machine_serials(const void *data)
      * Every machine has something to check: one-wire parts, or on a Fuel,
      * whose identity lives in its L1, the system board's areas.
      */
-    g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances), >, 0);
+    if (!c->io9) {
+        g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances),
+                         >, 0);
+    }
     g_hash_table_destroy(inv.roms);
     g_hash_table_destroy(inv.barcodes);
     g_hash_table_destroy(inv.l1_instances);
     g_unlink(prom);
+    if (io9_data) {
+        g_unlink(io9_data);
+        g_unlink(io9_clock);
+    }
     if (storage) {
         g_unlink(storage);
     }
@@ -440,6 +468,7 @@ static GPtrArray *catalogue_cases(void)
         c->name = g_strdup(t->data);
         c->ip35 = boot_flash_is_ip35(offering);
         c->storage = extra && extra->storage;
+        c->io9 = extra && extra->io9;
         c->args = g_strdup_printf(
             "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
             qdict_get_str(offering, "machine-options"),
