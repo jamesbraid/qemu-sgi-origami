@@ -2341,14 +2341,15 @@ static void test_gl_bitmap_draws_its_image(void)
                     MGRAS_HQ_FLAG_FENCE);
 
     for (int y = 14; y < 22; y++) {
+        g_autofree uint32_t *got = gl_window_row(qts, 4, y, 18);
+
         for (int x = 4; x < 22; x++) {
             bool on = false;
 
             for (int i = 0; i < ARRAY_SIZE(set); i++) {
                 on |= set[i].x == x && set[i].y == y;
             }
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
-                            on ? 0xff8000 : 0);
+            g_assert_cmphex(got[x - 4], ==, on ? 0xff8000 : 0);
             drawn += on;
         }
     }
@@ -2395,11 +2396,16 @@ static void test_gl_bitmap_unaligned_image(void)
     gl_word(qts, MGRAS_FENCE_TOKEN);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
-    for (int x = 0; x < 20; x++) {
-        bool on = x == 4 || x == 5 || x == 18 || x == 19;
+    {
+        g_autofree uint32_t *row6 = gl_window_row(qts, 0, 6, 20);
+        g_autofree uint32_t *row7 = gl_window_row(qts, 0, 7, 20);
 
-        g_assert_cmphex(gl_window_pixel(qts, x, 6), ==, on ? 0xffffff : 0);
-        g_assert_cmphex(gl_window_pixel(qts, x, 7), ==, 0);
+        for (int x = 0; x < 20; x++) {
+            bool on = x == 4 || x == 5 || x == 18 || x == 19;
+
+            g_assert_cmphex(row6[x], ==, on ? 0xffffff : 0);
+            g_assert_cmphex(row7[x], ==, 0);
+        }
     }
 
     /* A block no packet owns is framed the same way. */
@@ -2474,11 +2480,18 @@ static void test_gl_bitmap_split_by_a_context_switch(void)
 
     gl_enter_slot(qts, GL_SLOT_A);
     gl_word(qts, 0x0000ffff);
-    for (int x = 20; x < 36; x++) {
-        g_assert_cmphex(gl_window_pixel(qts, x, 30), ==, 5);
-        g_assert_cmphex(gl_window_pixel(qts, x, 31), ==, 0);
-        g_assert_cmphex(gl_window_pixel(qts, x, 32), ==, 0);
-        g_assert_cmphex(gl_window_pixel(qts, x, 33), ==, 5);
+    {
+        g_autofree uint32_t *row30 = gl_window_row(qts, 20, 30, 16);
+        g_autofree uint32_t *row31 = gl_window_row(qts, 20, 31, 16);
+        g_autofree uint32_t *row32 = gl_window_row(qts, 20, 32, 16);
+        g_autofree uint32_t *row33 = gl_window_row(qts, 20, 33, 16);
+
+        for (int x = 0; x < 16; x++) {
+            g_assert_cmphex(row30[x], ==, 5);
+            g_assert_cmphex(row31[x], ==, 0);
+            g_assert_cmphex(row32[x], ==, 0);
+            g_assert_cmphex(row33[x], ==, 5);
+        }
     }
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
@@ -3176,8 +3189,10 @@ static void test_gl_pixels_far_raster_position(void)
     gl_pixels_fence(qts);
 
     for (int y = 0; y < 128; y += 7) {
+        g_autofree uint32_t *got = gl_window_row(qts, 0, y, 128);
+
         for (int x = 0; x < 128; x += 7) {
-            g_assert_cmphex(gl_window_pixel(qts, x, y), ==, 0);
+            g_assert_cmphex(got[x], ==, 0);
         }
     }
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
@@ -5332,8 +5347,10 @@ static void test_gl_pixels_ordinary_rgba_captured_row_counts(void)
         gl_pixels_fence(qts);
 
         for (uint32_t row = 0; row < height; row++) {
+            g_autofree uint32_t *got = gl_window_row(qts, 4, 6 + row, width);
+
             for (uint32_t col = 0; col < width; col++) {
-                g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6 + row), ==,
+                g_assert_cmphex(got[col], ==,
                                 (0x20 + row) << 16 |
                                 (0x40 + col) << 8 | (0x60 + row + col));
             }
@@ -5451,6 +5468,8 @@ static void test_gl_pixels_captured_float_rgba_small_shapes(void)
         gl_pixels_fence(qts);
 
         for (uint32_t row = 0; row < height; row++) {
+            g_autofree uint32_t *got = gl_window_row(qts, 4, 6 + row, width);
+
             for (uint32_t col = 0; col < width; col++) {
                 uint8_t red = 16 + 13 * col;
                 uint8_t green = 23 + 11 * row;
@@ -5458,8 +5477,7 @@ static void test_gl_pixels_captured_float_rgba_small_shapes(void)
                 uint32_t expected = (uint32_t)red << 16 |
                                     (uint32_t)green << 8 | blue;
 
-                g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6 + row), ==,
-                                expected);
+                g_assert_cmphex(got[col], ==, expected);
             }
         }
         g_assert_cmphex(gl_window_pixel(qts, 4 + width, 6 + height - 1),
@@ -5564,13 +5582,15 @@ static void test_gl_pixels_captured_float_rgba_wide_strips(void)
         gl_pixels_row(qts, 0, components, strips[strip].words);
         gl_pixels_fence(qts);
 
+        g_autofree uint32_t *got = gl_window_row(qts, x, 6, width);
+
         for (uint32_t col = 0; col < width; col++) {
             uint32_t source_x = strips[strip].x + col;
             uint8_t red = 16 + 13 * source_x;
             uint8_t blue = 41 + 3 * source_x;
             uint32_t expected = (uint32_t)red << 16 | 23 << 8 | blue;
 
-            g_assert_cmphex(gl_window_pixel(qts, x + col, 6), ==, expected);
+            g_assert_cmphex(got[col], ==, expected);
         }
         g_assert_cmphex(gl_window_pixel(qts, x + width, 6), ==, 0);
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
@@ -5660,13 +5680,15 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
             gl_pixels_row(qts, 0, components, remainder * 4);
             gl_pixels_fence(qts);
 
+            g_autofree uint32_t *got = gl_window_row(qts, 1, 1,
+                                                     images[image].width);
+
             for (uint32_t col = 0; col < images[image].width; col++) {
                 uint8_t red = 16 + 13 * col;
                 uint8_t blue = 41 + 3 * col;
                 uint32_t expected = (uint32_t)red << 16 | 23 << 8 | blue;
 
-                g_assert_cmphex(gl_window_pixel(qts, 1 + col, 1), ==,
-                                expected);
+                g_assert_cmphex(got[col], ==, expected);
             }
             g_assert_cmphex(gl_window_pixel(qts, 1 + images[image].width, 1),
                             ==, 0);
@@ -5696,8 +5718,10 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
         gl_pixels_row(qts, 2, components, words);
         gl_pixels_fence(qts);
 
+        g_autofree uint32_t *got = gl_window_row(qts, 1, 1, 47);
+
         for (uint32_t col = 0; col < 47; col++) {
-            g_assert_cmphex(gl_window_pixel(qts, 1 + col, 1), ==, 0);
+            g_assert_cmphex(got[col], ==, 0);
         }
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
@@ -5717,8 +5741,12 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
     gl_pixels_row(qts, 0, components, 188);
     gl_pixels_fence(qts);
 
-    for (uint32_t col = 0; col < 47; col++) {
-        g_assert_cmphex(gl_window_pixel(qts, 1 + col, 1), ==, 0);
+    {
+        g_autofree uint32_t *got = gl_window_row(qts, 1, 1, 47);
+
+        for (uint32_t col = 0; col < 47; col++) {
+            g_assert_cmphex(got[col], ==, 0);
+        }
     }
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
