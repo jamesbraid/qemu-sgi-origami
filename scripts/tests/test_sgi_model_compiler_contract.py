@@ -3122,7 +3122,7 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
         self.assertEqual(assembly, {
             "id": "r10000-180mhz", "kind": "R10000",
             "prid": 0x926, "fpu_prid": 0x900,
-            "clock_hz": 0xaba9500, "cache_clock_hz": 0x55d4a80,
+            "clock_hz": 0xaba9500, "cache_clock_hz": 0x7270e00,
             "cache_mib": 1, "mode_bits": 0x1211a785,
         })
         self.assertIs(

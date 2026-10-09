@@ -363,7 +363,7 @@
       "hardware_kind": "r10000",
       "id": "base-cpu1",
       "identity": {
-        "cache_clock_mhz": 90,
+        "cache_clock_mhz": 120,
         "cache_mib": 1,
         "clock_mhz": 180,
         "fpu_identification": "0x0900",
@@ -796,7 +796,7 @@
       "hardware_kind": "r10000",
       "id": "base-cpu0",
       "identity": {
-        "cache_clock_mhz": 90,
+        "cache_clock_mhz": 120,
         "cache_mib": 1,
         "clock_mhz": 180,
         "fpu_identification": "0x0900",
@@ -2633,11 +2633,11 @@
       ],
       "variants": [
         {
-          "cache_clock_mhz": 90,
+          "cache_clock_mhz": 120,
           "cache_mib": 1,
           "clock_mhz": 180,
           "fpu_identification": "0x0900",
-          "notes": "Identity registers and cache clock corroborated as the same R10000/1 MiB assembly Origin 200 already catalogues (a real Origin 200 hinv reports \"Rev 2.6\"; boot-logs records this as the same variant on both products).",
+          "notes": "Identity registers corroborated as the same R10000/1 MiB assembly Origin 200 already catalogues (a real Origin 200 hinv reports \"Rev 2.6\"; boot-logs records this as the same variant on both products). The cache runs at 120 MHz, the clock divided by the mode word's 1.5, as a real Origin 200 inventory prints (\"Secondary cache: Size 1 MB Speed 120 Mhz\").",
           "processor_identification": "0x0926",
           "reset_mode": {
             "cache_test_mode": false,

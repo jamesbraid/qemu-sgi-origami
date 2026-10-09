@@ -293,7 +293,7 @@ static SGIModelProcessor console_test_r10000_180mhz = {
     .prid = 0x926,
     .fpu_prid = 0x900,
     .clock_hz = 0xaba9500,
-    .cache_clock_hz = 0x55d4a80,
+    .cache_clock_hz = 0x7270e00,
     .cache_mib = 1,
     .mode_bits = 0x1211a785,
 };

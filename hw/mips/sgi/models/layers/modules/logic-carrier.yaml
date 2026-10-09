@@ -364,7 +364,7 @@ layer:
         identity:
           processor_identification: "0x0926"
           fpu_identification: "0x0900"
-          cache_clock_mhz: 90
+          cache_clock_mhz: 120
         sources: ["web:r10000-users-manual-2.0 section 14.13, PRId register, printed page 255: implementation number 0x09"]
 
       - id: node-memory

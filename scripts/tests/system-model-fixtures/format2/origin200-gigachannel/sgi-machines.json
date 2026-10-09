@@ -502,7 +502,7 @@
           "cpu-slots": [
             {
               "assembly": {
-                "cache-clock-hz": 90000000,
+                "cache-clock-hz": 120000000,
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
@@ -516,7 +516,7 @@
             },
             {
               "assembly": {
-                "cache-clock-hz": 90000000,
+                "cache-clock-hz": 120000000,
                 "cache-mib": 1,
                 "clock-hz": 180000000,
                 "fpu-prid": 2304,
