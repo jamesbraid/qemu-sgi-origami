@@ -121,16 +121,18 @@ static void mgras_visual_read_registers(QTestState *qts, uint32_t size,
     gl_word(qts, 0x31c);
 }
 
+/* destination is the byte offset into the mapped pages, 0x30000 up. */
 static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
                                          uint32_t class_a_size,
-                                         uint32_t format)
+                                         uint32_t format,
+                                         uint32_t destination)
 {
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0x00080004 << 32) | 0x80000000);
     qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | bpr);
     qtest_writeq(qts, REG_CONTEXT_COMMAND, (uint64_t)0x00080504 << 32);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)0x00080604 << 32) | 0xd50);
+                 ((uint64_t)0x00080604 << 32) | destination);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0x00080704 << 32) | 1);
     qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | bpr);
@@ -150,12 +152,11 @@ static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
                  ((uint64_t)0x000a0504 << 32) | 0x4009);
 }
 
-static void mgras_visual_read_pixels_format_at(QTestState *qts,
-                                               uint32_t width,
-                                               bool malformed_bounds,
-                                               bool bracketed,
-                                               uint32_t format,
-                                               uint32_t x, uint32_t y)
+static void mgras_visual_read_pixels_to(QTestState *qts, uint32_t width,
+                                        bool malformed_bounds,
+                                        bool bracketed, uint32_t format,
+                                        uint32_t x, uint32_t y,
+                                        uint32_t destination)
 {
     uint32_t size = (width << 16) | width;
     uint32_t start = (x << 16) | y;
@@ -189,7 +190,8 @@ static void mgras_visual_read_pixels_format_at(QTestState *qts,
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 1, ==, 1);
     gl_word(qts, 0x000c0004);
     gl_word(qts, 0x200);
-    mgras_visual_read_descriptor(qts, width * width * 4, size, format);
+    mgras_visual_read_descriptor(qts, width * width * 4, size, format,
+                                 destination);
     gl_word(qts, 0x000e0400);
     gl_word(qts, 0x000e0100);
     gl_word(qts, 0x000a0704);
@@ -202,6 +204,17 @@ static void mgras_visual_read_pixels_format_at(QTestState *qts,
     if (bracketed) {
         gl_word(qts, VISUAL_READ_CLOSE);
     }
+}
+
+static void mgras_visual_read_pixels_format_at(QTestState *qts,
+                                               uint32_t width,
+                                               bool malformed_bounds,
+                                               bool bracketed,
+                                               uint32_t format,
+                                               uint32_t x, uint32_t y)
+{
+    mgras_visual_read_pixels_to(qts, width, malformed_bounds, bracketed,
+                                format, x, y, 0xd50);
 }
 
 static void mgras_visual_read_pixels(QTestState *qts, uint32_t width,
@@ -699,6 +712,61 @@ static void test_gl_clear_captured_readpixels_rejects_malformed_bounds(void)
     mgras_visual_clear_and_select_front(qts);
     qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
     mgras_visual_read_pixels(qts, 2, true, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+/*
+ * A captured client read into a destination four bytes past an 8-byte
+ * boundary programs signature and mode 0x00400480 (an IRIX 6.5.30 GLX
+ * probe, two adjacent one-pixel reads). Blue tells the client's R, G, B, A
+ * order and plane alpha apart from the server read's 0, B, G, R.
+ */
+static void test_gl_clear_captured_readpixels_1x1_dest_offset_4(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t blue[4] = { 0x00, 0x00, 0xff, 0xff };
+    uint8_t got[sizeof(poison)];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d50, poison, sizeof(poison));
+    mgras_visual_read_pixels_to(qts, 1, false, true, 0x00400480, 4, 4,
+                                0xd54);
+    qtest_memread(qts, 0x30d50, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(blue), blue, sizeof(blue));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+
+    /* The captured mode came with that alignment only. */
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels_to(qts, 1, false, true, 0x00400480, 4, 4,
+                                0xd50);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+/*
+ * A bracketed read whose signature was never captured is rejected whole;
+ * the server's raster read must not answer it in its own byte order.
+ */
+static void test_gl_clear_captured_readpixels_unknown_mode_not_raster(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    uint8_t got[sizeof(poison)];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels_format(qts, 1, false, true, 0x00400280);
     qtest_memread(qts, 0x30d4c, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
 }
@@ -4034,6 +4102,14 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-malformed-bounds",
         test_gl_clear_captured_readpixels_rejects_malformed_bounds, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-1x1-dest-offset-4",
+        test_gl_clear_captured_readpixels_1x1_dest_offset_4, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-unknown-mode-not-raster",
+        test_gl_clear_captured_readpixels_unknown_mode_not_raster, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-requires-bracket",
