@@ -49,7 +49,6 @@
                              (UINT64_C(0xff) << 32) | \
                              (UINT64_C(0x7ff) << 40))
 #define STATUS_ERROR        UINT64_C(7)
-#define STATUS_ADDR_ERROR   UINT64_C(4)
 #define STATUS_SOURCE       (UINT64_C(0x7ff) << 51)
 #define STATUS_OVERRUN      (UINT64_C(1) << 62)
 #define STATUS_VALID        (UINT64_C(1) << 63)
@@ -315,22 +314,32 @@ static void test_unroutable_launch_latches_nothing(void)
 }
 
 /*
- * A peer that has nothing at the addressed offset refuses it. The error code
- * for that is not observed; the address error is the model's choice, and the
- * reply still echoes the launch so the firmware can match it.
+ * A peer that has nothing at the addressed offset refuses it without a reply.
  */
-static void test_refused_offset_is_an_address_error(void)
+static void test_refused_offset_has_no_reply(void)
 {
-    QTestState *s = pair_start("");
+    g_autofree char *log = g_strdup_printf("%s/sn1-refused-offset-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
     const uint64_t params = UINT64_C(0xfffff8) | REQUEST_ID(0x1c8);
-    uint64_t status = vector_launch(s, A_BASE, 0, params, 0);
+    QTestState *s;
+    uint64_t status;
+    int fd = g_mkstemp(log);
 
-    g_assert_cmphex(status & STATUS_VALID, ==, STATUS_VALID);
-    g_assert_cmphex(status & STATUS_ERROR, ==, STATUS_ADDR_ERROR);
-    g_assert_cmphex(status & STATUS_ECHO, ==, params & STATUS_ECHO);
-    assert_unobserved_fields_clear(s, A_BASE, status);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d guest_errors -D %s", log);
+    s = pair_start(extra);
+    status = vector_launch(s, A_BASE, 0, params, 0);
+
+    g_assert_cmphex(status, ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
     qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "refused (error 4)"));
+    g_assert_cmpint(unlink(log), ==, 0);
 }
 
 static void withhold_scratch1(QTestState *s, const char *bedrock,
@@ -407,16 +416,16 @@ static void test_two_router_vector_reply(void)
 
     cable_down(s, "/machine/peripheral/middle", true);
     status = vector_launch(s, A_BASE, 0x45, params, 0);
-    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
-                    STATUS_VALID | STATUS_ADDR_ERROR);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0);
+    g_assert_cmphex(status, ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
     cable_down(s, "/machine/peripheral/middle", false);
 
     cable_down(s, "/machine/peripheral/target", true);
     status = vector_launch(s, A_BASE, 0x45, params, 0);
-    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
-                    STATUS_VALID | STATUS_ADDR_ERROR);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0x2);
+    g_assert_cmphex(status, ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
     qtest_quit(s);
 }
 
@@ -463,7 +472,7 @@ static void test_unsupported_vector_type(void)
                           WRITE_ID(0x5a) | type;
 
         status = vector_launch(s, A_BASE, 0, params, UINT64_MAX);
-        g_assert_cmphex(status, ==, STATUS_VALID | (params & STATUS_ECHO) | 5);
+        g_assert_cmphex(status, ==, 0);
         g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==,
                         SENTINEL);
         g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
@@ -492,10 +501,9 @@ static void test_router_uart_vector(void)
     assert_good_reply(status, 0x248);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0xcd);
     status = vector_launch(s, A_BASE, 0x5, 0x240, 0);
-    g_assert_cmphex(status & (STATUS_VALID | STATUS_ERROR), ==,
-                    STATUS_VALID | STATUS_ADDR_ERROR);
+    g_assert_cmphex(status, ==, 0);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
-    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, 0x2);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
     status = vector_launch(s, A_BASE, 0, 0x240, 0);
     assert_good_reply(status, 0x240);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0xab);
@@ -558,7 +566,7 @@ int main(int argc, char **argv)
                    test_route_zero_writes_the_peer);
     qtest_add_func("sn1/bedrock-link/unroutable-launch-latches-nothing",
                    test_unroutable_launch_latches_nothing);
-    qtest_add_func("sn1/bedrock-link/refused-offset-is-an-address-error",
-                   test_refused_offset_is_an_address_error);
+    qtest_add_func("sn1/bedrock-link/refused-offset-has-no-reply",
+                   test_refused_offset_has_no_reply);
     return g_test_run();
 }

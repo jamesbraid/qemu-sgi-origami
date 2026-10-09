@@ -66,7 +66,7 @@
 #define LB_VECTOR_TYPE_MASK    3ULL
 #define LB_VECTOR_TYPE_WRITE   1ULL
 #define LB_VECTOR_COMMAND_ERROR 5ULL
-/* Status type-or-error 2:0: 4 is an address error. Then overrun and valid. */
+/* Internal vector failure codes; failures do not generate status replies. */
 #define LB_VECTOR_ADDR_ERROR   4ULL
 #define LB_VECTOR_OVERRUN      (1ULL << 62)
 #define LB_VECTOR_VALID        (1ULL << 63)
@@ -255,8 +255,7 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
  * link, or for a nonzero route on a direct pair, is unknown. Such a launch
  * latches no reply, so the status stays
  * not valid and the firmware's own poll times out, and the launch is logged.
- * The return route and source are not
- * established either and read 0.
+ * Failed requests leave the reply registers untouched.
 */
 static void lb_vector_launch(SGIBedrockLBState *s)
 {
@@ -277,7 +276,11 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         return;
     }
     if (s->vector_params & LB_VECTOR_TYPE_MASK & ~LB_VECTOR_TYPE_WRITE) {
-        s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_COMMAND_ERROR;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-lb: vector request type %" PRIu64
+                      " refused (command error %" PRIu64 ")\n",
+                      (uint64_t)(s->vector_params & LB_VECTOR_TYPE_MASK),
+                      (uint64_t)LB_VECTOR_COMMAND_ERROR);
         return;
     }
     if (s->bedrock) {
@@ -287,16 +290,21 @@ static void lb_vector_launch(SGIBedrockLBState *s)
                                        result, packet.value);
     switch (result) {
     case SGI_NET_PACKET_NONE:
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector %s of 0x%" HWADDR_PRIx
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-lb: vector %s of 0x%" HWADDR_PRIx
                       " on route 0x%" PRIx64 " reached no device; no reply "
                       "is latched\n",
                       packet.op == SGI_NET_PACKET_WRITE ? "write" : "read",
                       packet.addr, s->vector_route);
         return;
     case SGI_NET_PACKET_ERROR:
-        s->vector_return = packet.reply_vector;
-        s->vector_status = reply | LB_VECTOR_VALID |
-            (packet.failure ? packet.failure : LB_VECTOR_ADDR_ERROR);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-lb: vector %s of 0x%" HWADDR_PRIx
+                      " on route 0x%" PRIx64 " refused (error %u)\n",
+                      packet.op == SGI_NET_PACKET_WRITE ? "write" : "read",
+                      packet.addr, s->vector_route,
+                      packet.failure ? packet.failure :
+                      (unsigned)LB_VECTOR_ADDR_ERROR);
         return;
     case SGI_NET_PACKET_OK:
         if (packet.op == SGI_NET_PACKET_READ) {

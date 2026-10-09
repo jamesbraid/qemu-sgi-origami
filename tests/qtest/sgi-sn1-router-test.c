@@ -47,11 +47,12 @@ static void expect_ordinary_vector_refusal(QTestState *s, uint64_t address,
 
     qtest_readq(s, lb + 0xc038);
     qtest_writeq(s, lb + 0xc030, sentinel);
+    qtest_writeq(s, lb + 0xc028, sentinel);
     qtest_writeq(s, lb + 0xc008, 0);
     qtest_writeq(s, lb + 0xc010, 0);
     qtest_writeq(s, lb + 0xc000, params | write);
-    g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                    (UINT64_C(1) << 63) | params | 4);
+    g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, 0);
+    g_assert_cmphex(qtest_readq(s, lb + 0xc028), ==, sentinel);
     g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
 }
 
@@ -84,12 +85,16 @@ static uint64_t experimental_status_vector_from(QTestState *s, unsigned cpu,
 
     experimental_readq(s, cpu, lb + 0xc038);
     experimental_writeq(s, cpu, lb + 0xc030, sentinel);
+    experimental_writeq(s, cpu, lb + 0xc028, sentinel);
     experimental_writeq(s, cpu, lb + 0xc008, route);
     experimental_writeq(s, cpu, lb + 0xc010, data);
     experimental_writeq(s, cpu, lb + 0xc000, params | write);
     response = experimental_readq(s, cpu, lb + 0xc020);
-    g_assert_cmphex(response, ==, (UINT64_C(1) << 63) | params |
-                    (accepted ? write : 4));
+    g_assert_cmphex(response, ==, accepted ?
+                    ((UINT64_C(1) << 63) | params | write) : 0);
+    if (!accepted) {
+        g_assert_cmphex(experimental_readq(s, cpu, lb + 0xc028), ==, sentinel);
+    }
     response = experimental_readq(s, cpu, lb + 0xc030);
     if (write || !accepted) {
         g_assert_cmphex(response, ==, sentinel);
@@ -233,6 +238,11 @@ static void test_experimental_status_write(void)
                                                true), ==, 0x100d);
     g_assert_cmphex(experimental_status_vector(s, bank[7] + 0x170, 0,
                                                false, 0, true), ==, 0);
+    experimental_status_vector(s, 0x30, 0, true, UINT64_MAX, false);
+    qtest_writeq(s, BASE + 0x30, UINT64_MAX);
+    g_assert_cmpuint(get(s, "failure"), ==, 5);
+    g_assert_cmphex(experimental_status_vector(s, 0x30, 0, false, 0,
+                                               true), ==, 0);
     experimental_status_vector(s, local0, 0, true, 0, true);
     qtest_readl(s, BASE + local0);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
@@ -1065,7 +1075,7 @@ static void test_error_clear_vector(void)
             qtest_writeq(s, lb + 0xc010, UINT64_MAX);
             qtest_writeq(s, lb + 0xc000, params | write);
             g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                            valid | params | (write ? 4 : 0));
+                            write ? 0 : valid | params);
             g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==,
                             write ? sentinel : 0);
         }
@@ -1121,8 +1131,7 @@ static void test_port_reset_vector(void)
         qtest_readq(s, lb + 0xc038);
         qtest_writeq(s, lb + 0xc010, UINT64_C(0x203));
         qtest_writeq(s, lb + 0xc000, params | 1);
-        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                        valid | params | 4);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, 0);
         qtest_readq(s, lb + 0xc038);
         qtest_writeq(s, lb + 0xc030, sentinel);
         qtest_writeq(s, lb + 0xc000, params);
@@ -1174,8 +1183,7 @@ static void test_global_port_def_vector(void)
         qtest_readq(s, lb + 0xc038);
         qtest_writeq(s, lb + 0xc010, UINT64_C(0x203));
         qtest_writeq(s, lb + 0xc000, params | 1);
-        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                        valid | params | 4);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, 0);
         qtest_readq(s, lb + 0xc038);
         qtest_writeq(s, lb + 0xc030, sentinel);
         qtest_writeq(s, lb + 0xc000, params);
@@ -1235,8 +1243,7 @@ static void test_global_diag_parms_vector(void)
             qtest_readq(s, lb + 0xc038);
             qtest_writeq(s, lb + 0xc010, value);
             qtest_writeq(s, lb + 0xc000, params | 1);
-            g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                            valid | params | 4);
+            g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, 0);
             qtest_readq(s, lb + 0xc038);
             qtest_writeq(s, lb + 0xc030, sentinel);
             qtest_writeq(s, lb + 0xc000, params);
@@ -1260,8 +1267,7 @@ static void test_global_diag_parms_vector(void)
         qtest_writeq(s, lb + 0xc030, sentinel);
         qtest_writeq(s, lb + 0xc000,
                      (bank[0] + 0x30) | (UINT64_C(0x5a) << 40));
-        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
-                        valid | bank[0] | 0x30 | (UINT64_C(0x5a) << 40) | 4);
+        g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, 0);
         g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, sentinel);
         qtest_readq(s, BASE + 0x31);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
