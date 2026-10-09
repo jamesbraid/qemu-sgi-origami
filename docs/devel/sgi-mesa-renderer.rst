@@ -13,8 +13,8 @@ device calls the checked Mesa draw path yet.
 Current drawing support
 -----------------------
 
-``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts points
-and every polygon mode: separate triangles, triangle strips and fans,
+``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts points,
+lines and every polygon mode: separate triangles, triangle strips and fans,
 quadrilaterals, quad strips and polygons, flat or smooth shaded, into one front
 RGB or RGBA colour resource. The resource has ordered UNORM components of 1 to
 16 bits. Its rows may start at either edge. A textured draw is still one
@@ -73,15 +73,44 @@ are unproven.
 A triangle frame is drawn upside down,
 because llvmpipe applies its top-left rule with rows running down. Drawing it
 upside down gives a pixel centre on a horizontal edge to the same triangle as
-the scalar path's top-left rule in OpenGL's upward rows. Point frames keep
-upward rows, where half-pixel point centres already match.
+the scalar path's top-left rule in OpenGL's upward rows. Point and line
+frames keep upward rows, where they already match.
 A point's size is rounded as the scalar path rounds it: to the nearest integer
 and at least one, with zero meaning one. The worker reads
 ``GL_ALIASED_POINT_SIZE_RANGE`` when it creates its context. A size outside
 that range returns ``SGI_RENDER_UNSUPPORTED`` before the native snapshot.
 
-Lines, line strips and line loops remain unsupported, whatever their width or
-stipple. Point, line and polygon smoothing remain unsupported. Each smoothing
+Aliased lines, line strips and line loops draw exactly as the scalar path
+draws them, including width, stipple and smooth colour. Native GL lines
+cannot match, so each segment is drawn as a two-triangle parallelogram:
+
+- The CPU clips, projects and snaps the segment with the scalar rasterizer's
+  own functions (``sgi_raster_line_span()``). With ``sgi_soft_line_covers()``
+  it finds the range of major-axis steps that hold base pixels, and it refuses
+  the draw if any step holds more than one.
+- The parallelogram covers the band of half the width either side of the
+  segment, where llvmpipe's triangle rules select exactly the scalar path's
+  replicated rows. Its ends extend past that range by whole multiples of the
+  segment's smallest step on the subpixel grid, so every vertex stays on the
+  line.
+- The worker maps window pixels through the fixed viewport (-4096, -4096,
+  16384, 16384), whose power-of-two scale keeps the vertices exact. A vertex
+  outside it returns ``SGI_RENDER_UNSUPPORTED`` before the snapshot.
+- The fragment program keeps only that range. It applies the stipple bit of
+  its base pixel. It computes colour in double from the pixel centre's
+  clamped parameter along the segment, weighted by 1 / clip w, as the scalar
+  path does.
+- The CPU carries the stipple counter along strips and loops and through a
+  borrowed phase across draws. It counts fragments outside the drawable too,
+  as the scalar path does.
+- Fragments are bounded by the viewport, as the scalar path bounds them.
+
+Before a renderer draws its first line, it draws tie vectors through both
+paths, with smooth colour and perspective weights. If coverage or any
+covered pixel's colour differs, lines stay unsupported on that renderer. Line
+smoothing and blended draws of more than one segment remain unsupported.
+
+Point, line and polygon smoothing remain unsupported. Each smoothing
 enable refuses only its own class of primitive, so a filled triangle drawn
 with line smoothing enabled is an ordinary aliased triangle. Polygon modes
 likewise apply only to polygons, so points ignore them. The refusal is
@@ -176,6 +205,22 @@ that ``test-sgi-renderer-gl`` selects, on a 16 by 16 front colour resource,
 with the rules named above. Any other driver is unproven.
 
 - ``scalar-match-points``: points of size 1 to 4, 8-bit RGBA.
+- ``scalar-match-lines``, ``scalar-match-line-ties``,
+  ``scalar-match-line-state``, ``scalar-match-line-stipple`` and
+  ``scalar-match-line-sweep``: separate lines, strips and loops at widths 1
+  to 6, flat and smooth. They cover:
+
+  - endpoints exactly on diamond edges and corners in every direction, rows
+    and columns through pixel centres, slopes of one, and one-subpixel moves
+    either side;
+  - clip w of 0.5, 1 and 2, clips, scissor and viewport bounds, and segments
+    3000 pixels long;
+  - one blended segment;
+  - stipple patterns and repeats along strips and through a borrowed phase,
+    including a draw with no visible pixel;
+  - 600 seeded random segments, some cut by view-volume clipping.
+
+  ``lines-refused`` checks the refusals, including the probe.
 - ``scalar-match-polygons``: flat and smooth triangle strips, triangle fans,
   quadrilaterals, quad strips and polygons, 8-bit RGBA, unblended, with
   identity matrices, a viewport equal to the resource and one full clip.
@@ -214,34 +259,12 @@ Open feature rows
 These features the shared design requires stay unsupported or unproven. In
 each, Mesa differs from the scalar rasterizer, and the scalar rule is the
 reviewed family contract. Each refusal returns ``SGI_RENDER_UNSUPPORTED``
-before the native snapshot. The ``lines-refused`` and ``scalar-match-blend``
-unit cases keep the vectors that showed the differences.
+before the native snapshot. The ``scalar-match-blend`` unit case keeps the
+vectors that showed the differences.
 
 Components wider than 10 bits have no scalar comparison, because the scalar
 rules stop at 10 bits. Unblended draws at 12 and 16 bits are accepted but
 are outside the proven set.
-
-Aliased lines differ from the scalar diamond-exit rule:
-
-- At width one, llvmpipe omits a start pixel that lies exactly on a diamond
-  boundary. For the segment from (2.75, 14.25) to (7.5, 11) in a 16 by 16
-  window, the scalar path draws pixel (2, 14) and llvmpipe leaves it
-  unchanged. Endpoints moved off the boundary give identical pixels at
-  widths one and three.
-- At even widths, the ends differ by a row or column even off the boundary.
-  At width two, with every endpoint offset by (3/256, 6/256):
-
-  - llvmpipe draws pixels (2, 13) and (2, 14) at the start of the segment from
-    (2.75, 14.25) to (7.5, 11), and the scalar path does not.
-  - The scalar path draws (1, 8) and (2, 8) at the end of the vertical segment
-    from (1.5, 3) to (1.5, 8.5), and llvmpipe does not.
-  - Pixels (11, 6) and (12, 6) take a different segment's colour.
-
-  Width four differs at the same places, four pixels wide.
-
-A reviewed decision to draw lines by the wide-primitive contract's rule, the
-shifted width-one diamond-exit line replicated along the minor axis, or to
-change that contract, would settle this.
 
 Constant-colour blend factors, ``CONSTANT_COLOR``, ``ONE_MINUS_CONSTANT_COLOR``,
 ``CONSTANT_ALPHA`` and ``ONE_MINUS_CONSTANT_ALPHA``, round exact half steps
