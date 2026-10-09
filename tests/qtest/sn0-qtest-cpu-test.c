@@ -17,6 +17,10 @@
 #define R12000_CPU_2 "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
     "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
     "r12000-scache-block-words=32"
+/* As R12000_CPU_2 but with SS=3: the 4 MiB cache of an Origin 200 PIMM. */
+#define R12000_CPU_4M "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
+    "r12000-reset-mode=0x1ba683,r12000-scache-bytes=4194304," \
+    "r12000-scache-block-words=32"
 #define R12000_CPU_1_32 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
     "r12000-reset-mode=0x19a683,r12000-scache-bytes=1048576," \
     "r12000-scache-block-words=32"
@@ -1106,6 +1110,11 @@ static void test_r12000_profile_32(void)
     r12000_run_profile(R12000_CPU_2, true, 0xe24, 0x1aa683, 0x7654);
 }
 
+static void test_r12000_profile_4m(void)
+{
+    r12000_run_profile(R12000_CPU_4M, true, 0xe24, 0x1ba683, 0x7654);
+}
+
 static void test_r12000_performance_ip7(void)
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
@@ -1292,6 +1301,13 @@ static void test_r12000_rejects_inconsistent_profile(void)
         { "R12000,r12000-prid=0xd12,r12000-fpu-id=0x4567,"
           "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
           "r12000-scache-block-words=16", "implementation 0x0e" },
+        /* SS=6 is reserved, so no capacity agrees with it. */
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+          "r12000-reset-mode=0x1ea683,r12000-scache-bytes=33554432,"
+          "r12000-scache-block-words=32", "Config SS" },
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+          "r12000-reset-mode=0x1b8683,r12000-scache-bytes=4194304,"
+          "r12000-scache-block-words=16", "at most 2 MiB" },
     };
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
@@ -1569,6 +1585,15 @@ static void test_r12000_migrate_32(void)
     r12000_migrate_profile(R12000_CPU_2, true);
 }
 
+/*
+ * A 4 MiB profile's state round-trips: the capacity subsections must load
+ * on an identical destination. The probe reads no cache state above 2 MiB.
+ */
+static void test_r12000_migrate_4m(void)
+{
+    r12000_migrate_profile(R12000_CPU_4M, true);
+}
+
 static void r12000_migrate_rejects_profile(const char *destination)
 {
     g_autofree char *image = r12000_probe_image(false);
@@ -1744,6 +1769,7 @@ int main(int argc, char **argv)
         }
         qtest_add_func("/r12000/profile-16-words", test_r12000_profile_16);
         qtest_add_func("/r12000/profile-32-words", test_r12000_profile_32);
+        qtest_add_func("/r12000/profile-4m", test_r12000_profile_4m);
         qtest_add_func("/r12000/performance-ip7", test_r12000_performance_ip7);
         qtest_add_func("/r12000/performance-selectors",
                        test_r12000_performance_selectors);
@@ -1751,6 +1777,7 @@ int main(int argc, char **argv)
                        test_r12000_count_compare_ip7);
         qtest_add_func("/r12000/migrate-16-words", test_r12000_migrate_16);
         qtest_add_func("/r12000/migrate-32-words", test_r12000_migrate_32);
+        qtest_add_func("/r12000/migrate-4m", test_r12000_migrate_4m);
         qtest_add_func("/r12000/migrate-incompatible-block",
                        test_r12000_migrate_rejects_different_block_size);
         qtest_add_func("/r12000/migrate-incompatible-fpu-id",
