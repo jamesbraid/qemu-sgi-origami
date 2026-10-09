@@ -2893,18 +2893,54 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
     g_autofree char *pic = qom_child_type(qts, "/machine", "pic-pic");
     g_autofree char *ioc4 = qom_child_type(
         qts, "/machine", "io9-io9-d1-f0");
+    g_autofree char *scsi = qom_child_type(
+        qts, "/machine", "io9-io9-d3-f0");
+    g_autofree char *ethernet = qom_child_type(
+        qts, "/machine", "io9-io9-d4-f0");
+    g_autofree char *rtc = qom_child_type(qts, "/machine", "ds1742-io9");
+    g_autofree char *tree = NULL;
     g_autoptr(QDict) response = NULL;
+    g_autoptr(QDict) memory = NULL;
+    g_autoptr(QDict) children_response = NULL;
     QList *cpus;
+    QList *children;
     const QListEntry *entry;
     unsigned int cpu_count = 0;
+    unsigned int io9_endpoint_count = 0;
 
+    children_response = qtest_qmp(qts,
+        "{'execute':'qom-list','arguments':{'path':'/machine'}}");
+    children = qdict_get_qlist(children_response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        const char *name = qdict_get_str(
+            qobject_to(QDict, qlist_entry_obj(entry)), "name");
+
+        if (g_str_has_prefix(name, "io9-")) {
+            g_assert_true(g_str_has_prefix(name, "io9-io9-d"));
+            io9_endpoint_count++;
+        }
+    }
+    g_assert_cmpuint(io9_endpoint_count, ==, 3);
+    memory = qtest_qmp(qts, "{'execute':'query-memory-size-summary'}");
+    g_assert_cmpuint(qdict_get_uint(qdict_get_qdict(memory, "return"),
+                                    "base-memory"), ==, UINT64_C(8) << 30);
     g_assert_true(qom_get_bool(qts, "/machine", "ip53-experimental"));
     g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "board-id-word"),
                     ==, 0x2001);
     g_assert_cmpstr(pic, ==, "sgi-pic");
     g_assert_cmpstr(ioc4, ==, "sgi-ioc4");
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/l1",
+                                  "port-speed-first"), ==, 0);
+    g_assert_cmpstr(scsi, ==, "qlogic-isp12160");
+    g_assert_cmpstr(ethernet, ==, "bcm570x");
+    g_assert_cmpstr(rtc, ==, "ds1742");
     g_assert_null(qom_child_type(qts, "/machine", "node1"));
     g_assert_null(qom_child_type(qts, "/machine", "router0"));
+    tree = qtest_hmp(qts, "info qtree");
+    g_assert_null(strstr(tree, "sgi-mgras"));
+    g_assert_null(strstr(tree, "sgi-odyssey"));
+    g_assert_null(strstr(tree, "sgi-kona"));
+    g_assert_null(strstr(tree, "ati-vga"));
     g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
                                   "qtest-clock-period"), ==,
                      CLOCK_PERIOD_FROM_HZ(1000000000));
