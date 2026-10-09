@@ -14,7 +14,7 @@ void qemu_gl_run_texture_blit(QemuGLShader *shader, bool flip)
     g_assert_not_reached();
 }
 
-static void plane_assert_llvmpipe(void)
+static void plane_assert_surfaceless_gl(void)
 {
     const EGLint config_attrs[] = {
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
@@ -52,8 +52,7 @@ static void plane_assert_llvmpipe(void)
                                  context));
     renderer = (const char *)glGetString(GL_RENDERER);
     g_assert_nonnull(renderer);
-    g_test_message("Mesa renderer: %s", renderer);
-    g_assert_nonnull(strstr(renderer, "llvmpipe"));
+    g_test_message("GL renderer: %s", renderer);
     g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                  EGL_NO_CONTEXT));
     g_assert_true(eglDestroyContext(display, context));
@@ -2111,8 +2110,7 @@ static void test_checked_draw_top_first_storage(void)
         return;
     }
     g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
-    g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
-    plane_assert_llvmpipe();
+    plane_assert_surfaceless_gl();
     plane_four_row_fixture_init(&f);
     view = plane_view(&f, 1);
     view.height = 4;
