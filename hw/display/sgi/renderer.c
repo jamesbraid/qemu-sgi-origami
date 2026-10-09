@@ -312,6 +312,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             return SGI_RENDER_UNSUPPORTED;
         }
     }
+    if (!sgi_renderer_viewport_supported(renderer, draw->state->viewport,
+                                         errp)) {
+        return SGI_RENDER_UNSUPPORTED;
+    }
     if (!target->resource_ops || !target->resource_ops->commit_covered) {
         error_setg(errp, "SGI Mesa draw needs a covered commit provider");
         return SGI_RENDER_UNSUPPORTED;

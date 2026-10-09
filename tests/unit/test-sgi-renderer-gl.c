@@ -44,6 +44,9 @@ static void mesa_test_env_set(MesaTestEnv *env)
     g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
 }
 
+/* The llvmpipe compatibility context's limit, read by mesa_test_available. */
+static GLint mesa_test_max_viewport[2];
+
 static bool mesa_test_available(bool need_core)
 {
     const EGLint config_attrs[] = {
@@ -102,6 +105,9 @@ static bool mesa_test_available(bool need_core)
         renderer = (const char *)glGetString(GL_RENDERER);
         if (!renderer || !strstr(renderer, "llvmpipe")) {
             goto done;
+        }
+        if (!i) {
+            glGetIntegerv(GL_MAX_VIEWPORT_DIMS, mesa_test_max_viewport);
         }
         g_assert_true(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                      EGL_NO_CONTEXT));
@@ -1239,6 +1245,130 @@ static void test_decoded_triangle_viewport_fill(void)
     g_clear_pointer(&err, error_free);
     g_assert_cmpuint(f.snapshots, ==, 1);
     g_assert_cmpuint(f.commits, ==, 1);
+    sgi_renderer_free(renderer);
+}
+
+/*
+ * A viewport beyond the host GL limit is unsupported for that draw only: the
+ * renderer must stay usable, so a following ordinary draw still commits. A
+ * viewport exactly at the limit is accepted.
+ */
+static void test_decoded_triangle_viewport_limit(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    int32_t over_limit[4][4] = {
+        { 0, 0, INT32_MAX, 4 },
+        { 0, 0, 4, INT32_MAX },
+    };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = 4, .height = 4, .depth = 1,
+        .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit_covered = native_draw_commit_covered,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+            .front = 7,
+        },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    vertices[0][SGI_GL_V_POSITION] = -1;
+    vertices[0][SGI_GL_V_POSITION + 1] = -1;
+    vertices[1][SGI_GL_V_POSITION] = 3;
+    vertices[1][SGI_GL_V_POSITION + 1] = -1;
+    vertices[2][SGI_GL_V_POSITION] = -1;
+    vertices[2][SGI_GL_V_POSITION + 1] = 3;
+    g_assert_cmpint(mesa_test_max_viewport[0], >=, 4);
+    g_assert_cmpint(mesa_test_max_viewport[1], >=, 4);
+    g_assert_cmpint(mesa_test_max_viewport[0], <, INT32_MAX);
+    g_assert_cmpint(mesa_test_max_viewport[1], <, INT32_MAX);
+    memcpy(over_limit[2], (int32_t[4]) {
+        0, 0, mesa_test_max_viewport[0] + 1, 4,
+    }, sizeof(over_limit[2]));
+    memcpy(over_limit[3], (int32_t[4]) {
+        0, 0, 4, mesa_test_max_viewport[1] + 1,
+    }, sizeof(over_limit[3]));
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(over_limit); i++) {
+        memcpy(state.viewport, over_limit[i], sizeof(state.viewport));
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_UNSUPPORTED);
+        g_assert_nonnull(err);
+        g_clear_pointer(&err, error_free);
+    }
+    g_assert_cmpuint(f.snapshots, ==, 0);
+    g_assert_cmpuint(f.commits, ==, 0);
+
+    /* The triangle covers window (0..2w, 0..2h), so every pixel either way. */
+    for (unsigned pass = 0; pass < 2; pass++) {
+        if (pass) {
+            memcpy(state.viewport, (int32_t[4]) { 0, 0, 4, 4 },
+                   sizeof(state.viewport));
+        } else {
+            memcpy(state.viewport, (int32_t[4]) {
+                0, 0, mesa_test_max_viewport[0], mesa_test_max_viewport[1],
+            }, sizeof(state.viewport));
+        }
+        memset(f.written, 0, sizeof(f.written));
+        memset(f.colour, 0, sizeof(f.colour));
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_OK);
+        g_assert_null(err);
+        g_assert_cmpuint(f.commits, ==, pass + 1);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmpuint(f.written[y][x], ==, 1);
+                g_assert_cmpuint(f.colour[y][x][0], ==, 255);
+            }
+        }
+    }
     sgi_renderer_free(renderer);
 }
 
@@ -3309,6 +3439,8 @@ int main(int argc, char **argv)
                     test_decoded_triangle_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-viewport-fill",
                     test_decoded_triangle_viewport_fill);
+    g_test_add_func("/sgi-renderer-gl/decoded-triangle-viewport-limit",
+                    test_decoded_triangle_viewport_limit);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-clip-union",
                     test_decoded_triangle_clip_union);
     g_test_add_func("/sgi-renderer-gl/triangle-resource-row-origin",

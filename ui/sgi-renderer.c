@@ -224,6 +224,10 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         error_setg(errp, "Invalid SGI OpenGL frame request");
         return false;
     }
+    if (frame->viewport_given &&
+        !sgi_renderer_viewport_supported(renderer, frame->viewport, errp)) {
+        return false;
+    }
     if (frame->texture.slots &&
         (!frame->texture.width || !frame->texture.height ||
          frame->texture.width > INT_MAX ||
@@ -291,6 +295,23 @@ bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp)
         !renderer->ops->supports_texture(renderer->opaque, errp)) {
         if (errp && !*errp) {
             error_setg(errp, "SGI OpenGL typed texture support is unavailable");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
+                                     const int32_t viewport[4], Error **errp)
+{
+    if (!renderer || !viewport || viewport[2] < 0 || viewport[3] < 0) {
+        error_setg(errp, "Invalid SGI OpenGL viewport");
+        return false;
+    }
+    if (!renderer->ops->supports_viewport ||
+        !renderer->ops->supports_viewport(renderer->opaque, viewport, errp)) {
+        if (errp && !*errp) {
+            error_setg(errp, "SGI OpenGL viewport support is unavailable");
         }
         return false;
     }

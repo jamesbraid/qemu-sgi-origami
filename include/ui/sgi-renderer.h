@@ -93,6 +93,8 @@ typedef struct SGIRendererOps {
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
     bool (*draw_frame)(void *opaque, SGIRendererFrame *frame, Error **errp);
     bool (*supports_texture)(void *opaque, Error **errp);
+    bool (*supports_viewport)(void *opaque, const int32_t viewport[4],
+                              Error **errp);
     bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
     void (*destroy)(void *opaque);
 } SGIRendererOps;
@@ -108,6 +110,9 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp);
 bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp);
+/* False when the host cannot map a viewport exactly; no failure latches. */
+bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
+                                     const int32_t viewport[4], Error **errp);
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
 /*

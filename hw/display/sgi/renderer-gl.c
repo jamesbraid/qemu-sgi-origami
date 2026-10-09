@@ -34,6 +34,7 @@ typedef struct SGIRendererGL {
     GLint texture_sampler, texture_mode, texture_wrap_s;
     GLint texture_wrap_t, texture_shade, texture_linear;
     GLint texture_border, texture_environment;
+    GLint max_viewport[2];
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -307,6 +308,7 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         error_setg(&renderer->error, "SGI renderer framebuffer is incomplete");
         return false;
     }
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, renderer->max_viewport);
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
     if (major > 4 || (major == 4 && minor >= 5)) {
@@ -376,7 +378,6 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
     GLuint texture = 0, sample = 0, framebuffer = 0, stencil = 0;
-    GLint max_viewport[2];
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
@@ -408,15 +409,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     }
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
-    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, max_viewport);
     if (frame->viewport_given) {
-        if (frame->viewport[2] > max_viewport[0] ||
-            frame->viewport[3] > max_viewport[1]) {
-            error_setg(&renderer->error,
-                       "SGI renderer host viewport limit is %dx%d",
-                       max_viewport[0], max_viewport[1]);
-            goto out;
-        }
+        /* sgi_renderer_draw_frame() has checked the host viewport limit. */
         glViewport(frame->viewport[0], frame->viewport[1],
                    frame->viewport[2], frame->viewport[3]);
     } else {
@@ -872,6 +866,22 @@ static bool renderer_gl_supports_texture(void *opaque, Error **errp)
     return true;
 }
 
+static bool renderer_gl_supports_viewport(void *opaque,
+                                          const int32_t viewport[4],
+                                          Error **errp)
+{
+    SGIRendererGL *renderer = opaque;
+
+    /* GL would clamp the size and silently change the window mapping. */
+    if (viewport[2] > renderer->max_viewport[0] ||
+        viewport[3] > renderer->max_viewport[1]) {
+        error_setg(errp, "SGI renderer host viewport limit is %dx%d",
+                   renderer->max_viewport[0], renderer->max_viewport[1]);
+        return false;
+    }
+    return true;
+}
+
 static bool renderer_gl_clear(void *opaque, SGIRendererClear *clear,
                               Error **errp)
 {
@@ -900,6 +910,7 @@ static const SGIRendererOps renderer_gl_ops = {
     .draw = renderer_gl_draw,
     .draw_frame = renderer_gl_draw_frame,
     .supports_texture = renderer_gl_supports_texture,
+    .supports_viewport = renderer_gl_supports_viewport,
     .clear = renderer_gl_clear,
     .destroy = renderer_gl_destroy,
 };
