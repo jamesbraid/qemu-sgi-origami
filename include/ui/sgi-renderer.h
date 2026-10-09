@@ -39,20 +39,20 @@ typedef struct SGIRendererRequest {
 #define SGI_RENDERER_CLEAR_RECTS 16
 
 /* OpenGL wrap values accepted at the direct renderer-frame boundary. */
-typedef enum SGIRendererTextureWrap {
+typedef enum SGIRendererFrameTextureWrap {
     SGI_RENDERER_WRAP_REPEAT = 0x2901,
     SGI_RENDERER_WRAP_CLAMP = 0x2900,
     SGI_RENDERER_WRAP_EDGE = 0x812f,
     SGI_RENDERER_WRAP_BORDER = 0x812d,
-} SGIRendererTextureWrap;
+} SGIRendererFrameTextureWrap;
 
 /* OpenGL texture environment values accepted at the direct frame boundary. */
-typedef enum SGIRendererTextureEnvironment {
+typedef enum SGIRendererFrameTextureEnvironment {
     SGI_RENDERER_ENV_REPLACE = 0x1e01,
     SGI_RENDERER_ENV_MODULATE = 0x2100,
     SGI_RENDERER_ENV_DECAL = 0x2101,
     SGI_RENDERER_ENV_BLEND = 0x0be2,
-} SGIRendererTextureEnvironment;
+} SGIRendererFrameTextureEnvironment;
 
 /* What an untextured frame's vertices draw; zero keeps triangles. */
 typedef enum SGIRendererPrimitive {
