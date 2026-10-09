@@ -227,7 +227,8 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         mask = address >= 0x118 ? 1 : UINT64_MAX;
         break;
     case 0x8000 ... 0x80f8:
-        if (write && (packet->data & ~INACTIVE_BARRIER_MASK)) {
+        if (write && !s->synthetic_diagnostics &&
+            (packet->data & ~INACTIVE_BARRIER_MASK)) {
             return refuse(packet, SGI_NET_PACKET_FAILURE_COMMAND);
         }
         storage = &s->inactive_barrier[(address - 0x8000) / 8];
@@ -416,7 +417,8 @@ static int router_post_load(void *opaque, int version_id)
         }
     }
     for (unsigned context = 0; context < INACTIVE_BARRIER_CONTEXTS; context++) {
-        if (s->inactive_barrier[context] & ~INACTIVE_BARRIER_MASK) {
+        if (!s->synthetic_diagnostics &&
+            (s->inactive_barrier[context] & ~INACTIVE_BARRIER_MASK)) {
             return -EINVAL;
         }
     }
