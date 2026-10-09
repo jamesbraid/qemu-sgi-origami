@@ -925,9 +925,6 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
                   "sgi-pic: head %u pin %u %s request destination 0x%"
                   PRIx64 "\n", s->head, pin, set ? "set" : "clear",
                   destination);
-    trace_sgi_pic_interrupt_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                                   s->head, pin, set, destination,
-                                   packet_value);
     if (linked) {
         uint8_t packet[8];
         SGIXioSource source = {
@@ -945,7 +942,8 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u interrupt target %x is absent\n",
                       s->head, widget);
-        return;
+        result = MEMTX_DECODE_ERROR;
+        goto trace_result;
     } else {
         address_space_stq_be(&s->pic->endpoint[widget].as, offset,
                              level | (set ? (bedrock ?
@@ -956,6 +954,12 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u interrupt destination 0x%"
                       PRIx64 " refused write\n", s->head, destination);
+    }
+trace_result:
+    if (trace_event_get_state_backends(TRACE_SGI_PIC_INTERRUPT_PACKET)) {
+        trace_sgi_pic_interrupt_packet(
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->head, pin, set,
+            destination, packet_value, result);
     }
 }
 
@@ -1363,8 +1367,10 @@ static void pic_pci_irq(void *opaque, int line, int level)
     SGIPICHead *s = opaque;
 
     if (line >= 0 && line < 32) {
-        trace_sgi_pic_pci_irq(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                              s->head, line, level);
+        if (trace_event_get_state_backends(TRACE_SGI_PIC_PCI_IRQ)) {
+            trace_sgi_pic_pci_irq(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                  s->head, line, level);
+        }
         if (level && !qemu_irq_is_connected(s->pci_irq[line])) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-pic: head %u PCI interrupt source %d has"
@@ -1381,8 +1387,10 @@ static void pic_set_pin(void *opaque, int pin, int level)
     bool was_high = s->pins & bit;
 
     s->pins = (s->pins & ~bit) | (level ? bit : 0);
-    trace_sgi_pic_pin(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->head, pin,
-                      level, s->pins);
+    if (trace_event_get_state_backends(TRACE_SGI_PIC_PIN)) {
+        trace_sgi_pic_pin(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->head,
+                          pin, level, s->pins);
+    }
     if (level && !was_high) {
         REG(s, 0x100) |= bit;
     }

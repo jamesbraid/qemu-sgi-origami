@@ -100,7 +100,7 @@ sgi_pic_head_reg_read(unsigned head, uint64_t offset, unsigned width, uint64_t v
 sgi_pic_head_reg_write(unsigned head, uint64_t offset, unsigned width, uint64_t value) "head %u offset 0x%" PRIx64 " width %u value 0x%" PRIx64
 sgi_pic_pin(int64_t virtual_ns, unsigned head, int pin, int level, uint8_t pins) "virtual_ns=%" PRId64 " head=%u pin=%d level=%d pins=0x%02x"
 sgi_pic_pci_irq(int64_t virtual_ns, unsigned head, int line, int level) "virtual_ns=%" PRId64 " head=%u line=%d level=%d"
-sgi_pic_interrupt_packet(int64_t virtual_ns, unsigned head, unsigned pin, bool set, uint64_t destination, uint64_t value) "virtual_ns=%" PRId64 " head=%u pin=%u set=%d destination=0x%016" PRIx64 " value=0x%016" PRIx64
+sgi_pic_interrupt_packet(int64_t virtual_ns, unsigned head, unsigned pin, bool set, uint64_t destination, uint64_t value, int result) "virtual_ns=%" PRId64 " head=%u pin=%u set=%d destination=0x%016" PRIx64 " value=0x%016" PRIx64 " result=%d"
 
 # sgi-xbridge.c
 sgi_xbridge_pci_irq(int64_t vtime, unsigned widget, unsigned device, unsigned pin, int level) "vtime %" PRId64 " source_widget %u device %u PCI_pin %u level %d"
