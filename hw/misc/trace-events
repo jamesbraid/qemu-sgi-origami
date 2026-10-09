@@ -186,6 +186,11 @@ sgi_odyssey_draw_mask(uint32_t mask) "mask 0x%" PRIx32
 sgi_odyssey_buffer_word(uint32_t reg, uint32_t word) "reg 0x%" PRIx32 " word 0x%" PRIx32
 sgi_odyssey_board_oob(uint32_t base, uint32_t limit_mib) "destination base 0x%" PRIx32 " exceeds the %u MiB this board reports"
 sgi_odyssey_gl_draw_path(const char *backend, int result, bool called) "backend %s result %d called=%d"
+# draw flags bits 0..6: back colours, polygon modes/stipple, point/line/polygon smooth, line stipple.
+# state flags bits 0..12: depth, stencil, blend, alpha, fog, cull, clip, colour/index logic, texture 3D, offset, window matrix, bound.
+sgi_odyssey_mesa_draw_input(uint32_t mode, uint32_t count, uint32_t draw_flags, uint32_t state_flags, uint32_t shade, uint32_t index_bits, uint32_t buffers, uint32_t mask, uint32_t front, uint32_t blend) "mode %u count %u draw-flags 0x%x state-flags 0x%x shade %u index-bits %u buffers 0x%x mask 0x%x front %u blend %u"
+sgi_odyssey_mesa_draw_window(int32_t ox, int32_t oy, uint32_t dw, uint32_t dh, int32_t vx, int32_t vy, int32_t vw, int32_t vh, uint32_t rw, uint32_t rh) "origin %d,%d extent %ux%u viewport %d,%d %dx%d resource %ux%u"
+sgi_odyssey_mesa_draw_resource(bool finite_matrices, bool finite_vertices, bool found, uint32_t buffer, uint32_t depth, uint32_t components) "finite-matrices=%d finite-vertices=%d found=%d buffer %u depth %u components %u"
 sgi_odyssey_mesa_renderer_result(int result) "render-result %d"
 sgi_odyssey_native_commit_covered(int buffer, uint64_t processed_pixels, uint32_t successful_stores, bool partial_pixel, bool extent_known, int result) "buffer %d processed-pixels %" PRIu64 " successful-stores %u partial-pixel=%d extent-known=%d render-result %d"
 
