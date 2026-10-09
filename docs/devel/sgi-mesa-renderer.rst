@@ -16,13 +16,29 @@ Current drawing support
 ``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
 flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
 resource has ordered UNORM components of 1 to 16 bits. Its rows may
-start at either edge. The decoded viewport is passed to the GL worker,
-including negative origins and dimensions larger than the resource. Mesa
-clips to the native attachment. The host must support the requested viewport
-dimensions. A smaller host limit reports an error instead of silently
-clamping the transform. A polygon-mode array is accepted only when both faces
-select FILL. LINE and POINT modes remain unsupported. A nonzero drawable
-origin remains unsupported by this draw path.
+start at either edge.
+
+Callers supply OpenGL window coordinates: window row 0 is the bottom
+display row, and the scissor box is in those rows. A resource's
+``bottom_origin`` flag changes only how its rows are stored. For a resource
+whose flag is false, the renderer stores window row *y* at native row
+*height - 1 - y*, and it flips drawable clip rectangles, which arrive in
+native rows, the same way. A family whose native window rows run down the
+display, such as Odyssey, maps them to OpenGL rows in its own adapter before
+submission. Unlike the scalar rasterizer, which stores window row *y* at
+plane row *y* whatever the plane's origin, the renderer does not accept
+top-down window rows.
+
+The decoded viewport is passed to the GL worker, including negative origins
+and dimensions larger than the resource. Mesa clips to the native
+attachment. A negative viewport width or height returns
+``SGI_RENDER_UNSUPPORTED``. The worker reads ``GL_MAX_VIEWPORT_DIMS`` once
+when it creates its context. A viewport larger than that limit returns
+``SGI_RENDER_UNSUPPORTED`` before the native snapshot instead of letting GL
+clamp the transform, and the renderer stays usable for later draws. A
+polygon-mode array is accepted only when both faces select FILL. LINE and
+POINT modes remain unsupported. A nonzero drawable origin remains
+unsupported by this draw path.
 
 A bound drawable with no clip rectangles owns no visible pixels. Its ``empty``
 flag does not change this draw behavior. Up to 16 inclusive plane rectangles
