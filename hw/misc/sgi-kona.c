@@ -3079,10 +3079,20 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
         error_free(create_err);
     }
     sgi_kona_renderer_arm_test_fault(s);
-    if (!sgi_renderer_draw_batch(s->renderer, requests, count, errp)) {
+    switch (sgi_renderer_draw_batch_checked(s->renderer, requests, count,
+                                            errp)) {
+    case SGI_RENDER_DRAW_OK:
+        break;
+    case SGI_RENDER_DRAW_REFUSED:
+        /* A precision refusal draws in software and keeps the renderer. */
+        result = SGI_RENDER_UNSUPPORTED;
+        goto out;
+    case SGI_RENDER_DRAW_FAILED:
         s->renderer_failed = true;
         result = SGI_RENDER_HOST_ERROR;
         goto out;
+    default:
+        g_assert_not_reached();
     }
     /* Do not commit native pixels until every host request succeeds. */
     colour_mask = sgi_raster_colour_mask(rules,
