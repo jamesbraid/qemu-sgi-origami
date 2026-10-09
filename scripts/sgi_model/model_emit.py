@@ -938,6 +938,8 @@ def _is_ip53_runtime_profile(model: dict) -> bool:
     emulation = model.get("machine", {}).get("emulation", {})
     expected = {
         "origin350": ("origin350", "ip53-origin350"),
+        "onyx4-host-serial-compat": (
+            "onyx4-host", "ip53-onyx4-host-serial-compat"),
         "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
         "tezro-deskside-700mhz-4mib-serial-trial": (
             "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
@@ -957,7 +959,7 @@ def _is_ip53_runtime_profile(model: dict) -> bool:
                 "launch_recipe") == "ip53-discovery")
 
 
-def _validate_origin350_ip53_consoles(model: dict, topology: dict) -> None:
+def _validate_ip53_runtime_consoles(model: dict, topology: dict) -> None:
     harness = model["machine"].get("harness", {})
     records = harness.get("console_records")
     policy = harness.get("console")
@@ -1039,7 +1041,7 @@ def _offerings_for(model: dict, topology: dict,
         launch_harness["console"] = model_harness["console"]
     experiment = _is_ip53_runtime_profile(model)
     if experiment:
-        _validate_origin350_ip53_consoles(model, topology)
+        _validate_ip53_runtime_consoles(model, topology)
     population = model["composition"]["population"]
     dimms_per_node = tuple(population["dimms_per_node"])
     node = topology["nodes"][0]

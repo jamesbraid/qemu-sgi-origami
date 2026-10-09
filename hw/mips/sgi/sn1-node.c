@@ -1558,11 +1558,15 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
     if (r16000) {
         bool onyx350 = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
                                  "onyx350") == 0;
+        bool onyx4_host = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
+                                    "onyx4-host") == 0;
         bool tezro = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
                                "tezro") == 0;
-        uint32_t expected_mode = onyx350 ? 0x009caf85 : 0x009cad85;
-        uint64_t expected_clock = onyx350 ? 800000000 : 700000000;
-        unsigned int expected_cache_mib = tezro ? 4 : 8;
+        uint32_t expected_mode = onyx4_host ? 0x009dad85 :
+                                 onyx350 ? 0x009caf85 : 0x009cad85;
+        uint64_t expected_clock = onyx4_host ? 1000000000 :
+                                  onyx350 ? 800000000 : 700000000;
+        unsigned int expected_cache_mib = onyx4_host ? 16 : tezro ? 4 : 8;
 
         if (tezro) {
             expected_mode = 0x009bad85;

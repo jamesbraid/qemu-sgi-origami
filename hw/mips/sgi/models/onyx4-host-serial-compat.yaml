@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 4 host-only serial compatibility experiment.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/ip53-onyx4-host-compat-module.yaml
+  - layers/products/onyx4-host-serial-compat.yaml

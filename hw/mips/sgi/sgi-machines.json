@@ -3820,6 +3820,169 @@
       "topology": "onyx350-compat"
     },
     {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "onyx4-host-serial-compat",
+      "dimms-per-node": [
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx 4 host IP53-backed serial compatibility experiment",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "onyx4-host,topology=onyx4-host-serial-compat,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          8192
+        ],
+        "default": 8192
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "onyx4-host",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
+          "board-ids": [
+            "io9"
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "kind": "ds1742",
+          "part": "ds1742",
+          "scope": "board",
+          "size": 2048
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx4-host-serial-compat"
+    },
+    {
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -16404,6 +16567,231 @@
         }
       ],
       "product": "onyx350",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "reported-type": 55,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "Onyx 4 host, IP53-backed serial compatibility experiment",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "ds1742": true,
+          "ds1742-fresh-year-base": 1968,
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-006",
+          "pci-functions": [
+            {
+              "clock-hz": 33333333,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9"
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 10333573,
+        "machine-type": 1
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "onyx4-host-serial-compat",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            8192
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "onyx4-host",
       "routers": [],
       "xio-attachments": [
         {

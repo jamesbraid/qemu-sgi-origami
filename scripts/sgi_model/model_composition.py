@@ -909,6 +909,8 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             raise ResolutionError(f"component '{cid}' is not a PIC host")
         expected = {
             "origin350": ("origin350", "ip53-origin350"),
+            "onyx4-host-serial-compat": (
+                "onyx4-host", "ip53-onyx4-host-serial-compat"),
             "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
             "tezro-deskside-700mhz-4mib-serial-trial": (
                 "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),

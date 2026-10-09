@@ -30,11 +30,14 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     const char *product = data;
     const char *topology = product;
     bool ip53 = g_str_equal(product, "origin350") ||
+                g_str_equal(product, "onyx4-host") ||
                 g_str_equal(product, "onyx350") ||
                 g_str_equal(product, "tezro");
     const SGIModelTopology *t;
 
-    if (g_str_equal(product, "onyx350")) {
+    if (g_str_equal(product, "onyx4-host")) {
+        topology = "onyx4-host-serial-compat";
+    } else if (g_str_equal(product, "onyx350")) {
         topology = "onyx350-compat";
     } else if (g_str_equal(product, "tezro")) {
         topology = "tezro-deskside-700mhz-4mib-serial-trial";
@@ -67,6 +70,12 @@ static const TypeInfo sn1_machine_types[] = {
         .parent = TYPE_SGI_SN_MACHINE,
         .class_init = sn1_machine_class_init,
         .class_data = "origin350",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("onyx4-host"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "onyx4-host",
     },
     {
         .name = MACHINE_TYPE_NAME("onyx350"),

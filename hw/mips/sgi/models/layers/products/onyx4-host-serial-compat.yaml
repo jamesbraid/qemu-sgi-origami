@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# One-node Onyx 4 host serial compatibility inputs.
+# This uses the existing IP53 runtime path and does not identify the host board.
+layer_version: 1
+sources:
+  ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
+  ip53-runtime-review: "docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: reviewed software experiment inputs and explicit unknowns"
+  ip53-flash-review: "docs/reviews/chimera-ip53-flash-experiment-review-20261002.md: configured PROM payload, two-position seed and bounded views"
+  ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
+  ip53-platform-contract: "docs/datasheets/ip53-platform-identity-experiment.md: selected input and limits"
+  ip53-platform-review: "docs/reviews/ip53-platform-identity-evidence-review-20261003.md: clearance for the inferred 0x2001 software input"
+  ip53-l1-contract: "docs/datasheets/ip53-l1-identity-experiment.md: selected local controller input and limits"
+  ip53-l1-review: "docs/reviews/ip53-l1-product-identity-evidence-review-20261003.md: clearance for the product-specific 0x37 software input"
+  ip53-clock-year-review: "docs/reviews/chimera-ip53-clock-identity-policy-review-20261005.md: cleared fresh-seed policy and limits"
+  onyx4-host-hinv: "https://forums.irixnet.org/thread-2263.html: cute-shrimp/02.hinv, source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
+  onyx4-host-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
+  onyx4-host-contract: "docs/datasheets/onyx4-serial-host.md: host assignment inference, selected software tuple, and compatibility boundary"
+layer:
+  kind: product
+  id: onyx4-host-serial-compat
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: derived
+    sources: [onyx4-host-hinv, onyx4-host-guide, onyx4-host-contract,
+              ip53-runtime-review]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    provenance: derived
+    sources: [onyx4-host-hinv, onyx4-host-contract]
+  cpu_selection:
+    default: {clock_mhz: 1000, cache_mib: 16}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  data:
+    machine:
+      name: Onyx 4 host IP53-backed serial compatibility experiment
+      model_role: emulation-target
+      notes: >-
+        One-node serial experiment selected from public HINV module 001c01, which
+        reports an IP59_4CPU board, four 1 GHz R16000 processors with 16 MiB
+        reported secondary cache, 8 GiB, and one IO9. The capture labels its
+        system Onyx 350; selecting this module as an Onyx 4 host is an inference.
+        QEMU uses the IP53 Bedrock, PIC, IO9 and guest board identity as an
+        explicit software compatibility mapping. Reset mode 0x009dad85 is a
+        selected synthetic input with the 16 MiB cache encoding; it is not a
+        measured electrical reset value. The eight-bank memory placement and
+        other IP53 device inputs are software choices. The launcher applies a
+        configured PROM seed; this profile does not establish physical fitment
+        or stock PROM boot.
+      firmware_config:
+        processor_reset_mode: 0x009dad85
+        machine_type: 0x00000001
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources: [ip53-runtime-review, ip53-flash-review]
+      emulation:
+        machine_name: onyx4-host
+        display_description: Onyx 4 host, IP53-backed serial compatibility experiment
+        profile: ip53-onyx4-host-serial-compat
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [8192]
+        pic_profiles:
+          pic: pic-rev3-bedrock-experimental
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x51454d554e00"
+            reason: >-
+              Stable synthetic Bedrock identity for this selected emulation
+              experiment; no physical board serial is supplied.
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [ip53-platform-driver, ip53-platform-contract,
+                     ip53-platform-review, "hw/mips/sgi/sn1-node.c",
+                     "hw/mips/sgi/sn-machine.c"]
+            notes: >-
+              Selects subtype 2 under the public OpenBSD product mapping. The
+              retained low twelve bits, 0x001, are an unmeasured software
+              choice. This does not identify an observed IP53 reset state.
+              The installed bank mask follows the synthetic bank placement
+              above.
+        l1_controllers:
+          l1:
+            reported_type: 55
+            revision: {major: 1, minor: 18, patch: 5}
+            provenance: derived
+            sources: [ip53-l1-contract, ip53-l1-review]
+            notes: >-
+              Product-specific software approximation for the selected local
+              controller, inferred from the 2U_INT_53 product context. This
+              does not establish a physical response, reset value or the
+              identity of a separately queried I/O controller.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: processor reset execution view
+              address: "0x1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high LBOOT execution alias
+              address: "0x100_1fc0_0000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [ip53-flash-review]
+          notes: >-
+            This path and digest identify the raw original base payload accepted
+            by the existing launcher. The launcher constructs the experiment
+            seed from this payload and records that configured seed's separate
+            hash. The reset and execution views are software choices, not claims
+            about IP53 physical decode or fitted flash.
+      harness:
+        console: l1-uart
+        console_records:
+          - {kind: console, node_id: bedrock, argument: "-serial chardev:l1", launcher_name: l1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_0", launcher_name: ioc4-serial-0}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_1", launcher_name: ioc4-serial-1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_2", launcher_name: ioc4-serial-2}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_3", launcher_name: ioc4-serial-3}
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: onyx4-host-serial-compat
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources: [ip53-runtime-review, ip53-flash-review]
+  evidence_policy: strict

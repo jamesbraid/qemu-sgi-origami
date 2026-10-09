@@ -46,6 +46,13 @@ layer:
               Captured on module 001c01 in the customized Onyx 350 system.
               This observed tuple does not prove standalone operation or
               establish reset behavior.
+          - clock_mhz: 1000
+            cache_mib: 16
+            notes: >-
+              Public HINV reports this tuple for module 001c01, an IP59_4CPU
+              board. Selecting that module as an Onyx 4 host is an inference;
+              this tuple is used only by the explicitly IP53-backed serial
+              compatibility experiment. It does not establish reset behavior.
           - clock_mhz: 700
             cache_mib: 4
             notes: >-
@@ -53,7 +60,7 @@ layer:
               the product component; processor identification and reset Config0
               remain unknown.
         provenance: derived
-        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected Origin 350 software profile and explicit unknowns", "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: captured 800 MHz/8 MiB CPU tuple and standalone-operation limit"]
+        sources: ["docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: selected Origin 350 software profile and explicit unknowns", "docs/reviews/chimera-onyx350-observed-module-evidence-review-20261006.md: captured 800 MHz/8 MiB CPU tuple and standalone-operation limit", "https://forums.irixnet.org/thread-2263.html: cute-shrimp/02.hinv module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"]
 
     address_spaces:
       - id: cached
