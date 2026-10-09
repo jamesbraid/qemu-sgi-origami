@@ -163,9 +163,9 @@ static bool sgi_render_mode_polygons(uint32_t mode)
 }
 
 /*
- * Polygon modes only. Points and lines stay unsupported: Mesa's aliased
- * lines differ from the shared wide-primitive contract at diamond ties
- * and at the ends of even widths.
+ * Points and polygon modes. Lines stay unsupported: Mesa's aliased lines
+ * differ from the shared wide-primitive contract at diamond ties and at
+ * the ends of even widths.
  */
 static bool sgi_render_draw_supported(const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
@@ -174,7 +174,10 @@ static bool sgi_render_draw_supported(const SGIRasterTarget *target,
     const SGIGLDrawState *st = draw->state;
     const SGIRenderResource *res;
 
-    if (!sgi_render_mode_polygons(draw->mode) ||
+    if ((draw->mode != SGI_GL_POINTS &&
+         !sgi_render_mode_polygons(draw->mode)) ||
+        (draw->mode == SGI_GL_POINTS &&
+         (!isfinite(draw->point_size) || draw->point_size < 0)) ||
         (st->texture_2d &&
          (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
         draw->back_colors ||
@@ -262,10 +265,18 @@ static bool sgi_render_rules_supported(const SGIRasterRules *rules)
            rules->arith == SGI_ARITH_DOUBLE;
 }
 
-/* Independent triangle vertices the mode decomposes into. */
+/* The scalar rasterizer's aliased size: nearest integer, at least one. */
+static float sgi_render_aliased_size(float requested)
+{
+    return requested == 0 ? 1 : MAX(floor((double)requested + 0.5), 1);
+}
+
+/* Independent vertices the mode decomposes into. */
 static uint64_t sgi_render_piece_vertices(uint32_t mode, uint32_t n)
 {
     switch (mode) {
+    case SGI_GL_POINTS:
+        return n;
     case SGI_GL_TRIANGLES:
         return n / 3 * 3;
     case SGI_GL_TRIANGLE_STRIP:
@@ -284,6 +295,7 @@ static uint64_t sgi_render_piece_vertices(uint32_t mode, uint32_t n)
 typedef struct SGIRenderPieces {
     float (*v)[SGI_RENDERER_FRAME_VERTEX_FLOATS];
     uint32_t count;
+    uint32_t primitive;
     bool flat;
 } SGIRenderPieces;
 
@@ -312,7 +324,7 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
 }
 
 /*
- * The triangles sgi_soft_draw() draws, in its order and with its provoking
+ * The pieces sgi_soft_draw() draws, in its order and with its provoking
  * vertices: odd strip triangles with their first two vertices swapped, and
  * quadrilaterals and polygons as fans from their first vertex.
  */
@@ -324,7 +336,14 @@ static void sgi_render_decompose(SGIRenderPieces *p, const SGIGLDraw *draw)
         const uint32_t index_[] = { __VA_ARGS__ }; \
         sgi_render_piece(p, draw, index_, ARRAY_SIZE(index_), provoking); \
     } while (0)
+    p->primitive = draw->mode == SGI_GL_POINTS ? SGI_RENDERER_POINTS :
+                                                 SGI_RENDERER_TRIANGLES;
     switch (draw->mode) {
+    case SGI_GL_POINTS:
+        for (uint32_t i = 0; i < n; i++) {
+            PIECE(i, i);
+        }
+        break;
     case SGI_GL_TRIANGLES:
         for (uint32_t i = 0; i + 2 < n; i += 3) {
             PIECE(i + 2, i, i + 1, i + 2);
@@ -384,6 +403,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     uint64_t piece_vertices = 0;
     SGIRenderPieces pieces = { 0 };
     g_autofree float *piece_storage = NULL;
+    float point_size = 0;
     bool any_written = false;
     SGIRenderCommitResult committed;
     SGIRenderResult status;
@@ -433,6 +453,14 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         if (piece_vertices > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX) {
             error_setg(errp, "SGI Mesa draw has too many vertices");
             return SGI_RENDER_UNSUPPORTED;
+        }
+        if (draw->mode == SGI_GL_POINTS) {
+            point_size = sgi_render_aliased_size(draw->point_size);
+            if (!sgi_renderer_primitive_supported(renderer,
+                                                  SGI_RENDERER_POINTS,
+                                                  point_size, errp)) {
+                return SGI_RENDER_UNSUPPORTED;
+            }
         }
     }
     if (draw->state->texture_2d) {
@@ -651,6 +679,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
         sgi_render_decompose(&pieces, draw);
         assert(pieces.count == piece_vertices);
+        frame.primitive = pieces.primitive;
+        frame.point_size = point_size;
         frame.count = pieces.count;
         frame.vertices = piece_storage;
     }

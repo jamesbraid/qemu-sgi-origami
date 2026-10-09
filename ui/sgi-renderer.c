@@ -33,11 +33,23 @@ static bool sgi_renderer_texture_env_valid(uint32_t mode)
 static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
 {
     if (frame->texture.slots) {
-        return frame->count >= 3 &&
+        return frame->primitive == SGI_RENDERER_TRIANGLES &&
+               frame->count >= 3 &&
                frame->count <= SGI_RENDERER_FRAME_VERTICES_MAX;
     }
-    return frame->count && frame->count % 3 == 0 &&
-           frame->count <= SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX;
+    if (!frame->count ||
+        frame->count > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX ||
+        !isfinite(frame->point_size) || frame->point_size < 0) {
+        return false;
+    }
+    switch (frame->primitive) {
+    case SGI_RENDERER_TRIANGLES:
+        return frame->count % 3 == 0;
+    case SGI_RENDERER_POINTS:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void sgi_renderer_register_gl(const SGIRendererOps *ops)
@@ -237,6 +249,11 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         !sgi_renderer_viewport_supported(renderer, frame->viewport, errp)) {
         return false;
     }
+    if (frame->primitive == SGI_RENDERER_POINTS &&
+        !sgi_renderer_primitive_supported(renderer, frame->primitive,
+                                          frame->point_size, errp)) {
+        return false;
+    }
     if (frame->texture.slots &&
         (!frame->texture.width || !frame->texture.height ||
          frame->texture.width > INT_MAX ||
@@ -321,6 +338,28 @@ bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
         !renderer->ops->supports_viewport(renderer->opaque, viewport, errp)) {
         if (errp && !*errp) {
             error_setg(errp, "SGI OpenGL viewport support is unavailable");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
+                                      uint32_t primitive, float size,
+                                      Error **errp)
+{
+    if (!renderer || !isfinite(size) || size < 0) {
+        error_setg(errp, "Invalid SGI OpenGL primitive size");
+        return false;
+    }
+    if (primitive == SGI_RENDERER_TRIANGLES) {
+        return true;
+    }
+    if (!renderer->ops->supports_primitive ||
+        !renderer->ops->supports_primitive(renderer->opaque, primitive,
+                                           size ? size : 1, errp)) {
+        if (errp && !*errp) {
+            error_setg(errp, "SGI OpenGL primitive support is unavailable");
         }
         return false;
     }
