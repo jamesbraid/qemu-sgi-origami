@@ -1115,7 +1115,7 @@ static void test_mi_busy_clears(const void *data)
                            " -device bcm570x,addr=%02x.0,netdev=n0",
                            log_path, BCM_SLOT);
     qts = qtest_init_ext(g_getenv("QTEST_QEMU_BINARY_SRC") ?
-                         "QTEST_QEMU_BINARY_SRC" : NULL,
+                         g_getenv("QTEST_QEMU_BINARY_SRC") : NULL,
                          args, NULL, true);
     bcm_open(&b, qts);
 
@@ -3886,9 +3886,7 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
                                 BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
-    /* Unmask the existing update, then acknowledge it. */
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    g_assert_true(intr_line_up(b.dev));
+    /* Unmask and clear the pending update before the next frame. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
@@ -3998,9 +3996,7 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
                                 BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
-    /* Acknowledge the first frame's update, so the next one stands alone. */
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    g_assert_true(intr_line_up(b.dev));
+    /* Clear the first frame's update, so the next one stands alone. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
@@ -4358,8 +4354,6 @@ static void test_receive_ring_full_recovers(const void *data)
      * An interrupt cycle with the ring still full changes nothing: the frames
      * are waiting on return-ring space, not on the driver's acknowledgement.
      */
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     g_usleep(100000);
@@ -5805,13 +5799,13 @@ static void test_interrupt_mailbox(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
     g_assert_false(intr_line_up(b.dev));
 
-    /* A completion posted while masked is cleared by the mailbox write. */
+    /* An update posted while masked is discarded by the zero write. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
-    /* The IRIX write-0-only acknowledgement clears a fresh completion. */
+    /* A fresh completion after unmasking asserts an interrupt. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -5827,6 +5821,28 @@ static void test_interrupt_mailbox(const void *data)
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_MASK_INTR);
     g_assert_false(intr_line_up(b.dev));
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+}
+
+/* Any nonzero In_ISR value suppresses interrupts while the handler runs. */
+static void test_mailbox_nonzero_masks(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+    bcm_arm_status(&b);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 2);
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(b.dev));
 
     bcm_close(&b);
@@ -6196,11 +6212,9 @@ static void test_state_survives_migration(const void *data)
 }
 
 /*
- * A write-one mailbox acknowledgement can precede the driver's matching
- * unmask. The mask itself has to survive migration: a frame the destination
- * places goes on raising no line until the driver writes zero. Receiving is
- * not part of that handshake. The posted buffer releases the frame either
- * way.
+ * The mailbox mask has to survive migration. A frame the destination places
+ * raises no line while masked, and the driver's zero write clears that
+ * pending update. A later status publication can raise a fresh interrupt.
  */
 static void test_masked_interrupt_survives_migration(const void *data)
 {
@@ -6272,6 +6286,8 @@ static void test_masked_interrupt_survives_migration(const void *data)
     wait_for_rx_prod(&to, 1);
     g_assert_false(intr_line_up(to.dev));
     bar_writel(&to, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(to.dev));
+    bar_writel(&to, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(to.dev));
 
     bcm_close(&to);
@@ -6719,6 +6735,8 @@ int main(int argc, char **argv)
                         test_rx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
                         test_interrupt_mailbox);
+    qtest_add_data_func("/bcm570x/mailbox-nonzero-masks", NULL,
+                        test_mailbox_nonzero_masks);
     qtest_add_data_func("/bcm570x/status-block-gated-by-hcc", NULL,
                         test_status_block_gated_by_hcc);
     qtest_add_data_func("/bcm570x/status-dma-error", NULL,
