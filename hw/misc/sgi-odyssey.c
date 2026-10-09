@@ -4887,6 +4887,7 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
 
     if ((d->state->texture_2d || d->state->texture_3d) &&
         !odyssey_texture_setup(s, &image, &texture, &t.texture)) {
+        trace_sgi_odyssey_gl_draw_path("scalar-skip", SGI_GL_DRAW_OK, false);
         return SGI_GL_DRAW_OK;
     }
     if ((state.texture_2d || state.texture_3d) && s->tex_env[0] == 4) {
@@ -4909,6 +4910,7 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     state.fog_index = (s->gl_fog[0] >> 12) & 0xfff;
     draw.state = &state;
     result = sgi_soft_draw(&rules, &t, &draw);
+    trace_sgi_odyssey_gl_draw_path("scalar", result, true);
     sgi_scanout_invalidate_all(&s->scanout);
     return result;
 }
@@ -4948,6 +4950,8 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
     if (odyssey_gl_index_mode(s)) {
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: Mesa colour-index draw "
                       "unsupported\n");
+        trace_sgi_odyssey_gl_draw_path("mesa-preflight",
+                                       SGI_RENDER_UNSUPPORTED, false);
         return SGI_GL_DRAW_UNSUPPORTED;
     }
     if (!odyssey_native_mesa_bind(&native, &s->mem,
@@ -4956,6 +4960,8 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
             sgi_board_memory_plane(&s->buffer1_mem, s->buffer1_plane),
             odyssey_mesa_invalidate_scanout_all, s, &err)) {
         error_report_err(err);
+        trace_sgi_odyssey_gl_draw_path("mesa-bind",
+                                       SGI_RENDER_RESOURCE_ERROR, false);
         return SGI_GL_DRAW_RESOURCE_ERROR;
     }
     state = *d->state;
@@ -4967,6 +4973,7 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
     result = odyssey_native_mesa_draw(&native, s->mesa_renderer, &rules,
                                      &draw, odyssey_draw_buffers(s),
                                      SGI_RENDER_MONO, s->did_compare, &err);
+    trace_sgi_odyssey_gl_draw_path("mesa-adapter", result, true);
     if (err) {
         error_report_err(err);
     }
