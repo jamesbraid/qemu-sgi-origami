@@ -33,6 +33,7 @@ typedef struct SGIRendererGL {
     Error *texture_error;
     GLint texture_sampler, texture_mode, texture_wrap_s;
     GLint texture_wrap_t, texture_shade, texture_linear;
+    GLint texture_border;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -84,53 +85,65 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
         "}\n";
     static const char *fragment_source =
         "#version 450 compatibility\n"
+        "#define WRAP_REPEAT " G_STRINGIFY(GL_REPEAT) "\n"
+        "#define WRAP_CLAMP " G_STRINGIFY(GL_CLAMP) "\n"
+        "#define WRAP_EDGE " G_STRINGIFY(GL_CLAMP_TO_EDGE) "\n"
+        "#define WRAP_BORDER " G_STRINGIFY(GL_CLAMP_TO_BORDER) "\n"
         "uniform usampler2D image_slots;\n"
-        "uniform int environment_mode, repeat_s, repeat_t, flat_shade;\n"
+        "uniform int environment_mode, wrap_s, wrap_t, flat_shade;\n"
         "uniform int linear_filter;\n"
+        "uniform dvec4 border_bytes;\n"
         "in vec4 smooth_colour;\n"
         "flat in vec4 flat_colour;\n"
         "in vec4 texture_coord;\n"
         "layout(location=0) out vec4 pixel;\n"
+        "double wrapped_coord(double x, int n, int wrap) {\n"
+        "  if (wrap == WRAP_REPEAT) return fract(x);\n"
+        "  double edge = 0.5 / double(n);\n"
+        "  if (wrap == WRAP_EDGE)\n"
+        "    return clamp(x, edge, 1.0 - edge);\n"
+        "  if (wrap == WRAP_BORDER)\n"
+        "    return clamp(x, -edge, 1.0 + edge);\n"
+        "  return clamp(x, 0.0, 1.0);\n"
+        "}\n"
+        "int wrapped_index(int i, int n, int wrap) {\n"
+        "  if (wrap == WRAP_REPEAT)\n"
+        "    return i < 0 ? n - 1 : (i >= n ? 0 : i);\n"
+        "  return wrap == WRAP_EDGE ? clamp(i, 0, n - 1) : i;\n"
+        "}\n"
+        "dvec4 fetch_slot(ivec2 xy, ivec2 size) {\n"
+        "  xy = ivec2(wrapped_index(xy.x, size.x, wrap_s),\n"
+        "             wrapped_index(xy.y, size.y, wrap_t));\n"
+        "  if (any(lessThan(xy, ivec2(0))) ||\n"
+        "      any(greaterThanEqual(xy, size))) return border_bytes;\n"
+        "  return dvec4(texelFetch(image_slots, xy, 0));\n"
+        "}\n"
         "void main() {\n"
         "  ivec2 size = textureSize(image_slots, 0);\n"
         "  dvec2 st = dvec2(texture_coord.xy) / double(texture_coord.w);\n"
-        "  dvec2 uv = dvec2(repeat_s != 0 ? fract(st.x) :\n"
-        "                    clamp(st.x, 0.0, 1.0),\n"
-        "                    repeat_t != 0 ? fract(st.y) :\n"
-        "                    clamp(st.y, 0.0, 1.0));\n"
+        "  dvec2 uv = dvec2(wrapped_coord(st.x, size.x, wrap_s),\n"
+        "                    wrapped_coord(st.y, size.y, wrap_t));\n"
         "  dvec4 texel;\n"
         "  if (linear_filter != 0) {\n"
-        "    dvec2 edge = 0.5 / dvec2(size);\n"
-        "    uv = dvec2(repeat_s != 0 ? uv.x :\n"
-        "               clamp(st.x, edge.x, 1.0 - edge.x),\n"
-        "               repeat_t != 0 ? uv.y :\n"
-        "               clamp(st.y, edge.y, 1.0 - edge.y));\n"
         "    dvec2 pos = uv * dvec2(size) - 0.5;\n"
         "    ivec2 lo = ivec2(floor(pos));\n"
         "    ivec2 hi = lo + ivec2(1);\n"
         "    dvec2 weight = fract(pos);\n"
-        "    lo.x = repeat_s != 0 ? (lo.x < 0 ? size.x - 1 : lo.x) :\n"
-        "           clamp(lo.x, 0, size.x - 1);\n"
-        "    hi.x = repeat_s != 0 ? (hi.x >= size.x ? 0 : hi.x) :\n"
-        "           clamp(hi.x, 0, size.x - 1);\n"
-        "    lo.y = repeat_t != 0 ? (lo.y < 0 ? size.y - 1 : lo.y) :\n"
-        "           clamp(lo.y, 0, size.y - 1);\n"
-        "    hi.y = repeat_t != 0 ? (hi.y >= size.y ? 0 : hi.y) :\n"
-        "           clamp(hi.y, 0, size.y - 1);\n"
-        "    dvec4 c00 = dvec4(texelFetch(image_slots, lo, 0));\n"
-        "    dvec4 c10 = dvec4(texelFetch(image_slots,\n"
-        "                                   ivec2(hi.x, lo.y), 0));\n"
-        "    dvec4 c01 = dvec4(texelFetch(image_slots,\n"
-        "                                   ivec2(lo.x, hi.y), 0));\n"
-        "    dvec4 c11 = dvec4(texelFetch(image_slots, hi, 0));\n"
+        "    dvec4 c00 = fetch_slot(lo, size);\n"
+        "    dvec4 c10 = fetch_slot(ivec2(hi.x, lo.y), size);\n"
+        "    dvec4 c01 = fetch_slot(ivec2(lo.x, hi.y), size);\n"
+        "    dvec4 c11 = fetch_slot(hi, size);\n"
         "    texel = c00 * (1.0 - weight.x) * (1.0 - weight.y) +\n"
         "            c10 * weight.x * (1.0 - weight.y) +\n"
         "            c01 * (1.0 - weight.x) * weight.y +\n"
         "            c11 * weight.x * weight.y;\n"
         "  } else {\n"
-        "    ivec2 xy = clamp(ivec2(floor(uv * dvec2(size))),\n"
-        "                     ivec2(0), size - ivec2(1));\n"
-        "    texel = dvec4(texelFetch(image_slots, xy, 0));\n"
+        "    ivec2 xy = ivec2(floor(uv * dvec2(size)));\n"
+        "    if (wrap_s == WRAP_CLAMP)\n"
+        "      xy.x = clamp(xy.x, 0, size.x - 1);\n"
+        "    if (wrap_t == WRAP_CLAMP)\n"
+        "      xy.y = clamp(xy.y, 0, size.y - 1);\n"
+        "    texel = fetch_slot(xy, size);\n"
         "  }\n"
         "  dvec4 primary = dvec4(flat_shade != 0 ? flat_colour :\n"
         "                         smooth_colour);\n"
@@ -178,16 +191,19 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
     renderer->texture_mode = glGetUniformLocation(renderer->texture_program,
                                                    "environment_mode");
     renderer->texture_wrap_s = glGetUniformLocation(renderer->texture_program,
-                                                     "repeat_s");
+                                                     "wrap_s");
     renderer->texture_wrap_t = glGetUniformLocation(renderer->texture_program,
-                                                     "repeat_t");
+                                                     "wrap_t");
     renderer->texture_shade = glGetUniformLocation(renderer->texture_program,
                                                     "flat_shade");
     renderer->texture_linear = glGetUniformLocation(renderer->texture_program,
                                                      "linear_filter");
+    renderer->texture_border = glGetUniformLocation(renderer->texture_program,
+                                                     "border_bytes");
     if (renderer->texture_sampler < 0 || renderer->texture_mode < 0 ||
         renderer->texture_wrap_s < 0 || renderer->texture_wrap_t < 0 ||
         renderer->texture_shade < 0 || renderer->texture_linear < 0 ||
+        renderer->texture_border < 0 ||
         renderer_gl_error(renderer, "texture program setup")) {
         if (!renderer->error) {
             error_setg(&renderer->error,
@@ -427,10 +443,10 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform1i(renderer->texture_mode,
                     frame->texture.env_mode == GL_REPLACE ? 0 :
                     frame->texture.env_mode == GL_MODULATE ? 1 : 2);
-        glUniform1i(renderer->texture_wrap_s,
-                    frame->texture.wrap_s == GL_REPEAT);
-        glUniform1i(renderer->texture_wrap_t,
-                    frame->texture.wrap_t == GL_REPEAT);
+        glUniform1i(renderer->texture_wrap_s, frame->texture.wrap_s);
+        glUniform1i(renderer->texture_wrap_t, frame->texture.wrap_t);
+        glUniform4dv(renderer->texture_border, 1,
+                     frame->texture.border_bytes);
         glUniform1i(renderer->texture_shade,
                     frame->shade_model == GL_FLAT);
         glUniform1i(renderer->texture_linear, frame->texture.linear_filter);
