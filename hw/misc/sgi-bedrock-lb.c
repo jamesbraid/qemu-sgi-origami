@@ -61,9 +61,11 @@
 /* The fields a reply echoes from the launch, in their shared positions. */
 #define LB_VECTOR_ECHO         (LB_VECTOR_ADDR | LB_VECTOR_WRITE_ID | \
                                 LB_VECTOR_REQUEST_ID)
-#define LB_VECTOR_PARAMS_MASK  (1ULL | LB_VECTOR_ECHO)
+#define LB_VECTOR_PARAMS_MASK  (3ULL | LB_VECTOR_ECHO)
 /* Parameters bit 0: the stock PROM launches reads with 0, writes with 1. */
+#define LB_VECTOR_TYPE_MASK    3ULL
 #define LB_VECTOR_TYPE_WRITE   1ULL
+#define LB_VECTOR_COMMAND_ERROR 5ULL
 /* Status type-or-error 2:0: 4 is an address error. Then overrun and valid. */
 #define LB_VECTOR_ADDR_ERROR   4ULL
 #define LB_VECTOR_OVERRUN      (1ULL << 62)
@@ -274,6 +276,10 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         s->vector_status |= LB_VECTOR_OVERRUN;
         return;
     }
+    if (s->vector_params & LB_VECTOR_TYPE_MASK & ~LB_VECTOR_TYPE_WRITE) {
+        s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_COMMAND_ERROR;
+        return;
+    }
     if (s->bedrock) {
         result = sgi_bedrock_vector_send(s->bedrock, &packet);
     }
@@ -288,7 +294,7 @@ static void lb_vector_launch(SGIBedrockLBState *s)
                       packet.addr, s->vector_route);
         return;
     case SGI_NET_PACKET_ERROR:
-        s->vector_return = 0;
+        s->vector_return = packet.reply_vector;
         s->vector_status = reply | LB_VECTOR_VALID |
             (packet.failure ? packet.failure : LB_VECTOR_ADDR_ERROR);
         return;
@@ -296,7 +302,7 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         if (packet.op == SGI_NET_PACKET_READ) {
             s->vector_read = packet.value;
         }
-        s->vector_return = 0;
+        s->vector_return = packet.reply_vector;
         /*
          * Bits 2:0 carry the request type on success: the stock PROM's write
          * primitive accepts only 1 there, its read
@@ -511,7 +517,12 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->vector_data = value;
         return;
     case LB_VECTOR_STATUS_CLEAR:
-        /* No consumer writes it; clearing on a write too is the model's. */
+        if (value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: nonzero write 0x%"
+                          PRIx64 " to the vector status clear is ignored\n",
+                          value);
+            return;
+        }
         s->vector_status = 0;
         return;
     case LB_REVISION:

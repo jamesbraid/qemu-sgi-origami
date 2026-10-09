@@ -50,8 +50,8 @@
 #define VECTOR_READ     0xc030
 #define VECTOR_STATUS_CLEAR 0xc038
 
-/* The one-bit type field is the model's reading of an open width. */
-#define VECTOR_PARAMS_MASK (1ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
+/* The two-bit request type distinguishes unsupported commands. */
+#define VECTOR_PARAMS_MASK (3ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
                             (0x7ffULL << 40))
 #define RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
                         (1ULL << 28) | (1ULL << 32))
@@ -458,19 +458,20 @@ static void test_vector_registers(void)
     qtest_writeq(s, LB_BASE + VECTOR_ROUTE, 0xfedcba9876543210ULL);
     qtest_writeq(s, LB_BASE + VECTOR_DATA, 0x1020304050607080ULL);
     qtest_writeq(s, LB_BASE + VECTOR_PARAMS, UINT64_MAX);
-    /* Bit 1 reading 0 is the model's one-bit type, not a datasheet fact. */
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_PARAMS), ==,
                     VECTOR_PARAMS_MASK);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_ROUTE), ==,
                     0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_DATA), ==,
                     0x1020304050607080ULL);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS) & 7, ==, 5);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR) & 7, ==,
+                    5);
     qtest_writeq(s, LB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
     qtest_writeq(s, LB_BASE + VECTOR_STATUS, UINT64_MAX);
+    qtest_writeq(s, LB_BASE + VECTOR_PARAMS, SCRATCH(0) | 1);
     qtest_writeq(s, LB_BASE + VECTOR_RETURN, 0x1111222233334444ULL);
     qtest_writeq(s, LB_BASE + VECTOR_READ, 0xdeadbeefdeadbeefULL);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
@@ -489,6 +490,7 @@ static void test_vector_registers(void)
     g_assert_null(strstr(found, "unsupported read at 0xc020"));
     g_assert_null(strstr(found, "unsupported read at 0xc028"));
     g_assert_null(strstr(found, "unsupported read at 0xc030"));
+    g_assert_nonnull(strstr(found, "vector status clear is ignored"));
     g_assert_null(strstr(found, "unsupported write at 0xc038"));
     g_assert_null(strstr(found, "unsupported read at 0xc038"));
     g_assert_null(strstr(found, "status-clear alias"));

@@ -155,7 +155,7 @@ static void test_experimental_status_write(void)
     const uint64_t global1 = bank[0] + 0x108;
     const uint64_t global8 = bank[7] + 0x178;
     const uint64_t patterns[] = { 0x8, 0x10, 0x800, 0x1000 };
-    const uint64_t expected[] = { 0x8, 0x10, 0x800, 0 };
+    const uint64_t expected[] = { 0x8, 0x10, 0x800, 0x1000 };
     const uint64_t route_patterns[] = { 0x8, 0x800, 0x1000 };
     QDict *mode_reply;
     uint8_t l1_before[131], l1_after[131];
@@ -202,7 +202,7 @@ static void test_experimental_status_write(void)
 
         experimental_status_vector(s, addr, 0, true, UINT64_MAX - p, true);
         g_assert_cmphex(experimental_status_vector(s, addr, 0, false, 0,
-                                                   true), ==, 0xfff - p);
+                                                   true), ==, UINT64_MAX - p);
         g_assert_cmphex(experimental_status_vector(s,
                         bank[p] + 0x200 + (p & 1 ? 126 * 8 : 8), 0,
                         false, 0, true), ==, 0);
@@ -215,12 +215,12 @@ static void test_experimental_status_write(void)
     }
     experimental_status_vector(s, global0, 0, true, UINT64_MAX, true);
     g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
-                                               true), ==, 0xf);
+                                               true), ==, UINT64_MAX);
     for (unsigned i = 0; i < G_N_ELEMENTS(patterns); i++) {
         experimental_status_vector(s, global0, 0, true, patterns[i], true);
         g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
                                                    true), ==,
-                        patterns[i] & 0xf);
+                        patterns[i]);
     }
     experimental_status_vector(s, global0, 0, true, 0x3, true);
     experimental_status_vector(s, global1, 0, true, 0x123a, true);
@@ -228,9 +228,9 @@ static void test_experimental_status_write(void)
     g_assert_cmphex(experimental_status_vector(s, global0, 0, false, 0,
                                                true), ==, 3);
     g_assert_cmphex(experimental_status_vector(s, global1, 0, false, 0,
-                                               true), ==, 0xa);
+                                               true), ==, 0x123a);
     g_assert_cmphex(experimental_status_vector(s, global8, 0, false, 0,
-                                               true), ==, 0xd);
+                                               true), ==, 0x100d);
     g_assert_cmphex(experimental_status_vector(s, bank[7] + 0x170, 0,
                                                false, 0, true), ==, 0);
     experimental_status_vector(s, local0, 0, true, 0, true);
@@ -355,7 +355,7 @@ static void test_experimental_status_write(void)
     g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
                     ==, vector_status);
     for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
-        experimental_status_vector(s, 0, 0, true, values[i], true);
+        experimental_status_vector(s, 0, 0, true, values[i], false);
         g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
                         ==, status);
         g_assert_cmphex(experimental_status_vector(s, 0x600000, 0, false,
@@ -397,8 +397,8 @@ static void test_experimental_status_write(void)
         g_assert_cmphex(qtest_readq(s, BASE + 0x600000), ==, status);
         for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
             qtest_writeq(s, BASE, values[i]);
-            g_assert_cmpuint(get(s, "result"), ==, 2);
-            g_assert_cmpuint(get(s, "failure"), ==, 0);
+            g_assert_cmpuint(get(s, "result"), ==, 1);
+            g_assert_cmpuint(get(s, "failure"), ==, 4);
             g_assert_cmphex(qtest_readq(s, BASE), ==, status);
         }
     }
@@ -438,7 +438,7 @@ static void test_experimental_status_write(void)
                                                true), ==, 0);
     g_assert_cmphex(experimental_status_vector(s,
                     bank[7] + 0x200 + 127 * 8, 0, false, 0, true), ==, 0);
-    experimental_status_vector(s, 0, 0, true, UINT64_MAX, true);
+    experimental_status_vector(s, 0, 0, true, UINT64_MAX, false);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
     assert_experimental_status(status, 1, 0);
     assert_experimental_status(
@@ -453,8 +453,8 @@ static void test_experimental_status_write(void)
     experimental_status_vector(s, 0x8000, 0, true, UINT64_MAX, true);
     experimental_status_vector(s, 0x80f8, 0, true,
                                UINT64_C(0xa5c30000deadbeef), true);
-    experimental_status_vector(s, bank[0] + 8, 0, true, 0, true);
-    experimental_status_vector(s, bank[5] + 0x88, 0, true, 0, true);
+    experimental_status_vector(s, bank[0] + 8, 0, true, 0, false);
+    experimental_status_vector(s, bank[5] + 0x88, 0, true, 0, false);
     experimental_status_vector(s, bank[0] + 0x200, 0, true,
                                UINT64_C(0xa5c3000000000803), true);
     experimental_status_vector(s, bank[7] + 0x200 + 127 * 8, 0, true,
@@ -499,17 +499,19 @@ static void test_experimental_status_write(void)
     g_assert_cmphex(experimental_status_vector(to, bank[5] + 0x88, 0,
                                                false, 0, true), ==, 0);
     g_assert_cmphex(experimental_status_vector(to, bank[0] + 0x200, 0,
-                                               false, 0, true), ==, 0x803);
+                                               false, 0, true), ==,
+                    UINT64_C(0xa5c3000000000803));
     g_assert_cmphex(experimental_status_vector(to, global0, 0, false, 0,
-                                               true), ==, 0xf);
+                                               true), ==, UINT64_MAX);
     g_assert_cmphex(experimental_status_vector(to, global1, 0, false, 0,
-                                               true), ==, 0xa);
+                                               true), ==, 0x123a);
     g_assert_cmphex(experimental_status_vector(to, global8, 0, false, 0,
-                                               true), ==, 0xd);
+                                               true), ==, 0x100d);
     g_assert_cmphex(experimental_status_vector(to,
-                    bank[7] + 0x200 + 127 * 8, 0, false, 0, true), ==, 0xbbb);
-    experimental_status_vector(to, bank[0] + 8, 0, true, 0, true);
-    experimental_status_vector(to, bank[5] + 0x88, 0, true, 0, true);
+                    bank[7] + 0x200 + 127 * 8, 0, false, 0, true), ==,
+                    UINT64_C(0x5a3c000000000bbb));
+    experimental_status_vector(to, bank[0] + 8, 0, true, 0, false);
+    experimental_status_vector(to, bank[5] + 0x88, 0, true, 0, false);
     experimental_status_vector(to, bank[0] + 8, 0, true, 1, false);
     experimental_status_vector(to, bank[5] + 0x88, 0, true, 1, false);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
@@ -523,11 +525,11 @@ static void test_experimental_status_write(void)
         experimental_status_vector_from(to, 2, 0x600000, 0, false, 0, true),
         6, 0);
     experimental_status_vector(to, 0, 0, true,
-                               UINT64_C(0x123456789abcdef0), true);
+                               UINT64_C(0x123456789abcdef0), false);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
                     ==, status);
     experimental_status_vector(to, 0x600000, 0, true, 0, false);
-    experimental_status_vector(to, 8, 0, true, 0, true);
+    experimental_status_vector(to, 8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(to, 8, 0, false, 0, true),
                     ==, 0);
     qtest_quit(to);
@@ -670,7 +672,7 @@ static void test_experimental_local_reset(void)
                                    true, 2 + i, true);
     }
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
-    experimental_status_vector(s, 0x8, 0, true, 0, true);
+    experimental_status_vector(s, 0x8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(s, 0x10, 0,
                                                false, 0, true), ==, 0x100);
     experimental_status_vector(s, 0x8, 0, true, 2, false);
@@ -788,7 +790,7 @@ static void test_experimental_port_errors(void)
             g_assert_cmphex(experimental_status_vector(s, address, 0,
                                                         false, 0, true),
                             ==, 0);
-            experimental_status_vector(s, address, 0, true, 0, true);
+            experimental_status_vector(s, address, 0, true, 0, false);
             experimental_status_vector(s, address, 0, true, 1, false);
             experimental_status_vector(s, address, 0, true, UINT64_MAX,
                                        false);
@@ -879,7 +881,7 @@ static void test_experimental_zero_reset_restore(void)
     port_error = qtest_readq(s, BASE + bank[0] + 0x88);
     l1_size = experimental_router_l1_reply(s, l1_before);
 
-    experimental_status_vector(s, 8, 0, true, 0, true);
+    experimental_status_vector(s, 8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(s, 8, 0, false, 0, true),
                     ==, 0);
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 8), ==, port_status);
@@ -916,7 +918,7 @@ static void test_experimental_zero_reset_restore(void)
     qtest_writel(s, BASE + 8, 0);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    experimental_status_vector(s, 8, 0, true, 0, true);
+    experimental_status_vector(s, 8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(s, 8, 0, false, 0, true),
                     ==, 0);
     qtest_quit(s);
@@ -1862,6 +1864,22 @@ static void test_migration_profile_mismatch(const void *data)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+static void test_revision_range(void)
+{
+    if (!g_test_subprocess()) {
+        QTestState *s = qtest_init(ARGS);
+
+        g_assert_cmphex((qtest_readq(s, BASE) >> 28) & 0xff, ==, 1);
+        qtest_quit(s);
+        g_test_trap_subprocess(NULL, 5 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*supports only inferred chip revision one*");
+        return;
+    }
+    qtest_quit(qtest_init("-M none -cpu R10000 "
+                          "-device sgi-sn1-router,chip-revision=255"));
+}
+
 static void test_uart(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 "
@@ -1983,6 +2001,7 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(false), test_migration_profile_mismatch);
     qtest_add_data_func("/sgi/sn1-router/migration-profile/synthetic-destination",
                         GINT_TO_POINTER(true), test_migration_profile_mismatch);
+    qtest_add_func("/sgi/sn1-router/revision-range", test_revision_range);
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
     qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
                    test_uart_adjacent_registers);
