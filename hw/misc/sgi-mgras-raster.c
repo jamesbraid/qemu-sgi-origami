@@ -2432,7 +2432,16 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     uint64_t source_x0, source_y0, source_x1, source_y1;
     uint64_t image_bytes, row_bytes;
     SGIPixelDMA d;
-    bool captured_format = signature_format == 0x00400080 ||
+    /*
+     * 0x00400480 is the one-pixel read into a destination four bytes past
+     * an 8-byte boundary (an IRIX 6.5.30 GLX probe's second of two adjacent
+     * reads). That bit 10 follows destination address bit 2 is inferred;
+     * only this captured shape is taken.
+     */
+    bool offset_read = signature_format == 0x00400480 &&
+                       signature_width == 1 && signature_height == 1;
+    bool captured_format = offset_read ||
+                           signature_format == 0x00400080 ||
                            signature_format == 0x00c00080 ||
                            (signature_width == 41 &&
                             (signature_height == 32 || signature_height == 1) &&
@@ -2461,21 +2470,22 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
-    if (!client_read_active) {
-        return false;
-    } else if (!signature_width || !signature_height) {
-        return false;
-    } else if (signature_size != signature_width * 4) {
-        return false;
-    } else if (!captured_format) {
-        return false;
-    } else if (signature_word3 != 0xa) {
+    if (!client_read_active || !signature_width || !signature_height ||
+        signature_word3 != 0xa) {
         return false;
     }
 
+    /*
+     * The client programmed a read signature inside its bracket, so this is
+     * its read: one the model has no capture for is refused, never answered
+     * by the server's raster read in that read's byte order.
+     */
     s->gl_context[s->gl_current].client_read_kicked = 1;
 
-    if (selector == MGRAS_CLIENT_READ_UNSUPPORTED) {
+    if (signature_size != signature_width * 4 ||
+        !captured_format || selector == MGRAS_CLIENT_READ_UNSUPPORTED ||
+        (offset_read && (mode != 0x00400480 ||
+                         mgras_raster_dma_src_offset(s) % 8 != 4))) {
         goto rejected;
     }
     if (deep && (strcmp(s->board->name, "ssi") ||
@@ -2524,7 +2534,8 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         s->rss[MGRAS_RSS_XFRCOUNTERS] != ((height << 16) | width) ||
         (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
             MGRAS_XFRMODE_GL_FORMAT_RGBA ||
-        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split)) {
+        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split &&
+         !offset_read)) {
         goto rejected;
     }
     source_x0 = (uint64_t)origin_x + x0;
@@ -2568,7 +2579,9 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
 rejected:
     qemu_log_mask(LOG_UNIMP, "sgi-mgras: captured OpenGL client DMA read "
                   "has unsupported bounds, mode or descriptor; no bytes "
-                  "returned\n");
+                  "returned (signature 0x%x extent %ux%u mode 0x%x offset "
+                  "0x%" PRIx64 ")\n", signature_format, signature_width,
+                  signature_height, mode, mgras_raster_dma_src_offset(s));
     return true;
 }
 
@@ -2609,7 +2622,9 @@ static void mgras_raster_dma_read(SGIMgrasState *s, uint32_t kick_byte)
     if (client_read) {
         return;
     }
-    image_read = mgras_raster_dma_read_image(s, slot);
+    /* The server's raster read never answers inside the client's bracket. */
+    image_read = !sgi_mgras_gl_client_read_active(s) &&
+                 mgras_raster_dma_read_image(s, slot);
     if (image_read) {
         return;
     }
