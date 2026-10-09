@@ -364,7 +364,6 @@ static uint32_t option_card_read(QTestState *qts, unsigned slot, unsigned reg)
     return value;
 }
 
->>>>>>> 95d3d8e9dc (hw/pci-host/sgi-xbridge: approximate wide direct DMA RAM writes)
 /*
  * The card's own scalar fields (address, count, seed, trigger) need
  * value-preserving placement through the slot's PIO window regardless of what

@@ -6757,7 +6757,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     }
                 }
             }
- (mips/sgi: route compute PCI DMA through Numalink)
             for (board_entry = t->io_boards; board_entry;
                  board_entry = board_entry->next) {
                 const SGIModelIoBoard *board = board_entry->value;

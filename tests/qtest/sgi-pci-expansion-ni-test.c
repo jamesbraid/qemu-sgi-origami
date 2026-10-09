@@ -241,6 +241,24 @@ static void dma(QTestState *qts, unsigned card, uint64_t address,
     }
 }
 
+static uint64_t wide_direct_host_value(unsigned index, uint64_t value)
+{
+    uint64_t placed;
+    uint64_t word_reversed;
+
+    if (index != 0) {
+        return value;
+    }
+    /* U0 head E alone has the synthetic wide mask in this fixture. */
+    placed = (value << 32) | (value >> 32);
+    word_reversed = (uint64_t)GUINT32_SWAP_LE_BE(value >> 32) << 32 |
+                    GUINT32_SWAP_LE_BE((uint32_t)value);
+    g_assert_cmphex(placed, !=, value);
+    g_assert_cmphex(placed, !=, GUINT64_SWAP_LE_BE(value));
+    g_assert_cmphex(placed, !=, word_reversed);
+    return placed;
+}
+
 static void test_dma(void)
 {
     QTestState *qts = start("");
@@ -250,17 +268,18 @@ static void test_dma(void)
     for (i = 0; i < 6; i++) {
         uint64_t payload = UINT64_C(0xdeadbeef01234000) + i;
         uint64_t address = UINT64_C(0xa080000000000000) + NODE(3) + 0x8000;
+        uint64_t host_value = wide_direct_host_value(i, payload);
 
         configure_card(qts, i);
         dma(qts, i, address, payload, true, MEMTX_OK);
-        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
-        dma(qts, i, address, payload, false, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, host_value);
+        dma(qts, i, address, host_value, false, MEMTX_OK);
         dma(qts, i, UINT64_C(0xa080000000000000) + NODE(7) + 0x8000,
             payload ^ 1, true, MEMTX_DECODE_ERROR);
-        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, host_value);
         dma(qts, i, UINT64_C(0xa080000000000000) + NODE(3) + 0x200000,
             payload ^ 1, true, MEMTX_DECODE_ERROR);
-        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, host_value);
     }
     qtest_quit(qts);
 }
@@ -1351,11 +1370,12 @@ static void test_dma_device2(void)
     for (unsigned i = 0; i < 6; i++) {
         uint64_t payload = UINT64_C(0xdeadbeef01235000) + i;
         uint64_t address = UINT64_C(0xa080000000000000) + NODE(3) + 0x8000;
+        uint64_t host_value = wide_direct_host_value(i, payload);
 
         configure_card(qts, i);
         dma(qts, i, address, payload, true, MEMTX_OK);
-        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
-        dma(qts, i, address, payload, false, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, host_value);
+        dma(qts, i, address, host_value, false, MEMTX_OK);
     }
     qtest_quit(qts);
     card_device = 1;

@@ -254,7 +254,8 @@ static MemTxResult pic_send_typed(SGIPICState *pic, hwaddr address,
                                   const SGIXioSource *source)
 {
     MemTxResult result = sgi_xio_peer_packet_rw(&pic->peer, address, buffer,
-                                                size, write, source);
+                                                size, write, source,
+                                                (SGIXioPacketAttrs) { 0 });
 
     pic->linked_packet_count++;
     pic->last_linked_result = result;
@@ -291,7 +292,8 @@ static MemTxResult pic_send_interrupt(SGIPICState *pic, hwaddr address,
 
     /* Interrupt destinations carry a full SN1 address, not a widget window. */
     result = pc->packet_rw(pic->peer.port, pic->peer.index, address,
-                           buffer, size, true, source);
+                           buffer, size, true, source,
+                           (SGIXioPacketAttrs) { 0 });
 out:
     pic->linked_packet_count++;
     pic->last_linked_result = result;
@@ -1859,7 +1861,8 @@ static bool pic_xio_connect(Object *port, unsigned int index,
 static MemTxResult pic_xio_packet_rw(Object *port, unsigned int index,
                                      hwaddr address, void *buffer,
                                      size_t size, bool write,
-                                     const SGIXioSource *source)
+                                     const SGIXioSource *source,
+                                     SGIXioPacketAttrs packet_attrs)
 {
     SGIPICState *s = SGI_PIC(port);
 

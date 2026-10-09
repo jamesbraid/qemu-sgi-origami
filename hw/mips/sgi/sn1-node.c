@@ -562,7 +562,8 @@ static bool sn1_node_bte_local_rw(void *opaque, hwaddr address,
     }
 
     *result = sn1_node_ni_destination_rw(&node->endpoint, NULL, address,
-                                         buffer, size, write);
+                                         buffer, size, write,
+                                         (SGIXioPacketAttrs) { 0 });
     return true;
 }
 
@@ -2134,7 +2135,6 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
                                DeviceState **l1_uart_out,
                                MemoryRegion **l1_uart_region,
                                Error **errp)
-
 {
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
@@ -2311,7 +2311,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                        "bedrock-reset", 0));
 
     if (!node->ip53_assembly_validated &&
-        !sn1_node_create_ip45_xbridge(node, errp)) { (mips/sgi: route compute PCI DMA through Numalink)
+        !sn1_node_create_ip45_xbridge(node, errp)) {
         return false;
     }
 
