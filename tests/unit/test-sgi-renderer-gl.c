@@ -4269,6 +4269,70 @@ static void test_scalar_match_shared_edges(void)
     }
 }
 
+/*
+ * Unblended draws at component widths other than 8. The scalar rules
+ * stop at 10 bits, so 12- and 16-bit storage has no scalar comparison.
+ * Stored alpha of one bit is refused: the scalar path rounds incoming
+ * alpha to at least two bits before truncating it to the store.
+ */
+static void test_scalar_match_widths(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const unsigned widths[] = { 1, 2, 4, 5, 6, 10 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+        for (unsigned components = 3; components <= 4; components++) {
+            const char *rgb = components == 4 ? "rgba" : "rgb";
+            g_autofree char *name = NULL;
+
+            prim_case_init(p, SGI_GL_TRIANGLE_FAN, components);
+            p->bits = widths[w];
+            prim_vertex_n(p, 1, 1.25f);
+            prim_vertex_n(p, 14.5f, 2);
+            prim_vertex_n(p, 13, 13.75f);
+            prim_vertex_n(p, 2.25f, 12);
+            prim_vertex(p, 0.5f, 6, 0.9f, 0.1f, 0.3f, 0.7f);
+            name = g_strdup_printf("%u-bit %s flat fan", widths[w], rgb);
+            if (widths[w] == 1 && components == 4) {
+                prim_expect_refused(renderer, name, p, &failures);
+            } else {
+                prim_expect(renderer, name, p, &failures);
+            }
+            g_clear_pointer(&name, g_free);
+
+            prim_case_init(p, SGI_GL_POINTS, components);
+            p->bits = widths[w];
+            p->draw.point_size = 2;
+            for (unsigned i = 0; i < 6; i++) {
+                prim_vertex(p, 2.5f + 2 * i, 3 + 1.75f * i, i / 5.0f,
+                            1 - i / 5.0f, 0.5f, (i * 37 % 11) / 10.0f);
+            }
+            name = g_strdup_printf("%u-bit %s points", widths[w], rgb);
+            if (widths[w] == 1 && components == 4) {
+                prim_expect_refused(renderer, name, p, &failures);
+            } else {
+                prim_expect(renderer, name, p, &failures);
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -4937,6 +5001,8 @@ int main(int argc, char **argv)
                     test_scalar_match_colour_ties);
     g_test_add_func("/sgi-renderer-gl/scalar-match-shared-edges",
                     test_scalar_match_shared_edges);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-widths",
+                    test_scalar_match_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);

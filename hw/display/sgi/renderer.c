@@ -286,6 +286,13 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
             return false;
         }
     }
+    /*
+     * The scalar path rounds incoming alpha to at least two bits before
+     * truncating it to the store, which a one-bit alpha store would show.
+     */
+    if (res->component_count == 4 && res->component[3].storage_bits < 2) {
+        return false;
+    }
     if (st->blend && !sgi_render_blend_supported(rules, st, res)) {
         return false;
     }
