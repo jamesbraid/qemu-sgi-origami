@@ -551,12 +551,15 @@ static void test_translations(void)
     for (unsigned i = 0; i < 6; i++) {
         uint64_t h = head(0, i);
         uint64_t payload = UINT64_C(0x1020304050607080) + i;
+        /* U1 head E device 1 exchanges halves only on direct writes. */
+        uint64_t direct_payload = i == 2 ?
+            (payload << 32) | (payload >> 32) : payload;
 
         configure_card(qts, i);
         qtest_writel(qts, h + 0x84, (0xa << 20) | 12);
         dma(qts, i, 0x80008000, payload, true, MEMTX_OK);
-        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
-        dma(qts, i, 0x80008000, payload, false, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, direct_payload);
+        dma(qts, i, 0x80008000, direct_payload, false, MEMTX_OK);
         qtest_writeq(qts, h + 0x10000, NODE(3) | 0x8021 | (0xa << 8));
         dma(qts, i, 0x40000000, payload ^ 0xff, true, MEMTX_OK);
         g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload ^ 0xff);
