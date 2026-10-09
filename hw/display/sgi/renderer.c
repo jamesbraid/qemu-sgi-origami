@@ -473,6 +473,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     g_autofree float *piece_storage = NULL;
     float point_size = 0;
     bool any_written = false;
+    bool upside_down;
     SGIRenderCommitResult committed;
     SGIRenderResult status;
 
@@ -571,8 +572,20 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     frame.width = resource->width;
     frame.height = resource->height;
+    /*
+     * A triangle frame holds window rows top first: llvmpipe applies its
+     * top-left rule with rows running down, so drawing upside down gives a
+     * pixel centre on a horizontal edge to the same triangle as the scalar
+     * path's top-left rule in OpenGL's upward window rows. Points keep
+     * upward rows, where their half-pixel centres already match.
+     */
+    upside_down = draw->mode != SGI_GL_POINTS;
     frame.viewport_given = true;
     memcpy(frame.viewport, draw->state->viewport, sizeof(frame.viewport));
+    if (upside_down) {
+        frame.viewport[1] = (int64_t)resource->height - frame.viewport[1] -
+                            frame.viewport[3];
+    }
     for (unsigned i = 0; i < clip->n; i++) {
         int64_t x0 = clip->r[i].x0;
         int64_t y0 = clip->r[i].y0;
@@ -599,6 +612,12 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             y1 = MIN(y1, (int64_t)s[1] + s[3] - 1);
         }
         if (x0 <= x1 && y0 <= y1) {
+            if (upside_down) {
+                int64_t window_y0 = y0;
+
+                y0 = (int64_t)resource->height - 1 - y1;
+                y1 = (int64_t)resource->height - 1 - window_y0;
+            }
             frame.clips[frame.clip_count++] =
                 (SGIRendererClearRect) { x0, y0, x1, y1 };
         }
@@ -712,8 +731,9 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     for (uint32_t y = 0; y < resource->height; y++) {
         size_t native_row = (size_t)y * resource->width;
-        size_t frame_row = (size_t)(resource->bottom_origin ? y :
-                                    resource->height - 1 - y) * resource->width;
+        size_t frame_row = (size_t)(resource->bottom_origin != upside_down ?
+                                    y : resource->height - 1 - y) *
+                           resource->width;
 
         for (uint32_t x = 0; x < resource->width; x++) {
             size_t native_pixel = native_row + x;
@@ -797,6 +817,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         memcpy(frame.projection, draw->state->projection,
                sizeof(frame.projection));
     }
+    /* An upside-down frame negates clip y, the projection's second row. */
+    for (unsigned i = 0; upside_down && i < 4; i++) {
+        frame.projection[i * 4 + 1] = -frame.projection[i * 4 + 1];
+    }
     if (!sgi_renderer_draw_frame(renderer, &frame, errp)) {
         return SGI_RENDER_HOST_ERROR;
     }
@@ -812,8 +836,9 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     for (uint32_t y = 0; y < resource->height; y++) {
         size_t native_row = (size_t)y * resource->width;
-        size_t frame_row = (size_t)(resource->bottom_origin ? y :
-                                    resource->height - 1 - y) * resource->width;
+        size_t frame_row = (size_t)(resource->bottom_origin != upside_down ?
+                                    y : resource->height - 1 - y) *
+                           resource->width;
 
         for (uint32_t x = 0; x < resource->width; x++) {
             size_t native_pixel = native_row + x;
@@ -832,7 +857,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             }
         }
     }
-    if (!resource->bottom_origin) {
+    /* Coverage returns to native rows. */
+    if (resource->bottom_origin == upside_down) {
         for (uint32_t y = 0; y < resource->height / 2; y++) {
             uint8_t *top = written + (size_t)y * resource->width;
             uint8_t *bottom = written +
