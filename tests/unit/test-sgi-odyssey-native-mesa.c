@@ -327,7 +327,7 @@ static void test_native_mesa_clip_scissor(void)
             .clip = { .n = 1, .r[0] = { 0, 0, 3, 0 } },
         },
         .viewport = { 0, 0, 4, 4 },
-        .scissor_test = 1, .scissor = { 1, 3, 2, 1 },
+        .scissor_test = 1, .scissor = { 1, 0, 2, 1 },
     };
     static const float xy[3][2] = {
         { -1, -1 }, { 3, -1 }, { -1, 3 },
@@ -417,7 +417,7 @@ static void test_native_mesa_preserves_tags(void)
             .clip = { .n = 1, .r[0] = { 0, 0, 3, 0 } },
         },
         .viewport = { 0, 0, 4, 4 },
-        .scissor_test = 1, .scissor = { 1, 3, 2, 1 },
+        .scissor_test = 1, .scissor = { 1, 0, 2, 1 },
     };
     static const float xy[3][2] = {
         { -1, -1 }, { 3, -1 }, { -1, 3 },
@@ -521,6 +521,308 @@ static void test_native_mesa_preserves_tags(void)
     sgi_renderer_free(renderer);
     native_fixture_cleanup(&f);
 }
+
+/*
+ * The scalar rasterizer stores Odyssey window pixel (x, y) at plane pixel
+ * (x, y): the device's scalar path writes plane row origin + y, so window
+ * row 0 is the top plane row. Record which plane pixels it covers.
+ */
+static void scalar_rows_store(void *opaque, SGIColourTarget target,
+                              int x, int y, uint32_t colour)
+{
+    uint8_t (*mask)[4] = opaque;
+
+    g_assert_cmpint(target, ==, 0);
+    g_assert_cmpint(x, >=, 0);
+    g_assert_cmpint(x, <, 4);
+    g_assert_cmpint(y, >=, 0);
+    g_assert_cmpint(y, <, 4);
+    mask[y][x] = 1;
+}
+
+static void native_rows_draw_init(SGIGLDrawState *state, SGIGLDraw *draw,
+                                  float vertices[3][SGI_GL_VERTEX_FLOATS],
+                                  const float xy[3][2])
+{
+    memset(vertices, 0, sizeof(float) * 3 * SGI_GL_VERTEX_FLOATS);
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    *draw = (SGIGLDraw) {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = state,
+    };
+}
+
+static SGIGLDrawState native_rows_state(void)
+{
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .front_face = SGI_GL_CCW,
+        .drawable = {
+            .bound = true, .front = 0,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+        },
+        .viewport = { 0, 0, 4, 4 },
+        /* Odyssey keeps the scissor on with its 0x81d box (window rows). */
+        .scissor_test = 1, .scissor = { 0, 0, 4, 4 },
+    };
+
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    return state;
+}
+
+/*
+ * Run one draw through the scalar rasterizer and through the adapter's
+ * checked Mesa path, and require the same native plane rows from both.
+ */
+static void native_rows_match_scalar(const SGIGLDrawState *in,
+                                     const float xy[3][2],
+                                     const uint8_t expected[4][4])
+{
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "synthetic",
+    };
+    SGIGLDrawState state = *in;
+    float vertices[3][SGI_GL_VERTEX_FLOATS];
+    SGIGLDraw draw;
+    uint8_t scalar[4][4] = { 0 };
+    SGIRasterTarget scalar_target = {
+        .store_colour = scalar_rows_store, .opaque = scalar,
+    };
+    NativeFixture f;
+    SGIRenderer *renderer;
+    uint8_t before[64];
+    Error *err = NULL;
+
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    native_rows_draw_init(&state, &draw, vertices, xy);
+    g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &draw), ==,
+                    SGI_GL_DRAW_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        g_test_message("scalar plane row %u: %u%u%u%u", y, scalar[y][0],
+                       scalar[y][1], scalar[y][2], scalar[y][3]);
+    }
+    g_assert_cmpmem(scalar, sizeof(scalar), expected, sizeof(scalar));
+
+    native_fixture_init(&f);
+    memcpy(before, f.memory[0].bytes, sizeof(before));
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+                    &draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    /* The adapter maps a submission-local copy; the guest's stays put. */
+    g_assert_cmpmem(&state, sizeof(state), in, sizeof(state));
+    for (unsigned y = 0; y < 4; y++) {
+        unsigned at = y * 16;
+
+        g_test_message("Mesa native row %u: %u%u%u%u", y,
+                       memcmp(f.memory[0].bytes + at, before + at, 4) != 0,
+                       memcmp(f.memory[0].bytes + at + 4,
+                              before + at + 4, 4) != 0,
+                       memcmp(f.memory[0].bytes + at + 8,
+                              before + at + 8, 4) != 0,
+                       memcmp(f.memory[0].bytes + at + 12,
+                              before + at + 12, 4) != 0);
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned at = (y * 4 + x) * 4;
+
+            if (scalar[y][x]) {
+                g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0],
+                                x, y), ==, 0xff0000ff);
+            } else {
+                g_assert_cmpmem(f.memory[0].bytes + at, 4, before + at, 4);
+            }
+        }
+    }
+    assert_tag_sentinels(&f);
+    sgi_renderer_free(renderer);
+    native_fixture_cleanup(&f);
+}
+
+static bool native_rows_require_mesa(void)
+{
+    if (!g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_test_skip("Set QEMU_TEST_SGI_REQUIRE_MESA for native Mesa draw");
+        return false;
+    }
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
+    require_llvmpipe();
+    return true;
+}
+
+/* An asymmetric triangle in window rows 0 and 1 of an offset viewport. */
+static void test_native_rows_viewport(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    /* x_w = 4 * x_ndc + 2, y_w = 4 * y_ndc + 3. */
+    static const float xy[3][2] = {
+        { -0.475f, -0.7f }, { 0.45f, -0.7f }, { -0.475f, -0.075f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 1, 1, 1, 0 },
+        { 1, 1, 0, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.viewport[0] = -2;
+    state.viewport[1] = -1;
+    state.viewport[2] = 8;
+    state.viewport[3] = 8;
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/*
+ * The combined-matrix profile: the reach viewport centred on the window
+ * origin, with a matrix that makes x_w and y_w the vertex's own x and y.
+ */
+static void test_native_rows_reach_viewport(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { 0.25f, 0.25f }, { 3.25f, 0.25f }, { 0.25f, 2.25f },
+    };
+    static const uint8_t expected[4][4] = {
+        { 1, 1, 1, 0 },
+        { 1, 0, 0, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.viewport[0] = -8192;
+    state.viewport[1] = -8192;
+    state.viewport[2] = 16384;
+    state.viewport[3] = 16384;
+    state.projection[0] = 1.0f / 8192;
+    state.projection[5] = 1.0f / 8192;
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/* A clip of plane rows 0 and 1 and a scissor box naming the same rows. */
+static void test_native_rows_clip_scissor(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    static const uint8_t expected[4][4] = {
+        { 1, 1, 1, 1 },
+        { 1, 1, 1, 1 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.drawable.clip.r[0] = (SGIClipRect) { 0, 0, 3, 1 };
+    state.scissor[3] = 2;
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/* The scissor box alone selects window row 0, columns 1 and 2. */
+static void test_native_rows_scissor(void)
+{
+    SGIGLDrawState state = native_rows_state();
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    static const uint8_t expected[4][4] = {
+        { 0, 1, 1, 0 },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    state.scissor[0] = 1;
+    state.scissor[2] = 2;
+    state.scissor[3] = 1;
+    native_rows_match_scalar(&state, xy, expected);
+}
+
+/*
+ * Only the observed profile is mapped: no window matrix, rows-down flag or
+ * drawable origin. Each is refused before any snapshot.
+ */
+static void test_native_rows_unsupported_profile(void)
+{
+    SGIRasterRules rules = native_rules;
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS];
+    SGIGLDrawState state;
+    SGIGLDraw draw;
+    NativeFixture f;
+    SGIRenderer *renderer;
+    uint8_t before[64];
+    Error *err = NULL;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    native_fixture_init(&f);
+    memcpy(before, f.memory[0].bytes, sizeof(before));
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    for (unsigned rejected = 0; rejected < 4; rejected++) {
+        uint64_t saved_size = f.memory[0].size;
+
+        state = native_rows_state();
+        native_rows_draw_init(&state, &draw, vertices, xy);
+        switch (rejected) {
+        case 0:
+            state.window_rows_down = 1;
+            break;
+        case 1:
+            state.window_matrix_given = 1;
+            break;
+        case 2:
+            state.drawable.origin[0] = 1;
+            break;
+        default:
+            state.drawable.origin[1] = 1;
+            break;
+        }
+        /* An attempted snapshot would report a resource failure here. */
+        f.memory[0].size = 0;
+        g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+                        &draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                        SGI_RENDER_UNSUPPORTED);
+        f.memory[0].size = saved_size;
+        g_assert_nonnull(err);
+        /* The shared renderer refuses some of these too; require ours. */
+        g_assert_nonnull(strstr(error_get_pretty(err), "row convention"));
+        error_free(err);
+        err = NULL;
+        g_assert_cmpmem(f.memory[0].bytes, sizeof(before), before,
+                        sizeof(before));
+        g_assert_cmpuint(f.invalidations, ==, 0);
+    }
+    sgi_renderer_free(renderer);
+    native_fixture_cleanup(&f);
+}
 #endif
 
 int main(int argc, char **argv)
@@ -542,6 +844,16 @@ int main(int argc, char **argv)
                     test_native_mesa_clip_scissor);
     g_test_add_func("/sgi-odyssey-native/mesa-preserves-tags",
                     test_native_mesa_preserves_tags);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-viewport",
+                    test_native_rows_viewport);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-reach-viewport",
+                    test_native_rows_reach_viewport);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-clip-scissor",
+                    test_native_rows_clip_scissor);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-scissor",
+                    test_native_rows_scissor);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-unsupported-profile",
+                    test_native_rows_unsupported_profile);
 #endif
     return g_test_run();
 }
