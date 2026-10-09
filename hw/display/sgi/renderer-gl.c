@@ -376,6 +376,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
     GLuint texture = 0, sample = 0, framebuffer = 0, stencil = 0;
+    GLint max_viewport[2];
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
@@ -407,7 +408,21 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     }
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, frame->width, frame->height);
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, max_viewport);
+    if (frame->viewport_given) {
+        if (frame->viewport[2] > max_viewport[0] ||
+            frame->viewport[3] > max_viewport[1]) {
+            error_setg(&renderer->error,
+                       "SGI renderer host viewport limit is %dx%d",
+                       max_viewport[0], max_viewport[1]);
+            goto out;
+        }
+        glViewport(frame->viewport[0], frame->viewport[1],
+                   frame->viewport[2], frame->viewport[3]);
+    } else {
+        glViewport(0, 0, frame->width, frame->height);
+    }
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glUseProgram(0);
     glDisable(GL_MULTISAMPLE);
     glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);

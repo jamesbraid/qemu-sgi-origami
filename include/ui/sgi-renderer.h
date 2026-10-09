@@ -65,6 +65,8 @@ typedef struct SGIRendererFrame {
     SGIRendererTexture2D texture;
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
+    bool viewport_given;
+    int32_t viewport[4]; /* Guest viewport in native plane pixels. */
     uint32_t clip_count; /* Zero means the full plane. */
     SGIRendererClearRect clips[SGI_RENDERER_CLEAR_RECTS];
     float modelview[16], projection[16];

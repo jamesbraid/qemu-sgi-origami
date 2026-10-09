@@ -15,8 +15,14 @@ Current drawing support
 
 ``sgi_render_draw_checked()`` in ``hw/display/sgi/renderer.c`` accepts one
 flat- or smooth-shaded triangle and one front RGB or RGBA colour resource. The
-resource must have bottom-origin rows and ordered UNORM components of 1 to 16
-bits. The viewport must cover the resource.
+resource has ordered UNORM components of 1 to 16 bits. Its rows may
+start at either edge. The decoded viewport is passed to the GL worker,
+including negative origins and dimensions larger than the resource. Mesa
+clips to the native attachment. The host must support the requested viewport
+dimensions. A smaller host limit reports an error instead of silently
+clamping the transform. A polygon-mode array is accepted only when both faces
+select FILL. LINE and POINT modes remain unsupported. A nonzero drawable
+origin remains unsupported by this draw path.
 
 A bound drawable with no clip rectangles owns no visible pixels. Its ``empty``
 flag does not change this draw behavior. Up to 16 inclusive plane rectangles

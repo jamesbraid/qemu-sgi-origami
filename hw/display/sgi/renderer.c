@@ -165,7 +165,10 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
     const SGIRenderResource *res;
 
     if (draw->mode != SGI_GL_TRIANGLES || draw->count != 3 ||
-        draw->back_colors || draw->polygon_modes ||
+        draw->back_colors ||
+        (draw->polygon_modes &&
+         (draw->polygon_modes[0] != SGI_GL_FILL ||
+          draw->polygon_modes[1] != SGI_GL_FILL)) ||
         draw->polygon_stipple_enabled || draw->point_smooth ||
         draw->line_smooth || draw->polygon_smooth ||
         draw->line_stipple_enabled ||
@@ -179,7 +182,8 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
         st->index_logic_op || st->texture_3d ||
         st->polygon_offset || st->window_matrix_given ||
         !st->drawable.bound ||
-        st->drawable.origin[0] || st->drawable.origin[1]) {
+        st->drawable.origin[0] || st->drawable.origin[1] ||
+        st->viewport[2] < 0 || st->viewport[3] < 0) {
         return false;
     }
     for (unsigned i = 0; i < 16; i++) {
@@ -202,10 +206,7 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
     if (!res || !res->width || !res->height || res->width > INT_MAX ||
         res->height > INT_MAX || res->depth != 1 ||
         res->buffer != SGI_RENDER_FRONT ||
-        (res->component_count != 3 && res->component_count != 4) ||
-        st->viewport[0] || st->viewport[1] ||
-        st->viewport[2] != res->width ||
-        st->viewport[3] != res->height) {
+        (res->component_count != 3 && res->component_count != 4)) {
         return false;
     }
     for (unsigned c = 0; c < res->component_count; c++) {
@@ -317,6 +318,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     frame.width = resource->width;
     frame.height = resource->height;
+    frame.viewport_given = true;
+    memcpy(frame.viewport, draw->state->viewport, sizeof(frame.viewport));
     for (unsigned i = 0; i < clip->n; i++) {
         int64_t x0 = clip->r[i].x0;
         int64_t y0 = clip->r[i].y0;

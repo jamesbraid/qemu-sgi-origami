@@ -1157,6 +1157,91 @@ static void test_decoded_triangle_native_commit(void)
     sgi_renderer_free(renderer);
 }
 
+static void test_decoded_triangle_viewport_fill(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    NativeDrawFixture f = { 0 };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = 4, .height = 4, .depth = 1,
+        .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = native_draw_snapshot,
+        .commit_covered = native_draw_commit_covered,
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 3 } },
+            .front = 7,
+        },
+        .viewport = { -8192, -8192, 16384, 16384 },
+    };
+    uint32_t polygon_modes[2] = { SGI_GL_FILL, SGI_GL_FILL };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+        .polygon_modes = polygon_modes,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    vertices[1][SGI_GL_V_POSITION] = 0.5f;
+    vertices[2][SGI_GL_V_POSITION + 1] = 0.5f;
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.written[0][0], ==, 1);
+    g_assert_cmpuint(f.written[3][3], ==, 1);
+    g_assert_cmpuint(f.colour[0][0][0], ==, 255);
+
+    memset(f.written, 0, sizeof(f.written));
+    polygon_modes[1] = SGI_GL_LINE;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f.snapshots, ==, 1);
+    g_assert_cmpuint(f.commits, ==, 1);
+    sgi_renderer_free(renderer);
+}
+
 static void test_decoded_triangle_clip_union(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -3222,6 +3307,8 @@ int main(int argc, char **argv)
                     test_headless_display_accepts_ui_context);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-native-commit",
                     test_decoded_triangle_native_commit);
+    g_test_add_func("/sgi-renderer-gl/decoded-triangle-viewport-fill",
+                    test_decoded_triangle_viewport_fill);
     g_test_add_func("/sgi-renderer-gl/decoded-triangle-clip-union",
                     test_decoded_triangle_clip_union);
     g_test_add_func("/sgi-renderer-gl/triangle-resource-row-origin",
