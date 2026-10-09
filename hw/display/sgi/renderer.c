@@ -1011,7 +1011,8 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             if (res->component[c].channel != SGI_RENDER_R + c ||
                 res->component[c].numeric != SGI_RENDER_UNORM ||
                 !res->component[c].storage_bits ||
-                res->component[c].storage_bits > 16) {
+                res->component[c].storage_bits > 16 ||
+                (c == 3 && res->component[c].storage_bits < 2)) {
                 error_setg(errp, "Unsupported SGI Mesa clear component");
                 return SGI_RENDER_UNSUPPORTED;
             }
@@ -1029,6 +1030,18 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
         clear->colour = true;
         clear->colour_mask = op->clear_colour_mask;
         memcpy(clear->rgba, op->clear_rgba, sizeof(clear->rgba));
+        /*
+         * Round the clear colour to the native steps in double, as the
+         * scalar path does, so a half step in float32 such as 0.9 * 255
+         * reaches the worker already on a step.
+         */
+        for (unsigned c = 0; c < res->component_count; c++) {
+            uint32_t max = (1u << res->component[c].storage_bits) - 1;
+            double v = op->clear_rgba[c];
+
+            clear->rgba[c] = !(v > 0) ? 0 : v >= 1 ? 1 :
+                             (float)((uint32_t)(v * max + 0.5) / (double)max);
+        }
         x0 = MAX(op->x0, 0);
         y0 = MAX(op->y0, 0);
         x1 = MIN(op->x1, (int32_t)res->width - 1);
