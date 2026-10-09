@@ -1732,6 +1732,136 @@ static void test_migration(void)
     rmdir(dir);
 }
 
+/* Change only the serialized profile, leaving the machine layout identical. */
+static void change_stream_router_profile(const char *path, uint8_t profile)
+{
+    static const char router_name[] = "sgi-sn1-router";
+    g_autoptr(GError) error = NULL;
+    GMappedFile *mapped = g_mapped_file_new(path, false, &error);
+    const char *stream;
+    gsize size;
+    unsigned matches = 0;
+    int fd;
+
+    g_assert_no_error(error);
+    g_assert_nonnull(mapped);
+    stream = g_mapped_file_get_contents(mapped);
+    size = g_mapped_file_get_length(mapped);
+    fd = open(path, O_WRONLY);
+    g_assert_cmpint(fd, >=, 0);
+    for (gsize i = 0; i + 14 < size; i++) {
+        uint8_t name_len;
+        gsize payload;
+
+        if ((uint8_t)stream[i] != 4) {
+            continue;
+        }
+        name_len = (uint8_t)stream[i + 5];
+        payload = i + 6 + name_len + 8;
+        if (name_len < sizeof(router_name) - 1 || payload + 2 > size) {
+            continue;
+        }
+        if (memcmp(stream + i + 6 + name_len - sizeof(router_name) + 1,
+                   router_name, sizeof(router_name) - 1) ||
+            ldl_be_p(stream + payload - 4) != 4 ||
+            (uint8_t)stream[payload] != 1) {
+            continue;
+        }
+        g_assert_cmpuint((uint8_t)stream[payload + 1], ==, !profile);
+        g_assert_cmpint(pwrite(fd, &profile, 1, payload + 1), ==, 1);
+        matches++;
+    }
+    g_assert_cmpuint(matches, ==, 1);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_mapped_file_unref(mapped);
+}
+
+static void test_migration_profile_mismatch(const void *data)
+{
+    bool synthetic = GPOINTER_TO_INT(data);
+    g_autofree char *dir = g_dir_make_tmp("sn1-router-profile-XXXXXX", NULL);
+    g_autofree char *stream = g_build_filename(dir, "stream", NULL);
+    g_autofree char *save_uri = g_strdup_printf("exec:cat > %s", stream);
+    g_autofree char *load_uri = g_strdup_printf("exec:cat %s", stream);
+    g_autofree char *prom = g_build_filename(dir, "prom", NULL);
+    g_autofree char *image = g_build_filename(dir, "storage", NULL);
+    g_autofree char *dest_image = g_build_filename(dir, "dest-storage", NULL);
+    g_autofree char *args = NULL;
+    QTestState *from, *to;
+    QDict *status;
+    int fd;
+
+    if (synthetic) {
+        fd = open(prom, O_CREAT | O_EXCL | O_RDWR, 0600);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        fd = open(image, O_CREAT | O_EXCL | O_RDWR, 0600);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        fd = open(dest_image, O_CREAT | O_EXCL | O_RDWR, 0600);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        args = g_strdup_printf(
+            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "expansion-storage.0=expansion-enclosure=cfg "
+            "-cpu R14000 -smp 4 -m 1G -bios %s "
+            "-drive if=none,id=cfg,file=%s,format=raw "
+            "-device sgi-sn1-router-test,id=test,"
+            "router=/machine/module3/router", prom, image);
+    } else {
+        args = g_strdup(ARGS);
+    }
+    from = qtest_init(args);
+    qtest_writeq(from, BASE + 0x100, 0x12345678);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", save_uri);
+    sgi_wait_migration(from, "completed");
+    qtest_quit(from);
+    change_stream_router_profile(stream, !synthetic);
+
+    if (synthetic) {
+        g_free(args);
+        args = g_strdup_printf(
+            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "expansion-storage.0=expansion-enclosure=cfg "
+            "-cpu R14000 -smp 4 -m 1G -bios %s "
+            "-drive if=none,id=cfg,file=%s,format=raw "
+            "-device sgi-sn1-router-test,id=test,"
+            "router=/machine/module3/router -incoming defer", prom,
+            dest_image);
+    } else {
+        char *incoming = g_strconcat(args, " -incoming defer", NULL);
+
+        g_free(args);
+        args = incoming;
+    }
+    to = qtest_init(args);
+    qtest_writeq(to, BASE + 0x100, 0xabcdef);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", load_uri);
+    sgi_wait_migration(to, "failed");
+    status = qtest_qmp_assert_success_ref(to,
+        "{'execute':'query-migrate'}");
+    g_assert_nonnull(strstr(qdict_get_str(status, "error-desc"),
+                            "device 'sgi-sn1-router'"));
+    g_assert_nonnull(strstr(qdict_get_str(status, "error-desc"),
+                            synthetic ? "1 != 0" : "0 != 1"));
+    qobject_unref(status);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x100), ==, 0xabcdef);
+    qtest_quit(to);
+    g_unlink(stream);
+    if (synthetic) {
+        g_unlink(prom);
+        g_unlink(image);
+        g_unlink(dest_image);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_uart(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 "
@@ -1849,6 +1979,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/route-table-words",
                    test_route_table_words);
     qtest_add_func("/sgi/sn1-router/migration", test_migration);
+    qtest_add_data_func("/sgi/sn1-router/migration-profile/ordinary-destination",
+                        GINT_TO_POINTER(false), test_migration_profile_mismatch);
+    qtest_add_data_func("/sgi/sn1-router/migration-profile/synthetic-destination",
+                        GINT_TO_POINTER(true), test_migration_profile_mismatch);
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
     qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
                    test_uart_adjacent_registers);
