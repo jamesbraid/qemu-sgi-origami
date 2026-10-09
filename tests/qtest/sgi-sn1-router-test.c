@@ -538,6 +538,213 @@ static void test_experimental_status_write(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+static void assert_local_reset_state(QTestState *s, uint64_t status)
+{
+    const unsigned links[] = { 3, 7 };
+
+    g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0, true),
+                    ==, status);
+    g_assert_cmphex(experimental_status_vector(s, 0x600000, 0, false, 0,
+                                               true), ==, status);
+    g_assert_cmphex(experimental_status_vector(s, 0x8, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x10, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x20, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x28, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x38, 0, false, 0, true),
+                    ==, UINT64_C(0xffff) << 10);
+    g_assert_cmphex(experimental_status_vector(s, 0x40, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x48, 0, false, 0, true),
+                    ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x50, 0, false, 0, true),
+                    ==, UINT64_C(3) << 20);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmphex(experimental_status_vector(s, 0x100 + 8 * i, 0,
+                                                   false, 0, true), ==, 0);
+    }
+    g_assert_cmphex(experimental_status_vector(s, 0x8000, 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x80f8, 0, false, 0,
+                                               true), ==, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(links); i++) {
+        unsigned p = links[i];
+
+        g_assert_cmphex(experimental_status_vector(s, bank[p], 0,
+                                                   false, 0, true), ==,
+                        0x1200 + p);
+        g_assert_cmphex(experimental_status_vector(s, bank[p] + 0x10, 0,
+                                                   false, 0, true), ==,
+                        0x400 + p);
+        g_assert_cmphex(experimental_status_vector(s, bank[p] + 0x18, 0,
+                                                   false, 0, true), ==,
+                        0x80 + p);
+        g_assert_cmphex(experimental_status_vector(s, bank[p] + 0x100, 0,
+                                                   false, 0, true), ==,
+                        0xa + i);
+        g_assert_cmphex(experimental_status_vector(s, bank[p] + 0x200 +
+                                                   5 * 8, 0, false, 0,
+                                                   true), ==, 2 + i);
+    }
+    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+}
+
+static void test_experimental_local_reset(void)
+{
+    const unsigned links[] = { 3, 7 };
+    const uint64_t local_offsets[] = {
+        0x10, 0x18, 0x20, 0x28, 0x38, 0x40, 0x48, 0x50,
+        0x100, 0x108, 0x110, 0x118, 0x120, 0x8000, 0x80f8,
+    };
+    const uint64_t local_values[] = {
+        0x100, 0x55aa, 0x1234, 0x5678, 0x155, 0x2345, 0x4567, 0xa5,
+        0x111, 0x222, 0x333, 1, 1, 0x444, 0x555,
+    };
+    g_autofree char *image = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *to_image = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t l1_before[131], l1_after[131];
+    size_t l1_size;
+    QTestState *s, *to, *ordinary;
+    uint64_t status;
+    int fd;
+
+    ordinary = qtest_init(ARGS);
+    qtest_writeq(ordinary, BASE + 0x8, 0);
+    g_assert_cmpuint(get(ordinary, "failure"), ==, 4);
+    qtest_writeq(ordinary, BASE + 0x8, 1);
+    g_assert_cmpuint(get(ordinary, "failure"), ==, 4);
+    g_assert_cmphex(qtest_readq(ordinary, BASE + 0x8), ==, 0);
+    qtest_quit(ordinary);
+
+    fd = g_file_open_tmp("sn1-router-local-reset-storage-XXXXXX",
+                         &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-router-local-reset-prom-XXXXXX", &prom,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    s = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router", prom, image);
+    set(s, "destination", 5);
+    set(s, "turn", 3);
+    status = experimental_status_vector(s, 0, 0, false, 0, true);
+    g_assert_cmphex(experimental_status_vector(s, 0x600000, 0,
+                                               false, 0, true), ==, status);
+    l1_size = experimental_router_l1_reply(s, l1_before);
+    for (unsigned i = 0; i < G_N_ELEMENTS(local_offsets); i++) {
+        experimental_status_vector(s, local_offsets[i], 0, true,
+                                   local_values[i], true);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(links); i++) {
+        unsigned p = links[i];
+
+        experimental_status_vector(s, bank[p], 0, true, 0x1200 + p, true);
+        experimental_status_vector(s, bank[p] + 0x10, 0, true,
+                                   0x400 + p, true);
+        experimental_status_vector(s, bank[p] + 0x18, 0, true,
+                                   0x80 + p, true);
+        experimental_status_vector(s, bank[p] + 0x100, 0, true,
+                                   0xa + i, true);
+        experimental_status_vector(s, bank[p] + 0x200 + 5 * 8, 0,
+                                   true, 2 + i, true);
+    }
+    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    experimental_status_vector(s, 0x8, 0, true, 0, true);
+    g_assert_cmphex(experimental_status_vector(s, 0x10, 0,
+                                               false, 0, true), ==, 0x100);
+    experimental_status_vector(s, 0x8, 0, true, 2, false);
+    experimental_status_vector(s, 0x8, 0, true, 1 << 9, false);
+    experimental_status_vector(s, 0x8, 0, true, 3, false);
+    g_assert_cmphex(experimental_status_vector(s, 0x10, 0,
+                                               false, 0, true), ==, 0x100);
+    qtest_readl(s, BASE + 0x8);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_readq(s, BASE + 0x9);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writel(s, BASE + 0x8, 1);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writeq(s, BASE + 0x9, 1);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
+    experimental_status_vector(s, 0x8, 0, true, 1, true);
+    assert_local_reset_state(s, status);
+    g_assert_cmphex(experimental_status_vector(s, 0x518, 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(s, 0x118, 0, false, 0,
+                                               true), ==, 1);
+    g_assert_cmpuint(experimental_router_l1_reply(s, l1_after), ==,
+                     l1_size);
+    g_assert_cmpmem(l1_after, l1_size, l1_before, l1_size);
+    experimental_status_vector(s, 0x100, 0, true, 0xaaa, true);
+    experimental_status_vector(s, 0x8, 0, true, 1, true);
+    assert_local_reset_state(s, status);
+
+    fd = g_file_open_tmp("sn1-router-local-reset-destination-XXXXXX",
+                         &to_image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    dir = g_dir_make_tmp("sn1-router-local-reset-migrate-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "socket", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    to = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router -incoming defer", prom, to_image);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(s,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(s, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    set(to, "destination", 5);
+    set(to, "turn", 3);
+    assert_local_reset_state(to, status);
+    g_assert_cmphex(experimental_status_vector(to, 0x518, 0, false, 0,
+                                               true), ==, 0);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    g_assert_cmphex(experimental_status_vector(to, bank[3] + 0x200 +
+                                               5 * 8, 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(to, bank[7] + 0x100, 0,
+                                               false, 0, true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(to, bank[3], 0, false, 0,
+                                               true), ==, 0);
+    g_assert_cmphex(get(to, "route"), ==, 4);
+    qtest_quit(to);
+    qtest_quit(s);
+    g_assert_cmpint(g_unlink(to_image), ==, 0);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 static void test_experimental_port_errors(void)
 {
     const uint64_t lb = SPACE_IO + UINT64_C(0x01000000) + 0x600000;
@@ -676,7 +883,7 @@ static void test_experimental_zero_reset_restore(void)
                     ==, 0);
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 8), ==, port_status);
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x88), ==, port_error);
-    for (unsigned bit = 0; bit <= 9; bit++) {
+    for (unsigned bit = 1; bit <= 9; bit++) {
         experimental_status_vector(s, 8, 0, true, UINT64_C(1) << bit,
                                    false);
     }
@@ -1611,6 +1818,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
     qtest_add_func("/sgi/sn1-router/experimental-status-write",
                    test_experimental_status_write);
+    qtest_add_func("/sgi/sn1-router/experimental-local-reset",
+                   test_experimental_local_reset);
     qtest_add_func("/sgi/sn1-router/error-clear", test_error_clear);
     qtest_add_func("/sgi/sn1-router/error-clear-vector",
                    test_error_clear_vector);

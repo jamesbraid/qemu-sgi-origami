@@ -129,6 +129,17 @@ static SGINetPacketResult refuse(SGINetPacket *packet,
     return SGI_NET_PACKET_ERROR;
 }
 
+static void router_reset_local(SGISN1RouterState *s)
+{
+    s->protection = 0;
+    s->jbus_control = 0;
+    memset(s->global, 0, sizeof(s->global));
+    s->global_port_def = 0;
+    memset(s->scratch, 0, sizeof(s->scratch));
+    memset(s->inactive_barrier, 0, sizeof(s->inactive_barrier));
+    memset(s->diagnostic, 0, sizeof(s->diagnostic));
+}
+
 SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     unsigned ingress, SGINetPacket *packet)
 {
@@ -183,8 +194,16 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         }
         return SGI_NET_PACKET_OK;
     }
-    if (address == 0x8 && write && s->synthetic_diagnostics && !packet->data) {
-        return SGI_NET_PACKET_OK;
+    if (address == 0x8 && write && s->synthetic_diagnostics) {
+        if (!packet->data) {
+            return SGI_NET_PACKET_OK;
+        }
+        if (packet->data == 1) {
+            router_reset_local(s);
+            sgi_net_port_flood_start();
+            router_changed(s);
+            return SGI_NET_PACKET_OK;
+        }
     }
     if (address == 0x8 || address == 0x18 || address == 0x30) {
         if (write) {
@@ -391,16 +410,10 @@ static void router_reset_enter(Object *obj, ResetType type)
     SGISN1RouterState *s = SGI_SN1_ROUTER(obj);
 
     /* Cold-zero state is a reviewed functional approximation. */
-    s->protection = 0;
-    s->jbus_control = 0;
-    memset(s->global, 0, sizeof(s->global));
-    s->global_port_def = 0;
-    memset(s->scratch, 0, sizeof(s->scratch));
+    router_reset_local(s);
     memset(s->parameter, 0, sizeof(s->parameter));
     memset(s->channel_test, 0, sizeof(s->channel_test));
     memset(s->remote_reset_mask, 0, sizeof(s->remote_reset_mask));
-    memset(s->inactive_barrier, 0, sizeof(s->inactive_barrier));
-    memset(s->diagnostic, 0, sizeof(s->diagnostic));
     memset(s->local, 0, sizeof(s->local));
     memset(s->meta, 0, sizeof(s->meta));
 }
