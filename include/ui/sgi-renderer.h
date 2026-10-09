@@ -226,12 +226,26 @@ typedef struct SGIRendererOps {
     void (*destroy)(void *opaque);
 } SGIRendererOps;
 
+/*
+ * A refused draw staged an image that differs from the software model; the
+ * renderer stays usable and the caller draws in software. A failed draw was
+ * malformed, or its backend failed or changed the request inputs.
+ */
+typedef enum SGIRenderDrawResult {
+    SGI_RENDER_DRAW_OK,
+    SGI_RENDER_DRAW_REFUSED,
+    SGI_RENDER_DRAW_FAILED,
+} SGIRenderDrawResult;
+
 void sgi_renderer_register_gl(const SGIRendererOps *ops);
 /* Only UNAVAILABLE permits an optional caller to choose another renderer. */
 SGIRenderCreateResult sgi_renderer_create(SGIRenderer **renderer,
                                           Error **errp);
 /* Legacy wrapper: NULL does not distinguish absence from setup failure. */
 SGIRenderer *sgi_renderer_new(Error **errp);
+SGIRenderDrawResult sgi_renderer_draw_checked(SGIRenderer *renderer,
+                                              SGIRendererRequest *request,
+                                              Error **errp);
 bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp);
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
@@ -253,6 +267,9 @@ bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
 /* All requests remain staged until the caller commits a successful batch. */
+SGIRenderDrawResult sgi_renderer_draw_batch_checked(
+    SGIRenderer *renderer, SGIRendererRequest *requests, unsigned count,
+    Error **errp);
 bool sgi_renderer_draw_batch(SGIRenderer *renderer,
                              SGIRendererRequest *requests, unsigned count,
                              Error **errp);

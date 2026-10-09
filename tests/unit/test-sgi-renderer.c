@@ -960,6 +960,8 @@ static bool batch_draw(void *opaque, SGIRendererRequest *request, Error **errp)
     memcpy(request->rgba, expected->rgba, sizeof(request->rgba));
     if (draw_count == 2 && batch_failure == 2) {
         request->rgba[3] = 255;
+    } else if (draw_count == 2 && batch_failure == 4) {
+        request->alpha = 0.5;
     }
     return true;
 }
@@ -994,8 +996,11 @@ static void test_batch(gconstpointer opaque)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
-    g_assert_cmpint(sgi_renderer_draw_batch(renderer, requests, 2, &err), ==,
-                    !failure);
+    g_assert_cmpint(sgi_renderer_draw_batch_checked(renderer, requests, 2,
+                                                    &err), ==,
+                    !failure ? SGI_RENDER_DRAW_OK :
+                    failure == 2 ? SGI_RENDER_DRAW_REFUSED :
+                                   SGI_RENDER_DRAW_FAILED);
     if (!failure) {
         g_assert_null(err);
         g_assert_true(sgi_renderer_staging_valid(&requests[0]));
@@ -1011,6 +1016,12 @@ static void test_batch(gconstpointer opaque)
             requests[1].clip[0] = 0;
             g_assert_true(sgi_renderer_draw_batch(renderer, requests, 2, &err));
             g_assert_null(err);
+        } else if (failure == 2) {
+            /* A refused batch leaves the renderer usable. */
+            g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+            g_assert_true(sgi_renderer_draw_batch(renderer, requests, 2,
+                                                  &err));
+            g_assert_null(err);
         } else {
             g_assert_true(sgi_renderer_staging_valid(&requests[0]));
             g_assert_false(sgi_renderer_draw_batch(renderer, requests, 2,
@@ -1019,7 +1030,51 @@ static void test_batch(gconstpointer opaque)
             error_free(err);
         }
     }
-    g_assert_cmpuint(draw_count, ==, 2);
+    g_assert_cmpuint(draw_count, ==, failure == 2 ? 4 : 2);
+    sgi_renderer_free(renderer);
+}
+
+/* A staging mismatch refuses one draw; changed inputs fail the renderer. */
+static void test_draw_result(gconstpointer opaque)
+{
+    bool mutate = GPOINTER_TO_UINT(opaque);
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    batch_failure = mutate ? 4 : 2;
+    draw_count = 0;
+    sgi_renderer_register_gl(&batch_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_OK);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    mutate ? SGI_RENDER_DRAW_FAILED : SGI_RENDER_DRAW_REFUSED);
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    mutate ? "SGI OpenGL renderer changed its request inputs" :
+                             "Invalid SGI OpenGL renderer staging");
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    mutate ? SGI_RENDER_DRAW_FAILED : SGI_RENDER_DRAW_OK);
+    if (mutate) {
+        g_assert_cmpstr(error_get_pretty(err), ==,
+                        "SGI OpenGL renderer has failed");
+        g_assert_cmpuint(draw_count, ==, 2);
+    } else {
+        g_assert_null(err);
+        g_assert_true(sgi_renderer_staging_valid(request));
+        g_assert_cmpuint(draw_count, ==, 3);
+    }
+    g_clear_pointer(&err, error_free);
     sgi_renderer_free(renderer);
 }
 
@@ -1143,7 +1198,8 @@ static void test_draw_failure_staging_precedence(void)
     g_assert_nonnull(renderer);
     g_assert_null(err);
     sgi_renderer_test_fail_draw(renderer, 1);
-    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_REFUSED);
     g_assert_nonnull(err);
     g_assert_cmpstr(error_get_pretty(err), ==,
                     "Invalid SGI OpenGL renderer staging");
@@ -1509,12 +1565,25 @@ static void test_batch_draw_failure_staging_precedence(void)
     g_assert_null(err);
     sgi_renderer_test_fail_draw(renderer, 2);
     requests[0] = requests[1] = *source;
-    g_assert_false(sgi_renderer_draw_batch(renderer, requests, 2, &err));
+    g_assert_cmpint(sgi_renderer_draw_batch_checked(renderer, requests, 2,
+                                                    &err), ==,
+                    SGI_RENDER_DRAW_REFUSED);
     g_assert_nonnull(err);
     g_assert_cmpstr(error_get_pretty(err), ==,
                     "Invalid SGI OpenGL renderer staging");
     g_assert_cmpuint(draw_count, ==, 2);
     g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+    g_clear_pointer(&err, error_free);
+    /*
+     * A refused draw does not count toward the armed fault, so it stays
+     * pending and fails the next draw that would otherwise succeed.
+     */
+    g_assert_cmpint(sgi_renderer_draw_batch_checked(renderer, requests, 2,
+                                                    &err), ==,
+                    SGI_RENDER_DRAW_FAILED);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Injected SGI renderer test draw failure");
+    g_assert_cmpuint(draw_count, ==, 3);
     error_free(err);
     sgi_renderer_free(renderer);
 }
@@ -1591,6 +1660,10 @@ int main(int argc, char **argv)
 
         g_test_add_data_func(path, GUINT_TO_POINTER(failure), test_batch);
     }
+    g_test_add_data_func("/sgi-renderer/draw-result/refused",
+                         GUINT_TO_POINTER(0), test_draw_result);
+    g_test_add_data_func("/sgi-renderer/draw-result/changed-inputs",
+                         GUINT_TO_POINTER(1), test_draw_result);
     g_test_add_func("/sgi-renderer/test-fault/instance",
                     test_instance_draw_failure);
     g_test_add_func("/sgi-renderer/test-fault/order",

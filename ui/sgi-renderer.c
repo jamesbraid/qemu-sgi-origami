@@ -574,8 +574,9 @@ static bool sgi_renderer_test_draw_complete(SGIRenderer *renderer,
     return true;
 }
 
-bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
-                       Error **errp)
+SGIRenderDrawResult sgi_renderer_draw_checked(SGIRenderer *renderer,
+                                              SGIRendererRequest *request,
+                                              Error **errp)
 {
     uint64_t generation = request->generation;
     uint8_t rgb[3];
@@ -603,15 +604,15 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     memcpy(vertices, request->vertices, sizeof(vertices));
     if (renderer->failed) {
         error_setg(errp, "SGI OpenGL renderer has failed");
-        return false;
+        return SGI_RENDER_DRAW_FAILED;
     }
     if (!sgi_renderer_request_valid(request)) {
         error_setg(errp, "Unsupported SGI OpenGL renderer request");
-        return false;
+        return SGI_RENDER_DRAW_FAILED;
     }
     if (!renderer->ops->draw(renderer->opaque, request, errp)) {
         renderer->failed = true;
-        return false;
+        return SGI_RENDER_DRAW_FAILED;
     }
     if (request->generation != generation ||
         memcmp(request->rgb, rgb, sizeof(rgb)) ||
@@ -626,13 +627,29 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         request->texture != texture ||
         request->clip_planes != clip_planes ||
         memcmp(request->clip_distance, clip_distance, sizeof(clip_distance)) ||
-        (texture && memcmp(texture, &texture_inputs, sizeof(texture_inputs))) ||
-        !sgi_renderer_staging_valid(request)) {
+        (texture && memcmp(texture, &texture_inputs, sizeof(texture_inputs)))) {
         renderer->failed = true;
-        error_setg(errp, "Invalid SGI OpenGL renderer staging");
-        return false;
+        error_setg(errp, "SGI OpenGL renderer changed its request inputs");
+        return SGI_RENDER_DRAW_FAILED;
     }
-    return sgi_renderer_test_draw_complete(renderer, errp);
+    /*
+     * A host precision difference is refused, not a backend failure. So
+     * is a fragment the software model cannot evaluate: the scalar redraw
+     * meets the same deterministic result.
+     */
+    if (!sgi_renderer_staging_valid(request)) {
+        error_setg(errp, "Invalid SGI OpenGL renderer staging");
+        return SGI_RENDER_DRAW_REFUSED;
+    }
+    return sgi_renderer_test_draw_complete(renderer, errp) ?
+           SGI_RENDER_DRAW_OK : SGI_RENDER_DRAW_FAILED;
+}
+
+bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
+                       Error **errp)
+{
+    return sgi_renderer_draw_checked(renderer, request, errp) ==
+           SGI_RENDER_DRAW_OK;
 }
 
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
@@ -831,22 +848,33 @@ bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
     return true;
 }
 
-bool sgi_renderer_draw_batch(SGIRenderer *renderer,
-                             SGIRendererRequest *requests, unsigned count,
-                             Error **errp)
+SGIRenderDrawResult sgi_renderer_draw_batch_checked(
+    SGIRenderer *renderer, SGIRendererRequest *requests, unsigned count,
+    Error **errp)
 {
     for (unsigned i = 0; i < count; i++) {
         if (!sgi_renderer_request_valid(&requests[i])) {
             error_setg(errp, "Unsupported SGI OpenGL renderer batch request");
-            return false;
+            return SGI_RENDER_DRAW_FAILED;
         }
     }
     for (unsigned i = 0; i < count; i++) {
-        if (!sgi_renderer_draw(renderer, &requests[i], errp)) {
-            return false;
+        SGIRenderDrawResult result =
+            sgi_renderer_draw_checked(renderer, &requests[i], errp);
+
+        if (result != SGI_RENDER_DRAW_OK) {
+            return result;
         }
     }
-    return true;
+    return SGI_RENDER_DRAW_OK;
+}
+
+bool sgi_renderer_draw_batch(SGIRenderer *renderer,
+                             SGIRendererRequest *requests, unsigned count,
+                             Error **errp)
+{
+    return sgi_renderer_draw_batch_checked(renderer, requests, count, errp) ==
+           SGI_RENDER_DRAW_OK;
 }
 
 void sgi_renderer_test_fail_draw(SGIRenderer *renderer, unsigned nth_draw)
