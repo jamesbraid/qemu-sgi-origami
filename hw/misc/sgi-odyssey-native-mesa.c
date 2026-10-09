@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
+#include "trace.h"
 
 static bool native_plane_valid(const SGIBoardMemory *memory,
                                const SGIPlane *plane)
@@ -183,10 +184,14 @@ static SGIRenderCommitResult native_commit_covered(
         .extent_known = true,
     };
     int b = native_resource_index(native, resource, slice, rect);
+    uint32_t successful_stores = 0;
     bool changed = false;
 
     if (b < 0 || !writes) {
         error_setg(errp, "Invalid Odyssey native Mesa commit resource");
+        trace_sgi_odyssey_native_commit_covered(
+            b, 0, 0, result.partial_pixel, result.extent_known,
+            result.status);
         return result;
     }
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
@@ -216,9 +221,13 @@ static SGIRenderCommitResult native_commit_covered(
                     native_invalidate(native);
                 }
                 error_setg(errp, "Odyssey native Mesa colour store failed");
+                trace_sgi_odyssey_native_commit_covered(
+                    b, result.complete_pixels, successful_stores,
+                    result.partial_pixel, result.extent_known, result.status);
                 return result;
             }
             changed = true;
+            successful_stores++;
             result.complete_pixels++;
         }
     }
@@ -226,6 +235,9 @@ static SGIRenderCommitResult native_commit_covered(
         native_invalidate(native);
     }
     result.status = SGI_RENDER_OK;
+    trace_sgi_odyssey_native_commit_covered(
+        b, result.complete_pixels, successful_stores,
+        result.partial_pixel, result.extent_known, result.status);
     return result;
 }
 
@@ -253,6 +265,7 @@ SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
                                          Error **errp)
 {
     SGIRasterTarget target;
+    SGIRenderResult result;
 
     if (!native || selected_buffers != 1 || eye != SGI_RENDER_MONO ||
         compare_active) {
@@ -265,5 +278,7 @@ SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
     }
     native->clip = draw->state->drawable.clip;
     target = odyssey_native_mesa_target(native);
-    return sgi_render_draw_checked(renderer, rules, &target, draw, errp);
+    result = sgi_render_draw_checked(renderer, rules, &target, draw, errp);
+    trace_sgi_odyssey_mesa_renderer_result(result);
+    return result;
 }

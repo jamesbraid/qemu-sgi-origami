@@ -185,6 +185,9 @@ sgi_odyssey_swap_latch(uint32_t arm, uint32_t displayed) "arm 0x%" PRIx32 " disp
 sgi_odyssey_draw_mask(uint32_t mask) "mask 0x%" PRIx32
 sgi_odyssey_buffer_word(uint32_t reg, uint32_t word) "reg 0x%" PRIx32 " word 0x%" PRIx32
 sgi_odyssey_board_oob(uint32_t base, uint32_t limit_mib) "destination base 0x%" PRIx32 " exceeds the %u MiB this board reports"
+sgi_odyssey_gl_draw_path(const char *backend, int result, bool called) "backend %s result %d called=%d"
+sgi_odyssey_mesa_renderer_result(int result) "render-result %d"
+sgi_odyssey_native_commit_covered(int buffer, uint64_t processed_pixels, uint32_t successful_stores, bool partial_pixel, bool extent_known, int result) "buffer %d processed-pixels %" PRIu64 " successful-stores %u partial-pixel=%d extent-known=%d render-result %d"
 
 # sgi-mgras-gl.c
 # The window a completed context image binds: image words 0, 2 and 3,
