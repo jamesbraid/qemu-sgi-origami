@@ -2,7 +2,8 @@
  * SGI IOC4 revision 0x53, serial-console subset.
  *
  * The four byte-wide 16550A ports and their local interrupt controller are
- * modeled. ATA, serial DMA, keyboard/mouse, GPIO and byte-bus devices are not.
+ * modeled. The IP53 profile also selects bounded serial DMA, ATA register
+ * readback and a byte-bus clock alias. Keyboard/mouse and GPIO are unmodeled.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
