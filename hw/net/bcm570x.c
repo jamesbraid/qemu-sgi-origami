@@ -357,8 +357,8 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_STATUS_TAG_OFF      4
 
 /*
- * The interrupt mailbox. Writing 1 masks the line and acknowledges the
- * pending status-block update; writing 0 re-enables it. The driver writes 1
+ * The interrupt mailbox. Every write clears the pending status-block
+ * update; any nonzero value masks the line and zero re-enables it. The driver writes 1
  * on entry to its handler and 0 on exit (bge_intr), and writes 0 once in
  * bge_blockinit to first enable host interrupts. Only the low 32 bits of the
  * 64-bit mailbox are used, and the chip acts on a write to the low half.
@@ -1676,9 +1676,9 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
                       off);
         return;
     case BCM570X_MBX_IRQ0_LO:
-        /* Every mailbox write clears the pending update; bit 0 masks. */
+        /* Every write clears pending state; a nonzero value masks. */
         s->irq_pending = false;
-        if (val & 1) {
+        if (val != 0) {
             s->irq_masked = true;
         } else {
             s->irq_masked = false;
