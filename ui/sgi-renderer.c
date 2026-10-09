@@ -29,6 +29,17 @@ static bool sgi_renderer_texture_env_valid(uint32_t mode)
            mode == SGI_RENDERER_ENV_BLEND;
 }
 
+/* Whole independent primitives within the frame's vertex bound. */
+static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
+{
+    if (frame->texture.slots) {
+        return frame->count >= 3 &&
+               frame->count <= SGI_RENDERER_FRAME_VERTICES_MAX;
+    }
+    return frame->count && frame->count % 3 == 0 &&
+           frame->count <= SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX;
+}
+
 void sgi_renderer_register_gl(const SGIRendererOps *ops)
 {
     assert(ops && ops->create && ops->draw && ops->destroy);
@@ -212,9 +223,7 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
     if (!renderer || !frame || !frame->vertices || !frame->rgba ||
         !frame->written ||
         !frame->width || !frame->height || frame->width > INT_MAX ||
-        frame->height > INT_MAX || frame->count < 3 ||
-        frame->count > SGI_RENDERER_FRAME_VERTICES_MAX ||
-        (!frame->texture.slots && frame->count != 3) ||
+        frame->height > INT_MAX || !sgi_renderer_frame_count_valid(frame) ||
         frame->width > SIZE_MAX / frame->height / 4 /
                        sizeof(*frame->rgba) ||
         frame->written_capacity < (size_t)frame->width * frame->height ||

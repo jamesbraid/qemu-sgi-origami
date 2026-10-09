@@ -2081,7 +2081,9 @@ static void test_checked_draw_top_first_storage(void)
     OdysseyPlanes planes = { 0 };
     SGIRasterTarget target;
     SGIRasterRules rules = {
-        .color_bits = 8, .alpha_bits = 8, .evidence = "synthetic",
+        .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
