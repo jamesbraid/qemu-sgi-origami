@@ -77,6 +77,11 @@ typedef struct SGIRendererFrame {
     float point_size; /* Aliased integer size; zero means one. */
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
+    /*
+     * Untextured fragment colour steps per component, red to alpha,
+     * applied before blending; zero leaves that component unrounded.
+     */
+    uint32_t colour_steps[4];
     bool viewport_given;
     int32_t viewport[4]; /* Guest viewport in native plane pixels. */
     uint32_t clip_count; /* Zero means the full plane. */

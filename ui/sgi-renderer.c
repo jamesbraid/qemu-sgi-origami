@@ -42,6 +42,11 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
         !isfinite(frame->point_size) || frame->point_size < 0) {
         return false;
     }
+    for (unsigned c = 0; c < 4; c++) {
+        if (frame->colour_steps[c] > UINT16_MAX) {
+            return false;
+        }
+    }
     switch (frame->primitive) {
     case SGI_RENDERER_TRIANGLES:
         return frame->count % 3 == 0;
