@@ -125,8 +125,7 @@ jobs:
         run: |
           echo "configure and build QEMU" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
-              sh -euxc 'git submodule update --init --depth=1
-                        python3 scripts/ci/sgi-check build'
+              python3 scripts/ci/sgi-check build
 
       - name: edited qtests and unit tests
         env:
@@ -253,8 +252,7 @@ jobs:
         run: |
           echo "$PART: configure and build QEMU" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
-              sh -euxc 'git submodule update --init --depth=1
-                        python3 scripts/ci/sgi-check build'
+              python3 scripts/ci/sgi-check build
 
       - name: run this part of the SGI test suite
         run: |
