@@ -21,6 +21,14 @@ static bool sgi_renderer_texture_wrap_valid(uint32_t wrap)
            wrap == SGI_RENDERER_WRAP_BORDER;
 }
 
+static bool sgi_renderer_texture_env_valid(uint32_t mode)
+{
+    return mode == SGI_RENDERER_ENV_REPLACE ||
+           mode == SGI_RENDERER_ENV_MODULATE ||
+           mode == SGI_RENDERER_ENV_DECAL ||
+           mode == SGI_RENDERER_ENV_BLEND;
+}
+
 void sgi_renderer_register_gl(const SGIRendererOps *ops)
 {
     assert(ops && ops->create && ops->draw && ops->destroy);
@@ -227,6 +235,10 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         return false;
     }
     if (frame->texture.slots) {
+        if (!sgi_renderer_texture_env_valid(frame->texture.env_mode)) {
+            error_setg(errp, "Invalid SGI OpenGL texture environment");
+            return false;
+        }
         if (!sgi_renderer_texture_wrap_valid(frame->texture.wrap_s) ||
             !sgi_renderer_texture_wrap_valid(frame->texture.wrap_t)) {
             error_setg(errp, "Invalid SGI OpenGL texture wrap");
@@ -237,6 +249,12 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
 
             if (!isfinite(value) || value < 0 || value > 255) {
                 error_setg(errp, "Invalid SGI OpenGL texture border colour");
+                return false;
+            }
+            value = frame->texture.environment_bytes[c];
+            if (!isfinite(value) || value < 0 || value > 255) {
+                error_setg(errp,
+                           "Invalid SGI OpenGL texture environment colour");
                 return false;
             }
         }

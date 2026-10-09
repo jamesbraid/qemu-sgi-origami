@@ -36,12 +36,21 @@ typedef enum SGIRendererTextureWrap {
     SGI_RENDERER_WRAP_BORDER = 0x812d,
 } SGIRendererTextureWrap;
 
+/* OpenGL texture environment values accepted at the direct frame boundary. */
+typedef enum SGIRendererTextureEnvironment {
+    SGI_RENDERER_ENV_REPLACE = 0x1e01,
+    SGI_RENDERER_ENV_MODULATE = 0x2100,
+    SGI_RENDERER_ENV_DECAL = 0x2101,
+    SGI_RENDERER_ENV_BLEND = 0x0be2,
+} SGIRendererTextureEnvironment;
+
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
     uint32_t env_mode, wrap_s, wrap_t;
     bool linear_filter;
     uint8_t component_bits;
     double border_bytes[4];
+    double environment_bytes[4];
     const uint32_t *slots; /* Raw RGBA slots, bottom row first. */
     size_t capacity_slots;
 } SGIRendererTexture2D;

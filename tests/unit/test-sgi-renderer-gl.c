@@ -1898,11 +1898,14 @@ static void test_typed_texture_triangle(void)
         float primary[3];
         uint32_t texel[4];
         uint8_t expected[3];
+        float env[3];
     } cases[] = {
         { SGI_GL_REPLACE, { 1, 1, 1 }, { 64, 128, 192, 170 },
           { 64, 128, 192 } },
         { SGI_GL_MODULATE, { 0.5f, 1, 0 }, { 128, 128, 128, 170 },
           { 64, 128, 0 } },
+        { SGI_GL_BLEND, { 0.25f, 0.5f, 0.75f }, { 128, 64, 192, 128 },
+          { 128, 112, 143 }, { 0.75f, 0.25f, 0.5f } },
         { SGI_GL_DECAL, { 0.5f, 0, 0 }, { 0, 0, 255, 170 },
           { 43, 0, 170 } },
     };
@@ -1994,6 +1997,7 @@ static void test_typed_texture_triangle(void)
     g_assert_null(err);
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         state.texture_env_mode = cases[i].mode;
+        memcpy(state.texture_env_color, cases[i].env, sizeof(cases[i].env));
         memcpy(f.texel, cases[i].texel, sizeof(f.texel));
         memset(f.colour, 0, sizeof(f.colour));
         memset(f.written, 0, sizeof(f.written));
@@ -2048,8 +2052,8 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     image.width = resources[1].width = 1;
-    g_assert_cmpuint(f.snapshots, ==, 6);
-    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.snapshots, ==, 2 * ARRAY_SIZE(cases));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases));
     state.drawable.clip.r[0] = (SGIClipRect) { 5, 5, 6, 6 };
     /* Nearest power-of-two shapes below, at, and above 16 MiB of slots. */
     image.width = resources[1].width = 1024;
@@ -2071,8 +2075,8 @@ static void test_typed_texture_triangle(void)
     g_clear_pointer(&err, error_free);
     image.height = resources[1].height = 1;
     state.drawable.clip.r[0] = (SGIClipRect) { 0, 0, 3, 3 };
-    g_assert_cmpuint(f.snapshots, ==, 6);
-    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.snapshots, ==, 2 * ARRAY_SIZE(cases));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases));
     /* A legal power-of-two width whose four-slot stride wraps uint32_t. */
     image.width = resources[1].width = 1u << 30;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -2093,8 +2097,8 @@ static void test_typed_texture_triangle(void)
     g_clear_pointer(&err, error_free);
     image.width = resources[1].width = 1;
     image.height = resources[1].height = 1;
-    g_assert_cmpuint(f.snapshots, ==, 6);
-    g_assert_cmpuint(f.commits, ==, 3);
+    g_assert_cmpuint(f.snapshots, ==, 2 * ARRAY_SIZE(cases));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases));
     vertices[0][SGI_GL_V_POSITION] = -2;
     vertices[0][SGI_GL_V_TEXCOORD + 3] = 0;
     vertices[0][SGI_GL_V_COLOR] = 0;
@@ -2103,8 +2107,8 @@ static void test_typed_texture_triangle(void)
                                              &draw, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 8);
-    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.snapshots, ==, 2 * (ARRAY_SIZE(cases) + 1));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases) + 1);
     g_assert_cmpuint(f.colour[0][0][0], ==, 43);
     state.shade_model = SGI_GL_SMOOTH;
     state.texture_env_mode = SGI_GL_MODULATE;
@@ -2113,8 +2117,8 @@ static void test_typed_texture_triangle(void)
                                              &draw, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 10);
-    g_assert_cmpuint(f.commits, ==, 5);
+    g_assert_cmpuint(f.snapshots, ==, 2 * (ARRAY_SIZE(cases) + 2));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases) + 2);
     /* Pixel (0, 0) has red 7/16 after clipping; round 255 * 7/16. */
     g_assert_cmpuint(f.colour[0][0][0], ==, 112);
     state.shade_model = SGI_GL_FLAT;
@@ -2128,16 +2132,16 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     vertices[0][SGI_GL_V_TEXCOORD + 3] = 1;
-    g_assert_cmpuint(f.snapshots, ==, 10);
-    g_assert_cmpuint(f.commits, ==, 5);
+    g_assert_cmpuint(f.snapshots, ==, 2 * (ARRAY_SIZE(cases) + 2));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases) + 2);
     f.fail_texture_snapshot = true;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
     error_free(err);
-    g_assert_cmpuint(f.snapshots, ==, 12);
-    g_assert_cmpuint(f.commits, ==, 5);
+    g_assert_cmpuint(f.snapshots, ==, 2 * (ARRAY_SIZE(cases) + 3));
+    g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(cases) + 2);
     g_assert_cmpuint(f.colour[0][0][0], ==, 112);
     sgi_renderer_free(renderer);
 }
@@ -2503,6 +2507,66 @@ static void test_frame_texture_validation(void)
     g_assert_cmpstr(error_get_pretty(err), ==,
                     "Invalid SGI OpenGL texture wrap");
     g_clear_pointer(&err, error_free);
+
+    frame.texture.wrap_s = SGI_GL_REPEAT;
+    frame.texture.env_mode = 0xffffffffu;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture environment");
+    g_clear_pointer(&err, error_free);
+
+    frame.texture.env_mode = SGI_GL_REPLACE;
+    frame.texture.environment_bytes[0] = NAN;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture environment colour");
+    g_clear_pointer(&err, error_free);
+
+    frame.texture.env_mode = SGI_GL_BLEND;
+    frame.texture.environment_bytes[0] = 191.25;
+    frame.texture.environment_bytes[1] = 256;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture environment colour");
+    g_clear_pointer(&err, error_free);
+
+    frame.texture.environment_bytes[1] = 63.75;
+    frame.texture.environment_bytes[2] = 127.5;
+    texels[0] = 128;
+    texels[1] = 64;
+    texels[2] = 192;
+    texels[3] = 128;
+    frame.shade_model = SGI_GL_FLAT;
+    for (unsigned i = 0; i < 4; i++) {
+        frame.modelview[i * 5] = 1;
+        frame.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        float *v = &vertices[i * SGI_RENDERER_FRAME_VERTEX_FLOATS];
+
+        v[3] = 1;
+        v[4] = 0.25f;
+        v[5] = 0.5f;
+        v[6] = 0.75f;
+        v[7] = 0.5f;
+        v[11] = 1;
+    }
+    vertices[0] = -1;
+    vertices[1] = -1;
+    vertices[SGI_RENDERER_FRAME_VERTEX_FLOATS] = 1;
+    vertices[SGI_RENDERER_FRAME_VERTEX_FLOATS + 1] = -1;
+    vertices[2 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = -1;
+    vertices[2 * SGI_RENDERER_FRAME_VERTEX_FLOATS + 1] = 1;
+    g_assert_true(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_null(err);
+    g_assert_cmpuint(written[0], ==, 1);
+    g_assert_cmpuint(rgba[0], ==, 128 * 257);
+    g_assert_cmpuint(rgba[1], ==, 112 * 257);
+    g_assert_cmpuint(rgba[2], ==, 143 * 257);
+    g_assert_cmpuint(rgba[3], ==, 64 * 257);
     sgi_renderer_free(renderer);
 }
 
