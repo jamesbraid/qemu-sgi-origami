@@ -138,7 +138,7 @@ class SystemModelResolutionTests(unittest.TestCase):
             {
                 "processor_identification": "0x0926",
                 "fpu_identification": "0x0900",
-                "cache_clock_mhz": 90,
+                "cache_clock_mhz": 120,
                 "clock_mhz": 180,
                 "cache_mib": 1,
                 "variants": [
@@ -158,7 +158,7 @@ class SystemModelResolutionTests(unittest.TestCase):
         cpu = next(item for item in model["components"] if item["id"] == "node-board-1-cpu-a")
         self.assertEqual(cpu["identity"]["processor_identification"], "0x0926")
         self.assertEqual(cpu["identity"]["fpu_identification"], "0x0900")
-        self.assertEqual(cpu["identity"]["cache_clock_mhz"], 90)
+        self.assertEqual(cpu["identity"]["cache_clock_mhz"], 120)
 
     def test_cpu_selection_rejects_a_directly_authored_identity_register_disagreement(self):
         def contradict_prid(document):
