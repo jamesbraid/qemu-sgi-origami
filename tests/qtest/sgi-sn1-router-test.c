@@ -369,6 +369,8 @@ static void test_experimental_status_write(void)
     experimental_status_vector(s, 0x8000, 0, true, UINT64_MAX, true);
     experimental_status_vector(s, 0x80f8, 0, true,
                                UINT64_C(0xa5c30000deadbeef), true);
+    experimental_status_vector(s, bank[0] + 8, 0, true, 0, true);
+    experimental_status_vector(s, bank[5] + 0x88, 0, true, 0, true);
     fd = g_file_open_tmp("sn1-router-status-destination-XXXXXX",
                          &to_image, &error);
     g_assert_no_error(error);
@@ -401,6 +403,14 @@ static void test_experimental_status_write(void)
                     UINT64_C(0xa5c30000deadbeef));
     g_assert_cmphex(experimental_status_vector(to, 0x18, 0, false, 0, true),
                     ==, 0xabcd);
+    g_assert_cmphex(experimental_status_vector(to, bank[0] + 8, 0,
+                                               false, 0, true), ==, 0);
+    g_assert_cmphex(experimental_status_vector(to, bank[5] + 0x88, 0,
+                                               false, 0, true), ==, 0);
+    experimental_status_vector(to, bank[0] + 8, 0, true, 0, true);
+    experimental_status_vector(to, bank[5] + 0x88, 0, true, 0, true);
+    experimental_status_vector(to, bank[0] + 8, 0, true, 1, false);
+    experimental_status_vector(to, bank[5] + 0x88, 0, true, 1, false);
     g_assert_cmphex(experimental_status_vector(to, 0, 0, false, 0, true),
                     ==, status);
     assert_experimental_status(status, 1, 0);
@@ -424,6 +434,90 @@ static void test_experimental_status_write(void)
     g_assert_cmpint(g_unlink(to_image), ==, 0);
     g_unlink(socket);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_experimental_port_errors(void)
+{
+    const uint64_t lb = SPACE_IO + UINT64_C(0x01000000) + 0x600000;
+    const uint64_t params = (bank[0] + 8) | (UINT64_C(0x5a) << 40);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    g_autofree char *image = NULL;
+    g_autofree char *prom = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *s;
+    uint64_t status, route;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-router-port-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-router-port-prom-XXXXXX", &prom, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    s = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router", prom, image);
+
+    for (unsigned phase = 0; phase < 2; phase++) {
+        qtest_writeq(s, BASE + 0x20, 0x1234);
+        qtest_writeq(s, BASE + bank[0], 0x123);
+        qtest_writeq(s, BASE + bank[5], 0x456);
+        status = experimental_status_vector(s, 0, 0, false, 0, true);
+        route = get(s, "route");
+        for (unsigned i = 0; i < 2; i++) {
+            uint64_t address = i ? bank[5] + 0x88 : bank[0] + 8;
+
+            g_assert_cmphex(experimental_status_vector(s, address, 0,
+                                                        false, 0, true),
+                            ==, 0);
+            experimental_status_vector(s, address, 0, true, 0, true);
+            experimental_status_vector(s, address, 0, true, 1, false);
+            experimental_status_vector(s, address, 0, true, UINT64_MAX,
+                                       false);
+            g_assert_cmphex(experimental_status_vector(s, address, 0,
+                                                        false, 0, true),
+                            ==, 0);
+            qtest_writel(s, BASE + address, 0);
+            g_assert_cmpuint(get(s, "failure"), ==, 4);
+            qtest_writeq(s, BASE + address + 1, 0);
+            g_assert_cmpuint(get(s, "failure"), ==, 4);
+            qtest_readl(s, BASE + address);
+            g_assert_cmpuint(get(s, "failure"), ==, 4);
+            qtest_readq(s, BASE + address + 1);
+            g_assert_cmpuint(get(s, "failure"), ==, 4);
+        }
+        g_assert_cmphex(qtest_readq(s, BASE + bank[0]), ==, 0x123);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[5]), ==, 0x456);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x20), ==, 0x1234);
+        g_assert_cmphex(experimental_status_vector(s, 0, 0, false, 0,
+                                                   true), ==, status);
+        g_assert_cmphex(get(s, "route"), ==, route);
+        qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+            "'path':'/machine/master-route','property':'down','value':true}}");
+        experimental_readq(s, 0, lb + 0xc038);
+        experimental_writeq(s, 0, lb + 0xc030, sentinel);
+        experimental_writeq(s, 0, lb + 0xc008, 0);
+        experimental_writeq(s, 0, lb + 0xc010, 0);
+        experimental_writeq(s, 0, lb + 0xc000, params | 1);
+        g_assert_cmphex(experimental_readq(s, 0, lb + 0xc020), ==, 0);
+        g_assert_cmphex(experimental_readq(s, 0, lb + 0xc030), ==, sentinel);
+        qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+            "'path':'/machine/master-route','property':'down','value':false}}");
+        g_assert_cmphex(experimental_status_vector(s, bank[0] + 8, 0,
+                                                   false, 0, true), ==, 0);
+        qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    }
+    qtest_quit(s);
     g_assert_cmpint(g_unlink(image), ==, 0);
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
@@ -651,6 +745,8 @@ static void test_error_clear_vector(void)
     for (unsigned p = 0; p < 8; p++) {
         uint64_t params = (bank[p] + 0x88) | (UINT64_C(0x5a) << 40);
 
+        expect_ordinary_vector_refusal(s, bank[p] + 8, true);
+        expect_ordinary_vector_refusal(s, bank[p] + 0x88, true);
         for (unsigned write = 0; write <= 1; write++) {
             qtest_readq(s, lb + 0xc038);
             qtest_writeq(s, lb + 0xc030, sentinel);
@@ -1422,6 +1518,8 @@ int main(int argc, char **argv)
                    test_port_reset_vector);
     qtest_add_func("/sgi/sn1-router/experimental-zero-reset-restore",
                    test_experimental_zero_reset_restore);
+    qtest_add_func("/sgi/sn1-router/experimental-port-errors",
+                   test_experimental_port_errors);
     qtest_add_func("/sgi/sn1-router/global-port-def-vector",
                    test_global_port_def_vector);
     qtest_add_func("/sgi/sn1-router/global-diag-parms-vector",
