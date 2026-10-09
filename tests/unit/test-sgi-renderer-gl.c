@@ -2169,6 +2169,15 @@ static void test_typed_texture_multi_texel(void)
         { -0.25f, 0.25f, SGI_GL_REPEAT, { 0, 255, 0 } },
         { -0.25f, 0.25f, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
         { 0.25f, 0.75f, SGI_GL_CLAMP_TO_EDGE, { 0, 0, 255 } },
+        { 0.25f, -0.25f, SGI_GL_REPEAT, { 0, 0, 255 } },
+        { 0.25f, -0.25f, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
+    };
+    static const struct {
+        float s1, t2;
+        uint8_t rgb[3];
+    } projective[] = {
+        { 3, 18, { 255, 255, 255 } },
+        { 2, 12, { 255, 0, 0 } },
     };
     NativeDrawFixture f = { 0 };
     SGIRenderResource resources[] = {
@@ -2287,7 +2296,6 @@ static void test_typed_texture_multi_texel(void)
         g_assert_cmpuint(f.tag[0][0], ==, 9);
         g_assert_cmpuint(f.tag[3][3], ==, 1);
     }
-    native_draw_fill_sentinel(&f);
     image.wrap_s = image.wrap_t = SGI_GL_REPEAT;
     vertices[0][SGI_GL_V_POSITION] = -2;
     vertices[1][SGI_GL_V_POSITION] = 2;
@@ -2300,22 +2308,31 @@ static void test_typed_texture_multi_texel(void)
         vertices[v][SGI_GL_V_TEXCOORD] = 0;
         vertices[v][SGI_GL_V_TEXCOORD + 1] = 0;
     }
-    vertices[1][SGI_GL_V_TEXCOORD] = 3;
-    vertices[2][SGI_GL_V_TEXCOORD + 1] = 18;
     vertices[1][SGI_GL_V_TEXCOORD + 3] = 2;
     vertices[2][SGI_GL_V_TEXCOORD + 3] = 2;
-    /* At pixel (0, 0), b=(1/2, 3/8, 1/8); sampled S=T=3/5. */
-    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
-                                             &draw, &err), ==, SGI_RENDER_OK);
-    g_assert_null(err);
-    g_assert_cmpuint(f.snapshots, ==, 8);
-    g_assert_cmpuint(f.commits, ==, 4);
-    for (unsigned c = 0; c < 3; c++) {
-        g_assert_cmpuint(f.colour[0][0][c], ==, 255);
-        g_assert_cmpuint(f.colour[3][3][c], ==, 5 + 2 * c);
+    /*
+     * At pixel (0, 0), D=15/16. S=T are 3/5 and 2/5; without Q they
+     * are 18/23 and 12/23, so the second case selects a different texel.
+     */
+    for (unsigned i = 0; i < ARRAY_SIZE(projective); i++) {
+        native_draw_fill_sentinel(&f);
+        vertices[1][SGI_GL_V_TEXCOORD] = projective[i].s1;
+        vertices[2][SGI_GL_V_TEXCOORD + 1] = projective[i].t2;
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_OK);
+        g_assert_null(err);
+        g_assert_cmpuint(f.snapshots, ==,
+                         2 * (ARRAY_SIZE(samples) + i + 1));
+        g_assert_cmpuint(f.commits, ==, ARRAY_SIZE(samples) + i + 1);
+        for (unsigned c = 0; c < 3; c++) {
+            g_assert_cmpuint(f.colour[0][0][c], ==,
+                             projective[i].rgb[c]);
+            g_assert_cmpuint(f.colour[3][3][c], ==, 5 + 2 * c);
+        }
+        g_assert_cmpuint(f.written[0][0], ==, 1);
+        g_assert_cmpuint(f.written[3][3], ==, 0);
     }
-    g_assert_cmpuint(f.written[0][0], ==, 1);
-    g_assert_cmpuint(f.written[3][3], ==, 0);
     native_draw_fill_sentinel(&f);
     f.fail_texture_snapshot = true;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -2323,8 +2340,10 @@ static void test_typed_texture_multi_texel(void)
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
-    g_assert_cmpuint(f.snapshots, ==, 10);
-    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.snapshots, ==,
+                     2 * (ARRAY_SIZE(samples) + ARRAY_SIZE(projective) + 1));
+    g_assert_cmpuint(f.commits, ==,
+                     ARRAY_SIZE(samples) + ARRAY_SIZE(projective));
     g_assert_cmpuint(f.colour[0][0][0], ==, 5);
     g_assert_cmpuint(f.written[0][0], ==, 0);
     f.fail_texture_snapshot = false;
@@ -2336,8 +2355,10 @@ static void test_typed_texture_multi_texel(void)
     epoxy_glReadPixels = saved_read_pixels;
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
-    g_assert_cmpuint(f.snapshots, ==, 12);
-    g_assert_cmpuint(f.commits, ==, 4);
+    g_assert_cmpuint(f.snapshots, ==,
+                     2 * (ARRAY_SIZE(samples) + ARRAY_SIZE(projective) + 2));
+    g_assert_cmpuint(f.commits, ==,
+                     ARRAY_SIZE(samples) + ARRAY_SIZE(projective));
     g_assert_cmpuint(f.colour[0][0][0], ==, 5);
     g_assert_cmpuint(f.written[0][0], ==, 0);
     sgi_renderer_free(renderer);
