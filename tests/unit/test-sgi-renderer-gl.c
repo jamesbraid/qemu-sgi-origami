@@ -4147,6 +4147,128 @@ static void test_scalar_match_colour_ties(void)
     }
 }
 
+/*
+ * Draw p into f through the scalar path or Mesa, returning the pixels this
+ * draw wrote in written.
+ */
+static bool prim_draw_into(SGIRenderer *renderer, PrimCase *p, PrimFixture *f,
+                           bool mesa, uint8_t written[PRIM_SIZE][PRIM_SIZE])
+{
+    Error *err = NULL;
+
+    memset(f->written, 0, sizeof(f->written));
+    if (mesa) {
+        SGIRenderResult result = prim_mesa_draw(renderer, p, f, &err);
+
+        if (result != SGI_RENDER_OK) {
+            g_test_message("checked draw returned %d: %s", result,
+                           err ? error_get_pretty(err) : "(no error)");
+            g_clear_pointer(&err, error_free);
+            return false;
+        }
+    } else {
+        prim_scalar_draw(p, f);
+    }
+    memcpy(written, f->written, sizeof(f->written));
+    return true;
+}
+
+/*
+ * Two triangles sharing an edge through pixel centres, one through each
+ * path, must leave the image an all-scalar frame leaves, with no pixel
+ * written by both.
+ */
+static void test_scalar_match_shared_edges(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        const char *name;
+        float a[3][2], b[3][2];
+    } edges[] = {
+        { "horizontal", { { 2, 4.5f }, { 14, 4.5f }, { 8, 12 } },
+                        { { 14, 4.5f }, { 2, 4.5f }, { 8, 1 } } },
+        { "vertical", { { 7.5f, 1 }, { 7.5f, 14 }, { 2, 8 } },
+                      { { 7.5f, 14 }, { 7.5f, 1 }, { 13, 8 } } },
+        { "diagonal", { { 1.5f, 1.5f }, { 13.5f, 13.5f }, { 1.5f, 13.5f } },
+                      { { 13.5f, 13.5f }, { 1.5f, 1.5f }, { 13.5f, 1.5f } } },
+        { "steep", { { 4.5f, 0.5f }, { 9.5f, 15.5f }, { 1.5f, 12.5f } },
+                   { { 9.5f, 15.5f }, { 4.5f, 0.5f }, { 14.5f, 3.5f } } },
+    };
+    PrimCase *a = g_new(PrimCase, 1), *b = g_new(PrimCase, 1);
+    g_autofree PrimFixture *expected = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *mixed = g_new(PrimFixture, 1);
+    uint8_t wa[PRIM_SIZE][PRIM_SIZE], wb[PRIM_SIZE][PRIM_SIZE];
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(a);
+        g_free(b);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(edges); i++) {
+        for (unsigned variant = 0; variant < 4; variant++) {
+            bool top = variant & 1, mesa_first = variant & 2;
+            g_autofree char *name = g_strdup_printf(
+                "%s edge, %s, Mesa draws %s", edges[i].name,
+                top ? "top-origin" : "bottom-origin",
+                mesa_first ? "the first" : "the second");
+            unsigned differences, twice = 0;
+
+            prim_case_init(a, SGI_GL_TRIANGLES, 4);
+            prim_case_init(b, SGI_GL_TRIANGLES, 4);
+            a->top_origin = b->top_origin = top;
+            for (unsigned v = 0; v < 3; v++) {
+                prim_vertex(a, edges[i].a[v][0], edges[i].a[v][1],
+                            0.9f, 0.1f, 0.2f, 1);
+                prim_vertex(b, edges[i].b[v][0], edges[i].b[v][1],
+                            0.1f, 0.8f, 0.3f, 1);
+            }
+            prim_destination(expected, a);
+            prim_destination(mixed, a);
+            g_assert_true(prim_draw_into(renderer, a, expected, false, wa));
+            g_assert_true(prim_draw_into(renderer, b, expected, false, wb));
+            for (unsigned y = 0; y < PRIM_SIZE; y++) {
+                for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                    g_assert_false(wa[y][x] && wb[y][x]);
+                    expected->written[y][x] = wa[y][x] || wb[y][x];
+                }
+            }
+            if (!prim_draw_into(renderer, a, mixed, mesa_first, wa) ||
+                !prim_draw_into(renderer, b, mixed, !mesa_first, wb)) {
+                failures++;
+                continue;
+            }
+            for (unsigned y = 0; y < PRIM_SIZE; y++) {
+                for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                    mixed->written[y][x] = wa[y][x] || wb[y][x];
+                    if (wa[y][x] && wb[y][x]) {
+                        g_test_message("%s: pixel (%u,%u) written twice",
+                                       name, x, y);
+                        twice++;
+                    }
+                }
+            }
+            differences = prim_report(name, expected, mixed);
+            if (differences || twice) {
+                g_test_message("%s: %u pixels differ, %u written twice",
+                               name, differences, twice);
+                failures++;
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(a);
+    g_free(b);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -4813,6 +4935,8 @@ int main(int argc, char **argv)
                     test_scalar_match_state);
     g_test_add_func("/sgi-renderer-gl/scalar-match-colour-ties",
                     test_scalar_match_colour_ties);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-shared-edges",
+                    test_scalar_match_shared_edges);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
