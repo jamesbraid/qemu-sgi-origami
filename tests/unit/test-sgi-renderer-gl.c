@@ -2165,6 +2165,8 @@ static void test_typed_texture_multi_texel(void)
         float s, t;
         uint32_t filter, wrap;
         uint8_t rgb[3];
+        bool colored_border;
+        uint32_t wrap_t;
     } samples[] = {
         { -0.25f, 0.25f, SGI_GL_NEAREST, SGI_GL_REPEAT, { 0, 255, 0 } },
         { -0.25f, 0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_EDGE,
@@ -2177,6 +2179,16 @@ static void test_typed_texture_multi_texel(void)
         { 0.375f, 0.625f, SGI_GL_LINEAR, SGI_GL_REPEAT, { 96, 64, 191 } },
         { 0, 0, SGI_GL_LINEAR, SGI_GL_REPEAT, { 128, 128, 128 } },
         { 0, 0, SGI_GL_LINEAR, SGI_GL_CLAMP_TO_EDGE, { 255, 0, 0 } },
+        { 1, 0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP, { 0, 255, 0 } },
+        { 1, 0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_BORDER,
+          { 64, 128, 191 }, true },
+        { 0, 0.25f, SGI_GL_LINEAR, SGI_GL_CLAMP, { 128, 0, 0 } },
+        { 0, 0.25f, SGI_GL_LINEAR, SGI_GL_CLAMP,
+          { 159, 64, 96 }, true },
+        { -0.25f, 0.25f, SGI_GL_LINEAR, SGI_GL_CLAMP_TO_BORDER,
+          { 0, 0, 0 } },
+        { 0.25f, -0.25f, SGI_GL_NEAREST, SGI_GL_CLAMP_TO_EDGE,
+          { 0, 0, 255 }, false, SGI_GL_REPEAT },
     };
     static const struct {
         float s1, t2;
@@ -2281,7 +2293,15 @@ static void test_typed_texture_multi_texel(void)
     for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
         native_draw_fill_sentinel(&f);
         image.min_filter = image.mag_filter = samples[i].filter;
-        image.wrap_s = image.wrap_t = samples[i].wrap;
+        image.wrap_s = samples[i].wrap;
+        image.wrap_t = samples[i].wrap_t ? samples[i].wrap_t : samples[i].wrap;
+        memset(image.border_color, 0, sizeof(image.border_color));
+        if (samples[i].colored_border) {
+            image.border_color[0] = 0.25f;
+            image.border_color[1] = 0.5f;
+            image.border_color[2] = 0.75f;
+            image.border_color[3] = 1;
+        }
         for (unsigned v = 0; v < 3; v++) {
             vertices[v][SGI_GL_V_TEXCOORD] = samples[i].s;
             vertices[v][SGI_GL_V_TEXCOORD + 1] = samples[i].t;
@@ -2303,6 +2323,16 @@ static void test_typed_texture_multi_texel(void)
         g_assert_cmpuint(f.tag[0][0], ==, 9);
         g_assert_cmpuint(f.tag[3][3], ==, 1);
     }
+    image.border_color[0] = NAN;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Unsupported SGI Mesa texture resource or sampler");
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f.snapshots, ==, 2 * ARRAY_SIZE(samples));
+    image.border_color[0] = 0;
     image.min_filter = image.mag_filter = SGI_GL_NEAREST;
     image.wrap_s = image.wrap_t = SGI_GL_REPEAT;
     vertices[0][SGI_GL_V_POSITION] = -2;

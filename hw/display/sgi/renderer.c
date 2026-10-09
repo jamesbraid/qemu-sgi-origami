@@ -64,9 +64,13 @@ static const SGIRenderResource *sgi_render_texture_resource(
         (image->min_filter != SGI_GL_NEAREST &&
          image->min_filter != SGI_GL_LINEAR) ||
         (image->wrap_s != SGI_GL_REPEAT &&
-         image->wrap_s != SGI_GL_CLAMP_TO_EDGE) ||
+         image->wrap_s != SGI_GL_CLAMP &&
+         image->wrap_s != SGI_GL_CLAMP_TO_EDGE &&
+         image->wrap_s != SGI_GL_CLAMP_TO_BORDER) ||
         (image->wrap_t != SGI_GL_REPEAT &&
-         image->wrap_t != SGI_GL_CLAMP_TO_EDGE) ||
+         image->wrap_t != SGI_GL_CLAMP &&
+         image->wrap_t != SGI_GL_CLAMP_TO_EDGE &&
+         image->wrap_t != SGI_GL_CLAMP_TO_BORDER) ||
         image->post_filter || image->detail_image ||
         image->read_filter_weight || image->lod_scale_s ||
         image->lod_scale_t ||
@@ -74,6 +78,11 @@ static const SGIRenderResource *sgi_render_texture_resource(
          st->texture_env_mode != SGI_GL_MODULATE &&
          st->texture_env_mode != SGI_GL_DECAL)) {
         return NULL;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (!isfinite(image->border_color[c])) {
+            return NULL;
+        }
     }
     for (size_t i = 0; i < target->resource_count; i++) {
         const SGIRenderResource *candidate = &target->resources[i];
@@ -436,6 +445,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             .slots = texture_slots,
             .capacity_slots = texture_capacity_slots,
         };
+        for (unsigned c = 0; c < 4; c++) {
+            frame.texture.border_bytes[c] =
+                MIN(MAX(target->texture->border_color[c], 0.0), 1.0) * 255.0;
+        }
     }
     for (uint32_t y = 0; y < resource->height; y++) {
         size_t native_row = (size_t)y * resource->width;
