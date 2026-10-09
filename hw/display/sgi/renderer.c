@@ -7,6 +7,9 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "ui/sgi-renderer.h"
 
+/* Temporary host staging bound for two CPU copies and a GL_RGBA32UI image. */
+#define SGI_RENDER_HOST_TEXTURE_STAGING_BYTES_MAX (16u * 1024u * 1024u)
+
 static const SGIRenderResource *sgi_render_colour_resource(
     const SGIRasterTarget *target, SGIColourTarget colour)
 {
@@ -98,6 +101,37 @@ static const SGIRenderResource *sgi_render_texture_resource(
         }
     }
     return res;
+}
+
+static SGIRenderResult sgi_render_texture_span(const SGIRenderResource *res,
+                                               size_t *stride_slots,
+                                               size_t *capacity_slots,
+                                               Error **errp)
+{
+    size_t width = res->width;
+    size_t height = res->height;
+
+    if (width > SIZE_MAX / 4) {
+        error_setg(errp, "SGI Mesa texture stride exceeds host address space");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    *stride_slots = width * 4;
+    if (height > SIZE_MAX / *stride_slots) {
+        error_setg(errp, "SGI Mesa texture span exceeds host address space");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    *capacity_slots = *stride_slots * height;
+    if (*capacity_slots > SIZE_MAX / sizeof(uint32_t)) {
+        error_setg(errp, "SGI Mesa texture bytes exceed host address space");
+        return SGI_RENDER_RESOURCE_ERROR;
+    }
+    if (*capacity_slots > SGI_RENDER_HOST_TEXTURE_STAGING_BYTES_MAX /
+                          sizeof(uint32_t)) {
+        error_setg(errp, "SGI Mesa texture exceeds the temporary 16 MiB "
+                   "host staging budget");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    return SGI_RENDER_OK;
 }
 
 static bool sgi_render_blend_pair_supported(const SGIGLDrawState *st)
@@ -209,6 +243,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     float vertices[SGI_VOLUME_TRIANGLE_MAX]
                   [SGI_RENDERER_FRAME_VERTEX_FLOATS];
     size_t pixels, nslots, nrgba;
+    size_t texture_stride_slots = 0, texture_capacity_slots = 0;
     unsigned polygon_count = 0;
     bool any_written = false;
     SGIRenderCommitResult committed;
@@ -253,6 +288,12 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             error_setg(errp,
                        "Unsupported SGI Mesa texture resource or sampler");
             return SGI_RENDER_UNSUPPORTED;
+        }
+        status = sgi_render_texture_span(texture_resource,
+                                         &texture_stride_slots,
+                                         &texture_capacity_slots, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
         }
         if (!sgi_renderer_texture_supported(renderer, errp)) {
             return SGI_RENDER_UNSUPPORTED;
@@ -353,33 +394,24 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         return status;
     }
     if (texture_resource) {
-        size_t texels, texture_components;
         SGIRenderRect texture_rect = {
             .x1 = texture_resource->width - 1,
             .y1 = texture_resource->height - 1,
         };
 
-        if (texture_resource->width > SIZE_MAX / texture_resource->height ||
-            (uint64_t)texture_resource->width * texture_resource->height >
-                SIZE_MAX / 4) {
-            error_setg(errp, "SGI Mesa texture exceeds host address space");
-            return SGI_RENDER_RESOURCE_ERROR;
-        }
-        texels = (size_t)texture_resource->width * texture_resource->height;
-        texture_components = texels * 4;
-        texture_slots = g_try_new(uint32_t, texture_components);
+        texture_slots = g_try_new(uint32_t, texture_capacity_slots);
         if (!texture_slots) {
             error_setg(errp, "Cannot allocate SGI Mesa texture snapshot");
             return SGI_RENDER_OOM;
         }
         status = sgi_render_resource_snapshot(target, texture_resource, 0,
                                               &texture_rect, texture_slots,
-                                              texture_resource->width * 4,
-                                              texture_components, errp);
+                                              texture_stride_slots,
+                                              texture_capacity_slots, errp);
         if (status != SGI_RENDER_OK) {
             return status;
         }
-        for (size_t i = 0; i < texture_components; i++) {
+        for (size_t i = 0; i < texture_capacity_slots; i++) {
             if (texture_slots[i] > UINT8_MAX) {
                 error_setg(errp, "SGI Mesa texture snapshot has invalid bits");
                 return SGI_RENDER_RESOURCE_ERROR;
@@ -393,7 +425,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             .wrap_t = target->texture->wrap_t,
             .component_bits = 8,
             .slots = texture_slots,
-            .capacity_slots = texture_components,
+            .capacity_slots = texture_capacity_slots,
         };
     }
     for (size_t i = 0; i < pixels; i++) {
