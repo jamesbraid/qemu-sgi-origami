@@ -7647,18 +7647,20 @@ int main(int argc, char **argv)
                         "revision5", test_ip53_runtime_pxbow_migration);
     qtest_add_data_func("sn/builder/ip53-pxbow-revision-4-mismatch",
                         "revision4", test_ip53_runtime_pxbow_migration);
-    qtest_add_func("sn/builder/ip53-legacy-composition-migration",
-                   test_ip53_legacy_composition_migration);
-    qtest_add_data_func("sn/builder/ip53-prior-reset-policy-to-current",
-                        "prior-to-current",
-                        test_ip53_reset_policy_migration_peer);
-    qtest_add_data_func("sn/builder/ip53-current-reset-policy-to-prior",
-                        "current-to-prior",
-                        test_ip53_reset_policy_migration_peer);
-    qtest_add_func("sn/builder/ip53-previous-cpu-pio-migration",
-                   test_ip53_previous_cpu_pio_migration);
-    qtest_add_func("sn/builder/ip53-previous-direct64-migration",
-                   test_ip53_previous_direct64_migration);
+    if (g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        qtest_add_func("sn/builder/ip53-legacy-composition-migration",
+                       test_ip53_legacy_composition_migration);
+        qtest_add_data_func("sn/builder/ip53-prior-reset-policy-to-current",
+                            "prior-to-current",
+                            test_ip53_reset_policy_migration_peer);
+        qtest_add_data_func("sn/builder/ip53-current-reset-policy-to-prior",
+                            "current-to-prior",
+                            test_ip53_reset_policy_migration_peer);
+        qtest_add_func("sn/builder/ip53-previous-cpu-pio-migration",
+                       test_ip53_previous_cpu_pio_migration);
+        qtest_add_func("sn/builder/ip53-previous-direct64-migration",
+                       test_ip53_previous_direct64_migration);
+    }
     qtest_add_func("sn/builder/ip53-runtime-permission-refusals",
                    test_ip53_runtime_permission_refusals);
     qtest_add_func("sn/builder/catalogue-references",

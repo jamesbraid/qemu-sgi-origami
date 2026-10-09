@@ -4615,8 +4615,6 @@ int main(int argc, char **argv)
                    test_cpu_word_view_interrupt_effects);
     qtest_add_func("/sgi-pic/current-identity-migration",
                    test_current_identity_migration);
-    qtest_add_func("/sgi-pic/old-identity-migration",
-                   test_old_identity_migration);
     qtest_add_func("/sgi-pic/pin-and-reset", test_pin_and_reset);
     qtest_add_func("/sgi-pic/remaining-pin-edges",
                    test_remaining_pin_edges);
@@ -4659,8 +4657,6 @@ int main(int argc, char **argv)
                    test_bedrock_interrupt_mode_mismatch);
     qtest_add_func("/sgi-pic/runtime-profile-migration",
                    test_runtime_profile_migration);
-    qtest_add_func("/sgi-pic/runtime-old-identity-migration",
-                   test_runtime_old_identity_migration);
     qtest_add_func("/sgi-pic/runtime-profile-direct64-migration-and-dma",
                    test_runtime_profile_direct64_migration_and_dma);
     qtest_add_func("/sgi-pic/runtime-profile-migration-profile-mismatch",
@@ -4671,14 +4667,8 @@ int main(int argc, char **argv)
         "/sgi-pic/runtime-profile-v6-migration-direct64-policy-mismatch",
         test_runtime_profile_v6_migration_rejects_direct64_policy);
     qtest_add_func(
-        "/sgi-pic/runtime-profile-v7-migration-attribute-policy-mismatch",
-        test_runtime_profile_v7_migration_rejects_attribute_policy);
-    qtest_add_func(
         "/sgi-pic/runtime-profile-migration-requester-width-policy-mismatch",
         test_runtime_profile_migration_rejects_requester_width_policy);
-    qtest_add_func(
-        "/sgi-pic/runtime-profile-v8-migration-direct64-attribute-policy-mismatch",
-        test_runtime_profile_v8_migration_rejects_attribute_policy);
     qtest_add_func("/sgi-pic/v1-migration-defaults-generic-mode",
                    test_pic_v1_migration_defaults_generic_mode);
     qtest_add_func("/sgi-pic/direct-dma-head-targets",
@@ -4693,5 +4683,17 @@ int main(int argc, char **argv)
                    test_bedrock_ioc4_interrupt);
     qtest_add_func("/sgi-pic/bedrock-ioc4-pending-migration",
                    test_bedrock_ioc4_pending_migration);
+    if (g_getenv("QTEST_QEMU_BINARY_SRC")) {
+        qtest_add_func("/sgi-pic/old-identity-migration",
+                       test_old_identity_migration);
+        qtest_add_func("/sgi-pic/runtime-old-identity-migration",
+                       test_runtime_old_identity_migration);
+        qtest_add_func(
+            "/sgi-pic/runtime-profile-v7-migration-attribute-policy-mismatch",
+            test_runtime_profile_v7_migration_rejects_attribute_policy);
+        qtest_add_func(
+            "/sgi-pic/runtime-profile-v8-migration-direct64-attribute-policy-mismatch",
+            test_runtime_profile_v8_migration_rejects_attribute_policy);
+    }
     return g_test_run();
 }
