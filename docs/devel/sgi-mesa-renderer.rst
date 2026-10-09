@@ -37,12 +37,29 @@ and these source/destination factor pairs: ``SRC_ALPHA`` with
 imports missing native destination alpha as one. Other factor pairs,
 equations, and colour layouts remain unsupported for blended draws.
 
-The path rejects colour-index drawing, depth and stencil tests, textures,
-client clip planes, ordered dithering, accumulation, and other draw states it
-has not mapped to Mesa. It snapshots the full colour resource and draws
-through an RGBA16 host buffer. Private stencil marks the clip union and
-pixels written by the same draw. It reads back colour and coverage before
-any native commit. The shared code passes the bottom-origin binary write mask
+A textured draw requires ``GL_TEXTURE_2D``, a front RGB8 or RGBA8 colour
+resource, and one ``SGI_RENDER_TEXTURE`` resource matching a level-zero
+``SGIGLTexImage``. The image has no stored border, positive power-of-two
+width and height, and RGBA base format. The texture resource has the same
+dimensions, bottom-origin rows, and four ordered 8-bit UNORM components.
+Colour and texture snapshots both finish before Mesa draws. Texture slot
+staging above 16 MiB returns ``SGI_RENDER_UNSUPPORTED``.
+
+Equal ``NEAREST`` or equal ``LINEAR`` minification and magnification filters
+are supported. S and T independently accept ``REPEAT``, ``CLAMP``,
+``CLAMP_TO_EDGE``, and ``CLAMP_TO_BORDER``. The worker filters raw integer
+RGBA8 texels before ``REPLACE``, ``MODULATE``, or ``DECAL``. For ``LINEAR``,
+it combines four taps with double-precision weights. The finite border
+colour is clamped to [0,1] and supplies out-of-range taps. It is separate
+from stored image-border texels. Mixed or mipmap filters, stored borders,
+other texture formats, and other environment modes remain unsupported.
+
+The path also rejects colour-index drawing, depth and stencil tests, client
+clip planes, ordered dithering, accumulation, and other draw states it has
+not mapped to Mesa. It snapshots the full colour resource and draws through
+an RGBA16 host buffer. Private stencil marks the clip union and pixels
+written by the same draw. It reads back colour and coverage before any
+native commit. The shared code passes the bottom-origin binary write mask
 to ``commit_covered``. The provider must leave zero-mask pixels untouched.
 Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
