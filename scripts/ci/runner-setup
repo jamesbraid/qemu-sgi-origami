@@ -188,6 +188,39 @@ case "${1-}" in
     echo "WORKSPACE_VOLUME=$volume" >> "$GITHUB_ENV"
     echo "workspace volume: $volume"
     ;;
+  build)
+    # Configure and build QEMU in the workspace. With WITH_SCRIPTS=1 the
+    # script and model suites run in a second container at the same time:
+    # they need no build, are single-threaded, and took over two minutes of
+    # the job's serial setup. Their output is printed after the build's, and
+    # the step fails if either fails.
+    : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
+    : "${IMAGE_ID:?IMAGE_ID is required}"
+    prefix=${PART:+$PART: }
+    log=$(mktemp)
+    scripts_pid=
+    if [ "${WITH_SCRIPTS-}" = 1 ]; then
+      bash "$0" run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+          python3 scripts/ci/sgi-check scripts >"$log" 2>&1 &
+      scripts_pid=$!
+    fi
+    built=0
+    bash "$0" run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+        python3 scripts/ci/sgi-check build || built=$?
+    scripts=0
+    if [ -n "$scripts_pid" ]; then
+      wait "$scripts_pid" || scripts=$?
+      echo '--- script and model suites ---'
+      cat "$log"
+    fi
+    rm -f "$log"
+    if [ "$scripts" -ne 0 ]; then
+      echo "the script and model suites failed with status $scripts"
+      # Name the suites, not the build, when both fail.
+      echo "${prefix}script and model suites" > "${CI_STEP:-/dev/null}"
+    fi
+    [ "$built" -eq 0 ] && [ "$scripts" -eq 0 ]
+    ;;
   run|run-tests)
     # run-tests also gives the container the TAP device and the capability
     # to create one, which the BCM570x and Xframe vnet cases need. The
@@ -262,7 +295,7 @@ case "${1-}" in
     fi
     ;;
   *)
-    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|check [tap]|report-failure|nudge-queue' >&2
+    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|build|check [tap]|report-failure|nudge-queue' >&2
     echo '       runner-setup run|run-tests [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;

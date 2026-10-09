@@ -113,19 +113,14 @@ jobs:
           echo "check the build container can see the checkout and TAP device" > "$CI_STEP"
           bash scripts/ci/runner-setup check tap
 
-      # These need no QEMU build, so run them first: a broken model file
-      # or script fails the job in minutes instead of after the build.
-      - name: script and model suites
-        run: |
-          echo "script and model suites" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
-              "$IMAGE_ID" python3 scripts/ci/sgi-check scripts
-
-      - name: configure and build QEMU
+      # The script and model suites need no QEMU build, so they run in a
+      # second container beside it; the step still fails if either fails.
+      - name: configure and build QEMU, and run the script and model suites
+        env:
+          WITH_SCRIPTS: 1
         run: |
           echo "configure and build QEMU" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
-              python3 scripts/ci/sgi-check build
+          bash scripts/ci/runner-setup build
 
       - name: edited qtests and unit tests
         env:
@@ -239,20 +234,15 @@ jobs:
           echo "$PART: check the build container can see the checkout and TAP device" > "$CI_STEP"
           bash scripts/ci/runner-setup check tap
 
-      # These need no QEMU build, so run them first: a broken model file
-      # or script fails the job in minutes instead of after the build.
-      - name: script and model suites
-        if: ${{ startsWith(matrix.part, 'functional') }}
-        run: |
-          echo "$PART: script and model suites" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
-              "$IMAGE_ID" python3 scripts/ci/sgi-check scripts
-
-      - name: configure and build QEMU
+      # The script and model suites need no QEMU build, so the functional
+      # part runs them in a second container beside it; the step still fails
+      # if either fails.
+      - name: configure and build QEMU, and run the script and model suites
+        env:
+          WITH_SCRIPTS: ${{ startsWith(matrix.part, 'functional') && '1' || '0' }}
         run: |
           echo "$PART: configure and build QEMU" > "$CI_STEP"
-          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
-              python3 scripts/ci/sgi-check build
+          bash scripts/ci/runner-setup build
 
       - name: run this part of the SGI test suite
         run: |
