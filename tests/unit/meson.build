@@ -336,6 +336,11 @@ if is_variable('qemu_sgi_machine_init')
   test_env.set('QEMU_SGI_MACHINE_INIT', qemu_sgi_machine_init.full_path())
 endif
 
+# Longer timeouts that leave a test in its quick suites, unlike slow_tests.
+unit_timeouts = {
+  'test-sgi-renderer-gl': 90,
+}
+
 slow_tests = {
   'test-aio-multithread' : 120,
   'test-bufferiszero': 60,
@@ -378,7 +383,7 @@ foreach test_name, extra: tests
        env: test_env,
        args: ['--tap', '-k'],
        protocol: 'tap',
-       timeout: slow_tests.get(test_name, 30),
+       timeout: slow_tests.get(test_name, unit_timeouts.get(test_name, 30)),
        priority: slow_tests.get(test_name, 30),
        suite: ['unit'] +
               (test_name in fork_unit_tests ? ['sgi', 'sgi-unit'] : []) +
