@@ -243,13 +243,13 @@ static bool sgi_render_mode_lines(uint32_t mode)
 }
 
 /*
- * Points and polygon modes. Lines stay unsupported: Mesa's aliased lines
- * differ from the shared wide-primitive contract at diamond ties and at
- * the ends of even widths. Smoothing stays unsupported, and each enable
- * refuses only the class it applies to (OpenGL 1.2.1, 3.3 to 3.5), as
- * sgi_soft_draw() reads them. Polygon modes likewise apply only to
- * polygons. The refusal is stricter than the scalar path, which draws
- * aliased and logs when its rules do not smooth.
+ * Points, lines and polygon modes. Smoothing is refused only where the
+ * scalar path smooths: points and lines whose enable is set under rules
+ * that smooth. Under rules that do not, sgi_soft_draw() ignores the
+ * enables and draws aliased, and so does this path. Polygon smoothing is
+ * never implemented by the scalar path, which draws such polygons
+ * aliased, so it is never refused here. Each enable and the polygon modes
+ * apply only to their own class of primitive (OpenGL 1.2.1, 3.3 to 3.5).
  */
 static bool sgi_render_draw_supported(const SGIRasterRules *rules,
                                       const SGIRasterTarget *target,
@@ -264,7 +264,7 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
          (!isfinite(draw->point_size) || draw->point_size < 0)) ||
         (sgi_render_mode_lines(draw->mode) &&
          (!isfinite(draw->line_width) || draw->line_width < 0 ||
-          draw->line_smooth)) ||
+          (rules->smooth_primitives && draw->line_smooth))) ||
         (st->texture_2d &&
          (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
         draw->back_colors ||
@@ -273,8 +273,8 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
           draw->polygon_modes[1] != SGI_GL_FILL)) ||
         draw->polygon_stipple_enabled ||
         (!sgi_render_mode_lines(draw->mode) && draw->line_stipple_enabled) ||
-        (draw->mode == SGI_GL_POINTS && draw->point_smooth) ||
-        (sgi_render_mode_polygons(draw->mode) && draw->polygon_smooth) ||
+        (draw->mode == SGI_GL_POINTS && rules->smooth_primitives &&
+         draw->point_smooth) ||
         (st->shade_model != SGI_GL_SMOOTH &&
          st->shade_model != SGI_GL_FLAT) || st->index_bits ||
         st->draw_buffers != SGI_GL_DRAW_FRONT ||
