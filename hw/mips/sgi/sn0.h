@@ -314,7 +314,16 @@ extern const SN0FlashImplementation sn0_flash;
 /* The Hub's physical address map and memory-bank geometry, defined once. */
 extern const SN0ModelAddressMap sn0_hub_address_map;
 extern const SN0ModelMemory sn0_hub_memory;
+extern const SN0ModelMemory sn0_hub_memory_256mb;
 extern const SN0ModelMemory sn0_ip27_memory;
+
+/*
+ * @board's bank sizes for a node whose configured processor clock is
+ * @cpu_clock_hz: the IP29 with 256 MB banks unless the stock PROM refuses
+ * them at that clock, any other board as it is.
+ */
+const SN0ModelMemory *sn0_model_board_memory(const SN0ModelMemory *board,
+                                             uint64_t cpu_clock_hz);
 
 /*
  * The Hub register offset its I2C adapter answers at, whether it carries a

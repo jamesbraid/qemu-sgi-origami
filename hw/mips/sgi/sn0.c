@@ -126,10 +126,16 @@ const SN0ModelAddressMap sn0_hub_address_map = {
  * The board takes 256 MB banks, but SGI's IP27 PROM 6.156 disables one
  * whenever the node's processor clock is 180 or 195 MHz ("256 MB dimm banks
  * not allowed on IP27 node boards"). A disabled bank 0 leaves the PROM no
- * usable memory, so 256 MiB is two 128 MiB banks here, as on the IP27.
+ * usable memory, so with those processors 256 MiB is two 128 MiB banks, as
+ * on the IP27; sn0_model_board_memory() picks the table with 256 MB banks
+ * for every other clock.
  */
 static const uint64_t sn0_hub_memory_sizes_mib[] = {
     0x200ULL, 0x80ULL, 0x40ULL,
+};
+
+static const uint64_t sn0_hub_memory_256mb_sizes_mib[] = {
+    0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
 };
 
 const SN0ModelMemory sn0_hub_memory = {
@@ -147,6 +153,30 @@ const SN0ModelMemory sn0_hub_memory = {
     .interleave_slot_stride_mib = 0x80ULL,
     .interleave_slots_per_bank = 4,
 };
+
+/* The same board where the PROM keeps 256 MB banks. */
+const SN0ModelMemory sn0_hub_memory_256mb = {
+    .board = "IP29",
+    .physical_banks = 4,
+    .architectural_banks = 8,
+    .supported_mib = sn0_hub_memory_256mb_sizes_mib,
+    .supported_size_count = ARRAY_SIZE(sn0_hub_memory_256mb_sizes_mib),
+    /* A 256 MiB bank 0 ends well below the boot flash's reset address. */
+    .first_bank_max_mib = 0x100ULL,
+    .bank_stride_mib = 0x200ULL,
+    .interleave_slot_stride_mib = 0x80ULL,
+    .interleave_slots_per_bank = 4,
+};
+
+const SN0ModelMemory *sn0_model_board_memory(const SN0ModelMemory *board,
+                                             uint64_t cpu_clock_hz)
+{
+    if (board == &sn0_hub_memory && cpu_clock_hz != 180000000ULL &&
+        cpu_clock_hz != 195000000ULL) {
+        return &sn0_hub_memory_256mb;
+    }
+    return board;
+}
 
 /*
  * The Origin 2000 node board (IP27) wires eight banks, each a DIMM pair.

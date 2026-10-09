@@ -3606,6 +3606,20 @@ class CatalogueJsonTests(unittest.TestCase):
               "nodes=1,processor=r12000-270mhz-4mb", "R12000")],
         )
 
+    def test_origin_200_memory_follows_the_processor_clock(self):
+        # 256 MB banks, and with them 1024 and 1792 MiB, only where the
+        # PROM keeps them: not at 180 MHz, whatever the cache.
+        catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
+        accepted = {o["processor"]["id"]: o["memory-per-node-mib"]["accepted"]
+                    for o in catalogue["offerings"]}
+        for slow in ("r10000-180mhz-1mb", "r10000-180mhz-2mb"):
+            self.assertNotIn(1024, accepted[slow])
+            self.assertEqual(max(accepted[slow]), 1664)
+        for fast in ("r10000-225mhz-2mb", "r12000-270mhz-4mb"):
+            self.assertIn(1024, accepted[fast])
+            self.assertEqual(max(accepted[fast]), 1792)
+            self.assertNotIn(2048, accepted[fast])
+
     def test_origin_200_processor_options_carry_each_mode_word(self):
         # Expected words assembled by hand from the SysAD fields: tap,
         # cache clock divisor, cache size, system clock divisor.

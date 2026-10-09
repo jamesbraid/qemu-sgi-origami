@@ -325,7 +325,8 @@ Onyx2 deskside:
      - ``origin200``
      - 1
      - 1 or 2
-     - 64 to 1664 MiB, as banks (see below)
+     - 64 to 1664 MiB, or 1792 with a faster module, as banks (see
+       below)
    * - ``origin200-dual``
      - ``origin200``
      - 2, direct-linked
@@ -385,7 +386,8 @@ of two cores each; naming sockets and cores explicitly must still match
 one of the topology's own accepted populations. ``-m`` splits evenly
 across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same per-node sizes
-``origin200`` does, so its total ranges from 128 MiB to 3328 MiB, while
+``origin200`` does, so its total ranges from 128 MiB to 3328 MiB (3584
+MiB with a 225 or 270 MHz module), while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
 size. A refused size is reported with the per-node sizes that are
 accepted. ``nodes`` is part of the machine configuration: a snapshot
@@ -488,18 +490,23 @@ the block's word.
 An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
 starting at bank 0 with no empty bank between two populated ones (SGI
 007-3709-002, printed page 48). Each bank takes the largest size that
-still lets the remaining banks hold the rest, with bank 0 capped at
-128 MiB, so 1664 MiB is 128, 512, 512 and 512 MiB. Bank 0 holds 64 or
-128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives the 20
-accepted sizes from 64 to 1664 MiB. The board also takes 256 MB banks,
-but the stock IP27 PROM 6.156 disables a 256 MB bank whenever the
-configuration block gives a processor clock of 180 or 195 MHz, so QEMU
-never builds one (*established*, from disassembly of the PROM's memory
-test). A 512 MB bank 0 is real hardware too, but it is an unsupported
+still lets the remaining banks hold the rest. The board takes 64, 128,
+256 and 512 MB banks, but the stock IP27 PROM 6.156 disables a 256 MB
+bank whenever the configuration block gives a processor clock of 180
+or 195 MHz (*established*, from disassembly of the PROM's memory test).
+So with a 180 MHz module QEMU builds no 256 MB bank: bank 0 holds 64 or
+128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives 20
+accepted sizes from 64 to 1664 MiB (1664 MiB is 128, 512, 512 and
+512 MiB). With a 225 or 270 MHz module bank 0 may hold 256 MiB and the
+others 256 MiB too, which gives 26 sizes from 64 to 1792 MiB; 512 MiB
+is then two 256 MiB banks, as on a real 270 MHz machine whose PROM
+inventory shows 256 MB banks 0 and 1 (Nekochan thread 16726704). A
+512 MB bank 0 is real hardware too, but it is an unsupported
 configuration here: the PROM fails its memory test at the boot flash's
 reset address, where QEMU's flash overlay covers the RAM. The cause is
 *inferred*: real firmware appears to expect RAM behind a cached access
-there. 1024, 1536 and 2048 MiB need such a bank and are refused.
+there. 1024, 1536 and 2048 MiB need such a bank at 180 MHz, and 2048 MiB
+at any clock, and are refused.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within

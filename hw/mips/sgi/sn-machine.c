@@ -6272,6 +6272,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
     }
+    if (s->processor) {
+        node_memory = sn0_model_board_memory(node_memory,
+                                             s->processor->clock_hz);
+    }
     if (sgi_machine_has_identity_records(s)) {
         g_autofree const SGIModelController **controllers = NULL;
         size_t controller_count;

@@ -415,7 +415,8 @@
               "additionalProperties": false,
               "properties": {
                 "accepted_bank_layouts_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "integer", "minimum": 0 } } },
-              "accepted_bank_sizes_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+              "accepted_bank_sizes_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+                "accepted_bank_sizes_mib_with_256mb_banks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 }, "description": "The per-node totals accepted for an offered processor whose clock the IP27 PROM keeps 256 MB banks at (any but 180 and 195 MHz)." }
               },
               "description": "Current emulator fitting rules. These are not asserted as IP29 hardware facts."
             },
