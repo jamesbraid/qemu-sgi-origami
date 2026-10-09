@@ -73,13 +73,20 @@ current Mesa draw and CLEAR paths support.
 Renderer lifetime and ownership
 -------------------------------
 
-``sgi_renderer_new()`` creates an ``SGIRenderer`` with a surfaceless EGL
-context and one worker thread. ``sgi_renderer_free()`` joins that worker and
-releases its host resources. Submissions are synchronous. The worker uses
-host arrays and immutable draw data for the duration of each call. It does
-not access guest memory or call family resource callbacks. It does not
-acquire QEMU's big lock. A host draw failure latches the renderer's failed
-state, so later draw requests fail.
+``sgi_renderer_create(&renderer, errp)`` returns ``SGI_RENDER_CREATE_OK``
+with a renderer. It returns ``SGI_RENDER_CREATE_UNAVAILABLE``,
+``SGI_RENDER_CREATE_OOM``, or ``SGI_RENDER_CREATE_HOST_ERROR`` with no
+renderer and an error. Only ``SGI_RENDER_CREATE_UNAVAILABLE`` permits an
+optional caller to choose another renderer. The legacy
+``sgi_renderer_new()`` wrapper returns ``NULL`` for every failure and loses
+that distinction.
+
+A created renderer has a surfaceless EGL context and one worker thread.
+``sgi_renderer_free()`` joins the worker and releases its host resources.
+Submissions are synchronous. The worker uses host arrays and immutable draw
+data for each call. It does not access guest memory, call family resource
+callbacks, or acquire QEMU's big lock. A host draw failure latches the
+renderer's failed state, so later draw requests fail.
 
 A family adopting this API must own the renderer for the head's lifetime and
 fail device realization if its required renderer cannot be created. The family
