@@ -9,6 +9,7 @@ struct SGIRenderer {
     void *opaque;
     bool failed;
     unsigned test_draw_countdown;
+    int line_probe;
 };
 
 static const SGIRendererOps *gl_ops;
@@ -58,6 +59,28 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
                 }
             }
         }
+    } else if (frame->primitive == SGI_RENDERER_LINES) {
+        if (!frame->lines || !frame->count ||
+            frame->count > SGI_RENDERER_LINE_SEGMENTS_MAX ||
+            (frame->line_stipple &&
+             (!frame->line_stipple_repeat ||
+              frame->line_stipple_repeat > 256))) {
+            return false;
+        }
+        for (uint32_t i = 0; i < frame->count; i++) {
+            const SGIRendererLine *l = &frame->lines[i];
+
+            if (l->lo > l->hi) {
+                return false;
+            }
+            for (unsigned v = 0; v < 4; v++) {
+                for (unsigned k = 0; k < 2; k++) {
+                    if (!(fabsf(l->quad[v][k]) < SGI_RENDERER_LINE_REACH * 3)) {
+                        return false;
+                    }
+                }
+            }
+        }
     } else if (!frame->vertices || !frame->count ||
         frame->count > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX ||
         !isfinite(frame->point_size) || frame->point_size < 0) {
@@ -73,6 +96,7 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
         return frame->count % 3 == 0;
     case SGI_RENDERER_POINTS:
     case SGI_RENDERER_WINDOW_TRIANGLES:
+    case SGI_RENDERER_LINES:
         return true;
     default:
         return false;
@@ -276,7 +300,8 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         return false;
     }
     if ((frame->primitive == SGI_RENDERER_POINTS ||
-         frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) &&
+         frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES ||
+         frame->primitive == SGI_RENDERER_LINES) &&
         !sgi_renderer_primitive_supported(renderer, frame->primitive,
                                           frame->point_size, errp)) {
         return false;
@@ -369,6 +394,16 @@ bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
         return false;
     }
     return true;
+}
+
+int sgi_renderer_line_probe_result(SGIRenderer *renderer)
+{
+    return renderer->line_probe;
+}
+
+void sgi_renderer_set_line_probe_result(SGIRenderer *renderer, int result)
+{
+    renderer->line_probe = result;
 }
 
 bool sgi_renderer_primitive_supported(SGIRenderer *renderer,

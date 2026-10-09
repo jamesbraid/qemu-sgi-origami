@@ -42,6 +42,11 @@ typedef struct SGIRendererGL {
     Error *window_error;
     GLint window_height, window_x, window_y, window_inv_w;
     GLint window_c0, window_c1, window_c2, window_steps;
+    GLuint line_program;
+    Error *line_error;
+    GLint line_ends, line_inv_w, line_colour_a, line_colour_b, line_steps;
+    GLint line_range, line_x_major, line_reverse, line_counter, line_stipple;
+    GLint line_repeat, line_pattern, line_flat;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -398,6 +403,120 @@ static bool renderer_gl_window_program(SGIRendererGL *renderer)
     return !renderer_gl_error(renderer, "window program setup");
 }
 
+/*
+ * Line frames: each segment is a parallelogram in window pixels mapped
+ * through a power-of-two viewport, so its snapped vertices arrive exact.
+ * The fragment keeps only major-axis steps lo to hi, applies the stipple
+ * bit of its base pixel, and computes its colour in double from its
+ * centre's clamped parameter along the segment, exactly as the scalar
+ * rasterizer does, before rounding it to the native steps.
+ */
+static bool renderer_gl_line_program(SGIRendererGL *renderer)
+{
+    static const char *vertex_source =
+        "#version 450 compatibility\n"
+        "void main() {\n"
+        "  gl_Position = vec4((gl_Vertex.xy + "
+        G_STRINGIFY(SGI_RENDERER_LINE_REACH) ".0) / "
+        G_STRINGIFY(SGI_RENDERER_LINE_REACH) ".0 * 0.5 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 450 compatibility\n"
+        "uniform dvec4 ends, colour_a, colour_b, steps;\n"
+        "uniform dvec2 inv_w;\n"
+        "uniform ivec2 range;\n"
+        "uniform int x_major, reverse_dir, counter, stipple, repeat_;\n"
+        "uniform int pattern, flat_shade;\n"
+        "layout(location=0) out vec4 pixel;\n"
+        "double channel(double c, double s) {\n"
+        "  if (s <= 0.0) return c;\n"
+        "  if (!(c > 0.0)) return 0.0;\n"
+        "  if (c >= 1.0) return 1.0;\n"
+        "  return floor(c * s + 0.5) / s;\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = ivec2(floor(gl_FragCoord.xy));\n"
+        "  int c = x_major != 0 ? p.x : p.y;\n"
+        "  if (c < range.x || c > range.y) discard;\n"
+        "  if (stipple != 0) {\n"
+        "    int i = reverse_dir != 0 ? range.y - c : c - range.x;\n"
+        "    int bit = ((counter + i) / repeat_) % 16;\n"
+        "    if (((pattern >> bit) & 1) == 0) discard;\n"
+        "  }\n"
+        "  dvec4 rgba = colour_b;\n"
+        "  if (flat_shade == 0) {\n"
+        "    precise double cx = (double(p.x) + 0.5) * 256.0;\n"
+        "    precise double cy = (double(p.y) + 0.5) * 256.0;\n"
+        "    precise double dx = ends.z - ends.x;\n"
+        "    precise double dy = ends.w - ends.y;\n"
+        "    precise double t = ((cx - ends.x) * dx + (cy - ends.y) * dy) /\n"
+        "                       (dx * dx + dy * dy);\n"
+        "    t = min(max(t, 0.0lf), 1.0lf);\n"
+        "    precise double wa = (1.0 - t) * inv_w.x;\n"
+        "    precise double wb = t * inv_w.y;\n"
+        "    precise dvec4 mixed = (wa * colour_a + wb * colour_b) /\n"
+        "                          (wa + wb);\n"
+        "    rgba = mixed;\n"
+        "  }\n"
+        "  pixel = vec4(channel(rgba.r, steps.r), channel(rgba.g, steps.g),\n"
+        "               channel(rgba.b, steps.b), channel(rgba.a, steps.a));\n"
+        "}\n";
+    GLuint vertex, fragment;
+    GLint linked;
+    char log[512];
+    struct {
+        GLint *location;
+        const char *name;
+    } uniforms[] = {
+        { &renderer->line_ends, "ends" },
+        { &renderer->line_inv_w, "inv_w" },
+        { &renderer->line_colour_a, "colour_a" },
+        { &renderer->line_colour_b, "colour_b" },
+        { &renderer->line_steps, "steps" },
+        { &renderer->line_range, "range" },
+        { &renderer->line_x_major, "x_major" },
+        { &renderer->line_reverse, "reverse_dir" },
+        { &renderer->line_counter, "counter" },
+        { &renderer->line_stipple, "stipple" },
+        { &renderer->line_repeat, "repeat_" },
+        { &renderer->line_pattern, "pattern" },
+        { &renderer->line_flat, "flat_shade" },
+    };
+
+    vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
+    if (!vertex) {
+        return false;
+    }
+    fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return false;
+    }
+    renderer->line_program = glCreateProgram();
+    glAttachShader(renderer->line_program, vertex);
+    glAttachShader(renderer->line_program, fragment);
+    glLinkProgram(renderer->line_program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    glGetProgramiv(renderer->line_program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        glGetProgramInfoLog(renderer->line_program, sizeof(log), NULL, log);
+        error_setg(&renderer->error, "SGI line program failed: %s", log);
+        return false;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(uniforms); i++) {
+        *uniforms[i].location = glGetUniformLocation(renderer->line_program,
+                                                     uniforms[i].name);
+        if (*uniforms[i].location < 0) {
+            error_setg(&renderer->error,
+                       "SGI line program is missing uniform %s",
+                       uniforms[i].name);
+            return false;
+        }
+    }
+    return !renderer_gl_error(renderer, "line program setup");
+}
+
 static bool renderer_gl_start(SGIRendererGL *renderer)
 {
     static const char *vertex_source =
@@ -501,12 +620,19 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
             renderer->window_error = renderer->error;
             renderer->error = NULL;
         }
+        if (!renderer_gl_line_program(renderer)) {
+            renderer->line_error = renderer->error;
+            renderer->error = NULL;
+        }
     } else {
         error_setg(&renderer->texture_error,
                    "SGI typed textures require OpenGL 4.5, host has %d.%d",
                    major, minor);
         error_setg(&renderer->window_error,
                    "SGI smooth triangles require OpenGL 4.5, host has %d.%d",
+                   major, minor);
+        error_setg(&renderer->line_error,
+                   "SGI lines require OpenGL 4.5, host has %d.%d",
                    major, minor);
     }
     return !renderer_gl_error(renderer, "startup");
@@ -606,6 +732,10 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glViewport(-SGI_RENDERER_WINDOW_REACH, -SGI_RENDERER_WINDOW_REACH,
                    4 * SGI_RENDERER_WINDOW_REACH,
                    4 * SGI_RENDERER_WINDOW_REACH);
+    } else if (frame->primitive == SGI_RENDERER_LINES) {
+        /* The line program maps window pixels through this viewport. */
+        glViewport(-SGI_RENDERER_LINE_REACH, -SGI_RENDERER_LINE_REACH,
+                   4 * SGI_RENDERER_LINE_REACH, 4 * SGI_RENDERER_LINE_REACH);
     } else if (frame->viewport_given) {
         /* sgi_renderer_draw_frame() has checked the host viewport limit. */
         glViewport(frame->viewport[0], frame->viewport[1],
@@ -675,6 +805,15 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform4d(renderer->window_steps, frame->colour_steps[0],
                     frame->colour_steps[1], frame->colour_steps[2],
                     frame->colour_steps[3]);
+    } else if (frame->primitive == SGI_RENDERER_LINES) {
+        glUseProgram(renderer->line_program);
+        glUniform4d(renderer->line_steps, frame->colour_steps[0],
+                    frame->colour_steps[1], frame->colour_steps[2],
+                    frame->colour_steps[3]);
+        glUniform1i(renderer->line_flat, frame->shade_model == GL_FLAT);
+        glUniform1i(renderer->line_stipple, frame->line_stipple);
+        glUniform1i(renderer->line_repeat, MAX(frame->line_stipple_repeat, 1));
+        glUniform1i(renderer->line_pattern, frame->line_stipple_pattern);
     } else {
         glUseProgram(renderer->colour_program);
         glUniform4f(renderer->colour_steps, frame->colour_steps[0],
@@ -737,14 +876,36 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         }
         glEnd();
     }
-    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES) {
+    for (uint32_t i = 0; frame->primitive == SGI_RENDERER_LINES &&
+                         i < frame->count; i++) {
+        static const unsigned corner[6] = { 0, 1, 2, 0, 2, 3 };
+        const SGIRendererLine *l = &frame->lines[i];
+
+        glUniform4d(renderer->line_ends, l->a[0], l->a[1], l->b[0], l->b[1]);
+        glUniform2d(renderer->line_inv_w, l->inv_w[0], l->inv_w[1]);
+        glUniform4d(renderer->line_colour_a, l->colour[0][0], l->colour[0][1],
+                    l->colour[0][2], l->colour[0][3]);
+        glUniform4d(renderer->line_colour_b, l->colour[1][0], l->colour[1][1],
+                    l->colour[1][2], l->colour[1][3]);
+        glUniform2i(renderer->line_range, l->lo, l->hi);
+        glUniform1i(renderer->line_x_major, l->x_major);
+        glUniform1i(renderer->line_reverse, l->reverse);
+        glUniform1i(renderer->line_counter, l->counter);
+        glBegin(GL_TRIANGLES);
+        for (unsigned v = 0; v < 6; v++) {
+            glVertex2fv(l->quad[corner[v]]);
+        }
+        glEnd();
+    }
+    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
+        frame->primitive != SGI_RENDERER_LINES) {
         glBegin(frame->texture.slots ? GL_TRIANGLE_FAN :
                 frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS :
                 GL_TRIANGLES);
     }
     for (uint32_t i = 0;
          frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
-         i < frame->count; i++) {
+         frame->primitive != SGI_RENDERER_LINES && i < frame->count; i++) {
         const float *vertex = frame->vertices +
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
 
@@ -754,7 +915,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         }
         glVertex4fv(vertex);
     }
-    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES) {
+    if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
+        frame->primitive != SGI_RENDERER_LINES) {
         glEnd();
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
@@ -919,6 +1081,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
             glDeleteProgram(renderer->texture_program);
             glDeleteProgram(renderer->colour_program);
             glDeleteProgram(renderer->window_program);
+            glDeleteProgram(renderer->line_program);
             clean = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                     EGL_NO_CONTEXT);
         }
@@ -992,6 +1155,7 @@ static void renderer_gl_destroy(void *opaque)
     error_free(renderer->error);
     error_free(renderer->texture_error);
     error_free(renderer->window_error);
+    error_free(renderer->line_error);
     qemu_cond_destroy(&renderer->condition);
     qemu_mutex_destroy(&renderer->mutex);
     g_free(renderer);
@@ -1151,6 +1315,22 @@ static bool renderer_gl_supports_primitive(void *opaque, uint32_t primitive,
             renderer->max_viewport[1] < 4 * SGI_RENDERER_WINDOW_REACH) {
             error_setg(errp, "SGI renderer window triangles need a %d-pixel "
                        "viewport", 4 * SGI_RENDERER_WINDOW_REACH);
+            return false;
+        }
+        return true;
+    }
+    if (primitive == SGI_RENDERER_LINES) {
+        /* Lines draw as triangles in the fixed power-of-two viewport. */
+        if (!renderer->line_program || renderer->line_error) {
+            error_setg(errp, "%s", renderer->line_error ?
+                       error_get_pretty(renderer->line_error) :
+                       "SGI line program is unavailable");
+            return false;
+        }
+        if (renderer->max_viewport[0] < 4 * SGI_RENDERER_LINE_REACH ||
+            renderer->max_viewport[1] < 4 * SGI_RENDERER_LINE_REACH) {
+            error_setg(errp, "SGI renderer lines need a %d-pixel viewport",
+                       4 * SGI_RENDERER_LINE_REACH);
             return false;
         }
         return true;

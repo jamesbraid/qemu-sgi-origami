@@ -3079,6 +3079,93 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     }
 }
 
+bool sgi_raster_line_span(const SGIRasterRules *rules,
+                          const SGIGLDrawState *st, const float *va,
+                          const float *vb, uint32_t width,
+                          SGIRasterLineSpan *out)
+{
+    SGISoftDraw r = { .rules = rules, .st = st };
+    SGIVolumeVertex ca, cb;
+    SGISoftVertex a, b, sa, sb;
+    const int sub = rules->subpixel_bits;
+    bool x_major;
+    int64_t major0, major1, shift;
+
+    *out = (SGIRasterLineSpan) { .exact = true, .lo = 1, .hi = 0 };
+    sgi_volume_from_draw_vertex(st, va, &ca);
+    sgi_volume_from_draw_vertex(st, vb, &cb);
+    if (!sgi_volume_clip_segment(&ca, &cb)) {
+        return true;
+    }
+    if (!sgi_soft_project(&r, &ca, &a) || !sgi_soft_project(&r, &cb, &b)) {
+        return false;
+    }
+    out->ax = a.x;
+    out->ay = a.y;
+    out->bx = b.x;
+    out->by = b.y;
+    out->a_inv_w = a.inv_w;
+    out->b_inv_w = b.inv_w;
+    memcpy(out->a_rgba, a.rgba, sizeof(out->a_rgba));
+    memcpy(out->b_rgba, b.rgba, sizeof(out->b_rgba));
+    if (a.x == b.x && a.y == b.y) {
+        return true;
+    }
+    /* The same shift, major range and minor candidates as the scan. */
+    x_major = llabs(b.x - a.x) >= llabs(b.y - a.y);
+    out->x_major = x_major;
+    shift = (int64_t)(MAX(width, 1) - 1) * (1 << (sub - 1));
+    sa = a;
+    sb = b;
+    if (x_major) {
+        sa.y -= shift;
+        sb.y -= shift;
+    } else {
+        sa.x -= shift;
+        sb.x -= shift;
+    }
+    major0 = ((x_major ? MIN(a.x, b.x) : MIN(a.y, b.y)) >> sub) - 1;
+    major1 = ((x_major ? MAX(a.x, b.x) : MAX(a.y, b.y)) >> sub) + 1;
+    for (int64_t m = major0; m <= major1; m++) {
+        const SGISoftVertex *lo = x_major ? (a.x <= b.x ? &sa : &sb) :
+                                            (a.y <= b.y ? &sa : &sb);
+        const SGISoftVertex *hi = lo == &sa ? &sb : &sa;
+        double l0 = x_major ? lo->x : lo->y, l1 = x_major ? hi->x : hi->y;
+        double n0 = x_major ? lo->y : lo->x, n1 = x_major ? hi->y : hi->x;
+        double e0 = MAX((double)m * (1 << sub), l0);
+        double e1 = MIN((double)(m + 1) * (1 << sub), l1);
+        double f0, f1;
+        unsigned count = 0;
+
+        if (l1 > l0) {
+            e0 = MIN(e0, l1);
+            e1 = MAX(e1, l0);
+            f0 = n0 + (n1 - n0) * (e0 - l0) / (l1 - l0);
+            f1 = n0 + (n1 - n0) * (e1 - l0) / (l1 - l0);
+        } else {
+            f0 = n0;
+            f1 = n1;
+        }
+        for (int64_t n = (int64_t)floor(MIN(f0, f1) / (1 << sub)) - 1;
+             n <= (int64_t)floor(MAX(f0, f1) / (1 << sub)) + 1; n++) {
+            count += sgi_soft_line_covers(&sa, &sb, x_major ? m : n,
+                                          x_major ? n : m, sub);
+        }
+        if (!count) {
+            continue;
+        }
+        if (!out->covered) {
+            out->covered = true;
+            out->lo = m;
+        } else if (m != out->hi + 1) {
+            out->exact = false;
+        }
+        out->exact &= count == 1;
+        out->hi = m;
+    }
+    return true;
+}
+
 /*
  * Aliased square-point centring follows OpenGL 1.2.1, 3.3, on the shared
  * snapped subpixel grid rather than ideal unsnapped coordinates. A point

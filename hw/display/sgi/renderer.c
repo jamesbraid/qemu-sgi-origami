@@ -237,6 +237,11 @@ static bool sgi_render_mode_polygons(uint32_t mode)
     return mode >= SGI_GL_TRIANGLES && mode <= SGI_GL_POLYGON;
 }
 
+static bool sgi_render_mode_lines(uint32_t mode)
+{
+    return mode >= SGI_GL_LINES && mode <= SGI_GL_LINE_STRIP;
+}
+
 /*
  * Points and polygon modes. Lines stay unsupported: Mesa's aliased lines
  * differ from the shared wide-primitive contract at diamond ties and at
@@ -254,17 +259,20 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
     const SGIGLDrawState *st = draw->state;
     const SGIRenderResource *res;
 
-    if ((draw->mode != SGI_GL_POINTS &&
-         !sgi_render_mode_polygons(draw->mode)) ||
+    if (draw->mode > SGI_GL_POLYGON ||
         (draw->mode == SGI_GL_POINTS &&
          (!isfinite(draw->point_size) || draw->point_size < 0)) ||
+        (sgi_render_mode_lines(draw->mode) &&
+         (!isfinite(draw->line_width) || draw->line_width < 0 ||
+          draw->line_smooth)) ||
         (st->texture_2d &&
          (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
         draw->back_colors ||
         (sgi_render_mode_polygons(draw->mode) && draw->polygon_modes &&
          (draw->polygon_modes[0] != SGI_GL_FILL ||
           draw->polygon_modes[1] != SGI_GL_FILL)) ||
-        draw->polygon_stipple_enabled || draw->line_stipple_enabled ||
+        draw->polygon_stipple_enabled ||
+        (!sgi_render_mode_lines(draw->mode) && draw->line_stipple_enabled) ||
         (draw->mode == SGI_GL_POINTS && draw->point_smooth) ||
         (sgi_render_mode_polygons(draw->mode) && draw->polygon_smooth) ||
         (st->shade_model != SGI_GL_SMOOTH &&
@@ -512,6 +520,363 @@ static void sgi_render_decompose(SGIRenderPieces *p, const SGIGLDraw *draw)
 #undef PIECE
 }
 
+static int sgi_render_test_band;
+
+void sgi_render_test_line_band(int subpixels)
+{
+    sgi_render_test_band = subpixels;
+}
+
+static int64_t sgi_render_gcd(int64_t a, int64_t b)
+{
+    while (b) {
+        int64_t r = a % b;
+
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+/* Subpixels per pixel under the 8 subpixel bits the rules check requires. */
+#define SGI_RENDER_LINE_SUB 256
+
+/*
+ * One segment's frame record. The parallelogram covers the band
+ * [line - N/2, line + N/2] in the minor axis around the unshifted segment,
+ * which under llvmpipe's triangle rules selects exactly the replicated rows
+ * of the scalar path's shifted width-one line; its ends extend past the
+ * base range by whole multiples of the segment's smallest step on the
+ * subpixel grid, d / gcd(dx, dy), so every vertex stays exactly on the
+ * line, and the fragment program keeps only steps lo to hi. False
+ * when a vertex falls outside the line viewport, where GL would clip and
+ * create new vertices.
+ */
+static bool sgi_render_line_record(const SGIRasterLineSpan *s,
+                                   uint32_t width, const float *flat,
+                                   uint32_t counter, SGIRendererLine *l)
+{
+    const int64_t reach = (int64_t)SGI_RENDERER_LINE_REACH *
+                          SGI_RENDER_LINE_SUB;
+    int64_t d[2] = { s->bx - s->ax, s->by - s->ay };
+    int64_t major = s->x_major ? 0 : 1;
+    int64_t g = sgi_render_gcd(llabs(d[0]), llabs(d[1]));
+    int64_t dm;
+    int64_t amaj = major ? s->ay : s->ax, bmaj = major ? s->by : s->bx;
+    int64_t need, k, h = (int64_t)width * (SGI_RENDER_LINE_SUB / 2);
+    int64_t ends[2][2], quad[4][2];
+
+    if (!g || width > SGI_RENDERER_LINE_REACH) {
+        return false;
+    }
+    d[0] /= g;
+    d[1] /= g;
+    dm = llabs(d[major]);
+    need = MAX(MAX(MIN(amaj, bmaj) - s->lo * SGI_RENDER_LINE_SUB,
+                   (s->hi + 1) * SGI_RENDER_LINE_SUB - MAX(amaj, bmaj)), 0) +
+           SGI_RENDER_LINE_SUB / 4;
+    k = (need + dm - 1) / dm;
+    ends[0][0] = s->ax - k * d[0];
+    ends[0][1] = s->ay - k * d[1];
+    ends[1][0] = s->bx + k * d[0];
+    ends[1][1] = s->by + k * d[1];
+    for (unsigned v = 0; v < 4; v++) {
+        const int64_t *e = ends[v == 1 || v == 2];
+        int64_t offset = (v < 2 ? -h : h) + sgi_render_test_band;
+
+        quad[v][0] = e[0] + (major ? offset : 0);
+        quad[v][1] = e[1] + (major ? 0 : offset);
+        for (unsigned c = 0; c < 2; c++) {
+            if (!(quad[v][c] > -reach && quad[v][c] < 3 * reach)) {
+                return false;
+            }
+            l->quad[v][c] = (float)quad[v][c] / SGI_RENDER_LINE_SUB;
+        }
+    }
+    l->a[0] = s->ax;
+    l->a[1] = s->ay;
+    l->b[0] = s->bx;
+    l->b[1] = s->by;
+    l->inv_w[0] = s->a_inv_w;
+    l->inv_w[1] = s->b_inv_w;
+    for (unsigned c = 0; c < 4; c++) {
+        l->colour[0][c] = flat ? flat[c] : s->a_rgba[c];
+        l->colour[1][c] = flat ? flat[c] : s->b_rgba[c];
+    }
+    l->lo = s->lo;
+    l->hi = s->hi;
+    l->x_major = s->x_major;
+    l->reverse = bmaj < amaj;
+    l->counter = counter;
+    return true;
+}
+
+/* A colour rounded to the steps in double, as the scalar path rounds it. */
+static void sgi_render_round_colour(const float *colour,
+                                    const uint32_t *steps, float *out)
+{
+    for (unsigned c = 0; c < 4; c++) {
+        uint32_t s = steps[c];
+        double v = colour[c];
+
+        out[c] = !s ? colour[c] : !(v > 0) ? 0 : v >= 1 ? 1 :
+                 (float)((uint32_t)(v * s + 0.5) / (double)s);
+    }
+}
+
+/* Separate lines pair vertices; a strip joins them and a loop closes. */
+static uint32_t sgi_render_line_segments(const SGIGLDraw *draw)
+{
+    if (draw->mode == SGI_GL_LINES) {
+        return draw->count / 2;
+    }
+    if (draw->count < 2) {
+        return 0;
+    }
+    return draw->count - 1 + (draw->mode == SGI_GL_LINE_LOOP);
+}
+
+typedef struct SGIRenderLines {
+    SGIRendererLine *lines;
+    uint32_t count, segments;
+    uint32_t counter;           /* the stipple counter after the draw */
+    bool consumed;              /* some base pixel was counted */
+} SGIRenderLines;
+
+/*
+ * The segments sgi_soft_draw() draws, with its provoking vertices and its
+ * stipple counter: separate lines restart it unless a phase is borrowed,
+ * strips and loops carry it. False when a segment cannot be drawn exactly.
+ */
+static bool sgi_render_lines(const SGIRasterRules *rules,
+                             const SGIGLDraw *draw, const uint32_t *steps,
+                             SGIRenderLines *out)
+{
+    uint32_t n = draw->count, repeat, modulus, width;
+    bool flat = draw->state->shade_model == SGI_GL_FLAT;
+    double size = draw->line_width == 0 ? 1 :
+                  floor((double)draw->line_width + 0.5);
+
+    if (!(size <= SGI_RENDERER_LINE_REACH)) {
+        return false;
+    }
+    width = MAX(size, 1);
+    repeat = MAX(1, MIN(draw->line_stipple_repeat, 256));
+    modulus = 16 * repeat;
+    out->counter = (draw->line_phase && !draw->line_phase_reset ?
+                    *draw->line_phase : 0) % modulus;
+    out->count = out->segments = 0;
+    out->consumed = false;
+    for (uint32_t s = 0; s < sgi_render_line_segments(draw); s++) {
+        /* Every segment's provoking vertex is its second. */
+        uint32_t i = draw->mode == SGI_GL_LINES ? 2 * s : s;
+        uint32_t j = draw->mode == SGI_GL_LINES ? i + 1 : (i + 1) % n;
+        const float *va = draw->vertices + (size_t)i * SGI_GL_VERTEX_FLOATS;
+        const float *vb = draw->vertices + (size_t)j * SGI_GL_VERTEX_FLOATS;
+        float colour[4];
+        SGIRasterLineSpan span;
+
+        out->segments++;
+        if (draw->mode == SGI_GL_LINES && !draw->line_phase) {
+            out->counter = 0;
+        }
+        if (!sgi_raster_line_span(rules, draw->state, va, vb, width,
+                                  &span) || !span.covered) {
+            continue;
+        }
+        if (!span.exact || out->count >= SGI_RENDERER_LINE_SEGMENTS_MAX) {
+            return false;
+        }
+        sgi_render_round_colour(vb + SGI_GL_V_COLOR, steps, colour);
+        if (!sgi_render_line_record(&span, width, flat ? colour : NULL,
+                                    out->counter, &out->lines[out->count])) {
+            return false;
+        }
+        out->count++;
+        out->counter = (out->counter + (uint32_t)(span.hi - span.lo + 1) %
+                        modulus) % modulus;
+        out->consumed = true;
+    }
+    return true;
+}
+
+/*
+ * Before lines are drawn on a renderer, draw tie vectors through both
+ * paths and compare: endpoints on diamond edges and corners, rows and
+ * columns through pixel centres, slopes of one through corners and even
+ * widths, in both directions. Lines stay unsupported on a renderer whose
+ * host rasterizes any of them differently.
+ */
+#define SGI_RENDER_PROBE_SIZE 24
+
+typedef struct SGIRenderProbe {
+    uint8_t written[SGI_RENDER_PROBE_SIZE][SGI_RENDER_PROBE_SIZE];
+    uint32_t rgb[SGI_RENDER_PROBE_SIZE][SGI_RENDER_PROBE_SIZE][3];
+} SGIRenderProbe;
+
+static void sgi_render_probe_store(void *opaque, SGIColourTarget target,
+                                   int x, int y,
+                                   const SGIRasterColour *colour)
+{
+    SGIRenderProbe *p = opaque;
+
+    if (x >= 0 && x < SGI_RENDER_PROBE_SIZE && y >= 0 &&
+        y < SGI_RENDER_PROBE_SIZE) {
+        p->written[y][x] = 1;
+        memcpy(p->rgb[y][x], colour->component, sizeof(p->rgb[y][x]));
+    }
+}
+
+static bool sgi_render_probe_load(void *opaque, SGIColourTarget target,
+                                  int x, int y, SGIRasterColour *colour)
+{
+    *colour = (SGIRasterColour) { { 0 } };
+    return true;
+}
+
+static bool sgi_render_line_probe(SGIRenderer *renderer)
+{
+    /* The rules sgi_render_rules_supported() accepts, complete. */
+    static const SGIRasterRules probe_rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "shared line probe",
+    };
+    const SGIRasterRules *rules = &probe_rules;
+    static const float probes[][5] = {
+        { 2.75f, 14.25f, 7.5f, 11, 1 },
+        { 7.5f, 11, 2.75f, 14.25f, 1 },
+        { 3.25f, 2.75f, 9.5f, 4.5f, 1 },
+        { 2.5f, 2, 8.5f, 8, 1 },
+        { 1.5f, 5.5f, 12.5f, 5.5f, 1 },
+        { 1.5f, 5.5f, 12.5f, 5.5f, 2 },
+        { 12.5f, 6.5f, 1.5f, 6.5f, 3 },
+        { 6.5f, 1.5f, 6.5f, 12.5f, 2 },
+        { 7.5f, 20.5f, 7.5f, 2.5f, 4 },
+        { 2, 2, 10, 10, 1 },
+        { 12, 2, 4, 10, 2 },
+        { 2.25f, 7, 14, 9.5f, 2 },
+        { 14, 9.5f, 2.25f, 7, 4 },
+        { 3, 3, 8, 8, 3 },
+        { 14, 4, 9, 9, 2 },
+        { 10.25f, 14.75f, 12.5f, 6.25f, 2 },
+        { 1.5f, 3, 1.5f, 8.5f, 2 },
+        { 8, 1, 14, 3.25f, 4 },
+    };
+    static const uint32_t steps[4] = { 255, 255, 255, 255 };
+    static const float colours[2][4] = {
+        { 1, 0.25f, 0.5f, 1 }, { 0.1f, 0.9f, 0.3f, 1 },
+    };
+    SGIGLDrawState st = {
+        .shade_model = SGI_GL_SMOOTH,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, SGI_RENDER_PROBE_SIZE - 1,
+                                        SGI_RENDER_PROBE_SIZE - 1 } },
+        },
+        .viewport = { 0, 0, SGI_RENDER_PROBE_SIZE, SGI_RENDER_PROBE_SIZE },
+        .depth_range = { 0, 1 },
+    };
+    g_autofree SGIRenderProbe *scalar = g_new0(SGIRenderProbe, 1);
+    g_autofree uint16_t *rgba = g_new0(uint16_t, SGI_RENDER_PROBE_SIZE *
+                                                 SGI_RENDER_PROBE_SIZE * 4);
+    g_autofree uint8_t *written = g_new0(uint8_t, SGI_RENDER_PROBE_SIZE *
+                                                  SGI_RENDER_PROBE_SIZE);
+    SGIRasterTarget target = {
+        .opaque = scalar,
+        .store_rgba = sgi_render_probe_store,
+        .load_rgba = sgi_render_probe_load,
+    };
+
+    for (unsigned i = 0; i < 16; i += 5) {
+        st.modelview[i] = 1;
+        st.projection[i] = 1;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
+        float v[2][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+        SGIGLDraw draw = {
+            .mode = SGI_GL_LINES, .count = 2, .vertices = &v[0][0],
+            .state = &st, .line_width = probes[i][4],
+        };
+        SGIRendererLine line;
+        SGIRenderLines lines = { .lines = &line };
+        SGIRendererFrame frame = {
+            .width = SGI_RENDER_PROBE_SIZE, .height = SGI_RENDER_PROBE_SIZE,
+            .primitive = SGI_RENDERER_LINES, .lines = &line,
+            .shade_model = SGI_GL_SMOOTH, .rgba = rgba, .written = written,
+            .written_capacity = SGI_RENDER_PROBE_SIZE * SGI_RENDER_PROBE_SIZE,
+        };
+        Error *err = NULL;
+
+        for (unsigned e = 0; e < 2; e++) {
+            v[e][SGI_GL_V_POSITION] = probes[i][e * 2] * 2 /
+                                      SGI_RENDER_PROBE_SIZE - 1;
+            v[e][SGI_GL_V_POSITION + 1] = probes[i][e * 2 + 1] * 2 /
+                                          SGI_RENDER_PROBE_SIZE - 1;
+            v[e][SGI_GL_V_POSITION + 3] = 1;
+            for (unsigned c = 0; c < 4; c++) {
+                v[e][SGI_GL_V_COLOR + c] = colours[e][c];
+                /* Clip w of 2 at every other end weights the colour. */
+                if (e && (i & 1)) {
+                    v[e][SGI_GL_V_POSITION + c] *= 2;
+                }
+            }
+        }
+        memcpy(frame.colour_steps, steps, sizeof(steps));
+        memset(scalar, 0, sizeof(*scalar));
+        sgi_soft_draw(rules, &target, &draw);
+        if (!sgi_render_lines(rules, &draw, steps, &lines) ||
+            lines.count != 1) {
+            return false;
+        }
+        frame.count = lines.count;
+        if (!sgi_renderer_draw_frame(renderer, &frame, &err)) {
+            error_free(err);
+            return false;
+        }
+        /* Coverage, and each covered pixel's colour, must match. */
+        if (memcmp(written, scalar->written, sizeof(scalar->written))) {
+            return false;
+        }
+        for (size_t px = 0; px < SGI_RENDER_PROBE_SIZE * SGI_RENDER_PROBE_SIZE;
+             px++) {
+            for (unsigned c = 0; written[px] && c < 3; c++) {
+                uint32_t mesa = ((uint32_t)rgba[px * 4 + c] * 255 + 32767) /
+                                65535;
+
+                if (mesa != scalar->rgb[px / SGI_RENDER_PROBE_SIZE]
+                                       [px % SGI_RENDER_PROBE_SIZE][c]) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/* Run the probe once per renderer; false when lines stay unsupported. */
+static bool sgi_render_lines_proven(SGIRenderer *renderer, Error **errp)
+{
+    if (!sgi_renderer_primitive_supported(renderer, SGI_RENDERER_LINES, 1,
+                                          errp)) {
+        return false;
+    }
+    if (!sgi_renderer_line_probe_result(renderer)) {
+        sgi_renderer_set_line_probe_result(renderer,
+            sgi_render_line_probe(renderer) ? 1 : -1);
+    }
+    if (sgi_renderer_line_probe_result(renderer) < 0) {
+        error_setg(errp, "SGI Mesa lines differ from the scalar path on "
+                   "this host");
+        return false;
+    }
+    return true;
+}
+
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
                                         const SGIRasterTarget *target,
@@ -540,6 +905,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     float point_size = 0;
     bool any_written = false;
     bool upside_down;
+    bool lines = sgi_render_mode_lines(draw ? draw->mode : 0);
+    SGIRenderLines line_set = { 0 };
+    g_autofree SGIRendererLine *line_storage = NULL;
+    uint32_t steps[4] = { 0 };
     SGIRenderCommitResult committed;
     SGIRenderResult status;
 
@@ -556,7 +925,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                       "dropped\n");
         return SGI_RENDER_OK;
     }
-    if (!clip->n) {
+    /* A line draw still counts its stipple phase with nothing visible. */
+    if (!clip->n && !(lines && draw->line_phase)) {
         return SGI_RENDER_OK;
     }
     if (clip->n > SGI_CLIP_MAX) {
@@ -580,7 +950,45 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "Unsupported SGI Mesa draw state or resource");
         return SGI_RENDER_UNSUPPORTED;
     }
-    if (!draw->state->texture_2d) {
+    for (unsigned c = 0; c < resource->component_count; c++) {
+        steps[c] = (1u << resource->component[c].storage_bits) - 1;
+    }
+    if (draw->state->blend) {
+        /* sgi_render_blend_supported() matched these to the storage. */
+        for (unsigned c = 0; c < 3; c++) {
+            steps[c] = (1u << rules->color_bits) - 1;
+        }
+        steps[3] = (1u << MAX(2, MAX(rules->color_bits,
+                                     rules->alpha_bits))) - 1;
+    }
+    if (lines) {
+        uint32_t segments = sgi_render_line_segments(draw);
+
+        if (!segments) {
+            return SGI_RENDER_OK;
+        }
+        /* As for other primitives, see the blending refusal below. */
+        if (draw->state->blend && segments > 1) {
+            error_setg(errp, "SGI Mesa blending of more than one primitive "
+                       "in a draw is unsupported");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        if (!sgi_render_lines_proven(renderer, errp)) {
+            return SGI_RENDER_UNSUPPORTED;
+        }
+        line_storage = g_try_new(SGIRendererLine,
+                                 MIN(segments,
+                                     SGI_RENDERER_LINE_SEGMENTS_MAX));
+        if (!line_storage) {
+            error_setg(errp, "Cannot allocate SGI Mesa draw lines");
+            return SGI_RENDER_OOM;
+        }
+        line_set.lines = line_storage;
+        if (!sgi_render_lines(rules, draw, steps, &line_set)) {
+            error_setg(errp, "SGI Mesa cannot draw a line exactly");
+            return SGI_RENDER_UNSUPPORTED;
+        }
+    } else if (!draw->state->texture_2d) {
         piece_vertices = sgi_render_piece_vertices(draw->mode, draw->count);
         if (!piece_vertices) {
             return SGI_RENDER_OK;
@@ -686,16 +1094,29 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "SGI Mesa draw needs a covered commit provider");
         return SGI_RENDER_UNSUPPORTED;
     }
+    /*
+     * Every refusal is above, so a refused draw leaves a borrowed phase
+     * for the caller's scalar fallback to count once. From here the draw
+     * counts as the scalar path's does.
+     */
+    if (lines) {
+        if (draw->line_phase && line_set.consumed) {
+            *draw->line_phase = line_set.counter;
+        }
+        if (!line_set.count) {
+            return SGI_RENDER_OK;
+        }
+    }
     frame.width = resource->width;
     frame.height = resource->height;
     /*
      * A triangle frame holds window rows top first: llvmpipe applies its
      * top-left rule with rows running down, so drawing upside down gives a
      * pixel centre on a horizontal edge to the same triangle as the scalar
-     * path's top-left rule in OpenGL's upward window rows. Points keep
-     * upward rows, where their half-pixel centres already match.
+     * path's top-left rule in OpenGL's upward window rows. Points and
+     * lines keep upward rows, where they already match.
      */
-    upside_down = draw->mode != SGI_GL_POINTS;
+    upside_down = sgi_render_mode_polygons(draw->mode);
     frame.viewport_given = true;
     memcpy(frame.viewport, draw->state->viewport, sizeof(frame.viewport));
     if (upside_down) {
@@ -734,8 +1155,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             x1 = MIN(x1, (int64_t)s[0] + s[2] - 1);
             y1 = MIN(y1, (int64_t)s[1] + s[3] - 1);
         }
-        if (window) {
-            /* The scalar path bounds triangle fragments by the viewport. */
+        if (window || lines) {
+            /* The scalar path bounds these fragments by the viewport. */
             const int32_t *v = draw->state->viewport;
 
             x0 = MAX(x0, v[0]);
@@ -902,21 +1323,19 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         frame.count = polygon_count;
         frame.vertices = &vertices[0][0];
     } else if (window) {
-        for (unsigned c = 0; c < resource->component_count; c++) {
-            frame.colour_steps[c] =
-                (1u << resource->component[c].storage_bits) - 1;
-        }
-        if (draw->state->blend) {
-            /* sgi_render_blend_supported() matched these to the storage. */
-            for (unsigned c = 0; c < 3; c++) {
-                frame.colour_steps[c] = (1u << rules->color_bits) - 1;
-            }
-            frame.colour_steps[3] =
-                (1u << MAX(2, MAX(rules->color_bits, rules->alpha_bits))) - 1;
-        }
+        memcpy(frame.colour_steps, steps, sizeof(steps));
         frame.primitive = SGI_RENDERER_WINDOW_TRIANGLES;
         frame.triangles = window_storage;
         frame.count = pieces.window_count;
+    } else if (lines) {
+        memcpy(frame.colour_steps, steps, sizeof(steps));
+        frame.primitive = SGI_RENDERER_LINES;
+        frame.lines = line_set.lines;
+        frame.count = line_set.count;
+        frame.line_stipple = draw->line_stipple_enabled;
+        frame.line_stipple_repeat = MAX(1, MIN(draw->line_stipple_repeat,
+                                               256));
+        frame.line_stipple_pattern = draw->line_stipple_pattern & 0xffff;
     } else {
         piece_storage = g_try_new(float, piece_vertices *
                                          SGI_RENDERER_FRAME_VERTEX_FLOATS);
@@ -926,18 +1345,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         pieces.v = (float (*)[SGI_RENDERER_FRAME_VERTEX_FLOATS])piece_storage;
         pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
-        for (unsigned c = 0; c < resource->component_count; c++) {
-            frame.colour_steps[c] =
-                (1u << resource->component[c].storage_bits) - 1;
-        }
-        if (draw->state->blend) {
-            /* sgi_render_blend_supported() matched these to the storage. */
-            for (unsigned c = 0; c < 3; c++) {
-                frame.colour_steps[c] = (1u << rules->color_bits) - 1;
-            }
-            frame.colour_steps[3] =
-                (1u << MAX(2, MAX(rules->color_bits, rules->alpha_bits))) - 1;
-        }
+        memcpy(frame.colour_steps, steps, sizeof(steps));
         pieces.steps = frame.colour_steps;
         sgi_render_decompose(&pieces, draw);
         assert(pieces.count == piece_vertices);

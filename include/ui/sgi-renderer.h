@@ -52,6 +52,7 @@ typedef enum SGIRendererPrimitive {
     SGI_RENDERER_TRIANGLES,
     SGI_RENDERER_POINTS,
     SGI_RENDERER_WINDOW_TRIANGLES,
+    SGI_RENDERER_LINES,
 } SGIRendererPrimitive;
 
 /*
@@ -74,6 +75,33 @@ typedef struct SGIRendererTriangle {
     double inv_w[3];
     float colour[3][4];
 } SGIRendererTriangle;
+
+/*
+ * Line frames draw in window pixels mapped through the fixed viewport
+ * (-SGI_RENDERER_LINE_REACH, -SGI_RENDERER_LINE_REACH, 4 * reach,
+ * 4 * reach), whose power-of-two scale keeps every vertex on the 1/256
+ * grid exact. Vertices must lie strictly inside it.
+ */
+#define SGI_RENDERER_LINE_REACH 4096
+#define SGI_RENDERER_LINE_SEGMENTS_MAX 65536
+
+/*
+ * One aliased segment as the scalar rasterizer draws it: a parallelogram
+ * covering the width band around the segment, of which only major-axis
+ * steps lo to hi draw. Each fragment's colour comes from its centre's
+ * clamped parameter along a to b, weighted by 1 / clip w. A flat segment
+ * takes colour b.
+ */
+typedef struct SGIRendererLine {
+    float quad[4][2];       /* window pixels, a convex parallelogram */
+    double a[2], b[2];      /* snapped endpoints, window subpixels of 1/256 */
+    double inv_w[2];
+    float colour[2][4];     /* clamped to [0, 1] */
+    int32_t lo, hi;
+    bool x_major;
+    bool reverse;           /* the segment runs down the major axis */
+    uint32_t counter;       /* stipple counter at the first base pixel */
+} SGIRendererLine;
 
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
@@ -99,6 +127,10 @@ typedef struct SGIRendererFrame {
     float point_size; /* Aliased integer size; zero means one. */
     /* A window triangle frame's triangles, count of them. */
     const SGIRendererTriangle *triangles;
+    /* A line frame's segments, count of them; vertices are unused. */
+    const SGIRendererLine *lines;
+    bool line_stipple;
+    uint32_t line_stipple_repeat, line_stipple_pattern;
     uint32_t shade_model;
     uint32_t blend, blend_src, blend_dst, blend_equation;
     /*
@@ -156,7 +188,13 @@ bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp);
 /* False when the host cannot map a viewport exactly; no failure latches. */
 bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
                                      const int32_t viewport[4], Error **errp);
-/* False when the host's aliased point range excludes the size. */
+/*
+ * The shared draw code's cached line probe outcome for this renderer:
+ * zero until it runs, positive when it passed, negative when it failed.
+ */
+int sgi_renderer_line_probe_result(SGIRenderer *renderer);
+void sgi_renderer_set_line_probe_result(SGIRenderer *renderer, int result);
+/* False when the host cannot draw the primitive at this aliased size. */
 bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
                                       uint32_t primitive, float size,
                                       Error **errp);
