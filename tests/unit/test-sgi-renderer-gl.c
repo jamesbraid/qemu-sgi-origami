@@ -3680,6 +3680,9 @@ typedef struct PrimCase {
     /* With state.texture_2d: a level-zero RGBA8 image, rows from T zero. */
     SGIGLTexImage image;
     uint32_t texels[4][4][4];
+    /* With use_phase, each path borrows its own stipple phase. */
+    bool use_phase;
+    uint32_t phase[2];
 } PrimCase;
 
 static bool prim_read_texel(void *opaque, uint32_t x, uint32_t y,
@@ -3846,6 +3849,7 @@ static void prim_scalar_draw(PrimCase *p, PrimFixture *f)
     prim_rules(p, &rules);
     p->image.read_texel = prim_read_texel;
     p->image.opaque = p;
+    p->draw.line_phase = p->use_phase ? &p->phase[0] : NULL;
     g_assert_true(sgi_raster_rules_supported(&rules));
     g_assert_cmpint(sgi_soft_draw(&rules, &target, &p->draw), ==,
                     SGI_GL_DRAW_OK);
@@ -3883,6 +3887,7 @@ static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
         }
     }
     draw.state = &state;
+    draw.line_phase = p->use_phase ? &p->phase[1] : NULL;
     if (p->rules_case == 1) {
         rules.subpixel_bits = 4;
     } else if (p->rules_case == 2) {
@@ -4830,6 +4835,427 @@ static void test_scalar_match_store_widths(void)
     }
 }
 
+/* A segment from window (x0, y0) to (x1, y1) under the case's viewport. */
+static void prim_segment(PrimCase *p, float x0, float y0, float x1, float y1)
+{
+    prim_vertex_window(p, x0, y0);
+    prim_vertex_window(p, x1, y1);
+}
+
+/*
+ * Exact ties: endpoints on diamond edges and corners in all four diagonal
+ * directions, rows and columns through pixel centres, slopes of one
+ * through corners, half-pixel shifts at even widths, and one-subpixel
+ * moves either side of each, at widths 1 to 6.
+ */
+static void test_scalar_match_line_ties(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float ties[][4] = {
+        { 2.75f, 14.25f, 7.5f, 11 }, { 7.5f, 11, 2.75f, 14.25f },
+        { 3.25f, 2.75f, 9.5f, 4.5f }, { 9.5f, 4.5f, 3.25f, 2.75f },
+        { 2.5f, 2, 8.5f, 8 }, { 8.5f, 8, 2.5f, 2 },
+        { 12.5f, 2, 6.5f, 8 }, { 6.5f, 8, 12.5f, 2 },
+        { 1.5f, 5.5f, 12.5f, 5.5f }, { 12.5f, 6.5f, 1.5f, 6.5f },
+        { 6.5f, 1.5f, 6.5f, 12.5f }, { 7.5f, 13.5f, 7.5f, 2.5f },
+        { 2, 2, 10, 10 }, { 12, 2, 4, 10 }, { 10, 10, 2, 2 },
+        { 2.25f, 7, 14, 9.5f }, { 14, 9.5f, 2.25f, 7 },
+        { 4.75f, 3.25f, 5.25f, 13.75f }, { 11, 1.5f, 3, 13.5f },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned width = 1; width <= 6; width++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(ties); i++) {
+            for (int nudge = -1; nudge <= 1; nudge++) {
+                const float d = nudge / 256.0f;
+                g_autofree char *name = g_strdup_printf(
+                    "tie %u width %u nudge %d", i, width, nudge);
+
+                prim_case_init(p, SGI_GL_LINES, 4);
+                p->draw.line_width = width;
+                prim_segment(p, ties[i][0] + d, ties[i][1] - d,
+                             ties[i][2] + d, ties[i][3] + d);
+                prim_expect(renderer, name, p, &failures);
+                cases++;
+            }
+        }
+    }
+    g_test_message("line ties: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Strips and loops sharing endpoints as direction changes, smooth colour
+ * with perspective weights, viewport, scissor and clip bounds, a long
+ * segment and a single blended segment.
+ */
+static void test_scalar_match_line_state(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect clips[] = {
+        { 1, 1, 6, 5 }, { 5, 4, 12, 10 }, { 13, 0, 15, 15 },
+    };
+    static const float strip[][2] = {
+        { 1.5f, 1.5f }, { 7.5f, 4.5f }, { 4.5f, 12.5f }, { 13.5f, 13.5f },
+        { 14.25f, 2.75f }, { 2.75f, 8.25f },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned shade = 0; shade < 2; shade++) {
+        for (unsigned width = 1; width <= 4; width += 3) {
+            for (unsigned mode = SGI_GL_LINE_LOOP; mode <= SGI_GL_LINE_STRIP;
+                 mode++) {
+                g_autofree char *name = g_strdup_printf(
+                    "%s %s width %u", shade ? "smooth" : "flat",
+                    mode == SGI_GL_LINE_LOOP ? "loop" : "strip", width);
+
+                prim_case_init(p, mode, 4);
+                p->state.shade_model = shade ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+                p->draw.line_width = width;
+                for (unsigned v = 0; v < ARRAY_SIZE(strip); v++) {
+                    prim_vertex_window(p, strip[v][0], strip[v][1]);
+                }
+                prim_expect(renderer, name, p, &failures);
+            }
+        }
+    }
+
+    /* Clip w of 2 at one end weights smooth colour for perspective. */
+    for (unsigned width = 1; width <= 3; width += 2) {
+        g_autofree char *name = g_strdup_printf("perspective width %u",
+                                                width);
+        float *v;
+
+        prim_case_init(p, SGI_GL_LINES, 4);
+        p->state.shade_model = SGI_GL_SMOOTH;
+        p->draw.line_width = width;
+        prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+        v = p->vertices[1];
+        for (unsigned c = 0; c < 4; c++) {
+            v[SGI_GL_V_POSITION + c] *= 2;
+        }
+        prim_expect(renderer, name, p, &failures);
+    }
+
+    prim_case_init(p, SGI_GL_LINE_STRIP, 4);
+    p->state.shade_model = SGI_GL_SMOOTH;
+    p->draw.line_width = 2;
+    prim_set_clips(p, clips, ARRAY_SIZE(clips));
+    p->state.scissor_test = 1;
+    memcpy(p->state.scissor, (int32_t[4]) { 2, 0, 12, 13 },
+           sizeof(p->state.scissor));
+    for (unsigned v = 0; v < ARRAY_SIZE(strip); v++) {
+        prim_vertex_window(p, strip[v][0], strip[v][1]);
+    }
+    prim_expect(renderer, "clips and scissor", p, &failures);
+
+    /* The same strip on a top-origin resource, rows mapped as a family does. */
+    for (unsigned width = 1; width <= 3; width += 2) {
+        g_autofree char *name = g_strdup_printf("top-origin strip width %u",
+                                                width);
+
+        p->top_origin = true;
+        p->draw.line_width = width;
+        prim_expect(renderer, name, p, &failures);
+    }
+
+    /* Fragments past the viewport are dropped, as the scalar path drops. */
+    prim_case_init(p, SGI_GL_LINES, 4);
+    memcpy(p->state.viewport, (int32_t[4]) { 3, 2, 9, 10 },
+           sizeof(p->state.viewport));
+    p->draw.line_width = 5;
+    prim_segment(p, 3.25f, 6.5f, 11.75f, 8.25f);
+    prim_segment(p, 7.5f, 2.25f, 9.5f, 11.75f);
+    prim_expect(renderer, "wide lines at the viewport edge", p, &failures);
+
+    prim_case_init(p, SGI_GL_LINES, 4);
+    memcpy(p->state.viewport, (int32_t[4]) { -2000, -2000, 4000, 4000 },
+           sizeof(p->state.viewport));
+    p->state.shade_model = SGI_GL_SMOOTH;
+    p->draw.line_width = 3;
+    prim_segment(p, -1500.25f, 3.5f, 1500.75f, 12.25f);
+    prim_segment(p, 7.25f, -1700.5f, 9.75f, 1800.25f);
+    prim_expect(renderer, "long segments", p, &failures);
+
+    prim_case_init(p, SGI_GL_LINES, 4);
+    p->state.blend = 1;
+    p->state.blend_src = SGI_GL_SRC_ALPHA;
+    p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    p->state.blend_equation = SGI_GL_FUNC_ADD;
+    p->state.shade_model = SGI_GL_SMOOTH;
+    p->draw.line_width = 3;
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    prim_expect(renderer, "one blended segment", p, &failures);
+    prim_segment(p, 2.5f, 13.25f, 12.75f, 1.5f);
+    prim_expect_refused(renderer, "two blended segments", p, &failures);
+
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Stipple counts produced base fragments in submitted direction, carried
+ * along strips and loops and, through a borrowed phase, across draws, and
+ * counted even for fragments outside the drawable.
+ */
+static void test_scalar_match_line_stipple(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const uint16_t patterns[] = { 0xf0f0, 0x5a3c, 0x0001, 0xfff7 };
+    static const float strip[][2] = {
+        { 1.5f, 1.25f }, { 14.5f, 4.75f }, { 3.25f, 13.5f },
+        { 12.75f, 10.5f }, { 20.5f, 30.25f }, { 2.5f, 7.5f },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(patterns); i++) {
+        for (unsigned repeat = 1; repeat <= 3; repeat++) {
+            for (unsigned width = 1; width <= 3; width += 2) {
+                for (unsigned mode = SGI_GL_LINES; mode <= SGI_GL_LINE_STRIP;
+                     mode++) {
+                    g_autofree char *name = g_strdup_printf(
+                        "stipple 0x%04x x%u width %u mode %u", patterns[i],
+                        repeat, width, mode);
+
+                    prim_case_init(p, mode, 4);
+                    p->draw.line_width = width;
+                    p->draw.line_stipple_enabled = true;
+                    p->draw.line_stipple_repeat = repeat;
+                    p->draw.line_stipple_pattern = patterns[i];
+                    for (unsigned v = 0; v < ARRAY_SIZE(strip); v++) {
+                        prim_vertex_window(p, strip[v][0], strip[v][1]);
+                    }
+                    prim_expect(renderer, name, p, &failures);
+                }
+            }
+        }
+    }
+
+    /* A borrowed phase: two draws continue one count, including clips. */
+    for (unsigned clipped = 0; clipped < 2; clipped++) {
+        prim_case_init(p, SGI_GL_LINES, 4);
+        p->use_phase = true;
+        p->phase[0] = p->phase[1] = 5;
+        p->draw.line_stipple_enabled = true;
+        p->draw.line_stipple_repeat = 2;
+        p->draw.line_stipple_pattern = 0x3c5a;
+        if (clipped) {
+            p->state.drawable.clip.n = 0;
+        }
+        prim_segment(p, 1.25f, 2.75f, 13.5f, 6.25f);
+        prim_segment(p, 4.5f, 14.25f, 9.75f, 1.5f);
+        prim_segment(p, 6, 6, 6, 6);
+        for (unsigned draw = 0; draw < 2; draw++) {
+            g_autofree char *name = g_strdup_printf(
+                "phase draw %u%s", draw, clipped ? " with no clip" : "");
+
+            prim_expect(renderer, name, p, &failures);
+            if (p->phase[0] != p->phase[1]) {
+                g_test_message("%s: scalar phase %u, Mesa phase %u", name,
+                               p->phase[0], p->phase[1]);
+                failures++;
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * A seeded sweep of random segments: endpoints past the window edges, so
+ * view-volume clipping cuts some, on quarter-pixel and 1/256 grids, at
+ * widths 1 to 6, flat and smooth, with clip w of 0.5, 1 or 2 at each end
+ * and stipple on a third of them.
+ */
+static void test_scalar_match_line_sweep(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float ws[] = { 0.5f, 1, 2 };
+    PrimCase *p = g_new(PrimCase, 1);
+    GRand *rand = g_rand_new_with_seed(20261009);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_rand_free(rand);
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < 600; i++) {
+        float grid = i & 1 ? 256 : 4;
+        float e[4];
+        g_autofree char *name = NULL;
+
+        for (unsigned k = 0; k < 4; k++) {
+            e[k] = g_rand_int_range(rand, -3 * grid, 19 * grid) / grid;
+        }
+        prim_case_init(p, SGI_GL_LINES, 4);
+        p->state.shade_model = g_rand_boolean(rand) ? SGI_GL_SMOOTH :
+                                                      SGI_GL_FLAT;
+        p->draw.line_width = g_rand_int_range(rand, 1, 7);
+        if (i % 3 == 0) {
+            p->draw.line_stipple_enabled = true;
+            p->draw.line_stipple_repeat = g_rand_int_range(rand, 1, 4);
+            p->draw.line_stipple_pattern = g_rand_int_range(rand, 0, 65536);
+        }
+        prim_segment(p, e[0], e[1], e[2], e[3]);
+        for (unsigned v = 0; v < 2; v++) {
+            float w = ws[g_rand_int_range(rand, 0, ARRAY_SIZE(ws))];
+
+            for (unsigned c = 0; c < 4; c++) {
+                p->vertices[v][SGI_GL_V_POSITION + c] *= w;
+            }
+        }
+        name = g_strdup_printf("sweep %u (%g,%g)-(%g,%g) width %g", i, e[0],
+                               e[1], e[2], e[3], p->draw.line_width);
+        prim_expect(renderer, name, p, &failures);
+        cases++;
+    }
+    g_test_message("line sweep: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_rand_free(rand);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Segments the parallelogram route cannot draw exactly are refused before
+ * the snapshot: a vertex past the line viewport, a huge width, and every
+ * line on a renderer whose probe found a difference.
+ */
+static void test_lines_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    prim_case_init(p, SGI_GL_LINES, 4);
+    memcpy(p->state.viewport, (int32_t[4]) { -8192, -8192, 16384, 16384 },
+           sizeof(p->state.viewport));
+    prim_segment(p, -6000.25f, 5.5f, 6000.75f, 9.25f);
+    prim_expect_refused(renderer, "past the line viewport", p, &failures);
+
+    prim_case_init(p, SGI_GL_LINES, 4);
+    p->draw.line_width = 9000;
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    prim_expect_refused(renderer, "huge width", p, &failures);
+
+    prim_case_init(p, SGI_GL_LINES, 4);
+    p->draw.line_smooth = true;
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    prim_expect_refused(renderer, "smoothed", p, &failures);
+
+    /*
+     * A draw refused after its segments are counted, here for want of a
+     * covered commit, leaves a borrowed phase alone, so the caller's scalar
+     * fallback counts it once.
+     */
+    {
+        static const SGIRenderResourceOps no_covered = {
+            .snapshot = prim_snapshot,
+        };
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        g_autofree PrimFixture *f = g_new(PrimFixture, 1);
+        SGIRasterTarget target = {
+            .opaque = f, .resources = res, .resource_count = 1,
+            .resource_ops = &no_covered,
+        };
+        uint32_t phase = 7;
+        SGIRenderResult result;
+
+        prim_case_init(p, SGI_GL_LINE_STRIP, 4);
+        p->draw.line_stipple_enabled = true;
+        p->draw.line_stipple_repeat = 2;
+        p->draw.line_stipple_pattern = 0x3c5a;
+        prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+        prim_vertex_window(p, 3.5f, 13.25f);
+        p->draw.line_phase = &phase;
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_destination(f, p);
+        result = sgi_render_draw_checked(renderer, &rules, &target, &p->draw,
+                                         &err);
+        if (result != SGI_RENDER_UNSUPPORTED || phase != 7 || f->snapshots) {
+            g_test_message("refused draw: result %d, phase %u, %u snapshots",
+                           result, phase, f->snapshots);
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+        p->draw.line_phase = NULL;
+    }
+    sgi_renderer_free(renderer);
+
+    /* Moving the band one subpixel must fail the probe and refuse lines. */
+    sgi_render_test_line_band(1);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    prim_case_init(p, SGI_GL_LINES, 4);
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    prim_expect_refused(renderer, "probe failure", p, &failures);
+    sgi_renderer_free(renderer);
+    sgi_render_test_line_band(0);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -4891,12 +5317,12 @@ static void prim_lines(PrimCase *p, uint32_t mode, float width, float offset)
 }
 
 /*
- * Lines stay unsupported. Against the scalar diamond-exit rule, llvmpipe
- * omits a width-one start pixel on an exact diamond boundary and differs
- * by a row or column at the ends of even widths; these are the vectors
- * that showed it.
+ * Native GL lines differ from the scalar diamond-exit rule: llvmpipe omits
+ * a width-one start pixel on an exact diamond boundary and differs by a
+ * row or column at the ends of even widths. These are the vectors that
+ * showed it; the parallelogram route must match them.
  */
-static void test_lines_refused(void)
+static void test_scalar_match_lines(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
     static const struct {
@@ -4915,6 +5341,9 @@ static void test_lines_refused(void)
         { "off-tie lines width 2", SGI_GL_LINES, 2, 3.0f / 256 },
         { "off-tie lines width 3", SGI_GL_LINES, 3, 3.0f / 256 },
         { "off-tie lines width 4", SGI_GL_LINES, 4, 3.0f / 256 },
+        { "lines width 5", SGI_GL_LINES, 5, 0 },
+        { "lines width 6", SGI_GL_LINES, 6, 0 },
+        { "off-tie lines width 6", SGI_GL_LINES, 6, 3.0f / 256 },
     };
     PrimCase *p = g_new(PrimCase, 1);
     SGIRenderer *renderer;
@@ -4930,7 +5359,7 @@ static void test_lines_refused(void)
     g_assert_nonnull(renderer);
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
         prim_lines(p, cases[i].mode, cases[i].width, cases[i].offset);
-        prim_expect_refused(renderer, cases[i].name, p, &failures);
+        prim_expect(renderer, cases[i].name, p, &failures);
     }
     sgi_renderer_free(renderer);
     g_free(p);
@@ -5155,8 +5584,7 @@ static void test_smoothing_refused(void)
         { SGI_GL_POLYGON, false, false, true, true },
         { SGI_GL_TRIANGLES, true, true, false, false },
         { SGI_GL_QUADS, true, true, false, false },
-        /* Lines are refused for their own rasterization. */
-        { SGI_GL_LINES, true, false, true, true },
+        { SGI_GL_LINES, true, false, true, false },
         { SGI_GL_POINTS, false, true, true, false },
     };
 
@@ -5544,6 +5972,16 @@ int main(int argc, char **argv)
                     test_scalar_match_store_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-lines",
+                    test_scalar_match_lines);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-line-ties",
+                    test_scalar_match_line_ties);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-line-state",
+                    test_scalar_match_line_state);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-line-stipple",
+                    test_scalar_match_line_stipple);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-line-sweep",
+                    test_scalar_match_line_sweep);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
     g_test_add_func("/sgi-renderer-gl/viewport-mirror-refused",
                     test_viewport_mirror_refused);

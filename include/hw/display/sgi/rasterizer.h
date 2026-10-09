@@ -446,6 +446,11 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
                                         const SGIRasterTarget *target,
                                         const SGIGLDraw *draw, Error **errp);
+/*
+ * Test-only: move every Mesa line parallelogram this many subpixels along
+ * its minor axis, so a renderer created afterwards fails its line probe.
+ */
+void sgi_render_test_line_band(int subpixels);
 SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterRules *rules,
                                           const SGIRasterTarget *target,
@@ -491,6 +496,35 @@ unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
                                     const float *vc,
                                     SGIRasterTriangle
                                     out[SGI_VOLUME_TRIANGLE_MAX - 2]);
+
+/*
+ * One aliased segment as sgi_soft_draw() rasterizes it, for a renderer that
+ * reproduces its pixels: the clipped, projected and snapped window
+ * endpoints in subpixels, their clamped colours and 1 / clip w, and the
+ * inclusive major-axis range of base pixels the width-one segment, shifted
+ * for the width, covers. exact says every major step in that range has
+ * exactly one base pixel; the base count is then hi - lo + 1.
+ */
+typedef struct SGIRasterLineSpan {
+    int64_t ax, ay, bx, by;
+    double a_inv_w, b_inv_w;
+    double a_rgba[4], b_rgba[4];
+    bool x_major;
+    bool covered;               /* false draws and counts nothing */
+    bool exact;
+    int64_t lo, hi;
+} SGIRasterLineSpan;
+
+/*
+ * Fill out for the segment from va to vb at aliased width, from the draw
+ * state's matrices, viewport and depth range. False when the scalar path
+ * drops the segment without counting stipple, as it does for a vertex it
+ * cannot project.
+ */
+bool sgi_raster_line_span(const SGIRasterRules *rules,
+                          const SGIGLDrawState *st, const float *va,
+                          const float *vb, uint32_t width,
+                          SGIRasterLineSpan *out);
 
 /* Borrowed state and image remain immutable until the sampler is freed. */
 typedef struct SGIRasterTexture SGIRasterTexture;
