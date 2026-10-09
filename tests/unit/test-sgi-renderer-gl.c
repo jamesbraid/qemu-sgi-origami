@@ -1008,8 +1008,8 @@ static void test_decoded_triangle_native_commit(void)
 
     state.blend = 0;
     f.fail_commit = false;
-    rules.smooth_primitives = true;
-    draw.polygon_smooth = true;
+    /* Polygon smoothing now draws aliased, as on the scalar path. */
+    draw.polygon_stipple_enabled = true;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
                     SGI_RENDER_UNSUPPORTED);
@@ -1019,8 +1019,7 @@ static void test_decoded_triangle_native_commit(void)
     g_assert_cmpuint(f.snapshots, ==, 4);
     g_assert_cmpuint(f.commits, ==, 3);
 
-    draw.polygon_smooth = false;
-    rules.smooth_primitives = false;
+    draw.polygon_stipple_enabled = false;
     state.clip_planes = 1;
     state.clip_plane[0][3] = -1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -3672,6 +3671,7 @@ typedef struct PrimCase {
     /* Nonzero fills every destination component with dest_value - 1. */
     uint32_t dest_value;
     unsigned bits; /* Colour, alpha and storage bits; zero means 8. */
+    bool smooth_rules; /* The rules smooth points and lines. */
     /* Nonzero overrides: rules colour bits, rules alpha bits plus one, */
     unsigned rules_colour, rules_alpha_plus_one;
     unsigned alpha_storage; /* and stored alpha bits. */
@@ -3791,6 +3791,7 @@ static void prim_rules(const PrimCase *p, SGIRasterRules *rules)
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .smooth_primitives = p->smooth_rules,
         .evidence = "synthetic",
     };
 }
@@ -5196,9 +5197,11 @@ static void test_lines_refused(void)
     prim_expect_refused(renderer, "huge width", p, &failures);
 
     prim_case_init(p, SGI_GL_LINES, 4);
+    p->smooth_rules = true;
     p->draw.line_smooth = true;
     prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
-    prim_expect_refused(renderer, "smoothed", p, &failures);
+    prim_expect_refused(renderer, "smoothed under smoothing rules", p,
+                        &failures);
 
     /*
      * A draw refused after its segments are counted, here for want of a
@@ -5522,11 +5525,6 @@ static void test_scalar_match_polygons(void)
     }
 }
 
-/*
- * Smoothing stays unsupported and refuses before the snapshot, but only
- * for the class it applies to (OpenGL 1.2.1, 3.3 to 3.5): a triangle with
- * line smoothing on draws.
- */
 /* Polygon modes do not apply to points, so a LINE/POINT pair draws them. */
 static void test_points_ignore_polygon_modes(void)
 {
@@ -5564,29 +5562,34 @@ static void test_points_ignore_polygon_modes(void)
     }
 }
 
-static void test_smoothing_refused(void)
+/*
+ * Smoothing parity with the scalar path. Under rules that do not smooth,
+ * sgi_soft_draw() ignores the point, line and polygon enables and draws
+ * aliased, and Mesa must draw the same pixels. Under rules that smooth,
+ * the scalar path smooths points and lines, so those are refused before
+ * the snapshot, but it never smooths polygons, so they still match.
+ */
+static void test_smoothing_parity(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        uint32_t mode;
+        bool point, line, polygon;
+    } enables[] = {
+        { SGI_GL_POINTS, true, false, false },
+        { SGI_GL_POINTS, true, true, true },
+        { SGI_GL_LINES, false, true, false },
+        { SGI_GL_LINE_STRIP, false, true, false },
+        { SGI_GL_LINE_LOOP, true, true, true },
+        { SGI_GL_TRIANGLES, false, false, true },
+        { SGI_GL_TRIANGLES, false, true, false },
+        { SGI_GL_QUADS, true, true, true },
+        { SGI_GL_POLYGON, false, false, true },
+    };
     PrimCase *p = g_new(PrimCase, 1);
     SGIRenderer *renderer;
     unsigned failures = 0;
     Error *err = NULL;
-    static const struct {
-        uint32_t mode;
-        bool point, line, polygon, refused;
-    } smoothing[] = {
-        { SGI_GL_POINTS, true, false, false, true },
-        { SGI_GL_LINES, false, true, false, true },
-        { SGI_GL_LINE_STRIP, false, true, false, true },
-        { SGI_GL_LINE_LOOP, false, true, false, true },
-        { SGI_GL_TRIANGLES, false, false, true, true },
-        { SGI_GL_QUADS, false, false, true, true },
-        { SGI_GL_POLYGON, false, false, true, true },
-        { SGI_GL_TRIANGLES, true, true, false, false },
-        { SGI_GL_QUADS, true, true, false, false },
-        { SGI_GL_LINES, true, false, true, false },
-        { SGI_GL_POINTS, false, true, true, false },
-    };
 
     mesa_test_env_set(&mesa_env);
     if (!mesa_test_available(false)) {
@@ -5595,61 +5598,39 @@ static void test_smoothing_refused(void)
     }
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
-    for (unsigned i = 0; i < G_N_ELEMENTS(smoothing); i++) {
-        g_autofree char *name = g_strdup_printf(
-            "mode %u smooth point %d line %d polygon %d", smoothing[i].mode,
-            smoothing[i].point, smoothing[i].line, smoothing[i].polygon);
-        PrimFixture f;
-        SGIRenderResource resource = {
-            .backing_id = 1, .backing_generation = 1,
-            .view_id = 2, .view_generation = 1,
-            .role = SGI_RENDER_COLOUR, .target = 7,
-            .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
-            .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
-            .bottom_origin = true, .component_count = 4,
-            .component = {
-                { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
-                { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
-                { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
-                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
-            },
-        };
-        SGIRenderResourceOps ops = {
-            .snapshot = prim_snapshot,
-            .commit_covered = prim_commit_covered,
-        };
-        SGIRasterTarget target = {
-            .opaque = &f, .resources = &resource, .resource_count = 1,
-            .resource_ops = &ops,
-        };
-        SGIRasterRules rules = {
-            .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
-            .rounding = SGI_ROUND_HALF_AWAY,
-            .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-            .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
-        };
-        SGIRenderResult result, expected;
+    for (unsigned smooth_rules = 0; smooth_rules < 2; smooth_rules++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(enables); i++) {
+            for (unsigned shade = 0; shade < 2; shade++) {
+                bool scalar_smooths = smooth_rules &&
+                    ((enables[i].mode == SGI_GL_POINTS && enables[i].point) ||
+                     (enables[i].mode >= SGI_GL_LINES &&
+                      enables[i].mode <= SGI_GL_LINE_STRIP &&
+                      enables[i].line));
+                g_autofree char *name = g_strdup_printf(
+                    "%s rules mode %u point %d line %d polygon %d %s",
+                    smooth_rules ? "smoothing" : "aliased", enables[i].mode,
+                    enables[i].point, enables[i].line, enables[i].polygon,
+                    shade ? "smooth" : "flat");
 
-        prim_case_init(p, smoothing[i].mode, 4);
-        prim_destination(&f, p);
-        for (unsigned v = 0; v < 4; v++) {
-            prim_vertex_n(p, v & 1 ? 12 : 3, v & 2 ? 12 : 3.5f);
+                prim_case_init(p, enables[i].mode, 4);
+                p->smooth_rules = smooth_rules;
+                p->state.shade_model = shade ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+                p->draw.point_size = 3;
+                p->draw.line_width = 2;
+                p->draw.point_smooth = enables[i].point;
+                p->draw.line_smooth = enables[i].line;
+                p->draw.polygon_smooth = enables[i].polygon;
+                prim_vertex_n(p, 2.25f, 2.75f);
+                prim_vertex_n(p, 13.5f, 3.25f);
+                prim_vertex_n(p, 12.75f, 13.5f);
+                prim_vertex_n(p, 3.5f, 12.25f);
+                if (scalar_smooths) {
+                    prim_expect_refused(renderer, name, p, &failures);
+                } else {
+                    prim_expect(renderer, name, p, &failures);
+                }
+            }
         }
-        p->draw.point_smooth = smoothing[i].point;
-        p->draw.line_smooth = smoothing[i].line;
-        p->draw.polygon_smooth = smoothing[i].polygon;
-        result = sgi_render_draw_checked(renderer, &rules, &target, &p->draw,
-                                         &err);
-        expected = smoothing[i].refused ? SGI_RENDER_UNSUPPORTED :
-                                          SGI_RENDER_OK;
-        if (result != expected ||
-            !!err != smoothing[i].refused ||
-            f.snapshots != !smoothing[i].refused) {
-            g_test_message("%s: result %d, %u snapshots", name, result,
-                           f.snapshots);
-            failures++;
-        }
-        g_clear_pointer(&err, error_free);
     }
     sgi_renderer_free(renderer);
     g_free(p);
@@ -5997,8 +5978,8 @@ int main(int argc, char **argv)
                     test_blend_overlap_refused);
     g_test_add_func("/sgi-renderer-gl/blend-10-bit-refused",
                     test_blend_10_bit_refused);
-    g_test_add_func("/sgi-renderer-gl/smoothing-refused",
-                    test_smoothing_refused);
+    g_test_add_func("/sgi-renderer-gl/smoothing-parity",
+                    test_smoothing_parity);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
                     test_decoded_clear_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",

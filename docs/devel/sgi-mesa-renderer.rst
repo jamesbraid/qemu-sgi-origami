@@ -107,15 +107,23 @@ cannot match, so each segment is drawn as a two-triangle parallelogram:
 
 Before a renderer draws its first line, it draws tie vectors through both
 paths, with smooth colour and perspective weights. If coverage or any
-covered pixel's colour differs, lines stay unsupported on that renderer. Line
-smoothing and blended draws of more than one segment remain unsupported.
+covered pixel's colour differs, lines stay unsupported on that renderer.
+Blended draws of more than one segment remain unsupported.
 
-Point, line and polygon smoothing remain unsupported. Each smoothing
-enable refuses only its own class of primitive, so a filled triangle drawn
-with line smoothing enabled is an ordinary aliased triangle. Polygon modes
-likewise apply only to polygons, so points ignore them. The refusal is
-stricter than the scalar rasterizer, which draws smoothed primitives aliased,
-and logs it, when its rules do not smooth.
+Smoothing follows the scalar path:
+
+- Under rules whose ``smooth_primitives`` is false, the scalar path ignores
+  the point, line and polygon smoothing enables and draws aliased, and so
+  does this path.
+- Under rules that smooth, the scalar path smooths points and lines, so a
+  point or line draw with its enable set returns ``SGI_RENDER_UNSUPPORTED``
+  before the snapshot. Odyssey's rules smooth, so its smoothed lines stay
+  refused.
+- The scalar path never smooths polygons; it draws them aliased and logs it.
+  Polygon smoothing is therefore never refused.
+
+Each enable applies only to its own class of primitive. Polygon modes
+likewise apply only to polygons, so points ignore them.
 
 Callers supply OpenGL window coordinates: window row 0 is the bottom
 display row, and the scissor box is in those rows. A resource's
@@ -221,6 +229,9 @@ with the rules named above. Any other driver is unproven.
   - 600 seeded random segments, some cut by view-volume clipping.
 
   ``lines-refused`` checks the refusals, including the probe.
+- ``smoothing-parity``: points, lines, strips, loops, triangles, quads and
+  polygons with every combination of smoothing enables, flat and smooth,
+  under rules that do and do not smooth.
 - ``scalar-match-polygons``: flat and smooth triangle strips, triangle fans,
   quadrilaterals, quad strips and polygons, 8-bit RGBA, unblended, with
   identity matrices, a viewport equal to the resource and one full clip.
