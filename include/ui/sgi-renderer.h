@@ -25,7 +25,10 @@ typedef struct SGIRendererRequest {
 } SGIRendererRequest;
 
 #define SGI_RENDERER_FRAME_VERTEX_FLOATS 12
+/* Bounds a textured frame, which is one clipped fan. */
 #define SGI_RENDERER_FRAME_VERTICES_MAX 9
+/* Bounds an untextured frame of independent primitives. */
+#define SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX (1u << 18)
 #define SGI_RENDERER_CLEAR_RECTS 16
 
 /* OpenGL wrap values accepted at the direct renderer-frame boundary. */
@@ -60,7 +63,8 @@ typedef struct SGIRendererClearRect {
 } SGIRendererClearRect;
 
 typedef struct SGIRendererFrame {
-    uint32_t width, height, count; /* A textured frame is a clipped fan. */
+    /* A textured frame is a clipped fan, others independent triangles. */
+    uint32_t width, height, count;
     const float *vertices; /* position xyzw, colour rgba, texcoord strq */
     SGIRendererTexture2D texture;
     uint32_t shade_model;

@@ -855,7 +855,11 @@ static void test_decoded_triangle_native_commit(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 12,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_SMOOTH,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1188,7 +1192,11 @@ static void test_decoded_triangle_viewport_fill(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1292,7 +1300,11 @@ static void test_decoded_triangle_viewport_limit(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1410,7 +1422,11 @@ static void test_decoded_triangle_clip_union(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1612,7 +1628,11 @@ static void test_triangle_resource_row_origin(void)
         .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_SMOOTH,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1776,7 +1796,11 @@ static void test_flat_triangle_alpha_blend(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -1973,7 +1997,11 @@ static void test_blend_without_native_alpha(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -2179,7 +2207,11 @@ static void test_typed_texture_triangle(void)
         .opaque = &f, .resources = resources, .resource_count = 2,
         .resource_ops = &ops, .texture = &image,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -2471,7 +2503,11 @@ static void test_typed_texture_multi_texel(void)
         .opaque = &f, .resources = resources, .resource_count = 2,
         .resource_ops = &ops, .texture = &image,
     };
-    SGIRasterRules rules = { .color_bits = 8, .evidence = "synthetic" };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+    };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
         .draw_buffers = SGI_GL_DRAW_FRONT,
@@ -3435,6 +3471,499 @@ static void test_decoded_clear_depth_stencil(void)
     sgi_renderer_free(renderer);
 }
 
+/*
+ * Scalar comparison: one draw through sgi_soft_draw() and through the
+ * checked Mesa path, from the same 16x16 bottom-origin native image, must
+ * leave the same component values and coverage. Differences are reported
+ * per pixel so that every case in a test runs before it fails.
+ */
+#define PRIM_SIZE 16
+
+typedef struct PrimFixture {
+    uint32_t rgba[PRIM_SIZE][PRIM_SIZE][4];
+    uint8_t written[PRIM_SIZE][PRIM_SIZE];
+    unsigned components;
+    unsigned snapshots, commits;
+} PrimFixture;
+
+static void prim_scalar_store(void *opaque, SGIColourTarget target, int x,
+                              int y, const SGIRasterColour *colour)
+{
+    PrimFixture *f = opaque;
+
+    g_assert_cmpint(x, >=, 0);
+    g_assert_cmpint(x, <, PRIM_SIZE);
+    g_assert_cmpint(y, >=, 0);
+    g_assert_cmpint(y, <, PRIM_SIZE);
+    for (unsigned c = 0; c < f->components; c++) {
+        f->rgba[y][x][c] = colour->component[c];
+    }
+    f->written[y][x] = 1;
+}
+
+static bool prim_scalar_load(void *opaque, SGIColourTarget target, int x,
+                             int y, SGIRasterColour *colour)
+{
+    PrimFixture *f = opaque;
+
+    for (unsigned c = 0; c < 4; c++) {
+        colour->component[c] = c < f->components ? f->rgba[y][x][c] : 0;
+    }
+    return true;
+}
+
+static SGIRenderResult prim_snapshot(void *opaque,
+                                     const SGIRenderResource *resource,
+                                     uint32_t slice, const SGIRenderRect *rect,
+                                     uint32_t *slots, size_t stride_slots,
+                                     size_t capacity_slots, Error **errp)
+{
+    PrimFixture *f = opaque;
+
+    f->snapshots++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            for (unsigned c = 0; c < f->components; c++) {
+                slots[(y - rect->y0) * stride_slots +
+                      (x - rect->x0) * f->components + c] = f->rgba[y][x][c];
+            }
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult prim_commit_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, Error **errp)
+{
+    PrimFixture *f = opaque;
+    uint64_t complete = 0;
+
+    f->commits++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            /* Every pixel of the rectangle is accounted for, written or not. */
+            complete++;
+            if (!writes->pixel[(y - rect->y0) * writes->stride_bytes +
+                               x - rect->x0]) {
+                continue;
+            }
+            for (unsigned c = 0; c < f->components; c++) {
+                f->rgba[y][x][c] = slots[(y - rect->y0) * stride_slots +
+                                         (x - rect->x0) * f->components + c];
+            }
+            f->written[y][x] = 1;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
+typedef struct PrimCase {
+    SGIGLDrawState state;
+    SGIGLDraw draw;
+    float vertices[64][SGI_GL_VERTEX_FLOATS];
+    unsigned components;
+    /* Nonzero selects one unsupported raster rule for the Mesa path. */
+    unsigned rules_case;
+} PrimCase;
+
+static void prim_case_init(PrimCase *p, uint32_t mode, unsigned components)
+{
+    memset(p, 0, sizeof(*p));
+    p->components = components;
+    p->state = (SGIGLDrawState) {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, PRIM_SIZE - 1,
+                                        PRIM_SIZE - 1 } },
+            .front = 7,
+        },
+        .viewport = { 0, 0, PRIM_SIZE, PRIM_SIZE },
+        .depth_range = { 0, 1 },
+    };
+    for (unsigned i = 0; i < 4; i++) {
+        p->state.modelview[i * 5] = 1;
+        p->state.projection[i * 5] = 1;
+    }
+    p->draw = (SGIGLDraw) {
+        .mode = mode, .vertices = &p->vertices[0][0], .state = &p->state,
+    };
+}
+
+/* Window coordinates; keep them on the 1/256 grid both paths snap to. */
+static void prim_vertex(PrimCase *p, float x, float y, float r, float g,
+                        float b, float a)
+{
+    float *v = p->vertices[p->draw.count++];
+
+    g_assert_cmpuint(p->draw.count, <=, G_N_ELEMENTS(p->vertices));
+    v[SGI_GL_V_POSITION] = x * 2 / PRIM_SIZE - 1;
+    v[SGI_GL_V_POSITION + 1] = y * 2 / PRIM_SIZE - 1;
+    v[SGI_GL_V_POSITION + 3] = 1;
+    v[SGI_GL_V_COLOR] = r;
+    v[SGI_GL_V_COLOR + 1] = g;
+    v[SGI_GL_V_COLOR + 2] = b;
+    v[SGI_GL_V_COLOR + 3] = a;
+}
+
+/* Distinct colours per vertex, so a wrong provoking vertex shows. */
+static void prim_vertex_n(PrimCase *p, float x, float y)
+{
+    unsigned n = p->draw.count;
+
+    prim_vertex(p, x, y, (37 + 41 * n) % 256 / 255.0f,
+                (91 + 23 * n) % 256 / 255.0f, (13 + 67 * n) % 256 / 255.0f,
+                (200 + 29 * n) % 256 / 255.0f);
+}
+
+static void prim_destination(PrimFixture *f, unsigned components)
+{
+    memset(f, 0, sizeof(*f));
+    f->components = components;
+    for (unsigned y = 0; y < PRIM_SIZE; y++) {
+        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+            f->rgba[y][x][0] = (x * 17 + y * 3) & 255;
+            f->rgba[y][x][1] = (y * 15 + x * 5 + 40) & 255;
+            f->rgba[y][x][2] = (x * y * 7 + 90) & 255;
+            f->rgba[y][x][3] = (x * 11 + y * 13 + 7) & 255;
+        }
+    }
+}
+
+/*
+ * Returns the number of differing pixels and logs each one. A refused
+ * draw instead counts one failure unless it is UNSUPPORTED before any
+ * snapshot.
+ */
+static unsigned prim_compare(SGIRenderer *renderer, const char *name,
+                             PrimCase *p, bool refused)
+{
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .alpha_bits = p->components == 4 ? 8 : 0,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "synthetic",
+    };
+    SGIRenderResource resource = {
+        .backing_id = 1, .backing_generation = 1,
+        .view_id = 2, .view_generation = 1,
+        .role = SGI_RENDER_COLOUR, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
+        .bottom_origin = true, .component_count = p->components,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    SGIRenderResourceOps ops = {
+        .snapshot = prim_snapshot,
+        .commit_covered = prim_commit_covered,
+    };
+    g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+    SGIRasterTarget scalar_target = {
+        .opaque = scalar,
+        .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
+    };
+    SGIRasterTarget mesa_target = {
+        .opaque = mesa, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRenderResult result;
+    Error *err = NULL;
+    unsigned differences = 0;
+
+    prim_destination(scalar, p->components);
+    prim_destination(mesa, p->components);
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &p->draw), ==,
+                    SGI_GL_DRAW_OK);
+    if (p->rules_case == 1) {
+        rules.subpixel_bits = 4;
+    } else if (p->rules_case == 2) {
+        rules.tie_rule = SGI_TIE_TOP_LEFT;
+    } else if (p->rules_case == 3) {
+        rules.arith = SGI_ARITH_FIXED16;
+    }
+    result = sgi_render_draw_checked(renderer, &rules, &mesa_target,
+                                     &p->draw, &err);
+    if (refused) {
+        if (result == SGI_RENDER_UNSUPPORTED && err && !mesa->snapshots) {
+            g_clear_pointer(&err, error_free);
+            return 0;
+        }
+        g_test_message("%s: expected a refusal, got %d after %u snapshots",
+                       name, result, mesa->snapshots);
+        g_clear_pointer(&err, error_free);
+        return 1;
+    }
+    if (result != SGI_RENDER_OK) {
+        g_test_message("%s: checked draw returned %d: %s", name, result,
+                       err ? error_get_pretty(err) : "(no error)");
+        g_clear_pointer(&err, error_free);
+        return PRIM_SIZE * PRIM_SIZE;
+    }
+    for (int y = PRIM_SIZE - 1; y >= 0; y--) {
+        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+            bool same = scalar->written[y][x] == mesa->written[y][x];
+
+            for (unsigned c = 0; c < p->components; c++) {
+                same &= scalar->rgba[y][x][c] == mesa->rgba[y][x][c];
+            }
+            if (!same) {
+                differences++;
+                g_test_message("%s: pixel (%u,%d) scalar %s %u,%u,%u,%u "
+                               "mesa %s %u,%u,%u,%u", name, x, y,
+                               scalar->written[y][x] ? "drawn" : "kept",
+                               scalar->rgba[y][x][0], scalar->rgba[y][x][1],
+                               scalar->rgba[y][x][2], scalar->rgba[y][x][3],
+                               mesa->written[y][x] ? "drawn" : "kept",
+                               mesa->rgba[y][x][0], mesa->rgba[y][x][1],
+                               mesa->rgba[y][x][2], mesa->rgba[y][x][3]);
+            }
+        }
+    }
+    if (differences) {
+        GString *rows = g_string_new(NULL);
+
+        /* Coverage maps, top row first: S scalar only, M Mesa only. */
+        for (int y = PRIM_SIZE - 1; y >= 0; y--) {
+            g_string_append_printf(rows, "%s: row %2d ", name, y);
+            for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                bool s = scalar->written[y][x], m = mesa->written[y][x];
+
+                g_string_append_c(rows, s && m ? '#' : s ? 'S' :
+                                        m ? 'M' : '.');
+            }
+            g_test_message("%s", rows->str);
+            g_string_truncate(rows, 0);
+        }
+        g_string_free(rows, true);
+    }
+    return differences;
+}
+
+static void prim_expect(SGIRenderer *renderer, const char *name, PrimCase *p,
+                        unsigned *failures)
+{
+    unsigned differences = prim_compare(renderer, name, p, false);
+
+    if (differences) {
+        g_test_message("%s: %u pixels differ", name, differences);
+        (*failures)++;
+    }
+}
+
+static void prim_expect_refused(SGIRenderer *renderer, const char *name,
+                                PrimCase *p, unsigned *failures)
+{
+    if (prim_compare(renderer, name, p, true)) {
+        (*failures)++;
+    }
+}
+
+static void prim_lines(PrimCase *p, uint32_t mode, float width, float offset)
+{
+    static const float ends[][4] = {
+        { 1.5f, 1.5f, 6.5f, 1.5f },      /* x-major, centres */
+        { 8, 1, 14, 3.25f },              /* shallow, off centre */
+        { 1.5f, 3, 1.5f, 8.5f },          /* vertical */
+        { 3, 3, 8, 8 },                   /* slope one */
+        { 14, 4, 9, 9 },                  /* slope minus one, reversed */
+        { 10.25f, 14.75f, 12.5f, 6.25f }, /* steep, downward */
+        { 2.75f, 14.25f, 7.5f, 11 },      /* shallow, downward */
+    };
+
+    prim_case_init(p, mode, 4);
+    p->draw.line_width = width;
+    for (unsigned i = 0; i < G_N_ELEMENTS(ends); i++) {
+        prim_vertex_n(p, ends[i][0] + offset, ends[i][1] + offset * 2);
+        prim_vertex_n(p, ends[i][2] + offset, ends[i][3] + offset * 2);
+    }
+}
+
+/*
+ * Lines stay unsupported. Against the scalar diamond-exit rule, llvmpipe
+ * omits a width-one start pixel on an exact diamond boundary and differs
+ * by a row or column at the ends of even widths; these are the vectors
+ * that showed it.
+ */
+static void test_lines_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        const char *name;
+        uint32_t mode;
+        float width, offset;
+    } cases[] = {
+        { "lines width 1", SGI_GL_LINES, 1, 0 },
+        { "line strip width 1", SGI_GL_LINE_STRIP, 1, 0 },
+        { "line loop width 1", SGI_GL_LINE_LOOP, 1, 0 },
+        { "lines width 2", SGI_GL_LINES, 2, 0 },
+        { "lines width 3", SGI_GL_LINES, 3, 0 },
+        { "off-tie lines width 1", SGI_GL_LINES, 1, 3.0f / 256 },
+        { "off-tie line strip width 1", SGI_GL_LINE_STRIP, 1, 3.0f / 256 },
+        { "off-tie line loop width 1", SGI_GL_LINE_LOOP, 1, 3.0f / 256 },
+        { "off-tie lines width 2", SGI_GL_LINES, 2, 3.0f / 256 },
+        { "off-tie lines width 3", SGI_GL_LINES, 3, 3.0f / 256 },
+        { "off-tie lines width 4", SGI_GL_LINES, 4, 3.0f / 256 },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        prim_lines(p, cases[i].mode, cases[i].width, cases[i].offset);
+        prim_expect_refused(renderer, cases[i].name, p, &failures);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/* Other subpixel precision, tie rules or arithmetic refuse before snapshot. */
+static void test_raster_rules_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < 3; i++) {
+        static const char *const names[] = {
+            "subpixel bits 4", "top-left tie rule", "fixed-point arithmetic",
+        };
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        p->rules_case = i + 1;
+        prim_vertex_n(p, 1, 1);
+        prim_vertex_n(p, 14, 2);
+        prim_vertex_n(p, 3, 13);
+        prim_expect_refused(renderer, names[i], p, &failures);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+static void test_scalar_match_polygons(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float strip[][2] = {
+        { 1, 1 }, { 2.5f, 7.25f }, { 5.75f, 1.5f }, { 7, 8 },
+        { 10.25f, 2 }, { 12.5f, 7.5f }, { 14.75f, 3.25f },
+    };
+    static const float quads[][2] = {
+        { 1, 9 }, { 6.5f, 8.25f }, { 7.25f, 14.5f }, { 1.75f, 15 },
+        { 9, 9.5f }, { 14.5f, 9 }, { 15, 13.75f }, { 8.5f, 14.25f },
+    };
+    static const float polygon[][2] = {
+        { 8, 1.25f }, { 13.5f, 3 }, { 14.75f, 8.5f }, { 9.5f, 13.25f },
+        { 3.25f, 10 }, { 2.5f, 4.75f },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned shade = 0; shade < 2; shade++) {
+        uint32_t model = shade ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+        const char *kind = shade ? "smooth" : "flat";
+        g_autofree char *name = NULL;
+
+        prim_case_init(p, SGI_GL_TRIANGLE_STRIP, 4);
+        p->state.shade_model = model;
+        for (unsigned i = 0; i < G_N_ELEMENTS(strip); i++) {
+            prim_vertex_n(p, strip[i][0], strip[i][1]);
+        }
+        name = g_strdup_printf("%s triangle strip", kind);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+        p->state.shade_model = model;
+        for (unsigned i = 0; i < G_N_ELEMENTS(polygon); i++) {
+            prim_vertex_n(p, polygon[i][0], polygon[i][1]);
+        }
+        name = g_strdup_printf("%s triangle fan", kind);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_case_init(p, SGI_GL_QUADS, 4);
+        p->state.shade_model = model;
+        for (unsigned i = 0; i < G_N_ELEMENTS(quads); i++) {
+            prim_vertex_n(p, quads[i][0], quads[i][1]);
+        }
+        name = g_strdup_printf("%s quads", kind);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_case_init(p, SGI_GL_QUAD_STRIP, 4);
+        p->state.shade_model = model;
+        for (unsigned i = 0; i < G_N_ELEMENTS(strip); i++) {
+            prim_vertex_n(p, strip[i][0], strip[i][1] + 6 * (i & 1));
+        }
+        name = g_strdup_printf("%s quad strip", kind);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+
+        prim_case_init(p, SGI_GL_POLYGON, 4);
+        p->state.shade_model = model;
+        for (unsigned i = 0; i < G_N_ELEMENTS(polygon); i++) {
+            prim_vertex_n(p, polygon[i][0], polygon[i][1]);
+        }
+        name = g_strdup_printf("%s polygon", kind);
+        prim_expect(renderer, name, p, &failures);
+        g_clear_pointer(&name, g_free);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3467,6 +3996,11 @@ int main(int argc, char **argv)
                     test_typed_texture_triangle);
     g_test_add_func("/sgi-renderer-gl/typed-texture-multi-texel",
                     test_typed_texture_multi_texel);
+    g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
+    g_test_add_func("/sgi-renderer-gl/raster-rules-refused",
+                    test_raster_rules_refused);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-polygons",
+                    test_scalar_match_polygons);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
                     test_decoded_clear_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",

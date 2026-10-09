@@ -157,14 +157,26 @@ static bool sgi_render_blend_pair_supported(const SGIGLDrawState *st)
             st->blend_dst == 1);
 }
 
-static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
+static bool sgi_render_mode_polygons(uint32_t mode)
+{
+    return mode >= SGI_GL_TRIANGLES && mode <= SGI_GL_POLYGON;
+}
+
+/*
+ * Polygon modes only. Points and lines stay unsupported: Mesa's aliased
+ * lines differ from the shared wide-primitive contract at diamond ties
+ * and at the ends of even widths.
+ */
+static bool sgi_render_draw_supported(const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
                                       const SGIRenderResource **result)
 {
     const SGIGLDrawState *st = draw->state;
     const SGIRenderResource *res;
 
-    if (draw->mode != SGI_GL_TRIANGLES || draw->count != 3 ||
+    if (!sgi_render_mode_polygons(draw->mode) ||
+        (st->texture_2d &&
+         (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
         draw->back_colors ||
         (draw->polygon_modes &&
          (draw->polygon_modes[0] != SGI_GL_FILL ||
@@ -191,9 +203,9 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
             return false;
         }
     }
-    for (unsigned i = 0; i < 3; i++) {
+    for (uint32_t i = 0; i < draw->count; i++) {
         const float *vertex = draw->vertices +
-                              i * SGI_GL_VERTEX_FLOATS;
+                              (size_t)i * SGI_GL_VERTEX_FLOATS;
 
         for (unsigned c = 0; c < 4; c++) {
             if (!isfinite(vertex[SGI_GL_V_POSITION + c]) ||
@@ -238,6 +250,117 @@ static bool sgi_render_plain_triangle(const SGIRasterTarget *target,
     return true;
 }
 
+/*
+ * The scalar comparisons that establish this path use 8 subpixel bits,
+ * the bottom-origin top-left tie rule and double arithmetic, as every
+ * family does; the worker cannot follow other rules.
+ */
+static bool sgi_render_rules_supported(const SGIRasterRules *rules)
+{
+    return rules->subpixel_bits == 8 &&
+           rules->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
+           rules->arith == SGI_ARITH_DOUBLE;
+}
+
+/* Independent triangle vertices the mode decomposes into. */
+static uint64_t sgi_render_piece_vertices(uint32_t mode, uint32_t n)
+{
+    switch (mode) {
+    case SGI_GL_TRIANGLES:
+        return n / 3 * 3;
+    case SGI_GL_TRIANGLE_STRIP:
+    case SGI_GL_TRIANGLE_FAN:
+    case SGI_GL_POLYGON:
+        return n >= 3 ? (uint64_t)(n - 2) * 3 : 0;
+    case SGI_GL_QUADS:
+        return n / 4 * 6;
+    case SGI_GL_QUAD_STRIP:
+        return n >= 4 ? (uint64_t)(n - 2) / 2 * 6 : 0;
+    default:
+        return 0;
+    }
+}
+
+typedef struct SGIRenderPieces {
+    float (*v)[SGI_RENDERER_FRAME_VERTEX_FLOATS];
+    uint32_t count;
+    bool flat;
+} SGIRenderPieces;
+
+/*
+ * One piece's vertices; flat shading gives each the provoking colour, so
+ * the worker's last-vertex convention needs no reordering.
+ */
+static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
+                             const uint32_t *index, unsigned n,
+                             uint32_t provoking)
+{
+    const float *colour = draw->vertices +
+                          (size_t)provoking * SGI_GL_VERTEX_FLOATS +
+                          SGI_GL_V_COLOR;
+
+    for (unsigned i = 0; i < n; i++) {
+        const float *src = draw->vertices +
+                           (size_t)index[i] * SGI_GL_VERTEX_FLOATS;
+        float *dst = p->v[p->count++];
+
+        memcpy(dst, &src[SGI_GL_V_POSITION], 4 * sizeof(float));
+        memcpy(dst + 4, p->flat ? colour : &src[SGI_GL_V_COLOR],
+               4 * sizeof(float));
+        memset(dst + 8, 0, 4 * sizeof(float));
+    }
+}
+
+/*
+ * The triangles sgi_soft_draw() draws, in its order and with its provoking
+ * vertices: odd strip triangles with their first two vertices swapped, and
+ * quadrilaterals and polygons as fans from their first vertex.
+ */
+static void sgi_render_decompose(SGIRenderPieces *p, const SGIGLDraw *draw)
+{
+    uint32_t n = draw->count;
+
+#define PIECE(provoking, ...) do { \
+        const uint32_t index_[] = { __VA_ARGS__ }; \
+        sgi_render_piece(p, draw, index_, ARRAY_SIZE(index_), provoking); \
+    } while (0)
+    switch (draw->mode) {
+    case SGI_GL_TRIANGLES:
+        for (uint32_t i = 0; i + 2 < n; i += 3) {
+            PIECE(i + 2, i, i + 1, i + 2);
+        }
+        break;
+    case SGI_GL_TRIANGLE_STRIP:
+        for (uint32_t i = 0; i + 2 < n; i++) {
+            if (i & 1) {
+                PIECE(i + 2, i + 1, i, i + 2);
+            } else {
+                PIECE(i + 2, i, i + 1, i + 2);
+            }
+        }
+        break;
+    case SGI_GL_TRIANGLE_FAN:
+    case SGI_GL_POLYGON:
+        for (uint32_t i = 0; i + 2 < n; i++) {
+            PIECE(draw->mode == SGI_GL_POLYGON ? 0 : i + 2, 0, i + 1, i + 2);
+        }
+        break;
+    case SGI_GL_QUADS:
+        for (uint32_t i = 0; i + 3 < n; i += 4) {
+            PIECE(i + 3, i, i + 1, i + 2);
+            PIECE(i + 3, i, i + 2, i + 3);
+        }
+        break;
+    case SGI_GL_QUAD_STRIP:
+        for (uint32_t i = 0; i + 3 < n; i += 2) {
+            PIECE(i + 3, i, i + 1, i + 3);
+            PIECE(i + 3, i, i + 3, i + 2);
+        }
+        break;
+    }
+#undef PIECE
+}
+
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
                                         const SGIRasterTarget *target,
@@ -258,6 +381,9 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     size_t pixels, nslots, nrgba;
     size_t texture_stride_slots = 0, texture_capacity_slots = 0;
     unsigned polygon_count = 0;
+    uint64_t piece_vertices = 0;
+    SGIRenderPieces pieces = { 0 };
+    g_autofree float *piece_storage = NULL;
     bool any_written = false;
     SGIRenderCommitResult committed;
     SGIRenderResult status;
@@ -291,9 +417,23 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         error_setg(errp, "SGI Mesa ordered dithering is unsupported");
         return SGI_RENDER_UNSUPPORTED;
     }
-    if (!sgi_render_plain_triangle(target, draw, &resource)) {
+    if (!sgi_render_rules_supported(rules)) {
+        error_setg(errp, "Unsupported SGI Mesa raster rules");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    if (!sgi_render_draw_supported(target, draw, &resource)) {
         error_setg(errp, "Unsupported SGI Mesa draw state or resource");
         return SGI_RENDER_UNSUPPORTED;
+    }
+    if (!draw->state->texture_2d) {
+        piece_vertices = sgi_render_piece_vertices(draw->mode, draw->count);
+        if (!piece_vertices) {
+            return SGI_RENDER_OK;
+        }
+        if (piece_vertices > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX) {
+            error_setg(errp, "SGI Mesa draw has too many vertices");
+            return SGI_RENDER_UNSUPPORTED;
+        }
     }
     if (draw->state->texture_2d) {
         texture_resource = sgi_render_texture_resource(target, draw->state);
@@ -484,9 +624,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             }
         }
     }
-    frame.count = texture_resource ? polygon_count : 3;
-    for (unsigned i = 0; i < frame.count; i++) {
-        if (texture_resource) {
+    if (texture_resource) {
+        for (unsigned i = 0; i < polygon_count; i++) {
             const SGIVolumeVertex *v = &polygon[i];
             const float *colour = draw->state->shade_model == SGI_GL_FLAT ?
                 draw->vertices + 2 * SGI_GL_VERTEX_FLOATS + SGI_GL_V_COLOR :
@@ -498,17 +637,23 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             memcpy(&vertices[i][4], colour, 4 * sizeof(float));
             memcpy(&vertices[i][8], &v->attr[SGI_GL_V_TEXCOORD],
                    4 * sizeof(float));
-        } else {
-            const float *src = draw->vertices +
-                               i * SGI_GL_VERTEX_FLOATS;
-
-            memcpy(&vertices[i][0], &src[SGI_GL_V_POSITION],
-                   4 * sizeof(float));
-            memcpy(&vertices[i][4], &src[SGI_GL_V_COLOR],
-                   4 * sizeof(float));
         }
+        frame.count = polygon_count;
+        frame.vertices = &vertices[0][0];
+    } else {
+        piece_storage = g_try_new(float, piece_vertices *
+                                         SGI_RENDERER_FRAME_VERTEX_FLOATS);
+        if (!piece_storage) {
+            error_setg(errp, "Cannot allocate SGI Mesa draw vertices");
+            return SGI_RENDER_OOM;
+        }
+        pieces.v = (float (*)[SGI_RENDERER_FRAME_VERTEX_FLOATS])piece_storage;
+        pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
+        sgi_render_decompose(&pieces, draw);
+        assert(pieces.count == piece_vertices);
+        frame.count = pieces.count;
+        frame.vertices = piece_storage;
     }
-    frame.vertices = &vertices[0][0];
     frame.shade_model = draw->state->shade_model;
     frame.blend = draw->state->blend;
     frame.blend_src = draw->state->blend_src;
