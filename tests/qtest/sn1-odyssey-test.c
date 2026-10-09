@@ -11237,6 +11237,408 @@ static void texture_public_border_bind_3d(QTestState *qts,
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+/*
+ * The texels are the public probe's authored 4x4x4 grid. Their placement,
+ * level_base + (15 + z) * 0x400, is the Odyssey datasheet's bounded policy
+ * for this captured stored RGBA8, border-one, 2x2x2 profile: it approximates
+ * software writes seen in Octane2 V12 model traces at the level bases
+ * 0x16a800 and 0x16b800. Physical V12 texture layout is unqualified.
+ */
+#define PUBLIC_VOLUME_STRIDE 0x400
+/* Each slice's upload box starts at (15, 15) inside its object. */
+#define PUBLIC_VOLUME_BOX 15
+#define PUBLIC_VOLUME_FIRST_BASE 0x16a800
+#define PUBLIC_VOLUME_SECOND_BASE 0x16b800
+
+static const struct {
+    float s, t, r;
+    uint32_t nearest, linear;
+} public_volume_samples[] = {
+    { 0.25f, 0.25f, 0.25f, 0x0080c0ff, 0x0080c0ff },
+    { 0.125f, 0.125f, 0.125f, 0x0080c0ff, 0x546c78ff },
+    { 0.875f, 0.125f, 0.125f, 0x400080ff, 0x544458ff },
+    { 0.125f, 0.875f, 0.125f, 0x80c040ff, 0x5c6c68ff },
+    { 0.875f, 0.875f, 0.125f, 0xc04000ff, 0x7c6448ff },
+    { 0.125f, 0.125f, 0.875f, 0x404040ff, 0x544c68ff },
+    { 0.875f, 0.125f, 0.875f, 0x80c000ff, 0x748448ff },
+    { 0.125f, 0.875f, 0.875f, 0xc080c0ff, 0x7c6c78ff },
+    { 0.875f, 0.875f, 0.875f, 0x000080ff, 0x3c4458ff },
+    { -0.125f, 0.75f, 0.25f, 0x80c040ff, 0x608060ff },
+    { 1.125f, 0.75f, 0.25f, 0xc04000ff, 0x608060ff },
+    { 0.25f, -0.125f, 0.75f, 0x404040ff, 0x802080ff },
+    { 0.25f, 1.125f, 0.75f, 0xc080c0ff, 0x80a080ff },
+    { 0.25f, 0.75f, -0.125f, 0x80c040ff, 0x606080ff },
+    { 0.25f, 0.75f, 1.125f, 0xc080c0ff, 0x606080ff },
+};
+
+/* The captured stored-border sampler and level words, nearest filter. */
+static const uint32_t public_volume_sampler[7] = {
+    0x08000421, 2, 2, 2, 0x03002a00, 0x00000404, 0x01c0cfff,
+};
+static const uint32_t public_volume_level[2] = { 0x41100004, 4 };
+/* The zero-border capture's level words: a different decoded stride. */
+static const uint32_t public_volume_zero_border_level[2] = { 0x41100002, 1 };
+
+static uint32_t public_stored_volume_texel(unsigned x, unsigned y, unsigned z)
+{
+    return (((x + 2 * y + z) % 4) * 64) << 24 |
+           (((2 * x + y + 3 * z) % 4) * 64) << 16 |
+           (((3 * x + 2 * y + 2 * z) % 4) * 64) << 8 | 0xff;
+}
+
+static uint32_t public_stored_volume_slice(uint32_t level_base, unsigned z)
+{
+    return level_base + (15 + z) * PUBLIC_VOLUME_STRIDE;
+}
+
+static void public_stored_volume_object(QTestState *qts, uint32_t base,
+                                        unsigned slice, bool authored,
+                                        uint32_t decoy)
+{
+    upload_begin_xy(qts, base, 4, 0x080024d0, PUBLIC_VOLUME_BOX,
+                    PUBLIC_VOLUME_BOX, 4, 4);
+    for (unsigned y = 0; y < 4; y++) {
+        const uint32_t header[] = {
+            ODSY_CMD_IMAGE_HEADER, 0x0f41104b, ODSY_CMD_IMAGE_HEADER_TAIL,
+            ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB),
+        };
+        uint32_t row[4];
+
+        for (unsigned x = 0; x < 4; x++) {
+            row[x] = authored ? public_stored_volume_texel(x, y, slice) :
+                                decoy;
+        }
+        /* Row framing and payload match the retained public upload. */
+        push_user_words(qts, header, ARRAY_SIZE(header));
+        push_user_words(qts, row, ARRAY_SIZE(row));
+    }
+    upload_end(qts);
+}
+
+/* Slice z's 16 authored texels sit inside the upload box of the object. */
+static void public_stored_volume_check(QTestState *qts, uint32_t base,
+                                       unsigned z)
+{
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(odsy_test_object_texel(
+                qts, base, PUBLIC_VOLUME_BOX + x, PUBLIC_VOLUME_BOX + y), ==,
+                public_stored_volume_texel(x, y, z));
+        }
+    }
+}
+
+/* Upload authored slice z at base and confirm it landed. */
+static void public_stored_volume_put(QTestState *qts, uint32_t base,
+                                     unsigned z)
+{
+    public_stored_volume_object(qts, base, z, true, 0);
+    public_stored_volume_check(qts, base, z);
+}
+
+/*
+ * Complete decoys at the level base, one stride below the first high slice
+ * and one above the last must never stand in for high slices. Each has its
+ * own colour, and none is an authored texel.
+ */
+static void public_stored_volume_decoys(QTestState *qts, uint32_t level_base)
+{
+    for (unsigned z = 0; z < 4; z++) {
+        public_stored_volume_object(qts,
+                                    level_base + z * PUBLIC_VOLUME_STRIDE,
+                                    z, false, 0xff00ffff | z << 16);
+    }
+    public_stored_volume_object(qts, level_base + 14 * PUBLIC_VOLUME_STRIDE,
+                                0, false, 0x00ffffff);
+    public_stored_volume_object(qts, level_base + 19 * PUBLIC_VOLUME_STRIDE,
+                                0, false, 0xffff00ff);
+}
+
+/*
+ * Mode and level-entry framing come from the retained public transport.
+ * The environment word 0x141b = 1 does not: neither the transport nor the
+ * datasheet records it. It is a precondition taken from the model, whose
+ * texture setup drops a draw without an environment and decodes 1 as
+ * replace. It is not capture or hardware evidence. Replace makes the
+ * expected pixels the texels themselves rather than texels modulated by
+ * the yellow vertex colour.
+ */
+static void public_stored_volume_bind_with(QTestState *qts,
+                                           const uint32_t sampler[7],
+                                           uint32_t level_base,
+                                           const uint32_t level[2])
+{
+    const uint32_t words[] = {
+        0x00010404, 0x02042200,
+        0x00010405, 0x00002420,
+        0x00011c16, sampler[0], sampler[1], sampler[2], sampler[3],
+        sampler[4], sampler[5], sampler[6],
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, level_base, level[0], level[1],
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void public_stored_volume_bind(QTestState *qts, uint32_t level_base,
+                                      bool linear)
+{
+    uint32_t sampler[7];
+
+    memcpy(sampler, public_volume_sampler, sizeof(sampler));
+    if (linear) {
+        sampler[4] = 0x03002a22;
+    }
+    public_stored_volume_bind_with(qts, sampler, level_base,
+                                   public_volume_level);
+}
+
+static void public_stored_volume_draw(QTestState *qts)
+{
+    texture_adapter_point_3d(qts, 101, 111, public_volume_samples[0].s,
+                             public_volume_samples[0].t,
+                             public_volume_samples[0].r);
+}
+
+/*
+ * The draw just bound must leave the destination pixel alone. The model
+ * reports an unsupported profile and missing backing through the same
+ * dropped draw, and exposes no state that tells them apart, so these
+ * cases check only that nothing was sampled.
+ */
+static void public_stored_volume_dropped(QTestState *qts)
+{
+    uint32_t before = odsy_test_pixel(qts, 101, 111);
+
+    public_stored_volume_draw(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 111), ==, before);
+}
+
+/* Positive control: the captured binding samples the high slices. */
+static void public_stored_volume_samples_high(QTestState *qts,
+                                              uint32_t level_base)
+{
+    texture_adapter_window(qts);
+    public_stored_volume_bind(qts, level_base, false);
+    public_stored_volume_draw(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 111), ==,
+                    public_volume_samples[0].nearest);
+}
+
+static void public_stored_volume_complete(uint32_t level_base)
+{
+    QTestState *qts = board_start("");
+
+    public_stored_volume_decoys(qts, level_base);
+    for (unsigned z = 0; z < 4; z++) {
+        public_stored_volume_put(qts, public_stored_volume_slice(level_base, z),
+                                 z);
+    }
+    texture_adapter_window(qts);
+    for (unsigned linear = 0; linear < 2; linear++) {
+        public_stored_volume_bind(qts, level_base, linear);
+        for (unsigned i = 0; i < ARRAY_SIZE(public_volume_samples); i++) {
+            uint32_t expected = linear ? public_volume_samples[i].linear :
+                                         public_volume_samples[i].nearest;
+
+            texture_adapter_point_3d(qts, 100 + i, 110 + linear,
+                                     public_volume_samples[i].s,
+                                     public_volume_samples[i].t,
+                                     public_volume_samples[i].r);
+            g_assert_cmphex(odsy_test_pixel(qts, 100 + i, 110 + linear), ==,
+                            expected);
+        }
+    }
+    board_quit(qts);
+}
+
+/*
+ * The high slices in absent are not uploaded, while every decoy is
+ * complete: no nearby object may stand in. Uploading them afterwards makes
+ * the same draw sample.
+ */
+static void public_stored_volume_missing(uint32_t level_base, unsigned absent)
+{
+    QTestState *qts = board_start("");
+
+    public_stored_volume_decoys(qts, level_base);
+    for (unsigned z = 0; z < 4; z++) {
+        if (!(absent & 1u << z)) {
+            public_stored_volume_put(qts,
+                                     public_stored_volume_slice(level_base, z),
+                                     z);
+        }
+    }
+    texture_adapter_window(qts);
+    public_stored_volume_bind(qts, level_base, false);
+    public_stored_volume_dropped(qts);
+
+    for (unsigned z = 0; z < 4; z++) {
+        if (absent & 1u << z) {
+            public_stored_volume_put(qts,
+                                     public_stored_volume_slice(level_base, z),
+                                     z);
+        }
+    }
+    public_stored_volume_samples_high(qts, level_base);
+    board_quit(qts);
+}
+
+/*
+ * Bind with the given sampler and level words over a complete high-origin
+ * volume and its decoys, plus deep complete decoys at level_base + z * 0x400
+ * for z from 4 up to (but not including) deep; the draw must not sample. The
+ * captured binding then samples the same volume.
+ */
+static void public_stored_volume_rejects(const uint32_t sampler[7],
+                                         const uint32_t level[2],
+                                         unsigned deep)
+{
+    uint32_t level_base = PUBLIC_VOLUME_FIRST_BASE;
+    QTestState *qts = board_start("");
+
+    public_stored_volume_decoys(qts, level_base);
+    for (unsigned z = 4; z < deep; z++) {
+        public_stored_volume_object(qts,
+                                    level_base + z * PUBLIC_VOLUME_STRIDE,
+                                    z, false, 0xff00ffff | z << 16);
+    }
+    for (unsigned z = 0; z < 4; z++) {
+        public_stored_volume_put(qts, public_stored_volume_slice(level_base, z),
+                                 z);
+    }
+    texture_adapter_window(qts);
+    public_stored_volume_bind_with(qts, sampler, level_base, level);
+    public_stored_volume_dropped(qts);
+    public_stored_volume_samples_high(qts, level_base);
+    board_quit(qts);
+}
+
+static void test_public_stored_volume_first_base(void)
+{
+    public_stored_volume_complete(PUBLIC_VOLUME_FIRST_BASE);
+}
+
+static void test_public_stored_volume_second_base(void)
+{
+    public_stored_volume_complete(PUBLIC_VOLUME_SECOND_BASE);
+}
+
+static void test_public_stored_volume_first_base_missing_0(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_FIRST_BASE, 1u << 0);
+}
+
+static void test_public_stored_volume_first_base_missing_1(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_FIRST_BASE, 1u << 1);
+}
+
+static void test_public_stored_volume_first_base_missing_2(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_FIRST_BASE, 1u << 2);
+}
+
+static void test_public_stored_volume_first_base_missing_3(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_FIRST_BASE, 1u << 3);
+}
+
+static void test_public_stored_volume_first_base_missing_all(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_FIRST_BASE, 0xf);
+}
+
+static void test_public_stored_volume_second_base_missing_0(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_SECOND_BASE, 1u << 0);
+}
+
+static void test_public_stored_volume_second_base_missing_1(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_SECOND_BASE, 1u << 1);
+}
+
+static void test_public_stored_volume_second_base_missing_2(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_SECOND_BASE, 1u << 2);
+}
+
+static void test_public_stored_volume_second_base_missing_3(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_SECOND_BASE, 1u << 3);
+}
+
+static void test_public_stored_volume_second_base_missing_all(void)
+{
+    public_stored_volume_missing(PUBLIC_VOLUME_SECOND_BASE, 0xf);
+}
+
+/*
+ * The same encoded profile with complete authored slices only at
+ * level_base + z * 0x400 and nothing at the high origin. The datasheet
+ * gives no selector for this low placement, so it must not be sampled.
+ * The high slices added afterwards are.
+ */
+static void test_public_stored_volume_low_origin(void)
+{
+    uint32_t level_base = PUBLIC_VOLUME_FIRST_BASE;
+    QTestState *qts = board_start("");
+
+    for (unsigned z = 0; z < 4; z++) {
+        public_stored_volume_put(qts, level_base + z * PUBLIC_VOLUME_STRIDE,
+                                 z);
+    }
+    texture_adapter_window(qts);
+    public_stored_volume_bind(qts, level_base, false);
+    public_stored_volume_dropped(qts);
+    for (unsigned z = 0; z < 4; z++) {
+        public_stored_volume_put(qts, public_stored_volume_slice(level_base, z),
+                                 z);
+    }
+    public_stored_volume_samples_high(qts, level_base);
+    board_quit(qts);
+}
+
+/*
+ * The zero-border capture's level words, 0x41100002,1, with the stored
+ * descriptor: a decoded slice stride other than the selected 0x400.
+ */
+static void test_public_stored_volume_other_stride(void)
+{
+    public_stored_volume_rejects(public_volume_sampler,
+                                 public_volume_zero_border_level, 0);
+}
+
+/*
+ * The zero-border capture's final sampler word, 0x00c0cfff, in place of the
+ * stored border's 0x01c0cfff: no longer the captured stored profile.
+ */
+static void test_public_stored_volume_wrong_border(void)
+{
+    uint32_t sampler[7];
+
+    memcpy(sampler, public_volume_sampler, sizeof(sampler));
+    sampler[6] = 0x00c0cfff;
+    public_stored_volume_rejects(sampler, public_volume_level, 0);
+}
+
+/*
+ * A depth word of 4 where the captured descriptor says 2, leaving the first
+ * sampler word unchanged: a malformed, non-captured size. A depth-4 stored
+ * volume read from the level base would span six slice objects, so complete
+ * decoys fill base + 4 and base + 5 strides too: only the size check, not a
+ * missing object, can reject this draw.
+ */
+static void test_public_stored_volume_wrong_size(void)
+{
+    uint32_t sampler[7];
+
+    memcpy(sampler, public_volume_sampler, sizeof(sampler));
+    sampler[3] = 4;
+    public_stored_volume_rejects(sampler, public_volume_level, 6);
+}
+
 static void test_texture_public_border_3d_copied_rows(void)
 {
     QTestState *qts = board_start("");
@@ -17406,6 +17808,54 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/texture-adapter/"
              "public-stored-border-3d",
              test_texture_public_border_3d);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base",
+                   test_public_stored_volume_first_base);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base",
+                   test_public_stored_volume_second_base);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base-missing-0",
+                   test_public_stored_volume_first_base_missing_0);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base-missing-1",
+                   test_public_stored_volume_first_base_missing_1);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base-missing-2",
+                   test_public_stored_volume_first_base_missing_2);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base-missing-3",
+                   test_public_stored_volume_first_base_missing_3);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-first-base-missing-all",
+                   test_public_stored_volume_first_base_missing_all);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base-missing-0",
+                   test_public_stored_volume_second_base_missing_0);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base-missing-1",
+                   test_public_stored_volume_second_base_missing_1);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base-missing-2",
+                   test_public_stored_volume_second_base_missing_2);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base-missing-3",
+                   test_public_stored_volume_second_base_missing_3);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-second-base-missing-all",
+                   test_public_stored_volume_second_base_missing_all);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-low-origin",
+                   test_public_stored_volume_low_origin);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-other-stride",
+                   test_public_stored_volume_other_stride);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-wrong-border",
+                   test_public_stored_volume_wrong_border);
+    add_fresh_case("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-wrong-size",
+                   test_public_stored_volume_wrong_size);
     add_fresh_case("sn1/odyssey/texture-adapter/"
                    "public-stored-border-3d-migration",
                    test_texture_public_border_3d_migration);
