@@ -9,7 +9,8 @@
 
 MemTxResult sgi_xio_port_packet_rw(Object *port, unsigned int index,
                                    hwaddr address, void *buffer, size_t size,
-                                   bool write, const SGIXioSource *source)
+                                   bool write, const SGIXioSource *source,
+                                   SGIXioPacketAttrs packet_attrs)
 {
     SGIXioPortClass *pc = SGI_XIO_PORT_GET_CLASS(port);
 
@@ -27,12 +28,14 @@ MemTxResult sgi_xio_port_packet_rw(Object *port, unsigned int index,
                       "sgi-xio: explicit packet address outside receiver\n");
         return MEMTX_DECODE_ERROR;
     }
-    return pc->packet_rw(port, index, address, buffer, size, write, source);
+    return pc->packet_rw(port, index, address, buffer, size, write, source,
+                         packet_attrs);
 }
 
 MemTxResult sgi_xio_peer_packet_rw(const SGIXioPeer *peer, hwaddr address,
                                    void *buffer, size_t size, bool write,
-                                   const SGIXioSource *source)
+                                   const SGIXioSource *source,
+                                   SGIXioPacketAttrs packet_attrs)
 {
     if (!peer->port) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -49,7 +52,7 @@ MemTxResult sgi_xio_peer_packet_rw(const SGIXioPeer *peer, hwaddr address,
         address &= SGI_XIO_PACKET_SIZE - 1;
     }
     return sgi_xio_port_packet_rw(peer->port, peer->index, address,
-                                  buffer, size, write, source);
+                                  buffer, size, write, source, packet_attrs);
 }
 
 const char *sgi_xio_port_describe(Object *port, unsigned int index)

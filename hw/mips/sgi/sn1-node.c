@@ -517,7 +517,7 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
 
 static MemTxResult sn1_node_ni_destination_rw(SN1FabricEndpoint *endpoint,
     const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
-    bool write)
+    bool write, SGIXioPacketAttrs packet_attrs)
 {
     SN1NodeState *node = SN1_NODE(endpoint->owner);
     AddressSpace *as;
@@ -542,10 +542,8 @@ static MemTxResult sn1_node_ni_destination_rw(SN1FabricEndpoint *endpoint,
         }
         as = &node->ni_ram_as;
     }
-    return write ? address_space_write(as, offset, MEMTXATTRS_UNSPECIFIED,
-                                      buffer, size) :
-                   address_space_read(as, offset, MEMTXATTRS_UNSPECIFIED,
-                                     buffer, size);
+    return sn1_fabric_packet_target_rw(as, offset, buffer, size, write,
+                                       packet_attrs);
 }
 
 static bool sn1_node_bte_local_rw(void *opaque, hwaddr address,

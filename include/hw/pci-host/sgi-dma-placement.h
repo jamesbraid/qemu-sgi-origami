@@ -21,18 +21,21 @@ typedef enum SGIDMAPlacement {
     SGI_DMA_PLACEMENT_IDENTITY,
     SGI_DMA_PLACEMENT_WORD,         /* PCI byte k is host byte k ^ 3 */
     SGI_DMA_PLACEMENT_DOUBLEWORD,   /* PCI byte k is host byte 7 - k */
+    SGI_DMA_PLACEMENT_HALF_WRITE,   /* synthetic XBridge direct write */
     SGI_DMA_PLACEMENTS,
 } SGIDMAPlacement;
 
 /* Moves host-ordered bytes onward; for a target with no address space. */
 typedef MemTxResult SGIDMAPlacementSend(void *opaque, hwaddr addr, void *buf,
                                         unsigned len, bool is_write,
-                                        MemTxAttrs attrs);
+                                        MemTxAttrs attrs,
+                                        SGIDMAPlacement placement);
 
 typedef struct SGIDMAPlacementSet SGIDMAPlacementSet;
 
 typedef struct SGIDMAPlacementTarget {
     SGIDMAPlacementSet *set;
+    SGIDMAPlacement placement;
     unsigned unit;
     MemoryRegion mr;
     AddressSpace as;

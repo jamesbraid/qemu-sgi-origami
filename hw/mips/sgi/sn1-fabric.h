@@ -26,7 +26,7 @@ typedef struct SN1FabricEndpoint {
         MemTxAttrs attrs);
     MemTxResult (*destination_rw)(struct SN1FabricEndpoint *endpoint,
         const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
-        bool write);
+        bool write, SGIXioPacketAttrs packet_attrs);
     void (*place_claims)(struct SN1FabricEndpoint *endpoint);
 } SN1FabricEndpoint;
 
@@ -58,7 +58,10 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
     unsigned origin, hwaddr address, void *buffer, size_t size, bool write,
     MemTxAttrs attrs);
 MemTxResult sn1_fabric_destination_rw(void *opaque, const SGIXioSource *source,
-    hwaddr address, void *buffer, size_t size, bool write);
+    hwaddr address, void *buffer, size_t size, bool write,
+    SGIXioPacketAttrs packet_attrs);
+MemTxResult sn1_fabric_packet_target_rw(AddressSpace *as, hwaddr offset,
+    void *buffer, size_t size, bool write, SGIXioPacketAttrs packet_attrs);
 bool sn1_fabric_routed(SN1FabricEndpoint *endpoint);
 SN1FabricEndpoint *sn1_fabric_peer(SN1FabricEndpoint *endpoint);
 unsigned int sn1_fabric_number(SN1FabricEndpoint *endpoint);
