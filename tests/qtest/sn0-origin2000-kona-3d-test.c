@@ -12897,6 +12897,10 @@ static void test_renderer_typed_coverage(gconstpointer opaque)
     g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 0);
     g_assert_cmphex(renderer_plane_at(s, 2, 900, 700), ==, 3);
 
+    /*
+     * An enabled texture with no image keeps the draw off the Mesa route.
+     * The legacy renderer draws it untextured, one request per tile.
+     */
     generation = renderer_counter(s, "x-test-mesa-front-generation");
     before = renderer_counter(s, "x-test-gpu-requests");
     kona_command(s, 0x24, (uint32_t[]){ 0xde1 }, 1);
@@ -12905,10 +12909,10 @@ static void test_renderer_typed_coverage(gconstpointer opaque)
     gl_vertex2f(s, 0.5, -0.5);
     gl_vertex2f(s, 0, 0.5);
     gl_end(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
-                     before);
     g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"), ==,
                      generation);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests") - before,
+                     >=, 1);
     qtest_quit(s);
 }
 
@@ -13556,15 +13560,74 @@ static void test_renderer_general_triangle(gconstpointer opaque)
     qtest_quit(gpu);
 }
 
+/* Renderer cases with this flag make host renderer creation unavailable. */
+#define RENDERER_CPU (1u << 16)
+
+static unsigned renderer_mode(gconstpointer opaque)
+{
+    return GPOINTER_TO_UINT(opaque) & ~RENDERER_CPU;
+}
+
+static QTestState *renderer_init(gconstpointer opaque)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+
+    if (GPOINTER_TO_UINT(opaque) & RENDERER_CPU) {
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+            "'property':'x-test-gpu-fail-create','value':1}}");
+    }
+    return s;
+}
+
+/*
+ * Each draw either completes on the host renderer or falls back to the
+ * scalar path. Refused draws use unsupported state and always fall back.
+ * Strict Mesa runs require every eligible draw on the host, except where
+ * an exact precision check may refuse it.
+ */
+static void renderer_assert_draws(QTestState *s, gconstpointer opaque,
+                                  unsigned eligible, unsigned refused,
+                                  bool precision)
+{
+    uint64_t draws = renderer_counter(s, "x-test-gpu-draws");
+    uint64_t fallbacks = renderer_counter(s, "x-test-gpu-fallbacks");
+
+    g_assert_cmpuint(draws + fallbacks, ==, eligible + refused);
+    g_assert_cmpuint(draws, <=, eligible);
+    if (GPOINTER_TO_UINT(opaque) & RENDERER_CPU) {
+        g_assert_cmpuint(draws, ==, 0);
+    } else if (!precision && g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_cmpuint(draws, ==, eligible);
+    }
+}
+
+static void renderer_add_modes(const char *suite, unsigned modes,
+                               GTestDataFunc fn)
+{
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned mode = 0; mode < modes; mode++) {
+            g_autofree char *path = g_strdup_printf(
+                "sn0/origin2000/kona-3d/renderer/%s%s/%u",
+                cpu ? "cpu/" : "", suite, mode);
+
+            qtest_add_data_func(path,
+                                GUINT_TO_POINTER(mode |
+                                                 (cpu ? RENDERER_CPU : 0)),
+                                fn);
+        }
+    }
+}
+
 static void test_renderer_polygon(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     unsigned primitive = mode == 1 ? 8 : mode == 2 ? 9 : 7;
     unsigned count = mode == 2 ? 3 : 4;
     float vertices[4][2] = {
         { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
     };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13584,8 +13647,7 @@ static void test_renderer_polygon(gconstpointer opaque)
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode == 3 ? 3 : mode == 2 ? 1 : 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, mode == 2 ? 0xffffff : 0x0000ff);
     if (mode == 2) {
         for (unsigned y = 0; y < 128; y++) {
@@ -13603,13 +13665,13 @@ static void test_renderer_polygon(gconstpointer opaque)
 
 static void test_renderer_large_polygon(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     unsigned count = mode == 0 ? 4 : mode == 4 ? 259 :
                      mode == 5 ? 258 : 5;
     const float vertices[5][2] = {
         { 0, 0 }, { 128, 0 }, { 128, 64 }, { 128, 128 }, { 0, 128 },
     };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13629,15 +13691,14 @@ static void test_renderer_large_polygon(gconstpointer opaque)
     /* Clipping the fifth vertex adds two intersections to the four inside. */
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode == 4 ? 0 : mode == 3 ? 4 : count - 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, mode != 4, mode == 4, false);
     expected_clear(expected, 0xff0000);
     assert_window_matches(s, expected);
     if (mode == 4) {
         kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
         renderer_triangle(s);
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 1);
-        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 2);
+        renderer_assert_draws(s, opaque, 1, 1, false);
         assert_window_matches(s, expected);
     }
     qtest_quit(s);
@@ -13651,10 +13712,10 @@ static void test_renderer_scissor(gconstpointer opaque)
         { 64, 64, INT32_MAX, INT32_MAX },
         { INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX }, { -1, -1, 1, 1 },
     };
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     const int32_t *box = boxes[mode];
     uint32_t words[4];
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13670,8 +13731,7 @@ static void test_renderer_scissor(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, 0xffffff);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
@@ -13696,10 +13756,10 @@ static void test_renderer_viewport(gconstpointer opaque)
         { 128, 0, 128, 128 }, { 0, 0, 0, 128 },
         { 0, 0, 32768, 32768 }, { 0, 0, 16384, 16384 }, { 0, 0, 256, 128 },
     };
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     const int32_t *vp = viewports[mode];
     uint32_t words[4];
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13720,8 +13780,7 @@ static void test_renderer_viewport(gconstpointer opaque)
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode == 5 ? 0 : mode == 7 ? 4 : 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, mode != 5, mode == 5, false);
     expected_clear(expected, 0xffffff);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
@@ -13764,10 +13823,10 @@ static void test_renderer_tiles(gconstpointer opaque)
         { 0, 0, FB_WIDTH, FB_HEIGHT, 160 },
         { PROBE_X, PROBE_Y, 257, 193, 12 },
     };
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     int32_t ox = windows[mode].x, oy = windows[mode].y;
     unsigned width = windows[mode].width, height = windows[mode].height;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree uint8_t *expected = NULL, *frame = NULL;
 
     renderer_fixture(s);
@@ -13791,8 +13850,7 @@ static void test_renderer_tiles(gconstpointer opaque)
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      windows[mode].requests);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     frame = kona_screendump(s);
     for (unsigned y = 0; y < FB_HEIGHT; y++) {
         for (unsigned x = 0; x < FB_WIDTH; x++) {
@@ -13825,12 +13883,12 @@ static void test_renderer_culling(gconstpointer opaque)
     };
     static const bool visible[] = { true, false, false, false,
                                    true, false, true, true };
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     uint32_t winding = mode == 3 || mode == 4 || mode == 7 ? 0x900 : 0x901;
     const float vertices[4][2] = {
         { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
     };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13845,8 +13903,7 @@ static void test_renderer_culling(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, visible[mode] ? 0xff0000 : 0xffffff);
     assert_window_matches(s, expected);
     qtest_quit(s);
@@ -13854,13 +13911,13 @@ static void test_renderer_culling(gconstpointer opaque)
 
 static void test_renderer_colour_mask(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque), mask = mode & 15;
+    unsigned mode = renderer_mode(opaque), mask = mode & 15;
     bool direct = mode & 16;
     const uint8_t old[3] = { direct ? 47 : 255, direct ? 89 : 255,
                              direct ? 123 : 255 };
     const uint8_t colour[3] = { 17, 63, 191 };
     uint32_t words[4], rgb = 0;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13885,8 +13942,7 @@ static void test_renderer_colour_mask(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, rgb);
     assert_window_matches(s, expected);
     /* A fully masked indexed pixel must still follow its palette entry. */
@@ -13904,10 +13960,10 @@ static void test_renderer_logic_op(gconstpointer opaque)
         0x00, 0xc0, 0x0c, 0xcc, 0x30, 0xf0, 0x3c, 0xfc,
         0x03, 0xc3, 0x0f, 0xcf, 0x33, 0xf3, 0x3f, 0xff,
     };
-    unsigned mode = GPOINTER_TO_UINT(opaque), op = mode & 15;
+    unsigned mode = renderer_mode(opaque), op = mode & 15;
     unsigned variant = mode / 16;
     uint32_t rgb = (variant == 4 ? 0xcc : values[op]) * 0x010101;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -13942,8 +13998,7 @@ static void test_renderer_logic_op(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, rgb);
     assert_window_matches(s, expected);
     kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
@@ -13962,10 +14017,10 @@ static void test_renderer_alpha_test(gconstpointer opaque)
         { 0, 0, 0 }, { -1, 0, 0 }, { 2, 1, 0 }, { 0.25f, 0.5f, -1 },
     };
     static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
-    unsigned mode = GPOINTER_TO_UINT(opaque), func = mode & 7;
+    unsigned mode = renderer_mode(opaque), func = mode & 7;
     unsigned variant = mode / 8;
     bool kept = passes[func] & (1 << (1 - cases[variant].relation));
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
     uint32_t args[] = { 0x200 + func, fbits(cases[variant].ref) };
 
@@ -13983,8 +14038,7 @@ static void test_renderer_alpha_test(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, kept ? 0xff0000 : 0xffffff);
     assert_window_matches(s, expected);
     kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
@@ -14019,11 +14073,11 @@ static void test_renderer_blend(gconstpointer opaque)
         { 0x8001, 0, 0x8006, { 1, 1, 1, 1 }, 0x8040ff },
         { 0x8002, 0, 0x8006, { 1, 1, 1, 1 }, 0x80bf00 },
     };
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     unsigned variant = mode / ARRAY_SIZE(cases);
     unsigned index = mode % ARRAY_SIZE(cases);
     uint32_t rgb = cases[index].rgb;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -14050,8 +14104,7 @@ static void test_renderer_blend(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, rgb);
     assert_window_matches(s, expected);
     kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
@@ -14061,7 +14114,7 @@ static void test_renderer_blend(gconstpointer opaque)
 
 static void test_renderer_smooth(gconstpointer opaque)
 {
-    unsigned input = GPOINTER_TO_UINT(opaque);
+    unsigned input = renderer_mode(opaque);
     bool gpu = input == 13;
     unsigned mode = gpu ? 1 : input;
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
@@ -14083,7 +14136,7 @@ static void test_renderer_smooth(gconstpointer opaque)
     }
     s = gpu ? qtest_initf(MACHINE_ARGS " -global sgi-kona.host-gpu=on"
                           " -display egl-headless,rendernode=%s", node) :
-              qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+              renderer_init(opaque);
     renderer_fixture(s);
     kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
     if (mode == 4) {
@@ -14125,14 +14178,8 @@ static void test_renderer_smooth(gconstpointer opaque)
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode < 10 ? 1 : 2);
-    if (gpu) {
-        /* A host precision refusal must preserve the exact software image. */
-        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws") +
-                         renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
-    } else {
-        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
-    }
+    /* A host precision refusal must preserve the exact software image. */
+    renderer_assert_draws(s, opaque, 1, 0, true);
     for (unsigned palette = 0; palette < 2; palette++) {
         expected_clear(expected, palette ? 0x326496 : 0xffffff);
         for (unsigned y = 0; y < 128; y++) {
@@ -14187,14 +14234,14 @@ static void test_renderer_smooth(gconstpointer opaque)
 static void test_renderer_depth(gconstpointer opaque)
 {
     static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
-    unsigned mode = GPOINTER_TO_UINT(opaque), func = mode & 7;
+    unsigned mode = renderer_mode(opaque), func = mode & 7;
     unsigned variant = mode / 8;
     int relation = variant == 1 ? 0 : variant == 2 || variant == 6 ? 1 : -1;
     bool kept = variant == 5 || (passes[func] & (1 << (1 - relation)));
     uint32_t old = variant == 1 ? 0x800000 :
                    variant == 2 ? 0x400000 : 0x9fffff;
     uint32_t incoming = variant == 6 ? 0xbfffff : 0x800000;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -14223,8 +14270,7 @@ static void test_renderer_depth(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     g_assert_cmphex(stencil_colour_or_depth(s, 5), ==,
                     kept && variant != 3 && variant != 5 ? incoming : old);
     g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, 0x5a);
@@ -14240,13 +14286,13 @@ static void test_renderer_stencil(gconstpointer opaque)
 {
     static const uint32_t ops[] = { 0x1e00, 0, 0x1e01, 0x1e02, 0x1e03, 0x150a };
     static const uint32_t results[] = { 0xa5, 0, 0x33, 0xa6, 0xa4, 0x5a };
-    unsigned mode = GPOINTER_TO_UINT(opaque), op = mode % 6;
+    unsigned mode = renderer_mode(opaque), op = mode % 6;
     unsigned outcome = mode / 6 % 3, variant = mode / 18;
     uint32_t mask = variant == 1 ? 15 : 255;
     uint32_t value = (0xa5 & ~mask) | (results[op] & mask);
     uint32_t selected[3] = { 0x1e00, 0x1e00, 0x1e00 };
     bool colour = outcome == 2 && variant != 2;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -14268,8 +14314,7 @@ static void test_renderer_stencil(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, value);
     g_assert_cmphex(stencil_colour_or_depth(s, 5), ==,
                     outcome == 2 ? 0x800000 : 0x9fffff);
@@ -14283,12 +14328,12 @@ static void test_renderer_stencil(gconstpointer opaque)
 
 static void test_renderer_depth_gradient(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     static const float positions[3][2] = { { 0, 0 }, { 128, 0 }, { 0, 128 } };
     static const unsigned probes[4][2] = {
         { 32, 16 }, { 64, 16 }, { 16, 64 }, { 96, 96 },
     };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
     uint32_t depth[4], stencil[4];
     double offset = 0;
@@ -14338,8 +14383,7 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 1);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     expected_clear(expected, 0xffffff);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
@@ -14396,12 +14440,12 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
 
 static void test_renderer_volume_clip(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     float positions[4][3] = {
         { 0, 0, 0 }, { 128, 0, 0 }, { 128, 128, 0 }, { 0, 128, 0 },
     };
     unsigned count = mode >= 6 ? 3 : 4;
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -14447,8 +14491,7 @@ static void test_renderer_volume_clip(gconstpointer opaque)
     } else {
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
     }
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, mode != 9, mode == 9, false);
     expected_clear(expected, 0xffffff);
     for (unsigned y = 0; y < 128; y++) {
         for (unsigned x = 0; x < 128; x++) {
@@ -14475,12 +14518,12 @@ static void test_renderer_volume_clip(gconstpointer opaque)
 
 static void test_renderer_user_clip(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     unsigned plane = mode < 6 ? mode : 0;
     static const float positions[4][2] = {
         { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
     };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
     uint32_t equation[9] = {
         0x3000 + plane, 0x3ff00000, 0, 0, 0, 0, 0,
@@ -14512,8 +14555,7 @@ static void test_renderer_user_clip(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, false);
     for (unsigned palette = 0; palette < 2; palette++) {
         expected_clear(expected, palette ? 0x326496 : 0xffffff);
         for (unsigned y = 0; y < 128; y++) {
@@ -14563,7 +14605,7 @@ static void renderer_texture_sample(double u, double v, bool linear,
 
 static void test_renderer_texture(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned mode = renderer_mode(opaque);
     static const float positions[4][2] = {
         { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
     };
@@ -14571,7 +14613,7 @@ static void test_renderer_texture(gconstpointer opaque)
     unsigned environment = mode == 4 ? 1 : mode == 5 ? 2 : mode == 6 ? 3 :
                            mode >= 7 ? 1 : 0;
     uint32_t h[20], record[22] = { 0x43, 0x101010, 256u << 10 };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s = renderer_init(opaque);
     g_autofree Expected *expected = g_new(Expected, 1);
 
     renderer_fixture(s);
@@ -14637,8 +14679,7 @@ static void test_renderer_texture(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    renderer_assert_draws(s, opaque, 1, 0, mode == 5);
     if (mode == 7) {
         g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, 0x5b);
         g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x800000);
@@ -15798,124 +15839,26 @@ int main(int argc, char **argv)
                         "general-triangle/no-gpu",
                         GUINT_TO_POINTER(RENDERER_GENERAL_NO_GPU),
                         test_renderer_general_triangle);
-    for (unsigned mode = 0; mode < 4; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/polygon/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_polygon);
-    }
-    for (unsigned mode = 0; mode < 6; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/large-polygon/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_large_polygon);
-    }
-    for (unsigned mode = 0; mode < 8; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/scissor/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_scissor);
-    }
-    for (unsigned mode = 0; mode < 8; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/viewport/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_viewport);
-    }
-    for (unsigned mode = 0; mode < 9; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/tiles/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_tiles);
-    }
-    for (unsigned mode = 0; mode < 8; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/culling/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_culling);
-    }
-    for (unsigned mode = 0; mode < 32; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/colour-mask/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_colour_mask);
-    }
-    for (unsigned mode = 0; mode < 80; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/logic-op/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_logic_op);
-    }
+    renderer_add_modes("polygon", 4, test_renderer_polygon);
+    renderer_add_modes("large-polygon", 6, test_renderer_large_polygon);
+    renderer_add_modes("scissor", 8, test_renderer_scissor);
+    renderer_add_modes("viewport", 8, test_renderer_viewport);
+    renderer_add_modes("tiles", 9, test_renderer_tiles);
+    renderer_add_modes("culling", 8, test_renderer_culling);
+    renderer_add_modes("colour-mask", 32, test_renderer_colour_mask);
+    renderer_add_modes("logic-op", 80, test_renderer_logic_op);
     qtest_add_data_func(
         "sn0/origin2000/kona-3d/renderer/smooth-gpu-precision",
         GUINT_TO_POINTER(13), test_renderer_smooth);
-    for (unsigned mode = 0; mode < 64; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/alpha-test/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_alpha_test);
-    }
-    for (unsigned mode = 0; mode < 54; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/blend/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_blend);
-    }
-    for (unsigned mode = 0; mode < 13; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/smooth/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_smooth);
-    }
-    for (unsigned mode = 0; mode < 64; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/depth/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_depth);
-    }
-    for (unsigned mode = 0; mode < 54; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/stencil/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_stencil);
-    }
-    for (unsigned mode = 0; mode < 12; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/depth-gradient/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_depth_gradient);
-    }
-    for (unsigned mode = 0; mode < 10; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/volume-clip/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_volume_clip);
-    }
-    for (unsigned mode = 0; mode < 12; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/user-clip/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_user_clip);
-    }
-    for (unsigned mode = 0; mode < 13; mode++) {
-        g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/kona-3d/renderer/texture/%u", mode);
-
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_texture);
-    }
+    renderer_add_modes("alpha-test", 64, test_renderer_alpha_test);
+    renderer_add_modes("blend", 54, test_renderer_blend);
+    renderer_add_modes("smooth", 13, test_renderer_smooth);
+    renderer_add_modes("depth", 64, test_renderer_depth);
+    renderer_add_modes("stencil", 54, test_renderer_stencil);
+    renderer_add_modes("depth-gradient", 12, test_renderer_depth_gradient);
+    renderer_add_modes("volume-clip", 10, test_renderer_volume_clip);
+    renderer_add_modes("user-clip", 12, test_renderer_user_clip);
+    renderer_add_modes("texture", 13, test_renderer_texture);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
     qtest_add_func("sn0/origin2000/kona-3d/native-bitmap/stale-destination",
