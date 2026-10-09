@@ -1939,9 +1939,11 @@ typedef struct ScacheLineCase {
     const char *path;
     const char *cpu;
     uint32_t expect_a;
+    /* The second index address; zero for SCACHE_LINE_A_ADDR + 64. */
+    uint64_t second;
 } ScacheLineCase;
 
-static void scache_line_write_guest_image(int fd)
+static void scache_line_write_guest_image(int fd, uint64_t second)
 {
     uint8_t image[IMAGE_SIZE] = { };
     GuestImage img = { .code = image, .pos = 0 };
@@ -1965,7 +1967,7 @@ static void scache_line_write_guest_image(int fd)
     emit_li32(&img, R_T0, SCACHE_LINE_TAG_A);
     emit_mtc0(&img, R_T0, CP0_TAGLO);
     emit_cache(&img, CACHE_S_INDEX_STORE_TAG, R_S1);
-    emit_li64(&img, R_S2, SCACHE_LINE_A_ADDR + 64);
+    emit_li64(&img, R_S2, second ? second : SCACHE_LINE_A_ADDR + 64);
     emit_li32(&img, R_T0, SCACHE_LINE_TAG_B);
     emit_mtc0(&img, R_T0, CP0_TAGLO);
     emit_cache(&img, CACHE_S_INDEX_STORE_TAG, R_S2);
@@ -1994,7 +1996,7 @@ static void test_r10k_scache_line_size(gconstpointer opaque)
 
     fd = g_file_open_tmp("mips64-r10k-scache-line-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
-    scache_line_write_guest_image(fd);
+    scache_line_write_guest_image(fd, c->second);
     close(fd);
 
     qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
@@ -2019,6 +2021,20 @@ static const ScacheLineCase scache_line_cases[] = {
         "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
         "r12000-scache-block-words=16",
         SCACHE_LINE_TAG_A,
+    },
+    /*
+     * The R10000's capacity follows Config SS from its reset mode, here
+     * 2 MiB against 1 MiB. Way 0's sets 0x20 and 0x1020 are two sets of a
+     * 2 MiB cache, and the same one of a 1 MiB cache, which wraps at
+     * 0x1000; only a cache sized from SS keeps both tags.
+     */
+    {
+        "/r10k/scache/capacity/2m", "R10000,reset-mode=0x12a785",
+        SCACHE_LINE_TAG_A, SCACHE_LINE_A_ADDR + 0x80000,
+    },
+    {
+        "/r10k/scache/capacity/1m", "R10000,reset-mode=0x11a785",
+        SCACHE_LINE_TAG_B, SCACHE_LINE_A_ADDR + 0x80000,
     },
 };
 
