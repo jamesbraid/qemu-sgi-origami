@@ -13,6 +13,7 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "trace.h"
 
 #define PI_CPU_PROTECT       0x000
@@ -307,6 +308,10 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
         return false;
     }
     pi_modify(s, value);
+    trace_sgi_bedrock_pi_io_modify(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                   s->interface, region, value,
+                                   (value >> 6) & 1,
+                                   s->pending[(value >> 6) & 1]);
     return true;
 }
 
@@ -537,9 +542,9 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_PENDING_MODIFY:
     case PI_PENDING_ALIAS:
         pi_modify(s, value);
-        trace_sgi_bedrock_pi_pending_modify(s->interface, cpu, value,
-                                            (value >> 6) & 1,
-                                            s->pending[(value >> 6) & 1]);
+        trace_sgi_bedrock_pi_pending_modify(
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->interface, cpu, value,
+            (value >> 6) & 1, s->pending[(value >> 6) & 1]);
         return;
     case PI_PENDING_0:
     case PI_PENDING_1:
