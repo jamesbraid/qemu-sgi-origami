@@ -37,7 +37,7 @@ layer:
         name: IP53 software compatibility mapping
         kind: board
         hardware_kind: ip53
-        
+
         provenance: derived
         sources: [ip53-origin350-profile-closure]
         notes: >-
