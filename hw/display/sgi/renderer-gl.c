@@ -33,7 +33,7 @@ typedef struct SGIRendererGL {
     Error *texture_error;
     GLint texture_sampler, texture_mode, texture_wrap_s;
     GLint texture_wrap_t, texture_shade, texture_linear;
-    GLint texture_border;
+    GLint texture_border, texture_environment;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -92,7 +92,7 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
         "uniform usampler2D image_slots;\n"
         "uniform int environment_mode, wrap_s, wrap_t, flat_shade;\n"
         "uniform int linear_filter;\n"
-        "uniform dvec4 border_bytes;\n"
+        "uniform dvec4 border_bytes, environment_bytes;\n"
         "in vec4 smooth_colour;\n"
         "flat in vec4 flat_colour;\n"
         "in vec4 texture_coord;\n"
@@ -152,11 +152,15 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
         "    bytes = texel;\n"
         "  } else if (environment_mode == 1) {\n"
         "    bytes = primary * texel;\n"
-        "  } else {\n"
+        "  } else if (environment_mode == 2) {\n"
         "    double alpha = texel.a;\n"
         "    bytes.rgb = (primary.rgb * (255.0 - alpha) * 255.0 +\n"
         "                 texel.rgb * alpha) / 255.0;\n"
         "    bytes.a = primary.a * 255.0;\n"
+        "  } else {\n"
+        "    bytes.rgb = primary.rgb * (255.0 - texel.rgb) +\n"
+        "                environment_bytes.rgb * texel.rgb / 255.0;\n"
+        "    bytes.a = primary.a * texel.a;\n"
         "  }\n"
         "  uvec4 rounded = uvec4(floor(clamp(bytes, 0.0, 255.0) + 0.5));\n"
         "  pixel = vec4(rounded) / 255.0;\n"
@@ -200,10 +204,12 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
                                                      "linear_filter");
     renderer->texture_border = glGetUniformLocation(renderer->texture_program,
                                                      "border_bytes");
+    renderer->texture_environment = glGetUniformLocation(
+        renderer->texture_program, "environment_bytes");
     if (renderer->texture_sampler < 0 || renderer->texture_mode < 0 ||
         renderer->texture_wrap_s < 0 || renderer->texture_wrap_t < 0 ||
         renderer->texture_shade < 0 || renderer->texture_linear < 0 ||
-        renderer->texture_border < 0 ||
+        renderer->texture_border < 0 || renderer->texture_environment < 0 ||
         renderer_gl_error(renderer, "texture program setup")) {
         if (!renderer->error) {
             error_setg(&renderer->error,
@@ -442,11 +448,14 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform1i(renderer->texture_sampler, 0);
         glUniform1i(renderer->texture_mode,
                     frame->texture.env_mode == GL_REPLACE ? 0 :
-                    frame->texture.env_mode == GL_MODULATE ? 1 : 2);
+                    frame->texture.env_mode == GL_MODULATE ? 1 :
+                    frame->texture.env_mode == GL_DECAL ? 2 : 3);
         glUniform1i(renderer->texture_wrap_s, frame->texture.wrap_s);
         glUniform1i(renderer->texture_wrap_t, frame->texture.wrap_t);
         glUniform4dv(renderer->texture_border, 1,
                      frame->texture.border_bytes);
+        glUniform4dv(renderer->texture_environment, 1,
+                     frame->texture.environment_bytes);
         glUniform1i(renderer->texture_shade,
                     frame->shade_model == GL_FLAT);
         glUniform1i(renderer->texture_linear, frame->texture.linear_filter);

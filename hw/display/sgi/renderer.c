@@ -76,11 +76,13 @@ static const SGIRenderResource *sgi_render_texture_resource(
         image->lod_scale_t ||
         (st->texture_env_mode != SGI_GL_REPLACE &&
          st->texture_env_mode != SGI_GL_MODULATE &&
-         st->texture_env_mode != SGI_GL_DECAL)) {
+         st->texture_env_mode != SGI_GL_DECAL &&
+         st->texture_env_mode != SGI_GL_BLEND)) {
         return NULL;
     }
     for (unsigned c = 0; c < 4; c++) {
-        if (!isfinite(image->border_color[c])) {
+        if (!isfinite(image->border_color[c]) ||
+            !isfinite(st->texture_env_color[c])) {
             return NULL;
         }
     }
@@ -448,6 +450,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         for (unsigned c = 0; c < 4; c++) {
             frame.texture.border_bytes[c] =
                 MIN(MAX(target->texture->border_color[c], 0.0), 1.0) * 255.0;
+            frame.texture.environment_bytes[c] =
+                MIN(MAX(draw->state->texture_env_color[c], 0.0), 1.0) * 255.0;
         }
     }
     for (uint32_t y = 0; y < resource->height; y++) {
