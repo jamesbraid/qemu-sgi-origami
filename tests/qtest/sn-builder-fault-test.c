@@ -1934,6 +1934,50 @@ static const TypeInfo routed_memory_type = {
     .class_init = routed_memory_class_init,
 };
 
+/* Keep the older notification fixture's cables while testing the public
+ * two-router route on its specified ports. */
+static void routed_memory_public_class_init(ObjectClass *oc, const void *data)
+{
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *source = smc->test_topology;
+    SGIModelTopology *t = g_memdup2(source, sizeof(*t));
+    SGIModelCableList **cable_tail = &t->cables;
+
+    t->name = (char *)"sn-builder-routed-memory-public-test";
+    t->cables = NULL;
+    for (const SGIModelCableList *entry = source->cables;
+         entry; entry = entry->next) {
+        SGIModelCable *cable = g_memdup2(entry->value, sizeof(*cable));
+        SGIModelLinkEndList **end_tail = &cable->ends;
+
+        cable->ends = NULL;
+        for (const SGIModelLinkEndList *end = entry->value->ends;
+             end; end = end->next) {
+            SGIModelLinkEnd *endpoint =
+                g_memdup2(end->value, sizeof(*endpoint));
+
+            if (endpoint->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
+                if (g_str_equal(cable->name, "master-route")) {
+                    endpoint->port = 2;
+                } else if (g_str_equal(cable->name, "slave-route")) {
+                    endpoint->port = 3;
+                } else if (g_str_equal(cable->name, "inter-router")) {
+                    endpoint->port = endpoint->index ? 7 : 5;
+                }
+            }
+            QAPI_LIST_APPEND(end_tail, endpoint);
+        }
+        QAPI_LIST_APPEND(cable_tail, cable);
+    }
+    smc->test_topology = t;
+}
+
+static const TypeInfo routed_memory_public_type = {
+    .name = MACHINE_TYPE_NAME("sn-builder-routed-memory-public-test"),
+    .parent = MACHINE_TYPE_NAME("sn-builder-routed-memory-test"),
+    .class_init = routed_memory_public_class_init,
+};
+
 static void sn_builder_fault_test_register_types(void)
 {
     /*
@@ -2065,6 +2109,7 @@ static void sn_builder_fault_test_register_types(void)
     type_register_static(&expansion_test_type);
     type_register_static(&routed_cleanup_type);
     type_register_static(&routed_memory_type);
+    type_register_static(&routed_memory_public_type);
 }
 
 type_init(sn_builder_fault_test_register_types)
