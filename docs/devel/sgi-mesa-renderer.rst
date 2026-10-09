@@ -23,10 +23,24 @@ separate triangle.
 The checked draw requires the raster rules every family uses and the scalar
 comparisons establish: 8 subpixel bits, ``SGI_ROUND_HALF_AWAY``,
 ``SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN`` and ``SGI_ARITH_DOUBLE``. Other rules
-return ``SGI_RENDER_UNSUPPORTED`` before the native snapshot. So does an RGBA
-resource whose stored alpha has fewer than two bits, because the scalar path
-rounds incoming alpha to at least two bits before it truncates alpha to the
-store.
+return ``SGI_RENDER_UNSUPPORTED`` before the native snapshot.
+
+Storage widths must also be ones whose stores are proven equal to the
+scalar path's, or the draw returns ``SGI_RENDER_UNSUPPORTED`` before the
+snapshot:
+
+- The colour components must have the rules' colour bits.
+- An RGBA resource's stored alpha must have the rules' alpha bits, and those
+  must equal the scalar path's incoming alpha precision, the larger of two,
+  the colour bits and the alpha bits. The scalar path rounds alpha to that
+  precision and then truncates it to the store. For example, with 10-bit
+  colour and 2-bit alpha, alpha 0.5 becomes 512 of 1023 and is stored as 1 of
+  3, where rounding straight to the store gives 2.
+- An RGBA resource under rules without alpha is refused too. There the scalar
+  path hands the store canonical zero alpha, which the family may or may not
+  store. This is how Odyssey pairs its rules with RGBA8.
+- An RGB resource is accepted under any alpha bits, because the scalar
+  path's colour rounding does not depend on them.
 
 The renderer splits each draw into independent points or triangles exactly as
 the scalar rasterizer does. It keeps the scalar path's order, swaps the first
@@ -185,6 +199,8 @@ with the rules named above. Any other driver is unproven.
 - ``scalar-match-texture``: flat-shaded textured triangles for the four
   environments, both filters, every accepted wrap mode, 2 by 2 and 4 by 4
   images, and RGB8 and RGBA8 targets.
+- ``scalar-match-store-widths``: refused width pairings for draws and CLEAR,
+  and RGB stores under alpha rules.
 - ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
   RGB and RGBA, with one or several clips, a scissor-bounded rectangle and a
   clip past the plane, under full and partial colour masks. The op's
@@ -275,8 +291,8 @@ bits. Depth and stencil use separate unsigned, single-component resources at
 exactly 24 and 8 bits. Colour-index CLEAR and other raster operations remain
 unsupported. The clear masks and inclusive clip rectangles determine which
 native pixels may be written. The clear colour is rounded to the native steps
-on the CPU in double, as the scalar path rounds it. A stored alpha of fewer
-than two bits returns ``SGI_RENDER_UNSUPPORTED`` before the snapshot.
+on the CPU in double, as the scalar path rounds it. Storage widths follow the
+same rule as draws.
 
 The path validates selected descriptors and snapshots every resource with
 nonempty clipped coverage before Mesa work. It finishes host CLEAR and

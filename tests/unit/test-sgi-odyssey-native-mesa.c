@@ -622,7 +622,10 @@ static void native_rows_compare(const SGIGLDrawState *in,
     SGIRenderer *renderer;
     uint8_t before[64];
     Error *err = NULL;
+    /* The caller's RGBA rules, as odyssey_gl_operation_rules() gives them. */
+    SGIRasterRules mesa_rules = rules;
 
+    mesa_rules.alpha_bits = 8;
     g_assert_true(sgi_raster_rules_supported(&rules));
     native_rows_draw_init(&state, &draw, vertices, xy);
     g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &draw), ==,
@@ -644,8 +647,8 @@ static void native_rows_compare(const SGIGLDrawState *in,
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
-    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
-                    &draw, 1, SGI_RENDER_MONO, false, &err), ==,
+    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer,
+                    &mesa_rules, &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
     /* The adapter maps a submission-local copy; the guest's stays put. */

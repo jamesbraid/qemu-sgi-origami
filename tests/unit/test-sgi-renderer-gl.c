@@ -2940,7 +2940,10 @@ static void test_decoded_clear_native_commit(void)
         .opaque = &f, .resources = resources, .resource_count = 2,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    /* Stored alpha matches the rules' alpha precision, as the gate requires. */
+    SGIRasterRules rules = {
+        .color_bits = 12, .alpha_bits = 12, .evidence = "synthetic",
+    };
     SGIRasterOp op = {
         .kind = SGI_RASTER_CLEAR,
         .targets = { 7, 8 }, .ntargets = 2,
@@ -2976,7 +2979,7 @@ static void test_decoded_clear_native_commit(void)
                 { SGI_RENDER_R, SGI_RENDER_UNORM, 12 },
                 { SGI_RENDER_G, SGI_RENDER_UNORM, 12 },
                 { SGI_RENDER_B, SGI_RENDER_UNORM, 12 },
-                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_A, SGI_RENDER_UNORM, 12 },
             },
         };
         for (unsigned y = 0; y < 4; y++) {
@@ -3669,6 +3672,9 @@ typedef struct PrimCase {
     /* Nonzero fills every destination component with dest_value - 1. */
     uint32_t dest_value;
     unsigned bits; /* Colour, alpha and storage bits; zero means 8. */
+    /* Nonzero overrides: rules colour bits, rules alpha bits plus one, */
+    unsigned rules_colour, rules_alpha_plus_one;
+    unsigned alpha_storage; /* and stored alpha bits. */
     /* Native rows run down; see PrimFixture. Clips stay in window rows. */
     bool top_origin;
     /* With state.texture_2d: a level-zero RGBA8 image, rows from T zero. */
@@ -3755,9 +3761,12 @@ static void prim_destination(PrimFixture *f, const PrimCase *p)
             };
 
             for (unsigned c = 0; c < 4; c++) {
+                uint32_t m = c == 3 && p->alpha_storage ?
+                             (1u << p->alpha_storage) - 1 : max;
+
                 /* Spread the 8-bit pattern over the whole width. */
                 f->rgba[y][x][c] = p->dest_value ? p->dest_value - 1 :
-                                   (v[c] & 255) * max / 255;
+                                   (v[c] & 255) * m / 255;
             }
             f->depth[y][x] = (x * 0x13579 + y * 0x2468ace) & 0xffffff;
             f->stencil[y][x] = (x * 29 + y * 53 + 5) & 255;
@@ -3770,8 +3779,11 @@ static void prim_rules(const PrimCase *p, SGIRasterRules *rules)
     unsigned bits = p->bits ? p->bits : 8;
 
     *rules = (SGIRasterRules) {
-        .subpixel_bits = 8, .color_bits = bits, .depth_bits = 24,
-        .alpha_bits = p->components == 4 ? bits : 0,
+        .subpixel_bits = 8,
+        .color_bits = p->rules_colour ? p->rules_colour : bits,
+        .depth_bits = 24,
+        .alpha_bits = p->rules_alpha_plus_one ? p->rules_alpha_plus_one - 1 :
+                      p->components == 4 ? bits : 0,
         .stencil_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
@@ -3795,7 +3807,8 @@ static void prim_resources(const PrimCase *p, SGIRenderResource res[2])
             { SGI_RENDER_R, SGI_RENDER_UNORM, bits },
             { SGI_RENDER_G, SGI_RENDER_UNORM, bits },
             { SGI_RENDER_B, SGI_RENDER_UNORM, bits },
-            { SGI_RENDER_A, SGI_RENDER_UNORM, bits },
+            { SGI_RENDER_A, SGI_RENDER_UNORM,
+              p->alpha_storage ? p->alpha_storage : bits },
         },
     };
     res[1] = (SGIRenderResource) {
@@ -4708,6 +4721,115 @@ static void test_scalar_match_clear(void)
     }
 }
 
+/*
+ * Stores whose widths differ from the rules' are refused, for draws and
+ * CLEAR, because the scalar path rounds to the rules' widths: with 10-bit
+ * colour and 2-bit stored alpha, alpha 0.5 rounds to 512 of 1023 and
+ * truncates to 1 of 3, where rounding straight to the store gives 2. Under
+ * rules without alpha, as Odyssey pairs its rules with RGBA8, the scalar
+ * path hands the store canonical zero alpha where Mesa would store the
+ * colour's alpha, so that pairing is refused too.
+ */
+static void test_scalar_match_store_widths(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        const char *name;
+        unsigned bits, rules_colour, rules_alpha_plus_one, alpha_storage;
+        unsigned components;
+        bool refused;
+    } cases[] = {
+        { "10-bit colour, 2-bit alpha", 10, 0, 3, 2, 4, true },
+        { "8-bit store, 6-bit rules", 8, 6, 0, 0, 3, true },
+        { "RGB store, 8-bit alpha rules", 8, 0, 9, 0, 3, false },
+        { "RGBA8 store, 4-bit alpha rules", 8, 0, 5, 4, 4, true },
+        { "RGBA8 store, rules without alpha", 8, 0, 1, 0, 4, true },
+        { "RGBA10 store, 10-bit alpha rules", 10, 0, 0, 0, 4, false },
+        { "RGBA4 store, 4-bit alpha rules", 4, 0, 0, 0, 4, false },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned kind = 0; kind < 4; kind++) {
+            static const char *const kinds[] = {
+                "flat fan", "smooth fan", "points", "clear",
+            };
+            g_autofree char *name = g_strdup_printf("%s %s", cases[i].name,
+                                                    kinds[kind]);
+
+            prim_case_init(p, kind == 2 ? SGI_GL_POINTS : SGI_GL_TRIANGLE_FAN,
+                           cases[i].components);
+            p->bits = cases[i].bits;
+            p->rules_colour = cases[i].rules_colour;
+            p->rules_alpha_plus_one = cases[i].rules_alpha_plus_one;
+            p->alpha_storage = cases[i].alpha_storage;
+            p->state.shade_model = kind == 1 ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+            p->draw.point_size = 2;
+            prim_vertex(p, 1, 1.25f, 0.5f, 0.25f, 0.75f, 0.5f);
+            prim_vertex(p, 14.5f, 2, 0.9f, 0.1f, 0.3f, 0.7f);
+            prim_vertex(p, 13, 13.75f, 0.2f, 0.6f, 0.4f, 0.35f);
+            prim_vertex(p, 2.25f, 12, 0.5f, 0.5f, 0.5f, 0.5f);
+            if (kind == 3) {
+                static const SGIClipRect full[] = { { 0, 0, 15, 15 } };
+                SGIRasterOp op = { 0 };
+                SGIRasterRules rules;
+                SGIRenderResource res[2];
+                g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+                SGIRasterTarget target = {
+                    .opaque = mesa, .resources = res, .resource_count = 1,
+                    .resource_ops = &prim_ops,
+                };
+                SGIRenderResult result;
+
+                prim_clear_op(&op, full, 1, NULL);
+                op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+                op.clear_colour_mask = SGI_GL_COLOUR_MASK_ALL;
+                memcpy(op.clear_rgba, (float[4]) { 0.5f, 0.25f, 0.9f, 0.5f },
+                       sizeof(op.clear_rgba));
+                if (!cases[i].refused) {
+                    unsigned d = prim_clear_compare(renderer, name, p, &op);
+
+                    if (d) {
+                        g_test_message("%s: %u pixels differ", name, d);
+                        failures++;
+                    }
+                    continue;
+                }
+                prim_rules(p, &rules);
+                prim_resources(p, res);
+                prim_destination(mesa, p);
+                result = sgi_render_raster_checked(renderer, &rules, &target,
+                                                   &op, &err);
+                if (result != SGI_RENDER_UNSUPPORTED || mesa->snapshots) {
+                    g_test_message("%s: expected a refusal, got %d", name,
+                                   result);
+                    failures++;
+                }
+                g_clear_pointer(&err, error_free);
+            } else if (cases[i].refused) {
+                prim_expect_refused(renderer, name, p, &failures);
+            } else {
+                prim_expect(renderer, name, p, &failures);
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -5384,6 +5506,8 @@ int main(int argc, char **argv)
                     test_scalar_match_texture);
     g_test_add_func("/sgi-renderer-gl/scalar-match-clear",
                     test_scalar_match_clear);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-store-widths",
+                    test_scalar_match_store_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);

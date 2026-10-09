@@ -206,6 +206,32 @@ static bool sgi_render_blend_supported(const SGIRasterRules *rules,
     return rules->alpha_bits == 8 && res->component[3].storage_bits == 8;
 }
 
+/*
+ * The storage widths whose stores are proven equal to the scalar path's:
+ * colour components of the rules' colour bits and, for RGBA, stored alpha
+ * of the rules' alpha bits, equal to the scalar path's incoming alpha
+ * precision MAX(2, colour bits, alpha bits) so its truncation to the store
+ * changes nothing. An RGB store has no alpha, and the scalar path's colour
+ * rounding does not depend on it. Under rules without alpha the scalar path
+ * hands an RGBA store canonical zero alpha,
+ * which the family may or may not store, so that pairing stays unproven.
+ */
+static bool sgi_render_widths_proven(const SGIRasterRules *rules,
+                                     const SGIRenderResource *res)
+{
+    for (unsigned c = 0; c < 3; c++) {
+        if (res->component[c].storage_bits != rules->color_bits) {
+            return false;
+        }
+    }
+    if (res->component_count == 3) {
+        return true;
+    }
+    return res->component[3].storage_bits == rules->alpha_bits &&
+           rules->alpha_bits == MAX(2, MAX(rules->color_bits,
+                                           rules->alpha_bits));
+}
+
 static bool sgi_render_mode_polygons(uint32_t mode)
 {
     return mode >= SGI_GL_TRIANGLES && mode <= SGI_GL_POLYGON;
@@ -286,11 +312,7 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
             return false;
         }
     }
-    /*
-     * The scalar path rounds incoming alpha to at least two bits before
-     * truncating it to the store, which a one-bit alpha store would show.
-     */
-    if (res->component_count == 4 && res->component[3].storage_bits < 2) {
+    if (!sgi_render_widths_proven(rules, res)) {
         return false;
     }
     if (st->blend && !sgi_render_blend_supported(rules, st, res)) {
@@ -1123,11 +1145,14 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             if (res->component[c].channel != SGI_RENDER_R + c ||
                 res->component[c].numeric != SGI_RENDER_UNORM ||
                 !res->component[c].storage_bits ||
-                res->component[c].storage_bits > 16 ||
-                (c == 3 && res->component[c].storage_bits < 2)) {
+                res->component[c].storage_bits > 16) {
                 error_setg(errp, "Unsupported SGI Mesa clear component");
                 return SGI_RENDER_UNSUPPORTED;
             }
+        }
+        if (!sgi_render_widths_proven(rules, res)) {
+            error_setg(errp, "Unsupported SGI Mesa clear component widths");
+            return SGI_RENDER_UNSUPPORTED;
         }
         if ((uint64_t)res->width * res->height >
             MIN(SIZE_MAX / 4 / sizeof(uint16_t),
