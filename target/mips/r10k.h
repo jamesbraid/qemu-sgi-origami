@@ -52,14 +52,20 @@ static inline bool r10k_scache_size_valid(uint32_t size)
            !(size & (size - 1));
 }
 
+/*
+ * A part left at the R10000's 1 MiB default takes the capacity its Config
+ * SS selects: codes 1 to 5 are 1 to 16 MiB. Code 0 (512 KiB) is not
+ * modelled and the reserved 6 and 7 keep the default too. A part
+ * configured with its own size keeps it.
+ */
 static inline uint32_t r10k_scache_capacity(uint32_t configured_size,
                                             uint32_t size_code)
 {
     uint32_t size = configured_size;
 
-    if (configured_size == R10K_SCACHE_SIZE && size_code >= 3 &&
+    if (configured_size == R10K_SCACHE_SIZE && size_code >= 1 &&
         size_code <= 5) {
-        size = R10K_SCACHE_SIZE << (size_code - 1);
+        size = (R10K_SCACHE_SIZE / 2) << size_code;
     }
     return r10k_scache_size_valid(size) ? size : 0;
 }
