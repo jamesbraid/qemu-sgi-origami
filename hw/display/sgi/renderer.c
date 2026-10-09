@@ -315,6 +315,13 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         y0 = MAX(y0, 0);
         x1 = MIN(x1, (int64_t)resource->width - 1);
         y1 = MIN(y1, (int64_t)resource->height - 1);
+        if (!resource->bottom_origin && y0 <= y1) {
+            int64_t native_y0 = y0;
+
+            /* Drawable clips use native rows; scissor uses GL window rows. */
+            y0 = (int64_t)resource->height - 1 - y1;
+            y1 = (int64_t)resource->height - 1 - native_y0;
+        }
         if (draw->state->scissor_test) {
             const int32_t *s = draw->state->scissor;
 

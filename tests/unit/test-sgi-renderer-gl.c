@@ -1458,7 +1458,7 @@ static void test_triangle_resource_row_origin(void)
         }
     }
 
-    /* The top native row is Mesa row 3; the clip and scissor own x 1..2. */
+    /* Native top-row clip maps to Mesa row 3 before GL scissor x 1..2. */
     resource.bottom_origin = false;
     target.opaque = &f[1];
     state.blend = 0;
@@ -1467,7 +1467,7 @@ static void test_triangle_resource_row_origin(void)
     state.scissor[1] = 3;
     state.scissor[2] = 2;
     state.scissor[3] = 1;
-    state.drawable.clip.r[0] = (SGIClipRect) { 0, 3, 3, 3 };
+    state.drawable.clip.r[0] = (SGIClipRect) { 0, 0, 3, 0 };
     vertices[0][SGI_GL_V_POSITION] = -1;
     vertices[0][SGI_GL_V_POSITION + 1] = -1;
     vertices[1][SGI_GL_V_POSITION] = 1;
