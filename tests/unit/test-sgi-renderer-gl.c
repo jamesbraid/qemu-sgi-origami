@@ -4004,6 +4004,142 @@ static void test_scalar_match_polygons(void)
     }
 }
 
+/*
+ * Smoothing stays unsupported and refuses before the snapshot, but only
+ * for the class it applies to (OpenGL 1.2.1, 3.3 to 3.5): a triangle with
+ * line smoothing on draws.
+ */
+/* Polygon modes do not apply to points, so a LINE/POINT pair draws them. */
+static void test_points_ignore_polygon_modes(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const uint32_t modes[2] = { SGI_GL_LINE, SGI_GL_POINT };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    prim_case_init(p, SGI_GL_POINTS, 4);
+    p->draw.point_size = 2;
+    p->draw.polygon_modes = modes;
+    prim_vertex_n(p, 3.5f, 4.5f);
+    prim_vertex_n(p, 11, 9.25f);
+    prim_expect(renderer, "points with polygon modes", p, &failures);
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    p->draw.polygon_modes = modes;
+    prim_vertex_n(p, 1, 1);
+    prim_vertex_n(p, 14, 2);
+    prim_vertex_n(p, 3, 13);
+    prim_expect_refused(renderer, "triangle with polygon modes", p,
+                        &failures);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+static void test_smoothing_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+    static const struct {
+        uint32_t mode;
+        bool point, line, polygon, refused;
+    } smoothing[] = {
+        { SGI_GL_POINTS, true, false, false, true },
+        { SGI_GL_LINES, false, true, false, true },
+        { SGI_GL_LINE_STRIP, false, true, false, true },
+        { SGI_GL_LINE_LOOP, false, true, false, true },
+        { SGI_GL_TRIANGLES, false, false, true, true },
+        { SGI_GL_QUADS, false, false, true, true },
+        { SGI_GL_POLYGON, false, false, true, true },
+        { SGI_GL_TRIANGLES, true, true, false, false },
+        { SGI_GL_QUADS, true, true, false, false },
+        /* Lines are refused for their own rasterization. */
+        { SGI_GL_LINES, true, false, true, true },
+        { SGI_GL_POINTS, false, true, true, false },
+    };
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < G_N_ELEMENTS(smoothing); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "mode %u smooth point %d line %d polygon %d", smoothing[i].mode,
+            smoothing[i].point, smoothing[i].line, smoothing[i].polygon);
+        PrimFixture f;
+        SGIRenderResource resource = {
+            .backing_id = 1, .backing_generation = 1,
+            .view_id = 2, .view_generation = 1,
+            .role = SGI_RENDER_COLOUR, .target = 7,
+            .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+            .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
+            .bottom_origin = true, .component_count = 4,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+            },
+        };
+        SGIRenderResourceOps ops = {
+            .snapshot = prim_snapshot,
+            .commit_covered = prim_commit_covered,
+        };
+        SGIRasterTarget target = {
+            .opaque = &f, .resources = &resource, .resource_count = 1,
+            .resource_ops = &ops,
+        };
+        SGIRasterRules rules = {
+            .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
+            .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+            .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        };
+        SGIRenderResult result, expected;
+
+        prim_destination(&f, 4);
+        prim_case_init(p, smoothing[i].mode, 4);
+        for (unsigned v = 0; v < 4; v++) {
+            prim_vertex_n(p, v & 1 ? 12 : 3, v & 2 ? 12 : 3.5f);
+        }
+        p->draw.point_smooth = smoothing[i].point;
+        p->draw.line_smooth = smoothing[i].line;
+        p->draw.polygon_smooth = smoothing[i].polygon;
+        result = sgi_render_draw_checked(renderer, &rules, &target, &p->draw,
+                                         &err);
+        expected = smoothing[i].refused ? SGI_RENDER_UNSUPPORTED :
+                                          SGI_RENDER_OK;
+        if (result != expected ||
+            !!err != smoothing[i].refused ||
+            f.snapshots != !smoothing[i].refused) {
+            g_test_message("%s: result %d, %u snapshots", name, result,
+                           f.snapshots);
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4043,6 +4179,10 @@ int main(int argc, char **argv)
                     test_raster_rules_refused);
     g_test_add_func("/sgi-renderer-gl/scalar-match-polygons",
                     test_scalar_match_polygons);
+    g_test_add_func("/sgi-renderer-gl/points-ignore-polygon-modes",
+                    test_points_ignore_polygon_modes);
+    g_test_add_func("/sgi-renderer-gl/smoothing-refused",
+                    test_smoothing_refused);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-native-commit",
                     test_decoded_clear_native_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-full-screen",

@@ -165,7 +165,11 @@ static bool sgi_render_mode_polygons(uint32_t mode)
 /*
  * Points and polygon modes. Lines stay unsupported: Mesa's aliased lines
  * differ from the shared wide-primitive contract at diamond ties and at
- * the ends of even widths.
+ * the ends of even widths. Smoothing stays unsupported, and each enable
+ * refuses only the class it applies to (OpenGL 1.2.1, 3.3 to 3.5), as
+ * sgi_soft_draw() reads them. Polygon modes likewise apply only to
+ * polygons. The refusal is stricter than the scalar path, which draws
+ * aliased and logs when its rules do not smooth.
  */
 static bool sgi_render_draw_supported(const SGIRasterTarget *target,
                                       const SGIGLDraw *draw,
@@ -181,12 +185,12 @@ static bool sgi_render_draw_supported(const SGIRasterTarget *target,
         (st->texture_2d &&
          (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
         draw->back_colors ||
-        (draw->polygon_modes &&
+        (sgi_render_mode_polygons(draw->mode) && draw->polygon_modes &&
          (draw->polygon_modes[0] != SGI_GL_FILL ||
           draw->polygon_modes[1] != SGI_GL_FILL)) ||
-        draw->polygon_stipple_enabled || draw->point_smooth ||
-        draw->line_smooth || draw->polygon_smooth ||
-        draw->line_stipple_enabled ||
+        draw->polygon_stipple_enabled || draw->line_stipple_enabled ||
+        (draw->mode == SGI_GL_POINTS && draw->point_smooth) ||
+        (sgi_render_mode_polygons(draw->mode) && draw->polygon_smooth) ||
         (st->shade_model != SGI_GL_SMOOTH &&
          st->shade_model != SGI_GL_FLAT) || st->index_bits ||
         st->draw_buffers != SGI_GL_DRAW_FRONT ||
