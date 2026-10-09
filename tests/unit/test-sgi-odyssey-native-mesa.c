@@ -62,9 +62,11 @@ static void require_llvmpipe(void)
 typedef struct NativeFixture {
     SGIBoardMemory memory[2];
     const SGIPlane *plane[2];
+    const SGIPlane *tag[2];
     OdysseyNativeMesa native;
     unsigned invalidations;
     unsigned stores;
+    unsigned completed_stores;
     unsigned fail_store;
     OdysseyNativeStoreResult failure;
 } NativeFixture;
@@ -84,19 +86,29 @@ static void native_fixture_init(NativeFixture *f)
         .width = 4, .height = 4, .stride = 16,
         .len = 64, .bottom_origin = false,
     };
+    SGIPlane tag = {
+        .base = 64, .len = 16,
+        .format = SGI_PLANE_TAG,
+        .packing = SGI_PACK_BE_RED_HIGH,
+        .width = 4, .height = 4, .stride = 4,
+    };
     Error *err = NULL;
 
     memset(f, 0, sizeof(*f));
     for (unsigned b = 0; b < 2; b++) {
         uint32_t id;
 
-        sgi_board_memory_init(&f->memory[b], 64);
+        sgi_board_memory_init(&f->memory[b], 80);
         id = sgi_board_memory_add_plane(&f->memory[b], &plane, &error_abort);
         f->plane[b] = sgi_board_memory_plane(&f->memory[b], id);
+        id = sgi_board_memory_add_plane(&f->memory[b], &tag, &error_abort);
+        f->tag[b] = sgi_board_memory_plane(&f->memory[b], id);
         for (unsigned y = 0; y < 4; y++) {
             for (unsigned x = 0; x < 4; x++) {
                 sgi_plane_store(&f->memory[b], f->plane[b], x, y,
                                 0x10203040 + b * 0x01010101 + y * 16 + x);
+                sgi_plane_store(&f->memory[b], f->tag[b], x, y,
+                                0x40 + b * 0x20 + y * 4 + x);
             }
         }
     }
@@ -111,6 +123,18 @@ static void native_fixture_cleanup(NativeFixture *f)
 {
     for (unsigned b = 0; b < 2; b++) {
         sgi_board_memory_cleanup(&f->memory[b]);
+    }
+}
+
+static void assert_tag_sentinels(const NativeFixture *f)
+{
+    for (unsigned b = 0; b < 2; b++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(sgi_plane_load(&f->memory[b], f->tag[b],
+                                x, y), ==, 0x40 + b * 0x20 + y * 4 + x);
+            }
+        }
     }
 }
 
@@ -131,6 +155,7 @@ static OdysseyNativeStoreResult fault_store(void *opaque,
         return f->failure;
     }
     sgi_plane_store(memory, plane, x, y, word);
+    f->completed_stores++;
     return ODYSSEY_NATIVE_STORE_OK;
 }
 
@@ -378,6 +403,124 @@ static void test_native_mesa_clip_scissor(void)
     sgi_renderer_free(renderer);
     native_fixture_cleanup(&f);
 }
+
+static void test_native_mesa_preserves_tags(void)
+{
+    NativeFixture f;
+    SGIRasterRules rules = native_rules;
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true, .front = 0,
+            .clip = { .n = 1, .r[0] = { 0, 0, 3, 0 } },
+        },
+        .viewport = { 0, 0, 4, 4 },
+        .scissor_test = 1, .scissor = { 1, 3, 2, 1 },
+    };
+    static const float xy[3][2] = {
+        { -1, -1 }, { 3, -1 }, { -1, 3 },
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &state,
+    };
+    SGIRenderer *renderer;
+    uint8_t colour_before[2][64];
+    Error *err = NULL;
+
+    if (!g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_test_skip("Set QEMU_TEST_SGI_REQUIRE_MESA for native Mesa draw");
+        return;
+    }
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", true);
+    require_llvmpipe();
+    native_fixture_init(&f);
+    assert_tag_sentinels(&f);
+    f.native.store = fault_store;
+    f.native.store_opaque = &f;
+    for (unsigned b = 0; b < 2; b++) {
+        memcpy(colour_before[b], f.memory[b].bytes, sizeof(colour_before[b]));
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_POSITION] = xy[i][0];
+        vertices[i][SGI_GL_V_POSITION + 1] = xy[i][1];
+        vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        vertices[i][SGI_GL_V_COLOR] = 1;
+        vertices[i][SGI_GL_V_COLOR + 3] = 1;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+
+    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+                    &draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.stores, ==, 2);
+    g_assert_cmpuint(f.completed_stores, ==, 2);
+    g_assert_cmpuint(f.invalidations, ==, 1);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned at = (y * 4 + x) * 4;
+
+            if (y == 0 && (x == 1 || x == 2)) {
+                g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0],
+                                x, y), ==, 0xff0000ff);
+            } else {
+                g_assert_cmpmem(f.memory[0].bytes + at, 4,
+                                colour_before[0] + at, 4);
+            }
+        }
+    }
+    g_assert_cmpmem(f.memory[1].bytes, sizeof(colour_before[1]),
+                    colour_before[1], sizeof(colour_before[1]));
+    assert_tag_sentinels(&f);
+
+    memcpy(colour_before[0], f.memory[0].bytes, sizeof(colour_before[0]));
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][SGI_GL_V_COLOR] = 0;
+        vertices[i][SGI_GL_V_COLOR + 1] = 1;
+    }
+    f.stores = 0;
+    f.completed_stores = 0;
+    f.fail_store = 2;
+    f.failure = ODYSSEY_NATIVE_STORE_UNCHANGED;
+    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+                    &draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                    SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    error_free(err);
+    g_assert_cmpuint(f.stores, ==, 2);
+    g_assert_cmpuint(f.completed_stores, ==, 1);
+    g_assert_cmpuint(f.invalidations, ==, 2);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned at = (y * 4 + x) * 4;
+
+            if (y == 0 && x == 1) {
+                g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0],
+                                x, y), ==, 0x00ff00ff);
+            } else {
+                g_assert_cmpmem(f.memory[0].bytes + at, 4,
+                                colour_before[0] + at, 4);
+            }
+        }
+    }
+    g_assert_cmpmem(f.memory[1].bytes, sizeof(colour_before[1]),
+                    colour_before[1], sizeof(colour_before[1]));
+    assert_tag_sentinels(&f);
+
+    sgi_renderer_free(renderer);
+    native_fixture_cleanup(&f);
+}
 #endif
 
 int main(int argc, char **argv)
@@ -397,6 +540,8 @@ int main(int argc, char **argv)
 #ifdef CONFIG_OPENGL
     g_test_add_func("/sgi-odyssey-native/mesa-clip-scissor",
                     test_native_mesa_clip_scissor);
+    g_test_add_func("/sgi-odyssey-native/mesa-preserves-tags",
+                    test_native_mesa_preserves_tags);
 #endif
     return g_test_run();
 }
