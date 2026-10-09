@@ -4091,6 +4091,62 @@ static void test_scalar_match_state(void)
     }
 }
 
+/*
+ * Colours whose exact product with 255 is a half step: 0.9 * 255 = 229.5.
+ * The scalar path rounds the float input in double; the result must not
+ * depend on float32 arithmetic in the worker.
+ */
+static void test_scalar_match_colour_ties(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float ties[][4] = {
+        { 0.9f, 0.1f, 0.3f, 0.7f },
+        { 0.5f, 0.7f, 0.9f, 0.1f },
+        { 0.3f, 0.5f, 0.1f, 0.9f },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned components = 3; components <= 4; components++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(ties); i++) {
+            const float *c = ties[i];
+            g_autofree char *name = NULL;
+
+            prim_case_init(p, SGI_GL_TRIANGLE_FAN, components);
+            prim_vertex(p, 1, 1, 0.2f, 0.4f, 0.6f, 0.8f);
+            prim_vertex(p, 14, 2, 0.2f, 0.4f, 0.6f, 0.8f);
+            prim_vertex(p, 13, 13, 0.2f, 0.4f, 0.6f, 0.8f);
+            prim_vertex(p, 2, 12, c[0], c[1], c[2], c[3]);
+            name = g_strdup_printf("flat fan rgb%s %u",
+                                   components == 4 ? "a" : "", i);
+            prim_expect(renderer, name, p, &failures);
+            g_clear_pointer(&name, g_free);
+
+            prim_case_init(p, SGI_GL_POINTS, components);
+            p->draw.point_size = 3;
+            prim_vertex(p, 4.5f, 4.5f, c[0], c[1], c[2], c[3]);
+            prim_vertex(p, 11.5f, 10.5f, c[3], c[2], c[1], c[0]);
+            name = g_strdup_printf("points rgb%s %u",
+                                   components == 4 ? "a" : "", i);
+            prim_expect(renderer, name, p, &failures);
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -4755,6 +4811,8 @@ int main(int argc, char **argv)
                     test_typed_texture_multi_texel);
     g_test_add_func("/sgi-renderer-gl/scalar-match-state",
                     test_scalar_match_state);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-colour-ties",
+                    test_scalar_match_colour_ties);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);

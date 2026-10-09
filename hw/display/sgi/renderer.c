@@ -347,6 +347,7 @@ typedef struct SGIRenderPieces {
     uint32_t count;
     uint32_t primitive;
     bool flat;
+    const uint32_t *steps; /* The frame's colour steps, red to alpha. */
 } SGIRenderPieces;
 
 /*
@@ -360,14 +361,31 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
     const float *colour = draw->vertices +
                           (size_t)provoking * SGI_GL_VERTEX_FLOATS +
                           SGI_GL_V_COLOR;
+    float rounded[4];
 
+    /*
+     * A constant colour is rounded here in double, as the scalar path
+     * rounds it, so a product exactly on a half step in float32, such as
+     * 0.9 * 255, reaches the worker already on a step.
+     */
+    if (p->flat || n == 1) {
+        for (unsigned c = 0; c < 4; c++) {
+            uint32_t s = p->steps[c];
+            double v = colour[c];
+
+            rounded[c] = !s ? colour[c] :
+                         !(v > 0) ? 0 :
+                         v >= 1 ? 1 :
+                         (float)((uint32_t)(v * s + 0.5) / (double)s);
+        }
+    }
     for (unsigned i = 0; i < n; i++) {
         const float *src = draw->vertices +
                            (size_t)index[i] * SGI_GL_VERTEX_FLOATS;
         float *dst = p->v[p->count++];
 
         memcpy(dst, &src[SGI_GL_V_POSITION], 4 * sizeof(float));
-        memcpy(dst + 4, p->flat ? colour : &src[SGI_GL_V_COLOR],
+        memcpy(dst + 4, p->flat || n == 1 ? rounded : &src[SGI_GL_V_COLOR],
                4 * sizeof(float));
         memset(dst + 8, 0, 4 * sizeof(float));
     }
@@ -740,10 +758,6 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         pieces.v = (float (*)[SGI_RENDERER_FRAME_VERTEX_FLOATS])piece_storage;
         pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
-        sgi_render_decompose(&pieces, draw);
-        assert(pieces.count == piece_vertices);
-        frame.primitive = pieces.primitive;
-        frame.point_size = point_size;
         for (unsigned c = 0; c < resource->component_count; c++) {
             frame.colour_steps[c] =
                 (1u << resource->component[c].storage_bits) - 1;
@@ -756,6 +770,11 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             frame.colour_steps[3] =
                 (1u << MAX(2, MAX(rules->color_bits, rules->alpha_bits))) - 1;
         }
+        pieces.steps = frame.colour_steps;
+        sgi_render_decompose(&pieces, draw);
+        assert(pieces.count == piece_vertices);
+        frame.primitive = pieces.primitive;
+        frame.point_size = point_size;
         frame.count = pieces.count;
         frame.vertices = piece_storage;
     }
