@@ -439,9 +439,9 @@ name it when given.
      - 2
      - ``0x1213ab85``
 
-Every Origin 200 inventory shows a 90 MHz Hub. Real machines'
-inventories establish the clock, cache size, cache clock, tap and chip
-revision of each module:
+Four modules are evidenced. Every Origin 200 inventory shows a 90 MHz
+Hub. Real machines' inventories establish the clock, cache size, cache
+clock, tap and chip revision of each module:
 
 * 180 MHz with 1 MiB: the stock PROM image's own configuration block
   (mode word ``0x1211a785``, 180 MHz) and published inventories of one-
@@ -471,21 +471,41 @@ PROM 6.27 prints 0.0). Every other mode field
 error correction, endianness) is the 180 MHz 1 MiB word's, and the
 R12000's delayed speculative dirty bit is clear. The R12000 divisor
 codes are NEC's (U10278EJ4V0UM, Table 8-1, printed pages 180-182). No
-source shows a one-processor 225 or 270 MHz module, so those offer two
+held source shows a one-processor 225 or 270 MHz module, so those offer two
 processors per module only; no inventory gives the 180 MHz 2 MiB dual
 module's or the R12000 module's board record, so their Hub one-wire
-part is left unprogrammed. No Origin 200 is known with a 195 or 250 MHz
-R10000 or a 300 MHz R12000.
+part is left unprogrammed. No held source shows an Origin 200 with a
+195 or 250 MHz R10000 or a 300 MHz R12000.
 
-Each module's clock and mode word reach the guest the way the
-hardware's do. The machine writes them into every node's flash
-configuration block (processor clock at 0x10, mode word at 0x04;
-:ref:`sgi-prom-image-ip27-values`), the mode word's bits 24:0 become
+The machine writes each module's clock and mode word into every node's
+flash configuration block (processor clock at 0x10, mode word at 0x04;
+:ref:`sgi-prom-image-ip27-values`). The mode word's bits 24:0 become
 each processor's Config at cold reset, the clock drives CP0 Count, and
 the PRId and secondary cache size are the CPU model's. The stock PROM
 reads the block to report the processors and build their KLCONFIG
-entries, and refuses to start a processor whose Config disagrees with
-the block's word.
+entries. That real hardware delivers the module's values this way is
+*inferred*, not established. The PROM's reconfiguration dialogue
+writes clock and mode bits into the block, which supports it. But no
+public source says the firmware compares the block with Config
+(:ref:`sgi-origin2000-module` grades that comparison *unknown*). The
+stock image also prints "Config values loaded from PIMM", from a path
+that reads another node's values rather than the local block, so which
+source a real Origin 200 node takes its configuration from on every
+boot is open. A trace of that path, or a dump of a real node's flash
+block beside its PIMM, would settle it.
+
+Limitations, *approximations* until a review clears a fix:
+
+* The node keeps Hub revision 3 and the IP29 board record 030-1244-001
+  revision H for every module. Every 225 and 270 MHz inventory shows
+  Hub revision 5, and those that print the board show IP29
+  030-1389-001; every 180 MHz inventory shows Hub revision 3
+  (*established* from the captures above).
+* A node flash that already exists, such as a reused machine-state
+  directory or a ``node0-flash`` drive, keeps the block it was written
+  with: ``processor=`` does not rewrite it, as a module swap on real
+  hardware needs the PROM's reconfiguration. A mismatched block is not
+  refused by QEMU.
 
 An Origin 200 node's ``-m`` share is laid out in its four DIMM banks,
 starting at bank 0 with no empty bank between two populated ones (SGI

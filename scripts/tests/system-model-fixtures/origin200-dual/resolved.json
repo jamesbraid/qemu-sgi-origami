@@ -3427,7 +3427,7 @@
           "cache_mib": 2,
           "clock_mhz": 180,
           "fpu_identification": "0x0900",
-          "notes": "The 2 MiB 180 MHz Origin 200 module. A real two-processor machine prints Rev 2.6, \"Secondary Cache 2MB 180MHz Tap 0x8\" and a 90 MHz Hub, which give the cache size, its 1:1 clock and tap 8; the other mode fields are the 1 MiB word's (inferred).",
+          "notes": "The 2 MiB 180 MHz Origin 200 module. Established: a real two-processor machine prints Rev 2.6, \"Secondary Cache 2MB 180MHz Tap 0x8\" and a 90 MHz Hub, which give the cache size, its 1:1 clock and tap 8. Inferred: the PRId from the printed revision, the FPU identification, and the other mode fields, which are the 1 MiB word's.",
           "processor_identification": "0x0926",
           "reset_mode": {
             "cache_test_mode": false,
@@ -3451,7 +3451,7 @@
           "cache_mib": 2,
           "clock_mhz": 225,
           "fpu_identification": "0x0900",
-          "notes": "The 225 MHz Origin 200 module, PIMM_225_2M_2P. Real machines print Rev 3.4, \"Scache: Size 2 MB Speed 225 Mhz Tap 0x9\" and a 90 MHz Hub, which give the cache size, its 1:1 clock, tap 9 and the 2.5 system-clock divisor; the other mode fields are the 180 MHz word's (inferred). FPU identification follows the 180 MHz variant (inferred).",
+          "notes": "The 225 MHz Origin 200 module, PIMM_225_2M_2P. Established: real machines print Rev 3.4, \"Scache: Size 2 MB Speed 225 Mhz Tap 0x9\" and a 90 MHz Hub, which give the cache size, its 1:1 clock and tap 9. Inferred: the 2.5 system-clock divisor from the clocks, the PRId from the printed revision, the FPU identification, and the other mode fields, which are the 180 MHz word's.",
           "processor_identification": "0x0934",
           "reset_mode": {
             "cache_test_mode": false,
@@ -3484,7 +3484,7 @@
           "cache_mib": 4,
           "clock_mhz": 270,
           "fpu_identification": "0x0900",
-          "notes": "The 270 MHz R12000 Origin 200 module. Real four-processor machines print Rev 2.3, \"Secondary Cache 4MB 180MHz Tap 0x9\", an R12010 FPU revision 0.0 under IRIX and a 90 MHz Hub, which give the cache size, its 1.5 divisor, tap 9 and the 3 system-clock divisor. The other mode fields are the R10000 180 MHz word's and delayed speculative dirty is off (inferred).",
+          "notes": "The 270 MHz R12000 Origin 200 module. Established: real four-processor machines print Rev 2.3, \"Secondary Cache 4MB 180MHz Tap 0x9\" and a 90 MHz Hub, which give the cache size and tap 9. Inferred: the 1.5 cache and 3 system-clock divisors from the clocks, the PRId from the printed revision, the FPU identification (IRIX prints the R12010 at 2.3 under PROM 6.156, as one real machine does, and 0.0 under PROM 6.27), the other mode fields, which are the R10000 180 MHz word's, and delayed speculative dirty off.",
           "processor_identification": "0x0e23",
           "reset_mode": {
             "cache_test_mode": false,
