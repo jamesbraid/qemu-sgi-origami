@@ -4333,6 +4333,102 @@ static void test_scalar_match_widths(void)
     }
 }
 
+static void prim_texture(PrimCase *p, unsigned size, uint32_t filter,
+                         uint32_t wrap_s, uint32_t wrap_t, uint32_t env)
+{
+    static const float coords[3][2] = {
+        { -0.6f, -0.35f }, { 1.7f, 0.2f }, { 0.45f, 1.9f },
+    };
+
+    p->state.texture_2d = 1;
+    p->state.texture_env_mode = env;
+    p->state.texture_env_color[0] = 0.2f;
+    p->state.texture_env_color[1] = 0.6f;
+    p->state.texture_env_color[2] = 0.85f;
+    p->state.texture_env_color[3] = 0.4f;
+    p->image = (SGIGLTexImage) {
+        .width = size, .height = size, .depth = 1,
+        .base_format = SGI_GL_RGBA,
+        .min_filter = filter, .mag_filter = filter,
+        .wrap_s = wrap_s, .wrap_t = wrap_t,
+        .border_color = { 0.25f, 0.5f, 0.75f, 0.6f },
+    };
+    for (unsigned y = 0; y < size; y++) {
+        for (unsigned x = 0; x < size; x++) {
+            uint32_t *t = p->texels[y][x];
+
+            t[0] = (x * 83 + y * 29 + 11) & 255;
+            t[1] = (x * 47 + y * 101 + 60) & 255;
+            t[2] = (x * 13 + y * 157 + 200) & 255;
+            t[3] = (x * 71 + y * 37 + 90) & 255;
+        }
+    }
+    prim_vertex(p, 0.5f, 1.25f, 0.3f, 0.65f, 0.95f, 0.55f);
+    prim_vertex(p, 15.25f, 2.5f, 0.3f, 0.65f, 0.95f, 0.55f);
+    prim_vertex(p, 3.75f, 15.5f, 0.3f, 0.65f, 0.95f, 0.55f);
+    for (unsigned v = 0; v < 3; v++) {
+        p->vertices[v][SGI_GL_V_TEXCOORD] = coords[v][0];
+        p->vertices[v][SGI_GL_V_TEXCOORD + 1] = coords[v][1];
+        p->vertices[v][SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+}
+
+static void test_scalar_match_texture(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const uint32_t envs[] = {
+        SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL, SGI_GL_BLEND,
+    };
+    static const uint32_t wraps[][2] = {
+        { SGI_GL_REPEAT, SGI_GL_REPEAT },
+        { SGI_GL_CLAMP, SGI_GL_CLAMP },
+        { SGI_GL_CLAMP_TO_EDGE, SGI_GL_CLAMP_TO_EDGE },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_CLAMP_TO_BORDER },
+        { SGI_GL_REPEAT, SGI_GL_CLAMP_TO_BORDER },
+        { SGI_GL_CLAMP, SGI_GL_CLAMP_TO_EDGE },
+    };
+    static const uint32_t filters[] = { SGI_GL_NEAREST, SGI_GL_LINEAR };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned components = 3; components <= 4; components++) {
+        for (unsigned size = 2; size <= 4; size += 2) {
+            for (unsigned e = 0; e < ARRAY_SIZE(envs); e++) {
+                for (unsigned f = 0; f < ARRAY_SIZE(filters); f++) {
+                    for (unsigned w = 0; w < ARRAY_SIZE(wraps); w++) {
+                        g_autofree char *name = g_strdup_printf(
+                            "texture rgb%s %ux%u env 0x%x filter 0x%x "
+                            "wrap 0x%x 0x%x", components == 4 ? "a" : "",
+                            size, size, envs[e], filters[f], wraps[w][0],
+                            wraps[w][1]);
+
+                        prim_case_init(p, SGI_GL_TRIANGLES, components);
+                        prim_texture(p, size, filters[f], wraps[w][0],
+                                     wraps[w][1], envs[e]);
+                        prim_expect(renderer, name, p, &failures);
+                        cases++;
+                    }
+                }
+            }
+        }
+    }
+    g_test_message("texture: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -5003,6 +5099,8 @@ int main(int argc, char **argv)
                     test_scalar_match_shared_edges);
     g_test_add_func("/sgi-renderer-gl/scalar-match-widths",
                     test_scalar_match_widths);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-texture",
+                    test_scalar_match_texture);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
