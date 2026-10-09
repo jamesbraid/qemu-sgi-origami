@@ -21,14 +21,26 @@ RGB or RGBA colour resource. The resource has ordered UNORM components of 1 to
 separate triangle.
 
 The checked draw requires the raster rules every family uses and the scalar
-comparisons establish: 8 subpixel bits, ``SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN``
-and ``SGI_ARITH_DOUBLE``. Other rules return ``SGI_RENDER_UNSUPPORTED``
-before the native snapshot.
+comparisons establish: 8 subpixel bits, ``SGI_ROUND_HALF_AWAY``,
+``SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN`` and ``SGI_ARITH_DOUBLE``. Other rules
+return ``SGI_RENDER_UNSUPPORTED`` before the native snapshot. So does an RGBA
+resource whose stored alpha has fewer than two bits, because the scalar path
+rounds incoming alpha to at least two bits before it truncates alpha to the
+store.
 
 The renderer splits each draw into independent points or triangles exactly as
 the scalar rasterizer does. It keeps the scalar path's order, swaps the first
 two vertices of odd strip triangles, draws quadrilaterals and polygons as fans
 from their first vertex, and uses the same provoking vertex for flat shading.
+A constant colour, that of a flat-shaded piece or a point, is rounded to the
+native steps on the CPU in double, as the scalar path rounds it, so that a
+product exactly on a half step in float32, such as 0.9 times 255, is not
+rounded the other way by the worker. Smooth-shaded colours are interpolated
+and rounded by the worker in float32. A triangle frame is drawn upside down,
+because llvmpipe applies its top-left rule with rows running down. Drawing it
+upside down gives a pixel centre on a horizontal edge to the same triangle as
+the scalar path's top-left rule in OpenGL's upward rows. Point frames keep
+upward rows, where half-pixel point centres already match.
 A point's size is rounded as the scalar path rounds it: to the nearest integer
 and at least one, with zero meaning one. The worker reads
 ``GL_ALIASED_POINT_SIZE_RANGE`` when it creates its context. A size outside
@@ -120,14 +132,70 @@ Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
 
+Proven against the scalar path
+------------------------------
+
+A frame that mixes Mesa and scalar draws equals an all-scalar frame only for
+state that a named unit case proves pixel-identical to ``sgi_soft_draw()`` or
+``sgi_soft_raster()``. Every case below runs on the pinned Linux llvmpipe
+that ``test-sgi-renderer-gl`` selects, on a 16 by 16 front colour resource,
+with the rules named above. Any other driver is unproven.
+
+- ``scalar-match-points``: points of size 1 to 4, 8-bit RGBA.
+- ``scalar-match-polygons``: flat and smooth triangle strips, triangle fans,
+  quadrilaterals, quad strips and polygons, 8-bit RGBA, unblended, with
+  identity matrices, a viewport equal to the resource and one full clip.
+- ``scalar-match-blend``: one separate triangle, 8-bit RGB and RGBA, every
+  accepted blend equation and factor.
+- ``scalar-match-state``: flat-shaded draws with disjoint, touching and
+  overlapping clip rectangles, scissor boxes inside, crossing and empty,
+  offset and oversized viewports including the 16384-pixel reach viewport,
+  and orthographic and perspective matrices with non-integer vertices, each
+  on a bottom-origin resource and on a top-origin resource whose rows the
+  family maps into OpenGL rows.
+- ``scalar-match-colour-ties``: flat fans and points whose colours are exact
+  half steps in float32.
+- ``scalar-match-shared-edges``: two triangles sharing a horizontal,
+  vertical, diagonal or steep edge through pixel centres, one drawn through
+  each path in either order, on both row origins. The image equals the
+  all-scalar image and no pixel is written twice.
+- ``scalar-match-widths``: unblended flat fans and points at 1, 2, 4, 5, 6
+  and 10 bits per component, RGB and RGBA, with rules of the same width.
+- ``scalar-match-texture``: flat-shaded textured triangles for the four
+  environments, both filters, every accepted wrap mode, 2 by 2 and 4 by 4
+  images, and RGB8 and RGBA8 targets.
+- ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
+  RGB and RGBA, with one or several clips, a scissor-bounded rectangle and a
+  clip past the plane, under full and partial colour masks. The op's
+  rectangle is the clips' union bounded by the scissor, as ``sgi_gl_clear()``
+  builds it. With a single clip the scalar path writes the whole rectangle
+  without testing it against that clip, so it relies on that shape.
+
 Open feature rows
 -----------------
 
-Two features the shared design requires stay unsupported. In each, Mesa
-differs from the scalar rasterizer, and the scalar rule is the reviewed
-family contract. Each refusal returns ``SGI_RENDER_UNSUPPORTED`` before the
-native snapshot. The ``lines-refused`` and ``scalar-match-blend`` unit cases
-keep the vectors that showed the differences.
+These features the shared design requires stay unsupported or unproven. In
+each, Mesa differs from the scalar rasterizer, and the scalar rule is the
+reviewed family contract. Each refusal returns ``SGI_RENDER_UNSUPPORTED``
+before the native snapshot. The ``lines-refused`` and ``scalar-match-blend``
+unit cases keep the vectors that showed the differences.
+
+Smooth shading is accepted but is not proven identical in general. The worker
+interpolates and rounds in float32; the scalar path works in double. A value
+within about a thousandth of a half step can round the other way:
+
+- Viewport (3, -2, 10, 12): pixel (4, 5) has exact alpha 125.499; the scalar
+  path stores 126 and llvmpipe 125.
+- An orthographic and a perspective matrix give one-step alpha differences at
+  pixels (7, 10) and (8, 8).
+
+Coverage and the other components match in those cases. Doing the
+interpolation in double the scalar path's way would settle this, or a family
+mixing paths can keep smooth-shaded draws on the scalar path.
+
+Components wider than 10 bits have no scalar comparison, because the scalar
+rules stop at 10 bits. Unblended draws at 12 and 16 bits are accepted but
+are outside the proven set.
 
 Aliased lines differ from the scalar diamond-exit rule:
 
@@ -198,7 +266,9 @@ CLEAR. Colour resources use three or four ordered UNORM components of 1 to 16
 bits. Depth and stencil use separate unsigned, single-component resources at
 exactly 24 and 8 bits. Colour-index CLEAR and other raster operations remain
 unsupported. The clear masks and inclusive clip rectangles determine which
-native pixels may be written.
+native pixels may be written. The clear colour is rounded to the native steps
+on the CPU in double, as the scalar path rounds it. A stored alpha of fewer
+than two bits returns ``SGI_RENDER_UNSUPPORTED`` before the snapshot.
 
 The path validates selected descriptors and snapshots every resource with
 nonempty clipped coverage before Mesa work. It finishes host CLEAR and
