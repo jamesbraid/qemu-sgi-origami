@@ -1237,12 +1237,22 @@ static void test_decoded_triangle_viewport_fill(void)
     g_assert_cmpuint(f.colour[0][0][0], ==, 255);
 
     memset(f.written, 0, sizeof(f.written));
-    polygon_modes[1] = SGI_GL_LINE;
-    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
-                                             &draw, &err), ==,
-                    SGI_RENDER_UNSUPPORTED);
-    g_assert_nonnull(err);
-    g_clear_pointer(&err, error_free);
+    /* Either face selecting LINE or POINT makes the whole draw unsupported. */
+    for (unsigned i = 0; i < 4; i++) {
+        static const uint32_t modes[4][2] = {
+            { SGI_GL_FILL, SGI_GL_LINE },
+            { SGI_GL_FILL, SGI_GL_POINT },
+            { SGI_GL_LINE, SGI_GL_FILL },
+            { SGI_GL_POINT, SGI_GL_FILL },
+        };
+
+        memcpy(polygon_modes, modes[i], sizeof(polygon_modes));
+        g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                                 &draw, &err), ==,
+                        SGI_RENDER_UNSUPPORTED);
+        g_assert_nonnull(err);
+        g_clear_pointer(&err, error_free);
+    }
     g_assert_cmpuint(f.snapshots, ==, 1);
     g_assert_cmpuint(f.commits, ==, 1);
     sgi_renderer_free(renderer);
