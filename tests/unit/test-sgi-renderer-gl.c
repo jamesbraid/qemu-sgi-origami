@@ -3483,6 +3483,7 @@ static void test_decoded_clear_depth_stencil(void)
 typedef struct PrimFixture {
     uint32_t rgba[PRIM_SIZE][PRIM_SIZE][4];
     uint8_t written[PRIM_SIZE][PRIM_SIZE];
+    uint32_t depth[PRIM_SIZE][PRIM_SIZE], stencil[PRIM_SIZE][PRIM_SIZE];
     uint32_t texels[4][4][4];
     unsigned components;
     unsigned snapshots, commits;
@@ -3531,6 +3532,50 @@ static bool prim_scalar_load(void *opaque, SGIColourTarget target, int x,
     return true;
 }
 
+static void prim_scalar_store_depth(void *opaque, int x, int y,
+                                    uint32_t depth)
+{
+    PrimFixture *f = opaque;
+
+    if (x >= 0 && x < PRIM_SIZE && y >= 0 && y < PRIM_SIZE) {
+        f->depth[y][x] = depth;
+    }
+}
+
+static uint32_t prim_scalar_load_stencil(void *opaque, int x, int y)
+{
+    PrimFixture *f = opaque;
+
+    return x >= 0 && x < PRIM_SIZE && y >= 0 && y < PRIM_SIZE ?
+           f->stencil[y][x] : 0;
+}
+
+static void prim_scalar_store_stencil(void *opaque, int x, int y,
+                                      uint32_t value)
+{
+    PrimFixture *f = opaque;
+
+    if (x >= 0 && x < PRIM_SIZE && y >= 0 && y < PRIM_SIZE) {
+        f->stencil[y][x] = value;
+    }
+}
+
+/* The fixture's slot for component c of pixel (x, y) in a resource. */
+static uint32_t *prim_slot(PrimFixture *f, const SGIRenderResource *res,
+                           uint32_t x, uint32_t y, unsigned c)
+{
+    switch (res->role) {
+    case SGI_RENDER_TEXTURE:
+        return &f->texels[y][x][c];
+    case SGI_RENDER_DEPTH:
+        return &f->depth[y][x];
+    case SGI_RENDER_STENCIL:
+        return &f->stencil[y][x];
+    default:
+        return &f->rgba[y][x][c];
+    }
+}
+
 static SGIRenderResult prim_snapshot(void *opaque,
                                      const SGIRenderResource *resource,
                                      uint32_t slice, const SGIRenderRect *rect,
@@ -3538,15 +3583,14 @@ static SGIRenderResult prim_snapshot(void *opaque,
                                      size_t capacity_slots, Error **errp)
 {
     PrimFixture *f = opaque;
-    unsigned n = resource->role == SGI_RENDER_TEXTURE ? 4 : f->components;
+    unsigned n = resource->component_count;
 
     f->snapshots++;
     for (uint32_t y = rect->y0; y <= rect->y1; y++) {
         for (uint32_t x = rect->x0; x <= rect->x1; x++) {
             for (unsigned c = 0; c < n; c++) {
                 slots[(y - rect->y0) * stride_slots + (x - rect->x0) * n + c] =
-                    resource->role == SGI_RENDER_TEXTURE ?
-                    f->texels[y][x][c] : f->rgba[y][x][c];
+                    *prim_slot(f, resource, x, y, c);
             }
         }
     }
@@ -3572,11 +3616,14 @@ static SGIRenderCommitResult prim_commit_covered(
                                          x - rect->x0]) {
                 continue;
             }
-            for (unsigned c = 0; c < f->components; c++) {
-                f->rgba[y][x][c] = slots[(y - rect->y0) * stride_slots +
-                                         (x - rect->x0) * f->components + c];
+            for (unsigned c = 0; c < res->component_count; c++) {
+                *prim_slot(f, res, x, y, c) =
+                    slots[(y - rect->y0) * stride_slots +
+                          (x - rect->x0) * res->component_count + c];
             }
-            f->written[y][x] = 1;
+            if (res->role == SGI_RENDER_COLOUR) {
+                f->written[y][x] = 1;
+            }
         }
     }
     return (SGIRenderCommitResult) {
@@ -3699,6 +3746,8 @@ static void prim_destination(PrimFixture *f, const PrimCase *p)
                 f->rgba[y][x][c] = p->dest_value ? p->dest_value - 1 :
                                    (v[c] & 255) * max / 255;
             }
+            f->depth[y][x] = (x * 0x13579 + y * 0x2468ace) & 0xffffff;
+            f->stencil[y][x] = (x * 29 + y * 53 + 5) & 255;
         }
     }
 }
@@ -4429,6 +4478,219 @@ static void test_scalar_match_texture(void)
     }
 }
 
+/* One decoded CLEAR through sgi_soft_raster() and the checked Mesa path. */
+static unsigned prim_clear_compare(SGIRenderer *renderer, const char *name,
+                                   PrimCase *p, const SGIRasterOp *op)
+{
+    g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+    SGIRenderResource res[4];
+    SGIRasterRules rules;
+    SGIRasterTarget scalar_target = {
+        .opaque = scalar,
+        .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
+        .store_depth = prim_scalar_store_depth,
+        .load_stencil = prim_scalar_load_stencil,
+        .store_stencil = prim_scalar_store_stencil,
+    };
+    SGIRasterTarget mesa_target = {
+        .opaque = mesa, .resources = res, .resource_count = 3,
+        .resource_ops = &prim_ops,
+    };
+    SGIRenderResult result;
+    Error *err = NULL;
+    unsigned differences;
+
+    prim_rules(p, &rules);
+    prim_resources(p, res);
+    res[1] = (SGIRenderResource) {
+        .backing_id = 5, .backing_generation = 1,
+        .view_id = 6, .view_generation = 1,
+        .role = SGI_RENDER_DEPTH, .width = PRIM_SIZE, .height = PRIM_SIZE,
+        .depth = 1, .bottom_origin = true, .component_count = 1,
+        .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, 24 } },
+    };
+    res[2] = (SGIRenderResource) {
+        .backing_id = 7, .backing_generation = 1,
+        .view_id = 8, .view_generation = 1,
+        .role = SGI_RENDER_STENCIL, .width = PRIM_SIZE, .height = PRIM_SIZE,
+        .depth = 1, .bottom_origin = true, .component_count = 1,
+        .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, 8 } },
+    };
+    prim_destination(scalar, p);
+    prim_destination(mesa, p);
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    sgi_soft_raster(&rules, &scalar_target, op);
+    result = sgi_render_raster_checked(renderer, &rules, &mesa_target, op,
+                                       &err);
+    if (result != SGI_RENDER_OK) {
+        g_test_message("%s: checked clear returned %d: %s", name, result,
+                       err ? error_get_pretty(err) : "(no error)");
+        g_clear_pointer(&err, error_free);
+        return PRIM_SIZE * PRIM_SIZE;
+    }
+    differences = prim_report(name, scalar, mesa);
+    for (unsigned y = 0; y < PRIM_SIZE; y++) {
+        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+            if (scalar->depth[y][x] != mesa->depth[y][x] ||
+                scalar->stencil[y][x] != mesa->stencil[y][x]) {
+                g_test_message("%s: pixel (%u,%u) scalar depth 0x%x "
+                               "stencil 0x%x mesa depth 0x%x stencil 0x%x",
+                               name, x, y, scalar->depth[y][x],
+                               scalar->stencil[y][x], mesa->depth[y][x],
+                               mesa->stencil[y][x]);
+                differences++;
+            }
+        }
+    }
+    return differences;
+}
+
+/*
+ * The op's rectangle is the union of its clips, bounded by a scissor, as
+ * sgi_gl_clear() builds it.
+ */
+static void prim_clear_op(SGIRasterOp *op, const SGIClipRect *clips,
+                          unsigned n, const int32_t *scissor)
+{
+    op->kind = SGI_RASTER_CLEAR;
+    op->targets[0] = 7;
+    op->ntargets = 1;
+    op->clip.n = n;
+    memcpy(op->clip.r, clips, n * sizeof(*clips));
+    op->x0 = op->y0 = INT32_MAX;
+    op->x1 = op->y1 = INT32_MIN;
+    for (unsigned i = 0; i < n; i++) {
+        op->x0 = MIN(op->x0, clips[i].x0);
+        op->y0 = MIN(op->y0, clips[i].y0);
+        op->x1 = MAX(op->x1, clips[i].x1);
+        op->y1 = MAX(op->y1, clips[i].y1);
+    }
+    if (scissor) {
+        op->x0 = MAX(op->x0, scissor[0]);
+        op->y0 = MAX(op->y0, scissor[1]);
+        op->x1 = MIN(op->x1, scissor[0] + scissor[2] - 1);
+        op->y1 = MIN(op->y1, scissor[1] + scissor[3] - 1);
+    }
+}
+
+static void test_scalar_match_clear(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect full[] = { { 0, 0, 15, 15 } };
+    static const SGIClipRect several[] = {
+        { 1, 1, 5, 4 }, { 4, 3, 12, 9 }, { 13, 0, 15, 15 },
+    };
+    static const SGIClipRect outside[] = { { -3, 10, 20, 22 } };
+    static const int32_t scissor[4] = { 2, 2, 11, 9 };
+    static const struct {
+        const SGIClipRect *clips;
+        unsigned n;
+        const int32_t *scissor;
+        const char *name;
+    } shapes[] = {
+        { full, 1, NULL, "full" },
+        { several, 3, NULL, "several clips" },
+        { several, 3, scissor, "several clips and scissor" },
+        { outside, 1, NULL, "clip past the plane" },
+    };
+    static const float colours[][4] = {
+        { 0.9f, 0.1f, 0.3f, 0.7f },
+        { 0.25f, 0.5f, 0.75f, 1 },
+    };
+    static const uint32_t masks[] = {
+        SGI_GL_COLOUR_MASK_ALL,
+        SGI_GL_COLOUR_MASK_RED | SGI_GL_COLOUR_MASK_BLUE,
+        SGI_GL_COLOUR_MASK_GREEN | SGI_GL_COLOUR_MASK_ALPHA,
+    };
+    static const unsigned widths[] = { 4, 8, 10 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+        for (unsigned components = 3; components <= 4; components++) {
+            for (unsigned s = 0; s < ARRAY_SIZE(shapes); s++) {
+                for (unsigned k = 0; k < ARRAY_SIZE(colours) *
+                                         ARRAY_SIZE(masks); k++) {
+                    const float *colour = colours[k % ARRAY_SIZE(colours)];
+                    uint32_t mask = masks[k / ARRAY_SIZE(colours)];
+                    SGIRasterOp op = { 0 };
+                    g_autofree char *name = g_strdup_printf(
+                        "clear %u-bit rgb%s %s colour %u mask 0x%x",
+                        widths[w], components == 4 ? "a" : "",
+                        shapes[s].name, k % 2, mask);
+                    unsigned differences;
+
+                    prim_case_init(p, SGI_GL_TRIANGLES, components);
+                    p->bits = widths[w];
+                    prim_clear_op(&op, shapes[s].clips, shapes[s].n,
+                                  shapes[s].scissor);
+                    op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+                    if (k & 1) {
+                        op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT |
+                                            SGI_GL_STENCIL_BUFFER_BIT;
+                    }
+                    memcpy(op.clear_rgba, colour, sizeof(op.clear_rgba));
+                    op.clear_colour_mask = mask;
+                    op.clear_depth24 = 0x9abcde;
+                    op.clear_stencil = 0xa5;
+                    op.stencil_mask = 0x3c;
+                    differences = prim_clear_compare(renderer, name, p, &op);
+                    if (differences) {
+                        g_test_message("%s: %u pixels differ", name,
+                                       differences);
+                        failures++;
+                    }
+                    cases++;
+                }
+            }
+        }
+    }
+    /* One-bit stored alpha: the scalar path rounds alpha to two bits. */
+    {
+        SGIRasterOp op = { 0 };
+        SGIRasterRules rules;
+        SGIRenderResource res[2];
+        g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+        SGIRasterTarget target = {
+            .opaque = mesa, .resources = res, .resource_count = 1,
+            .resource_ops = &prim_ops,
+        };
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        p->bits = 1;
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_destination(mesa, p);
+        prim_clear_op(&op, full, 1, NULL);
+        op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+        op.clear_colour_mask = SGI_GL_COLOUR_MASK_ALL;
+        op.clear_rgba[3] = 0.7f;
+        if (sgi_render_raster_checked(renderer, &rules, &target, &op,
+                                      &err) != SGI_RENDER_UNSUPPORTED ||
+            mesa->snapshots) {
+            g_test_message("one-bit alpha clear was not refused");
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+    }
+    g_test_message("clear: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -5101,6 +5363,8 @@ int main(int argc, char **argv)
                     test_scalar_match_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-texture",
                     test_scalar_match_texture);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-clear",
+                    test_scalar_match_clear);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
                     test_scalar_match_points);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
