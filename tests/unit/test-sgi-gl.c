@@ -323,6 +323,57 @@ static void test_clear_op(void)
     g_assert_cmpuint(rec.ops, ==, 2);
 }
 
+static void test_drawable_extent(void)
+{
+    SGIGLContext c;
+    SGIGLDrawable d = { .bound = true, .width = 6, .height = 5 };
+    SGIGLDrawable prior;
+
+    sgi_gl_init(&c, 0x1234);
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpuint(c.cur.drawable.width, ==, 6);
+    g_assert_cmpuint(c.cur.drawable.height, ==, 5);
+    prior = c.cur.drawable;
+
+    d.height = 0;
+    g_assert_false(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpmem(&c.cur.drawable, sizeof(prior), &prior, sizeof(prior));
+    d.width = 0;
+    d.height = 5;
+    g_assert_false(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpmem(&c.cur.drawable, sizeof(prior), &prior, sizeof(prior));
+
+    d.width = d.height = 0;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpuint(c.cur.drawable.width, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.height, ==, 0);
+
+    d.width = 6;
+    d.height = 5;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    d.bound = false;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpuint(c.cur.drawable.bound, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.width, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.height, ==, 0);
+
+    d.bound = true;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    d.bound = false;
+    d.height = 0;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    g_assert_cmpuint(c.cur.drawable.bound, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.width, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.height, ==, 0);
+
+    d.bound = true;
+    d.height = 5;
+    g_assert_true(sgi_gl_set_drawable(&c, &d));
+    sgi_gl_reset(&c, 0x1234);
+    g_assert_cmpuint(c.cur.drawable.width, ==, 0);
+    g_assert_cmpuint(c.cur.drawable.height, ==, 0);
+}
+
 /*
  * One point whose snapped x and whose depth both fall on a half step,
  * below zero and at 0.5, under each rounding. With one subpixel bit and a
@@ -10645,6 +10696,7 @@ static void test_hints_ignore_rendering(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-gl/drawable-extent", test_drawable_extent);
     g_test_add_data_func("/sgi-gl/line-stipple-error-clone-open", NULL,
                          test_line_stipple_error_clone);
     g_test_add_data_func("/sgi-gl/line-stipple-error-clone-closed",

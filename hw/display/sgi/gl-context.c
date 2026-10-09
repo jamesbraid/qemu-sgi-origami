@@ -347,9 +347,16 @@ bool sgi_gl_get_polygon_stipple(const SGIGLContext *c, uint32_t rows[32])
     return true;
 }
 
-void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d)
+bool sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d)
 {
+    if (d->bound && !!d->width != !!d->height) {
+        return false;
+    }
     c->cur.drawable = *d;
+    if (!d->bound) {
+        c->cur.drawable.width = c->cur.drawable.height = 0;
+    }
+    return true;
 }
 
 void sgi_gl_set_index_mode(SGIGLContext *c, uint32_t index_bits)
@@ -3106,6 +3113,16 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
             return false;
         }
     }
+    if (!!st->drawable.width != !!st->drawable.height) {
+        error_setg(errp, "sgi-gl: drawable extent %u by %u is half-known",
+                   st->drawable.width, st->drawable.height);
+        return false;
+    }
+    if (!st->drawable.bound && st->drawable.width) {
+        error_setg(errp, "sgi-gl: unbound drawable extent %u by %u",
+                   st->drawable.width, st->drawable.height);
+        return false;
+    }
     for (size_t i = 0; i < ARRAY_SIZE(stacks); i++) {
         if (stacks[i].depth >= SGI_GL_STACK_DEPTH) {
             error_setg(errp, "sgi-gl: %s %u is past the stack's %u",
@@ -3419,6 +3436,25 @@ static const VMStateDescription vmstate_sgi_gl_drawable_extra = {
     },
 };
 
+static bool sgi_gl_drawable_extent_needed(void *opaque)
+{
+    SGIGLDrawable *d = opaque;
+
+    return d->width != 0 || d->height != 0;
+}
+
+static const VMStateDescription vmstate_sgi_gl_drawable_extent = {
+    .name = "sgi-gl-drawable/extent",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_drawable_extent_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(width, SGIGLDrawable),
+        VMSTATE_UINT32(height, SGIGLDrawable),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_drawable = {
     .name = "sgi-gl-drawable",
     .version_id = 1,
@@ -3426,6 +3462,7 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_clip_empty,
         &vmstate_sgi_gl_drawable_extra,
+        &vmstate_sgi_gl_drawable_extent,
         NULL
     },
     .fields = (const VMStateField[]) {
@@ -3999,6 +4036,7 @@ static int sgi_gl_context_pre_load(void *opaque)
 {
     SGIGLContext *c = opaque;
 
+    c->cur.drawable.width = c->cur.drawable.height = 0;
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
     c->line_phase = 0;
     for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
