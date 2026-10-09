@@ -10,6 +10,7 @@ RUN apt-get update && \
         binutils-mips64-linux-gnuabi64 \
         build-essential \
         ca-certificates \
+        ccache \
         gcc-mips64-linux-gnuabi64 \
         gdb-multiarch \
         git \

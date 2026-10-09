@@ -204,9 +204,19 @@ case "${1-}" in
           python3 scripts/ci/sgi-check scripts >"$log" 2>&1 &
       scripts_pid=$!
     fi
+    # Compiles are cached in a named volume that outlives the job, on the
+    # builder's own daemon: the workspace (and so the build directory)
+    # starts clean every run, but the same source path and compiler make
+    # unchanged files hit. The masquerade directory goes first on PATH so
+    # configure and ninja both pick up the caching compiler.
     built=0
-    bash "$0" run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
-        python3 scripts/ci/sgi-check build || built=$?
+    bash "$0" run -v "$WORKSPACE_VOLUME:/src" -w /src \
+        -v qemu-ci-ccache:/ccache -e CCACHE_DIR=/ccache \
+        -e CCACHE_MAXSIZE=3G "$IMAGE_ID" \
+        sh -euxc 'PATH=/usr/lib/ccache:$PATH
+                  ccache --zero-stats
+                  python3 scripts/ci/sgi-check build
+                  ccache --show-stats' || built=$?
     scripts=0
     if [ -n "$scripts_pid" ]; then
       wait "$scripts_pid" || scripts=$?
