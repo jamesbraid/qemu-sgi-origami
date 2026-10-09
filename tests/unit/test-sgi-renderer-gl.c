@@ -857,6 +857,7 @@ static void test_decoded_triangle_native_commit(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 12,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1194,6 +1195,7 @@ static void test_decoded_triangle_viewport_fill(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1302,6 +1304,7 @@ static void test_decoded_triangle_viewport_limit(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1424,6 +1427,7 @@ static void test_decoded_triangle_clip_union(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1630,6 +1634,7 @@ static void test_triangle_resource_row_origin(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1798,6 +1803,7 @@ static void test_flat_triangle_alpha_blend(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -1999,6 +2005,7 @@ static void test_blend_without_native_alpha(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -2210,6 +2217,7 @@ static void test_typed_texture_triangle(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -2506,6 +2514,7 @@ static void test_typed_texture_multi_texel(void)
     };
     SGIRasterRules rules = {
         .subpixel_bits = 8, .color_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
     };
@@ -4816,9 +4825,10 @@ static void test_raster_rules_refused(void)
     }
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
-    for (unsigned i = 0; i < 3; i++) {
+    for (unsigned i = 0; i < 4; i++) {
         static const char *const names[] = {
             "subpixel bits 4", "top-left tie rule", "fixed-point arithmetic",
+            "round half to even",
         };
 
         prim_case_init(p, SGI_GL_TRIANGLES, 4);
@@ -5022,6 +5032,7 @@ static void test_smoothing_refused(void)
         };
         SGIRasterRules rules = {
             .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
+            .rounding = SGI_ROUND_HALF_AWAY,
             .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
             .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
         };

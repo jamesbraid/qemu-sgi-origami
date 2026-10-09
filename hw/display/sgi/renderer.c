@@ -312,12 +312,14 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
 
 /*
  * The scalar comparisons that establish this path use 8 subpixel bits,
- * the bottom-origin top-left tie rule and double arithmetic, as every
- * family does; the worker cannot follow other rules.
+ * rounding half away from zero, the bottom-origin top-left tie rule and
+ * double arithmetic, as every family does; the worker cannot follow other
+ * rules.
  */
 static bool sgi_render_rules_supported(const SGIRasterRules *rules)
 {
     return rules->subpixel_bits == 8 &&
+           rules->rounding == SGI_ROUND_HALF_AWAY &&
            rules->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            rules->arith == SGI_ARITH_DOUBLE;
 }
