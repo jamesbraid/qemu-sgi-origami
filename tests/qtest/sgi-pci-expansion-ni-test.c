@@ -634,7 +634,7 @@ static void test_routed_migration(void)
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(qtest_readq(to, ROUTER + 0x20a00 + 7 * 8), ==, 6);
     dma(to, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
-        UINT64_C(0x123456789abcdef0), false, MEMTX_OK);
+        UINT64_C(0x9abcdef012345678), false, MEMTX_OK);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
