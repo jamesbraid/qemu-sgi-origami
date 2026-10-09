@@ -156,6 +156,7 @@ static void test_experimental_status_write(void)
     const uint64_t global8 = bank[7] + 0x178;
     const uint64_t patterns[] = { 0x8, 0x10, 0x800, 0x1000 };
     const uint64_t expected[] = { 0x8, 0x10, 0x800, 0 };
+    const uint64_t route_patterns[] = { 0x8, 0x800, 0x1000 };
     QDict *mode_reply;
     uint8_t l1_before[131], l1_after[131];
     size_t l1_size;
@@ -256,9 +257,9 @@ static void test_experimental_status_write(void)
     qobject_unref(mode_reply);
     route_before = get(s, "route");
     g_assert_cmphex(route_before, ==, 4 | (2 << 8));
-    for (unsigned i = 0; i < 2; i++) {
+    for (unsigned i = 0; i < G_N_ELEMENTS(route_patterns); i++) {
         experimental_status_vector(s, bank[3] + 0x200 + 5 * 8, 0,
-                                   true, 2 | (i ? 0x1000 : 0x800), true);
+                                   true, 2 | route_patterns[i], true);
         g_assert_cmphex(get(s, "route"), ==, route_before);
     }
     experimental_status_vector(s, bank[3] + 0x200 + 5 * 8, 0,
