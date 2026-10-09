@@ -121,11 +121,15 @@ static void mgras_visual_read_registers(QTestState *qts, uint32_t size,
     gl_word(qts, 0x31c);
 }
 
-/* destination is the byte offset into the mapped pages, 0x30000 up. */
+/*
+ * destination is the byte offset into the mapped pages, 0x30000 up; word3
+ * is class-A register 6, 0xa in every captured client read.
+ */
 static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
                                          uint32_t class_a_size,
                                          uint32_t format,
-                                         uint32_t destination)
+                                         uint32_t destination,
+                                         uint32_t word3)
 {
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0x00080004 << 32) | 0x80000000);
@@ -144,7 +148,7 @@ static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0x000a0404 << 32) | format);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)0x000a0604 << 32) | 0xa);
+                 ((uint64_t)0x000a0604 << 32) | word3);
     qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0x00080b04 << 32) | 0xbf);
@@ -152,11 +156,12 @@ static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
                  ((uint64_t)0x000a0504 << 32) | 0x4009);
 }
 
-static void mgras_visual_read_pixels_to(QTestState *qts, uint32_t width,
-                                        bool malformed_bounds,
-                                        bool bracketed, uint32_t format,
-                                        uint32_t x, uint32_t y,
-                                        uint32_t destination)
+static void mgras_visual_read_pixels_word3(QTestState *qts, uint32_t width,
+                                           bool malformed_bounds,
+                                           bool bracketed, uint32_t format,
+                                           uint32_t x, uint32_t y,
+                                           uint32_t destination,
+                                           uint32_t word3)
 {
     uint32_t size = (width << 16) | width;
     uint32_t start = (x << 16) | y;
@@ -191,7 +196,7 @@ static void mgras_visual_read_pixels_to(QTestState *qts, uint32_t width,
     gl_word(qts, 0x000c0004);
     gl_word(qts, 0x200);
     mgras_visual_read_descriptor(qts, width * width * 4, size, format,
-                                 destination);
+                                 destination, word3);
     gl_word(qts, 0x000e0400);
     gl_word(qts, 0x000e0100);
     gl_word(qts, 0x000a0704);
@@ -204,6 +209,16 @@ static void mgras_visual_read_pixels_to(QTestState *qts, uint32_t width,
     if (bracketed) {
         gl_word(qts, VISUAL_READ_CLOSE);
     }
+}
+
+static void mgras_visual_read_pixels_to(QTestState *qts, uint32_t width,
+                                        bool malformed_bounds,
+                                        bool bracketed, uint32_t format,
+                                        uint32_t x, uint32_t y,
+                                        uint32_t destination)
+{
+    mgras_visual_read_pixels_word3(qts, width, malformed_bounds, bracketed,
+                                   format, x, y, destination, 0xa);
 }
 
 static void mgras_visual_read_pixels_format_at(QTestState *qts,
@@ -767,6 +782,46 @@ static void test_gl_clear_captured_readpixels_unknown_mode_not_raster(void)
     gl_word(qts, GL_CLEAR_COLOR_BUFFER);
     qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
     mgras_visual_read_pixels_format(qts, 1, false, true, 0x00400280);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+/* The 4-mod-8 signature was captured at one pixel; a 2x2 read is refused. */
+static void test_gl_clear_captured_readpixels_dest_offset_4_only_1x1(void)
+{
+    uint8_t poison[24];
+    uint8_t got[sizeof(poison)];
+
+    memset(poison, 0xa5, sizeof(poison));
+    mgras_visual_clear_and_select_front(qts);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d50, poison, sizeof(poison));
+    mgras_visual_read_pixels_to(qts, 2, false, true, 0x00400480, 4, 4,
+                                0xd54);
+    qtest_memread(qts, 0x30d50, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+/*
+ * A kick inside the client's bracket without the captured register 6 is
+ * not a client read, and the server's raster read must not answer it
+ * either: the destination keeps its bytes.
+ */
+static void test_gl_clear_captured_readpixels_bracket_word3_not_raster(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    uint8_t got[sizeof(poison)];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels_word3(qts, 1, false, true, 0x00400080, 4, 4,
+                                   0xd50, 0xb);
     qtest_memread(qts, 0x30d4c, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
 }
@@ -4110,6 +4165,14 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-unknown-mode-not-raster",
         test_gl_clear_captured_readpixels_unknown_mode_not_raster, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-dest-offset-4-only-1x1",
+        test_gl_clear_captured_readpixels_dest_offset_4_only_1x1, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-bracket-word3-not-raster",
+        test_gl_clear_captured_readpixels_bracket_word3_not_raster, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-requires-bracket",
