@@ -1061,15 +1061,25 @@ def _processor_record(part: str, identity: dict, label: str) -> dict:
     }
 
 
+# The processor clocks at which the stock IP27 PROM disables a 256 MB DIMM
+# bank, read from the flash configuration block (PROM 6.156 disassembly,
+# recorded in the Hub memory datasheet). QEMU's sn0.c applies the same rule.
+_IP27_PROM_NO_256MB_BANK_MHZ = (180, 195)
+
+
 def _processor_options(model: dict, hub: dict, default: dict) -> list[dict]:
     """Every processor module a launch may select, the default first.
 
     Each is compiled from its catalogued variant: identity registers, cache
-    clock and reset mode all come from the processors catalogue.
+    clock and reset mode all come from the processors catalogue, and the
+    memory totals the node accepts depend on whether the PROM keeps 256 MB
+    banks at its clock.
     """
     firmware = model["machine"].get("firmware_config") or {}
     hub_clock_hz = firmware.get("hub_clock_hz",
                                 (hub.get("identity") or {}).get("clock_hz"))
+    constraints = (model["machine"].get("emulation") or {}).get(
+        "emulator_constraints") or {}
     options = []
     for option in model["machine"]["processor_options"]:
         label = (f"offered {option['part']} {option['clock_mhz']} MHz/"
@@ -1093,9 +1103,18 @@ def _processor_options(model: dict, hub: dict, default: dict) -> list[dict]:
         assembly["mode_bits"] = _compile_r10000_reset_mode(
             {"processor_reset_mode": variant["reset_mode"]},
             assembly["clock_hz"], hub_clock_hz, option["part"])
+        if option["clock_mhz"] in _IP27_PROM_NO_256MB_BANK_MHZ:
+            accepted = _accepted_memory_mib(model)
+        else:
+            sizes = constraints.get("accepted_bank_sizes_mib_with_256mb_banks")
+            if not sizes:
+                raise CompileError(
+                    f"{label} keeps 256 MB banks, but emulator_constraints "
+                    "names no accepted_bank_sizes_mib_with_256mb_banks")
+            accepted = list(sizes)
         options.append({
             "assembly": assembly,
-            "accepted_memory_mib": _accepted_memory_mib(model),
+            "accepted_memory_mib": accepted,
             "cpus_per_node": list(option["processors_per_node"]),
         })
     if options[0]["assembly"] != default:

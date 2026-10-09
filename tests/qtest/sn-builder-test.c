@@ -7099,7 +7099,10 @@ static void test_unbuildable_rows_rejected(const void *data)
 /*
  * processor= names one of the topology's own modules, and -cpu, if given,
  * its part; without -cpu the module's part is the default. A
- * module comes only in the processor counts real ones show.
+ * module comes only in the processor counts real ones show, and its clock
+ * decides the memory totals: 1024 MiB needs a 256 MB bank, which a 225 MHz
+ * node keeps and a 180 MHz one does not, and 2048 MiB a 512 MiB bank 0,
+ * which neither builds.
  */
 static void test_origin200_processor_choices(const void *data)
 {
@@ -7125,6 +7128,10 @@ static void test_origin200_processor_choices(const void *data)
         "processor=r10000-180mhz-1mb", "-smp", "2", "-m", "256M",
         "-display", "none", NULL
     };
+    const char *bank0_512[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,processor=r10000-225mhz-2mb",
+        "-smp", "2", "-m", "2048M", "-display", "none", NULL
+    };
     QTestState *qts;
 
     assert_qemu_rejects(unknown, "topology 'origin200' offers no processor "
@@ -7139,12 +7146,17 @@ static void test_origin200_processor_choices(const void *data)
                         "'r10000-225mhz-2mb' is known");
     assert_qemu_rejects(no_choice, "topology 'origin2000-deskside' offers no "
                         "processor choice");
+    assert_qemu_rejects(bank0_512, "topology 'origin200' does not accept "
+                        "2048 MiB per node, only 64, 128, 192, 256, 320, "
+                        "384, 448, 512, 576, 640, 704, 768, 832, 896, 960, "
+                        "1024, 1088, 1152, 1216, 1280, 1344, 1408, 1536, "
+                        "1600, 1664 or 1792 MiB");
 
     qts = qtest_init("-M origin200,processor=r10000-225mhz-2mb -smp 2 "
-                     "-m 512M -display none");
+                     "-m 1024M -display none");
     qtest_quit(qts);
     qts = qtest_init("-M origin200,topology=origin200-dual,"
-                     "processor=r12000-270mhz-4mb -smp 4 -m 1024M "
+                     "processor=r12000-270mhz-4mb -smp 4 -m 2048M "
                      "-display none");
     qtest_quit(qts);
 }

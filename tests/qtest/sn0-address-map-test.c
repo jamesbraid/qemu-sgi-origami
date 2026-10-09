@@ -775,17 +775,88 @@ static void check_128m_banks(QTestState *qts, unsigned int count)
 
 /*
  * The IP27 PROM disables a 256 MB bank on a node whose processors run at
- * 180 or 195 MHz, the only SN0 clocks QEMU offers, and with bank 0 gone it
- * finds no usable memory. So 256 MiB on an Origin 200 is two 128 MiB banks,
- * not one bank split over four 64 MiB runs: bank 0's second slot is empty.
+ * 180 or 195 MHz, and with bank 0 gone it finds no usable memory. So
+ * 256 MiB on a 180 MHz Origin 200 is two 128 MiB banks, not one bank
+ * split over four 64 MiB runs: bank 0's second slot is empty. The 2 MiB
+ * module runs at 180 MHz too, so the rule follows the clock, not the part.
  */
 static void test_256m_memory(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200 -m 256M");
+    QTestState *qts = qtest_initf("-M origin200%s -m 256M",
+                                  data ? ",processor=r10000-180mhz-2mb" : "");
 
     check_128m_banks(qts, 2);
     check_not_ram(qts, NODE0 + MEM_SLOT_SIZE);
 
+    qtest_quit(qts);
+}
+
+/*
+ * Check that banks 0 to @count - 1 each hold 256 MiB as four 64 MiB runs,
+ * one at the start of each 128 MiB slot, and, if @last, that the bank
+ * after them, if the board has one, is empty.
+ */
+static void check_256m_banks(QTestState *qts, unsigned int count, bool last)
+{
+    unsigned int bank, slot;
+
+    for (bank = 0; bank < count; bank++) {
+        for (slot = 0; slot < 4; slot++) {
+            uint64_t base = NODE0 + bank * MEM_BANK_SIZE +
+                            slot * MEM_SLOT_SIZE;
+
+            check_ram(qts, base, 0x2560000000000000ULL + bank * 4 + slot);
+            check_ram(qts, base + 64 * MiB - 8,
+                      0x256fffffffffff00ULL + bank * 4 + slot);
+            check_not_ram(qts, base + 64 * MiB);
+        }
+    }
+    if (last && count < 4) {
+        check_not_ram(qts, NODE0 + count * MEM_BANK_SIZE);
+    }
+}
+
+/*
+ * At any other clock the PROM keeps 256 MB banks, so a 225 MHz node lays
+ * 256 MiB out as one bank and 512 MiB as two, the second of which a
+ * 180 MHz node could not use.
+ */
+static void test_256m_banks_at_225mhz(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,processor=r10000-225mhz-2mb -smp 2 -m 256M");
+
+    check_256m_banks(qts, 1, true);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200,processor=r10000-225mhz-2mb -smp 2 "
+                     "-m 512M");
+    check_256m_banks(qts, 2, true);
+    qtest_quit(qts);
+}
+
+/*
+ * The largest total with 256 MB banks: a 256 MiB bank 0 and three 512 MiB
+ * banks, which needs a 270 MHz R12000 node.
+ */
+static void test_1792m_memory_at_270mhz(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,processor=r12000-270mhz-4mb -cpu R12000 -smp 2 "
+        "-m 1792M");
+    unsigned int bank, slot;
+
+    check_256m_banks(qts, 1, false);
+    for (bank = 1; bank < 4; bank++) {
+        for (slot = 0; slot < 4; slot++) {
+            uint64_t base = NODE0 + bank * MEM_BANK_SIZE +
+                            slot * MEM_SLOT_SIZE;
+
+            check_ram(qts, base, 0x1792000000000000ULL + bank * 4 + slot);
+            check_ram(qts, base + MEM_SLOT_SIZE - 8,
+                      0x1792ffffffffff00ULL + bank * 4 + slot);
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -1798,6 +1869,12 @@ int main(int argc, char **argv)
                         test_128m_memory);
     qtest_add_data_func("sn0/address-map/memory-256m", NULL,
                         test_256m_memory);
+    qtest_add_data_func("sn0/address-map/memory-256m-180mhz-2mb", "2mb",
+                        test_256m_memory);
+    qtest_add_data_func("sn0/address-map/memory-256m-banks-225mhz", NULL,
+                        test_256m_banks_at_225mhz);
+    qtest_add_data_func("sn0/address-map/memory-1792m-270mhz", NULL,
+                        test_1792m_memory_at_270mhz);
     qtest_add_data_func("sn0/address-map/memory-192m", NULL,
                         test_192m_memory);
     qtest_add_data_func("sn0/address-map/memory-512m", NULL,
