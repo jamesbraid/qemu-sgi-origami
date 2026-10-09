@@ -177,9 +177,10 @@ static void card_realize(PCIDevice *dev, Error **errp)
         error_setg(errp, "NI card needs an interrupt pin from 1 to 4");
         return;
     }
-    if (s->transfer_length != 8 && s->transfer_length != 16 &&
+    if (s->transfer_length != 4 && s->transfer_length != 8 &&
+        s->transfer_length != 16 &&
         s->transfer_length != 256) {
-        error_setg(errp, "NI card transfer length must be 8, 16 or 256");
+        error_setg(errp, "NI card transfer length must be 4, 8, 16 or 256");
         return;
     }
     dev->config[PCI_INTERRUPT_PIN] = s->interrupt_pin;
@@ -277,6 +278,10 @@ struct NIFixtureState {
     MemoryRegion ram;
     MemoryRegion ram_overlay;
     bool ram_overlay_enabled;
+    MemoryRegion ram_device;
+    bool ram_device_enabled;
+    bool ram_unmapped_tail;
+    uint8_t ram_device_bytes[8];
     uint64_t ram_overlay_value;
     uint64_t ram_overlay_writes;
     uint64_t packet_write_8;
@@ -955,6 +960,7 @@ static bool fixture_power_operation(void *opaque, bool on, Error **errp)
 static void fixture_build(DeviceState *dev, Error **errp)
 {
     NIFixtureState *s = NI_FIXTURE(dev);
+    hwaddr ram_bytes = s->ram_unmapped_tail ? RAM_BYTES - 0x1000 : RAM_BYTES;
     SGIBedrockState *compute;
     Error *local_error = NULL;
     SN1FabricEndpoint *bic_endpoint;
@@ -978,15 +984,23 @@ static void fixture_build(DeviceState *dev, Error **errp)
         return;
     }
     if (!memory_region_init_ram(&s->ram, OBJECT(s), "ni-fixture.ram",
-                                RAM_BYTES, errp)) {
+                                ram_bytes, errp)) {
         return;
     }
     if (s->ram_overlay_enabled) {
         memory_region_init_io(&s->ram_overlay, OBJECT(s), &ram_overlay_ops, s,
                               "ni-fixture.ram-overlay", 8);
+        /* Packet writes reenter this fixture from its requester MMIO region. */
         s->ram_overlay.disable_reentrancy_guard = true;
         memory_region_add_subregion_overlap(&s->ram, 0x9000,
                                             &s->ram_overlay, 1);
+    }
+    if (s->ram_device_enabled) {
+        memory_region_init_ram_device_ptr(&s->ram_device, OBJECT(s),
+                                          "ni-fixture.ram-device", 8,
+                                          s->ram_device_bytes);
+        memory_region_add_subregion_overlap(&s->ram, 0xa000,
+                                            &s->ram_device, 1);
     }
     address_space_init(&s->ram_as, &s->ram, "ni-fixture.ram");
     s->compute = qdev_new(TYPE_SGI_BEDROCK);
@@ -1276,7 +1290,7 @@ static void fixture_build(DeviceState *dev, Error **errp)
                           "ni-fixture.status", 144);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
-        "ni-fixture.ram-observation", &s->ram, 0, RAM_BYTES);
+        "ni-fixture.ram-observation", &s->ram, 0, ram_bytes);
     memory_region_init_alias(&s->compute_observation, OBJECT(s),
         "ni-fixture.compute-observation", sysbus_mmio_get_region(
             SYS_BUS_DEVICE(s->compute), 0), 0, SGI_BEDROCK_SIZE);
@@ -1374,6 +1388,9 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 
 static const Property fixture_properties[] = {
     DEFINE_PROP_BOOL("ram-overlay", NIFixtureState, ram_overlay_enabled, false),
+    DEFINE_PROP_BOOL("ram-device", NIFixtureState, ram_device_enabled, false),
+    DEFINE_PROP_BOOL("ram-unmapped-tail", NIFixtureState, ram_unmapped_tail,
+                     false),
     DEFINE_PROP_UINT32("compute-origins", NIFixtureState, compute_origins, 2),
     DEFINE_PROP_UINT32("uart-origins", NIFixtureState,
                        uart_origins, UINT32_MAX),

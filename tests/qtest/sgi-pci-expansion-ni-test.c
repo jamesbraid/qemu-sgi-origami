@@ -494,6 +494,74 @@ static void test_routed_direct_dma_unmarked_slot(void)
     card_device = 1;
 }
 
+static void test_routed_wide_direct_dma_exclusions(void)
+{
+    const unsigned index = 2;
+    const uint64_t payload = UINT64_C(0x1011121314151617);
+    const uint8_t source[] = { 0x10, 0x11, 0x12, 0x13,
+                               0x14, 0x15, 0x16, 0x17 };
+    static const struct {
+        const char *options;
+        uint32_t address;
+        unsigned length;
+        MemTxResult result;
+    } cases[] = {
+        { "-global sgi-pci-expansion-ni-card.transfer-length=4",
+          0x80008000, 4, MEMTX_OK },
+        { "", 0x80008001, 8, MEMTX_OK },
+        { "-global sgi-pci-expansion-ni-fixture.ram-device=on",
+          0x8000a000, 8, MEMTX_OK },
+        { "-global sgi-pci-expansion-ni-fixture.ram-unmapped-tail=on",
+          0x800ff000, 8, MEMTX_DECODE_ERROR },
+    };
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {
+        QTestState *qts = routed_start(cases[n].options);
+        uint64_t h = head(0, index);
+        uint8_t actual[8] = { 0 };
+
+        routed_program(qts);
+        configure_card(qts, index);
+        qtest_writel(qts, h + 0x84, (0xa << 20) | (NODE(3) >> 31));
+        if (cases[n].result == MEMTX_OK) {
+            qtest_memset(qts, RAM + (cases[n].address & 0xfffff), 0,
+                         cases[n].length);
+        } else {
+            qtest_writeq(qts, RAM + 0xfe000, payload);
+        }
+        dma(qts, index, cases[n].address, payload, true, cases[n].result);
+        if (cases[n].result == MEMTX_OK) {
+            qtest_memread(qts, RAM + (cases[n].address & 0xfffff), actual,
+                          cases[n].length);
+            g_assert_cmpmem(actual, cases[n].length, source,
+                            cases[n].length);
+        } else {
+            g_assert_cmphex(qtest_readq(qts, RAM + 0xfe000), ==, payload);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_routed_wide_direct_dma_device2(void)
+{
+    const unsigned index = 2;
+    QTestState *qts;
+    uint64_t h;
+
+    card_device = 2;
+    qts = routed_start("-global sgi-pci-expansion-ni-fixture.card-device=2");
+    h = head(0, index);
+    routed_program(qts);
+    configure_card(qts, index);
+    qtest_writel(qts, h + 0x84, (0xa << 20) | (NODE(3) >> 31));
+    dma(qts, index, 0x80008000, UINT64_C(0x1011121314151617),
+        true, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==,
+                    UINT64_C(0x1415161710111213));
+    qtest_quit(qts);
+    card_device = 1;
+}
+
 static void test_routed_migration(void)
 {
     GError *error = NULL;
@@ -3693,6 +3761,10 @@ int main(int argc, char **argv)
                    test_routed_wide_direct_dma_chunks);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct-dma-unmarked-slot",
                    test_routed_direct_dma_unmarked_slot);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide-direct-dma-exclusions",
+                   test_routed_wide_direct_dma_exclusions);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide-direct-dma-device2",
+                   test_routed_wide_direct_dma_device2);
     qtest_add_func("/sgi/pci-expansion-ni/routed/migration",
                    test_routed_migration);
     qtest_add_func("/sgi/pci-expansion-ni/routed/interrupt-permission",
