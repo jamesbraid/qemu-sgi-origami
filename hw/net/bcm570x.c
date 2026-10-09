@@ -2805,8 +2805,8 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 11,
-    .minimum_version_id = 11,
+    .version_id = 10,
+    .minimum_version_id = 10,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, Bcm570xState),
