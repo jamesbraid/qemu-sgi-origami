@@ -28,6 +28,7 @@
 #define XBRIDGE_HOST_REGISTER (1U << 17)
 #define XBRIDGE_HOST_NASID_SHIFT 9
 #define XBRIDGE_PIO_SWAP (1U << 13)
+#define XBRIDGE_DIRECT_SWAP (1U << 19)
 #define ADAPTER_MMIO 0x10000000
 #define DMA_PREFIX UINT64_C(0xa080000000000000)
 #define DMA_SWAP_CLEAR_PREFIX UINT64_C(0xa100000000000000)
@@ -508,6 +509,8 @@ static void test_direct_dma_write(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     uint8_t source[16], guard[24], seen[24], migrated[24];
+    uint8_t chunk_source[272], chunk_raw[272], chunk_expected[272];
+    uint8_t chunk_guard[288], chunk_seen[288];
     /* This expansion slot selects the model's eight-byte DMA placement. */
     static const uint8_t wide_no_swap[16] = {
         0x4d, 0x54, 0x5b, 0x62, 0x31, 0x38, 0x3f, 0x46,
@@ -518,6 +521,8 @@ static void test_direct_dma_write(void)
         0x9a, 0x93, 0x8c, 0x85, 0x7e, 0x77, 0x70, 0x69,
     };
     uint64_t address;
+    uint32_t device_control;
+    uint32_t direct_control;
     int fd;
 
     fd = g_file_open_tmp("sn1-option-tigon-dma-XXXXXX", &storage, &error);
@@ -590,6 +595,75 @@ static void test_direct_dma_write(void)
     g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
                     sizeof(wide_no_swap));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
+
+    /* The second DMA chunk must preserve the same eight-byte placement. */
+    reg_write(&t, TI_WINBASE, 0x3000);
+    for (unsigned i = 0; i < sizeof(chunk_source); i++) {
+        chunk_source[i] = i * 29 + (i >> 8) * 71;
+    }
+    g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                                     t.window + 0x800, chunk_source,
+                                     sizeof(chunk_source)));
+    memset(chunk_guard, 0x96, sizeof(chunk_guard));
+    device_control = cpu_readl(t.qts, t.pio_cpu,
+                               t.head + 0x204 + p.device * 8);
+    direct_control = cpu_readl(t.qts, t.pio_cpu, t.head + 0x84);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x84,
+               (0xa << 20) | (memory_address(p.destination, 0) >> 31));
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.head + 0x84), ==,
+                    (0xa << 20) | (memory_address(p.destination, 0) >> 31));
+    for (unsigned direct_swap = 0; direct_swap < 2; direct_swap++) {
+        cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+                   (device_control & ~XBRIDGE_DIRECT_SWAP) |
+                   (direct_swap ? XBRIDGE_DIRECT_SWAP : 0));
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu,
+                                  t.head + 0x204 + p.device * 8) &
+                        XBRIDGE_DIRECT_SWAP, ==,
+                        direct_swap ? XBRIDGE_DIRECT_SWAP : 0);
+        for (unsigned i = 0; i < sizeof(chunk_raw); i++) {
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                          t.window + 0x800 + (i ^ 3), &chunk_raw[i], 1));
+            g_assert_cmphex(chunk_raw[i], ==, chunk_source[i ^ 3]);
+            chunk_expected[i] = chunk_source[i ^ (direct_swap ? 3 : 4)];
+        }
+        g_assert_cmphex(reg_read(&t, TI_PCI_STATE) &
+                        (TI_PCI_NO_WORD_SWAP | TI_PCI_32BIT_BUS), ==,
+                        TI_PCI_NO_WORD_SWAP);
+        memory_write(&t, p.destination, 0x2a0400 - 8,
+                     chunk_guard, sizeof(chunk_guard));
+        address = 0x80000000U | 0x2a0400;
+        reg_write(&t, TI_DMA_WRITE_HOST_HI, address >> 32);
+        reg_write(&t, TI_DMA_WRITE_HOST_LO, address);
+        reg_write(&t, TI_DMA_WRITE_LOCAL, 0x3000);
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_NO_SWAP,
+                        ==, TI_DMA_NO_SWAP);
+        reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(chunk_source));
+        memory_read(&t, p.destination, 0x2a0400 - 8,
+                    chunk_seen, sizeof(chunk_seen));
+        g_assert_cmpmem(chunk_seen, sizeof(chunk_seen), chunk_guard,
+                        sizeof(chunk_guard));
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) &
+                        (TI_DMA_ACTIVE | TI_DMA_NO_SWAP), ==, TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, 0);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_HOST_HI), ==,
+                        address >> 32);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_HOST_LO), ==,
+                        (uint32_t)address + sizeof(chunk_source));
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LOCAL), ==,
+                        0x3000 + sizeof(chunk_source));
+        memory_read(&t, p.destination, 0x2a0400 - 8,
+                    chunk_seen, sizeof(chunk_seen));
+        g_assert_cmpmem(chunk_seen, 8, chunk_guard, 8);
+        g_assert_cmpmem(chunk_seen + 8, sizeof(chunk_source),
+                        chunk_expected, sizeof(chunk_expected));
+        g_assert_cmpmem(chunk_seen + 8 + sizeof(chunk_source), 8,
+                        chunk_guard + 8 + sizeof(chunk_source), 8);
+    }
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+               device_control);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x84, direct_control);
 
     memory_write(&t, p.destination, 0x2a0080 - 4,
                  guard, sizeof(guard));
