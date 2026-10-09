@@ -4558,8 +4558,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
          * The captured 2x2x2 stored upload starts 15 slice strides above
          * this level base. Other placements remain unqualified.
          */
-        if (three_d_stored && base == 0x16a800 &&
-            width == 2 && height == 2 && depth == 2) {
+        if (three_d_stored && width == 2 && height == 2 &&
+            depth == 2) {
             uint64_t first_slice;
 
             if (umul64_overflow(slice_stride, 15, &first_slice) ||
