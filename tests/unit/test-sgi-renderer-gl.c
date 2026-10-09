@@ -2452,6 +2452,60 @@ static void test_frame_coverage_capacity(void)
     sgi_renderer_free(renderer);
 }
 
+static void test_frame_texture_validation(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    float vertices[3 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = { 0 };
+    uint16_t rgba[4 * 4 * 4] = { 0 };
+    uint8_t written[4 * 4] = { 0 };
+    uint32_t texels[4] = { 255, 0, 0, 255 };
+    SGIRendererFrame frame = {
+        .width = 4, .height = 4, .count = 3,
+        .vertices = vertices, .rgba = rgba,
+        .written = written, .written_capacity = sizeof(written),
+        .texture = {
+            .width = 1, .height = 1, .component_bits = 8,
+            .env_mode = SGI_GL_REPLACE,
+            .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+            .slots = texels, .capacity_slots = ARRAY_SIZE(texels),
+        },
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+
+    frame.texture.border_bytes[0] = NAN;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture border colour");
+    g_clear_pointer(&err, error_free);
+
+    frame.texture.border_bytes[0] = 0;
+    frame.texture.border_bytes[1] = 256;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture border colour");
+    g_clear_pointer(&err, error_free);
+
+    frame.texture.border_bytes[1] = 0;
+    frame.texture.wrap_s = 0xffffffffu;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Invalid SGI OpenGL texture wrap");
+    g_clear_pointer(&err, error_free);
+    sgi_renderer_free(renderer);
+}
+
 typedef struct NativeClearFixture {
     uint32_t colour[2][4][4][4];
     unsigned writes[2][4][4];
@@ -3113,6 +3167,8 @@ int main(int argc, char **argv)
                     test_blend_without_native_alpha);
     g_test_add_func("/sgi-renderer-gl/frame-coverage-capacity",
                     test_frame_coverage_capacity);
+    g_test_add_func("/sgi-renderer-gl/frame-texture-validation",
+                    test_frame_texture_validation);
     g_test_add_func("/sgi-renderer-gl/typed-texture-triangle",
                     test_typed_texture_triangle);
     g_test_add_func("/sgi-renderer-gl/typed-texture-multi-texel",
