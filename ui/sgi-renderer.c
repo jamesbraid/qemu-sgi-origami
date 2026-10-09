@@ -144,6 +144,17 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
     return true;
 }
 
+static bool sgi_renderer_test_draw_complete(SGIRenderer *renderer,
+                                            Error **errp)
+{
+    if (renderer->test_draw_countdown && !--renderer->test_draw_countdown) {
+        renderer->failed = true;
+        error_setg(errp, "Injected SGI renderer test draw failure");
+        return false;
+    }
+    return true;
+}
+
 bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
                        Error **errp)
 {
@@ -176,12 +187,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         error_setg(errp, "Invalid SGI OpenGL renderer staging");
         return false;
     }
-    if (renderer->test_draw_countdown && !--renderer->test_draw_countdown) {
-        renderer->failed = true;
-        error_setg(errp, "Injected SGI renderer test draw failure");
-        return false;
-    }
-    return true;
+    return sgi_renderer_test_draw_complete(renderer, errp);
 }
 
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
@@ -233,7 +239,7 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         renderer->failed = true;
         return false;
     }
-    return true;
+    return sgi_renderer_test_draw_complete(renderer, errp);
 }
 
 bool sgi_renderer_texture_supported(SGIRenderer *renderer, Error **errp)

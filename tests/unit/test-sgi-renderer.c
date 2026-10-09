@@ -377,6 +377,91 @@ static void test_draw_failure_staging_precedence(void)
     sgi_renderer_free(renderer);
 }
 
+static bool frame_callback_fails;
+
+static bool test_draw_frame(void *opaque, SGIRendererFrame *frame,
+                            Error **errp)
+{
+    draw_count++;
+    if (frame_callback_fails) {
+        error_setg(errp, "Test frame backend failed");
+        return false;
+    }
+    frame->written[0] = 1;
+    return true;
+}
+
+static const SGIRendererOps frame_ops = {
+    .create = generation_create,
+    .draw = generation_draw,
+    .draw_frame = test_draw_frame,
+    .destroy = generation_destroy,
+};
+
+static void test_frame_failure(void)
+{
+    float vertices[3 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = { 0 };
+    uint16_t rgba[4] = { 0 };
+    uint8_t written[1] = { 0 };
+    SGIRendererFrame frame = {
+        .width = 1, .height = 1, .count = 3, .vertices = vertices,
+        .rgba = rgba, .written = written, .written_capacity = 1,
+    };
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    draw_count = 0;
+    sgi_renderer_register_gl(&frame_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 1);
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Injected SGI renderer test draw failure");
+    g_assert_cmpuint(draw_count, ==, 1);
+    g_assert_cmpuint(written[0], ==, 1);
+    error_free(err);
+    err = NULL;
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "SGI OpenGL renderer has failed");
+    g_assert_cmpuint(draw_count, ==, 1);
+    error_free(err);
+    sgi_renderer_free(renderer);
+
+    frame_callback_fails = true;
+    written[0] = 0;
+    draw_count = 0;
+    err = NULL;
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    sgi_renderer_test_fail_draw(renderer, 1);
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "Test frame backend failed");
+    g_assert_cmpuint(draw_count, ==, 1);
+    g_assert_cmpuint(written[0], ==, 0);
+    g_clear_pointer(&err, error_free);
+    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==,
+                    "SGI OpenGL renderer has failed");
+    g_assert_cmpuint(draw_count, ==, 1);
+    g_clear_pointer(&err, error_free);
+    sgi_renderer_free(renderer);
+    frame_callback_fails = false;
+}
+
 static SGIRenderCreateResult create_result;
 static bool create_return_pointer;
 
@@ -549,6 +634,8 @@ int main(int argc, char **argv)
                     test_draw_failure_order);
     g_test_add_func("/sgi-renderer/test-fault/staging-precedence",
                     test_draw_failure_staging_precedence);
+    g_test_add_func("/sgi-renderer/test-fault/frame",
+                    test_frame_failure);
     g_test_add_data_func("/sgi-renderer/create/success",
                          GINT_TO_POINTER(SGI_RENDER_CREATE_OK),
                          test_create_result);
