@@ -4556,7 +4556,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         }
         /*
          * The captured 2x2x2 stored upload starts 15 slice strides above
-         * this level base. Other placements remain unqualified.
+         * the level base. For this one captured profile the rule applies
+         * at any level base: a compatibility approximation of model traces
+         * that showed it at two bases. Physical V12 texture layout remains
+         * unqualified.
          */
         if (three_d_stored && width == 2 && height == 2 &&
             depth == 2) {
