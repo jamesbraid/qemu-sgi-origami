@@ -286,6 +286,33 @@ documents:
       sha256: 535bda2d0de4ee9a86d79c0d1ebbb1d54ceadd52677d3395e430f50f39ebfcc7
 
 web:
+  nekonomicon-16724207:
+    title: "Nekochan forum archive thread 16724207, two-module Origin 350 inventory"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16724207/1.html
+      sha256: 88e26ec45b8e49249abe2c2269dfcda19d90d14cbdfac834faeb2f5528e2fdd4
+  living-raptor-onyx350-hinv:
+    title: "John Hartley's Onyx 350 module inventory"
+    publisher: "John Hartley"
+    kind: capture
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://just.graphica.com.au/tips/what-is-inside-that-box-sgi-hinv/#onyx-350-with-infinitereality4
+      sha256: e165c7a004c18bd6dd079566f3d81fdfeaf5ba5f4057656ebdcb7f734e707ce8
+  irixnet-thread-2263:
+    title: "IRIXnet thread 2263, owner Onyx 4 inventory"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-2263.html
+      sha256: fe7d3d15560b2e4e431975e5f299c4f80e9d31db654cfe9f718b9399f3272df7
   origin-onyx2-quick-reference-booklet:
     title: "SGI Hardware Quick-reference Booklet, Origin and Onyx2 Series"
     publisher: "Silicon Graphics"

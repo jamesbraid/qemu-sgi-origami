@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Software compatibility composition for the reviewed Tezro deskside inputs.
+# Software compatibility composition for the selected Tezro deskside inputs.
 layer_version: 1
 sources:
-  tezro-deskside-review: "docs/reviews/chimera-tezro-deskside-compatibility-review-20261006.md: reviewed compatibility choices and unresolved physical behavior"
+  tezro-deskside-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro deskside software choices and unresolved physical behavior"
 layer:
   kind: product
   id: tezro-deskside-compat

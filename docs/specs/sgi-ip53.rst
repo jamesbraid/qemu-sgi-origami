@@ -90,3 +90,52 @@ topologies and unmeasured board behavior must not be inferred from one
 another. The PIC attachment, IOC4 settings, PCI revisions, and linked clock
 are profile choices where explicitly identified above. Physical behavior
 that lacks matching evidence remains unknown.
+
+.. _sgi-ip53-serial-profiles:
+
+Headless serial profile choices
+===============================
+
+The machine catalogue selects the following inputs for serial IRIX experiments.
+These values define the emulator profiles; a successful guest boot does not
+measure a processor reset pin, PROM image fitted to a board, or PCI wiring on
+the named product. The physical inventory facts cited by the catalogue have
+separate public capture or manual references.
+
+============================  =======================  ========  ===========  ============
+Profile                       Processors               Memory    Cache each   Reset mode
+============================  =======================  ========  ===========  ============
+Origin 350                    four 700 MHz R16000       2 GiB     8 MiB        0x009cad85
+Onyx 350 captured module      four 800 MHz R16000       8 GiB     8 MiB        0x009caf85
+Tezro deskside, one CPU       one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
+Tezro deskside, four CPUs     four 700 MHz R16000       4 GiB     4 MiB        0x009bad85
+Tezro rack, first enclosure  one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
+Onyx 4 host candidate        four 1 GHz R16000         8 GiB     16 MiB       0x009dad85
+============================  =======================  ========  ===========  ============
+
+The R16000 reset words are supplied through the explicit experimental CPU
+properties. They are software inputs, not measured silicon values. The Onyx
+350 and Onyx 4 rows project a captured module into a single-module host. The
+Onyx 4 capture reports an IP59 board in a system called Onyx 350; assigning
+that module to the Onyx 4 host is an inference. Its profile uses the IP53
+guest-board path as a compatibility mapping, not a physical IP59 schematic.
+The public IP59 module inventory reports HUB revision 2 at 200 MHz.
+Mapping that report to Bedrock revision 2 is a profile choice; raw NI and
+widget register identities remain unmeasured.
+
+The Origin 350, Onyx 350 and Onyx 4 host profiles each select one PIC at XIO
+widget 15. Tezro selects two PIC widgets, 11 and 15, and places the modeled
+IO9 behind widget 15. The one-CPU and four-CPU Tezro deskside profiles share
+the same selected board, memory and I/O construction. The rack profile models
+only the first enclosure. No profile here attaches graphics, a G2/G2N brick,
+or a NUMAlink peer. Direct-link XIO and the PIC interrupt and DMA settings
+are emulator choices where physical routing remains unknown.
+
+These profiles select an IP35 PROM 6.210 payload and a profile-specific flash
+seed. Flash read and write cycle inputs are both 16, and the machine-type
+input is 1. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
+clock; Tezro selects 66,666,667 Hz. The linked clock resource uses a 1968
+fresh-year base. Platform identity ``0x2001`` and L1 product input ``0x37``
+are selected software identities. The public captures do not establish those
+electrical values, an installed flash image, or the complete PIC and IO9
+interrupt wiring.

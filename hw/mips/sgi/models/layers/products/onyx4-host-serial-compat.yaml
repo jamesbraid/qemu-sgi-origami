@@ -4,17 +4,17 @@
 layer_version: 1
 sources:
   ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
-  ip53-runtime-review: "docs/reviews/chimera-ip53-runtime-experiment-review-20261002.md: reviewed software experiment inputs and explicit unknowns"
-  ip53-flash-review: "docs/reviews/chimera-ip53-flash-experiment-review-20261002.md: configured PROM payload, two-position seed and bounded views"
+  ip53-runtime-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected CPU, memory, and reset inputs"
+  ip53-flash-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
   ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
-  ip53-platform-contract: "docs/datasheets/ip53-platform-identity-experiment.md: selected input and limits"
-  ip53-platform-review: "docs/reviews/ip53-platform-identity-evidence-review-20261003.md: clearance for the inferred 0x2001 software input"
-  ip53-l1-contract: "docs/datasheets/ip53-l1-identity-experiment.md: selected local controller input and limits"
-  ip53-l1-review: "docs/reviews/ip53-l1-product-identity-evidence-review-20261003.md: clearance for the product-specific 0x37 software input"
-  ip53-clock-year-review: "docs/reviews/chimera-ip53-clock-identity-policy-review-20261005.md: cleared fresh-seed policy and limits"
-  onyx4-host-hinv: "https://forums.irixnet.org/thread-2263.html: cute-shrimp/02.hinv, source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
+  ip53-platform-contract: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected platform software identity 0x2001 and limits"
+  ip53-platform-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected platform software identity 0x2001 and limits"
+  ip53-l1-contract: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
+  ip53-l1-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
+  ip53-clock-year-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
+  onyx4-host-hinv: "web:irixnet-thread-2263  cute-shrimp/02.hinv, source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
   onyx4-host-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
-  onyx4-host-contract: "docs/datasheets/onyx4-serial-host.md: host assignment inference, selected software tuple, and compatibility boundary"
+  onyx4-host-contract: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
 layer:
   kind: product
   id: onyx4-host-serial-compat

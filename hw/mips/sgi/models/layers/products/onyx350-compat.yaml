@@ -3,10 +3,11 @@
 layer_version: 1
 sources:
   ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
-  onyx350-compatibility-proposal: "docs/datasheets/onyx350-observed-host-compatibility.md: proposed Onyx 350 inputs and explicit unknowns; pending independent evidence review"
-  onyx350-flash-candidate: "docs/datasheets/ip53-boot-flash-experiment.md: candidate 800 MHz/8 MiB seed; captured Onyx module reports PROM 6.211 while the selected payload is 6.210"
+  onyx350-compatibility-proposal: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
+  onyx350-hinv: "web:living-raptor-onyx350-hinv  module 001c01 CPU, memory and PROM 6.211 inventory"
+  onyx350-flash-candidate: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 800 MHz flash seed from IP35 PROM 6.210"
   ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
-  ip53-clock-year-review: "docs/reviews/chimera-ip53-clock-identity-policy-review-20261005.md: cleared fresh-seed policy and limits"
+  ip53-clock-year-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
 layer:
   kind: product
   id: onyx350-compat
@@ -16,12 +17,12 @@ layer:
     max_nodes: 1
     supported_cpu_populations: [[4]]
     provenance: derived
-    sources: [ip53-product-capacity, onyx350-compatibility-proposal]
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal, onyx350-hinv]
   population:
     nodes: 1
     cpus_per_node: [4]
     provenance: derived
-    sources: [ip53-product-capacity, onyx350-compatibility-proposal]
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal, onyx350-hinv]
   cpu_selection:
     default: {clock_mhz: 800, cache_mib: 8}
     slots: [cpu0, cpu1, cpu2, cpu3]
@@ -48,7 +49,7 @@ layer:
         flash_read_cycles: 16
         flash_write_cycles: 16
         provenance: derived
-        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate]
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate, onyx350-hinv]
       emulation:
         machine_name: onyx350
         display_description: SGI Onyx 350 (IP53), approximate software profile
@@ -71,8 +72,7 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
             provenance: derived
-            sources: [ip53-platform-driver, onyx350-compatibility-proposal,
-                     onyx350-compatibility-proposal, "hw/mips/sgi/sn1-node.c",
+            sources: [ip53-platform-driver, onyx350-compatibility-proposal, "hw/mips/sgi/sn1-node.c",
                      "hw/mips/sgi/sn-machine.c"]
             notes: >-
               Selects subtype 2 under the public OpenBSD product mapping. The
@@ -85,7 +85,7 @@ layer:
             reported_type: 55
             revision: {major: 1, minor: 18, patch: 5}
             provenance: derived
-            sources: [onyx350-compatibility-proposal, onyx350-compatibility-proposal]
+            sources: [onyx350-compatibility-proposal]
             notes: >-
               Product-specific software approximation for the selected local
               controller, inferred from the 2U_INT_53 product context. This
@@ -110,7 +110,7 @@ layer:
             address: "0x100_1a000000"
             size: "0x0080_0000"
           provenance: derived
-          sources: [onyx350-flash-candidate]
+          sources: [onyx350-flash-candidate, onyx350-hinv]
           notes: >-
             This path and digest identify the raw original base payload accepted
             by the existing launcher. The launcher constructs the selected 800 MHz seed from this 6.210 payload and records its distinct hash. The captured module reports PROM 6.211; the trial does not establish physical decode or fitted flash.
@@ -143,5 +143,5 @@ layer:
         supported_guests: []
         install_media: []
         provenance: derived
-        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate]
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate, onyx350-hinv]
   evidence_policy: strict

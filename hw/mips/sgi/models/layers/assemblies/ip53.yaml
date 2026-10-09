@@ -29,7 +29,7 @@ layer:
       banks: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024]
       bank_positions: [0, 1, 2, 3, 4, 5, 6, 7]
       provenance: observed-hardware
-      sources: [onyx350-observed-module]
+      sources: ["web:living-raptor-onyx350-hinv  module 001c01 lists eight enabled 1 GiB logical banks"]
       notes: >-
         Logical enabled banks reported for captured module 001c01. Physical
         DIMM slot positions are not established; this is an explicit software
