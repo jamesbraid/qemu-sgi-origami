@@ -2260,6 +2260,29 @@ static void test_runtime_identity_bit(void)
     qtest_quit(qts);
 }
 
+static void test_runtime_host_error_field(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(false, NULL);
+
+    for (unsigned head = 0; head < 2; head++) {
+        uint64_t value = UINT64_C(0x1234567800000000) | (head + 1);
+
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x128), ==, 0);
+        qtest_writeq(qts, HEAD(head) + 0x128, value);
+        g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x12c), ==,
+                        head + 1);
+        qtest_writel(qts, CPU_HEAD(head) + 0x12c, 0x55 + head);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x128), ==,
+                        UINT64_C(0x1234567800000000) | (0x55 + head));
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x100), ==, 0);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x128), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
 static void test_cpu_word_view_registers(void)
 {
     GError *error = NULL;
@@ -3949,6 +3972,9 @@ static void test_runtime_profile_migration(void)
     qtest_writeq(from, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
     qtest_writel(from, CPU_HEAD(0) + 0x600024, 0x12345678);
     g_assert_cmphex(qtest_readl(from, BASE + 0x44000024), ==, 0x12345678);
+    qtest_writeq(from, HEAD(0) + 0x128,
+                 UINT64_C(0x1234567800000055));
+    qtest_writel(from, CPU_HEAD(1) + 0x12c, 0x66);
     qtest_writeq(from, HEAD(0) + 0x28, UINT64_C(0x0123456789abcdef));
     qtest_writeq(from, HEAD(1) + 0x28, UINT64_C(0xfedcba9876543210));
     qtest_writeq(from, HEAD(0) + 0x30, UINT64_C(0x1122334455667788));
@@ -3966,6 +3992,9 @@ static void test_runtime_profile_migration(void)
     g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x130), ==,
                     (UINT64_C(0x34) << 48) |
                     UINT64_C(0x800001800090));
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x128), ==,
+                    UINT64_C(0x1234567800000055));
+    g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x128), ==, 0x66);
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x28), ==,
                     UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(qtest_readq(to, HEAD(1) + 0x28), ==,
@@ -4606,6 +4635,8 @@ int main(int argc, char **argv)
                    test_unsupported_registers);
     qtest_add_func("/sgi-pic/identity-fields", test_identity_fields);
     qtest_add_func("/sgi-pic/runtime-identity-bit", test_runtime_identity_bit);
+    qtest_add_func("/sgi-pic/runtime-host-error-field",
+                   test_runtime_host_error_field);
     qtest_add_func("/sgi-pic/cpu-word-view-registers",
                    test_cpu_word_view_registers);
     qtest_add_func("/sgi-pic/cpu-word-view-profile-isolation",

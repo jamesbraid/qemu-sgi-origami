@@ -644,6 +644,7 @@ static bool pic_defined(hwaddr addr)
     case 0x110:
     case 0x118:
     case 0x120:
+    case 0x128:
     case 0x130 ... 0x168:
     case 0x200 ... 0x218:
         return true;
