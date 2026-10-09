@@ -1969,7 +1969,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
-    if (g_str_equal(SGI_MACHINE_GET_CLASS(machine)->product, "origin350") &&
+    if (g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "origin350") == 0 &&
         node->model_node->has_board_kind &&
         node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
         qdev_prop_set_uint32(node->l1, "port-speed-first", 1);
