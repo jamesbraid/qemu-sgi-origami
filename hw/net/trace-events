@@ -579,6 +579,10 @@ xframe_rx_completion_irq_recompute(void) ""
 # bcm570x.c
 bcm570x_rx_shortage_drop(const char *ring, uint32_t len) "%s ring empty, %u-byte frame dropped"
 bcm570x_mi_comm_complete(const char *op, unsigned phy, unsigned reg, uint16_t value, bool link_up, bool autoneg_done) "MI %s phy=%u reg=0x%02x value=0x%04x link=%u autoneg=%u"
+bcm570x_rx_completion(int64_t virtual_ns, const char *ring, unsigned ring_index, unsigned return_index, uint64_t buffer, unsigned length, uint32_t flags) "virtual_ns=%" PRId64 " ring=%s index=%u return=%u buffer=0x%" PRIx64 " length=%u flags=0x%08x"
+bcm570x_rx_status_publish(int64_t virtual_ns, uint64_t address, uint8_t tag, uint16_t rx_producer, uint16_t tx_consumer, bool raise) "virtual_ns=%" PRId64 " status_block=0x%" PRIx64 " tag=%u rx_producer=%u tx_consumer=%u raise=%d"
+bcm570x_rx_mailbox_write(int64_t virtual_ns, uint32_t offset, uint32_t value) "virtual_ns=%" PRId64 " mailbox=0x%04x value=0x%08x"
+bcm570x_irq_level(int64_t virtual_ns, bool pending, bool masked, bool level) "virtual_ns=%" PRId64 " pending=%d masked=%d INTA=%d"
 
 # ics1890.c
 ics1890_read(uint16_t val, unsigned reg) "val 0x%04x reg %u"

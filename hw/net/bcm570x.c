@@ -653,6 +653,8 @@ static void bcm570x_update_irq(Bcm570xState *s)
         pcistate |= BCM570X_PCISTATE_INTR_NOT_ACTIVE;
     }
     pci_set_long(pci->config + BCM570X_PCI_PCISTATE, pcistate);
+    trace_bcm570x_irq_level(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                            s->irq_pending, s->irq_masked, active);
     pci_set_irq(pci, active);
 }
 
@@ -951,6 +953,9 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
         return false;
     }
     s->status_tag = next_tag;
+    trace_bcm570x_rx_status_publish(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                    base, s->status_tag, s->status_rx_prod,
+                                    s->status_tx_cons, raise);
 
     /*
      * The block now carries an update the driver has not taken. The line
@@ -1676,6 +1681,8 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
                       off);
         return;
     case BCM570X_MBX_IRQ0_LO:
+        trace_bcm570x_rx_mailbox_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                       off, val);
         /* Every write clears pending state; a nonzero value masks. */
         s->irq_pending = false;
         if (val != 0) {
@@ -1720,6 +1727,8 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         bcm570x_regfile_write(s, off, val);
+        trace_bcm570x_rx_mailbox_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                       off, val);
         /*
          * A write that actually posts a buffer ends the shortage, so the
          * total is reported and the next drought starts its own count. A
@@ -1758,6 +1767,8 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             s->rx_std_shortage_drops = 0;
         }
         bcm570x_regfile_write(s, off, val);
+        trace_bcm570x_rx_mailbox_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                       off, val);
         /*
          * Bring-up completes with the driver enabling the engines, unmasking
          * interrupts, and posting receive buffers; only then does it wait for
@@ -1794,6 +1805,8 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         bcm570x_regfile_write(s, off, val);
+        trace_bcm570x_rx_mailbox_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                       off, val);
         /*
          * Taking a completion frees the entry it sat in, and the back end may
          * be holding a frame this device refused while the ring was full.
@@ -2522,6 +2535,9 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         bcm570x_defer_rx_flush(s);
         return 0;
     }
+    trace_bcm570x_rx_completion(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                on_jumbo ? "jumbo" : "standard", idx,
+                                s->rx_prod_staged, buf_addr, framelen, rx_flags);
 
     if (on_jumbo) {
         s->rx_jumbo_cons =
