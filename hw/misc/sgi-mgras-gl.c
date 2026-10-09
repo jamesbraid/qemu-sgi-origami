@@ -1251,6 +1251,10 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
     object_property_add_uint32_ptr(OBJECT(s), "x-test-render-inject-result",
                                    &s->gl_render_inject_result,
                                    OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(OBJECT(s),
+                                   "x-test-render-inject-commit-failure",
+                                   &s->gl_render_inject_commit_failure,
+                                   OBJ_PROP_FLAG_READWRITE);
     object_property_add(OBJECT(s), "x-test-render-failed", "uint32",
                         mgras_gl_test_get_failed, NULL, NULL, NULL);
     object_property_add(OBJECT(s), "x-test-render-resource-pixel", "uint32",
@@ -1285,6 +1289,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
         s->gl_render_result = SGI_GL_DRAW_OK;
     }
     s->gl_render_inject_result = 0;
+    s->gl_render_inject_commit_failure = 0;
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
@@ -3193,6 +3198,19 @@ static SGIRenderCommitResult mgras_gl_render_commit_covered(
     const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
     size_t capacity_slots, const SGIRenderWriteCoverage *writes, Error **errp)
 {
+    SGIMgrasState *s = opaque;
+
+    if (s->gl_render_inject_commit_failure) {
+        /* Fail after the snapshot and before any native write. */
+        SGIRenderCommitResult result = {
+            .status = SGI_RENDER_RESOURCE_ERROR,
+            .extent_known = true,
+        };
+
+        s->gl_render_inject_commit_failure = 0;
+        error_setg(errp, "injected MGRAS native commit failure");
+        return result;
+    }
     return mgras_gl_render_commit_pixels(opaque, resource, slice, rect,
                                          slots, stride_slots, writes, errp);
 }
