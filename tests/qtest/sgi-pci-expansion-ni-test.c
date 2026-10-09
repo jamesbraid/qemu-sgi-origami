@@ -357,7 +357,7 @@ static void test_routed_dma(void)
 
 static void test_routed_wide_direct_dma(void)
 {
-    const unsigned index = 2; /* U1 head E, device 1. */
+    const unsigned index = 0; /* U0 head E, device 1. */
     const uint64_t payload = UINT64_C(0x1011121314151617);
     const uint64_t ram = NODE(3) + 0x8000;
     const uint64_t hub = (UINT64_C(1) << 47) |
@@ -371,12 +371,17 @@ static void test_routed_wide_direct_dma(void)
     routed_program(qts);
     configure_card(qts, index);
     reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':{"
-        "'path':'" PATH "/chassis/u1/head-e',"
+        "'path':'" PATH "/chassis/u0/head-e',"
         "'property':'wide-slot-mask'}}");
     g_assert_cmphex(qdict_get_int(reply, "return"), ==, 0x06);
     qobject_unref(reply);
     reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':{"
-        "'path':'" PATH "/chassis/u1/head-f',"
+        "'path':'" PATH "/chassis/u0/head-f',"
+    "'property':'wide-slot-mask'}}");
+    g_assert_cmphex(qdict_get_int(reply, "return"), ==, 0);
+    qobject_unref(reply);
+    reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':{"
+        "'path':'" PATH "/chassis/u1/head-e',"
         "'property':'wide-slot-mask'}}");
     g_assert_cmphex(qdict_get_int(reply, "return"), ==, 0);
     qobject_unref(reply);
@@ -419,7 +424,7 @@ static void test_routed_wide_direct_dma(void)
 static void test_routed_wide_direct_dma_chunks(void)
 {
     const unsigned lengths[] = { 8, 16, 256 };
-    const unsigned index = 2;
+    const unsigned index = 0;
     const uint64_t ram = NODE(3) + 0x8000;
 
     for (unsigned n = 0; n < G_N_ELEMENTS(lengths) * 2; n++) {
@@ -469,7 +474,7 @@ static void test_routed_wide_direct_dma_chunks(void)
 
 static void test_routed_direct_dma_unmarked_slot(void)
 {
-    const unsigned index = 2;
+    const unsigned index = 0;
     const uint64_t payload = UINT64_C(0x1011121314151617);
     QTestState *qts;
     uint64_t h;
@@ -494,9 +499,28 @@ static void test_routed_direct_dma_unmarked_slot(void)
     card_device = 1;
 }
 
+static void test_routed_direct_dma_unmarked_head(void)
+{
+    const unsigned index = 2; /* U1 head E retains the old placement. */
+    const uint64_t payload = UINT64_C(0x1011121314151617);
+    QTestState *qts = routed_start("");
+    uint64_t h = head(0, index);
+
+    routed_program(qts);
+    configure_card(qts, index);
+    qtest_writel(qts, h + 0x84, (0xa << 20) | (NODE(3) >> 31));
+    dma(qts, index, 0x80008000, payload, true, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+    qtest_writel(qts, h + 0x204 + card_device * 8, 0x1012);
+    dma(qts, index, 0x80008000, payload, true, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==,
+                    UINT64_C(0x1312111017161514));
+    qtest_quit(qts);
+}
+
 static void test_routed_wide_direct_dma_exclusions(void)
 {
-    const unsigned index = 2;
+    const unsigned index = 0;
     const uint64_t payload = UINT64_C(0x1011121314151617);
     const uint8_t source[] = { 0x10, 0x11, 0x12, 0x13,
                                0x14, 0x15, 0x16, 0x17 };
@@ -524,17 +548,23 @@ static void test_routed_wide_direct_dma_exclusions(void)
         configure_card(qts, index);
         qtest_writel(qts, h + 0x84, (0xa << 20) | (NODE(3) >> 31));
         if (cases[n].result == MEMTX_OK) {
-            qtest_memset(qts, RAM + (cases[n].address & 0xfffff), 0,
-                         cases[n].length);
+            uint64_t at = RAM + (cases[n].address & 0xfffff);
+
+            qtest_memset(qts, at, 0, cases[n].length);
+            qtest_writeb(qts, at - 1, 0xa5);
+            qtest_writeb(qts, at + cases[n].length, 0x5a);
         } else {
             qtest_writeq(qts, RAM + 0xfe000, payload);
         }
         dma(qts, index, cases[n].address, payload, true, cases[n].result);
         if (cases[n].result == MEMTX_OK) {
-            qtest_memread(qts, RAM + (cases[n].address & 0xfffff), actual,
-                          cases[n].length);
+            uint64_t at = RAM + (cases[n].address & 0xfffff);
+
+            qtest_memread(qts, at, actual, cases[n].length);
             g_assert_cmpmem(actual, cases[n].length, source,
                             cases[n].length);
+            g_assert_cmphex(qtest_readb(qts, at - 1), ==, 0xa5);
+            g_assert_cmphex(qtest_readb(qts, at + cases[n].length), ==, 0x5a);
         } else {
             g_assert_cmphex(qtest_readq(qts, RAM + 0xfe000), ==, payload);
         }
@@ -544,7 +574,7 @@ static void test_routed_wide_direct_dma_exclusions(void)
 
 static void test_routed_wide_direct_dma_device2(void)
 {
-    const unsigned index = 2;
+    const unsigned index = 0;
     QTestState *qts;
     uint64_t h;
 
@@ -619,8 +649,8 @@ static void test_translations(void)
     for (unsigned i = 0; i < 6; i++) {
         uint64_t h = head(0, i);
         uint64_t payload = UINT64_C(0x1020304050607080) + i;
-        /* U1 head E device 1 exchanges halves only on direct writes. */
-        uint64_t direct_payload = i == 2 ?
+        /* U0 head E device 1 exchanges halves only on direct writes. */
+        uint64_t direct_payload = i == 0 ?
             (payload << 32) | (payload >> 32) : payload;
 
         configure_card(qts, i);
@@ -3761,6 +3791,8 @@ int main(int argc, char **argv)
                    test_routed_wide_direct_dma_chunks);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct-dma-unmarked-slot",
                    test_routed_direct_dma_unmarked_slot);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/direct-dma-unmarked-head",
+                   test_routed_direct_dma_unmarked_head);
     qtest_add_func("/sgi/pci-expansion-ni/routed/wide-direct-dma-exclusions",
                    test_routed_wide_direct_dma_exclusions);
     qtest_add_func("/sgi/pci-expansion-ni/routed/wide-direct-dma-device2",
