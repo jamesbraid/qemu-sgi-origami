@@ -446,6 +446,53 @@ static void test_gl_mesa_checked_failures(void)
     }
 }
 
+static void test_gl_mesa_native_commit_failure(void)
+{
+    QTestState *test = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QDict *reply;
+
+    mgras_reset_state(test);
+    mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+    gl_viewport(test, 0, 0, 1280, 1024);
+    gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
+    gl_draw_buffer(test, 1);
+    gl_clear_color(test, 0, 0, 1, 1);
+    gl_word(test, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x0000ff);
+
+    qtest_qmp_assert_success(test,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-render-inject-commit-failure', 'value': 1}}",
+        MGRAS_QOM_PATH);
+    gl_color3f(test, 1, 0, 0);
+    gl_word(test, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(test, -1, -1);
+    gl_vertex2f(test, 1, -1);
+    gl_vertex2f(test, -1, 1);
+    gl_word(test, GL_END_TRIANGLES);
+
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-inject-commit-failure"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-result"), ==, 3);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-failed"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-commits"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0x0000ff);
+    g_assert_cmphex(mgras_test_format(test, 100, 923), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+
+    reply = qtest_qmp(test, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(reply, "return"), "status"),
+                    ==, "internal-error");
+    qobject_unref(reply);
+    qtest_quit(test);
+}
+
 static void test_gl_clear_captured_readpixels_alpha_zero(void)
 {
     static const uint8_t poison[12] = {
@@ -3957,6 +4004,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-mesa-checked-failures",
         test_gl_mesa_checked_failures, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-native-commit-failure",
+        test_gl_mesa_native_commit_failure, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-alpha-zero",
