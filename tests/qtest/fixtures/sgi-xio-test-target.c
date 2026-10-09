@@ -170,7 +170,8 @@ static const MemoryRegionOps dma_observer_ops = {
 
 static MemTxResult target_packet_rw(Object *port, unsigned int index,
                                     hwaddr address, void *buffer, size_t size,
-                                    bool write, const SGIXioSource *source)
+                                    bool write, const SGIXioSource *source,
+                                    SGIXioPacketAttrs packet_attrs)
 {
     SGIXioTestTargetState *s = SGI_XIO_TEST_TARGET(port);
     MemTxResult result;
@@ -207,7 +208,8 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
                 result = MEMTX_ACCESS_ERROR;
             } else {
                 result = pc->packet_rw(s->target_port, s->target_index,
-                                       address, buffer, size, write, source);
+                                       address, buffer, size, write, source,
+                                       packet_attrs);
             }
         } else if (sgi_xio_port_switched(s->target_port,
                                          s->target_index)) {
@@ -228,7 +230,7 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
             }
             result = sgi_xio_port_packet_rw(s->target_port, s->target_index,
                                             address, buffer, size, write,
-                                            source);
+                                            source, packet_attrs);
         }
     } else {
         hwaddr offset;
