@@ -16,6 +16,7 @@
 #define ROUTER_SIZE 0x600008
 #define FORCE_LOCAL (UINT64_C(1) << 12)
 #define META_ID_MASK (UINT64_C(15) << 8)
+#define PROTECTION_CONFIG_MASK UINT64_C(0x3fff)
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
 #define CHANNEL_TEST_MASK UINT64_C(0x004000000fffffff)
 #define REMOTE_RESET_MASK UINT64_C(0xff)
@@ -209,6 +210,7 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     switch (address) {
     case 0x10:
         storage = &s->protection;
+        mask = s->synthetic_diagnostics ? PROTECTION_CONFIG_MASK : UINT64_MAX;
         break;
     case 0x20:
     case 0x28:
