@@ -60,8 +60,9 @@ static const SGIRenderResource *sgi_render_texture_resource(
         !is_power_of_2(image->width) ||
         !is_power_of_2(image->height) ||
         image->base_format != SGI_GL_RGBA ||
-        image->min_filter != SGI_GL_NEAREST ||
-        image->mag_filter != SGI_GL_NEAREST ||
+        image->min_filter != image->mag_filter ||
+        (image->min_filter != SGI_GL_NEAREST &&
+         image->min_filter != SGI_GL_LINEAR) ||
         (image->wrap_s != SGI_GL_REPEAT &&
          image->wrap_s != SGI_GL_CLAMP_TO_EDGE) ||
         (image->wrap_t != SGI_GL_REPEAT &&
@@ -430,6 +431,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             .env_mode = draw->state->texture_env_mode,
             .wrap_s = target->texture->wrap_s,
             .wrap_t = target->texture->wrap_t,
+            .linear_filter = target->texture->min_filter == SGI_GL_LINEAR,
             .component_bits = 8,
             .slots = texture_slots,
             .capacity_slots = texture_capacity_slots,

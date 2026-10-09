@@ -31,6 +31,7 @@ typedef struct SGIRendererRequest {
 typedef struct SGIRendererTexture2D {
     uint32_t width, height;
     uint32_t env_mode, wrap_s, wrap_t;
+    bool linear_filter;
     uint8_t component_bits;
     const uint32_t *slots; /* Raw RGBA slots, bottom row first. */
     size_t capacity_slots;

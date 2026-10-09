@@ -32,7 +32,7 @@ typedef struct SGIRendererGL {
     GLuint texture_program;
     Error *texture_error;
     GLint texture_sampler, texture_mode, texture_wrap_s;
-    GLint texture_wrap_t, texture_shade;
+    GLint texture_wrap_t, texture_shade, texture_linear;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -86,6 +86,7 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
         "#version 450 compatibility\n"
         "uniform usampler2D image_slots;\n"
         "uniform int environment_mode, repeat_s, repeat_t, flat_shade;\n"
+        "uniform int linear_filter;\n"
         "in vec4 smooth_colour;\n"
         "flat in vec4 flat_colour;\n"
         "in vec4 texture_coord;\n"
@@ -97,20 +98,51 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
         "                    clamp(st.x, 0.0, 1.0),\n"
         "                    repeat_t != 0 ? fract(st.y) :\n"
         "                    clamp(st.y, 0.0, 1.0));\n"
-        "  ivec2 xy = clamp(ivec2(floor(uv * dvec2(size))),\n"
-        "                   ivec2(0), size - ivec2(1));\n"
-        "  uvec4 texel = texelFetch(image_slots, xy, 0);\n"
+        "  dvec4 texel;\n"
+        "  if (linear_filter != 0) {\n"
+        "    dvec2 edge = 0.5 / dvec2(size);\n"
+        "    uv = dvec2(repeat_s != 0 ? uv.x :\n"
+        "               clamp(st.x, edge.x, 1.0 - edge.x),\n"
+        "               repeat_t != 0 ? uv.y :\n"
+        "               clamp(st.y, edge.y, 1.0 - edge.y));\n"
+        "    dvec2 pos = uv * dvec2(size) - 0.5;\n"
+        "    ivec2 lo = ivec2(floor(pos));\n"
+        "    ivec2 hi = lo + ivec2(1);\n"
+        "    dvec2 weight = fract(pos);\n"
+        "    lo.x = repeat_s != 0 ? (lo.x < 0 ? size.x - 1 : lo.x) :\n"
+        "           clamp(lo.x, 0, size.x - 1);\n"
+        "    hi.x = repeat_s != 0 ? (hi.x >= size.x ? 0 : hi.x) :\n"
+        "           clamp(hi.x, 0, size.x - 1);\n"
+        "    lo.y = repeat_t != 0 ? (lo.y < 0 ? size.y - 1 : lo.y) :\n"
+        "           clamp(lo.y, 0, size.y - 1);\n"
+        "    hi.y = repeat_t != 0 ? (hi.y >= size.y ? 0 : hi.y) :\n"
+        "           clamp(hi.y, 0, size.y - 1);\n"
+        "    dvec4 c00 = dvec4(texelFetch(image_slots, lo, 0));\n"
+        "    dvec4 c10 = dvec4(texelFetch(image_slots,\n"
+        "                                   ivec2(hi.x, lo.y), 0));\n"
+        "    dvec4 c01 = dvec4(texelFetch(image_slots,\n"
+        "                                   ivec2(lo.x, hi.y), 0));\n"
+        "    dvec4 c11 = dvec4(texelFetch(image_slots, hi, 0));\n"
+        "    texel = c00 * (1.0 - weight.x) * (1.0 - weight.y) +\n"
+        "            c10 * weight.x * (1.0 - weight.y) +\n"
+        "            c01 * (1.0 - weight.x) * weight.y +\n"
+        "            c11 * weight.x * weight.y;\n"
+        "  } else {\n"
+        "    ivec2 xy = clamp(ivec2(floor(uv * dvec2(size))),\n"
+        "                     ivec2(0), size - ivec2(1));\n"
+        "    texel = dvec4(texelFetch(image_slots, xy, 0));\n"
+        "  }\n"
         "  dvec4 primary = dvec4(flat_shade != 0 ? flat_colour :\n"
         "                         smooth_colour);\n"
         "  dvec4 bytes;\n"
         "  if (environment_mode == 0) {\n"
-        "    bytes = dvec4(texel);\n"
+        "    bytes = texel;\n"
         "  } else if (environment_mode == 1) {\n"
-        "    bytes = primary * dvec4(texel);\n"
+        "    bytes = primary * texel;\n"
         "  } else {\n"
-        "    double alpha = double(texel.a);\n"
+        "    double alpha = texel.a;\n"
         "    bytes.rgb = (primary.rgb * (255.0 - alpha) * 255.0 +\n"
-        "                 dvec3(texel.rgb) * alpha) / 255.0;\n"
+        "                 texel.rgb * alpha) / 255.0;\n"
         "    bytes.a = primary.a * 255.0;\n"
         "  }\n"
         "  uvec4 rounded = uvec4(floor(clamp(bytes, 0.0, 255.0) + 0.5));\n"
@@ -151,9 +183,11 @@ static bool renderer_gl_texture_program(SGIRendererGL *renderer)
                                                      "repeat_t");
     renderer->texture_shade = glGetUniformLocation(renderer->texture_program,
                                                     "flat_shade");
+    renderer->texture_linear = glGetUniformLocation(renderer->texture_program,
+                                                     "linear_filter");
     if (renderer->texture_sampler < 0 || renderer->texture_mode < 0 ||
         renderer->texture_wrap_s < 0 || renderer->texture_wrap_t < 0 ||
-        renderer->texture_shade < 0 ||
+        renderer->texture_shade < 0 || renderer->texture_linear < 0 ||
         renderer_gl_error(renderer, "texture program setup")) {
         if (!renderer->error) {
             error_setg(&renderer->error,
@@ -399,6 +433,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
                     frame->texture.wrap_t == GL_REPEAT);
         glUniform1i(renderer->texture_shade,
                     frame->shade_model == GL_FLAT);
+        glUniform1i(renderer->texture_linear, frame->texture.linear_filter);
     }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glStencilMask(0xff);
