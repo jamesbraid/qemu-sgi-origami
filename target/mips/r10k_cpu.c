@@ -3,6 +3,7 @@
 /* R10000-family properties, model ownership and CPU lifecycle. */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "cpu.h"
@@ -188,12 +189,17 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
         error_setg(errp, "r12000-reset-mode has a reserved encoding");
     } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
         error_setg(errp, "r12000-reset-mode endianness differs from CPU");
-    } else if ((bytes != 1024 * 1024 && bytes != 2 * 1024 * 1024) ||
-               ((mode >> CP0C0_R10K_SS) & 7) != (bytes >> 20)) {
+    } else if (((mode >> CP0C0_R10K_SS) & 7) > 5 ||
+               bytes != 512 * KiB << ((mode >> CP0C0_R10K_SS) & 7)) {
+        /* SS codes 0 to 5 select 512 KiB to 16 MiB; 6 and 7 are reserved. */
         error_setg(errp, "r12000-scache-bytes disagrees with Config SS");
     } else if ((words != 16 && words != 32) ||
                ((mode >> CP0C0_R10K_SB) & 1) != (words == 32)) {
         error_setg(errp, "r12000-scache-block-words disagrees with Config SB");
+    } else if (words == 16 && bytes > 2 * MiB) {
+        /* Tag and MRU state for 64-byte blocks migrates only to 2 MiB. */
+        error_setg(errp, "r12000-scache-block-words=16 supports at most "
+                   "2 MiB of secondary cache");
     } else {
         profile->cpu_model = g_new(mips_def_t, 1);
         *profile->cpu_model = *cpu->env.cpu_model;
