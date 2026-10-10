@@ -809,6 +809,55 @@ static void test_surfaceless_llvmpipe_pixels(void)
     g_assert_true(eglReleaseThread());
 }
 
+static PFNGLGETPROGRAMIVPROC saved_program_status;
+static unsigned program_links, failing_program_link;
+
+/* Fail the link status of the nth program the worker builds, from one. */
+static void fail_nth_program_link(GLuint program, GLenum name, GLint *value)
+{
+    saved_program_status(program, name, value);
+    if (name == GL_LINK_STATUS && ++program_links == failing_program_link) {
+        *value = GL_FALSE;
+    }
+}
+
+/*
+ * A program that fails to build when the host has the OpenGL it needs is a
+ * host setup failure, reported by renderer creation, not a refusal of each
+ * later draw that would use it. The worker builds, in order, its request,
+ * colour, texture, smooth triangle and line programs.
+ */
+static void test_program_failure_fails_creation(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const char *const programs[] = {
+        "texture", "window", "line",
+    };
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(programs); i++) {
+        SGIRenderer *renderer = NULL;
+        SGIRenderCreateResult result;
+        Error *err = NULL;
+
+        saved_program_status = epoxy_glGetProgramiv;
+        program_links = 0;
+        failing_program_link = 3 + i;
+        epoxy_glGetProgramiv = fail_nth_program_link;
+        result = sgi_renderer_create(&renderer, &err);
+        epoxy_glGetProgramiv = saved_program_status;
+        g_assert_cmpuint(program_links, >=, failing_program_link);
+        g_assert_cmpint(result, ==, SGI_RENDER_CREATE_HOST_ERROR);
+        g_assert_null(renderer);
+        g_assert_nonnull(err);
+        g_assert_nonnull(strstr(error_get_pretty(err), programs[i]));
+        error_free(err);
+    }
+}
+
 static void test_two_headless_renderers(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -6395,6 +6444,8 @@ int main(int argc, char **argv)
     module_call_init(MODULE_INIT_QOM);
     g_test_add_func("/sgi-renderer-gl/surfaceless-llvmpipe-pixels",
                     test_surfaceless_llvmpipe_pixels);
+    g_test_add_func("/sgi-renderer-gl/program-failure-fails-creation",
+                    test_program_failure_fails_creation);
     g_test_add_func("/sgi-renderer-gl/two-headless-renderers",
                     test_two_headless_renderers);
     g_test_add_func("/sgi-renderer-gl/headless-display-ui-context",

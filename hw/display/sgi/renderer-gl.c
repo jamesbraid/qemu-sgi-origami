@@ -710,18 +710,17 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     }
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
+    /*
+     * A host too old for these programs is a host limit, and the draws
+     * that need them are refused. A program that fails to build on a host
+     * new enough is a setup failure, so creation fails, rather than a
+     * refusal that would send every such draw to the scalar path.
+     */
     if (major > 4 || (major == 4 && minor >= 5)) {
-        if (!renderer_gl_texture_program(renderer)) {
-            renderer->texture_error = renderer->error;
-            renderer->error = NULL;
-        }
-        if (!renderer_gl_window_program(renderer)) {
-            renderer->window_error = renderer->error;
-            renderer->error = NULL;
-        }
-        if (!renderer_gl_line_program(renderer)) {
-            renderer->line_error = renderer->error;
-            renderer->error = NULL;
+        if (!renderer_gl_texture_program(renderer) ||
+            !renderer_gl_window_program(renderer) ||
+            !renderer_gl_line_program(renderer)) {
+            return false;
         }
     } else {
         error_setg(&renderer->texture_error,
