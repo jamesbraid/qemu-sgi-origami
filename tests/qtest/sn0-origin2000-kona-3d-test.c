@@ -13284,6 +13284,55 @@ static void test_renderer_typed_failure_reset(void)
 }
 
 /*
+ * A Mesa-route draw into a window smaller than the screen completes on the
+ * host and leaves pixels outside the window untouched.
+ */
+static void test_renderer_typed_partial_window(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    uint64_t generation, requests, fallbacks;
+
+    renderer_typed_setup(s);
+    x_read_fixture_command(s, 0x129,
+                           (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0,
+                                         0x180c, 0x40001, 1, 6, 5, 1, 1 },
+                           13);
+    x_read_fixture_command(s, 0x136,
+                           (uint32_t[]){ 0, 0, 1, 8, 1, 1, 0 }, 7);
+    for (unsigned x = 600; x <= 640; x += 40) {
+        x_read_fixture_command(s, 0x139,
+                               (uint32_t[]){ x, FB_HEIGHT - 1 - 512 }, 2);
+        qtest_writel(s, KONA_REG(0xc1000c), 0);
+        x_read_fixture_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+        g_assert_cmphex(renderer_plane_at(s, 2, x, 512), ==, 3);
+    }
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ 0, 0, 0x05670080, 0x05670080,
+                                      0, 0, 620, 600, 0, 0xd, 0 }, 11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ 0, 0, 0 }, 3);
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    requests = renderer_counter(s, "x-test-gpu-requests");
+    fallbacks = renderer_counter(s, "x-test-gpu-fallbacks");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     requests + 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                     fallbacks);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     >, generation);
+    g_assert_cmphex(renderer_plane_at(s, 0, 600, 512), ==, 0xff0000);
+    g_assert_cmphex(renderer_plane_at(s, 2, 600, 512), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 0, 640, 512), ==, 0);
+    g_assert_cmphex(renderer_plane_at(s, 2, 640, 512), ==, 3);
+    qtest_quit(s);
+}
+
+/*
  * A failed draw on the Mesa route stops the VM. It is not retried on the
  * scalar path, and a later fence does not complete.
  */
@@ -15879,6 +15928,8 @@ int main(int argc, char **argv)
                    test_renderer_typed_ortho_excluded);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-failure-reset",
                    test_renderer_typed_failure_reset);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-partial-window",
+                   test_renderer_typed_partial_window);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-checked-failure",
                    test_renderer_typed_checked_failure);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
