@@ -7146,7 +7146,7 @@ static void test_mixed_frame_set(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
     static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
-    static const SGIRenderAttemptOptions plain = { 0 };
+    static const SGIRenderAttemptOptions without_flag = { 0 };
     PrimCase *p = g_new(PrimCase, 1);
     SGIRenderer *renderer;
     unsigned failures = 0, cases = 0;
@@ -7163,7 +7163,7 @@ static void test_mixed_frame_set(void)
         g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
         g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
         const char *name = NULL;
-        bool proven = true;
+        bool proven = true, plain = true;
 
         switch (k) {
         case 0:
@@ -7245,7 +7245,16 @@ static void test_mixed_frame_set(void)
             prim_case_init(p, SGI_GL_TRIANGLES, 4);
             prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
                          SGI_GL_REPLACE);
+            break;
+        case 12:
+            name = "textured triangle with a 32-texel image";
+            prim_case_init(p, SGI_GL_TRIANGLES, 4);
+            prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                         SGI_GL_REPLACE);
+            /* Refused before any snapshot, so its texels are never read. */
+            p->image.width = 32;
             proven = false;
+            plain = false;
             break;
         }
         if (!name) {
@@ -7268,7 +7277,10 @@ static void test_mixed_frame_set(void)
                                mesa->snapshots);
                 failures++;
             }
-            p->attempt = &plain;
+            if (!plain) {
+                continue;
+            }
+            p->attempt = &without_flag;
             prim_destination(mesa, p);
             prim_mesa_draw(renderer, p, mesa, &err);
             g_clear_pointer(&err, error_free);

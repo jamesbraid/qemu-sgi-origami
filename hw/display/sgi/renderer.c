@@ -1240,16 +1240,22 @@ static bool sgi_render_mixed_fixture(const SGIGLDrawState *st,
  *  - points of sizes up to 4, unblended, in the fixture;
  *  - untextured polygons under any accepted state, blended only in the
  *    fixture;
- *  - no textured triangles yet.
+ *  - textured triangles under any accepted state, with images the draw
+ *    path accepts of at most 16 by 16 texels.
  */
 static bool sgi_render_mixed_frame_proven(const SGIRasterRules *rules,
+                                          const SGIRasterTarget *target,
                                           const SGIGLDraw *draw,
                                           const SGIRenderResource *res)
 {
     const SGIGLDrawState *st = draw->state;
 
     if (!sgi_raster_rules_supported(rules) ||
-        !sgi_render_mixed_width(rules->color_bits) || st->texture_2d) {
+        !sgi_render_mixed_width(rules->color_bits) ||
+        (st->texture_2d &&
+         (!sgi_render_texture_image_supported(target->texture, st) ||
+          target->texture->width > 16 ||
+          target->texture->height > 16))) {
         return false;
     }
     if (sgi_render_mode_lines(draw->mode)) {
@@ -1339,7 +1345,7 @@ static SGIRenderResult sgi_render_draw_run(
         return sgi_render_refuse(reason, refusal);
     }
     if (opts && opts->mixed_frame &&
-        !sgi_render_mixed_frame_proven(rules, draw, resource)) {
+        !sgi_render_mixed_frame_proven(rules, target, draw, resource)) {
         error_setg(errp, "SGI Mesa draw state is not proven identical to "
                    "the scalar path for a mixed frame");
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_MIXED_FRAME);
