@@ -1183,6 +1183,75 @@ static SGIRenderResult sgi_render_refuse(SGIRenderRefusal *reason,
     return SGI_RENDER_UNSUPPORTED;
 }
 
+/* The proven widths: scalar-match-widths and the 8-bit cases. */
+static bool sgi_render_mixed_width(unsigned bits)
+{
+    return bits == 1 || bits == 2 || bits == 4 || bits == 5 || bits == 6 ||
+           bits == 8 || bits == 10;
+}
+
+/*
+ * The fixture the point, blend and texture comparisons draw in: one clip
+ * covering a bottom-origin resource, no scissor, the viewport equal to the
+ * resource and identity matrices.
+ */
+static bool sgi_render_mixed_fixture(const SGIGLDrawState *st,
+                                     const SGIRenderResource *res)
+{
+    const SGIClipRect *clip = &st->drawable.clip.r[0];
+
+    if (!res->bottom_origin || st->drawable.clip.n != 1 || clip->x0 > 0 ||
+        clip->y0 > 0 || clip->x1 < (int64_t)res->width - 1 ||
+        clip->y1 < (int64_t)res->height - 1 || st->scissor_test ||
+        st->viewport[0] || st->viewport[1] ||
+        st->viewport[2] != (int64_t)res->width ||
+        st->viewport[3] != (int64_t)res->height) {
+        return false;
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        float identity = i % 5 == 0;
+
+        if (st->modelview[i] != identity || st->projection[i] != identity) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Whether a draw lies inside the set the scalar comparisons prove
+ * pixel-identical on the pinned llvmpipe, so that a frame mixing it with
+ * scalar draws equals an all-scalar frame. Each limit names what is not
+ * yet proven:
+ *  - rules the scalar path implements, at proven widths;
+ *  - lines at 8 bits and widths up to 6, under any accepted state;
+ *  - points of sizes up to 4, unblended, in the fixture;
+ *  - untextured polygons under any accepted state, blended only in the
+ *    fixture;
+ *  - no textured triangles: their sampling differs from the scalar path
+ *    at some vertices away from the fixture's.
+ */
+static bool sgi_render_mixed_frame_proven(const SGIRasterRules *rules,
+                                          const SGIGLDraw *draw,
+                                          const SGIRenderResource *res)
+{
+    const SGIGLDrawState *st = draw->state;
+
+    if (!sgi_raster_rules_supported(rules) ||
+        !sgi_render_mixed_width(rules->color_bits) || st->texture_2d) {
+        return false;
+    }
+    if (sgi_render_mode_lines(draw->mode)) {
+        return rules->color_bits == 8 &&
+               sgi_render_aliased_size(draw->line_width) <= 6;
+    }
+    if (draw->mode == SGI_GL_POINTS) {
+        return !st->blend && sgi_render_aliased_size(draw->point_size) <= 4 &&
+               sgi_render_mixed_fixture(st, res);
+    }
+    return !st->blend || sgi_render_mixed_fixture(st, res);
+}
+
 /*
  * A checked draw. Every UNSUPPORTED result before the snapshot sets
  * *reason; one without a reason came from native work and is a failure.
@@ -1263,6 +1332,12 @@ static SGIRenderResult sgi_render_draw_run(
         error_setg(errp, "Unsupported SGI Mesa draw state or resource (%s)",
                    sgi_render_refusal_name(refusal));
         return sgi_render_refuse(reason, refusal);
+    }
+    if (opts && opts->mixed_frame &&
+        !sgi_render_mixed_frame_proven(rules, draw, resource)) {
+        error_setg(errp, "SGI Mesa draw state is not proven identical to "
+                   "the scalar path for a mixed frame");
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_MIXED_FRAME);
     }
     for (unsigned c = 0; c < resource->component_count; c++) {
         steps[c] = (1u << resource->component[c].storage_bits) - 1;
@@ -1995,6 +2070,15 @@ static SGIRenderResult sgi_render_raster_run(
             error_setg(errp, "Unsupported SGI Mesa clear component widths");
             return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_STORE_WIDTH);
         }
+        /* scalar-match-clear proves 4, 8 and 10 bits. */
+        if (opts && opts->mixed_frame &&
+            (!sgi_raster_rules_supported(rules) ||
+             (rules->color_bits != 4 && rules->color_bits != 8 &&
+              rules->color_bits != 10))) {
+            error_setg(errp, "SGI Mesa clear width is not proven identical "
+                       "to the scalar path for a mixed frame");
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_MIXED_FRAME);
+        }
         if ((uint64_t)res->width * res->height >
             MIN(SIZE_MAX / 4 / sizeof(uint16_t),
                 SIZE_MAX / res->component_count)) {
@@ -2483,6 +2567,9 @@ static const struct {
     },
     [SGI_RENDER_REFUSAL_RASTER_OP] = {
         "raster-op", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_MIXED_FRAME] = {
+        "mixed-frame", SGI_RENDER_REFUSAL_CLASS_STATE,
     },
     [SGI_RENDER_REFUSAL_HOST_VIEWPORT] = {
         "host-viewport", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
