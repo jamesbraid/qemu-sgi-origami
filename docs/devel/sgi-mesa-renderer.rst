@@ -38,7 +38,7 @@ snapshot:
   3, where rounding straight to the store gives 2.
 - An RGBA resource under rules without alpha is refused too. There the scalar
   path hands the store canonical zero alpha, which the family may or may not
-  store. This is how Odyssey pairs its rules with RGBA8.
+  store.
 - An RGB resource is accepted under any alpha bits, because the scalar
   path's colour rounding does not depend on them.
 
