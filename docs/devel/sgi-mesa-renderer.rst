@@ -399,8 +399,11 @@ data for each call. It does not access guest memory, call family resource
 callbacks, or acquire QEMU's big lock. A host draw failure latches the
 renderer's failed state, so later draw requests fail.
 
-A family adopting this API must own the renderer for the head's lifetime and
-fail device realization if its required renderer cannot be created. The family
+A family adopting this API must own the renderer for the head's lifetime. It
+fails device realization when creation reports ``SGI_RENDER_CREATE_OOM`` or
+``SGI_RENDER_CREATE_HOST_ERROR`` and the family requires Mesa. Only
+``SGI_RENDER_CREATE_UNAVAILABLE`` lets it draw the whole device on its
+scalar path. The family
 still owns command decoding, ``SGIGLContext``, target selection, native
 storage, dirty tracking, migration, and guest-visible completion. It must
 resolve those inputs before calling the shared code. Reset and migration
@@ -453,10 +456,63 @@ succeeds.
 ``SGIRenderResult`` distinguishes ``SGI_RENDER_OK``, ``SGI_RENDER_OOM``,
 ``SGI_RENDER_UNSUPPORTED``, ``SGI_RENDER_RESOURCE_ERROR``, and
 ``SGI_RENDER_HOST_ERROR``. Only a real allocation failure can become guest
-GL out-of-memory. Unsupported mandatory work blocks family adoption. An
-unexpected failure of already validated work must stop the VM visibly under
-the big lock, with its host diagnostic, rather than report guest success or
-retry through the software rasterizer.
+GL out-of-memory. An unexpected failure of already validated work must stop
+the VM visibly under the big lock, with its host diagnostic, rather than
+report guest success or retry through the software rasterizer.
+
+Attempts and per-draw fallback
+------------------------------
+
+A family may turn Mesa on while the renderer still refuses some of its
+state. Each draw then runs wholly on Mesa or wholly on the family's scalar
+path. ``sgi_render_draw_attempt()`` and ``sgi_render_raster_attempt()``
+take the same inputs as the checked calls, plus borrowed
+``SGIRenderAttemptOptions``, and return ``SGIRenderDrawResult``:
+
+- ``SGI_RENDER_DRAW_OK``: Mesa committed every required pixel.
+- ``SGI_RENDER_DRAW_REFUSED``: nothing visible happened and no failure
+  latched. ``SGIRenderAttemptOutcome`` carries ``SGI_RENDER_UNSUPPORTED``
+  and an ``SGIRenderRefusal`` reason. The next draw tries Mesa again.
+- ``SGI_RENDER_DRAW_FAILED``: the outcome carries ``SGI_RENDER_OOM``,
+  ``SGI_RENDER_RESOURCE_ERROR`` or ``SGI_RENDER_HOST_ERROR``. The rules
+  above apply, and the draw is never retried on the scalar path. A provider
+  that returns ``SGI_RENDER_UNSUPPORTED`` from a commit has failed after
+  native work began, so the attempt reports a resource error.
+
+``sgi_render_draw_checked()`` and ``sgi_render_raster_checked()`` are the
+attempts without options and keep their ``SGIRenderResult``.
+
+A refusal has one of three sources, each decided before any native write:
+
+- The shared renderer refuses state before the native snapshot, so before
+  any native access.
+- A family snapshot callback returns ``SGI_RENDER_UNSUPPORTED`` when the
+  view cannot represent what it read, reason ``SNAPSHOT``. It must only
+  have read native storage. A failed or invalid read is a resource error,
+  never a refusal.
+- The optional ``check_staged`` callback sees each resource's staged slots
+  and write coverage after host readback and before the first native
+  commit. ``SGI_RENDER_UNSUPPORTED`` refuses with reason ``PRECISION`` and
+  commits nothing; any other failure fails the attempt.
+
+Each reason is one feature row, with a stable name from
+``sgi_render_refusal_name()`` for counters and traces, and a class from
+``sgi_render_refusal_class()``: unsupported state, a host limit that varies
+by host, such as the viewport or point-size range, an OpenGL older than
+4.5, or a probe that found Mesa differs, or a precision mismatch. A host
+failure while a probe runs is a failure, not a refusal.
+
+The fallback runs inside the family's ``draw_checked`` sink callback, or
+its raster callback, before that callback returns. On a refusal the
+callback draws the same draw on its scalar path and returns that draw's own
+``SGIGLDrawResult``, so a scalar out-of-memory result still reaches the
+shared GL context, and the context never sees the refusal. Borrowed draw
+data, such as the line-stipple phase pointer, is valid only during the
+callback, and the renderer leaves a refused draw's phase for the scalar
+draw to count. The attempt and its fallback run in the big-lock section
+that issued the draw, so no guest access, reset or migration observes the
+refused draw between them. A family must defer once-per-draw reports and
+validation flags until the draw's path is final.
 
 Build and test
 --------------

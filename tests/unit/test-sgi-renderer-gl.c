@@ -3969,6 +3969,14 @@ typedef struct PrimCase {
     /* With use_phase, each path borrows its own stipple phase. */
     bool use_phase;
     uint32_t phase[2];
+    /*
+     * With attempt set, the Mesa draw goes through sgi_render_draw_attempt()
+     * and leaves its result and outcome here; ops replaces prim_ops.
+     */
+    const SGIRenderAttemptOptions *attempt;
+    SGIRenderDrawResult attempt_result;
+    SGIRenderAttemptOutcome outcome;
+    const SGIRenderResourceOps *ops;
 } PrimCase;
 
 static bool prim_read_texel(void *opaque, uint32_t x, uint32_t y,
@@ -4156,7 +4164,7 @@ static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
     SGIRasterTarget target = {
         .opaque = f, .resources = res,
         .resource_count = p->state.texture_2d ? 2 : 1,
-        .resource_ops = &prim_ops,
+        .resource_ops = p->ops ? p->ops : &prim_ops,
         .texture = p->state.texture_2d ? &p->image : NULL,
     };
 
@@ -4183,6 +4191,12 @@ static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
         rules.arith = SGI_ARITH_FIXED16;
     } else if (p->rules_case == 4) {
         rules.rounding = SGI_ROUND_HALF_EVEN;
+    }
+    if (p->attempt) {
+        p->attempt_result = sgi_render_draw_attempt(renderer, &rules, &target,
+                                                    &draw, p->attempt,
+                                                    &p->outcome, errp);
+        return p->outcome.status;
     }
     return sgi_render_draw_checked(renderer, &rules, &target, &draw, errp);
 }
@@ -6438,6 +6452,389 @@ static void test_scalar_match_blend(void)
     }
 }
 
+/* A snapshot that cannot represent the stored data, having read it. */
+static SGIRenderResult prim_refusing_snapshot(void *opaque,
+                                              const SGIRenderResource *res,
+                                              uint32_t slice,
+                                              const SGIRenderRect *rect,
+                                              uint32_t *slots,
+                                              size_t stride_slots,
+                                              size_t capacity_slots,
+                                              Error **errp)
+{
+    PrimFixture *f = opaque;
+
+    f->snapshots++;
+    error_setg(errp, "test view cannot hold the stored data");
+    return SGI_RENDER_UNSUPPORTED;
+}
+
+/* A provider that refuses once it has started to commit. */
+static SGIRenderCommitResult prim_refusing_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    PrimFixture *f = opaque;
+
+    f->commits++;
+    error_setg(errp, "test commit refused");
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_UNSUPPORTED,
+        .extent_known = true,
+    };
+}
+
+typedef struct PrimCheck {
+    unsigned calls;
+    SGIRenderResult result;
+    uint64_t covered;
+} PrimCheck;
+
+static SGIRenderResult prim_check_staged(void *opaque,
+                                         const SGIRenderResource *res,
+                                         const SGIRenderRect *rect,
+                                         const uint32_t *slots,
+                                         size_t stride_slots,
+                                         size_t capacity_slots,
+                                         const SGIRenderWriteCoverage *writes,
+                                         Error **errp)
+{
+    PrimCheck *c = opaque;
+
+    c->calls++;
+    for (size_t i = 0; i < writes->capacity_bytes; i++) {
+        c->covered += writes->pixel[i];
+    }
+    if (c->result != SGI_RENDER_OK) {
+        error_setg(errp, "test precision check result %d", c->result);
+    }
+    return c->result;
+}
+
+static void prim_fan(PrimCase *p, unsigned components)
+{
+    prim_case_init(p, SGI_GL_TRIANGLE_FAN, components);
+    prim_vertex_n(p, 1, 1.25f);
+    prim_vertex_n(p, 14.5f, 2);
+    prim_vertex_n(p, 13, 13.75f);
+    prim_vertex_n(p, 2.25f, 12);
+}
+
+/*
+ * One attempt; returns 1 and logs it unless the result, status, reason and
+ * the fixture's snapshot and commit counts are as expected.
+ */
+static unsigned prim_attempt_expect(SGIRenderer *renderer, const char *name,
+                                    PrimCase *p, SGIRenderDrawResult result,
+                                    SGIRenderResult status,
+                                    SGIRenderRefusal reason,
+                                    unsigned snapshots, unsigned commits)
+{
+    g_autofree PrimFixture *f = g_new(PrimFixture, 1);
+    Error *err = NULL;
+    bool ok;
+
+    prim_destination(f, p);
+    prim_mesa_draw(renderer, p, f, &err);
+    ok = p->attempt_result == result && p->outcome.status == status &&
+         p->outcome.reason == reason && f->snapshots == snapshots &&
+         f->commits == commits && (result == SGI_RENDER_DRAW_OK) == !err;
+    if (!ok) {
+        g_test_message("%s: result %d status %d reason %s, %u snapshots, "
+                       "%u commits: %s", name, p->attempt_result,
+                       p->outcome.status,
+                       sgi_render_refusal_name(p->outcome.reason),
+                       f->snapshots, f->commits,
+                       err ? error_get_pretty(err) : "(no error)");
+    }
+    g_clear_pointer(&err, error_free);
+    return !ok;
+}
+
+/*
+ * The typed attempt: OK commits; each refusal names its feature row and
+ * happens before any snapshot, or for a family snapshot or precision
+ * refusal before any commit, and leaves the renderer usable; a failure
+ * is never a refusal.
+ */
+static void test_attempt_outcomes(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIRenderResourceOps refusing_snapshot = {
+        .snapshot = prim_refusing_snapshot,
+        .commit_covered = prim_commit_covered,
+    };
+    static const SGIRenderResourceOps refusing_commit = {
+        .snapshot = prim_snapshot,
+        .commit_covered = prim_refusing_commit,
+    };
+    static const SGIRenderResourceOps dense_only = {
+        .snapshot = prim_snapshot,
+        .commit = prim_commit,
+    };
+    SGIRenderAttemptOptions plain = { 0 };
+    PrimCheck check = { 0 };
+    SGIRenderAttemptOptions checked = {
+        .check_staged = prim_check_staged, .opaque = &check,
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+#define EXPECT(name, setup, result, status, reason, snapshots, commits) \
+    do { \
+        prim_fan(p, 4); \
+        p->attempt = &plain; \
+        setup; \
+        failures += prim_attempt_expect(renderer, name, p, result, status, \
+                                        reason, snapshots, commits); \
+    } while (0)
+#define REFUSED(name, setup, reason) \
+    EXPECT(name, setup, SGI_RENDER_DRAW_REFUSED, SGI_RENDER_UNSUPPORTED, \
+           SGI_RENDER_REFUSAL_##reason, 0, 0)
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    EXPECT("ok", , SGI_RENDER_DRAW_OK, SGI_RENDER_OK,
+           SGI_RENDER_REFUSAL_NONE, 1, 1);
+    REFUSED("rules", p->rules_case = 1, RULES);
+    REFUSED("fog", p->state.fog = 1, FOG);
+    REFUSED("depth test", p->state.depth_test = 1, FRAGMENT_TESTS);
+    REFUSED("cull", p->state.cull_face = 1, FACING);
+    REFUSED("colour index", p->state.index_bits = 8, COLOUR_INDEX);
+    REFUSED("colour mask", p->state.colour_mask = SGI_GL_COLOUR_MASK_RED,
+            BUFFERS);
+    REFUSED("polygon stipple", p->draw.polygon_stipple_enabled = true,
+            PRIMITIVE);
+    REFUSED("store width", p->alpha_storage = 4, STORE_WIDTH);
+    REFUSED("blend overlap",
+            (p->state.blend = 1, p->state.blend_src = SGI_GL_SRC_ALPHA,
+             p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA,
+             p->state.blend_equation = SGI_GL_FUNC_ADD), BLEND_OVERLAP);
+    REFUSED("covered commit", p->ops = &dense_only, PROVIDER);
+    REFUSED("textured depth plane",
+            (prim_case_init(p, SGI_GL_TRIANGLES, 4),
+             prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                          SGI_GL_MODULATE),
+             p->vertices[0][SGI_GL_V_POSITION + 2] = -1,
+             p->vertices[1][SGI_GL_V_POSITION + 2] = -1,
+             p->attempt = &plain), DEPTH_PLANE);
+    EXPECT("flat depth plane",
+           (p->vertices[0][SGI_GL_V_POSITION + 2] = -1,
+            p->vertices[1][SGI_GL_V_POSITION + 2] = -1), SGI_RENDER_DRAW_OK,
+           SGI_RENDER_OK, SGI_RENDER_REFUSAL_NONE, 1, 1);
+    EXPECT("snapshot refusal", p->ops = &refusing_snapshot,
+           SGI_RENDER_DRAW_REFUSED, SGI_RENDER_UNSUPPORTED,
+           SGI_RENDER_REFUSAL_SNAPSHOT, 1, 0);
+    check = (PrimCheck) { .result = SGI_RENDER_UNSUPPORTED };
+    EXPECT("precision refusal", p->attempt = &checked,
+           SGI_RENDER_DRAW_REFUSED, SGI_RENDER_UNSUPPORTED,
+           SGI_RENDER_REFUSAL_PRECISION, 1, 0);
+    if (check.calls != 1 || !check.covered) {
+        g_test_message("precision check: %u calls, %" PRIu64 " covered",
+                       check.calls, check.covered);
+        failures++;
+    }
+    check = (PrimCheck) { .result = SGI_RENDER_OK };
+    EXPECT("precision accepted", p->attempt = &checked, SGI_RENDER_DRAW_OK,
+           SGI_RENDER_OK, SGI_RENDER_REFUSAL_NONE, 1, 1);
+    check = (PrimCheck) { .result = SGI_RENDER_HOST_ERROR };
+    EXPECT("precision check failure", p->attempt = &checked,
+           SGI_RENDER_DRAW_FAILED, SGI_RENDER_HOST_ERROR,
+           SGI_RENDER_REFUSAL_NONE, 1, 0);
+    /*
+     * A borrowed stipple phase is the scalar fallback's to count: a family
+     * snapshot or precision refusal must leave it as it was.
+     */
+    for (unsigned i = 0; i < 2; i++) {
+        const char *name = i ? "phase after precision refusal" :
+                               "phase after snapshot refusal";
+
+        check = (PrimCheck) { .result = SGI_RENDER_UNSUPPORTED };
+        EXPECT(name,
+               (prim_lines(p, SGI_GL_LINE_STRIP, 2, 0),
+                p->attempt = i ? &checked : &plain,
+                p->ops = i ? NULL : &refusing_snapshot,
+                p->draw.line_stipple_enabled = true,
+                p->draw.line_stipple_repeat = 2,
+                p->draw.line_stipple_pattern = 0x3c5a,
+                p->use_phase = true, p->phase[1] = 7),
+               SGI_RENDER_DRAW_REFUSED, SGI_RENDER_UNSUPPORTED,
+               i ? SGI_RENDER_REFUSAL_PRECISION : SGI_RENDER_REFUSAL_SNAPSHOT,
+               1, 0);
+        if (p->phase[1] != 7) {
+            g_test_message("%s: phase %u, expected 7", name, p->phase[1]);
+            failures++;
+        }
+    }
+    /* A provider refusing during its commit has failed, not refused. */
+    EXPECT("commit refusal", p->ops = &refusing_commit,
+           SGI_RENDER_DRAW_FAILED, SGI_RENDER_RESOURCE_ERROR,
+           SGI_RENDER_REFUSAL_NONE, 1, 1);
+    /* None of the refusals above latched: the renderer still draws. */
+    EXPECT("ok after refusals", , SGI_RENDER_DRAW_OK, SGI_RENDER_OK,
+           SGI_RENDER_REFUSAL_NONE, 1, 1);
+    saved_read_pixels = epoxy_glReadPixels;
+    epoxy_glReadPixels = fail_colour_read_pixels;
+    EXPECT("host failure", , SGI_RENDER_DRAW_FAILED, SGI_RENDER_HOST_ERROR,
+           SGI_RENDER_REFUSAL_NONE, 1, 0);
+    epoxy_glReadPixels = saved_read_pixels;
+    sgi_renderer_free(renderer);
+
+    /* A host failure in the line probe is a failure, not a refusal. */
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    saved_renderbuffer_storage = epoxy_glRenderbufferStorage;
+    epoxy_glRenderbufferStorage = fail_stencil_storage;
+    EXPECT("line probe host failure",
+           (prim_lines(p, SGI_GL_LINES, 1, 0), p->attempt = &plain),
+           SGI_RENDER_DRAW_FAILED, SGI_RENDER_HOST_ERROR,
+           SGI_RENDER_REFUSAL_NONE, 0, 0);
+    epoxy_glRenderbufferStorage = saved_renderbuffer_storage;
+#undef REFUSED
+#undef EXPECT
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/* Every reason has its own name and the class its row belongs to. */
+static void test_refusal_names(void)
+{
+    g_autoptr(GHashTable) names = g_hash_table_new(g_str_hash, g_str_equal);
+
+    for (unsigned r = 0; r < SGI_RENDER_REFUSAL__MAX; r++) {
+        const char *name = sgi_render_refusal_name(r);
+
+        g_assert_nonnull(name);
+        g_assert_true(g_hash_table_add(names, (gpointer)name));
+    }
+    g_assert_cmpstr(sgi_render_refusal_name(SGI_RENDER_REFUSAL_FOG), ==,
+                    "fog");
+    g_assert_cmpstr(sgi_render_refusal_name(SGI_RENDER_REFUSAL__MAX), ==,
+                    "unknown");
+    g_assert_cmpint(sgi_render_refusal_class(SGI_RENDER_REFUSAL_FOG), ==,
+                    SGI_RENDER_REFUSAL_CLASS_STATE);
+    g_assert_cmpint(sgi_render_refusal_class(SGI_RENDER_REFUSAL_HOST_VIEWPORT),
+                    ==, SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT);
+    g_assert_cmpint(sgi_render_refusal_class(SGI_RENDER_REFUSAL_HOST_PROBE),
+                    ==, SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT);
+    g_assert_cmpint(sgi_render_refusal_class(SGI_RENDER_REFUSAL_PRECISION),
+                    ==, SGI_RENDER_REFUSAL_CLASS_PRECISION);
+}
+
+/*
+ * Decoded CLEAR through the attempt: it commits, and refuses unsupported
+ * planes, and a family snapshot or precision refusal before any commit.
+ */
+static void test_attempt_clear(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect full[] = { { 0, 0, 15, 15 } };
+    static const SGIRenderResourceOps refusing_snapshot = {
+        .snapshot = prim_refusing_snapshot,
+        .commit = prim_commit,
+    };
+    PrimCheck check = { 0 };
+    const SGIRenderAttemptOptions checked = {
+        .check_staged = prim_check_staged, .opaque = &check,
+    };
+    static const struct {
+        const char *name;
+        unsigned bits, index_bits;
+        bool refusing_snapshot, check;
+        SGIRenderResult check_result;
+        SGIRenderDrawResult result;
+        SGIRenderRefusal reason;
+        unsigned snapshots, commits;
+    } cases[] = {
+        { "ok", 8, 0, false, false, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_OK, SGI_RENDER_REFUSAL_NONE, 1, 1 },
+        { "colour index", 8, 8, false, false, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_REFUSED, SGI_RENDER_REFUSAL_RASTER_OP, 0, 0 },
+        { "snapshot refusal", 8, 0, true, false, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_REFUSED, SGI_RENDER_REFUSAL_SNAPSHOT, 1, 0 },
+        { "precision refusal", 8, 0, false, true,
+          SGI_RENDER_UNSUPPORTED, SGI_RENDER_DRAW_REFUSED,
+          SGI_RENDER_REFUSAL_PRECISION, 1, 0 },
+        { "precision accepted", 8, 0, false, true, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_OK, SGI_RENDER_REFUSAL_NONE, 1, 1 },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree PrimFixture *f = g_new(PrimFixture, 1);
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        SGIRasterTarget target = {
+            .opaque = f, .resources = res, .resource_count = 1,
+            .resource_ops = &prim_ops,
+        };
+        const SGIRenderAttemptOptions *opts = NULL;
+        SGIRasterOp op = { 0 };
+        SGIRenderAttemptOutcome outcome;
+        SGIRenderDrawResult result;
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        p->bits = cases[i].bits;
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_destination(f, p);
+        prim_clear_op(&op, full, 1, NULL);
+        op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+        op.clear_colour_mask = SGI_GL_COLOUR_MASK_ALL;
+        op.clear_rgba[0] = 0.5f;
+        op.index_bits = cases[i].index_bits;
+        check = (PrimCheck) { .result = cases[i].check_result };
+        if (cases[i].refusing_snapshot) {
+            target.resource_ops = &refusing_snapshot;
+        }
+        if (cases[i].check) {
+            opts = &checked;
+        }
+        result = sgi_render_raster_attempt(renderer, &rules, &target, &op,
+                                           opts, &outcome, &err);
+        if (result != cases[i].result || outcome.reason != cases[i].reason ||
+            f->snapshots != cases[i].snapshots ||
+            f->commits != cases[i].commits ||
+            (cases[i].check && check.calls != 1)) {
+            const char *why = err ? error_get_pretty(err) : "(no error)";
+
+            g_test_message("%s: result %d reason %s, %u snapshots, %u "
+                           "commits, %u checks: %s", cases[i].name, result,
+                           sgi_render_refusal_name(outcome.reason),
+                           f->snapshots, f->commits, check.calls, why);
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -6478,6 +6875,10 @@ int main(int argc, char **argv)
                     test_scalar_match_colour_ties);
     g_test_add_func("/sgi-renderer-gl/scalar-match-shared-edges",
                     test_scalar_match_shared_edges);
+    g_test_add_func("/sgi-renderer-gl/attempt-outcomes",
+                    test_attempt_outcomes);
+    g_test_add_func("/sgi-renderer-gl/refusal-names", test_refusal_names);
+    g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-clipped",
                     test_scalar_match_depth_clipped);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-planes",

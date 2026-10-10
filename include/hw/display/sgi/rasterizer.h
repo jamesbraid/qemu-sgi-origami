@@ -7,6 +7,7 @@
 #define HW_DISPLAY_SGI_RASTERIZER_H
 
 #include "hw/display/sgi/gl-context.h"
+#include "ui/sgi-renderer.h"
 
 /*
  * The rules a head's rasterizer follows where OpenGL leaves a choice or a
@@ -483,6 +484,111 @@ SGIRenderCommitResult sgi_render_resource_commit_covered(
     size_t stride_slots, size_t capacity_slots,
     const SGIRenderWriteCoverage *writes, Error **errp);
 typedef struct SGIRenderer SGIRenderer;
+
+/*
+ * Why a checked draw or raster operation was refused: one feature row each,
+ * so a family can count its fallbacks by reason. A refusal is decided
+ * before any native access, or, for the last two, before the first native
+ * write.
+ */
+typedef enum SGIRenderRefusal {
+    SGI_RENDER_REFUSAL_NONE,
+    /* State the shared renderer does not draw. */
+    SGI_RENDER_REFUSAL_RULES,           /* raster rules */
+    SGI_RENDER_REFUSAL_DITHER,          /* ordered dithering */
+    SGI_RENDER_REFUSAL_PRIMITIVE,       /* mode, polygon mode, stipple */
+    SGI_RENDER_REFUSAL_SMOOTHING,       /* smoothed points and lines */
+    SGI_RENDER_REFUSAL_COLOUR_INDEX,
+    SGI_RENDER_REFUSAL_BUFFERS,         /* draw buffers, colour mask */
+    SGI_RENDER_REFUSAL_FRAGMENT_TESTS,  /* depth, stencil and alpha tests */
+    SGI_RENDER_REFUSAL_FOG,
+    SGI_RENDER_REFUSAL_FACING,          /* culling, back colours */
+    SGI_RENDER_REFUSAL_CLIP_PLANES,
+    SGI_RENDER_REFUSAL_LOGIC_OP,
+    SGI_RENDER_REFUSAL_POLYGON_OFFSET,
+    SGI_RENDER_REFUSAL_WINDOW,          /* window matrix, drawable origin */
+    SGI_RENDER_REFUSAL_GEOMETRY,        /* non-finite or out-of-range input */
+    SGI_RENDER_REFUSAL_DEPTH_PLANE,     /* textured depth near a plane */
+    SGI_RENDER_REFUSAL_LINE_SHAPE,      /* a segment not drawn exactly */
+    SGI_RENDER_REFUSAL_RESOURCE,        /* target resource layout */
+    SGI_RENDER_REFUSAL_STORE_WIDTH,     /* widths not proven */
+    SGI_RENDER_REFUSAL_BLEND,           /* equation, factor or width */
+    SGI_RENDER_REFUSAL_BLEND_OVERLAP,   /* blending several primitives */
+    SGI_RENDER_REFUSAL_TEXTURE,         /* texture state or resource */
+    SGI_RENDER_REFUSAL_PROVIDER,        /* missing resource callbacks */
+    SGI_RENDER_REFUSAL_RASTER_OP,       /* raster operation or plane */
+    /* Host limits, which vary by host. */
+    SGI_RENDER_REFUSAL_HOST_VIEWPORT,
+    SGI_RENDER_REFUSAL_HOST_POINT_SIZE,
+    SGI_RENDER_REFUSAL_HOST_PROGRAM,    /* OpenGL too old for a program */
+    SGI_RENDER_REFUSAL_HOST_PROBE,      /* lines or smooth triangles differ */
+    SGI_RENDER_REFUSAL_HOST_STAGING,    /* host vertex or texture bounds */
+    /* The family's own refusals. */
+    SGI_RENDER_REFUSAL_SNAPSHOT,        /* a view cannot hold stored data */
+    SGI_RENDER_REFUSAL_PRECISION,       /* staged pixels differ */
+    SGI_RENDER_REFUSAL__MAX,
+} SGIRenderRefusal;
+
+typedef enum SGIRenderRefusalClass {
+    SGI_RENDER_REFUSAL_CLASS_STATE,
+    SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    SGI_RENDER_REFUSAL_CLASS_PRECISION,
+} SGIRenderRefusalClass;
+
+/* A stable lowercase name for counters and traces, such as "fog". */
+const char *sgi_render_refusal_name(SGIRenderRefusal reason);
+SGIRenderRefusalClass sgi_render_refusal_class(SGIRenderRefusal reason);
+
+/* Borrowed for one attempt; a zeroed struct asks for nothing extra. */
+typedef struct SGIRenderAttemptOptions {
+    /*
+     * Optional precision check of each resource's staged pixels, after
+     * host readback and before the first native commit. slots and writes
+     * are as the commit would receive them. OK accepts, UNSUPPORTED
+     * refuses as SGI_RENDER_REFUSAL_PRECISION and commits nothing; any
+     * other result is a failure. It must change no native state.
+     */
+    SGIRenderResult (*check_staged)(void *opaque,
+                                    const SGIRenderResource *resource,
+                                    const SGIRenderRect *rect,
+                                    const uint32_t *slots,
+                                    size_t stride_slots,
+                                    size_t capacity_slots,
+                                    const SGIRenderWriteCoverage *writes,
+                                    Error **errp);
+    void *opaque;
+} SGIRenderAttemptOptions;
+
+typedef struct SGIRenderAttemptOutcome {
+    /*
+     * SGI_RENDER_OK, SGI_RENDER_UNSUPPORTED when refused, or the cause of
+     * a failure: OOM, RESOURCE_ERROR or HOST_ERROR.
+     */
+    SGIRenderResult status;
+    SGIRenderRefusal reason;    /* NONE unless refused */
+} SGIRenderAttemptOutcome;
+
+/*
+ * Attempt a draw or raster operation on Mesa, for a caller that draws a
+ * refused one on its scalar path instead. OK: every required pixel is
+ * committed. REFUSED: nothing visible happened, no failure latched, and
+ * outcome->reason says why. A snapshot callback refuses by returning
+ * SGI_RENDER_UNSUPPORTED, and may do so only when it has read native
+ * storage and changed nothing. FAILED: an allocation, resource, host or
+ * commit failure, possibly after native writes; never retry it on the
+ * scalar path. sgi_render_draw_checked() and sgi_render_raster_checked()
+ * are these without options, returning outcome->status.
+ */
+SGIRenderDrawResult sgi_render_draw_attempt(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIGLDraw *draw,
+    const SGIRenderAttemptOptions *opts, SGIRenderAttemptOutcome *outcome,
+    Error **errp);
+SGIRenderDrawResult sgi_render_raster_attempt(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIRasterOp *op,
+    const SGIRenderAttemptOptions *opts, SGIRenderAttemptOutcome *outcome,
+    Error **errp);
 
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
