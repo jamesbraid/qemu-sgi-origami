@@ -13283,6 +13283,86 @@ static void test_renderer_typed_failure_reset(void)
     qtest_quit(s);
 }
 
+/*
+ * A failed draw on the Mesa route stops the VM. It is not retried on the
+ * scalar path, and a later fence does not complete.
+ */
+static void test_renderer_typed_checked_failure(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s;
+    char *planes[7];
+    uint64_t requests, draws, fallbacks, completions, generation;
+    uint32_t causes;
+    QDict *status;
+
+    if (!g_test_subprocess()) {
+        /* The VM-stop diagnostic goes to QEMU's stderr. */
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*Injected SGI renderer test draw failure*");
+        g_test_trap_assert_stderr_unmatched(
+            "*Injected SGI renderer test draw failure*"
+            "Injected SGI renderer test draw failure*");
+        return;
+    }
+    s = kona_init_logged_args(&log, " -global sgi-kona.host-gpu=on");
+    renderer_typed_setup(s);
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    texture_plane_digests(s, planes);
+    prepare_refused_reply(s);
+    requests = renderer_counter(s, "x-test-gpu-requests");
+    draws = renderer_counter(s, "x-test-gpu-draws");
+    fallbacks = renderer_counter(s, "x-test-gpu-fallbacks");
+    completions = renderer_counter(s, "x-test-dma-completions");
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    causes = qtest_readl(s, REG_INT_CAUSE) & (INT_CAUSE_MAILBOX | 0x20);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-fail-draw','value':1}}");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    status = qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "internal-error");
+    qobject_unref(status);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     requests + 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                     fallbacks);
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     >, generation);
+    texture_assert_planes(s, planes);
+    assert_reply_unchanged(s);
+
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    kona_command(s, 0xc6, (uint32_t[]){ 1 }, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     requests + 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                     fallbacks);
+    g_assert_cmpuint(renderer_counter(s, "x-test-dma-completions"), ==,
+                     completions);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) &
+                    (INT_CAUSE_MAILBOX | 0x20), ==, causes);
+    texture_assert_planes(s, planes);
+    assert_reply_unchanged(s);
+    texture_free_digests(planes);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(found);
+    g_assert_null(strstr(found, "sgi_kona_return_post token 0xc6 "));
+}
+
 static void renderer_assert_image_colour(QTestState *s, uint32_t rgb)
 {
     g_autofree Expected *expected = g_new(Expected, 1);
@@ -15799,6 +15879,8 @@ int main(int argc, char **argv)
                    test_renderer_typed_ortho_excluded);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-failure-reset",
                    test_renderer_typed_failure_reset);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-checked-failure",
+                   test_renderer_typed_checked_failure);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
                    test_renderer_legacy_failure);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
