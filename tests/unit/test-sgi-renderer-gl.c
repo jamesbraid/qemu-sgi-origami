@@ -5355,9 +5355,9 @@ static void test_scalar_match_clear(void)
  * CLEAR, because the scalar path rounds to the rules' widths: with 10-bit
  * colour and 2-bit stored alpha, alpha 0.5 rounds to 512 of 1023 and
  * truncates to 1 of 3, where rounding straight to the store gives 2. Under
- * rules without alpha, as Odyssey pairs its rules with RGBA8, the scalar
- * path hands the store canonical zero alpha where Mesa would store the
- * colour's alpha, so that pairing is refused too.
+ * rules without alpha the scalar path hands the store canonical zero alpha
+ * where Mesa would store the colour's alpha, so that pairing is refused
+ * too.
  */
 static void test_scalar_match_store_widths(void)
 {
