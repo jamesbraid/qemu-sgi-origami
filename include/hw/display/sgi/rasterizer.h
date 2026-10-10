@@ -517,6 +517,7 @@ typedef enum SGIRenderRefusal {
     SGI_RENDER_REFUSAL_TEXTURE,         /* texture state or resource */
     SGI_RENDER_REFUSAL_PROVIDER,        /* missing resource callbacks */
     SGI_RENDER_REFUSAL_RASTER_OP,       /* raster operation or plane */
+    SGI_RENDER_REFUSAL_MIXED_FRAME,     /* outside the proven set */
     /* Host limits, which vary by host. */
     SGI_RENDER_REFUSAL_HOST_VIEWPORT,
     SGI_RENDER_REFUSAL_HOST_POINT_SIZE,
@@ -539,8 +540,14 @@ typedef enum SGIRenderRefusalClass {
 const char *sgi_render_refusal_name(SGIRenderRefusal reason);
 SGIRenderRefusalClass sgi_render_refusal_class(SGIRenderRefusal reason);
 
-/* Borrowed for one attempt; a zeroed struct asks for nothing extra. */
+/* Borrowed for one attempt; a zeroed struct asks for neither feature. */
 typedef struct SGIRenderAttemptOptions {
+    /*
+     * The caller draws refused work on its scalar path within the same
+     * frame, so refuse everything the scalar comparison tests do not prove
+     * pixel-identical, as SGI_RENDER_REFUSAL_MIXED_FRAME.
+     */
+    bool mixed_frame;
     /*
      * Optional precision check of each resource's staged pixels, after
      * host readback and before the first native commit. slots and writes

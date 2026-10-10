@@ -4704,6 +4704,154 @@ static void test_scalar_match_depth_clipped(void)
 }
 
 /*
+ * The mixed-frame set combines widths, modes and state that the other
+ * cases prove one at a time; these cases compare the combinations: every
+ * proven width, RGB and RGBA, every polygon mode, flat and smooth, under
+ * clips, scissors, offset and oversized viewports, matrices and top-origin
+ * rows.
+ */
+static void test_scalar_match_cross(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const unsigned widths[] = { 1, 2, 4, 5, 6, 8, 10 };
+    static const uint32_t modes[] = {
+        SGI_GL_TRIANGLES, SGI_GL_TRIANGLE_STRIP, SGI_GL_TRIANGLE_FAN,
+        SGI_GL_QUADS, SGI_GL_QUAD_STRIP, SGI_GL_POLYGON,
+    };
+    static const float points[8][2] = {
+        { 1.25f, 0.75f }, { 14.5f, 2.125f }, { 3.5f, 6.5f },
+        { 12.75f, 7.25f }, { 2.375f, 11.25f }, { 13.5f, 12.5f },
+        { 6.5f, 15.25f }, { 9.75f, 14.5f },
+    };
+    static const SGIClipRect disjoint[] = {
+        { 1, 1, 5, 4 }, { 9, 2, 14, 6 }, { 3, 10, 6, 15 },
+    };
+    static const char *const states[] = {
+        "clips", "scissor", "offset viewport", "oversized viewport",
+        "orthographic", "perspective", "top-origin",
+        "top-origin, scissor and perspective",
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+        for (unsigned components = 3; components <= 4; components++) {
+            /* One-bit stored alpha is refused; see store widths. */
+            if (widths[w] == 1 && components == 4) {
+                continue;
+            }
+            for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+                for (unsigned k = 0; k < 2 * ARRAY_SIZE(states); k++) {
+                    unsigned state = k / 2;
+                    bool smooth = k & 1;
+                    g_autofree char *name = g_strdup_printf(
+                        "%u-bit rgb%s mode %u %s %s", widths[w],
+                        components == 4 ? "a" : "", modes[m],
+                        smooth ? "smooth" : "flat", states[state]);
+
+                    prim_case_init(p, modes[m], components);
+                    p->bits = widths[w];
+                    p->state.shade_model = smooth ? SGI_GL_SMOOTH :
+                                                    SGI_GL_FLAT;
+                    switch (state) {
+                    case 0:
+                        prim_set_clips(p, disjoint, ARRAY_SIZE(disjoint));
+                        break;
+                    case 1:
+                    case 7:
+                        p->state.scissor_test = 1;
+                        memcpy(p->state.scissor, (int32_t[4]) { -4, 3, 13, 9 },
+                               sizeof(p->state.scissor));
+                        break;
+                    case 2:
+                        memcpy(p->state.viewport,
+                               (int32_t[4]) { 3, -2, 10, 12 },
+                               sizeof(p->state.viewport));
+                        break;
+                    case 3:
+                        memcpy(p->state.viewport,
+                               (int32_t[4]) { -8, -8, 40, 40 },
+                               sizeof(p->state.viewport));
+                        break;
+                    }
+                    p->top_origin = state >= 6;
+                    for (unsigned v = 0; v < ARRAY_SIZE(points); v++) {
+                        prim_vertex_window(p, points[v][0], points[v][1]);
+                    }
+                    if (state == 4 || state == 5 || state == 7) {
+                        prim_matrices(p, state != 4);
+                    }
+                    if (prim_compare(renderer, name, p, false)) {
+                        failures++;
+                    }
+                    cases++;
+                }
+            }
+        }
+    }
+    /* Lines are proven at 8 bits; combine their widths with the state. */
+    for (unsigned m = SGI_GL_LINES; m <= SGI_GL_LINE_STRIP; m++) {
+        for (unsigned k = 0; k < 3 * 2 * ARRAY_SIZE(states); k++) {
+            static const unsigned line_widths[] = { 1, 3, 6 };
+            unsigned state = k / 6, width = line_widths[k / 2 % 3];
+            bool smooth = k & 1;
+            g_autofree char *name = g_strdup_printf(
+                "line mode %u width %u %s %s", m, width,
+                smooth ? "smooth" : "flat", states[state]);
+
+            prim_case_init(p, m, 4);
+            p->draw.line_width = width;
+            p->state.shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+            switch (state) {
+            case 0:
+                prim_set_clips(p, disjoint, ARRAY_SIZE(disjoint));
+                break;
+            case 1:
+            case 7:
+                p->state.scissor_test = 1;
+                memcpy(p->state.scissor, (int32_t[4]) { -4, 3, 13, 9 },
+                       sizeof(p->state.scissor));
+                break;
+            case 2:
+                memcpy(p->state.viewport, (int32_t[4]) { 3, -2, 10, 12 },
+                       sizeof(p->state.viewport));
+                break;
+            case 3:
+                memcpy(p->state.viewport, (int32_t[4]) { -8, -8, 40, 40 },
+                       sizeof(p->state.viewport));
+                break;
+            }
+            p->top_origin = state >= 6;
+            for (unsigned v = 0; v < ARRAY_SIZE(points); v++) {
+                prim_vertex_window(p, points[v][0], points[v][1]);
+            }
+            if (state == 4 || state == 5 || state == 7) {
+                prim_matrices(p, state != 4);
+            }
+            if (prim_compare(renderer, name, p, false)) {
+                failures++;
+            }
+            cases++;
+        }
+    }
+    g_test_message("cross: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
  * Unblended draws at component widths other than 8. The scalar rules
  * stop at 10 bits, so 12- and 16-bit storage has no scalar comparison.
  * Stored alpha of one bit is refused: the scalar path rounds incoming
@@ -6734,8 +6882,169 @@ static void test_refusal_names(void)
 }
 
 /*
- * Decoded CLEAR through the attempt: it commits, and refuses unsupported
- * planes, and a family snapshot or precision refusal before any commit.
+ * With the mixed-frame flag, a draw outside the proven set is refused
+ * before any snapshot, and one inside it draws exactly what the scalar
+ * path draws. Without the flag the same refused draws are accepted, so the
+ * flag alone refuses them.
+ */
+static void test_mixed_frame_set(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
+    static const SGIRenderAttemptOptions plain = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned k = 0; ; k++) {
+        g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+        g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+        const char *name = NULL;
+        bool proven = true;
+
+        switch (k) {
+        case 0:
+            name = "flat fan";
+            prim_fan(p, 4);
+            break;
+        case 1:
+            name = "smooth fan with scissor on a top-origin resource";
+            prim_fan(p, 4);
+            p->state.shade_model = SGI_GL_SMOOTH;
+            p->top_origin = true;
+            p->state.scissor_test = 1;
+            memcpy(p->state.scissor, (int32_t[4]) { 3, 2, 9, 10 },
+                   sizeof(p->state.scissor));
+            break;
+        case 2:
+            name = "5-bit fan";
+            prim_fan(p, 3);
+            p->bits = 5;
+            break;
+        case 3:
+            name = "3-bit fan";
+            prim_fan(p, 3);
+            p->bits = 3;
+            proven = false;
+            break;
+        case 4:
+            name = "points of size 4";
+            prim_case_init(p, SGI_GL_POINTS, 4);
+            p->draw.point_size = 4;
+            prim_vertex_n(p, 4.5f, 5.5f);
+            prim_vertex_n(p, 10.25f, 11.75f);
+            break;
+        case 5:
+            name = "points of size 5";
+            prim_case_init(p, SGI_GL_POINTS, 4);
+            p->draw.point_size = 5;
+            prim_vertex_n(p, 4.5f, 5.5f);
+            proven = false;
+            break;
+        case 6:
+            name = "points in an offset viewport";
+            prim_case_init(p, SGI_GL_POINTS, 4);
+            memcpy(p->state.viewport, (int32_t[4]) { 2, 1, 12, 13 },
+                   sizeof(p->state.viewport));
+            prim_vertex_n(p, 4.5f, 5.5f);
+            proven = false;
+            break;
+        case 7:
+            name = "lines of width 6";
+            prim_lines(p, SGI_GL_LINES, 6, 0);
+            break;
+        case 8:
+            name = "lines of width 7";
+            prim_lines(p, SGI_GL_LINES, 7, 0);
+            proven = false;
+            break;
+        case 9:
+        case 10:
+            name = k == 9 ? "blended triangle" :
+                   "blended triangle with a scissor";
+            prim_case_init(p, SGI_GL_TRIANGLES, 4);
+            p->state.blend = 1;
+            p->state.blend_src = SGI_GL_SRC_ALPHA;
+            p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+            p->state.blend_equation = SGI_GL_FUNC_ADD;
+            prim_vertex_n(p, 1, 1.25f);
+            prim_vertex_n(p, 14.5f, 2);
+            prim_vertex_n(p, 7, 13.75f);
+            if (k == 10) {
+                p->state.scissor_test = 1;
+                memcpy(p->state.scissor, (int32_t[4]) { 0, 0, 16, 16 },
+                       sizeof(p->state.scissor));
+                proven = false;
+            }
+            break;
+        case 11:
+            name = "textured triangle";
+            prim_case_init(p, SGI_GL_TRIANGLES, 4);
+            prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                         SGI_GL_REPLACE);
+            proven = false;
+            break;
+        }
+        if (!name) {
+            break;
+        }
+        cases++;
+        p->attempt = &mixed;
+        prim_destination(scalar, p);
+        prim_destination(mesa, p);
+        prim_scalar_draw(p, scalar);
+        prim_mesa_draw(renderer, p, mesa, &err);
+        g_clear_pointer(&err, error_free);
+        if (!proven) {
+            if (p->attempt_result != SGI_RENDER_DRAW_REFUSED ||
+                p->outcome.reason != SGI_RENDER_REFUSAL_MIXED_FRAME ||
+                mesa->snapshots) {
+                g_test_message("%s: result %d reason %s after %u snapshots",
+                               name, p->attempt_result,
+                               sgi_render_refusal_name(p->outcome.reason),
+                               mesa->snapshots);
+                failures++;
+            }
+            p->attempt = &plain;
+            prim_destination(mesa, p);
+            prim_mesa_draw(renderer, p, mesa, &err);
+            g_clear_pointer(&err, error_free);
+            if (p->attempt_result != SGI_RENDER_DRAW_OK) {
+                g_test_message("%s: not accepted without the flag: %d", name,
+                               p->attempt_result);
+                failures++;
+            }
+            continue;
+        }
+        if (p->attempt_result != SGI_RENDER_DRAW_OK) {
+            g_test_message("%s: result %d reason %s", name,
+                           p->attempt_result,
+                           sgi_render_refusal_name(p->outcome.reason));
+            failures++;
+        } else if (prim_report(name, scalar, mesa)) {
+            failures++;
+        }
+    }
+    g_test_message("mixed frame: %u of %u cases wrong", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Decoded CLEAR through the attempt: it commits, refuses unsupported
+ * planes, a family snapshot or precision refusal before any commit, and
+ * under the mixed-frame flag widths scalar-match-clear does not prove.
  */
 static void test_attempt_clear(void)
 {
@@ -6749,26 +7058,31 @@ static void test_attempt_clear(void)
     const SGIRenderAttemptOptions checked = {
         .check_staged = prim_check_staged, .opaque = &check,
     };
+    static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
     static const struct {
         const char *name;
         unsigned bits, index_bits;
-        bool refusing_snapshot, check;
+        bool refusing_snapshot, check, mixed;
         SGIRenderResult check_result;
         SGIRenderDrawResult result;
         SGIRenderRefusal reason;
         unsigned snapshots, commits;
     } cases[] = {
-        { "ok", 8, 0, false, false, SGI_RENDER_OK,
+        { "ok", 8, 0, false, false, false, SGI_RENDER_OK,
           SGI_RENDER_DRAW_OK, SGI_RENDER_REFUSAL_NONE, 1, 1 },
-        { "colour index", 8, 8, false, false, SGI_RENDER_OK,
+        { "colour index", 8, 8, false, false, false, SGI_RENDER_OK,
           SGI_RENDER_DRAW_REFUSED, SGI_RENDER_REFUSAL_RASTER_OP, 0, 0 },
-        { "snapshot refusal", 8, 0, true, false, SGI_RENDER_OK,
+        { "snapshot refusal", 8, 0, true, false, false, SGI_RENDER_OK,
           SGI_RENDER_DRAW_REFUSED, SGI_RENDER_REFUSAL_SNAPSHOT, 1, 0 },
-        { "precision refusal", 8, 0, false, true,
+        { "precision refusal", 8, 0, false, true, false,
           SGI_RENDER_UNSUPPORTED, SGI_RENDER_DRAW_REFUSED,
           SGI_RENDER_REFUSAL_PRECISION, 1, 0 },
-        { "precision accepted", 8, 0, false, true, SGI_RENDER_OK,
+        { "precision accepted", 8, 0, false, true, false, SGI_RENDER_OK,
           SGI_RENDER_DRAW_OK, SGI_RENDER_REFUSAL_NONE, 1, 1 },
+        { "mixed 10-bit", 10, 0, false, false, true, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_OK, SGI_RENDER_REFUSAL_NONE, 1, 1 },
+        { "mixed 5-bit", 5, 0, false, false, true, SGI_RENDER_OK,
+          SGI_RENDER_DRAW_REFUSED, SGI_RENDER_REFUSAL_MIXED_FRAME, 0, 0 },
     };
     PrimCase *p = g_new(PrimCase, 1);
     SGIRenderer *renderer;
@@ -6811,6 +7125,8 @@ static void test_attempt_clear(void)
         }
         if (cases[i].check) {
             opts = &checked;
+        } else if (cases[i].mixed) {
+            opts = &mixed;
         }
         result = sgi_render_raster_attempt(renderer, &rules, &target, &op,
                                            opts, &outcome, &err);
@@ -6878,7 +7194,11 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/attempt-outcomes",
                     test_attempt_outcomes);
     g_test_add_func("/sgi-renderer-gl/refusal-names", test_refusal_names);
+    g_test_add_func("/sgi-renderer-gl/mixed-frame-set",
+                    test_mixed_frame_set);
     g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-cross",
+                    test_scalar_match_cross);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-clipped",
                     test_scalar_match_depth_clipped);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-planes",

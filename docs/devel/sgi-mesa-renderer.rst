@@ -256,6 +256,13 @@ with the rules named above. Any other driver is unproven.
   - 600 seeded random segments, some cut by view-volume clipping.
 
   ``lines-refused`` checks the refusals, including the probe.
+- ``scalar-match-cross``: every proven width, RGB and RGBA, with every
+  polygon mode, flat and smooth, and lines of widths 1, 3 and 6 at 8 bits,
+  each under several clips, a scissor, offset and oversized viewports,
+  orthographic and perspective matrices and top-origin rows.
+- ``mixed-frame-set`` and ``attempt-clear``: the mixed-frame flag refuses
+  each limit above before any snapshot, and draws inside the set match the
+  scalar path.
 - ``smooth-probe-refused``: a renderer whose smooth triangles are moved one
   subpixel fails its probe, refuses smooth triangles and still draws flat
   ones; a host failure during the probe is a failure.
@@ -513,6 +520,32 @@ draw to count. The attempt and its fallback run in the big-lock section
 that issued the draw, so no guest access, reset or migration observes the
 refused draw between them. A family must defer once-per-draw reports and
 validation flags until the draw's path is final.
+
+A frame mixing Mesa and scalar draws equals an all-scalar frame only if
+every Mesa draw writes exactly the pixels its scalar draw would. A family
+that falls back sets ``mixed_frame`` in the options, and the renderer then
+also refuses, with reason ``MIXED_FRAME`` before the snapshot, every draw
+outside the set the cases under `Proven against the scalar path`_ prove:
+
+- raster rules the scalar rasterizer implements, with 1, 2, 4, 5, 6, 8 or
+  10 colour bits;
+- untextured polygons under any state the renderer accepts, but blended
+  ones only in the comparisons' fixture: one clip covering a bottom-origin
+  resource, no scissor, the viewport equal to the resource and identity
+  matrices;
+- lines at 8 bits and widths up to 6, under any accepted state;
+- unblended points of size up to 4, in that fixture;
+- no textured triangles. Away from the fixture's vertices, a textured
+  triangle with a diagonal edge through pixel centres sampled a different
+  colour from the scalar path at one pixel, so the texture comparisons do
+  not cover textured draws in general;
+- CLEAR at 4, 8 and 10 colour bits.
+
+A family may instead refuse such state itself before calling. Widening the
+set needs a scalar-comparison case, or a reviewed change to the scalar
+contract. The set holds only for the pinned llvmpipe the cases select. On
+any other driver a family needs its own comparison results, or a precision
+check through ``check_staged``, before it mixes paths.
 
 Build and test
 --------------
