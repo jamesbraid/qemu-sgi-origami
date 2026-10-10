@@ -493,6 +493,17 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
  * its minor axis, so a renderer created afterwards fails its line probe.
  */
 void sgi_render_test_line_band(int subpixels);
+/*
+ * Test-only: move every Mesa smooth triangle this many subpixels right, so
+ * a renderer created afterwards fails its smooth triangle probe.
+ */
+void sgi_render_test_window_shift(int subpixels);
+/*
+ * Test-only: run the smooth triangle probe now if it has not run, so a
+ * fault armed afterwards reaches the draw under test, not the probe.
+ */
+SGIRenderResult sgi_render_test_window_probe(SGIRenderer *renderer,
+                                             Error **errp);
 SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterRules *rules,
                                           const SGIRasterTarget *target,

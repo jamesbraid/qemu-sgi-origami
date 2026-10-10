@@ -67,6 +67,20 @@ triangles:
   operations, before rounding to the native steps.
 - Fragments are bounded by the viewport, as the scalar path bounds them.
 
+This is exact only where llvmpipe evaluates the program's doubles as IEEE
+binary64 and the compiler has not fused the scalar path's own multiplies
+and adds, as on the pinned llvmpipe build on x86-64 hosts that the unit
+tests prove. GLSL does not require correctly rounded double division, and
+compilers for other architectures may contract the scalar arithmetic.
+Before a renderer draws its first smooth triangle, it draws
+perspective-weighted smooth triangles, two of them sharing an edge through
+pixel centres and one with an edge in the near plane, through both paths.
+If coverage or any covered pixel's colour differs, smooth triangles stay
+unsupported on that renderer. A host failure during the probe is returned
+as that failure. Flat triangles near the near or far plane use the same
+program, so where the program is missing or this probe fails they are
+refused too.
+
 Smooth textured triangles still interpolate the primary colour in float32 and
 are unproven.
 
@@ -242,6 +256,9 @@ with the rules named above. Any other driver is unproven.
   - 600 seeded random segments, some cut by view-volume clipping.
 
   ``lines-refused`` checks the refusals, including the probe.
+- ``smooth-probe-refused``: a renderer whose smooth triangles are moved one
+  subpixel fails its probe, refuses smooth triangles and still draws flat
+  ones; a host failure during the probe is a failure.
 - ``smoothing-parity``: points, lines, strips, loops, triangles, quads and
   polygons with every combination of smoothing enables, flat and smooth,
   under rules that do and do not smooth.
