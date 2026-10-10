@@ -350,7 +350,12 @@ width would settle the second.
 
 Untextured draws need a small colour program that the worker builds when it
 creates its context. If that program fails to compile, renderer creation
-fails, so clears through the same renderer are unavailable too.
+fails, so clears through the same renderer are unavailable too. The
+texture, smooth triangle and line programs need OpenGL 4.5. On an older
+host the draws that need them return ``SGI_RENDER_UNSUPPORTED``, a host
+limit. If one fails to build on a host that has OpenGL 4.5, creation
+returns ``SGI_RENDER_CREATE_HOST_ERROR``, because a later refusal would
+hide a broken host behind the scalar path.
 
 Decoded CLEAR
 -------------
