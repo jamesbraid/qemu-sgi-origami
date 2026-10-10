@@ -118,12 +118,16 @@ typedef enum SGIRendererPrimitive {
 
 /*
  * One triangle as the scalar rasterizer scans it: snapped window positions
- * in 1/256 subpixels, wound counter-clockwise, each vertex's 1 / clip w and
- * clamped colour. Each fragment's colour comes from its centre's
- * barycentric weights, corrected by 1 / w, computed in double.
+ * in 1/256 subpixels, wound counter-clockwise, each vertex's normalized
+ * depth, 1 / clip w and clamped colour. Each fragment's depth and colour
+ * come from its centre's barycentric weights, the colour corrected by
+ * 1 / w, computed in double; a depth outside [0, 1] drops the fragment.
+ * In a flat-shaded frame every vertex carries the provoking colour, which
+ * is used as it is.
  */
 typedef struct SGIRendererTriangle {
     double x[3], y[3];
+    double z[3];
     double inv_w[3];
     float colour[3][4];
 } SGIRendererTriangle;

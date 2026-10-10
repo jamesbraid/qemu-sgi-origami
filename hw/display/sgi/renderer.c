@@ -411,8 +411,34 @@ typedef struct SGIRenderPieces {
      */
     SGIRendererTriangle *window;
     uint32_t window_count, window_capacity;
+    /*
+     * With rules set, each triangle is also clipped and projected as the
+     * scalar path does, to find depths it may round past a plane; with v
+     * NULL as well, nothing else is produced.
+     */
     const SGIRasterRules *rules;
+    bool depth_inexact;
 } SGIRenderPieces;
+
+/* Far below the plane, far above the scalar depth sum's rounding error. */
+#define SGI_RENDER_DEPTH_MARGIN ldexp(1, -32)
+
+/*
+ * The scalar path drops a fragment whose depth, interpolated in double
+ * from the first vertex, rounds outside [0, 1]; GL ignores depth here.
+ * Equal depths interpolate exactly. Otherwise a sum can round past a plane
+ * only within rounding error of it, so only where a vertex is that close,
+ * as one on the near or far plane is. Such a triangle is drawn by the
+ * window program, which repeats the scalar sum and its drop.
+ */
+static bool sgi_render_depth_exact(const SGIRasterTriangle *t)
+{
+    double lo = MIN(t->z[0], MIN(t->z[1], t->z[2]));
+    double hi = MAX(t->z[0], MAX(t->z[1], t->z[2]));
+
+    return lo == hi || (lo >= SGI_RENDER_DEPTH_MARGIN &&
+                        hi <= 1 - SGI_RENDER_DEPTH_MARGIN);
+}
 
 /*
  * One piece's vertices; flat shading gives each the provoking colour, so
@@ -427,7 +453,7 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
                           SGI_GL_V_COLOR;
     float rounded[4];
 
-    if (p->window) {
+    if (n == 3 && p->rules) {
         SGIRasterTriangle t[SGI_VOLUME_TRIANGLE_MAX - 2];
         unsigned count = sgi_raster_triangle_pieces(p->rules, draw->state,
             draw->vertices + (size_t)index[0] * SGI_GL_VERTEX_FLOATS,
@@ -435,6 +461,12 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
             draw->vertices + (size_t)index[2] * SGI_GL_VERTEX_FLOATS, t);
 
         for (unsigned i = 0; i < count; i++) {
+            p->depth_inexact |= !sgi_render_depth_exact(&t[i]);
+        }
+        if (!p->window && !p->v) {
+            return;
+        }
+        for (unsigned i = 0; p->window && i < count; i++) {
             SGIRendererTriangle *out;
 
             if (p->window_count == p->window_capacity) {
@@ -445,13 +477,17 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
             for (unsigned v = 0; v < 3; v++) {
                 out->x[v] = t[i].x[v];
                 out->y[v] = t[i].y[v];
+                out->z[v] = t[i].z[v];
                 out->inv_w[v] = t[i].inv_w[v];
                 for (unsigned c = 0; c < 4; c++) {
-                    out->colour[v][c] = t[i].rgba[v][c];
+                    /* A flat piece takes the provoking colour, unclamped. */
+                    out->colour[v][c] = p->flat ? colour[c] : t[i].rgba[v][c];
                 }
             }
         }
-        return;
+        if (p->window) {
+            return;
+        }
     }
     /*
      * A constant colour is rounded here in double, as the scalar path
@@ -1042,6 +1078,13 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
          */
         window = draw->mode != SGI_GL_POINTS &&
                  draw->state->shade_model == SGI_GL_SMOOTH;
+        /* So are flat triangles whose depth may round past a plane. */
+        if (!window && draw->mode != SGI_GL_POINTS) {
+            SGIRenderPieces check = { .rules = rules };
+
+            sgi_render_decompose(&check, draw);
+            window = check.depth_inexact;
+        }
     }
     if (window) {
         const double reach = (double)SGI_RENDERER_WINDOW_REACH * 256;
@@ -1062,6 +1105,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         pieces.window = window_storage;
         pieces.rules = rules;
+        pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
         sgi_render_decompose(&pieces, draw);
         if (pieces.window_count > pieces.window_capacity) {
             error_setg(errp, "SGI Mesa draw has too many triangles");
@@ -1088,6 +1132,15 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
     }
     if (draw->state->texture_2d) {
+        SGIRenderPieces check = { .rules = rules };
+
+        sgi_render_decompose(&check, draw);
+        /* The textured program does not repeat the scalar depth drop. */
+        if (check.depth_inexact) {
+            error_setg(errp, "SGI Mesa textured triangle depth may round "
+                       "past the near or far plane");
+            return SGI_RENDER_UNSUPPORTED;
+        }
         texture_resource = sgi_render_texture_resource(target, draw->state);
         if (!texture_resource) {
             error_setg(errp,

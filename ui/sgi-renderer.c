@@ -54,7 +54,8 @@ static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
 
                 if (!(t->x[v] > -reach && t->x[v] < 3 * reach &&
                       t->y[v] > -reach && t->y[v] < 3 * reach &&
-                      y > -reach && y < 3 * reach)) {
+                      y > -reach && y < 3 * reach) ||
+                    !(t->z[v] >= 0 && t->z[v] <= 1)) {
                     return false;
                 }
             }
