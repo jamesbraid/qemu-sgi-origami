@@ -417,7 +417,8 @@ static void test_gl_mesa_checked_failures(void)
 {
     static const uint32_t failures[] = { 1, 2, 3, 4 };
 
-    for (unsigned i = 0; i < ARRAY_SIZE(failures) + 1; i++) {
+    /* After the injected results: a scissor, then a client clip plane. */
+    for (unsigned i = 0; i < ARRAY_SIZE(failures) + 2; i++) {
         QTestState *test = qtest_init(
             MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
         uint32_t expected = i < ARRAY_SIZE(failures) ? failures[i] : 2;
@@ -434,16 +435,19 @@ static void test_gl_mesa_checked_failures(void)
                 "{'execute': 'qom-set', 'arguments': {'path': %s, "
                 "'property': 'x-test-render-inject-result', 'value': %u}}",
                 MGRAS_QOM_PATH, expected);
-        } else {
+        } else if (i == ARRAY_SIZE(failures)) {
             gl_scissor(test, 0, 0, 1, 1);
             gl_one(test, GL_SCISSOR_TEST_HDR, 1);
+        } else {
+            gl_clip_plane(test, 0, 1, 0, 0, 0);
+            gl_one(test, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
         }
         gl_color3f(test, 1, 0, 0);
         gl_word(test, GL_BEGIN_TRIANGLES);
         gl_vertex2f(test, -1, -1);
         gl_vertex2f(test, 1, -1);
         gl_vertex2f(test, -1, 1);
-        if (i == 0 || i == ARRAY_SIZE(failures)) {
+        if (i == 0 || i >= ARRAY_SIZE(failures)) {
             gl_word(test, GL_END_TRIANGLES);
         }
         g_assert_cmpuint(mgras_qom_get_uint(test,
