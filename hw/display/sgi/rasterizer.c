@@ -1160,6 +1160,29 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
 }
 
 /* Validate every surviving vertex before any part of its primitive draws. */
+/*
+ * Whether a clipped vertex has a clip w and the texture coordinates im
+ * uses: s and q always, t unless the image is one-dimensional, and r for
+ * a shadow comparison against a depth image.
+ */
+static bool sgi_soft_texcoord_valid(const SGIGLTexImage *im,
+                                    const SGIGLTexLevel *base,
+                                    const SGIVolumeVertex *v)
+{
+    bool valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
+                 v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
+
+    for (int k = 0; k < 4; k++) {
+        if (!im->one_dimensional || k == 0 || k == 3 ||
+            (k == 2 && im->shadow_compare &&
+             (base ? base->base_format : im->base_format) ==
+             SGI_GL_DEPTH_COMPONENT)) {
+            valid &= isfinite(v->attr[SGI_GL_V_TEXCOORD + k]);
+        }
+    }
+    return valid;
+}
+
 static bool sgi_soft_texture_vertex_valid(const SGISoftDraw *r,
                                           const SGIVolumeVertex *v)
 {
@@ -1168,16 +1191,7 @@ static bool sgi_soft_texture_vertex_valid(const SGISoftDraw *r,
     if (!r->texture) {
         return true;
     }
-    valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
-            v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
-    for (int k = 0; k < 4; k++) {
-        if (!r->texture->one_dimensional || k == 0 || k == 3 ||
-            (k == 2 && r->texture->shadow_compare &&
-             (r->texture_base ? r->texture_base->base_format :
-              r->texture->base_format) == SGI_GL_DEPTH_COMPONENT)) {
-            valid &= isfinite(v->attr[SGI_GL_V_TEXCOORD + k]);
-        }
-    }
+    valid = sgi_soft_texcoord_valid(r->texture, r->texture_base, v);
     if (!valid) {
         sgi_soft_texture_report(r, 4, "invalid clipped coordinates, "
                                 "primitive dropped");
@@ -2893,10 +2907,32 @@ unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
             t->z[j] = v[j].z;
             t->inv_w[j] = v[j].inv_w;
             memcpy(t->rgba[j], v[j].rgba, sizeof(t->rgba[j]));
+            memcpy(t->texcoord[j], v[j].texcoord, sizeof(t->texcoord[j]));
         }
         count++;
     }
     return count;
+}
+
+bool sgi_raster_triangle_texture_valid(const SGIGLDrawState *st,
+                                       const SGIGLTexImage *image,
+                                       const float *va, const float *vb,
+                                       const float *vc)
+{
+    const float *verts[3] = { va, vb, vc };
+    SGIVolumeVertex in[3], poly[SGI_VOLUME_TRIANGLE_MAX];
+    unsigned n;
+
+    for (int i = 0; i < 3; i++) {
+        sgi_volume_from_draw_vertex(st, verts[i], &in[i]);
+    }
+    n = sgi_volume_clip_triangle(in, poly);
+    for (unsigned i = 0; i < n; i++) {
+        if (!sgi_soft_texcoord_valid(image, NULL, &poly[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* Sign of v + e1 * epsilon + e2 * epsilon squared as epsilon -> 0+. */

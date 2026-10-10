@@ -77,9 +77,7 @@ typedef struct SGIRendererRequest {
 } SGIRendererRequest;
 
 #define SGI_RENDERER_FRAME_VERTEX_FLOATS 12
-/* Bounds a textured frame, which is one clipped fan. */
-#define SGI_RENDERER_FRAME_VERTICES_MAX 9
-/* Bounds an untextured frame of independent primitives. */
+/* Bounds a frame of independent primitives. */
 #define SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX (1u << 18)
 #define SGI_RENDERER_CLEAR_RECTS 16
 
@@ -119,17 +117,19 @@ typedef enum SGIRendererPrimitive {
 /*
  * One triangle as the scalar rasterizer scans it: snapped window positions
  * in 1/256 subpixels, wound counter-clockwise, each vertex's normalized
- * depth, 1 / clip w and clamped colour. Each fragment's depth and colour
- * come from its centre's barycentric weights, the colour corrected by
- * 1 / w, computed in double; a depth outside [0, 1] drops the fragment.
- * In a flat-shaded frame every vertex carries the provoking colour, which
- * is used as it is.
+ * depth, 1 / clip w, clamped colour and texture coordinates. Each
+ * fragment's depth, colour and texture coordinates come from its centre's
+ * barycentric weights, the colour and coordinates corrected by 1 / w,
+ * computed in double; a depth outside [0, 1] drops the fragment. In a
+ * flat-shaded frame every vertex carries the provoking colour, which is
+ * used as it is.
  */
 typedef struct SGIRendererTriangle {
     double x[3], y[3];
     double z[3];
     double inv_w[3];
     float colour[3][4];
+    double texcoord[3][4];  /* s, t, r, q; used by textured frames */
 } SGIRendererTriangle;
 
 /*
@@ -164,8 +164,8 @@ typedef struct SGIRendererTexture2D {
     uint32_t env_mode, wrap_s, wrap_t;
     bool linear_filter;
     uint8_t component_bits;
-    double border_bytes[4];
-    double environment_bytes[4];
+    double border[4];       /* in [0, 1] */
+    double environment[4];  /* in [0, 1] */
     const uint32_t *slots; /* Raw RGBA slots, bottom row first. */
     size_t capacity_slots;
 } SGIRendererTexture2D;
@@ -175,7 +175,7 @@ typedef struct SGIRendererClearRect {
 } SGIRendererClearRect;
 
 typedef struct SGIRendererFrame {
-    /* A textured frame is a clipped fan, others independent primitives. */
+    /* A textured frame is window triangles, as a smooth one is. */
     uint32_t width, height, count;
     const float *vertices; /* position xyzw, colour rgba, texcoord strq */
     SGIRendererTexture2D texture;
