@@ -41,7 +41,8 @@ typedef struct SGIRendererGL {
     GLint colour_steps, colour_flat;
     GLuint window_program;
     Error *window_error;
-    GLint window_height, window_x, window_y, window_inv_w;
+    GLint window_height, window_x, window_y, window_z, window_inv_w;
+    GLint window_flat;
     GLint window_c0, window_c1, window_c2, window_steps;
     GLuint line_program;
     Error *line_error;
@@ -326,7 +327,8 @@ static bool renderer_gl_window_program(SGIRendererGL *renderer)
     static const char *fragment_source =
         "#version 450 compatibility\n"
         "uniform float height;\n"
-        "uniform dvec3 vx, vy, inv_w;\n"
+        "uniform int flat_shade;\n"
+        "uniform dvec3 vx, vy, vz, inv_w;\n"
         "uniform dvec4 c0, c1, c2, steps;\n"
         "layout(location=0) out vec4 pixel;\n"
         "double channel(double c, double s) {\n"
@@ -348,11 +350,15 @@ static bool renderer_gl_window_program(SGIRendererGL *renderer)
         "  precise double area = edge(0, 1, vx[2], vy[2]);\n"
         "  precise double b1 = edge(2, 0, cx, cy) / area;\n"
         "  precise double b2 = edge(0, 1, cx, cy) / area;\n"
+        "  precise double z = vz[0] + b1 * (vz[1] - vz[0]) +\n"
+        "                     b2 * (vz[2] - vz[0]);\n"
+        "  if (!(z >= 0.0 && z <= 1.0)) discard;\n"
         "  precise double w0 = (1.0 - b1 - b2) * inv_w[0];\n"
         "  precise double w1 = b1 * inv_w[1];\n"
         "  precise double w2 = b2 * inv_w[2];\n"
         "  precise double sum = w0 + w1 + w2;\n"
-        "  precise dvec4 rgba = (w0 * c0 + w1 * c1 + w2 * c2) / sum;\n"
+        "  precise dvec4 rgba = flat_shade != 0 ? c0 :\n"
+        "      (w0 * c0 + w1 * c1 + w2 * c2) / sum;\n"
         "  pixel = vec4(channel(rgba.r, steps.r), channel(rgba.g, steps.g),\n"
         "               channel(rgba.b, steps.b), channel(rgba.a, steps.a));\n"
         "}\n";
@@ -366,6 +372,8 @@ static bool renderer_gl_window_program(SGIRendererGL *renderer)
         { &renderer->window_height, "height" },
         { &renderer->window_x, "vx" },
         { &renderer->window_y, "vy" },
+        { &renderer->window_z, "vz" },
+        { &renderer->window_flat, "flat_shade" },
         { &renderer->window_inv_w, "inv_w" },
         { &renderer->window_c0, "c0" },
         { &renderer->window_c1, "c1" },
@@ -1014,6 +1022,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     } else if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
         glUseProgram(renderer->window_program);
         glUniform1f(renderer->window_height, frame->height);
+        glUniform1i(renderer->window_flat, frame->shade_model == GL_FLAT);
         glUniform4d(renderer->window_steps, frame->colour_steps[0],
                     frame->colour_steps[1], frame->colour_steps[2],
                     frame->colour_steps[3]);
@@ -1076,6 +1085,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 
         glUniform3d(renderer->window_x, t->x[0], t->x[1], t->x[2]);
         glUniform3d(renderer->window_y, t->y[0], t->y[1], t->y[2]);
+        glUniform3d(renderer->window_z, t->z[0], t->z[1], t->z[2]);
         glUniform3d(renderer->window_inv_w, t->inv_w[0], t->inv_w[1],
                     t->inv_w[2]);
         for (unsigned v = 0; v < 3; v++) {

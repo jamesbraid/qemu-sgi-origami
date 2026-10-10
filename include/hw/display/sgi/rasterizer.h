@@ -531,10 +531,11 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
  * One triangle of a clipped polygon as sgi_soft_draw() rasterizes it, for a
  * renderer that reproduces its pixels: snapped window positions in
  * subpixels, wound counter-clockwise as the scan takes them, with each
- * vertex's 1 / clip w and clamped colour.
+ * vertex's normalized depth in [0, 1], 1 / clip w and clamped colour.
  */
 typedef struct SGIRasterTriangle {
     int64_t x[3], y[3];
+    double z[3];
     double inv_w[3];
     double rgba[3][4];
 } SGIRasterTriangle;

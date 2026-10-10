@@ -2890,6 +2890,7 @@ unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
         for (int j = 0; j < 3; j++) {
             t->x[j] = v[j].x;
             t->y[j] = v[j].y;
+            t->z[j] = v[j].z;
             t->inv_w[j] = v[j].inv_w;
             memcpy(t->rgba[j], v[j].rgba, sizeof(t->rgba[j]));
         }

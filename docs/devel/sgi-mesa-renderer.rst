@@ -75,6 +75,18 @@ because llvmpipe applies its top-left rule with rows running down. Drawing it
 upside down gives a pixel centre on a horizontal edge to the same triangle as
 the scalar path's top-left rule in OpenGL's upward rows. Point and line
 frames keep upward rows, where they already match.
+The scalar path drops a fragment whose depth, interpolated in double from
+a triangle's first vertex, rounds outside [0, 1]. On an edge lying in the
+near plane that sum rounds a few ulps below 0 at some pixel centres, and the
+scalar path drops them. The smooth-triangle program repeats the scalar
+path's depth sum in double from the same clipped vertices and discards the
+same fragments. A flat triangle whose depths differ and, after clipping,
+come within 2^-32 of either plane is drawn by that program too, with its
+provoking colour, so it drops the same pixels. Elsewhere the sum cannot
+leave [0, 1]. A textured triangle near a plane still returns
+``SGI_RENDER_UNSUPPORTED`` before the snapshot, because the texture program
+does not repeat the drop.
+
 A point's size is rounded as the scalar path rounds it: to the nearest integer
 and at least one, with zero meaning one. The worker reads
 ``GL_ALIASED_POINT_SIZE_RANGE`` when it creates its context. A size outside
@@ -244,6 +256,12 @@ with the rules named above. Any other driver is unproven.
   viewport, and orthographic and perspective matrices with non-integer
   vertices, each on a bottom-origin resource and on a top-origin resource
   whose rows the family maps into OpenGL rows.
+- ``scalar-match-depth-planes``: flat and smooth triangles with an edge in
+  the near or far plane, through pixel centres, in every vertex order,
+  match, including the pixels the scalar path drops; textured ones are
+  refused. ``scalar-match-depth-clipped``: 600 random flat and smooth
+  triangles on, past and between the planes, with clip w from 0.5 to 2,
+  match.
 - ``scalar-match-colour-ties``: flat fans and points whose colours are exact
   half steps in float32.
 - ``scalar-match-shared-edges``: two triangles sharing a horizontal,

@@ -4268,7 +4268,7 @@ static void prim_matrices(PrimCase *p, bool perspective)
         0.9f, 0, 0, 0,
         0, 1.1f, 0, 0,
         0, 0, -0.5f, 0,
-        0.05f, -0.07f, -0.25f, 1,
+        0.05f, -0.07f, -1.3f, 1,
     };
     /* Near 1, far 10, a 90 degree field of view. */
     static const float frustum[16] = {
@@ -4578,6 +4578,60 @@ static void test_scalar_match_shared_edges(void)
 }
 
 /*
+ * Random flat and smooth triangles crossing or touching the near and far
+ * planes, clipped there by the scalar path, must match it pixel for pixel.
+ */
+static void test_scalar_match_depth_clipped(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    g_autoptr(GRand) rand = g_rand_new_with_seed(1279);
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < 600; i++) {
+        g_autofree char *name = g_strdup_printf("depth-clipped %u", i);
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 3 + g_rand_int_range(rand, 0, 2));
+        p->state.shade_model = g_rand_boolean(rand) ? SGI_GL_SMOOTH :
+                                                      SGI_GL_FLAT;
+        for (unsigned v = 0; v < 3; v++) {
+            float w = g_rand_int_range(rand, 4, 17) / 8.0f;
+            float *pos;
+            int pick = g_rand_int_range(rand, 0, 4);
+
+            prim_vertex_n(p, g_rand_int_range(rand, 0, 65) / 4.0f,
+                          g_rand_int_range(rand, 0, 65) / 4.0f);
+            pos = &p->vertices[v][SGI_GL_V_POSITION];
+            /* On a plane, past one, or between them. */
+            pos[2] = pick == 0 ? -1 : pick == 1 ? 1 :
+                     g_rand_int_range(rand, -48, 49) / 32.0f;
+            for (unsigned c = 0; c < 4; c++) {
+                pos[c] *= w;
+            }
+        }
+        if (prim_compare(renderer, name, p, false)) {
+            failures++;
+        }
+        cases++;
+    }
+    g_test_message("depth clipped: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
  * Unblended draws at component widths other than 8. The scalar rules
  * stop at 10 bits, so 12- and 16-bit storage has no scalar comparison.
  * Stored alpha of one bit is refused: the scalar path rounds incoming
@@ -4735,6 +4789,127 @@ static void test_scalar_match_texture(void)
         }
     }
     g_test_message("texture: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * The scalar path drops a fragment whose interpolated depth rounds outside
+ * [0, 1]. With two vertices on the near or far plane, pixel centres on
+ * their edge sit at a depth the scalar sum can round past the plane. Flat
+ * and smooth draws must match the scalar path, drops included; textured
+ * ones, whose program does not repeat the drop, must be refused before any
+ * snapshot.
+ */
+static void test_scalar_match_depth_planes(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const struct {
+        const char *name;
+        float v[3][2];
+    } shapes[] = {
+        { "left", { { 2.5f, 1.5f }, { 2.5f, 14.5f }, { 13.25f, 7.75f } } },
+        { "right", { { 13.5f, 14.5f }, { 13.5f, 1.5f }, { 2.25f, 8.25f } } },
+        { "top", { { 14.5f, 13.5f }, { 1.5f, 13.5f }, { 7.75f, 2.25f } } },
+        { "bottom", { { 1.5f, 2.5f }, { 14.5f, 2.5f }, { 8.25f, 13.75f } } },
+        { "diagonal", { { 13.5f, 13.5f }, { 1.5f, 1.5f }, { 1.75f, 12.25f } } },
+    };
+    static const float apex[] = { -0.37f, 0.1f, 0.53f, 0.9f, -0.85f };
+    /* Normalized device z of the edge: near, far, and away from both. */
+    static const float planes[] = { -1, 1, 0.25f };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, refused = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned s = 0; s < ARRAY_SIZE(shapes); s++) {
+        for (unsigned z = 0; z < ARRAY_SIZE(planes); z++) {
+            for (unsigned a = 0; a < ARRAY_SIZE(apex); a++) {
+                for (unsigned k = 0; k < 9; k++) {
+                    /*
+                     * Flat, smooth and textured, in each vertex order, so
+                     * the apex may come first.
+                     */
+                    static const char *const kinds[] = {
+                        "flat", "smooth", "textured",
+                    };
+                    unsigned kind = k % 3, first = k / 3;
+                    g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+                    g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+                    g_autofree char *name = g_strdup_printf(
+                        "%s %s edge at z %g, apex z %g, from vertex %u",
+                        kinds[kind], shapes[s].name, planes[z], apex[a],
+                        first);
+                    SGIRenderResult result;
+                    unsigned differences;
+
+                    /*
+                     * Textured triangles check only the refusal: away from
+                     * the planes their sampling at these vertices differs
+                     * from the scalar path for a reason unrelated to depth.
+                     */
+                    if (kind == 2 && fabsf(planes[z]) != 1) {
+                        continue;
+                    }
+                    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+                    if (kind == 2) {
+                        prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT,
+                                     SGI_GL_REPEAT, SGI_GL_MODULATE);
+                    } else {
+                        p->state.shade_model = kind ? SGI_GL_SMOOTH :
+                                                      SGI_GL_FLAT;
+                        for (unsigned i = 0; i < 3; i++) {
+                            prim_vertex(p, 0, 0, 0.2f + i * 0.3f, 0.7f,
+                                        0.4f, 1);
+                        }
+                    }
+                    for (unsigned i = 0; i < 3; i++) {
+                        unsigned v = (first + i) % 3;
+                        float *pos = &p->vertices[i][SGI_GL_V_POSITION];
+
+                        pos[0] = shapes[s].v[v][0] * 2 / PRIM_SIZE - 1;
+                        pos[1] = shapes[s].v[v][1] * 2 / PRIM_SIZE - 1;
+                        pos[2] = v < 2 ? planes[z] : apex[a];
+                    }
+                    prim_destination(scalar, p);
+                    prim_destination(mesa, p);
+                    prim_scalar_draw(p, scalar);
+                    result = prim_mesa_draw(renderer, p, mesa, &err);
+                    if (result == SGI_RENDER_UNSUPPORTED && !mesa->snapshots &&
+                        fabsf(planes[z]) == 1 && kind == 2) {
+                        g_clear_pointer(&err, error_free);
+                        refused++;
+                        continue;
+                    }
+                    if (result != SGI_RENDER_OK) {
+                        g_test_message("%s: checked draw returned %d: %s",
+                                       name, result, err ?
+                                       error_get_pretty(err) : "(no error)");
+                        g_clear_pointer(&err, error_free);
+                        failures++;
+                        continue;
+                    }
+                    differences = prim_report(name, scalar, mesa);
+                    if (differences) {
+                        g_test_message("%s: %u pixels differ", name,
+                                       differences);
+                        failures++;
+                    }
+                }
+            }
+        }
+    }
+    g_test_message("depth planes: %u refused, %u differ", refused, failures);
     sgi_renderer_free(renderer);
     g_free(p);
     if (failures) {
@@ -6174,6 +6349,10 @@ int main(int argc, char **argv)
                     test_scalar_match_colour_ties);
     g_test_add_func("/sgi-renderer-gl/scalar-match-shared-edges",
                     test_scalar_match_shared_edges);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-depth-clipped",
+                    test_scalar_match_depth_clipped);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-depth-planes",
+                    test_scalar_match_depth_planes);
     g_test_add_func("/sgi-renderer-gl/scalar-match-widths",
                     test_scalar_match_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-texture",
