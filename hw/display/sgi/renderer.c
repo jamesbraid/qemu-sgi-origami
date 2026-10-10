@@ -420,6 +420,13 @@ typedef struct SGIRenderPieces {
     bool depth_inexact;
 } SGIRenderPieces;
 
+static int sgi_render_test_shift;
+
+void sgi_render_test_window_shift(int subpixels)
+{
+    sgi_render_test_shift = subpixels;
+}
+
 /* Far below the plane, far above the scalar depth sum's rounding error. */
 #define SGI_RENDER_DEPTH_MARGIN ldexp(1, -32)
 
@@ -475,7 +482,7 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
             }
             out = &p->window[p->window_count++];
             for (unsigned v = 0; v < 3; v++) {
-                out->x[v] = t[i].x[v];
+                out->x[v] = t[i].x[v] + sgi_render_test_shift;
                 out->y[v] = t[i].y[v];
                 out->z[v] = t[i].z[v];
                 out->inv_w[v] = t[i].inv_w[v];
@@ -912,6 +919,187 @@ static bool sgi_render_line_probe(SGIRenderer *renderer)
     return true;
 }
 
+static SGIRenderResult sgi_render_probe_snapshot(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    /* The probe starts from black, as sgi_render_probe_load() reads it. */
+    memset(slots, 0, capacity_slots * sizeof(*slots));
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult sgi_render_probe_commit(
+    void *opaque, const SGIRenderResource *resource, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    SGIRenderProbe *p = opaque;
+
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            if (writes->pixel[y * writes->stride_bytes + x]) {
+                p->written[y][x] = 1;
+                memcpy(p->rgb[y][x], &slots[y * stride_slots + x * 3],
+                       sizeof(p->rgb[y][x]));
+            }
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = (uint64_t)(rect->x1 - rect->x0 + 1) *
+                           (rect->y1 - rect->y0 + 1),
+        .extent_known = true,
+    };
+}
+
+/*
+ * Smooth triangles draw exactly only where llvmpipe evaluates the fragment
+ * program's doubles as IEEE binary64 and the scalar rasterizer's own
+ * arithmetic is not contracted into fused operations, as on the pinned
+ * x86-64 build the unit tests prove. Draw perspective-weighted smooth
+ * triangles with a shared edge through pixel centres through both paths,
+ * and report UNSUPPORTED if coverage or any covered pixel's colour differs.
+ * A host failure is returned as it is.
+ */
+static SGIRenderResult sgi_render_window_probe(SGIRenderer *renderer,
+                                               Error **errp)
+{
+    static const SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "shared smooth triangle probe",
+    };
+    /*
+     * Window x, y, clip w, normalized device z, then colour, for each
+     * vertex. The last triangle has an edge in the near plane through pixel
+     * centres, where the scalar depth sum drops pixels.
+     */
+    static const float probe[][8] = {
+        { 1.5f, 1.5f, 1, 0, 0.9f, 0.1f, 0.3f, 1 },
+        { 21.5f, 21.5f, 2, 0, 0.2f, 0.75f, 0.5f, 1 },
+        { 1.5f, 21.5f, 0.5f, 0, 0.6f, 0.4f, 0.98f, 1 },
+        { 21.5f, 21.5f, 2, 0, 0.31f, 0.77f, 0.05f, 1 },
+        { 1.5f, 1.5f, 1, 0, 0.5f, 0.5f, 0.5f, 1 },
+        { 21.5f, 1.5f, 0.5f, 0, 0.1f, 0.9f, 0.7f, 1 },
+        { 2.25f, 7, 1, 0, 0.13f, 0.47f, 0.92f, 1 },
+        { 22, 9.5f, 0.75f, 0, 0.88f, 0.02f, 0.35f, 1 },
+        { 7.75f, 23.25f, 1.5f, 0, 0.4f, 0.6f, 0.2f, 1 },
+        { 13.25f, 7.75f, 1, -0.37f, 0.7f, 0.2f, 0.4f, 1 },
+        { 2.5f, 1.5f, 1, -1, 0.5f, 0.5f, 0.9f, 1 },
+        { 2.5f, 14.5f, 1, -1, 0.3f, 0.8f, 0.1f, 1 },
+    };
+    SGIGLDrawState st = {
+        .shade_model = SGI_GL_SMOOTH,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .drawable = {
+            .bound = true,
+            .clip = { .n = 1, .r[0] = { 0, 0, SGI_RENDER_PROBE_SIZE - 1,
+                                        SGI_RENDER_PROBE_SIZE - 1 } },
+        },
+        .viewport = { 0, 0, SGI_RENDER_PROBE_SIZE, SGI_RENDER_PROBE_SIZE },
+        .depth_range = { 0, 1 },
+    };
+    float v[ARRAY_SIZE(probe)][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = ARRAY_SIZE(probe),
+        .vertices = &v[0][0], .state = &st,
+    };
+    const SGIRenderResource resource = {
+        .role = SGI_RENDER_COLOUR, .buffer = SGI_RENDER_FRONT,
+        .width = SGI_RENDER_PROBE_SIZE, .height = SGI_RENDER_PROBE_SIZE,
+        .depth = 1, .bottom_origin = true, .component_count = 3,
+        .component = {
+            { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+            { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+        },
+    };
+    static const SGIRenderResourceOps ops = {
+        .snapshot = sgi_render_probe_snapshot,
+        .commit_covered = sgi_render_probe_commit,
+    };
+    g_autofree SGIRenderProbe *scalar = g_new0(SGIRenderProbe, 1);
+    g_autofree SGIRenderProbe *mesa = g_new0(SGIRenderProbe, 1);
+    SGIRasterTarget scalar_target = {
+        .opaque = scalar,
+        .store_rgba = sgi_render_probe_store,
+        .load_rgba = sgi_render_probe_load,
+    };
+    SGIRasterTarget mesa_target = {
+        .opaque = mesa, .resources = &resource, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRenderResult status;
+
+    for (unsigned i = 0; i < 16; i += 5) {
+        st.modelview[i] = 1;
+        st.projection[i] = 1;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(probe); i++) {
+        float w = probe[i][2];
+
+        v[i][SGI_GL_V_POSITION] = (probe[i][0] * 2 / SGI_RENDER_PROBE_SIZE -
+                                   1) * w;
+        v[i][SGI_GL_V_POSITION + 1] = (probe[i][1] * 2 /
+                                       SGI_RENDER_PROBE_SIZE - 1) * w;
+        v[i][SGI_GL_V_POSITION + 2] = probe[i][3] * w;
+        v[i][SGI_GL_V_POSITION + 3] = w;
+        memcpy(&v[i][SGI_GL_V_COLOR], &probe[i][4], 4 * sizeof(float));
+    }
+    sgi_soft_draw(&rules, &scalar_target, &draw);
+    status = sgi_render_draw_checked(renderer, &rules, &mesa_target, &draw,
+                                     errp);
+    if (status != SGI_RENDER_OK) {
+        return status;
+    }
+    if (memcmp(scalar, mesa, sizeof(*scalar))) {
+        error_setg(errp, "SGI Mesa smooth triangles differ from the scalar "
+                   "path on this host");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    return SGI_RENDER_OK;
+}
+
+/*
+ * Run the smooth triangle probe once per renderer. It draws through this
+ * path itself, so its own draw finds the probe running and goes ahead.
+ */
+static SGIRenderResult sgi_render_window_proven(SGIRenderer *renderer,
+                                                Error **errp)
+{
+    SGIRenderResult status;
+
+    switch (sgi_renderer_window_probe_result(renderer)) {
+    case 0:
+        sgi_renderer_set_window_probe_result(renderer, 2);
+        status = sgi_render_window_probe(renderer, errp);
+        if (status == SGI_RENDER_OK || status == SGI_RENDER_UNSUPPORTED) {
+            sgi_renderer_set_window_probe_result(renderer,
+                status == SGI_RENDER_OK ? 1 : -1);
+        } else {
+            sgi_renderer_set_window_probe_result(renderer, 0);
+        }
+        return status;
+    case -1:
+        error_setg(errp, "SGI Mesa smooth triangles differ from the scalar "
+                   "path on this host");
+        return SGI_RENDER_UNSUPPORTED;
+    default:
+        return SGI_RENDER_OK;
+    }
+}
+
+SGIRenderResult sgi_render_test_window_probe(SGIRenderer *renderer,
+                                             Error **errp)
+{
+    return sgi_render_window_proven(renderer, errp);
+}
+
 /* Run the probe once per renderer; false when lines stay unsupported. */
 static bool sgi_render_lines_proven(SGIRenderer *renderer, Error **errp)
 {
@@ -1093,6 +1281,10 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                               SGI_RENDERER_WINDOW_TRIANGLES,
                                               1, errp)) {
             return SGI_RENDER_UNSUPPORTED;
+        }
+        status = sgi_render_window_proven(renderer, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
         }
         pieces.window_capacity = MIN(piece_vertices / 3 *
                                      (SGI_VOLUME_TRIANGLE_MAX - 2),

@@ -1329,6 +1329,9 @@ static void test_decoded_triangle_native_commit(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
+    /* The fault must reach this draw, not the smooth triangle probe. */
+    g_assert_cmpint(sgi_render_test_window_probe(renderer, &err), ==,
+                    SGI_RENDER_OK);
     saved_renderbuffer_storage = epoxy_glRenderbufferStorage;
     epoxy_glRenderbufferStorage = fail_stencil_storage;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -1345,6 +1348,9 @@ static void test_decoded_triangle_native_commit(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
+    /* The fault must reach this draw, not the smooth triangle probe. */
+    g_assert_cmpint(sgi_render_test_window_probe(renderer, &err), ==,
+                    SGI_RENDER_OK);
     saved_read_pixels = epoxy_glReadPixels;
     epoxy_glReadPixels = fail_stencil_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -1361,6 +1367,9 @@ static void test_decoded_triangle_native_commit(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
+    /* The fault must reach this draw, not the smooth triangle probe. */
+    g_assert_cmpint(sgi_render_test_window_probe(renderer, &err), ==,
+                    SGI_RENDER_OK);
     saved_read_pixels = epoxy_glReadPixels;
     epoxy_glReadPixels = fail_colour_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
@@ -5662,6 +5671,75 @@ static void test_lines_refused(void)
     }
 }
 
+/*
+ * A renderer whose smooth triangles differ from the scalar path, here
+ * moved one subpixel right, must refuse smooth triangles before any
+ * snapshot and still draw flat ones.
+ */
+static void test_smooth_probe_refused(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    sgi_render_test_window_shift(1);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned smooth = 0; smooth < 2; smooth++) {
+        prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+        p->state.shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+        prim_vertex_n(p, 1, 1.25f);
+        prim_vertex_n(p, 14.5f, 2);
+        prim_vertex_n(p, 13, 13.75f);
+        prim_vertex_n(p, 2.25f, 12);
+        if (smooth) {
+            prim_expect_refused(renderer, "probe failure, smooth", p,
+                                &failures);
+        } else {
+            prim_expect(renderer, "probe failure, flat", p, &failures);
+        }
+    }
+    sgi_renderer_free(renderer);
+    sgi_render_test_window_shift(0);
+
+    /* A host failure in the probe is a failure, never a refusal. */
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    {
+        g_autofree PrimFixture *f = g_new(PrimFixture, 1);
+        SGIRenderResult result;
+
+        prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+        p->state.shade_model = SGI_GL_SMOOTH;
+        prim_vertex_n(p, 1, 1.25f);
+        prim_vertex_n(p, 14.5f, 2);
+        prim_vertex_n(p, 13, 13.75f);
+        prim_destination(f, p);
+        saved_renderbuffer_storage = epoxy_glRenderbufferStorage;
+        epoxy_glRenderbufferStorage = fail_stencil_storage;
+        result = prim_mesa_draw(renderer, p, f, &err);
+        epoxy_glRenderbufferStorage = saved_renderbuffer_storage;
+        if (result != SGI_RENDER_HOST_ERROR || f->snapshots) {
+            g_test_message("probe host failure: result %d, %u snapshots",
+                           result, f->snapshots);
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
 static void test_scalar_match_points(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -6374,6 +6452,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/scalar-match-line-sweep",
                     test_scalar_match_line_sweep);
     g_test_add_func("/sgi-renderer-gl/lines-refused", test_lines_refused);
+    g_test_add_func("/sgi-renderer-gl/smooth-probe-refused",
+                    test_smooth_probe_refused);
     g_test_add_func("/sgi-renderer-gl/viewport-mirror-refused",
                     test_viewport_mirror_refused);
     g_test_add_func("/sgi-renderer-gl/raster-rules-refused",

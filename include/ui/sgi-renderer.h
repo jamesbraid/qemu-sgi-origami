@@ -264,6 +264,9 @@ bool sgi_renderer_viewport_supported(SGIRenderer *renderer,
  */
 int sgi_renderer_line_probe_result(SGIRenderer *renderer);
 void sgi_renderer_set_line_probe_result(SGIRenderer *renderer, int result);
+/* The same for the smooth triangle probe. */
+int sgi_renderer_window_probe_result(SGIRenderer *renderer);
+void sgi_renderer_set_window_probe_result(SGIRenderer *renderer, int result);
 /* False when the host cannot draw the primitive at this aliased size. */
 bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
                                       uint32_t primitive, float size,

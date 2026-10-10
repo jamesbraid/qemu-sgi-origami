@@ -10,6 +10,7 @@ struct SGIRenderer {
     bool failed;
     unsigned test_draw_countdown;
     int line_probe;
+    int window_probe;
 };
 
 static const SGIRendererOps *gl_ops;
@@ -777,6 +778,16 @@ int sgi_renderer_line_probe_result(SGIRenderer *renderer)
 void sgi_renderer_set_line_probe_result(SGIRenderer *renderer, int result)
 {
     renderer->line_probe = result;
+}
+
+int sgi_renderer_window_probe_result(SGIRenderer *renderer)
+{
+    return renderer->window_probe;
+}
+
+void sgi_renderer_set_window_probe_result(SGIRenderer *renderer, int result)
+{
+    renderer->window_probe = result;
 }
 
 bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
