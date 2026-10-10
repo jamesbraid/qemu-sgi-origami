@@ -508,7 +508,6 @@ typedef enum SGIRenderRefusal {
     SGI_RENDER_REFUSAL_POLYGON_OFFSET,
     SGI_RENDER_REFUSAL_WINDOW,          /* window matrix, drawable origin */
     SGI_RENDER_REFUSAL_GEOMETRY,        /* non-finite or out-of-range input */
-    SGI_RENDER_REFUSAL_DEPTH_PLANE,     /* textured depth near a plane */
     SGI_RENDER_REFUSAL_LINE_SHAPE,      /* a segment not drawn exactly */
     SGI_RENDER_REFUSAL_RESOURCE,        /* target resource layout */
     SGI_RENDER_REFUSAL_STORE_WIDTH,     /* widths not proven */
@@ -655,20 +654,23 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
  * One triangle of a clipped polygon as sgi_soft_draw() rasterizes it, for a
  * renderer that reproduces its pixels: snapped window positions in
  * subpixels, wound counter-clockwise as the scan takes them, with each
- * vertex's normalized depth in [0, 1], 1 / clip w and clamped colour.
+ * vertex's normalized depth in [0, 1], 1 / clip w, clamped colour and
+ * texture coordinates.
  */
 typedef struct SGIRasterTriangle {
     int64_t x[3], y[3];
     double z[3];
     double inv_w[3];
     double rgba[3][4];
+    double texcoord[3][4];
 } SGIRasterTriangle;
 
 /*
  * Clip the triangle va, vb, vc to the view volume, split it into the fan
  * the scalar path scans, and fill out with the triangles it draws, dropping
  * those it drops: one with a vertex it cannot project, or of zero area.
- * Returns how many; untextured draws only.
+ * Returns how many. Mipmapped textures, whose level selection needs the
+ * scan's gradients, are not described.
  */
 unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
                                     const SGIGLDrawState *st,
@@ -676,6 +678,18 @@ unsigned sgi_raster_triangle_pieces(const SGIRasterRules *rules,
                                     const float *vc,
                                     SGIRasterTriangle
                                     out[SGI_VOLUME_TRIANGLE_MAX - 2]);
+
+/*
+ * Whether sgi_soft_draw() textures the triangle va, vb, vc with the
+ * level-zero image: false when any vertex of its clipped polygon has a
+ * clip w or texture q that is not positive, or a coordinate the image uses
+ * that is not finite, which drops the whole triangle, including fan pieces
+ * sgi_raster_triangle_pieces() keeps.
+ */
+bool sgi_raster_triangle_texture_valid(const SGIGLDrawState *st,
+                                       const SGIGLTexImage *image,
+                                       const float *va, const float *vb,
+                                       const float *vc);
 
 /*
  * One aliased segment as sgi_soft_draw() rasterizes it, for a renderer that

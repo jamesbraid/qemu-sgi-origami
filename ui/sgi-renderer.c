@@ -34,10 +34,9 @@ static bool sgi_renderer_texture_env_valid(uint32_t mode)
 /* Whole independent primitives within the frame's vertex bound. */
 static bool sgi_renderer_frame_count_valid(const SGIRendererFrame *frame)
 {
-    if (frame->texture.slots) {
-        return frame->primitive == SGI_RENDERER_TRIANGLES &&
-               frame->count >= 3 &&
-               frame->count <= SGI_RENDERER_FRAME_VERTICES_MAX;
+    if (frame->texture.slots &&
+        frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES) {
+        return false;
     }
     if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
         const double reach = (double)SGI_RENDERER_WINDOW_REACH * 256;
@@ -703,17 +702,29 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
             return false;
         }
         for (unsigned c = 0; c < 4; c++) {
-            double value = frame->texture.border_bytes[c];
+            double value = frame->texture.border[c];
 
-            if (!isfinite(value) || value < 0 || value > 255) {
+            if (!isfinite(value) || value < 0 || value > 1) {
                 error_setg(errp, "Invalid SGI OpenGL texture border colour");
                 return false;
             }
-            value = frame->texture.environment_bytes[c];
-            if (!isfinite(value) || value < 0 || value > 255) {
+            value = frame->texture.environment[c];
+            if (!isfinite(value) || value < 0 || value > 1) {
                 error_setg(errp,
                            "Invalid SGI OpenGL texture environment colour");
                 return false;
+            }
+        }
+        for (uint32_t i = 0; i < frame->count; i++) {
+            for (unsigned v = 0; v < 3; v++) {
+                const double *tc = frame->triangles[i].texcoord[v];
+
+                if (!isfinite(tc[0]) || !isfinite(tc[1]) ||
+                    !isfinite(tc[2]) || !(tc[3] > 0) || !isfinite(tc[3])) {
+                    error_setg(errp,
+                               "Invalid SGI OpenGL texture coordinates");
+                    return false;
+                }
             }
         }
     }

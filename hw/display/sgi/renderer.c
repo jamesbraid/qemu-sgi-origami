@@ -449,6 +449,9 @@ typedef struct SGIRenderPieces {
      */
     const SGIRasterRules *rules;
     bool depth_inexact;
+    /* A textured triangle the scalar path drops whole; see below. */
+    bool texture_invalid;
+    const SGIGLTexImage *image;     /* a textured draw's level-zero image */
 } SGIRenderPieces;
 
 static int sgi_render_test_shift;
@@ -501,6 +504,13 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
         for (unsigned i = 0; i < count; i++) {
             p->depth_inexact |= !sgi_render_depth_exact(&t[i]);
         }
+        if (draw->state->texture_2d && p->image) {
+            p->texture_invalid |= !sgi_raster_triangle_texture_valid(
+                draw->state, p->image,
+                draw->vertices + (size_t)index[0] * SGI_GL_VERTEX_FLOATS,
+                draw->vertices + (size_t)index[1] * SGI_GL_VERTEX_FLOATS,
+                draw->vertices + (size_t)index[2] * SGI_GL_VERTEX_FLOATS);
+        }
         if (!p->window && !p->v) {
             return;
         }
@@ -517,6 +527,8 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
                 out->y[v] = t[i].y[v];
                 out->z[v] = t[i].z[v];
                 out->inv_w[v] = t[i].inv_w[v];
+                memcpy(out->texcoord[v], t[i].texcoord[v],
+                       sizeof(out->texcoord[v]));
                 for (unsigned c = 0; c < 4; c++) {
                     /* A flat piece takes the provoking colour, unclamped. */
                     out->colour[v][c] = p->flat ? colour[c] : t[i].rgba[v][c];
@@ -1228,8 +1240,7 @@ static bool sgi_render_mixed_fixture(const SGIGLDrawState *st,
  *  - points of sizes up to 4, unblended, in the fixture;
  *  - untextured polygons under any accepted state, blended only in the
  *    fixture;
- *  - no textured triangles: their sampling differs from the scalar path
- *    at some vertices away from the fixture's.
+ *  - no textured triangles yet.
  */
 static bool sgi_render_mixed_frame_proven(const SGIRasterRules *rules,
                                           const SGIGLDraw *draw,
@@ -1267,16 +1278,12 @@ static SGIRenderResult sgi_render_draw_run(
     const SGIClipList *clip;
     SGIRenderRect rect;
     SGIRendererFrame frame = { 0 };
-    SGIVolumeVertex polygon[SGI_VOLUME_TRIANGLE_MAX];
     g_autofree uint32_t *slots = NULL;
     g_autofree uint16_t *rgba = NULL;
     g_autofree uint8_t *written = NULL;
     g_autofree uint32_t *texture_slots = NULL;
-    float vertices[SGI_VOLUME_TRIANGLE_MAX]
-                  [SGI_RENDERER_FRAME_VERTEX_FLOATS];
     size_t pixels, nslots, nrgba;
     size_t texture_stride_slots = 0, texture_capacity_slots = 0;
-    unsigned polygon_count = 0;
     uint64_t piece_vertices = 0;
     SGIRenderPieces pieces = { 0 };
     g_autofree float *piece_storage = NULL;
@@ -1293,8 +1300,6 @@ static SGIRenderResult sgi_render_draw_run(
     SGIRenderResult status;
     SGIRenderRefusal refusal;
 
-    QEMU_BUILD_BUG_ON(SGI_VOLUME_TRIANGLE_MAX !=
-                      SGI_RENDERER_FRAME_VERTICES_MAX);
     if (!renderer || !rules || !target || !draw || !draw->state ||
         !draw->vertices) {
         error_setg(errp, "Missing SGI Mesa draw input");
@@ -1378,7 +1383,7 @@ static SGIRenderResult sgi_render_draw_run(
             error_setg(errp, "SGI Mesa cannot draw a line exactly");
             return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_LINE_SHAPE);
         }
-    } else if (!draw->state->texture_2d) {
+    } else {
         piece_vertices = sgi_render_piece_vertices(draw->mode, draw->count);
         if (!piece_vertices) {
             return SGI_RENDER_OK;
@@ -1410,11 +1415,13 @@ static SGIRenderResult sgi_render_draw_run(
             }
         }
         /*
-         * Smooth colour comes from the scalar path's own clipped triangles,
-         * drawn at its window positions and interpolated in double.
+         * Smooth colour and texture coordinates come from the scalar path's
+         * own clipped triangles, drawn at its window positions and
+         * interpolated in double.
          */
         window = draw->mode != SGI_GL_POINTS &&
-                 draw->state->shade_model == SGI_GL_SMOOTH;
+                 (draw->state->shade_model == SGI_GL_SMOOTH ||
+                  draw->state->texture_2d);
         /* So are flat triangles whose depth may round past a plane. */
         if (!window && draw->mode != SGI_GL_POINTS) {
             SGIRenderPieces check = { .rules = rules };
@@ -1449,6 +1456,7 @@ static SGIRenderResult sgi_render_draw_run(
         }
         pieces.window = window_storage;
         pieces.rules = rules;
+        pieces.image = target->texture;
         pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
         sgi_render_decompose(&pieces, draw);
         if (pieces.window_count > pieces.window_capacity) {
@@ -1477,14 +1485,15 @@ static SGIRenderResult sgi_render_draw_run(
         }
     }
     if (draw->state->texture_2d) {
-        SGIRenderPieces check = { .rules = rules };
-
-        sgi_render_decompose(&check, draw);
-        /* The textured program does not repeat the scalar depth drop. */
-        if (check.depth_inexact) {
-            error_setg(errp, "SGI Mesa textured triangle depth may round "
-                       "past the near or far plane");
-            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_DEPTH_PLANE);
+        /*
+         * The scalar path drops the whole triangle when any vertex of its
+         * clipped polygon cannot be textured, even one only in fan pieces
+         * it would drop anyway, so refuse and let it.
+         */
+        if (pieces.texture_invalid) {
+            error_setg(errp, "Unsupported SGI Mesa clipped texture "
+                       "coordinates");
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_GEOMETRY);
         }
         texture_resource = sgi_render_texture_resource(target, draw->state);
         if (!texture_resource) {
@@ -1596,36 +1605,6 @@ static SGIRenderResult sgi_render_draw_run(
         sgi_render_commit_phase(draw, lines ? &line_set : NULL);
         return SGI_RENDER_OK;
     }
-    if (texture_resource) {
-        SGIVolumeVertex source[3];
-
-        for (unsigned i = 0; i < 3; i++) {
-            sgi_volume_from_draw_vertex(draw->state,
-                draw->vertices + i * SGI_GL_VERTEX_FLOATS, &source[i]);
-        }
-        polygon_count = sgi_volume_clip_triangle(source, polygon);
-        if (!polygon_count) {
-            return SGI_RENDER_OK;
-        }
-        for (unsigned i = 0; i < polygon_count; i++) {
-            const SGIVolumeVertex *v = &polygon[i];
-            bool valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
-                         (float)v->clip[3] > 0 &&
-                         isfinite(v->attr[SGI_GL_V_TEXCOORD + 3]) &&
-                         v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
-
-            for (unsigned c = 0; c < 4; c++) {
-                valid &= isfinite(v->clip[c]) &&
-                         isfinite((float)v->clip[c]) &&
-                         isfinite(v->attr[SGI_GL_V_TEXCOORD + c]);
-            }
-            if (!valid) {
-                error_setg(errp,
-                           "Unsupported SGI Mesa clipped texture coordinates");
-                return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_GEOMETRY);
-            }
-        }
-    }
     if (resource->width > SIZE_MAX / resource->height ||
         (uint64_t)resource->width * resource->height >
             SIZE_MAX / 4 / sizeof(*rgba)) {
@@ -1699,11 +1678,12 @@ static SGIRenderResult sgi_render_draw_run(
             .slots = texture_slots,
             .capacity_slots = texture_capacity_slots,
         };
+        /* Clamped in double from the float state, as the scalar path does. */
         for (unsigned c = 0; c < 4; c++) {
-            frame.texture.border_bytes[c] =
-                MIN(MAX(target->texture->border_color[c], 0.0), 1.0) * 255.0;
-            frame.texture.environment_bytes[c] =
-                MIN(MAX(draw->state->texture_env_color[c], 0.0), 1.0) * 255.0;
+            frame.texture.border[c] =
+                MIN(MAX(target->texture->border_color[c], 0.0), 1.0);
+            frame.texture.environment[c] =
+                MIN(MAX(draw->state->texture_env_color[c], 0.0), 1.0);
         }
     }
     for (uint32_t y = 0; y < resource->height; y++) {
@@ -1730,23 +1710,7 @@ static SGIRenderResult sgi_render_draw_run(
             }
         }
     }
-    if (texture_resource) {
-        for (unsigned i = 0; i < polygon_count; i++) {
-            const SGIVolumeVertex *v = &polygon[i];
-            const float *colour = draw->state->shade_model == SGI_GL_FLAT ?
-                draw->vertices + 2 * SGI_GL_VERTEX_FLOATS + SGI_GL_V_COLOR :
-                &v->attr[SGI_GL_V_COLOR];
-
-            for (unsigned c = 0; c < 4; c++) {
-                vertices[i][c] = v->clip[c];
-            }
-            memcpy(&vertices[i][4], colour, 4 * sizeof(float));
-            memcpy(&vertices[i][8], &v->attr[SGI_GL_V_TEXCOORD],
-                   4 * sizeof(float));
-        }
-        frame.count = polygon_count;
-        frame.vertices = &vertices[0][0];
-    } else if (window) {
+    if (window) {
         memcpy(frame.colour_steps, steps, sizeof(steps));
         frame.primitive = SGI_RENDERER_WINDOW_TRIANGLES;
         frame.triangles = window_storage;
@@ -1786,17 +1750,9 @@ static SGIRenderResult sgi_render_draw_run(
     frame.rgba = rgba;
     frame.written = written;
     frame.written_capacity = pixels;
-    if (texture_resource) {
-        for (unsigned i = 0; i < 4; i++) {
-            frame.modelview[i * 5] = 1;
-            frame.projection[i * 5] = 1;
-        }
-    } else {
-        memcpy(frame.modelview, draw->state->modelview,
-               sizeof(frame.modelview));
-        memcpy(frame.projection, draw->state->projection,
-               sizeof(frame.projection));
-    }
+    memcpy(frame.modelview, draw->state->modelview, sizeof(frame.modelview));
+    memcpy(frame.projection, draw->state->projection,
+           sizeof(frame.projection));
     /* An upside-down frame negates clip y, the projection's second row. */
     for (unsigned i = 0; upside_down && i < 4; i++) {
         frame.projection[i * 4 + 1] = -frame.projection[i * 4 + 1];
@@ -2540,9 +2496,6 @@ static const struct {
     },
     [SGI_RENDER_REFUSAL_GEOMETRY] = {
         "geometry", SGI_RENDER_REFUSAL_CLASS_STATE,
-    },
-    [SGI_RENDER_REFUSAL_DEPTH_PLANE] = {
-        "depth-plane", SGI_RENDER_REFUSAL_CLASS_STATE,
     },
     [SGI_RENDER_REFUSAL_LINE_SHAPE] = {
         "line-shape", SGI_RENDER_REFUSAL_CLASS_STATE,

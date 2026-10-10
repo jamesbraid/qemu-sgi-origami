@@ -51,7 +51,7 @@ native steps on the CPU in double, as the scalar path rounds it, so that a
 product exactly on a half step in float32, such as 0.9 times 255, is not
 rounded the other way by the worker.
 
-An untextured smooth-shaded draw goes through the scalar path's own
+A smooth-shaded or textured draw goes through the scalar path's own
 triangles:
 
 - The CPU clips each triangle, splits it into the scalar path's fan and
@@ -64,7 +64,9 @@ triangles:
   snapshot.
 - The fragment program recomputes the scalar path's edge functions,
   barycentric weights and 1 / w correction in double, in its order of
-  operations, before rounding to the native steps.
+  operations, before rounding to the native steps. A textured draw's program
+  also interpolates the texture coordinates that way and samples as the
+  scalar path does; see below.
 - Fragments are bounded by the viewport, as the scalar path bounds them.
 
 This is exact only where llvmpipe evaluates the program's doubles as IEEE
@@ -81,9 +83,6 @@ as that failure. Flat triangles near the near or far plane use the same
 program, so where the program is missing or this probe fails they are
 refused too.
 
-Smooth textured triangles still interpolate the primary colour in float32 and
-are unproven.
-
 A triangle frame is drawn upside down,
 because llvmpipe applies its top-left rule with rows running down. Drawing it
 upside down gives a pixel centre on a horizontal edge to the same triangle as
@@ -97,9 +96,7 @@ path's depth sum in double from the same clipped vertices and discards the
 same fragments. A flat triangle whose depths differ and, after clipping,
 come within 2^-32 of either plane is drawn by that program too, with its
 provoking colour, so it drops the same pixels. Elsewhere the sum cannot
-leave [0, 1]. A textured triangle near a plane still returns
-``SGI_RENDER_UNSUPPORTED`` before the snapshot, because the texture program
-does not repeat the drop.
+leave [0, 1]. The texture program repeats the drop too.
 
 A point's size is rounded as the scalar path rounds it: to the nearest integer
 and at least one, with zero meaning one. The worker reads
@@ -206,22 +203,40 @@ staging above 16 MiB returns ``SGI_RENDER_UNSUPPORTED``.
 
 Equal ``NEAREST`` or equal ``LINEAR`` minification and magnification filters
 are supported. S and T independently accept ``REPEAT``, ``CLAMP``,
-``CLAMP_TO_EDGE``, and ``CLAMP_TO_BORDER``. The worker filters raw integer
-RGBA8 texels before ``REPLACE``, ``MODULATE``, ``DECAL``, or ``BLEND``. For
-``LINEAR``, it combines four taps with double-precision weights. ``BLEND``
-mixes primary and environment RGB using filtered texture RGB as a per-channel
-weight. It multiplies primary alpha by filtered texture alpha. The current
-environment colour is clamped to [0,1] before the mix. The finite border
-colour is clamped to [0,1] and supplies out-of-range taps. It is separate
-from stored image-border texels. Mixed or mipmap filters, stored borders,
-other texture formats, and other environment modes remain unsupported.
+``CLAMP_TO_EDGE``, and ``CLAMP_TO_BORDER``. The program samples level zero
+as the scalar path does, in double:
+
+- It interpolates s, t and q with the scalar path's 1 / w weights and
+  divides by q. A q that is not positive, or a coordinate that is not
+  finite, drops the fragment, as the scalar path drops it.
+- It reduces each coordinate by its wrap mode: the fractional part for
+  ``REPEAT``, a clamp to [0, 1] for ``CLAMP``, to half a texel inside the
+  image for ``CLAMP_TO_EDGE`` and half a texel outside it for
+  ``CLAMP_TO_BORDER``.
+- ``NEAREST`` takes the texel at the floor of size times coordinate, the
+  last texel at exactly 1 except under ``CLAMP_TO_BORDER``. ``LINEAR``
+  takes the four taps around size times coordinate minus one half, with
+  the scalar path's weights, in its order, skipping zero weights.
+- A repeated tap index wraps into the image. A tap still outside it reads
+  the border colour clamped to [0, 1], separate from stored image-border
+  texels. A texel is its 8-bit value divided by 255.
+- ``REPLACE``, ``MODULATE``, ``DECAL`` and ``BLEND`` combine the primary
+  colour and the texel in [0, 1] with the scalar path's formulas, the
+  environment colour clamped to [0, 1]. A flat-shaded draw's primary colour
+  is its provoking vertex's, unclamped, as in the scalar path.
+
+Interpolating texture coordinates in float32, as GL varyings do, picked the
+other texel where the scalar path's coordinate lies on a texel boundary, as
+at a t of 0.5 within rounding on a 2 by 2 image. Mixed or mipmap filters,
+stored borders, other texture formats, and other environment modes remain
+unsupported.
 
 The path also rejects colour-index drawing, depth and stencil tests, client
 clip planes, ordered dithering, accumulation, and other draw states it has
-not mapped to Mesa. It snapshots the full colour resource. An untextured draw
-renders into a 32-bit float host buffer, which is rounded to the native steps
-only at readback. That is why a blended draw is limited to one primitive. A
-textured draw uses an RGBA8 buffer. One private stencil bit marks the clip
+not mapped to Mesa. It snapshots the full colour resource. A draw renders
+into a 32-bit float host buffer, which is rounded to the native steps only
+at readback. That is why a blended draw is limited to one primitive. One
+private stencil bit marks the clip
 union and another marks written pixels, so primitives of one draw that
 overlap each still draw. The worker reads back colour and coverage before any
 native commit. The shared code passes the bottom-origin binary write mask
@@ -282,8 +297,8 @@ with the rules named above. Any other driver is unproven.
   whose rows the family maps into OpenGL rows.
 - ``scalar-match-depth-planes``: flat and smooth triangles with an edge in
   the near or far plane, through pixel centres, in every vertex order,
-  match, including the pixels the scalar path drops; textured ones are
-  refused. ``scalar-match-depth-clipped``: 600 random flat and smooth
+  match, including the pixels the scalar path drops, flat, smooth and
+  textured. ``scalar-match-depth-clipped``: 600 random flat and smooth
   triangles on, past and between the planes, with clip w from 0.5 to 2,
   match.
 - ``scalar-match-colour-ties``: flat fans and points whose colours are exact
@@ -298,6 +313,15 @@ with the rules named above. Any other driver is unproven.
 - ``scalar-match-texture``: flat-shaded textured triangles for the four
   environments, both filters, every accepted wrap mode, 2 by 2 and 4 by 4
   images, and RGB8 and RGBA8 targets.
+- ``scalar-match-texture-boundary``: the triangle whose texel row the
+  float32 interpolation got wrong at pixel (4,10).
+- ``scalar-match-texture-sweep``: textured triangles with diagonal and
+  axis-aligned edges through pixel centres, every vertex order, clip w of
+  0.5, 1 and 2, flat and smooth, every environment, both filters and every
+  wrap pairing, then 1200 seeded random triangles with images of 1 to 16
+  texels a side, square or not, on top-origin rows or under a scissor,
+  several clips, an offset viewport or orthographic and perspective
+  matrices.
 - ``scalar-match-store-widths``: refused width pairings for draws and CLEAR,
   and RGB stores under alpha rules.
 - ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
@@ -535,10 +559,7 @@ outside the set the cases under `Proven against the scalar path`_ prove:
   matrices;
 - lines at 8 bits and widths up to 6, under any accepted state;
 - unblended points of size up to 4, in that fixture;
-- no textured triangles. Away from the fixture's vertices, a textured
-  triangle with a diagonal edge through pixel centres sampled a different
-  colour from the scalar path at one pixel, so the texture comparisons do
-  not cover textured draws in general;
+- no textured triangles yet;
 - CLEAR at 4, 8 and 10 colour bits.
 
 A family may instead refuse such state itself before calling. Widening the

@@ -13,6 +13,11 @@ typedef enum SGIRendererWorkKind {
     SGI_RENDERER_WORK_CLEAR,
 } SGIRendererWorkKind;
 
+/* The uniforms the window and textured window programs share. */
+typedef struct SGIWindowUniforms {
+    GLint height, flat, x, y, z, inv_w, c0, c1, c2, steps;
+} SGIWindowUniforms;
+
 typedef struct SGIRendererGL {
     QemuThread thread;
     QemuMutex mutex;
@@ -32,8 +37,10 @@ typedef struct SGIRendererGL {
     GLuint program;
     GLuint texture_program;
     Error *texture_error;
+    SGIWindowUniforms texture_window;
+    GLint texture_t0, texture_t1, texture_t2;
     GLint texture_sampler, texture_mode, texture_wrap_s;
-    GLint texture_wrap_t, texture_shade, texture_linear;
+    GLint texture_wrap_t, texture_linear;
     GLint texture_border, texture_environment;
     GLint max_viewport[2];
     GLfloat point_range[2];
@@ -41,9 +48,7 @@ typedef struct SGIRendererGL {
     GLint colour_steps, colour_flat;
     GLuint window_program;
     Error *window_error;
-    GLint window_height, window_x, window_y, window_z, window_inv_w;
-    GLint window_flat;
-    GLint window_c0, window_c1, window_c2, window_steps;
+    SGIWindowUniforms window;
     GLuint line_program;
     Error *line_error;
     GLint line_ends, line_inv_w, line_colour_a, line_colour_b, line_steps;
@@ -87,155 +92,6 @@ static GLuint renderer_shader(SGIRendererGL *renderer, GLenum type,
         return 0;
     }
     return shader;
-}
-
-static bool renderer_gl_texture_program(SGIRendererGL *renderer)
-{
-    static const char *vertex_source =
-        "#version 450 compatibility\n"
-        "out vec4 smooth_colour;\n"
-        "flat out vec4 flat_colour;\n"
-        "out vec4 texture_coord;\n"
-        "void main() {\n"
-        "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
-        "  smooth_colour = gl_Color; flat_colour = gl_Color;\n"
-        "  texture_coord = gl_MultiTexCoord0;\n"
-        "}\n";
-    static const char *fragment_source =
-        "#version 450 compatibility\n"
-        "#define WRAP_REPEAT " G_STRINGIFY(GL_REPEAT) "\n"
-        "#define WRAP_CLAMP " G_STRINGIFY(GL_CLAMP) "\n"
-        "#define WRAP_EDGE " G_STRINGIFY(GL_CLAMP_TO_EDGE) "\n"
-        "#define WRAP_BORDER " G_STRINGIFY(GL_CLAMP_TO_BORDER) "\n"
-        "uniform usampler2D image_slots;\n"
-        "uniform int environment_mode, wrap_s, wrap_t, flat_shade;\n"
-        "uniform int linear_filter;\n"
-        "uniform dvec4 border_bytes, environment_bytes;\n"
-        "in vec4 smooth_colour;\n"
-        "flat in vec4 flat_colour;\n"
-        "in vec4 texture_coord;\n"
-        "layout(location=0) out vec4 pixel;\n"
-        "double wrapped_coord(double x, int n, int wrap) {\n"
-        "  if (wrap == WRAP_REPEAT) return fract(x);\n"
-        "  double edge = 0.5 / double(n);\n"
-        "  if (wrap == WRAP_EDGE)\n"
-        "    return clamp(x, edge, 1.0 - edge);\n"
-        "  if (wrap == WRAP_BORDER)\n"
-        "    return clamp(x, -edge, 1.0 + edge);\n"
-        "  return clamp(x, 0.0, 1.0);\n"
-        "}\n"
-        "int wrapped_index(int i, int n, int wrap) {\n"
-        "  if (wrap == WRAP_REPEAT)\n"
-        "    return i < 0 ? n - 1 : (i >= n ? 0 : i);\n"
-        "  return wrap == WRAP_EDGE ? clamp(i, 0, n - 1) : i;\n"
-        "}\n"
-        "dvec4 fetch_slot(ivec2 xy, ivec2 size) {\n"
-        "  xy = ivec2(wrapped_index(xy.x, size.x, wrap_s),\n"
-        "             wrapped_index(xy.y, size.y, wrap_t));\n"
-        "  if (any(lessThan(xy, ivec2(0))) ||\n"
-        "      any(greaterThanEqual(xy, size))) return border_bytes;\n"
-        "  return dvec4(texelFetch(image_slots, xy, 0));\n"
-        "}\n"
-        "void main() {\n"
-        "  ivec2 size = textureSize(image_slots, 0);\n"
-        "  dvec2 st = dvec2(texture_coord.xy) / double(texture_coord.w);\n"
-        "  dvec2 uv = dvec2(wrapped_coord(st.x, size.x, wrap_s),\n"
-        "                    wrapped_coord(st.y, size.y, wrap_t));\n"
-        "  dvec4 texel;\n"
-        "  if (linear_filter != 0) {\n"
-        "    dvec2 pos = uv * dvec2(size) - 0.5;\n"
-        "    ivec2 lo = ivec2(floor(pos));\n"
-        "    ivec2 hi = lo + ivec2(1);\n"
-        "    dvec2 weight = fract(pos);\n"
-        "    dvec4 c00 = fetch_slot(lo, size);\n"
-        "    dvec4 c10 = fetch_slot(ivec2(hi.x, lo.y), size);\n"
-        "    dvec4 c01 = fetch_slot(ivec2(lo.x, hi.y), size);\n"
-        "    dvec4 c11 = fetch_slot(hi, size);\n"
-        "    texel = c00 * (1.0 - weight.x) * (1.0 - weight.y) +\n"
-        "            c10 * weight.x * (1.0 - weight.y) +\n"
-        "            c01 * (1.0 - weight.x) * weight.y +\n"
-        "            c11 * weight.x * weight.y;\n"
-        "  } else {\n"
-        "    ivec2 xy = ivec2(floor(uv * dvec2(size)));\n"
-        "    if (wrap_s == WRAP_CLAMP)\n"
-        "      xy.x = clamp(xy.x, 0, size.x - 1);\n"
-        "    if (wrap_t == WRAP_CLAMP)\n"
-        "      xy.y = clamp(xy.y, 0, size.y - 1);\n"
-        "    texel = fetch_slot(xy, size);\n"
-        "  }\n"
-        "  dvec4 primary = dvec4(flat_shade != 0 ? flat_colour :\n"
-        "                         smooth_colour);\n"
-        "  dvec4 bytes;\n"
-        "  if (environment_mode == 0) {\n"
-        "    bytes = texel;\n"
-        "  } else if (environment_mode == 1) {\n"
-        "    bytes = primary * texel;\n"
-        "  } else if (environment_mode == 2) {\n"
-        "    double alpha = texel.a;\n"
-        "    bytes.rgb = (primary.rgb * (255.0 - alpha) * 255.0 +\n"
-        "                 texel.rgb * alpha) / 255.0;\n"
-        "    bytes.a = primary.a * 255.0;\n"
-        "  } else {\n"
-        "    bytes.rgb = primary.rgb * (255.0 - texel.rgb) +\n"
-        "                environment_bytes.rgb * texel.rgb / 255.0;\n"
-        "    bytes.a = primary.a * texel.a;\n"
-        "  }\n"
-        "  uvec4 rounded = uvec4(floor(clamp(bytes, 0.0, 255.0) + 0.5));\n"
-        "  pixel = vec4(rounded) / 255.0;\n"
-        "}\n";
-    GLuint vertex, fragment;
-    GLint linked;
-    char log[512];
-
-    vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
-    if (!vertex) {
-        return false;
-    }
-    fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
-    if (!fragment) {
-        glDeleteShader(vertex);
-        return false;
-    }
-    renderer->texture_program = glCreateProgram();
-    glAttachShader(renderer->texture_program, vertex);
-    glAttachShader(renderer->texture_program, fragment);
-    glLinkProgram(renderer->texture_program);
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
-    glGetProgramiv(renderer->texture_program, GL_LINK_STATUS, &linked);
-    if (!linked) {
-        glGetProgramInfoLog(renderer->texture_program, sizeof(log), NULL, log);
-        error_setg(&renderer->error, "SGI texture program failed: %s", log);
-        return false;
-    }
-    renderer->texture_sampler = glGetUniformLocation(renderer->texture_program,
-                                                      "image_slots");
-    renderer->texture_mode = glGetUniformLocation(renderer->texture_program,
-                                                   "environment_mode");
-    renderer->texture_wrap_s = glGetUniformLocation(renderer->texture_program,
-                                                     "wrap_s");
-    renderer->texture_wrap_t = glGetUniformLocation(renderer->texture_program,
-                                                     "wrap_t");
-    renderer->texture_shade = glGetUniformLocation(renderer->texture_program,
-                                                    "flat_shade");
-    renderer->texture_linear = glGetUniformLocation(renderer->texture_program,
-                                                     "linear_filter");
-    renderer->texture_border = glGetUniformLocation(renderer->texture_program,
-                                                     "border_bytes");
-    renderer->texture_environment = glGetUniformLocation(
-        renderer->texture_program, "environment_bytes");
-    if (renderer->texture_sampler < 0 || renderer->texture_mode < 0 ||
-        renderer->texture_wrap_s < 0 || renderer->texture_wrap_t < 0 ||
-        renderer->texture_shade < 0 || renderer->texture_linear < 0 ||
-        renderer->texture_border < 0 || renderer->texture_environment < 0 ||
-        renderer_gl_error(renderer, "texture program setup")) {
-        if (!renderer->error) {
-            error_setg(&renderer->error,
-                       "SGI texture program is missing a uniform");
-        }
-        return false;
-    }
-    return true;
 }
 
 /*
@@ -310,109 +166,257 @@ static bool renderer_gl_colour_program(SGIRendererGL *renderer)
  * snapped window positions, mapped through a power-of-two viewport and
  * turned upside down as triangle frames are, so GL covers exactly the
  * scalar path's pixels. The fragment program recomputes the scalar path's
- * integer edge functions, barycentric weights and 1 / w correction in
- * double, in its order of operations, and rounds to the native steps.
+ * integer edge functions, barycentric weights, depth and 1 / w correction
+ * in double, in its order of operations, drops the fragments whose depth
+ * it drops, and rounds to the native steps.
  */
-static bool renderer_gl_window_program(SGIRendererGL *renderer)
+#define RENDERER_WINDOW_VERTEX \
+    "#version 450 compatibility\n" \
+    "uniform float height;\n" \
+    "void main() {\n" \
+    "  vec2 p = vec2(gl_Vertex.x, height - gl_Vertex.y);\n" \
+    "  gl_Position = vec4((p + " \
+    G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0) / " \
+    G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0 * 0.5 - 1.0, 0.0, 1.0);\n" \
+    "}\n"
+
+#define RENDERER_WINDOW_FRAGMENT_DECLS \
+    "#version 450 compatibility\n" \
+    "uniform float height;\n" \
+    "uniform int flat_shade;\n" \
+    "uniform dvec3 vx, vy, vz, inv_w;\n" \
+    "uniform dvec4 c0, c1, c2, steps;\n" \
+    "layout(location=0) out vec4 pixel;\n"
+
+/* main() up to the weights w0, w1 and w2, their sum and the colour. */
+#define RENDERER_WINDOW_FRAGMENT_MAIN \
+    "double channel(double c, double s) {\n" \
+    "  if (s <= 0.0) return c;\n" \
+    "  if (!(c > 0.0)) return 0.0;\n" \
+    "  if (c >= 1.0) return 1.0;\n" \
+    "  return floor(c * s + 0.5) / s;\n" \
+    "}\n" \
+    "double edge(int a, int b, double px, double py) {\n" \
+    "  precise double e = (vx[b] - vx[a]) * (py - vy[a]) -\n" \
+    "                     (vy[b] - vy[a]) * (px - vx[a]);\n" \
+    "  return e;\n" \
+    "}\n" \
+    "void main() {\n" \
+    "  int px = int(floor(gl_FragCoord.x));\n" \
+    "  int py = int(height) - 1 - int(floor(gl_FragCoord.y));\n" \
+    "  double cx = double(px) * 256.0 + 128.0;\n" \
+    "  double cy = double(py) * 256.0 + 128.0;\n" \
+    "  precise double area = edge(0, 1, vx[2], vy[2]);\n" \
+    "  precise double b1 = edge(2, 0, cx, cy) / area;\n" \
+    "  precise double b2 = edge(0, 1, cx, cy) / area;\n" \
+    "  precise double z = vz[0] + b1 * (vz[1] - vz[0]) +\n" \
+    "                     b2 * (vz[2] - vz[0]);\n" \
+    "  if (!(z >= 0.0 && z <= 1.0)) discard;\n" \
+    "  precise double w0 = (1.0 - b1 - b2) * inv_w[0];\n" \
+    "  precise double w1 = b1 * inv_w[1];\n" \
+    "  precise double w2 = b2 * inv_w[2];\n" \
+    "  precise double sum = w0 + w1 + w2;\n" \
+    "  precise dvec4 rgba = flat_shade != 0 ? c0 :\n" \
+    "      (w0 * c0 + w1 * c1 + w2 * c2) / sum;\n"
+
+#define RENDERER_WINDOW_FRAGMENT_TAIL \
+    "  pixel = vec4(channel(rgba.r, steps.r), channel(rgba.g, steps.g),\n" \
+    "               channel(rgba.b, steps.b), channel(rgba.a, steps.a));\n" \
+    "}\n"
+
+static GLuint renderer_gl_link(SGIRendererGL *renderer, const char *name,
+                               const char *vertex_source,
+                               const char *fragment_source)
 {
-    static const char *vertex_source =
-        "#version 450 compatibility\n"
-        "uniform float height;\n"
-        "void main() {\n"
-        "  vec2 p = vec2(gl_Vertex.x, height - gl_Vertex.y);\n"
-        "  gl_Position = vec4((p + "
-        G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0) / "
-        G_STRINGIFY(SGI_RENDERER_WINDOW_REACH) ".0 * 0.5 - 1.0, 0.0, 1.0);\n"
-        "}\n";
-    static const char *fragment_source =
-        "#version 450 compatibility\n"
-        "uniform float height;\n"
-        "uniform int flat_shade;\n"
-        "uniform dvec3 vx, vy, vz, inv_w;\n"
-        "uniform dvec4 c0, c1, c2, steps;\n"
-        "layout(location=0) out vec4 pixel;\n"
-        "double channel(double c, double s) {\n"
-        "  if (s <= 0.0) return c;\n"
-        "  if (!(c > 0.0)) return 0.0;\n"
-        "  if (c >= 1.0) return 1.0;\n"
-        "  return floor(c * s + 0.5) / s;\n"
-        "}\n"
-        "double edge(int a, int b, double px, double py) {\n"
-        "  precise double e = (vx[b] - vx[a]) * (py - vy[a]) -\n"
-        "                     (vy[b] - vy[a]) * (px - vx[a]);\n"
-        "  return e;\n"
-        "}\n"
-        "void main() {\n"
-        "  int px = int(floor(gl_FragCoord.x));\n"
-        "  int py = int(height) - 1 - int(floor(gl_FragCoord.y));\n"
-        "  double cx = double(px) * 256.0 + 128.0;\n"
-        "  double cy = double(py) * 256.0 + 128.0;\n"
-        "  precise double area = edge(0, 1, vx[2], vy[2]);\n"
-        "  precise double b1 = edge(2, 0, cx, cy) / area;\n"
-        "  precise double b2 = edge(0, 1, cx, cy) / area;\n"
-        "  precise double z = vz[0] + b1 * (vz[1] - vz[0]) +\n"
-        "                     b2 * (vz[2] - vz[0]);\n"
-        "  if (!(z >= 0.0 && z <= 1.0)) discard;\n"
-        "  precise double w0 = (1.0 - b1 - b2) * inv_w[0];\n"
-        "  precise double w1 = b1 * inv_w[1];\n"
-        "  precise double w2 = b2 * inv_w[2];\n"
-        "  precise double sum = w0 + w1 + w2;\n"
-        "  precise dvec4 rgba = flat_shade != 0 ? c0 :\n"
-        "      (w0 * c0 + w1 * c1 + w2 * c2) / sum;\n"
-        "  pixel = vec4(channel(rgba.r, steps.r), channel(rgba.g, steps.g),\n"
-        "               channel(rgba.b, steps.b), channel(rgba.a, steps.a));\n"
-        "}\n";
-    GLuint vertex, fragment;
+    GLuint vertex, fragment, program;
     GLint linked;
     char log[512];
-    struct {
-        GLint *location;
-        const char *name;
-    } uniforms[] = {
-        { &renderer->window_height, "height" },
-        { &renderer->window_x, "vx" },
-        { &renderer->window_y, "vy" },
-        { &renderer->window_z, "vz" },
-        { &renderer->window_flat, "flat_shade" },
-        { &renderer->window_inv_w, "inv_w" },
-        { &renderer->window_c0, "c0" },
-        { &renderer->window_c1, "c1" },
-        { &renderer->window_c2, "c2" },
-        { &renderer->window_steps, "steps" },
-    };
 
     vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
     if (!vertex) {
-        return false;
+        return 0;
     }
     fragment = renderer_shader(renderer, GL_FRAGMENT_SHADER, fragment_source);
     if (!fragment) {
         glDeleteShader(vertex);
-        return false;
+        return 0;
     }
-    renderer->window_program = glCreateProgram();
-    glAttachShader(renderer->window_program, vertex);
-    glAttachShader(renderer->window_program, fragment);
-    glLinkProgram(renderer->window_program);
+    program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
     glDeleteShader(vertex);
     glDeleteShader(fragment);
-    glGetProgramiv(renderer->window_program, GL_LINK_STATUS, &linked);
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
     if (!linked) {
-        glGetProgramInfoLog(renderer->window_program, sizeof(log), NULL, log);
-        error_setg(&renderer->error, "SGI window program failed: %s", log);
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        error_setg(&renderer->error, "SGI %s program failed: %s", name, log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+static bool renderer_gl_uniform(SGIRendererGL *renderer, GLuint program,
+                                const char *program_name, const char *name,
+                                GLint *location)
+{
+    *location = glGetUniformLocation(program, name);
+    if (*location < 0) {
+        error_setg(&renderer->error, "SGI %s program is missing uniform %s",
+                   program_name, name);
         return false;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(uniforms); i++) {
-        *uniforms[i].location = glGetUniformLocation(renderer->window_program,
-                                                     uniforms[i].name);
-        if (*uniforms[i].location < 0) {
-            error_setg(&renderer->error,
-                       "SGI window program is missing uniform %s",
-                       uniforms[i].name);
-            return false;
-        }
+    return true;
+}
+
+static bool renderer_gl_window_uniforms(SGIRendererGL *renderer,
+                                        GLuint program, const char *name,
+                                        SGIWindowUniforms *u)
+{
+    return renderer_gl_uniform(renderer, program, name, "height",
+                               &u->height) &&
+           renderer_gl_uniform(renderer, program, name, "flat_shade",
+                               &u->flat) &&
+           renderer_gl_uniform(renderer, program, name, "vx", &u->x) &&
+           renderer_gl_uniform(renderer, program, name, "vy", &u->y) &&
+           renderer_gl_uniform(renderer, program, name, "vz", &u->z) &&
+           renderer_gl_uniform(renderer, program, name, "inv_w",
+                               &u->inv_w) &&
+           renderer_gl_uniform(renderer, program, name, "c0", &u->c0) &&
+           renderer_gl_uniform(renderer, program, name, "c1", &u->c1) &&
+           renderer_gl_uniform(renderer, program, name, "c2", &u->c2) &&
+           renderer_gl_uniform(renderer, program, name, "steps", &u->steps);
+}
+
+static bool renderer_gl_window_program(SGIRendererGL *renderer)
+{
+    renderer->window_program = renderer_gl_link(renderer, "window",
+        RENDERER_WINDOW_VERTEX,
+        RENDERER_WINDOW_FRAGMENT_DECLS RENDERER_WINDOW_FRAGMENT_MAIN
+        RENDERER_WINDOW_FRAGMENT_TAIL);
+    return renderer->window_program &&
+           renderer_gl_window_uniforms(renderer, renderer->window_program,
+                                       "window", &renderer->window) &&
+           !renderer_gl_error(renderer, "window program setup");
+}
+
+/*
+ * Textured window triangles: the window program's weights also give the
+ * texture coordinates, in double, as the scalar path interpolates them.
+ * The program then samples level zero exactly as the scalar path does:
+ * it reduces each coordinate by its wrap mode, takes the nearest texel or
+ * the four linear taps with their double weights in the scalar order,
+ * reads taps outside the image as the border colour, normalizes texels by
+ * 255, and applies the environment to the primary colour in [0, 1].
+ * Texture sizes are powers of two, so a mask wraps a repeated index.
+ */
+static bool renderer_gl_texture_program(SGIRendererGL *renderer)
+{
+    static const char *fragment_source =
+        RENDERER_WINDOW_FRAGMENT_DECLS
+        "#define WRAP_REPEAT " G_STRINGIFY(GL_REPEAT) "\n"
+        "#define WRAP_CLAMP " G_STRINGIFY(GL_CLAMP) "\n"
+        "#define WRAP_EDGE " G_STRINGIFY(GL_CLAMP_TO_EDGE) "\n"
+        "#define WRAP_BORDER " G_STRINGIFY(GL_CLAMP_TO_BORDER) "\n"
+        "uniform dvec4 t0, t1, t2;\n"
+        "uniform usampler2D image_slots;\n"
+        "uniform int environment_mode, wrap_s, wrap_t, linear_filter;\n"
+        "uniform dvec4 border, environment;\n"
+        "double reduce(double x, int n, int wrap) {\n"
+        "  precise double half_texel = 0.5 / double(n);\n"
+        "  if (wrap == WRAP_REPEAT) return x - floor(x);\n"
+        "  if (wrap == WRAP_EDGE)\n"
+        "    return min(max(x, half_texel), 1.0 - half_texel);\n"
+        "  if (wrap == WRAP_BORDER)\n"
+        "    return min(max(x, -half_texel), 1.0 + half_texel);\n"
+        "  return min(max(x, 0.0), 1.0);\n"
+        "}\n"
+        "dvec4 tap(int x, int y, ivec2 size) {\n"
+        "  if (wrap_s == WRAP_REPEAT) x = x & (size.x - 1);\n"
+        "  if (wrap_t == WRAP_REPEAT) y = y & (size.y - 1);\n"
+        "  if (x < 0 || y < 0 || x >= size.x || y >= size.y) return border;\n"
+        "  return dvec4(texelFetch(image_slots, ivec2(x, y), 0)) / 255.0;\n"
+        "}\n"
+        RENDERER_WINDOW_FRAGMENT_MAIN
+        "  precise dvec4 tc = (w0 * t0 + w1 * t1 + w2 * t2) / sum;\n"
+        "  if (!(tc.q > 0.0) || isinf(tc.q)) discard;\n"
+        "  precise double s = tc.s / tc.q;\n"
+        "  precise double t = tc.t / tc.q;\n"
+        "  if (isinf(s) || isnan(s) || isinf(t) || isnan(t)) discard;\n"
+        "  ivec2 size = textureSize(image_slots, 0);\n"
+        "  s = reduce(s, size.x, wrap_s);\n"
+        "  t = reduce(t, size.y, wrap_t);\n"
+        "  dvec4 texel = dvec4(0.0);\n"
+        "  if (linear_filter == 0) {\n"
+        "    int x = int(floor(double(size.x) * s));\n"
+        "    int y = int(floor(double(size.y) * t));\n"
+        "    if (s == 1.0 && wrap_s != WRAP_BORDER) x = size.x - 1;\n"
+        "    if (t == 1.0 && wrap_t != WRAP_BORDER) y = size.y - 1;\n"
+        "    texel = tap(x, y, size);\n"
+        "  } else {\n"
+        "    precise double u = double(size.x) * s - 0.5;\n"
+        "    precise double v = double(size.y) * t - 0.5;\n"
+        "    int x = int(floor(u)), y = int(floor(v));\n"
+        "    precise double a = u - double(x), b = v - double(y);\n"
+        "    for (int j = 0; j < 2; j++) {\n"
+        "      for (int i = 0; i < 2; i++) {\n"
+        "        precise double weight = (i != 0 ? a : 1.0 - a) *\n"
+        "                                (j != 0 ? b : 1.0 - b);\n"
+        "        if (weight != 0.0) {\n"
+        "          precise dvec4 term = weight * tap(x + i, y + j, size);\n"
+        "          texel = texel + term;\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  if (environment_mode == 0) {\n"
+        "    rgba = texel;\n"
+        "  } else if (environment_mode == 1) {\n"
+        "    rgba = rgba * texel;\n"
+        "  } else if (environment_mode == 2) {\n"
+        "    rgba.rgb = rgba.rgb * (1.0 - texel.a) + texel.rgb * texel.a;\n"
+        "  } else {\n"
+        "    rgba.rgb = rgba.rgb * (1.0 - texel.rgb) +\n"
+        "               environment.rgb * texel.rgb;\n"
+        "    rgba.a = rgba.a * texel.a;\n"
+        "  }\n"
+        RENDERER_WINDOW_FRAGMENT_TAIL;
+    renderer->texture_program = renderer_gl_link(renderer, "texture",
+        RENDERER_WINDOW_VERTEX, fragment_source);
+    if (!renderer->texture_program ||
+        !renderer_gl_window_uniforms(renderer, renderer->texture_program,
+                                     "texture", &renderer->texture_window)) {
+        return false;
     }
-    return !renderer_gl_error(renderer, "window program setup");
+    return renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "t0", &renderer->texture_t0) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "t1", &renderer->texture_t1) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "t2", &renderer->texture_t2) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "image_slots",
+                               &renderer->texture_sampler) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "environment_mode",
+                               &renderer->texture_mode) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "wrap_s",
+                               &renderer->texture_wrap_s) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "wrap_t",
+                               &renderer->texture_wrap_t) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "linear_filter",
+                               &renderer->texture_linear) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "border",
+                               &renderer->texture_border) &&
+           renderer_gl_uniform(renderer, renderer->texture_program,
+                               "texture", "environment",
+                               &renderer->texture_environment) &&
+           !renderer_gl_error(renderer, "texture program setup");
 }
 
 /*
@@ -911,6 +915,9 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
     GLuint texture = 0, sample = 0, framebuffer = 0, stencil = 0;
+    const SGIWindowUniforms *window = frame->texture.slots ?
+                                      &renderer->texture_window :
+                                      &renderer->window;
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
@@ -921,12 +928,10 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glBindTexture(GL_TEXTURE_2D, texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     /*
-     * Float storage keeps untextured blending free of intermediate fixed
-     * point rounding; readback clamps as a native store does.
+     * Float storage keeps blending free of intermediate fixed point
+     * rounding; readback clamps as a native store does.
      */
-    glTexImage2D(GL_TEXTURE_2D, 0,
-                 frame->texture.slots ? GL_RGBA8 : GL_RGBA32F,
-                 frame->width, frame->height,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, frame->width, frame->height,
                  0, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -1011,20 +1016,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
                     frame->texture.env_mode == GL_DECAL ? 2 : 3);
         glUniform1i(renderer->texture_wrap_s, frame->texture.wrap_s);
         glUniform1i(renderer->texture_wrap_t, frame->texture.wrap_t);
-        glUniform4dv(renderer->texture_border, 1,
-                     frame->texture.border_bytes);
+        glUniform4dv(renderer->texture_border, 1, frame->texture.border);
         glUniform4dv(renderer->texture_environment, 1,
-                     frame->texture.environment_bytes);
-        glUniform1i(renderer->texture_shade,
-                    frame->shade_model == GL_FLAT);
+                     frame->texture.environment);
         glUniform1i(renderer->texture_linear, frame->texture.linear_filter);
     } else if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
         glUseProgram(renderer->window_program);
-        glUniform1f(renderer->window_height, frame->height);
-        glUniform1i(renderer->window_flat, frame->shade_model == GL_FLAT);
-        glUniform4d(renderer->window_steps, frame->colour_steps[0],
-                    frame->colour_steps[1], frame->colour_steps[2],
-                    frame->colour_steps[3]);
     } else if (frame->primitive == SGI_RENDERER_LINES) {
         glUseProgram(renderer->line_program);
         glUniform4d(renderer->line_steps, frame->colour_steps[0],
@@ -1075,21 +1072,31 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glLoadMatrixf(frame->projection);
     glMatrixMode(GL_MODELVIEW);
     glLoadMatrixf(frame->modelview);
+    if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
+        glUniform1f(window->height, frame->height);
+        glUniform1i(window->flat, frame->shade_model == GL_FLAT);
+        glUniform4d(window->steps, frame->colour_steps[0],
+                    frame->colour_steps[1], frame->colour_steps[2],
+                    frame->colour_steps[3]);
+    }
     for (uint32_t i = 0; frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES &&
                          i < frame->count; i++) {
         const SGIRendererTriangle *t = &frame->triangles[i];
-        const GLint colours[3] = {
-            renderer->window_c0, renderer->window_c1, renderer->window_c2,
+        const GLint colours[3] = { window->c0, window->c1, window->c2 };
+        const GLint coords[3] = {
+            renderer->texture_t0, renderer->texture_t1, renderer->texture_t2,
         };
 
-        glUniform3d(renderer->window_x, t->x[0], t->x[1], t->x[2]);
-        glUniform3d(renderer->window_y, t->y[0], t->y[1], t->y[2]);
-        glUniform3d(renderer->window_z, t->z[0], t->z[1], t->z[2]);
-        glUniform3d(renderer->window_inv_w, t->inv_w[0], t->inv_w[1],
-                    t->inv_w[2]);
+        glUniform3d(window->x, t->x[0], t->x[1], t->x[2]);
+        glUniform3d(window->y, t->y[0], t->y[1], t->y[2]);
+        glUniform3d(window->z, t->z[0], t->z[1], t->z[2]);
+        glUniform3d(window->inv_w, t->inv_w[0], t->inv_w[1], t->inv_w[2]);
         for (unsigned v = 0; v < 3; v++) {
             glUniform4d(colours[v], t->colour[v][0], t->colour[v][1],
                         t->colour[v][2], t->colour[v][3]);
+            if (frame->texture.slots) {
+                glUniform4dv(coords[v], 1, t->texcoord[v]);
+            }
         }
         glBegin(GL_TRIANGLES);
         for (unsigned v = 0; v < 3; v++) {
@@ -1120,8 +1127,7 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     }
     if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
         frame->primitive != SGI_RENDERER_LINES) {
-        glBegin(frame->texture.slots ? GL_TRIANGLE_FAN :
-                frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS :
+        glBegin(frame->primitive == SGI_RENDERER_POINTS ? GL_POINTS :
                 GL_TRIANGLES);
     }
     for (uint32_t i = 0;
@@ -1131,9 +1137,6 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
 
         glColor4fv(vertex + 4);
-        if (frame->texture.slots) {
-            glTexCoord4fv(vertex + 8);
-        }
         glVertex4fv(vertex);
     }
     if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&

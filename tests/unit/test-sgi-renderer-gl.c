@@ -3019,14 +3019,20 @@ static void test_frame_coverage_capacity(void)
 static void test_frame_texture_validation(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
-    float vertices[3 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = { 0 };
+    SGIRendererTriangle triangle = {
+        .x = { -256, 2048, -256 }, .y = { -256, -256, 2048 },
+        .z = { 0.5, 0.5, 0.5 }, .inv_w = { 1, 1, 1 },
+    };
     uint16_t rgba[4 * 4 * 4] = { 0 };
     uint8_t written[4 * 4] = { 0 };
-    uint32_t texels[4] = { 255, 0, 0, 255 };
+    uint32_t texels[4] = { 128, 64, 192, 128 };
     SGIRendererFrame frame = {
-        .width = 4, .height = 4, .count = 3,
-        .vertices = vertices, .rgba = rgba,
-        .written = written, .written_capacity = sizeof(written),
+        .width = 4, .height = 4, .count = 1,
+        .primitive = SGI_RENDERER_WINDOW_TRIANGLES, .triangles = &triangle,
+        .shade_model = SGI_GL_FLAT,
+        .colour_steps = { 255, 255, 255, 255 },
+        .rgba = rgba, .written = written,
+        .written_capacity = sizeof(written),
         .texture = {
             .width = 1, .height = 1, .component_bits = 8,
             .env_mode = SGI_GL_REPLACE,
@@ -3034,100 +3040,67 @@ static void test_frame_texture_validation(void)
             .slots = texels, .capacity_slots = ARRAY_SIZE(texels),
         },
     };
+    static const float colour[4] = { 0.25f, 0.5f, 0.75f, 0.5f };
+    static const double environment[4] = { 0.75, 0.25, 0.5, 1 };
     SGIRenderer *renderer;
     Error *err = NULL;
 
+    for (unsigned v = 0; v < 3; v++) {
+        memcpy(triangle.colour[v], colour, sizeof(colour));
+        triangle.texcoord[v][0] = triangle.texcoord[v][1] = 0.5;
+        triangle.texcoord[v][3] = 1;
+    }
     mesa_test_env_set(&mesa_env);
-    if (!mesa_test_available(false)) {
+    if (!mesa_test_available(true)) {
         return;
     }
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
 
-    frame.texture.border_bytes[0] = NAN;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture border colour");
-    g_clear_pointer(&err, error_free);
-
-    frame.texture.border_bytes[0] = 0;
-    frame.texture.border_bytes[1] = 256;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture border colour");
-    g_clear_pointer(&err, error_free);
-
-    frame.texture.border_bytes[1] = 0;
+#define FRAME_REFUSED(message) do { \
+        g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err)); \
+        g_assert_nonnull(err); \
+        g_assert_cmpstr(error_get_pretty(err), ==, message); \
+        g_clear_pointer(&err, error_free); \
+    } while (0)
+    frame.texture.border[0] = NAN;
+    FRAME_REFUSED("Invalid SGI OpenGL texture border colour");
+    frame.texture.border[0] = 0;
+    frame.texture.border[1] = 2;
+    FRAME_REFUSED("Invalid SGI OpenGL texture border colour");
+    frame.texture.border[1] = 0;
     frame.texture.wrap_s = 0xffffffffu;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture wrap");
-    g_clear_pointer(&err, error_free);
-
+    FRAME_REFUSED("Invalid SGI OpenGL texture wrap");
     frame.texture.wrap_s = SGI_GL_REPEAT;
     frame.texture.env_mode = 0xffffffffu;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture environment");
-    g_clear_pointer(&err, error_free);
-
-    frame.texture.env_mode = SGI_GL_REPLACE;
-    frame.texture.environment_bytes[0] = NAN;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture environment colour");
-    g_clear_pointer(&err, error_free);
-
+    FRAME_REFUSED("Invalid SGI OpenGL texture environment");
     frame.texture.env_mode = SGI_GL_BLEND;
-    frame.texture.environment_bytes[0] = 191.25;
-    frame.texture.environment_bytes[1] = 256;
-    g_assert_false(sgi_renderer_draw_frame(renderer, &frame, &err));
-    g_assert_nonnull(err);
-    g_assert_cmpstr(error_get_pretty(err), ==,
-                    "Invalid SGI OpenGL texture environment colour");
-    g_clear_pointer(&err, error_free);
+    frame.texture.environment[0] = NAN;
+    FRAME_REFUSED("Invalid SGI OpenGL texture environment colour");
+    frame.texture.environment[0] = 1.5;
+    FRAME_REFUSED("Invalid SGI OpenGL texture environment colour");
+    memcpy(frame.texture.environment, environment, sizeof(environment));
+    triangle.texcoord[1][3] = 0;
+    FRAME_REFUSED("Invalid SGI OpenGL texture coordinates");
+    triangle.texcoord[1][3] = 1;
+    /* A textured frame is window triangles only. */
+    frame.primitive = SGI_RENDERER_TRIANGLES;
+    FRAME_REFUSED("Invalid SGI OpenGL frame request");
+    frame.primitive = SGI_RENDERER_WINDOW_TRIANGLES;
+#undef FRAME_REFUSED
 
-    frame.texture.environment_bytes[1] = 63.75;
-    frame.texture.environment_bytes[2] = 127.5;
-    frame.texture.environment_bytes[3] = 255;
-    texels[0] = 128;
-    texels[1] = 64;
-    texels[2] = 192;
-    texels[3] = 128;
-    frame.shade_model = SGI_GL_FLAT;
-    for (unsigned i = 0; i < 4; i++) {
-        frame.modelview[i * 5] = 1;
-        frame.projection[i * 5] = 1;
-    }
-    for (unsigned i = 0; i < 3; i++) {
-        float *v = &vertices[i * SGI_RENDERER_FRAME_VERTEX_FLOATS];
-
-        v[3] = 1;
-        v[4] = 0.25f;
-        v[5] = 0.5f;
-        v[6] = 0.75f;
-        v[7] = 0.5f;
-        v[11] = 1;
-    }
-    vertices[0] = -1;
-    vertices[1] = -1;
-    vertices[SGI_RENDERER_FRAME_VERTEX_FLOATS] = 1;
-    vertices[SGI_RENDERER_FRAME_VERTEX_FLOATS + 1] = -1;
-    vertices[2 * SGI_RENDERER_FRAME_VERTEX_FLOATS] = -1;
-    vertices[2 * SGI_RENDERER_FRAME_VERTEX_FLOATS + 1] = 1;
     g_assert_true(sgi_renderer_draw_frame(renderer, &frame, &err));
     g_assert_null(err);
-    g_assert_cmpuint(written[0], ==, 1);
-    g_assert_cmpuint(rgba[0], ==, 128 * 257);
-    g_assert_cmpuint(rgba[1], ==, 112 * 257);
-    g_assert_cmpuint(rgba[2], ==, 143 * 257);
-    g_assert_cmpuint(rgba[3], ==, 64 * 257);
+    /* BLEND as the scalar path computes it, in double from the floats. */
+    for (unsigned c = 0; c < 4; c++) {
+        double t = texels[c] / 255.0;
+        double value = c < 3 ? colour[c] * (1 - t) + environment[c] * t :
+                               colour[c] * t;
+
+        g_assert_cmpuint(written[0], ==, 1);
+        g_assert_cmpuint(rgba[c], ==, (uint32_t)(value * 255 + 0.5) * 257);
+    }
     sgi_renderer_free(renderer);
 }
 
@@ -3785,7 +3758,7 @@ typedef struct PrimFixture {
     uint32_t rgba[PRIM_SIZE][PRIM_SIZE][4];
     uint8_t written[PRIM_SIZE][PRIM_SIZE];
     uint32_t depth[PRIM_SIZE][PRIM_SIZE], stencil[PRIM_SIZE][PRIM_SIZE];
-    uint32_t texels[4][4][4];
+    uint32_t texels[16][16][4];
     unsigned components;
     unsigned snapshots, commits;
     /*
@@ -3965,7 +3938,7 @@ typedef struct PrimCase {
     bool top_origin;
     /* With state.texture_2d: a level-zero RGBA8 image, rows from T zero. */
     SGIGLTexImage image;
-    uint32_t texels[4][4][4];
+    uint32_t texels[16][16][4];
     /* With use_phase, each path borrows its own stipple phase. */
     bool use_phase;
     uint32_t phase[2];
@@ -4960,6 +4933,23 @@ static void prim_texture(PrimCase *p, unsigned size, uint32_t filter,
     }
 }
 
+/* Resize a prim_texture() image to width by height, refilling its texels. */
+static void prim_texture_size(PrimCase *p, unsigned width, unsigned height)
+{
+    p->image.width = width;
+    p->image.height = height;
+    for (unsigned y = 0; y < height; y++) {
+        for (unsigned x = 0; x < width; x++) {
+            uint32_t *t = p->texels[y][x];
+
+            t[0] = (x * 83 + y * 29 + 11) & 255;
+            t[1] = (x * 47 + y * 101 + 60) & 255;
+            t[2] = (x * 13 + y * 157 + 200) & 255;
+            t[3] = (x * 71 + y * 37 + 90) & 255;
+        }
+    }
+}
+
 static void test_scalar_match_texture(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -5017,12 +5007,298 @@ static void test_scalar_match_texture(void)
 }
 
 /*
+ * Place a prim_texture() triangle at window positions xy with clip w and
+ * texture coordinates st, q one, so that its edges and texel boundaries
+ * fall where the scalar path's double arithmetic and float32
+ * interpolation can disagree.
+ */
+static void prim_texture_place(PrimCase *p, const float xy[3][2],
+                               const float st[3][2], const float w[3])
+{
+    for (unsigned v = 0; v < 3; v++) {
+        float *vertex = p->vertices[v];
+
+        vertex[SGI_GL_V_POSITION] = (xy[v][0] * 2 / PRIM_SIZE - 1) * w[v];
+        vertex[SGI_GL_V_POSITION + 1] = (xy[v][1] * 2 / PRIM_SIZE - 1) * w[v];
+        vertex[SGI_GL_V_POSITION + 2] = 0;
+        vertex[SGI_GL_V_POSITION + 3] = w[v];
+        vertex[SGI_GL_V_TEXCOORD] = st[v][0];
+        vertex[SGI_GL_V_TEXCOORD + 1] = st[v][1];
+        vertex[SGI_GL_V_TEXCOORD + 2] = 0;
+        vertex[SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+}
+
+/*
+ * The vector that showed textured triangles differ: a 2 by 2 NEAREST
+ * texture where the scalar path's t at pixel (4,10) is 0.5 within
+ * rounding, a texel boundary, so float32 interpolation picks the other
+ * row.
+ */
+static void test_scalar_match_texture_boundary(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float xy[3][2] = {
+        { 1.5f, 1.5f }, { 1.75f, 12.25f }, { 13.5f, 13.5f },
+    };
+    static const float st[3][2] = {
+        { -0.6f, -0.35f }, { 1.7f, 0.2f }, { 0.45f, 1.9f },
+    };
+    static const float w[3] = { 1, 1, 1 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                 SGI_GL_MODULATE);
+    prim_texture_place(p, xy, st, w);
+    prim_expect(renderer, "texel boundary at (4,10)", p, &failures);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Textured triangles away from the fixture: diagonal and axis-aligned
+ * edges through pixel centres, every vertex order, clip w of 0.5, 1 and 2,
+ * flat and smooth, every environment, both filters and the accepted wraps,
+ * then a seeded random sweep.
+ */
+static void test_scalar_match_texture_sweep(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float shapes[][3][2] = {
+        { { 13.5f, 13.5f }, { 1.5f, 1.5f }, { 1.75f, 12.25f } },
+        { { 2.5f, 1.5f }, { 2.5f, 14.5f }, { 13.25f, 7.75f } },
+        { { 14.5f, 13.5f }, { 1.5f, 13.5f }, { 7.75f, 2.25f } },
+        { { 0.5f, 0.5f }, { 15.5f, 3.5f }, { 4.5f, 15.5f } },
+    };
+    static const float coords[][3][2] = {
+        { { -0.6f, -0.35f }, { 1.7f, 0.2f }, { 0.45f, 1.9f } },
+        { { 0, 0 }, { 1, 0 }, { 0.5f, 1 } },
+        { { 0.25f, 2.75f }, { -1.5f, 0.5f }, { 3, -0.125f } },
+    };
+    static const float weights[][3] = {
+        { 1, 1, 1 }, { 1, 2, 0.5f }, { 2, 0.5f, 1 },
+    };
+    static const uint32_t envs[] = {
+        SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL, SGI_GL_BLEND,
+    };
+    static const uint32_t wraps[] = {
+        SGI_GL_REPEAT, SGI_GL_CLAMP, SGI_GL_CLAMP_TO_EDGE,
+        SGI_GL_CLAMP_TO_BORDER,
+    };
+    static const uint32_t filters[] = { SGI_GL_NEAREST, SGI_GL_LINEAR };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autoptr(GRand) rand = g_rand_new_with_seed(20261009);
+    SGIRenderer *renderer;
+    unsigned failures = 0, cases = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned s = 0; s < ARRAY_SIZE(shapes); s++) {
+        for (unsigned k = 0; k < 3 * ARRAY_SIZE(coords) *
+                                 ARRAY_SIZE(weights); k++) {
+            unsigned first = k % 3, c = k / 3 % ARRAY_SIZE(coords);
+            unsigned wi = k / 3 / ARRAY_SIZE(coords);
+            float xy[3][2], st[3][2], w[3];
+
+            for (unsigned v = 0; v < 3; v++) {
+                memcpy(xy[v], shapes[s][(first + v) % 3], sizeof(xy[v]));
+                memcpy(st[v], coords[c][v], sizeof(st[v]));
+                w[v] = weights[wi][v];
+            }
+            for (unsigned m = 0; m < 2 * ARRAY_SIZE(envs) *
+                                     ARRAY_SIZE(filters) *
+                                     ARRAY_SIZE(wraps); m++) {
+                unsigned smooth = m & 1, e = m / 2 % ARRAY_SIZE(envs);
+                unsigned f = m / 2 / ARRAY_SIZE(envs) % ARRAY_SIZE(filters);
+                unsigned wr = m / 2 / ARRAY_SIZE(envs) / ARRAY_SIZE(filters);
+                g_autofree char *name = g_strdup_printf(
+                    "shape %u from %u coords %u w %u %s env 0x%x filter "
+                    "0x%x wrap 0x%x", s, first, c, wi,
+                    smooth ? "smooth" : "flat", envs[e], filters[f],
+                    wraps[wr]);
+
+                prim_case_init(p, SGI_GL_TRIANGLES, 4);
+                prim_texture(p, (m / 8) & 1 ? 4 : 2, filters[f], wraps[wr],
+                             wraps[(wr + m / 4) % ARRAY_SIZE(wraps)],
+                             envs[e]);
+                p->state.shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+                prim_texture_place(p, xy, st, w);
+                for (unsigned v = 0; smooth && v < 3; v++) {
+                    p->vertices[v][SGI_GL_V_COLOR + v] = 0.1f + 0.4f * v;
+                }
+                if (prim_compare(renderer, name, p, false)) {
+                    failures++;
+                }
+                cases++;
+            }
+        }
+    }
+    for (unsigned i = 0; i < 1200; i++) {
+        float xy[3][2], st[3][2], w[3];
+        g_autofree char *name = g_strdup_printf("random %u", i);
+
+        for (unsigned v = 0; v < 3; v++) {
+            /* Quarter pixels put many edges through pixel centres. */
+            xy[v][0] = g_rand_int_range(rand, 0, 65) / 4.0f;
+            xy[v][1] = g_rand_int_range(rand, 0, 65) / 4.0f;
+            st[v][0] = g_rand_int_range(rand, -64, 129) / 32.0f;
+            st[v][1] = g_rand_int_range(rand, -64, 129) / 32.0f;
+            w[v] = g_rand_int_range(rand, 2, 17) / 8.0f;
+        }
+        int state = g_rand_int_range(rand, 0, 6);
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 3 + g_rand_int_range(rand, 0, 2));
+        prim_texture(p, 2, filters[g_rand_int_range(rand, 0, 2)],
+                     wraps[g_rand_int_range(rand, 0, 4)],
+                     wraps[g_rand_int_range(rand, 0, 4)],
+                     envs[g_rand_int_range(rand, 0, 4)]);
+        /* Power-of-two sizes from 1 to 16, square or not. */
+        prim_texture_size(p, 1u << g_rand_int_range(rand, 0, 5),
+                          1u << g_rand_int_range(rand, 0, 5));
+        p->state.shade_model = g_rand_boolean(rand) ? SGI_GL_SMOOTH :
+                                                      SGI_GL_FLAT;
+        prim_texture_place(p, xy, st, w);
+        /* Then the state the cross cases vary for untextured draws. */
+        switch (state) {
+        case 1:
+            p->top_origin = true;
+            break;
+        case 2:
+            p->state.scissor_test = 1;
+            memcpy(p->state.scissor, (int32_t[4]) { -4, 3, 13, 9 },
+                   sizeof(p->state.scissor));
+            break;
+        case 3:
+            memcpy(p->state.viewport, (int32_t[4]) { 3, -2, 10, 12 },
+                   sizeof(p->state.viewport));
+            break;
+        case 4:
+            prim_set_clips(p, (SGIClipRect[]) {
+                { 1, 1, 5, 4 }, { 9, 2, 14, 6 }, { 3, 10, 6, 15 },
+            }, 3);
+            break;
+        case 5:
+            prim_matrices(p, g_rand_boolean(rand));
+            break;
+        }
+        for (unsigned v = 0; v < 3; v++) {
+            for (unsigned c = 0; c < 4; c++) {
+                p->vertices[v][SGI_GL_V_COLOR + c] =
+                    g_rand_int_range(rand, 0, 256) / 255.0f;
+            }
+        }
+        if (prim_compare(renderer, name, p, false)) {
+            failures++;
+        }
+        cases++;
+    }
+    g_test_message("texture sweep: %u of %u cases differ", failures, cases);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * The scalar path drops a whole textured triangle when any vertex of its
+ * clipped polygon has a texture q that is not positive. Here vertex c has
+ * q 0 and lies 1/8192 of the half-width inside the right plane, and b lies
+ * past it at c's height. Clipping makes a vertex on the plane next to c,
+ * so the fan piece holding c snaps to zero area and is dropped, while the
+ * piece between a, the cut on ab and the cut on bc, whose q are positive,
+ * survives. Mesa must draw nothing, as the scalar path does, or refuse
+ * before any snapshot.
+ */
+static void test_texture_invalid_clipped_vertex(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float clip[3][4] = {
+        { -0.75f, -0.75f, 0, 1 },               /* a, inside */
+        { 3, 0.5f, 0, 1 },                      /* b, past the right plane */
+        { 1 - 1.0f / 8192, 0.5f, 0, 1 },        /* c, just inside it */
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned first = 0; first < 3; first++) {
+        g_autofree PrimFixture *scalar = g_new(PrimFixture, 1);
+        g_autofree PrimFixture *mesa = g_new(PrimFixture, 1);
+        g_autofree char *name = g_strdup_printf("q 0 at c, from %u", first);
+        unsigned drawn = 0;
+        SGIRenderResult result;
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                     SGI_GL_REPLACE);
+        for (unsigned i = 0; i < 3; i++) {
+            unsigned v = (first + i) % 3;
+
+            memcpy(&p->vertices[i][SGI_GL_V_POSITION], clip[v],
+                   sizeof(clip[0]));
+            p->vertices[i][SGI_GL_V_TEXCOORD + 3] = v == 2 ? 0 : 1;
+        }
+        prim_destination(scalar, p);
+        prim_destination(mesa, p);
+        prim_scalar_draw(p, scalar);
+        for (unsigned y = 0; y < PRIM_SIZE; y++) {
+            for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                drawn += scalar->written[y][x];
+            }
+        }
+        g_assert_cmpuint(drawn, ==, 0);
+        result = prim_mesa_draw(renderer, p, mesa, &err);
+        g_clear_pointer(&err, error_free);
+        if (result == SGI_RENDER_UNSUPPORTED && !mesa->snapshots) {
+            continue;
+        }
+        if (result != SGI_RENDER_OK || prim_report(name, scalar, mesa)) {
+            g_test_message("%s: result %d differs from the scalar drop",
+                           name, result);
+            failures++;
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
  * The scalar path drops a fragment whose interpolated depth rounds outside
  * [0, 1]. With two vertices on the near or far plane, pixel centres on
- * their edge sit at a depth the scalar sum can round past the plane. Flat
- * and smooth draws must match the scalar path, drops included; textured
- * ones, whose program does not repeat the drop, must be refused before any
- * snapshot.
+ * their edge sit at a depth the scalar sum can round past the plane. Flat,
+ * smooth and textured draws must match the scalar path, drops included.
  */
 static void test_scalar_match_depth_planes(void)
 {
@@ -5042,7 +5318,7 @@ static void test_scalar_match_depth_planes(void)
     static const float planes[] = { -1, 1, 0.25f };
     PrimCase *p = g_new(PrimCase, 1);
     SGIRenderer *renderer;
-    unsigned failures = 0, refused = 0;
+    unsigned failures = 0;
     Error *err = NULL;
 
     mesa_test_env_set(&mesa_env);
@@ -5073,14 +5349,6 @@ static void test_scalar_match_depth_planes(void)
                     SGIRenderResult result;
                     unsigned differences;
 
-                    /*
-                     * Textured triangles check only the refusal: away from
-                     * the planes their sampling at these vertices differs
-                     * from the scalar path for a reason unrelated to depth.
-                     */
-                    if (kind == 2 && fabsf(planes[z]) != 1) {
-                        continue;
-                    }
                     prim_case_init(p, SGI_GL_TRIANGLES, 4);
                     if (kind == 2) {
                         prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT,
@@ -5105,12 +5373,6 @@ static void test_scalar_match_depth_planes(void)
                     prim_destination(mesa, p);
                     prim_scalar_draw(p, scalar);
                     result = prim_mesa_draw(renderer, p, mesa, &err);
-                    if (result == SGI_RENDER_UNSUPPORTED && !mesa->snapshots &&
-                        fabsf(planes[z]) == 1 && kind == 2) {
-                        g_clear_pointer(&err, error_free);
-                        refused++;
-                        continue;
-                    }
                     if (result != SGI_RENDER_OK) {
                         g_test_message("%s: checked draw returned %d: %s",
                                        name, result, err ?
@@ -5129,7 +5391,7 @@ static void test_scalar_match_depth_planes(void)
             }
         }
     }
-    g_test_message("depth planes: %u refused, %u differ", refused, failures);
+    g_test_message("depth planes: %u differ", failures);
     sgi_renderer_free(renderer);
     g_free(p);
     if (failures) {
@@ -6768,13 +7030,6 @@ static void test_attempt_outcomes(void)
              p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA,
              p->state.blend_equation = SGI_GL_FUNC_ADD), BLEND_OVERLAP);
     REFUSED("covered commit", p->ops = &dense_only, PROVIDER);
-    REFUSED("textured depth plane",
-            (prim_case_init(p, SGI_GL_TRIANGLES, 4),
-             prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
-                          SGI_GL_MODULATE),
-             p->vertices[0][SGI_GL_V_POSITION + 2] = -1,
-             p->vertices[1][SGI_GL_V_POSITION + 2] = -1,
-             p->attempt = &plain), DEPTH_PLANE);
     EXPECT("flat depth plane",
            (p->vertices[0][SGI_GL_V_POSITION + 2] = -1,
             p->vertices[1][SGI_GL_V_POSITION + 2] = -1), SGI_RENDER_DRAW_OK,
@@ -7199,12 +7454,18 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",
                     test_scalar_match_cross);
+    g_test_add_func("/sgi-renderer-gl/texture-invalid-clipped-vertex",
+                    test_texture_invalid_clipped_vertex);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-clipped",
                     test_scalar_match_depth_clipped);
     g_test_add_func("/sgi-renderer-gl/scalar-match-depth-planes",
                     test_scalar_match_depth_planes);
     g_test_add_func("/sgi-renderer-gl/scalar-match-widths",
                     test_scalar_match_widths);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-texture-boundary",
+                    test_scalar_match_texture_boundary);
+    g_test_add_func("/sgi-renderer-gl/scalar-match-texture-sweep",
+                    test_scalar_match_texture_sweep);
     g_test_add_func("/sgi-renderer-gl/scalar-match-texture",
                     test_scalar_match_texture);
     g_test_add_func("/sgi-renderer-gl/scalar-match-clear",
