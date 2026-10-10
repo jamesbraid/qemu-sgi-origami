@@ -559,7 +559,8 @@ outside the set the cases under `Proven against the scalar path`_ prove:
   matrices;
 - lines at 8 bits and widths up to 6, under any accepted state;
 - unblended points of size up to 4, in that fixture;
-- no textured triangles yet;
+- textured triangles under any accepted state, with images of at most 16
+  by 16 texels, the largest the texture sweep draws;
 - CLEAR at 4, 8 and 10 colour bits.
 
 A family may instead refuse such state itself before calling. Widening the
