@@ -231,9 +231,12 @@ typedef struct SGIRendererOps {
 } SGIRendererOps;
 
 /*
- * A refused draw staged an image that differs from the software model; the
- * renderer stays usable and the caller draws in software. A failed draw was
- * malformed, or its backend failed or changed the request inputs.
+ * OK: the draw completed. REFUSED: nothing visible happened and no failure
+ * latched; the caller draws it in software. A refusal comes from state the
+ * renderer does not draw, a host limit, a view that cannot hold the stored
+ * data, or staged pixels that differ from the software model. FAILED: the
+ * draw was malformed, or its backend or a native write failed; it is never
+ * retried in software.
  */
 typedef enum SGIRenderDrawResult {
     SGI_RENDER_DRAW_OK,

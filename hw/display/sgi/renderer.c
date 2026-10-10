@@ -267,10 +267,9 @@ static bool sgi_render_mode_lines(uint32_t mode)
  * no host path yet and are refused, so the scalar path keeps their
  * dimensionality checks.
  */
-static bool sgi_render_draw_supported(const SGIRasterRules *rules,
-                                      const SGIRasterTarget *target,
-                                      const SGIGLDraw *draw,
-                                      const SGIRenderResource **result)
+static SGIRenderRefusal sgi_render_draw_supported(
+    const SGIRasterRules *rules, const SGIRasterTarget *target,
+    const SGIGLDraw *draw, const SGIRenderResource **result)
 {
     const SGIGLDrawState *st = draw->state;
     const SGIRenderResource *res;
@@ -279,37 +278,69 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
         (draw->mode == SGI_GL_POINTS &&
          (!isfinite(draw->point_size) || draw->point_size < 0)) ||
         (sgi_render_mode_lines(draw->mode) &&
-         (!isfinite(draw->line_width) || draw->line_width < 0 ||
-          (rules->smooth_primitives && draw->line_smooth))) ||
-        (st->texture_2d &&
-         (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) ||
-        draw->back_colors ||
+         (!isfinite(draw->line_width) || draw->line_width < 0)) ||
         (sgi_render_mode_polygons(draw->mode) && draw->polygon_modes &&
          (draw->polygon_modes[0] != SGI_GL_FILL ||
           draw->polygon_modes[1] != SGI_GL_FILL)) ||
         draw->polygon_stipple_enabled ||
         (!sgi_render_mode_lines(draw->mode) && draw->line_stipple_enabled) ||
+        (st->shade_model != SGI_GL_SMOOTH &&
+         st->shade_model != SGI_GL_FLAT)) {
+        return SGI_RENDER_REFUSAL_PRIMITIVE;
+    }
+    if ((sgi_render_mode_lines(draw->mode) && rules->smooth_primitives &&
+         draw->line_smooth) ||
         (draw->mode == SGI_GL_POINTS && rules->smooth_primitives &&
          draw->point_smooth) ||
         (sgi_render_mode_polygons(draw->mode) && rules->smooth_primitives &&
-         draw->polygon_smooth) ||
-        (st->shade_model != SGI_GL_SMOOTH &&
-         st->shade_model != SGI_GL_FLAT) || st->index_bits ||
-        st->draw_buffers != SGI_GL_DRAW_FRONT ||
-        st->colour_mask != SGI_GL_COLOUR_MASK_ALL ||
-        st->depth_test || st->stencil_test || st->blend > 1 ||
-        st->alpha_test || st->fog || st->cull_face || st->clip_planes ||
-        st->color_logic_op ||
-        st->index_logic_op || st->texture_1d || st->texture_3d ||
-        st->polygon_offset || st->window_matrix_given ||
-        !st->drawable.bound ||
-        st->drawable.origin[0] || st->drawable.origin[1] ||
-        st->viewport[2] < 0 || st->viewport[3] < 0) {
-        return false;
+         draw->polygon_smooth)) {
+        return SGI_RENDER_REFUSAL_SMOOTHING;
+    }
+    if (st->texture_2d &&
+        (draw->mode != SGI_GL_TRIANGLES || draw->count != 3)) {
+        return SGI_RENDER_REFUSAL_TEXTURE;
+    }
+    if (draw->back_colors || st->cull_face) {
+        return SGI_RENDER_REFUSAL_FACING;
+    }
+    if (st->index_bits) {
+        return SGI_RENDER_REFUSAL_COLOUR_INDEX;
+    }
+    if (st->draw_buffers != SGI_GL_DRAW_FRONT ||
+        st->colour_mask != SGI_GL_COLOUR_MASK_ALL) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
+    }
+    if (st->depth_test || st->stencil_test || st->alpha_test) {
+        return SGI_RENDER_REFUSAL_FRAGMENT_TESTS;
+    }
+    if (st->blend > 1) {
+        return SGI_RENDER_REFUSAL_BLEND;
+    }
+    if (st->fog) {
+        return SGI_RENDER_REFUSAL_FOG;
+    }
+    if (st->clip_planes) {
+        return SGI_RENDER_REFUSAL_CLIP_PLANES;
+    }
+    if (st->color_logic_op || st->index_logic_op) {
+        return SGI_RENDER_REFUSAL_LOGIC_OP;
+    }
+    if (st->texture_1d || st->texture_3d) {
+        return SGI_RENDER_REFUSAL_TEXTURE;
+    }
+    if (st->polygon_offset) {
+        return SGI_RENDER_REFUSAL_POLYGON_OFFSET;
+    }
+    if (st->window_matrix_given || !st->drawable.bound ||
+        st->drawable.origin[0] || st->drawable.origin[1]) {
+        return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return SGI_RENDER_REFUSAL_GEOMETRY;
     }
     for (unsigned i = 0; i < 16; i++) {
         if (!isfinite(st->modelview[i]) || !isfinite(st->projection[i])) {
-            return false;
+            return SGI_RENDER_REFUSAL_GEOMETRY;
         }
     }
     for (uint32_t i = 0; i < draw->count; i++) {
@@ -319,7 +350,7 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
         for (unsigned c = 0; c < 4; c++) {
             if (!isfinite(vertex[SGI_GL_V_POSITION + c]) ||
                 !isfinite(vertex[SGI_GL_V_COLOR + c])) {
-                return false;
+                return SGI_RENDER_REFUSAL_GEOMETRY;
             }
         }
     }
@@ -328,34 +359,34 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
         res->height > INT_MAX || res->depth != 1 ||
         res->buffer != SGI_RENDER_FRONT ||
         (res->component_count != 3 && res->component_count != 4)) {
-        return false;
+        return SGI_RENDER_REFUSAL_RESOURCE;
     }
     for (unsigned c = 0; c < res->component_count; c++) {
         if (res->component[c].channel != SGI_RENDER_R + c ||
             res->component[c].numeric != SGI_RENDER_UNORM ||
             !res->component[c].storage_bits ||
             res->component[c].storage_bits > 16) {
-            return false;
+            return SGI_RENDER_REFUSAL_RESOURCE;
         }
     }
     if (!sgi_render_widths_proven(rules, res)) {
-        return false;
+        return SGI_RENDER_REFUSAL_STORE_WIDTH;
     }
     if (st->blend && !sgi_render_blend_supported(rules, st, res)) {
-        return false;
+        return SGI_RENDER_REFUSAL_BLEND;
     }
     if (st->texture_2d) {
         if (st->blend) {
-            return false;
+            return SGI_RENDER_REFUSAL_TEXTURE;
         }
         for (unsigned c = 0; c < res->component_count; c++) {
             if (res->component[c].storage_bits != 8) {
-                return false;
+                return SGI_RENDER_REFUSAL_TEXTURE;
             }
         }
     }
     *result = res;
-    return true;
+    return SGI_RENDER_REFUSAL_NONE;
 }
 
 /*
@@ -795,7 +826,12 @@ static bool sgi_render_probe_load(void *opaque, SGIColourTarget target,
     return true;
 }
 
-static bool sgi_render_line_probe(SGIRenderer *renderer)
+/*
+ * OK when every probe vector matches the scalar path, UNSUPPORTED when one
+ * differs, or the host failure that stopped the probe.
+ */
+static SGIRenderResult sgi_render_line_probe(SGIRenderer *renderer,
+                                             Error **errp)
 {
     /* The rules sgi_render_rules_supported() accepts, complete. */
     static const SGIRasterRules probe_rules = {
@@ -871,7 +907,6 @@ static bool sgi_render_line_probe(SGIRenderer *renderer)
             .shade_model = SGI_GL_SMOOTH, .rgba = rgba, .written = written,
             .written_capacity = SGI_RENDER_PROBE_SIZE * SGI_RENDER_PROBE_SIZE,
         };
-        Error *err = NULL;
 
         for (unsigned e = 0; e < 2; e++) {
             v[e][SGI_GL_V_POSITION] = probes[i][e * 2] * 2 /
@@ -892,16 +927,15 @@ static bool sgi_render_line_probe(SGIRenderer *renderer)
         sgi_soft_draw(rules, &target, &draw);
         if (!sgi_render_lines(rules, &draw, steps, &lines) ||
             lines.count != 1) {
-            return false;
+            return SGI_RENDER_UNSUPPORTED;
         }
         frame.count = lines.count;
-        if (!sgi_renderer_draw_frame(renderer, &frame, &err)) {
-            error_free(err);
-            return false;
+        if (!sgi_renderer_draw_frame(renderer, &frame, errp)) {
+            return SGI_RENDER_HOST_ERROR;
         }
         /* Coverage, and each covered pixel's colour, must match. */
         if (memcmp(written, scalar->written, sizeof(scalar->written))) {
-            return false;
+            return SGI_RENDER_UNSUPPORTED;
         }
         for (size_t px = 0; px < SGI_RENDER_PROBE_SIZE * SGI_RENDER_PROBE_SIZE;
              px++) {
@@ -911,12 +945,12 @@ static bool sgi_render_line_probe(SGIRenderer *renderer)
 
                 if (mesa != scalar->rgb[px / SGI_RENDER_PROBE_SIZE]
                                        [px % SGI_RENDER_PROBE_SIZE][c]) {
-                    return false;
+                    return SGI_RENDER_UNSUPPORTED;
                 }
             }
         }
     }
-    return true;
+    return SGI_RENDER_OK;
 }
 
 static SGIRenderResult sgi_render_probe_snapshot(
@@ -1100,29 +1134,64 @@ SGIRenderResult sgi_render_test_window_probe(SGIRenderer *renderer,
     return sgi_render_window_proven(renderer, errp);
 }
 
-/* Run the probe once per renderer; false when lines stay unsupported. */
-static bool sgi_render_lines_proven(SGIRenderer *renderer, Error **errp)
+/*
+ * Run the line probe once per renderer. A host without line support, or
+ * whose lines differ, refuses lines; a host failure in the probe is
+ * returned as that failure, and the probe runs again next time.
+ */
+static SGIRenderResult sgi_render_lines_proven(SGIRenderer *renderer,
+                                               SGIRenderRefusal *reason,
+                                               Error **errp)
 {
+    SGIRenderResult status;
+
     if (!sgi_renderer_primitive_supported(renderer, SGI_RENDERER_LINES, 1,
                                           errp)) {
-        return false;
+        *reason = SGI_RENDER_REFUSAL_HOST_PROGRAM;
+        return SGI_RENDER_UNSUPPORTED;
     }
     if (!sgi_renderer_line_probe_result(renderer)) {
+        status = sgi_render_line_probe(renderer, errp);
+        if (status != SGI_RENDER_OK && status != SGI_RENDER_UNSUPPORTED) {
+            return status;
+        }
         sgi_renderer_set_line_probe_result(renderer,
-            sgi_render_line_probe(renderer) ? 1 : -1);
+            status == SGI_RENDER_OK ? 1 : -1);
     }
     if (sgi_renderer_line_probe_result(renderer) < 0) {
         error_setg(errp, "SGI Mesa lines differ from the scalar path on "
                    "this host");
-        return false;
+        *reason = SGI_RENDER_REFUSAL_HOST_PROBE;
+        return SGI_RENDER_UNSUPPORTED;
     }
-    return true;
+    return SGI_RENDER_OK;
 }
 
-SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
-                                        const SGIRasterRules *rules,
-                                        const SGIRasterTarget *target,
-                                        const SGIGLDraw *draw, Error **errp)
+/* Count a line draw's stipple into its borrowed phase, as the scalar does. */
+static void sgi_render_commit_phase(const SGIGLDraw *draw,
+                                    const SGIRenderLines *lines)
+{
+    if (lines && draw->line_phase && lines->consumed) {
+        *draw->line_phase = lines->counter;
+    }
+}
+
+static SGIRenderResult sgi_render_refuse(SGIRenderRefusal *reason,
+                                         SGIRenderRefusal why)
+{
+    *reason = why;
+    return SGI_RENDER_UNSUPPORTED;
+}
+
+/*
+ * A checked draw. Every UNSUPPORTED result before the snapshot sets
+ * *reason; one without a reason came from native work and is a failure.
+ */
+static SGIRenderResult sgi_render_draw_run(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIGLDraw *draw,
+    const SGIRenderAttemptOptions *opts, SGIRenderRefusal *reason,
+    Error **errp)
 {
     const SGIRenderResource *resource;
     const SGIRenderResource *texture_resource = NULL;
@@ -1153,6 +1222,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     uint32_t steps[4] = { 0 };
     SGIRenderCommitResult committed;
     SGIRenderResult status;
+    SGIRenderRefusal refusal;
 
     QEMU_BUILD_BUG_ON(SGI_VOLUME_TRIANGLE_MAX !=
                       SGI_RENDERER_FRAME_VERTICES_MAX);
@@ -1182,15 +1252,17 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
     }
     if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
         error_setg(errp, "SGI Mesa ordered dithering is unsupported");
-        return SGI_RENDER_UNSUPPORTED;
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_DITHER);
     }
     if (!sgi_render_rules_supported(rules)) {
         error_setg(errp, "Unsupported SGI Mesa raster rules");
-        return SGI_RENDER_UNSUPPORTED;
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RULES);
     }
-    if (!sgi_render_draw_supported(rules, target, draw, &resource)) {
-        error_setg(errp, "Unsupported SGI Mesa draw state or resource");
-        return SGI_RENDER_UNSUPPORTED;
+    refusal = sgi_render_draw_supported(rules, target, draw, &resource);
+    if (refusal != SGI_RENDER_REFUSAL_NONE) {
+        error_setg(errp, "Unsupported SGI Mesa draw state or resource (%s)",
+                   sgi_render_refusal_name(refusal));
+        return sgi_render_refuse(reason, refusal);
     }
     for (unsigned c = 0; c < resource->component_count; c++) {
         steps[c] = (1u << resource->component[c].storage_bits) - 1;
@@ -1213,10 +1285,11 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         if (draw->state->blend && segments > 1) {
             error_setg(errp, "SGI Mesa blending of more than one primitive "
                        "in a draw is unsupported");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_BLEND_OVERLAP);
         }
-        if (!sgi_render_lines_proven(renderer, errp)) {
-            return SGI_RENDER_UNSUPPORTED;
+        status = sgi_render_lines_proven(renderer, reason, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
         }
         line_storage = g_try_new(SGIRendererLine,
                                  MIN(segments,
@@ -1228,7 +1301,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         line_set.lines = line_storage;
         if (!sgi_render_lines(rules, draw, steps, &line_set)) {
             error_setg(errp, "SGI Mesa cannot draw a line exactly");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_LINE_SHAPE);
         }
     } else if (!draw->state->texture_2d) {
         piece_vertices = sgi_render_piece_vertices(draw->mode, draw->count);
@@ -1237,7 +1310,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
         if (piece_vertices > SGI_RENDERER_FRAME_PRIMITIVE_VERTICES_MAX) {
             error_setg(errp, "SGI Mesa draw has too many vertices");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_STAGING);
         }
         /*
          * The float target rounds only at readback, so a second
@@ -1250,14 +1323,15 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             piece_vertices > (draw->mode == SGI_GL_POINTS ? 1 : 3)) {
             error_setg(errp, "SGI Mesa blending of more than one primitive "
                        "in a draw is unsupported");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_BLEND_OVERLAP);
         }
         if (draw->mode == SGI_GL_POINTS) {
             point_size = sgi_render_aliased_size(draw->point_size);
             if (!sgi_renderer_primitive_supported(renderer,
                                                   SGI_RENDERER_POINTS,
                                                   point_size, errp)) {
-                return SGI_RENDER_UNSUPPORTED;
+                return sgi_render_refuse(reason,
+                                         SGI_RENDER_REFUSAL_HOST_POINT_SIZE);
             }
         }
         /*
@@ -1280,9 +1354,12 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         if (!sgi_renderer_primitive_supported(renderer,
                                               SGI_RENDERER_WINDOW_TRIANGLES,
                                               1, errp)) {
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_PROGRAM);
         }
         status = sgi_render_window_proven(renderer, errp);
+        if (status == SGI_RENDER_UNSUPPORTED) {
+            *reason = SGI_RENDER_REFUSAL_HOST_PROBE;
+        }
         if (status != SGI_RENDER_OK) {
             return status;
         }
@@ -1301,7 +1378,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         sgi_render_decompose(&pieces, draw);
         if (pieces.window_count > pieces.window_capacity) {
             error_setg(errp, "SGI Mesa draw has too many triangles");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_STAGING);
         }
         if (!pieces.window_count) {
             return SGI_RENDER_OK;
@@ -1318,7 +1395,8 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                       y > -reach && y < 3 * reach)) {
                     error_setg(errp, "SGI Mesa triangle lies outside the "
                                "window viewport");
-                    return SGI_RENDER_UNSUPPORTED;
+                    return sgi_render_refuse(reason,
+                                             SGI_RENDER_REFUSAL_GEOMETRY);
                 }
             }
         }
@@ -1331,44 +1409,45 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         if (check.depth_inexact) {
             error_setg(errp, "SGI Mesa textured triangle depth may round "
                        "past the near or far plane");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_DEPTH_PLANE);
         }
         texture_resource = sgi_render_texture_resource(target, draw->state);
         if (!texture_resource) {
             error_setg(errp,
                        "Unsupported SGI Mesa texture resource or sampler");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_TEXTURE);
         }
         status = sgi_render_texture_span(texture_resource,
                                          &texture_stride_slots,
                                          &texture_capacity_slots, errp);
+        if (status == SGI_RENDER_UNSUPPORTED) {
+            *reason = SGI_RENDER_REFUSAL_HOST_STAGING;
+        }
         if (status != SGI_RENDER_OK) {
             return status;
         }
         if (!sgi_renderer_texture_supported(renderer, errp)) {
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_PROGRAM);
         }
     }
     if (!sgi_renderer_viewport_supported(renderer, draw->state->viewport,
                                          errp)) {
-        return SGI_RENDER_UNSUPPORTED;
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_VIEWPORT);
     }
-    if (!target->resource_ops || !target->resource_ops->commit_covered) {
-        error_setg(errp, "SGI Mesa draw needs a covered commit provider");
-        return SGI_RENDER_UNSUPPORTED;
+    if (!target->resource_ops || !target->resource_ops->snapshot ||
+        !target->resource_ops->commit_covered) {
+        error_setg(errp, "SGI Mesa draw needs snapshot and covered commit "
+                   "providers");
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_PROVIDER);
     }
     /*
-     * Every refusal is above, so a refused draw leaves a borrowed phase
-     * for the caller's scalar fallback to count once. From here the draw
-     * counts as the scalar path's does.
+     * A borrowed phase is written only once the draw can no longer be
+     * refused, so a refused draw leaves it for the caller's scalar
+     * fallback to count once.
      */
-    if (lines) {
-        if (draw->line_phase && line_set.consumed) {
-            *draw->line_phase = line_set.counter;
-        }
-        if (!line_set.count) {
-            return SGI_RENDER_OK;
-        }
+    if (lines && !line_set.count) {
+        sgi_render_commit_phase(draw, &line_set);
+        return SGI_RENDER_OK;
     }
     frame.width = resource->width;
     frame.height = resource->height;
@@ -1389,7 +1468,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         /* Refuse rather than wrap a mirrored origin GL cannot take. */
         if (y < INT32_MIN || y > INT32_MAX) {
             error_setg(errp, "SGI Mesa viewport origin is out of range");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_GEOMETRY);
         }
         frame.viewport[1] = y;
     }
@@ -1439,6 +1518,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         }
     }
     if (!frame.clip_count) {
+        sgi_render_commit_phase(draw, lines ? &line_set : NULL);
         return SGI_RENDER_OK;
     }
     if (texture_resource) {
@@ -1467,7 +1547,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
             if (!valid) {
                 error_setg(errp,
                            "Unsupported SGI Mesa clipped texture coordinates");
-                return SGI_RENDER_UNSUPPORTED;
+                return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_GEOMETRY);
             }
         }
     }
@@ -1501,6 +1581,9 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                           resource->component_count,
                                           nslots, errp);
     if (status != SGI_RENDER_OK) {
+        if (status == SGI_RENDER_UNSUPPORTED) {
+            *reason = SGI_RENDER_REFUSAL_SNAPSHOT;
+        }
         return status;
     }
     if (texture_resource) {
@@ -1519,6 +1602,9 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                               texture_stride_slots,
                                               texture_capacity_slots, errp);
         if (status != SGI_RENDER_OK) {
+            if (status == SGI_RENDER_UNSUPPORTED) {
+                *reason = SGI_RENDER_REFUSAL_SNAPSHOT;
+            }
             return status;
         }
         for (size_t i = 0; i < texture_capacity_slots; i++) {
@@ -1651,6 +1737,7 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         any_written |= written[i] != 0;
     }
     if (!any_written) {
+        sgi_render_commit_phase(draw, lines ? &line_set : NULL);
         return SGI_RENDER_OK;
     }
     for (uint32_t y = 0; y < resource->height; y++) {
@@ -1698,12 +1785,38 @@ SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
         .capacity_bytes = pixels,
     };
 
+    if (opts && opts->check_staged) {
+        status = opts->check_staged(opts->opaque, resource, &rect, slots,
+                                    resource->width *
+                                    resource->component_count, nslots,
+                                    &writes, errp);
+        if (status != SGI_RENDER_OK) {
+            if (status == SGI_RENDER_UNSUPPORTED) {
+                *reason = SGI_RENDER_REFUSAL_PRECISION;
+            }
+            return status;
+        }
+    }
+    /* A failed commit is never retried, so the phase is counted here. */
+    sgi_render_commit_phase(draw, lines ? &line_set : NULL);
+
     committed = sgi_render_resource_commit_covered(target, resource, 0,
                                                    &rect, slots,
                                                    resource->width *
                                                    resource->component_count,
                                                    nslots, &writes, errp);
     return committed.status;
+}
+
+SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
+                                        const SGIRasterRules *rules,
+                                        const SGIRasterTarget *target,
+                                        const SGIGLDraw *draw, Error **errp)
+{
+    SGIRenderRefusal reason = SGI_RENDER_REFUSAL_NONE;
+
+    return sgi_render_draw_run(renderer, rules, target, draw, NULL, &reason,
+                               errp);
 }
 
 static void sgi_render_clear_coverage_row(const SGIRendererClear *clear,
@@ -1739,10 +1852,60 @@ static bool sgi_render_clear_covers_plane(const SGIRendererClear *clear,
     return true;
 }
 
-SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
-                                          const SGIRasterRules *rules,
-                                          const SGIRasterTarget *target,
-                                          const SGIRasterOp *op, Error **errp)
+/*
+ * The caller's precision check of each cleared resource's staged slots,
+ * before the first native commit, with the clipped union as coverage.
+ */
+static SGIRenderResult sgi_render_clear_check(
+    const SGIRasterTarget *target, const SGIRenderAttemptOptions *opts,
+    unsigned colour_count, bool depth, bool stencil,
+    const SGIRenderResource *const *resources,
+    const SGIRendererClear *clears, uint32_t *const *slots,
+    const size_t *nslots, Error **errp)
+{
+    for (unsigned i = 0; i < colour_count + depth + stencil; i++) {
+        const SGIRenderResource *res = resources[i];
+        const SGIRendererClear *clear = i < colour_count ? &clears[i] :
+                                                           &clears[0];
+        size_t pixels = (size_t)res->width * res->height;
+        g_autofree uint8_t *covered = NULL;
+        SGIRenderRect rect = { .x1 = res->width - 1, .y1 = res->height - 1 };
+        SGIRenderWriteCoverage writes;
+        SGIRenderResult status;
+
+        if (!clear->rect_count) {
+            continue;
+        }
+        covered = g_try_new(uint8_t, pixels);
+        if (!covered) {
+            error_setg(errp, "Cannot allocate SGI Mesa clear coverage");
+            return SGI_RENDER_OOM;
+        }
+        for (uint32_t y = 0; y < res->height; y++) {
+            sgi_render_clear_coverage_row(clear, res->width, y,
+                                          covered + (size_t)y * res->width);
+        }
+        writes = (SGIRenderWriteCoverage) {
+            .pixel = covered,
+            .stride_bytes = res->width,
+            .capacity_bytes = pixels,
+        };
+        status = opts->check_staged(opts->opaque, res, &rect, slots[i],
+                                    res->width * res->component_count,
+                                    nslots[i], &writes, errp);
+        if (status != SGI_RENDER_OK) {
+            return status;
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+/* A checked raster operation, refusing as sgi_render_draw_run() does. */
+static SGIRenderResult sgi_render_raster_run(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIRasterOp *op,
+    const SGIRenderAttemptOptions *opts, SGIRenderRefusal *reason,
+    Error **errp)
 {
     const SGIRenderResource *resources[SGI_GL_MAX_TARGETS + 2] = { 0 };
     SGIRendererClear clears[SGI_GL_MAX_TARGETS] = { 0 };
@@ -1767,7 +1930,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                SGI_GL_STENCIL_BUFFER_BIT)) ||
         op->index_bits) {
         error_setg(errp, "Unsupported SGI Mesa raster operation or plane");
-        return SGI_RENDER_UNSUPPORTED;
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RASTER_OP);
     }
     if (op->x0 > op->x1 || op->y0 > op->y1 ||
         op->ntargets > SGI_GL_MAX_TARGETS ||
@@ -1798,7 +1961,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
     if ((depth && rules->depth_bits != 24) ||
         (stencil && rules->stencil_bits != 8)) {
         error_setg(errp, "Unsupported SGI Mesa clear scalar precision");
-        return SGI_RENDER_UNSUPPORTED;
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_STORE_WIDTH);
     }
     for (unsigned i = 0; i < colour_count; i++) {
         SGIRendererClear *clear = &clears[i];
@@ -1817,7 +1980,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             res->depth != 1 || !res->bottom_origin ||
             (res->component_count != 3 && res->component_count != 4)) {
             error_setg(errp, "Unsupported SGI Mesa clear resource");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RESOURCE);
         }
         for (unsigned c = 0; c < res->component_count; c++) {
             if (res->component[c].channel != SGI_RENDER_R + c ||
@@ -1825,12 +1988,12 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                 !res->component[c].storage_bits ||
                 res->component[c].storage_bits > 16) {
                 error_setg(errp, "Unsupported SGI Mesa clear component");
-                return SGI_RENDER_UNSUPPORTED;
+                return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RESOURCE);
             }
         }
         if (!sgi_render_widths_proven(rules, res)) {
             error_setg(errp, "Unsupported SGI Mesa clear component widths");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_STORE_WIDTH);
         }
         if ((uint64_t)res->width * res->height >
             MIN(SIZE_MAX / 4 / sizeof(uint16_t),
@@ -1905,7 +2068,7 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             (k && (res->width != resources[colour_count]->width ||
                    res->height != resources[colour_count]->height))) {
             error_setg(errp, "Unsupported SGI Mesa clear scalar resource");
-            return SGI_RENDER_UNSUPPORTED;
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RESOURCE);
         }
         resources[i] = res;
         max_width = MAX(max_width, res->width);
@@ -1915,9 +2078,14 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             if (clears[i].width != clears[0].width ||
                 clears[i].height != clears[0].height) {
                 error_setg(errp, "SGI Mesa clear attachment sizes differ");
-                return SGI_RENDER_UNSUPPORTED;
+                return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RESOURCE);
             }
         }
+    }
+    if (!target->resource_ops || !target->resource_ops->snapshot ||
+        !target->resource_ops->commit) {
+        error_setg(errp, "SGI Mesa clear needs snapshot and commit providers");
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_PROVIDER);
     }
     if (depth || stencil) {
         SGIRendererClear *clear = &clears[0];
@@ -1982,6 +2150,9 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                               res->component_count,
                                               nslots[i], errp);
         if (status != SGI_RENDER_OK) {
+            if (status == SGI_RENDER_UNSUPPORTED) {
+                *reason = SGI_RENDER_REFUSAL_SNAPSHOT;
+            }
             goto out;
         }
         for (size_t pixel = 0; pixel < pixels[i]; pixel++) {
@@ -2019,6 +2190,9 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                               slots[i], res->width,
                                               nslots[i], errp);
         if (status != SGI_RENDER_OK) {
+            if (status == SGI_RENDER_UNSUPPORTED) {
+                *reason = SGI_RENDER_REFUSAL_SNAPSHOT;
+            }
             goto out;
         }
     }
@@ -2093,6 +2267,17 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
             }
         }
     }
+    if (opts && opts->check_staged) {
+        status = sgi_render_clear_check(target, opts, colour_count, depth,
+                                        stencil, resources, clears, slots,
+                                        nslots, errp);
+        if (status != SGI_RENDER_OK) {
+            if (status == SGI_RENDER_UNSUPPORTED) {
+                *reason = SGI_RENDER_REFUSAL_PRECISION;
+            }
+            goto out;
+        }
+    }
     covered = g_try_new(uint8_t, max_width);
     if (!covered) {
         error_setg(errp, "Cannot allocate SGI Mesa clear coverage row");
@@ -2162,4 +2347,174 @@ out:
     }
     g_free(packed);
     return status;
+}
+
+SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
+                                          const SGIRasterRules *rules,
+                                          const SGIRasterTarget *target,
+                                          const SGIRasterOp *op, Error **errp)
+{
+    SGIRenderRefusal reason = SGI_RENDER_REFUSAL_NONE;
+
+    return sgi_render_raster_run(renderer, rules, target, op, NULL, &reason,
+                                 errp);
+}
+
+/*
+ * A refusal is UNSUPPORTED with its reason. UNSUPPORTED without one came
+ * from a provider once native work had begun, so it is a resource failure.
+ */
+static SGIRenderDrawResult sgi_render_attempt_result(
+    SGIRenderResult status, SGIRenderRefusal reason,
+    SGIRenderAttemptOutcome *outcome)
+{
+    if (status == SGI_RENDER_UNSUPPORTED &&
+        reason == SGI_RENDER_REFUSAL_NONE) {
+        status = SGI_RENDER_RESOURCE_ERROR;
+    }
+    *outcome = (SGIRenderAttemptOutcome) {
+        .status = status,
+        .reason = status == SGI_RENDER_UNSUPPORTED ? reason :
+                                                     SGI_RENDER_REFUSAL_NONE,
+    };
+    return status == SGI_RENDER_OK ? SGI_RENDER_DRAW_OK :
+           status == SGI_RENDER_UNSUPPORTED ? SGI_RENDER_DRAW_REFUSED :
+                                              SGI_RENDER_DRAW_FAILED;
+}
+
+SGIRenderDrawResult sgi_render_draw_attempt(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIGLDraw *draw,
+    const SGIRenderAttemptOptions *opts, SGIRenderAttemptOutcome *outcome,
+    Error **errp)
+{
+    SGIRenderRefusal reason = SGI_RENDER_REFUSAL_NONE;
+    SGIRenderResult status = sgi_render_draw_run(renderer, rules, target,
+                                                 draw, opts, &reason, errp);
+
+    return sgi_render_attempt_result(status, reason, outcome);
+}
+
+SGIRenderDrawResult sgi_render_raster_attempt(
+    SGIRenderer *renderer, const SGIRasterRules *rules,
+    const SGIRasterTarget *target, const SGIRasterOp *op,
+    const SGIRenderAttemptOptions *opts, SGIRenderAttemptOutcome *outcome,
+    Error **errp)
+{
+    SGIRenderRefusal reason = SGI_RENDER_REFUSAL_NONE;
+    SGIRenderResult status = sgi_render_raster_run(renderer, rules, target,
+                                                   op, opts, &reason, errp);
+
+    return sgi_render_attempt_result(status, reason, outcome);
+}
+
+static const struct {
+    const char *name;
+    SGIRenderRefusalClass class;
+} sgi_render_refusals[SGI_RENDER_REFUSAL__MAX] = {
+    [SGI_RENDER_REFUSAL_NONE] = {
+        "none", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_RULES] = {
+        "rules", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_DITHER] = {
+        "dither", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_PRIMITIVE] = {
+        "primitive", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_SMOOTHING] = {
+        "smoothing", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_COLOUR_INDEX] = {
+        "colour-index", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_BUFFERS] = {
+        "buffers", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_FRAGMENT_TESTS] = {
+        "fragment-tests", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_FOG] = {
+        "fog", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_FACING] = {
+        "facing", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_CLIP_PLANES] = {
+        "clip-planes", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_LOGIC_OP] = {
+        "logic-op", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_POLYGON_OFFSET] = {
+        "polygon-offset", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_WINDOW] = {
+        "window", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_GEOMETRY] = {
+        "geometry", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_DEPTH_PLANE] = {
+        "depth-plane", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_LINE_SHAPE] = {
+        "line-shape", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_RESOURCE] = {
+        "resource", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_STORE_WIDTH] = {
+        "store-width", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_BLEND] = {
+        "blend", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_BLEND_OVERLAP] = {
+        "blend-overlap", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_TEXTURE] = {
+        "texture", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_PROVIDER] = {
+        "provider", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_RASTER_OP] = {
+        "raster-op", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_HOST_VIEWPORT] = {
+        "host-viewport", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_HOST_POINT_SIZE] = {
+        "host-point-size", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_HOST_PROGRAM] = {
+        "host-program", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_HOST_PROBE] = {
+        "host-probe", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_HOST_STAGING] = {
+        "host-staging", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_SNAPSHOT] = {
+        "snapshot", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_PRECISION] = {
+        "precision", SGI_RENDER_REFUSAL_CLASS_PRECISION,
+    },
+};
+
+const char *sgi_render_refusal_name(SGIRenderRefusal reason)
+{
+    return reason < SGI_RENDER_REFUSAL__MAX ?
+           sgi_render_refusals[reason].name : "unknown";
+}
+
+SGIRenderRefusalClass sgi_render_refusal_class(SGIRenderRefusal reason)
+{
+    return reason < SGI_RENDER_REFUSAL__MAX ?
+           sgi_render_refusals[reason].class : SGI_RENDER_REFUSAL_CLASS_STATE;
 }
