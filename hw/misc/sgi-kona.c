@@ -9737,6 +9737,28 @@ bool sgi_kona_x_pixel_dma_waiting(SGIKonaState *s)
 }
 
 /*
+ * The host address of device address `device`: entry device >> 14 of the
+ * XG map RAM maps its 16 KiB page, the entry's frame the host page's 4 KiB
+ * frame number. False at an entry that maps nothing, which the caller
+ * logs.
+ */
+bool sgi_kona_device_address(SGIKonaState *s, uint64_t device,
+                             uint64_t *host)
+{
+    const uint64_t page = 1u << SGI_KONA_MAPRAM_PAGE_SHIFT;
+    uint64_t index = device >> SGI_KONA_MAPRAM_PAGE_SHIFT;
+    uint32_t entry = index < sgi_kona_mapram_entry_count(s) ?
+                     s->map_ram[index] : 0;
+
+    if ((entry & SGI_KONA_MAPRAM_KIND_MASK) != SGI_KONA_MAPRAM_KIND_16K) {
+        return false;
+    }
+    *host = ((uint64_t)(entry & SGI_KONA_PAGE_WORD_FRAME) << 12) +
+            (device & (page - 1));
+    return true;
+}
+
+/*
  * len bytes at device address `device`, through the XG map RAM: entry
  * device >> 14 maps the 16 KiB page, its frame the host page's 4 KiB
  * frame number, as the kernel fills the entries before the packet. False,

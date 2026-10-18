@@ -1336,6 +1336,14 @@ bool sgi_kona_x_pixel_dma_waiting(SGIKonaState *s);
 bool sgi_kona_x_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                           uint32_t per_line, uint64_t pitch);
 
+/*
+ * The host address of device address `device` through the XG map RAM, the
+ * translation the pipe's DMA reads use; false at an entry that maps
+ * nothing. See the definition.
+ */
+bool sgi_kona_device_address(SGIKonaState *s, uint64_t device,
+                             uint64_t *host);
+
 /* A plain command-page word through the page's decoder. */
 void sgi_kona_command_word(SGIKonaState *s, uint32_t word);
 

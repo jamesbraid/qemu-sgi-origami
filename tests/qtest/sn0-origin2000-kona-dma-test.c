@@ -665,6 +665,10 @@ static void test_dma_command_page_reaches_engine(void)
 #define LIST_PULL        0x167u
 #define LIST_MOVE        0x16fu
 #define DMA_POOL         0x1edu
+/* The XG map RAM: one entry per 16 KiB device page. */
+#define REG_MAPRAM(i)    KONA_REG(0x100000 + 4 * (uint64_t)(i))
+#define MAPRAM_16K       0x20000000u
+#define MAPRAM_PAGE      0x4000u
 #define DONE_CONSUMED    1
 #define FAIL_BUSY        5
 
@@ -678,13 +682,30 @@ static void kona_command(QTestState *s, const uint32_t *words, unsigned n)
     }
 }
 
-/* kona_dmapool's registration: 0x1ed, the split address, the length. */
+/*
+ * kona_dmapool's registration of a pool at device address `device` whose
+ * pages are host memory from `host`: one 16 KiB map RAM entry per page,
+ * the page's 4 KiB frame number with the 16 KiB kind, as the kernel loads
+ * them before the packet, then 0x1ed, the split device address and the
+ * length.
+ */
+static void kona_register_pool_at(QTestState *s, uint64_t device,
+                                  uint64_t host, uint32_t len)
+{
+    for (uint32_t off = 0; off < len; off += MAPRAM_PAGE) {
+        qtest_writel(s, REG_MAPRAM((device + off) / MAPRAM_PAGE),
+                     MAPRAM_16K | (uint32_t)((host + off) >> 12));
+    }
+    kona_command(s, (const uint32_t[]) {
+        DMA_POOL, (uint32_t)(device >> 12),
+        ((uint32_t)device & 0xfffu) | KONA_DMA_ADDR_TAG, len,
+    }, 4);
+}
+
+/* A pool whose device addresses are the host addresses. */
 static void kona_register_pool(QTestState *s, uint64_t base, uint32_t len)
 {
-    kona_command(s, (const uint32_t[]) {
-        DMA_POOL, (uint32_t)(base >> 12),
-        ((uint32_t)base & 0xfffu) | KONA_DMA_ADDR_TAG, len,
-    }, 4);
+    kona_register_pool_at(s, base, base, len);
 }
 
 /*
@@ -730,6 +751,49 @@ static void test_list_from_pool_reaches_decoder(void)
     g_assert_cmphex(kona_point_pixel(qts), ==, LIST_POINT_RGB);
     g_assert_cmpuint(kona_completions(qts), ==, 1);
     kona_assert_last_completion(qts, DONE_CONSUMED, 0, 13);
+}
+
+/*
+ * The pool's address is a device address, read through the map RAM: the
+ * kernel registered its 8 MiB pool at device address 0x34000 after
+ * loading the entries for its pages. Here the list sits in host memory at
+ * DMA_POOL_HOST, which entry 0xd maps device page 0x34000 to, while the
+ * host page at 0x34000 holds zeros. Invoked by 0x16e and pulled by 0x167,
+ * the list draws its point from the mapped page; a model that read the
+ * device address as a host address would decode the zeros and draw
+ * nothing. With the entry cleared, the pull fails on the bus.
+ */
+#define DMA_POOL_DEVICE UINT64_C(0x34000)
+#define DMA_POOL_HOST   UINT64_C(0x80000)
+
+static void test_list_from_pool_through_map_ram(void)
+{
+    static const uint32_t zeros[ARRAY_SIZE(list_words)];
+
+    kona_reset();
+    kona_write_be32_array(qts, DMA_POOL_DEVICE, zeros, ARRAY_SIZE(zeros));
+    kona_write_be32_array(qts, DMA_POOL_HOST + 0x100, list_words,
+                          ARRAY_SIZE(list_words));
+    kona_register_pool_at(qts, DMA_POOL_DEVICE, DMA_POOL_HOST, 0x4000);
+
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALL_POOL, 0x100, ARRAY_SIZE(list_words),
+    }, 3);
+    g_assert_cmphex(kona_point_pixel(qts), ==, LIST_POINT_RGB);
+    kona_assert_last_completion(qts, DONE_CONSUMED, 0, 13);
+
+    kona_command(qts, (const uint32_t[]) {
+        LIST_PULL, 0x2000, 0x100, sizeof(list_words), 0,
+    }, 5);
+    g_assert_cmphex(kona_list_word(qts, 0x2000), ==, list_words[0]);
+    g_assert_cmphex(kona_list_word(qts, 0x2030), ==, list_words[12]);
+    kona_assert_last_completion(qts, DONE_WRITTEN, 0, sizeof(list_words));
+
+    qtest_writel(qts, REG_MAPRAM(DMA_POOL_DEVICE / MAPRAM_PAGE), 0);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_PULL, 0x3000, 0x100, sizeof(list_words), 0,
+    }, 5);
+    kona_assert_last_completion(qts, DONE_FAILED, 0, FAIL_BUS);
 }
 
 /*
@@ -1028,6 +1092,8 @@ int main(int argc, char **argv)
                    test_dma_command_page_reaches_engine);
     qtest_add_func("sn0/origin2000/kona/dma/list-from-pool-reaches-decoder",
                    test_list_from_pool_reaches_decoder);
+    qtest_add_func("sn0/origin2000/kona/dma/list-from-pool-through-map-ram",
+                   test_list_from_pool_through_map_ram);
     qtest_add_func("sn0/origin2000/kona/dma/"
                    "list-from-pipe-memory-reaches-decoder",
                    test_list_from_pipe_memory_reaches_decoder);
