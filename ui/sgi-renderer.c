@@ -626,6 +626,39 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
     return true;
 }
 
+/*
+ * Whether a request can cover no pixel of its clip rectangle: the clip is
+ * empty, or no pixel centre of the clip lies within the bounding box of
+ * the triangle. Every pixel the host or the software model could draw has
+ * its centre inside the triangle, so such a request stages only zeros.
+ * The box uses the same 1/256-pixel vertices as the coverage test.
+ */
+static bool sgi_renderer_request_empty(const SGIRendererRequest *request)
+{
+    int64_t vertices[3][2];
+
+    if (request->clip[0] > request->clip[2] ||
+        request->clip[1] > request->clip[3]) {
+        return true;
+    }
+    renderer_triangle(request, vertices);
+    for (unsigned axis = 0; axis < 2; axis++) {
+        int64_t lo = MIN(MIN(vertices[0][axis], vertices[1][axis]),
+                         vertices[2][axis]);
+        int64_t hi = MAX(MAX(vertices[0][axis], vertices[1][axis]),
+                         vertices[2][axis]);
+        /* Pixels whose centre p * 256 + 128 lies in [lo, hi]. */
+        double first = ceil((lo - 128) / 256.0);
+        double last = floor((hi - 128) / 256.0);
+
+        if (MAX(first, request->clip[axis]) >
+            MIN(last, request->clip[axis + 2])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool sgi_renderer_test_draw_complete(SGIRenderer *renderer,
                                             Error **errp)
 {
@@ -672,6 +705,15 @@ SGIRenderDrawResult sgi_renderer_draw_checked(SGIRenderer *renderer,
     if (!sgi_renderer_request_valid(request)) {
         error_setg(errp, "Unsupported SGI OpenGL renderer request");
         return SGI_RENDER_DRAW_FAILED;
+    }
+    /*
+     * A tile the triangle cannot reach stages nothing, which needs no host
+     * round trip; it still counts as a draw for the test fault hook.
+     */
+    if (sgi_renderer_request_empty(request)) {
+        memset(request->rgba, 0, sizeof(request->rgba));
+        return sgi_renderer_test_draw_complete(renderer, errp) ?
+               SGI_RENDER_DRAW_OK : SGI_RENDER_DRAW_FAILED;
     }
     if (!renderer->ops->draw(renderer->opaque, request, errp)) {
         renderer->failed = true;

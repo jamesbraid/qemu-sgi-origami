@@ -430,6 +430,12 @@ data for each call. It does not access guest memory, call family resource
 callbacks, or acquire QEMU's big lock. A host draw failure latches the
 renderer's failed state, so later draw requests fail.
 
+A legacy request is one 128 by 128 tile of a triangle, and a family splits
+each triangle over every tile of its window. A request whose clip holds no
+pixel centre inside the triangle's bounding box stages zeros at once,
+without a worker round trip, as the host and the software check would both
+leave it; it still counts as a draw for the test fault hook.
+
 A family adopting this API must own the renderer for the head's lifetime. It
 fails device realization when creation reports ``SGI_RENDER_CREATE_OOM`` or
 ``SGI_RENDER_CREATE_HOST_ERROR`` and the family requires Mesa. Only
