@@ -1899,6 +1899,11 @@ void sgi_raster_texture_free(SGIRasterTexture *texture)
     g_free(texture);
 }
 
+void sgi_raster_texture_quiet(SGIRasterTexture *texture)
+{
+    texture->reports = UINT_MAX;
+}
+
 bool sgi_raster_texture_fragment(SGIRasterTexture *texture,
                                  const double coord[4], double color[4])
 {

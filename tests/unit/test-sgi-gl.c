@@ -8200,6 +8200,45 @@ static void test_texture_prepare_reports_once(void)
     }
 }
 
+static bool texture_sampler_quiet;
+
+static void texture_sample_invalid(void)
+{
+    TexturePixels pixels = { 0 };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLDrawState state = {
+        .texture_2d = true,
+        .texture_env_mode = SGI_GL_MODULATE,
+    };
+    double coord[4] = { 0.25, 0.25, 0, 0 };
+    double rgba[4] = { 1, 1, 1, 1 };
+    g_autoptr(SGIRasterTexture) sampler = NULL;
+
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, &image, &sampler), ==,
+                    SGI_RASTER_TEXTURE_READY);
+    if (texture_sampler_quiet) {
+        sgi_raster_texture_quiet(sampler);
+    }
+    g_assert_false(sgi_raster_texture_fragment(sampler, coord, rgba));
+}
+
+/*
+ * A sampler reports an invalid fragment once, unless it is quiet because
+ * a scalar draw of the same fragments makes the draw's reports.
+ */
+static void test_texture_sampler_quiet(void)
+{
+    g_autofree char *log = NULL;
+
+    texture_sampler_quiet = false;
+    log = logged_by(texture_sample_invalid);
+    g_assert_nonnull(strstr(log, "invalid projected coordinates"));
+    g_clear_pointer(&log, g_free);
+    texture_sampler_quiet = true;
+    log = logged_by(texture_sample_invalid);
+    g_assert_cmpstr(log, ==, "");
+}
+
 /* Direct draw producers have the same environment clamp as context commands. */
 static void test_texture_fragment_precision(void)
 {
@@ -13364,6 +13403,8 @@ int main(int argc, char **argv)
                     test_texture_prepare_reports_once);
     g_test_add_func("/sgi-gl/texture-fragment-precision",
                     test_texture_fragment_precision);
+    g_test_add_func("/sgi-gl/texture-sampler-quiet",
+                    test_texture_sampler_quiet);
     g_test_add_func("/sgi-gl/texture-environment-clamp",
                     test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
