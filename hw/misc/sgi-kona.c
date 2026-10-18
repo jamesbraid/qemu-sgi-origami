@@ -2530,9 +2530,14 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
     unsigned format, environment;
     SGIRasterTextureResult result;
 
+    /*
+     * Quiet, like the sampler below: the scalar draw that confirms or
+     * replaces a host draw makes the draw's reports, so an incomplete
+     * image reaches the host untextured without its own.
+     */
     result = sgi_raster_texture_check(st, image);
     if (result != SGI_RASTER_TEXTURE_READY) {
-        return sgi_raster_texture_prepare(st, image, sampler);
+        return result;
     }
     if (st->texture_1d || st->texture_3d ||
         image->one_dimensional || image->volume || !image->pyramid ||
@@ -2600,6 +2605,7 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
     if (result != SGI_RASTER_TEXTURE_READY) {
         return result;
     }
+    sgi_raster_texture_quiet(*sampler);
     *pixels = g_try_malloc(bytes);
     if (!*pixels) {
         return SGI_RASTER_TEXTURE_OOM;
@@ -2967,10 +2973,443 @@ static SGIRenderResult sgi_kona_renderer_create(SGIKonaState *s,
     }
 }
 
+/* The planes a draw's writes are held for: colour banks 0 and 1 first. */
+enum {
+    SGI_KONA_SHADOW_DEPTH = 2,
+    SGI_KONA_SHADOW_STENCIL,
+    SGI_KONA_SHADOW_LAYERS,
+};
+
+/*
+ * One plane's held writes. They are stored densely over area, which is
+ * allocated on the first write and grows within the shadow's bounds as
+ * writes land outside it. extent is the box around what was written, so
+ * comparing and committing cost what the draw touched, not the window.
+ */
+typedef struct SGIKonaShadowLayer {
+    uint32_t *values;
+    uint8_t *written;
+    SGIClipRect area;           /* inclusive; valid while values is set */
+    SGIClipRect extent;         /* inclusive; valid while values is set */
+    size_t width;               /* of area */
+} SGIKonaShadowLayer;
+
+/*
+ * One draw's colour, depth and stencil writes held aside from the planes.
+ * Reads through target see them, so a draw that reads what it wrote, such
+ * as blending overlapping triangles, behaves as it would on the planes.
+ * Nothing reaches the planes until the draw's path is final.
+ *
+ * Each plane the draw writes gets a dense layer within bounds, the box
+ * around the drawable's clip rectangles that the scalar path also bounds
+ * its writes by, within the planes. A write the planes would drop is
+ * dropped here too. A write the shadow cannot hold, a colour index or a
+ * place outside bounds, marks it escaped; a layer it cannot allocate or
+ * grow marks it out of memory. Host-only, never migrated.
+ */
+typedef struct SGIKonaShadow {
+    SGIRasterTarget target;
+    const SGIRasterTarget *base;
+    SGIKonaState *s;
+    SGIClipRect bounds;         /* inclusive; empty when x0 > x1 */
+    SGIKonaShadowLayer layers[SGI_KONA_SHADOW_LAYERS];
+    bool escaped;
+    bool oom;
+} SGIKonaShadow;
+
+static const SGIPlane *sgi_kona_shadow_plane(SGIKonaState *s, unsigned layer)
+{
+    switch (layer) {
+    case SGI_KONA_SHADOW_DEPTH:
+        return sgi_kona_plane(s, s->plane_depth);
+    case SGI_KONA_SHADOW_STENCIL:
+        return sgi_kona_plane(s, s->plane_stencil);
+    default:
+        return sgi_kona_plane(s, sgi_kona_bank_plane(s, layer));
+    }
+}
+
+/* Where (x, y) is held in a layer; false where nothing is held. */
+static bool sgi_kona_shadow_at(const SGIKonaShadow *sh, unsigned layer,
+                               int x, int y, size_t *at)
+{
+    const SGIKonaShadowLayer *l = &sh->layers[layer];
+
+    if (!l->written ||
+        x < l->extent.x0 || x > l->extent.x1 ||
+        y < l->extent.y0 || y > l->extent.y1) {
+        return false;
+    }
+    *at = (size_t)(y - l->area.y0) * l->width + (x - l->area.x0);
+    return l->written[*at];
+}
+
+/*
+ * Make l's area cover (x, y), which is within the shadow's bounds. A new
+ * area reaches 32 pixels each way from its first write, and a grown one
+ * gains at least its own width or height, and 64 pixels, on each side it
+ * grows, so a draw's writes reallocate a layer a few times, not per row.
+ */
+static bool sgi_kona_shadow_cover(SGIKonaShadow *sh, SGIKonaShadowLayer *l,
+                                  int x, int y)
+{
+    SGIKonaState *s = sh->s;
+    SGIClipRect area;
+    int64_t grow_x, grow_y;
+    size_t width, pixels;
+    uint32_t *values;
+    uint8_t *written;
+
+    if (l->values) {
+        if (x >= l->area.x0 && x <= l->area.x1 &&
+            y >= l->area.y0 && y <= l->area.y1) {
+            return true;
+        }
+        area = l->area;
+        grow_x = MAX(l->area.x1 - l->area.x0 + 1, 64);
+        grow_y = MAX(l->area.y1 - l->area.y0 + 1, 64);
+    } else {
+        /* qtest: fail the armed layer as if the host were out of memory. */
+        if (s->test_renderer_fail_hold && !--s->test_renderer_fail_hold) {
+            return false;
+        }
+        area = (SGIClipRect) { .x0 = x, .y0 = y, .x1 = x, .y1 = y };
+        grow_x = grow_y = 32;
+    }
+    if (!l->values || x < area.x0) {
+        area.x0 = MAX((int64_t)x - grow_x, sh->bounds.x0);
+    }
+    if (!l->values || x > area.x1) {
+        area.x1 = MIN((int64_t)x + grow_x, sh->bounds.x1);
+    }
+    if (!l->values || y < area.y0) {
+        area.y0 = MAX((int64_t)y - grow_y, sh->bounds.y0);
+    }
+    if (!l->values || y > area.y1) {
+        area.y1 = MIN((int64_t)y + grow_y, sh->bounds.y1);
+    }
+    width = area.x1 - area.x0 + 1;
+    pixels = width * (size_t)(area.y1 - area.y0 + 1);
+    values = g_try_new(uint32_t, pixels);
+    written = g_try_malloc0(pixels);
+    if (!values || !written) {
+        g_free(values);
+        g_free(written);
+        return false;
+    }
+    if (l->values) {
+        size_t row = l->area.x1 - l->area.x0 + 1;
+
+        for (int64_t oy = l->area.y0; oy <= l->area.y1; oy++) {
+            size_t from = (size_t)(oy - l->area.y0) * l->width;
+            size_t to = (size_t)(oy - area.y0) * width +
+                        (l->area.x0 - area.x0);
+
+            memcpy(&values[to], &l->values[from], row * sizeof(*values));
+            memcpy(&written[to], &l->written[from], row);
+        }
+        g_free(l->values);
+        g_free(l->written);
+    } else {
+        l->extent = (SGIClipRect) { .x0 = x, .y0 = y, .x1 = x, .y1 = y };
+    }
+    l->values = values;
+    l->written = written;
+    l->area = area;
+    l->width = width;
+    return true;
+}
+
+static void sgi_kona_shadow_store(SGIKonaShadow *sh, unsigned layer,
+                                  int x, int y, uint32_t value)
+{
+    const SGIPlane *p = sgi_kona_shadow_plane(sh->s, layer);
+    SGIKonaShadowLayer *l = &sh->layers[layer];
+    size_t at;
+
+    if (sh->escaped || sh->oom) {
+        return;
+    }
+    if (!p) {
+        sh->escaped = true;
+        return;
+    }
+    if (!sgi_plane_contains(p, x, y)) {
+        return;
+    }
+    if (x < sh->bounds.x0 || x > sh->bounds.x1 ||
+        y < sh->bounds.y0 || y > sh->bounds.y1) {
+        sh->escaped = true;
+        return;
+    }
+    if (!sgi_kona_shadow_cover(sh, l, x, y)) {
+        sh->oom = true;
+        return;
+    }
+    l->extent.x0 = MIN(l->extent.x0, x);
+    l->extent.y0 = MIN(l->extent.y0, y);
+    l->extent.x1 = MAX(l->extent.x1, x);
+    l->extent.y1 = MAX(l->extent.y1, y);
+    at = (size_t)(y - l->area.y0) * l->width + (x - l->area.x0);
+    l->values[at] = value;
+    l->written[at] = 1;
+}
+
+static void sgi_kona_shadow_store_colour(void *opaque, SGIColourTarget target,
+                                         int x, int y, uint32_t colour)
+{
+    SGIKonaShadow *sh = opaque;
+    int bank = sgi_kona_target_bank(sh->s, target);
+
+    /* The planes store nothing for another target, and hold 24 bits. */
+    if (bank >= 0) {
+        sgi_kona_shadow_store(sh, bank, x, y, colour & 0x00ffffff);
+    }
+}
+
+static uint32_t sgi_kona_shadow_load_colour(void *opaque,
+                                            SGIColourTarget target,
+                                            int x, int y)
+{
+    SGIKonaShadow *sh = opaque;
+    int bank = sgi_kona_target_bank(sh->s, target);
+    size_t at;
+
+    if (bank >= 0 && sgi_kona_shadow_at(sh, bank, x, y, &at)) {
+        return sh->layers[bank].values[at];
+    }
+    return sh->base->load_colour(sh->base->opaque, target, x, y);
+}
+
+/* The legacy host route refuses colour-index draws, so none is compared. */
+static void sgi_kona_shadow_store_index(void *opaque, SGIColourTarget target,
+                                        int x, int y, uint32_t index,
+                                        uint32_t mask)
+{
+    SGIKonaShadow *sh = opaque;
+
+    sh->escaped = true;
+}
+
+static uint32_t sgi_kona_shadow_load_depth(void *opaque, int x, int y)
+{
+    SGIKonaShadow *sh = opaque;
+    size_t at;
+
+    if (sgi_kona_shadow_at(sh, SGI_KONA_SHADOW_DEPTH, x, y, &at)) {
+        return sh->layers[SGI_KONA_SHADOW_DEPTH].values[at];
+    }
+    return sh->base->load_depth(sh->base->opaque, x, y);
+}
+
+static void sgi_kona_shadow_store_depth(void *opaque, int x, int y,
+                                        uint32_t depth)
+{
+    sgi_kona_shadow_store(opaque, SGI_KONA_SHADOW_DEPTH, x, y, depth);
+}
+
+static uint32_t sgi_kona_shadow_load_stencil(void *opaque, int x, int y)
+{
+    SGIKonaShadow *sh = opaque;
+    size_t at;
+
+    if (sgi_kona_shadow_at(sh, SGI_KONA_SHADOW_STENCIL, x, y, &at)) {
+        return sh->layers[SGI_KONA_SHADOW_STENCIL].values[at];
+    }
+    return sh->base->load_stencil(sh->base->opaque, x, y);
+}
+
+static void sgi_kona_shadow_store_stencil(void *opaque, int x, int y,
+                                          uint32_t value)
+{
+    sgi_kona_shadow_store(opaque, SGI_KONA_SHADOW_STENCIL, x, y, value);
+}
+
+static void sgi_kona_shadow_init(SGIKonaShadow *sh, SGIKonaState *s,
+                                 const SGIRasterTarget *base,
+                                 const SGIGLDrawable *drawable)
+{
+    int64_t width = 0, height = 0;
+
+    /* KONA's planes take no RGBA stores and no fog curve. */
+    assert(!base->store_rgba && !base->load_rgba && !base->fog_factor);
+    assert(base->opaque == s);
+    *sh = (SGIKonaShadow) {
+        .target = *base,
+        .base = base,
+        .s = s,
+        .bounds = { .x0 = 0, .y0 = 0, .x1 = -1, .y1 = -1 },
+    };
+    sh->target.opaque = sh;
+    sh->target.store_colour = sgi_kona_shadow_store_colour;
+    sh->target.load_colour = base->load_colour ?
+                             sgi_kona_shadow_load_colour : NULL;
+    sh->target.store_index = sgi_kona_shadow_store_index;
+    sh->target.load_depth = sgi_kona_shadow_load_depth;
+    sh->target.store_depth = sgi_kona_shadow_store_depth;
+    sh->target.load_stencil = base->load_stencil ?
+                              sgi_kona_shadow_load_stencil : NULL;
+    sh->target.store_stencil = base->store_stencil ?
+                               sgi_kona_shadow_store_stencil : NULL;
+
+    /* sgi_soft_window()'s box, within the largest plane a write can reach. */
+    if (!drawable->bound || !drawable->clip.n) {
+        return;
+    }
+    for (unsigned i = 0; i < SGI_KONA_SHADOW_LAYERS; i++) {
+        const SGIPlane *p = sgi_kona_shadow_plane(s, i);
+
+        if (p) {
+            width = MAX(width, p->width);
+            height = MAX(height, p->height);
+        }
+    }
+    sh->bounds = drawable->clip.r[0];
+    for (uint32_t i = 1; i < MIN(drawable->clip.n, SGI_CLIP_MAX); i++) {
+        sh->bounds.x0 = MIN(sh->bounds.x0, drawable->clip.r[i].x0);
+        sh->bounds.y0 = MIN(sh->bounds.y0, drawable->clip.r[i].y0);
+        sh->bounds.x1 = MAX(sh->bounds.x1, drawable->clip.r[i].x1);
+        sh->bounds.y1 = MAX(sh->bounds.y1, drawable->clip.r[i].y1);
+    }
+    sh->bounds.x0 = MAX(sh->bounds.x0, 0);
+    sh->bounds.y0 = MAX(sh->bounds.y0, 0);
+    sh->bounds.x1 = MIN((int64_t)sh->bounds.x1, width - 1);
+    sh->bounds.y1 = MIN((int64_t)sh->bounds.y1, height - 1);
+}
+
+static void sgi_kona_shadow_free(SGIKonaShadow *sh)
+{
+    for (unsigned i = 0; i < SGI_KONA_SHADOW_LAYERS; i++) {
+        g_clear_pointer(&sh->layers[i].values, g_free);
+        g_clear_pointer(&sh->layers[i].written, g_free);
+    }
+}
+
+/* The same values written to the same places, and nothing else. */
+static bool sgi_kona_shadow_equal(const SGIKonaShadow *a,
+                                  const SGIKonaShadow *b)
+{
+    if (a->escaped || b->escaped || a->oom || b->oom) {
+        return false;
+    }
+    for (unsigned i = 0; i < SGI_KONA_SHADOW_LAYERS; i++) {
+        const SGIKonaShadowLayer *la = &a->layers[i], *lb = &b->layers[i];
+
+        if (!la->written != !lb->written) {
+            return false;
+        }
+        if (!la->written) {
+            continue;
+        }
+        if (memcmp(&la->extent, &lb->extent, sizeof(la->extent))) {
+            return false;
+        }
+        for (int64_t y = la->extent.y0; y <= la->extent.y1; y++) {
+            size_t n = la->extent.x1 - la->extent.x0 + 1;
+            size_t at = (size_t)(y - la->area.y0) * la->width +
+                        (la->extent.x0 - la->area.x0);
+            size_t bt = (size_t)(y - lb->area.y0) * lb->width +
+                        (la->extent.x0 - lb->area.x0);
+
+            if (memcmp(&la->written[at], &lb->written[bt], n)) {
+                return false;
+            }
+            for (size_t k = 0; k < n; k++) {
+                if (la->written[at + k] &&
+                    la->values[at + k] != lb->values[bt + k]) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static void sgi_kona_shadow_commit(const SGIKonaShadow *sh)
+{
+    const SGIRasterTarget *base = sh->base;
+    SGIKonaState *s = sh->s;
+
+    assert(!sh->escaped && !sh->oom);
+    for (unsigned i = 0; i < SGI_KONA_SHADOW_LAYERS; i++) {
+        const SGIKonaShadowLayer *l = &sh->layers[i];
+        SGIColourTarget target = i == 0 ? s->plane_front : s->plane_back;
+
+        if (!l->written) {
+            continue;
+        }
+        for (int y = l->extent.y0; y <= l->extent.y1; y++) {
+            for (int x = l->extent.x0; x <= l->extent.x1; x++) {
+                size_t at = (size_t)(y - l->area.y0) * l->width +
+                            (x - l->area.x0);
+
+                if (!l->written[at]) {
+                    continue;
+                }
+                switch (i) {
+                case SGI_KONA_SHADOW_DEPTH:
+                    base->store_depth(base->opaque, x, y, l->values[at]);
+                    break;
+                case SGI_KONA_SHADOW_STENCIL:
+                    base->store_stencil(base->opaque, x, y, l->values[at]);
+                    break;
+                default:
+                    base->store_colour(base->opaque, target, x, y,
+                                       l->values[at]);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/*
+ * Commit a legacy host draw, held in host, only when the scalar path
+ * writes exactly the same values to exactly the same places; otherwise
+ * commit the scalar draw. The legacy route validates its staged pixels
+ * against the renderer's own model, which is not the scalar path, so this
+ * is what lets its pixels share a frame with scalar draws. The scalar draw
+ * runs once either way, so its once-per-draw reports are made once. When
+ * the scalar writes cannot be held for lack of memory, nothing is
+ * committed and the draw is out of memory.
+ */
+static SGIGLDrawResult sgi_kona_renderer_confirm(SGIKonaState *s,
+                                                 const SGIRasterRules *rules,
+                                                 const SGIRasterTarget *t,
+                                                 const SGIGLDraw *d,
+                                                 const SGIKonaShadow *host,
+                                                 bool *confirmed)
+{
+    SGIKonaShadow scalar;
+    SGIGLDrawResult ret;
+
+    sgi_kona_shadow_init(&scalar, s, t, &d->state->drawable);
+    ret = sgi_soft_draw(rules, &scalar.target, d);
+    *confirmed = ret == SGI_GL_DRAW_OK &&
+                 sgi_kona_shadow_equal(host, &scalar);
+    if (*confirmed) {
+        sgi_kona_shadow_commit(host);
+    } else if (scalar.oom) {
+        ret = SGI_GL_DRAW_OUT_OF_MEMORY;
+    } else if (!scalar.escaped) {
+        sgi_kona_shadow_commit(&scalar);
+    } else {
+        /* Unreachable: the scalar path writes only inside the bounds. */
+        ret = sgi_soft_draw(rules, t, d);
+    }
+    sgi_kona_shadow_free(&scalar);
+    return ret;
+}
+
+/*
+ * The legacy host batch. On success its writes are held in out for
+ * sgi_kona_renderer_confirm(), not stored on the planes.
+ */
 static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                                             const SGIGLDraw *d,
                                             const SGIRasterRules *rules,
                                             const SGIRasterTarget *t,
+                                            const SGIRasterTarget *out,
                                             Error **errp)
 {
     SGIRendererRequest *requests;
@@ -3136,7 +3575,7 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                         if (!sgi_raster_window_depth(d->state, z,
                                                      request->offset,
                                                      &window) ||
-                            !sgi_raster_depth_stencil(rules, d->state, t,
+                            !sgi_raster_depth_stencil(rules, d->state, out,
                                 tile.x0 + x, tile.y0 + y, window)) {
                             continue;
                         }
@@ -3145,9 +3584,9 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                         continue;
                     }
                     if (logic_op || blend || colour_mask != 0xffffff) {
-                        uint32_t old = sgi_kona_gl_load_colour(s, target,
-                                                              tile.x0 + x,
-                                                              tile.y0 + y);
+                        uint32_t old = out->load_colour(out->opaque, target,
+                                                        tile.x0 + x,
+                                                        tile.y0 + y);
 
                         if (logic_op) {
                             colour = sgi_x_logic_op(
@@ -3159,13 +3598,17 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                         }
                         colour = (colour & colour_mask) | (old & ~colour_mask);
                     }
-                    sgi_kona_gl_store_colour(s, target,
-                                             tile.x0 + x, tile.y0 + y, colour);
+                    if (s->test_renderer_skew) {
+                        /* qtest: a host draw that differs from scalar. */
+                        colour ^= 1;
+                        s->test_renderer_skew = false;
+                    }
+                    out->store_colour(out->opaque, target,
+                                      tile.x0 + x, tile.y0 + y, colour);
                 }
             }
         }
     }
-    s->renderer_draws++;
     result = SGI_RENDER_OK;
 out:
     g_free(requests);
@@ -3252,6 +3695,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIGLDraw copy;
     SGIGLDrawResult ret;
     SGIRenderResult legacy_result;
+    SGIKonaShadow host;
     Error *err = NULL;
 
     if (s->mesa_failed) {
@@ -3313,11 +3757,30 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
             g_assert_not_reached();
         }
     }
-    legacy_result = sgi_kona_renderer_draw(s, d, &rules, &t, &err);
-    switch (legacy_result) {
-    case SGI_RENDER_OK:
+    sgi_kona_shadow_init(&host, s, &t, &d->state->drawable);
+    legacy_result = sgi_kona_renderer_draw(s, d, &rules, &t, &host.target,
+                                           &err);
+    if (legacy_result == SGI_RENDER_OK && host.oom) {
+        /* The host writes could not be held; nothing reached the planes. */
+        legacy_result = SGI_RENDER_OOM;
+    }
+    if (legacy_result == SGI_RENDER_OK) {
+        bool confirmed;
+
         error_free(err);
-        return SGI_GL_DRAW_OK;
+        ret = sgi_kona_renderer_confirm(s, &rules, &t, d, &host, &confirmed);
+        sgi_kona_shadow_free(&host);
+        if (confirmed) {
+            s->renderer_draws++;
+            return SGI_GL_DRAW_OK;
+        }
+        if (ret != SGI_GL_DRAW_OUT_OF_MEMORY) {
+            s->renderer_fallbacks++;
+        }
+        goto report;
+    }
+    sgi_kona_shadow_free(&host);
+    switch (legacy_result) {
     case SGI_RENDER_OOM:
         error_free(err);
         return SGI_GL_DRAW_OUT_OF_MEMORY;
@@ -3339,6 +3802,7 @@ scalar:
         s->renderer_fallbacks++;
     }
     ret = sgi_soft_draw(&rules, &t, d);
+report:
     if (ret != SGI_GL_DRAW_OK) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: GL draw of context %" PRIu32
                       " not completed by the rasterizer\n", d->context);
@@ -11673,6 +12137,35 @@ static void sgi_kona_test_set_renderer_failure(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_kona_test_set_renderer_fail_hold(Object *obj, Visitor *v,
+                                                 const char *name,
+                                                 void *opaque, Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint32_t nth;
+
+    if (!qtest_enabled() || !s->host_gpu) {
+        error_setg(errp, "KONA held-write fault requires qtest and host-gpu");
+        return;
+    }
+    if (!visit_type_uint32(v, name, &nth, errp)) {
+        return;
+    }
+    s->test_renderer_fail_hold = nth;
+}
+
+static void sgi_kona_test_set_renderer_skew(Object *obj, bool skew,
+                                            Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+
+    if (!qtest_enabled() || !s->host_gpu) {
+        error_setg(errp, "KONA renderer skew requires qtest and host-gpu");
+        return;
+    }
+    s->test_renderer_skew = skew;
+}
+
 static void sgi_kona_test_set_renderer_create_failure(Object *obj, Visitor *v,
                                                       const char *name,
                                                       void *opaque,
@@ -11830,6 +12323,10 @@ static void sgi_kona_instance_init(Object *obj)
     object_property_add(obj, "x-test-gpu-fail-create", "uint32", NULL,
                         sgi_kona_test_set_renderer_create_failure,
                         NULL, NULL);
+    object_property_add_bool(obj, "x-test-gpu-skew-legacy", NULL,
+                             sgi_kona_test_set_renderer_skew);
+    object_property_add(obj, "x-test-gpu-fail-hold", "uint32", NULL,
+                        sgi_kona_test_set_renderer_fail_hold, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-gpu-requests",
                                    &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
@@ -11931,6 +12428,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->mesa_failed = false;
     s->test_renderer_fail_draw = 0;
     s->test_renderer_fail_create = 0;
+    s->test_renderer_skew = false;
+    s->test_renderer_fail_hold = 0;
 
     s->widget_control = 0;
     s->onewire_reg = 0;
@@ -12279,6 +12778,8 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
     s->mesa_failed = false;
     s->test_renderer_fail_draw = 0;
     s->test_renderer_fail_create = 0;
+    s->test_renderer_skew = false;
+    s->test_renderer_fail_hold = 0;
 
     /*
      * An open video command can hold no more data words than it takes, or
