@@ -979,7 +979,8 @@ static void test_interrupts(void)
     configure_card(qts, 0);
     dma(qts, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
         0x12345678, true, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==,
+                    UINT64_C(0x1234567800000000));
     qtest_quit(qts);
 }
 
@@ -1318,7 +1319,8 @@ static void test_intx_denied(void)
     configure_card(qts, 0);
     dma(qts, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
         0x12345678, true, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==,
+                    UINT64_C(0x1234567800000000));
     qtest_quit(qts);
 }
 
