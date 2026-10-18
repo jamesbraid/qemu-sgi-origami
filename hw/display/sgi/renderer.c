@@ -449,6 +449,7 @@ typedef struct SGIRenderPieces {
      */
     const SGIRasterRules *rules;
     bool depth_inexact;
+    bool near_plane;    /* some vertex within the margin of a plane */
     /* A textured triangle the scalar path drops whole; see below. */
     bool texture_invalid;
     const SGIGLTexImage *image;     /* a textured draw's level-zero image */
@@ -503,6 +504,10 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
 
         for (unsigned i = 0; i < count; i++) {
             p->depth_inexact |= !sgi_render_depth_exact(&t[i]);
+            for (unsigned v = 0; v < 3; v++) {
+                p->near_plane |= t[i].z[v] <= SGI_RENDER_DEPTH_MARGIN ||
+                                 t[i].z[v] >= 1 - SGI_RENDER_DEPTH_MARGIN;
+            }
         }
         if (draw->state->texture_2d && p->image) {
             p->texture_invalid |= !sgi_raster_triangle_texture_valid(
@@ -1270,6 +1275,175 @@ static bool sgi_render_mixed_frame_proven(const SGIRasterRules *rules,
 }
 
 /*
+ * The state checks a checked draw makes before any host work, in its
+ * order: the refusal it returns for the draw's state, or NONE with the
+ * colour resource found. With mixed_frame it also refuses state outside
+ * the proven set. The in-set tag calls it too, so the tag and the draw
+ * path cannot disagree on what the mixed-frame check accepts.
+ */
+static SGIRenderRefusal sgi_render_draw_accepts(
+    const SGIRasterRules *rules, const SGIRasterTarget *target,
+    const SGIGLDraw *draw, bool mixed_frame,
+    const SGIRenderResource **resource)
+{
+    SGIRenderRefusal refusal;
+
+    if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
+        return SGI_RENDER_REFUSAL_DITHER;
+    }
+    if (!sgi_render_rules_supported(rules)) {
+        return SGI_RENDER_REFUSAL_RULES;
+    }
+    refusal = sgi_render_draw_supported(rules, target, draw, resource);
+    if (refusal != SGI_RENDER_REFUSAL_NONE) {
+        return refusal;
+    }
+    if (mixed_frame &&
+        !sgi_render_mixed_frame_proven(rules, target, draw, *resource)) {
+        return SGI_RENDER_REFUSAL_MIXED_FRAME;
+    }
+    return SGI_RENDER_REFUSAL_NONE;
+}
+
+static size_t sgi_render_signature_limit = SIZE_MAX;
+
+void sgi_render_test_signature_limit(size_t length)
+{
+    sgi_render_signature_limit = length ? length : SIZE_MAX;
+}
+
+static const char *sgi_render_rule_name(const char *const *names, size_t n,
+                                        unsigned value)
+{
+    return value < n && names[value] ? names[value] : "unknown";
+}
+
+/* Whether any clipped vertex of the draw lies within the depth margin. */
+static bool sgi_render_draw_near_plane(const SGIRasterRules *rules,
+                                       const SGIGLDraw *draw)
+{
+    if (sgi_render_mode_polygons(draw->mode)) {
+        SGIRenderPieces check = { .rules = rules };
+
+        sgi_render_decompose(&check, draw);
+        return check.near_plane;
+    }
+    for (uint32_t i = 0; i < draw->count; i++) {
+        SGIVolumeVertex v;
+        double z;
+
+        sgi_volume_from_draw_vertex(draw->state,
+            draw->vertices + (size_t)i * SGI_GL_VERTEX_FLOATS, &v);
+        if (!(v.clip[3] > 0)) {
+            continue;
+        }
+        z = (v.clip[2] / v.clip[3] + 1) / 2;
+        if (z <= SGI_RENDER_DEPTH_MARGIN || z >= 1 - SGI_RENDER_DEPTH_MARGIN) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void sgi_render_draw_signature(const SGIRasterRules *rules,
+                               const SGIRasterTarget *target,
+                               const SGIGLDraw *draw,
+                               SGIRenderSignature *signature)
+{
+    const SGIGLDrawState *st = draw->state;
+    const SGIRenderResource *res = st ?
+        sgi_render_colour_resource(target, st->drawable.front) : NULL;
+    const SGIGLTexImage *image = st && st->texture_2d ? target->texture :
+                                 NULL;
+    const SGIRenderResource *proven;
+    const char *class = sgi_render_mode_lines(draw->mode) ? "line" :
+                        draw->mode == SGI_GL_POINTS ? "point" : "polygon";
+    /* Names, not enum values, so renumbering cannot change a signature. */
+    static const char *const rounding_names[] = {
+        [SGI_ROUND_FLOOR] = "floor",
+        [SGI_ROUND_HALF_UP] = "half-up",
+        [SGI_ROUND_HALF_EVEN] = "half-even",
+        [SGI_ROUND_HALF_AWAY] = "half-away",
+    };
+    static const char *const tie_names[] = {
+        [SGI_TIE_TOP_LEFT] = "top-left",
+        [SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN] = "top-left-bottom-origin",
+    };
+    static const char *const arith_names[] = {
+        [SGI_ARITH_FIXED16] = "fixed16",
+        [SGI_ARITH_DOUBLE] = "double",
+    };
+    unsigned widths[4] = { 0 };
+    bool matrices = true, clips = false;
+    int length;
+
+    memset(signature, 0, sizeof(*signature));
+    signature->version = SGI_RENDER_SIGNATURE_VERSION;
+    if (!st) {
+        g_strlcpy(signature->text, "v1 invalid", sizeof(signature->text));
+        return;
+    }
+    for (unsigned c = 0; res && c < res->component_count && c < 4; c++) {
+        widths[c] = res->component[c].storage_bits;
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        float identity = i % 5 == 0;
+
+        matrices &= st->modelview[i] == identity &&
+                    st->projection[i] == identity;
+    }
+    if (res && st->drawable.clip.n == 1) {
+        const SGIClipRect *clip = &st->drawable.clip.r[0];
+
+        clips = clip->x0 <= 0 && clip->y0 <= 0 &&
+                clip->x1 >= (int64_t)res->width - 1 &&
+                clip->y1 >= (int64_t)res->height - 1;
+    }
+    length = g_snprintf(signature->text, sizeof(signature->text),
+               "v%u %s point=%g line=%g stipple=%u/%u shade=0x%x "
+               "blend=%u/0x%x/0x%x/0x%x texture=%u/0x%x/0x%x/0x%x/0x%x/"
+               "0x%x/%ux%u rules=%u/%s/%s/%s/%u widths=%u/%u/%u/%u "
+               "rows=%s fixture=%u/%u/%u/%u near-plane=%u",
+               SGI_RENDER_SIGNATURE_VERSION, class,
+               draw->mode == SGI_GL_POINTS ?
+                   sgi_render_aliased_size(draw->point_size) : 0,
+               sgi_render_mode_lines(draw->mode) ?
+                   sgi_render_aliased_size(draw->line_width) : 0,
+               draw->line_stipple_enabled, draw->polygon_stipple_enabled,
+               st->shade_model, st->blend,
+               st->blend ? st->blend_equation : 0,
+               st->blend ? st->blend_src : 0,
+               st->blend ? st->blend_dst : 0,
+               st->texture_2d, image ? st->texture_env_mode : 0,
+               image ? image->min_filter : 0, image ? image->mag_filter : 0,
+               image ? image->wrap_s : 0, image ? image->wrap_t : 0,
+               image ? image->width : 0, image ? image->height : 0,
+               rules->subpixel_bits,
+               sgi_render_rule_name(rounding_names,
+                                    ARRAY_SIZE(rounding_names),
+                                    rules->rounding),
+               sgi_render_rule_name(tie_names, ARRAY_SIZE(tie_names),
+                                    rules->tie_rule),
+               sgi_render_rule_name(arith_names, ARRAY_SIZE(arith_names),
+                                    rules->arith),
+               rules->smooth_primitives,
+               widths[0], widths[1], widths[2], widths[3],
+               !res ? "none" : res->bottom_origin ? "bottom" : "top",
+               res && !st->viewport[0] && !st->viewport[1] &&
+                   st->viewport[2] == (int64_t)res->width &&
+                   st->viewport[3] == (int64_t)res->height,
+               !st->scissor_test, clips, matrices,
+               draw->vertices && sgi_render_draw_near_plane(rules, draw));
+    /* Truncation would merge distinct signatures; count them as one. */
+    if (length >= MIN(sizeof(signature->text), sgi_render_signature_limit)) {
+        g_strlcpy(signature->text, "v1 overflow", sizeof(signature->text));
+    }
+    signature->in_set = draw->vertices &&
+        sgi_render_draw_accepts(rules, target, draw, true, &proven) ==
+            SGI_RENDER_REFUSAL_NONE;
+}
+
+/*
  * A checked draw. Every UNSUPPORTED result before the snapshot sets
  * *reason; one without a reason came from native work and is a failure.
  */
@@ -1330,31 +1504,31 @@ static SGIRenderResult sgi_render_draw_run(
         error_setg(errp, "Invalid SGI Mesa scissor dimensions");
         return SGI_RENDER_RESOURCE_ERROR;
     }
-    if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
-        error_setg(errp, "SGI Mesa ordered dithering is unsupported");
-        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_DITHER);
-    }
-    if (!sgi_render_rules_supported(rules)) {
-        error_setg(errp, "Unsupported SGI Mesa raster rules");
-        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RULES);
-    }
     if (opts && opts->mixed_frame &&
         !sgi_renderer_identity(renderer)->reference) {
         error_setg(errp, "SGI Mesa mixed frames are proven only on the "
                    "reference llvmpipe build");
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_DRIVER);
     }
-    refusal = sgi_render_draw_supported(rules, target, draw, &resource);
-    if (refusal != SGI_RENDER_REFUSAL_NONE) {
+    refusal = sgi_render_draw_accepts(rules, target, draw,
+                                      opts && opts->mixed_frame, &resource);
+    switch (refusal) {
+    case SGI_RENDER_REFUSAL_NONE:
+        break;
+    case SGI_RENDER_REFUSAL_DITHER:
+        error_setg(errp, "SGI Mesa ordered dithering is unsupported");
+        return sgi_render_refuse(reason, refusal);
+    case SGI_RENDER_REFUSAL_RULES:
+        error_setg(errp, "Unsupported SGI Mesa raster rules");
+        return sgi_render_refuse(reason, refusal);
+    case SGI_RENDER_REFUSAL_MIXED_FRAME:
+        error_setg(errp, "SGI Mesa draw state is not proven identical to "
+                   "the scalar path for a mixed frame");
+        return sgi_render_refuse(reason, refusal);
+    default:
         error_setg(errp, "Unsupported SGI Mesa draw state or resource (%s)",
                    sgi_render_refusal_name(refusal));
         return sgi_render_refuse(reason, refusal);
-    }
-    if (opts && opts->mixed_frame &&
-        !sgi_render_mixed_frame_proven(rules, target, draw, resource)) {
-        error_setg(errp, "SGI Mesa draw state is not proven identical to "
-                   "the scalar path for a mixed frame");
-        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_MIXED_FRAME);
     }
     for (unsigned c = 0; c < resource->component_count; c++) {
         steps[c] = (1u << resource->component[c].storage_bits) - 1;

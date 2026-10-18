@@ -597,6 +597,42 @@ SGIRenderDrawResult sgi_render_raster_attempt(
     const SGIRenderAttemptOptions *opts, SGIRenderAttemptOutcome *outcome,
     Error **errp);
 
+/*
+ * A draw's state signature, which shadow comparison counts results by.
+ * Version 1 holds the primitive class; the aliased point size, line width
+ * and stipple enables; the shade model; blend enable, equation and
+ * factors; texture enable, environment, filters, wraps and image size; the
+ * raster rules' subpixel bits, rounding, tie rule, arithmetic and
+ * smoothing; the colour and alpha storage widths; the row origin; whether
+ * the viewport, scissor, clip rectangles and matrices each meet the
+ * comparison fixture's conditions; and whether any vertex, after the
+ * scalar path clips it, has a depth within 2^-32 of the near or far plane.
+ * Adding a field the mixed-frame check accepts increments the version.
+ */
+#define SGI_RENDER_SIGNATURE_VERSION 1
+
+typedef struct SGIRenderSignature {
+    uint32_t version;
+    /*
+     * Canonical text, equal exactly when the signatures are, "v1 ...".
+     * Text that would not fit becomes "v1 overflow" rather than truncate.
+     */
+    char text[512];
+    /* The mixed-frame check accepts the draw on the reference driver. */
+    bool in_set;
+} SGIRenderSignature;
+
+void sgi_render_draw_signature(const SGIRasterRules *rules,
+                               const SGIRasterTarget *target,
+                               const SGIGLDraw *draw,
+                               SGIRenderSignature *signature);
+/*
+ * Test-only: treat signature text of this many characters or more as
+ * truncated, which makes it the single signature "v1 overflow"; zero
+ * restores the buffer's own bound.
+ */
+void sgi_render_test_signature_limit(size_t length);
+
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,
                                         const SGIRasterTarget *target,
