@@ -13698,6 +13698,72 @@ static void test_renderer_general_triangle(gconstpointer opaque)
     qtest_quit(gpu);
 }
 
+/*
+ * A Mesa-route draw the shared renderer refuses is drawn by the scalar path
+ * inside the same callback, exactly as a host-gpu=off board draws it, and
+ * is counted. It does not go on to the legacy host batch: mode 1's alpha
+ * test is state that batch would otherwise draw. Mode 2 blends under a
+ * scissor test, which the shared renderer draws but the scalar comparisons
+ * do not prove, so only the mixed-frame option refuses it. Once the
+ * refused state is gone the next draw is accepted by Mesa again.
+ */
+static void test_renderer_mesa_refused(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t enables[] = { 0xb60, 0xbc0, 0xbe2 };
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t requests, draws, fallbacks, generation;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_typed_setup(states[i]);
+        kona_command_f(states[i], 0x63, (float[]){ 1, 0.5f, 0 }, 3);
+        if (mode == 2) {
+            kona_command(states[i], 0xcb, (uint32_t[]){ 0x302, 0x303 }, 2);
+            kona_command(states[i], 0xc,
+                         (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+            kona_command(states[i], 0x24, (uint32_t[]){ 0xc11 }, 1);
+        }
+    }
+    requests = renderer_counter(gpu, "x-test-gpu-requests");
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    fallbacks = renderer_counter(gpu, "x-test-gpu-fallbacks");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        kona_command(states[i], 0x24, &enables[mode], 1);
+        gl_begin(states[i], 4);
+        gl_vertex2f(states[i], -0.5, -0.5);
+        gl_vertex2f(states[i], 0.5, -0.5);
+        gl_vertex2f(states[i], 0, 0.5);
+        gl_end(states[i]);
+    }
+    renderer_general_compare_planes(gpu, cpu, mode);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==,
+                     requests);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + 1);
+    g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-fallbacks"), ==, 0);
+
+    kona_command(gpu, 0x25, &enables[mode], 1);
+    generation = renderer_counter(gpu, "x-test-mesa-front-generation");
+    gl_begin(gpu, 4);
+    gl_vertex2f(gpu, -0.25, -0.25);
+    gl_vertex2f(gpu, 0.25, -0.25);
+    gl_vertex2f(gpu, 0, 0.25);
+    gl_end(gpu);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==,
+                     requests + 1);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                     draws + 1);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + 1);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-mesa-front-generation"),
+                     >, generation);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+}
+
 /* Renderer cases with this flag make host renderer creation unavailable. */
 #define RENDERER_CPU (1u << 16)
 
@@ -15943,6 +16009,14 @@ int main(int argc, char **argv)
                    test_renderer_typed_checked_failure);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
                    test_renderer_legacy_failure);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/mesa-refused/fog",
+                        GUINT_TO_POINTER(0), test_renderer_mesa_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "mesa-refused/alpha-test",
+                        GUINT_TO_POINTER(1), test_renderer_mesa_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "mesa-refused/mixed-frame",
+                        GUINT_TO_POINTER(2), test_renderer_mesa_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
                         "create-legacy-unavailable",
                         GUINT_TO_POINTER(1), test_renderer_create_failure);
