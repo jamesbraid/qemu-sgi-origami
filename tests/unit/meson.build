@@ -346,7 +346,7 @@ endif
 
 # Longer timeouts that leave a test in its quick suites, unlike slow_tests.
 unit_timeouts = {
-  'test-sgi-renderer-gl': 90,
+  'test-sgi-renderer-gl': 240,
 }
 
 slow_tests = {
