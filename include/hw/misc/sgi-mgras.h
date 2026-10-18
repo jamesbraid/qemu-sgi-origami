@@ -548,6 +548,11 @@ struct SGIMgrasState {
     MemoryRegion *fabric;
     AddressSpace fabric_as;
     /*
+     * Bytes per DMA page-list entry, 8 or 4, chosen by the machine that
+     * fits the board: see mgras_raster_dma_setup().
+     */
+    uint8_t page_list_entry_bytes;
+    /*
      * The master node's graphics credits (sgi-pi-gfx), which the machine
      * links when it places the board. Each processor store the node
      * counted on its way to the port returns one credit there as soon as

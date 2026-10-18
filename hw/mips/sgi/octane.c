@@ -719,6 +719,12 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
              * synthetic ones, "EMUG00", like the other IP30 identities.
              */
             qdev_prop_set_bit(board, "board-record", true);
+            /*
+             * IP30 software writes 32-bit DMA page-list entries: IRIX
+             * 6.5.30's X server and kernel, and the Linux IMPACTSR
+             * driver's table of 32-bit words.
+             */
+            qdev_prop_set_uint8(board, "page-list-entry-bytes", 4);
         }
         if (!object_property_set_link(OBJECT(board), "fabric",
                                       OBJECT(&s->graphics_fabric), errp) ||

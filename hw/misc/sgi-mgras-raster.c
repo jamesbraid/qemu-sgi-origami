@@ -1928,8 +1928,10 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * va = addr_low + addr_high +
  * row*pitch + byte, page_ix = va >> 12, and the source page's physical
  * address is (pagelist[page_ix] << 12) | (va & 0xfff). The page list
- * itself is `count` big-endian 64-bit page-frame-number entries at
+ * itself is `count` big-endian page-frame-number entries at
  * (list_node << 32) | list_pa, both taken from the selected mapping slot.
+ * An entry is 64 bits behind an SN0 Hub and 32 bits on Octane; the
+ * page-list-entry-bytes property carries the choice.
  * Consecutive page-list entries need not be adjacent, so a row's bytes
  * can span a page boundary at an arbitrary offset: the shared DMA code
  * cuts every transfer at each guest page and resolves each page through
@@ -2030,19 +2032,25 @@ static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
     uint64_t base = sgi_mgras_dma_map_slot_base(s, slot);
     uint32_t list_node = (uint32_t)(base >> 32) & 0xff;
     uint32_t count = sgi_mgras_dma_map_slot_count(s, slot);
+    uint32_t entry = s->page_list_entry_bytes;
     uint64_t list_addr;
+    g_autofree uint8_t *raw = NULL;
     g_autofree uint64_t *addr = NULL;
 
     /*
      * The base pair's low word is entry 0's byte address, not a
-     * page-aligned address plus flag bits: every observed mapping's low
-     * word ends in 0x18 or 0x19 (three zero header words before the
-     * page-frame-number entries begin), so only bits 2:0 are flag-like.
-     * Masking to the page (as this used to) reads the header's first
-     * zero word as page-frame number 0 and drops every transfer 24 bytes
-     * short.
+     * page-aligned address plus flag bits: every observed SN0 mapping's
+     * low word ends in 0x18 or 0x19 (three zero 8-byte header words
+     * before the page-frame-number entries begin), and every observed
+     * Octane one in 0xc, with the 4-byte word before entry 0 reading
+     * zero. Treating only the bits below the entry size as flags is
+     * inferred from those: clear writes also use 0x1, 0x5 and 0x9, with a
+     * count of zero. Masking to the page (as this used to)
+     * reads the header's first zero word as page-frame number 0 and
+     * drops every transfer short; masking an Octane list to 8 bytes
+     * starts it one entry early.
      */
-    list_addr = ((uint64_t)list_node << 32) | ((uint32_t)base & ~0x7u);
+    list_addr = ((uint64_t)list_node << 32) | ((uint32_t)base & ~(entry - 1));
     ctx->s = s;
     ctx->widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
     *bus = (SGIDMABus) {
@@ -2062,7 +2070,7 @@ static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
      * 31:0. A list that ran past the node's last byte would carry into the
      * node number and read another node's memory.
      */
-    if ((uint32_t)list_addr + (uint64_t)count * 8 > (1ull << 32)) {
+    if ((uint32_t)list_addr + (uint64_t)count * entry > (1ull << 32)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA page list of %u "
                       "entries at 0x%" PRIx64 " runs past its node\n",
                       count, list_addr);
@@ -2070,14 +2078,18 @@ static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
     }
 
     /* Read the big-endian entries and turn them into page addresses. */
-    addr = g_new(uint64_t, count);
-    if (!sgi_dma_read(bus, list_addr, addr, count * 8,
+    raw = g_malloc(count * entry);
+    if (!sgi_dma_read(bus, list_addr, raw, count * entry,
                       trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK),
                       s->trace_sequence - 1)) {
         return false;
     }
+    addr = g_new(uint64_t, count);
     for (uint32_t i = 0; i < count; i++) {
-        addr[i] = (ldq_be_p(&addr[i]) & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12;
+        uint64_t pfn = entry == 8 ? ldq_be_p(raw + i * 8)
+                                  : ldl_be_p(raw + i * 4);
+
+        addr[i] = (pfn & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12;
     }
     *pl = (SGIDMAPageList) {
         .addr = addr,

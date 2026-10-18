@@ -1687,6 +1687,11 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
                   "travel");
         return false;
     }
+    if (s->page_list_entry_bytes != 4 && s->page_list_entry_bytes != 8) {
+        error_setg(errp, "sgi-mgras page-list-entry-bytes must be 4 or 8, "
+                   "not %u", s->page_list_entry_bytes);
+        return false;
+    }
     if (!mgras_realize_board(s, errp)) {
         return false;
     }
@@ -2345,6 +2350,13 @@ static const Property mgras_properties[] = {
                        gl_render_create_fault, 0),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    /*
+     * IRIX's IP27 kernel writes 64-bit DMA page-list entries; its IP30
+     * kernel and X server write 32-bit ones. What the board itself keys
+     * the width on is not known, so the machine states its host's.
+     */
+    DEFINE_PROP_UINT8("page-list-entry-bytes", SGIMgrasState,
+                      page_list_entry_bytes, 8),
     DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),
     /*
      * Fit the board's serial-number record. Off by default, which keeps
