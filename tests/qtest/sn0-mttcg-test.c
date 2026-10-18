@@ -1293,7 +1293,13 @@ static void build_masked_interrupt(GuestImage *img)
     emit_spin(img);
 }
 
-/* Big-lock acquisitions the profiler has counted since it was last reset. */
+/*
+ * Big-lock acquisitions the profiler has counted since it was last reset,
+ * leaving out the main loop's. The main loop takes the lock once for every
+ * qtest command the test sends while it waits for the guest, so that count
+ * grows with how long the guest takes (several times longer under a
+ * sanitizer) and says nothing about what the guest's own accesses do.
+ */
 static uint64_t bql_acquisitions(QTestState *qts)
 {
     g_autofree char *report = qtest_hmp(qts, "info sync-profile 200");
@@ -1312,7 +1318,8 @@ static uint64_t bql_acquisitions(QTestState *qts)
         }
         /* "BQL mutex  <object>  <call site>  <wait>  <count>  <mean>" */
         if (n == 7 && g_str_equal(field[0], "BQL") &&
-            g_str_equal(field[1], "mutex")) {
+            g_str_equal(field[1], "mutex") &&
+            !g_str_has_prefix(field[3], "util/main-loop.c:")) {
             total += g_ascii_strtoull(field[5], NULL, 10);
         }
     }
