@@ -8847,6 +8847,91 @@ static void texture_3d_error_init(void)
     enable(&texture_error_scene.c, SGI_GL_TEXTURE_3D, true);
 }
 
+/*
+ * When more than one texture target is enabled, the highest dimension
+ * wins: 3D before 2D before 1D (OpenGL 1.2.1, 3.8.10). The family supplies
+ * the winning target's image, which is checked against that target only.
+ */
+static void texture_precedence_init(bool volume)
+{
+    if (volume) {
+        texture_3d_error_init();
+        /* Opaque green, so a drawn texel differs from an untouched pixel. */
+        for (unsigned i = 0; i < ARRAY_SIZE(texture_3d_error_pixels.pixel);
+             i++) {
+            texture_3d_error_pixels.pixel[i] = 0xff00ff00;
+        }
+    } else {
+        texture_error_init();
+    }
+}
+
+static void test_texture_target_precedence(void)
+{
+    static const struct {
+        bool one, two, three;   /* the enables */
+        bool volume, one_dimensional; /* the image the family hands */
+        const char *refused;    /* the log line, or NULL to draw */
+    } cases[] = {
+        /* 1D and 2D: the 2D image draws; a 1D image is the wrong target. */
+        { true, true, false, false, false, NULL },
+        { true, true, false, false, true, "incompatible 1D texture image" },
+        /* 2D and 3D, 1D and 3D, all three: the volume draws. */
+        { false, true, true, true, false, NULL },
+        { true, false, true, true, false, NULL },
+        { true, true, true, true, false, NULL },
+        /* The 3D winner needs a volume, whatever else is enabled. */
+        { false, true, true, false, false,
+          "3D texturing requires a volume image" },
+        { true, false, true, false, true,
+          "incompatible 1D texture image" },
+        /*
+         * A volume image under the 2D enable alone stays accepted. With
+         * 1D enabled too the 2D binding wins, and a volume is not one.
+         */
+        { false, true, false, true, false, NULL },
+        { true, true, false, true, false,
+          "volume texture image for a 2D target" },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        uint32_t expected;
+
+        /* The pixel the same image draws with only its own target. */
+        texture_precedence_init(cases[i].volume);
+        if (cases[i].volume && !cases[i].three) {
+            enable(&texture_error_scene.c, SGI_GL_TEXTURE_3D, false);
+            enable(&texture_error_scene.c, SGI_GL_TEXTURE_2D, true);
+        }
+        texture_error_draw();
+        expected = frag_pixel(&texture_error_scene, 16, 16);
+
+        texture_precedence_init(cases[i].volume);
+        if (cases[i].one_dimensional) {
+            texture_error_image.one_dimensional = true;
+            texture_error_image.height = 1;
+            texture_error_image.volume = false;
+        }
+        enable(&texture_error_scene.c, SGI_GL_TEXTURE_1D, cases[i].one);
+        enable(&texture_error_scene.c, SGI_GL_TEXTURE_2D, cases[i].two);
+        enable(&texture_error_scene.c, SGI_GL_TEXTURE_3D, cases[i].three);
+        if (!cases[i].volume && cases[i].three) {
+            /* A 2D image handed for a winning 3D enable. */
+            texture_error_image.volume = false;
+        }
+        if (cases[i].refused) {
+            texture_error_assert(cases[i].refused, 0);
+        } else {
+            g_autofree char *log = logged_by(texture_error_draw);
+
+            g_assert_null(strstr(log, "texture"));
+            g_assert_cmphex(frag_pixel(&texture_error_scene, 16, 16), ==,
+                            expected);
+            g_assert_cmphex(expected, !=, 0);
+        }
+    }
+}
+
 static void test_texture_3d_errors(void)
 {
     for (unsigned incomplete = 0; incomplete < 4; incomplete++) {
@@ -8874,9 +8959,6 @@ static void test_texture_3d_errors(void)
     texture_3d_error_init();
     texture_error_image.wrap_r = 0;
     texture_error_assert("unsupported texture state", 0);
-    texture_3d_error_init();
-    enable(&texture_error_scene.c, SGI_GL_TEXTURE_2D, true);
-    texture_error_assert("simultaneous texture targets", 0);
     texture_3d_error_init();
     texture_error_image.volume = false;
     texture_error_assert("3D texturing requires a volume image", 0);
@@ -13211,6 +13293,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-post-filter",
                     test_texture_3d_post_filter);
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
+    g_test_add_func("/sgi-gl/texture-target-precedence",
+                    test_texture_target_precedence);
     g_test_add_func("/sgi-gl/texture-sharpen", test_texture_sharpen);
     g_test_add_func("/sgi-gl/texture-detail", test_texture_detail);
     g_test_add_func("/sgi-gl/texture-detail-repeat",

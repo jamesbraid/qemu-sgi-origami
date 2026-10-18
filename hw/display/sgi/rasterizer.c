@@ -1047,19 +1047,19 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
     const SGIGLTexImage *im = r->t->texture;
     const SGIGLDrawState *st = r->st;
 
-    if ((!st->texture_1d && !st->texture_2d && !st->texture_3d) ||
-        st->index_bits) {
+    /*
+     * With several targets enabled the highest dimension wins: 3D, then
+     * 2D, then 1D (OpenGL 1.2.1, 3.8.10). The family supplies the winning
+     * target's image, so the image is checked against that target only.
+     */
+    unsigned target = st->texture_3d ? 3 : st->texture_2d ? 2 :
+                      st->texture_1d ? 1 : 0;
+
+    if (!target || st->index_bits) {
         return true;
     }
-    if (!!st->texture_1d + !!st->texture_2d + !!st->texture_3d > 1) {
-        if (report) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: simultaneous texture targets "
-                          "are unsupported, draw dropped\n");
-        }
-        return false;
-    }
     if (im && ((im->one_dimensional && im->volume) ||
-               !!st->texture_1d != im->one_dimensional ||
+               (target == 1) != im->one_dimensional ||
                (im->one_dimensional && !im->pyramid && im->height != 1))) {
         if (report) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: incompatible 1D texture image, "
@@ -1067,7 +1067,19 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
         }
         return false;
     }
-    if (st->texture_3d && im && !im->volume) {
+    /*
+     * A volume image under the 2D enable alone stays accepted, as before
+     * targets were ranked. With 1D enabled as well the 2D binding wins,
+     * and a volume is not a 2D image.
+     */
+    if (target == 2 && im && im->volume && st->texture_1d) {
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: volume texture image for a 2D "
+                          "target, draw dropped\n");
+        }
+        return false;
+    }
+    if (target == 3 && im && !im->volume) {
         if (report) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: 3D texturing requires a volume "
                           "image, draw dropped\n");
