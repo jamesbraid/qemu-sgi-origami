@@ -30,8 +30,9 @@
  * The private target lists the same resources, in the same order, as the
  * native one, with callbacks over the family's private host storage: a
  * snapshot, a dense commit for the capture and a covered commit for the
- * Mesa attempt. Neither call writes native storage, latches anything the
- * scalar path depends on, or reports anything to the guest.
+ * Mesa attempt, and an index commit when it lists an index resource. None
+ * of these writes native storage, latches anything the scalar path depends
+ * on, or reports anything to the guest.
  */
 
 typedef enum SGIRenderShadowResult {
