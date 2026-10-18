@@ -38,3 +38,14 @@ foreach bench_name, deps: benchs
             timeout: 0,
             suite: ['speed'])
 endforeach
+
+if have_system
+  executable('sgi-raster-bench',
+             sources: files('sgi-raster-bench.c',
+                            '../../hw/display/sgi/gl-context.c',
+                            '../../hw/display/sgi/x-gc.c',
+                            '../../hw/display/sgi/rasterizer.c',
+                            '../../hw/display/sgi/board-memory.c'),
+             dependencies: [qemuutil, migration, io],
+             build_by_default: false)
+endif
