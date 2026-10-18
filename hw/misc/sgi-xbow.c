@@ -2018,9 +2018,29 @@ void sgi_xbow_quiesce(SGIXbowState *s)
 static void sgi_xbow_unrealize(DeviceState *dev)
 {
     SGIXbowState *s = SGI_XBOW(dev);
-    unsigned int link;
+    unsigned int port, link;
 
     sgi_xbow_quiesce(s);
+    /*
+     * A route aliases a widget's face without owning it. Drop the routes
+     * now, while the faces are certainly alive: this device is only freed
+     * after an RCU grace period, by which time a face's owner may be gone,
+     * and removing an alias from its container reads the aliased region.
+     */
+    memory_region_transaction_begin();
+    for (port = 0; port < SGI_XBOW_LINKS; port++) {
+        for (link = 0; link < SGI_XBOW_LINKS; link++) {
+            if (s->route[port][link].container) {
+                memory_region_del_subregion(&s->ingress[port],
+                                            &s->route[port][link]);
+            }
+            if (s->packet_route[port][link].container) {
+                memory_region_del_subregion(&s->packet_ingress[port],
+                                            &s->packet_route[port][link]);
+            }
+        }
+    }
+    memory_region_transaction_commit();
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         if (s->face_as[link]) {
             address_space_destroy_free(s->face_as[link]);
