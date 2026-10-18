@@ -416,6 +416,11 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x174, 20 }, { 0x176, 1 }, { 0x178, 1 }, { 0x179, 22 },
     { 0x17b, 14 }, { 0x17c, 4 }, { 0x17d, 6 },
     { 0x1d5, 5 }, { 0x106, 5 }, { 0xed, 4 },
+    /*
+     * The texture-table bookkeeping's 0x1e0: both senders in the GL
+     * selector catalogue write two words after it.
+     */
+    { 0x1e0, 2 },
 };
 
 /*

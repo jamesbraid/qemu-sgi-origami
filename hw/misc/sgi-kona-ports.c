@@ -425,6 +425,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_TEX_BIND, 5 },
     { SGI_KONA_CMD_GL_TEX_BIND_LINEAR, 5 },
     { SGI_KONA_CMD_GL_TEX_POST_SCALE, 4 },
+    { SGI_KONA_CMD_GL_TEX_TABLE_USAGE, 2 },
 };
 const unsigned sgi_kona_gl_num_tokens = ARRAY_SIZE(sgi_kona_gl_tokens);
 
