@@ -339,6 +339,14 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_TEX_BIND_LINEAR 0x106
 #define SGI_KONA_CMD_GL_TEX_POST_SCALE 0xed
 #define SGI_KONA_GL_TEX_LOAD_WORDS  20
+/*
+ * 0x1e0 and two words, from the library's texture-table bookkeeping: a
+ * selector store and either a literal 0, 1 or 2 and one computed store,
+ * or two computed stores (the GL selector catalogue). A traced ivview
+ * start sent nine of them in a row after its scissor. What the pipe does
+ * with them is unknown, so the model frames and consumes them.
+ */
+#define SGI_KONA_CMD_GL_TEX_TABLE_USAGE 0x1e0
 /* glPopAttrib's per-light words after 0x119's count. */
 #define SGI_KONA_GL_POP_LIGHT_WORDS 12
 /* glPolygonStipple's rows after its three words, one word a row. */
