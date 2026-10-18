@@ -2813,12 +2813,52 @@ static uint64_t l1_port_speed_first(QTestState *s)
     return qdict_get_uint(result, "return");
 }
 
+static void assert_machine_port_speed(QTestState *s, uint32_t first)
+{
+    const uint8_t zero_reply[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    const uint8_t one_reply[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0
+    };
+    const uint8_t *expected = first ? one_reply : zero_reply;
+    uint8_t reply[131];
+
+    g_assert_cmpuint(l1_port_speed_first(s), ==, first);
+    qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+    g_assert_cmpuint(general(s, 0x000a, NULL, 0, 0, reply), ==,
+                     sizeof(zero_reply));
+    g_assert_cmpmem(reply, sizeof(zero_reply), expected, sizeof(zero_reply));
+}
+
 static void test_machine_port_speed_profiles(void)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *flash = NULL, *prom = NULL;
     g_autofree char *data = NULL, *clock = NULL;
     QTestState *s;
+    static const struct {
+        const char *machine;
+        const char *memory;
+        unsigned int cpus;
+        const char *reset_mode;
+        const char *scache_bytes;
+        uint32_t first;
+    } profiles[] = {
+        { "origin350", "2G", 4, "0x009cad85", "0x800000", 1 },
+        { "onyx350,topology=onyx350-compat", "8G", 4,
+          "0x009caf85", "0x800000", 1 },
+        { "tezro,topology=tezro-tower-one", "4G", 1,
+          "0x009bad85", "0x400000", 1 },
+        { "tezro,topology=tezro-tower-multi", "4G", 4,
+          "0x009bad85", "0x400000", 1 },
+        { "tezro,topology=tezro-rack-base", "4G", 1,
+          "0x009bad85", "0x400000", 1 },
+        { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
+          "0x009dad85", "0x1000000", 1 },
+        { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
+          "0x009bad85", "0x400000", 0 },
+    };
     int fd;
 
     fd = g_file_open_tmp("sn1-l1-ip53-flash-XXXXXX", &flash, &error);
@@ -2838,22 +2878,26 @@ static void test_machine_port_speed_profiles(void)
     g_assert_cmpint(ftruncate(fd, 16), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
 
-    s = qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
-                    "-cpu R16000,r16000-experimental=on,"
-                    "r16000-reset-mode=0x009cad85,"
-                    "r16000-scache-bytes=0x800000 "
-                    "-drive if=pflash,index=0,file=%s,format=raw "
-                    "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
-                    "format=raw "
-                    "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
-                    "format=raw -display none -S",
-                    flash, data, clock);
-    g_assert_cmpuint(l1_port_speed_first(s), ==, 1);
-    qtest_quit(s);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+                        "-cpu R16000,r16000-experimental=on,"
+                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-drive if=pflash,index=0,file=%s,format=raw "
+                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                        "format=raw "
+                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                        "format=raw -display none -S",
+                        profiles[i].machine, profiles[i].memory,
+                        profiles[i].cpus,
+                        profiles[i].reset_mode, profiles[i].scache_bytes,
+                        flash, data, clock);
+        assert_machine_port_speed(s, profiles[i].first);
+        qtest_quit(s);
+    }
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
                     "-bios %s -S", prom);
-    g_assert_cmpuint(l1_port_speed_first(s), ==, 0);
+    assert_machine_port_speed(s, 0);
     qtest_quit(s);
     g_unlink(flash);
     g_unlink(prom);
