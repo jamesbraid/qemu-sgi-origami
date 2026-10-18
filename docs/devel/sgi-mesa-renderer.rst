@@ -151,11 +151,19 @@ display row, and the scissor box is in those rows. A resource's
 ``bottom_origin`` flag changes only how its rows are stored. For a resource
 whose flag is false, the renderer stores window row *y* at native row
 *height - 1 - y*, and it flips drawable clip rectangles, which arrive in
-native rows, the same way. A family whose native window rows run down the
-display, such as Odyssey, maps them to OpenGL rows in its own adapter before
-submission. Unlike the scalar rasterizer, which stores window row *y* at
-plane row *y* whatever the plane's origin, the renderer does not accept
-top-down window rows.
+native rows, the same way. Unlike the scalar rasterizer, which stores
+window row *y* at plane row *y* whatever the plane's origin, the renderer
+does not accept top-down window rows. A family whose window rows run down
+the display must not mirror them into OpenGL rows if it mixes Mesa and
+scalar draws: the scalar path applies its bottom-origin tie rule to the
+rows as they come, so a mirrored Mesa draw gives the pixel centres on a
+shared horizontal edge to the other triangle. Odyssey's adapter therefore
+publishes views whose ``bottom_origin`` is true and whose row *y* is plane
+row *y*, and moves the viewport and scissor by the drawable origin. The
+flag there describes how the view numbers its rows, not which way the
+display runs. Because the scalar path adds the origin after snapping, the
+adapter refuses a draw with an exact half-subpixel coordinate whose sign
+the origin changes, which would round the other way.
 
 The decoded viewport is passed to the GL worker, including negative origins
 and dimensions larger than the resource. Mesa clips to the native
