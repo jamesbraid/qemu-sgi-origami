@@ -1778,6 +1778,10 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
             return false;
         }
     }
+    /* The last step that can fail, so a failure leaves no renderer. */
+    if (!sgi_mgras_gl_realize(s, errp)) {
+        return false;
+    }
     sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
     mgras_update_timing(s, false);
     device_cold_reset(dev);
@@ -2336,6 +2340,9 @@ static const Property mgras_properties[] = {
     /* Experimental host renderer; ordinary board rendering stays native. */
     DEFINE_PROP_BOOL("x-mesa-renderer", SGIMgrasState,
                      gl_renderer_opt_in, false),
+    /* Host-only qtest fault: an SGIRenderCreateResult in place of Mesa's. */
+    DEFINE_PROP_UINT32("x-test-render-create-fault", SGIMgrasState,
+                       gl_render_create_fault, 0),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),

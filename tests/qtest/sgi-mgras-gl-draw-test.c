@@ -875,6 +875,89 @@ static void test_gl_mesa_fallback_scalar_oom(void)
     qtest_quit(mesa);
 }
 
+/*
+ * Mesa missing from the host is the one creation result that lets an
+ * opt-in board run: every draw then takes the scalar path, uncounted per
+ * draw, and the board records the whole-device fallback once, in its own
+ * reason and in the total, so the session never reads as one with no
+ * fallbacks. It draws as a board that never asked for Mesa, so a scalar
+ * allocation failure retains the shared GL error and latches nothing.
+ */
+static void test_gl_mesa_unavailable_draws_scalar(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on"
+        " -global sgi-mgras.x-test-render-create-fault=1");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        qtest_qmp_assert_success(both[i],
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-scalar-inject-oom', 'value': 1}}",
+            MGRAS_QOM_PATH);
+        mgras_mesa_triangle(both[i], 0, 1, 0, false, false);
+    }
+    /* The failed scalar draw's vertex is still the last command. */
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-result"), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(soft, "x-test-gl-draw-error"), ==,
+                    0x0505);
+    g_assert_cmphex(mgras_qom_get_uint(mesa, "x-test-gl-draw-error"), ==,
+                    mgras_qom_get_uint(soft, "x-test-gl-draw-error"));
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        gl_word(both[i], GL_END_TRIANGLES);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, false);
+    }
+    mgras_assert_running(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-mesa-fallback-unavailable"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-failed"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-result"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-validated"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-commits"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(mesa, 100, 923), ==, 0xff0000);
+    mgras_assert_rows_match(mesa, soft);
+    g_assert_cmpuint(mgras_qom_get_uint(soft,
+        "x-mesa-fallback-unavailable"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(soft, "x-mesa-fallbacks"), ==, 0);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/*
+ * Any other creation failure, out of memory or a host error, fails
+ * realization when the board asks for Mesa. It exits with an error, never
+ * a signal, and never runs on the scalar path.
+ */
+static void test_gl_mesa_creation_failure_refuses_realize(const void *data)
+{
+    uint32_t fault = GPOINTER_TO_UINT(data);
+    g_autofree char *fault_global = g_strdup_printf(
+        "sgi-mgras.x-test-render-create-fault=%u", fault);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000",
+        "-global", "sgi-mgras.x-mesa-renderer=on",
+        "-global", fault_global,
+        "-device", "sgi-mgras,slot=io3",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_false(WIFSIGNALED(wait_status));
+    g_assert_nonnull(strstr(error_output, "sgi-mgras: Mesa renderer: "));
+}
+
 static void test_gl_mesa_native_commit_failure(void)
 {
     QTestState *test = qtest_init(
@@ -4559,6 +4642,18 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-mesa-fallback-scalar-oom",
         test_gl_mesa_fallback_scalar_oom, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-unavailable-draws-scalar",
+        test_gl_mesa_unavailable_draws_scalar, false);
+    /* SGI_RENDER_CREATE_OOM and SGI_RENDER_CREATE_HOST_ERROR. */
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-mesa-creation-failure/out-of-memory",
+        GUINT_TO_POINTER(2), test_gl_mesa_creation_failure_refuses_realize,
+        false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-mesa-creation-failure/host-error",
+        GUINT_TO_POINTER(3), test_gl_mesa_creation_failure_refuses_realize,
+        false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-alpha-zero",

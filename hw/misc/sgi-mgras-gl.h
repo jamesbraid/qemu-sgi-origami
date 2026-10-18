@@ -11,6 +11,8 @@ bool sgi_mgras_gl_header(uint32_t header);
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words);
 void sgi_mgras_gl_init(SGIMgrasState *s);
+/* Create the opt-in Mesa renderer; false fails the board's realization. */
+bool sgi_mgras_gl_realize(SGIMgrasState *s, Error **errp);
 void sgi_mgras_gl_cleanup(SGIMgrasState *s);
 void sgi_mgras_gl_reset(SGIMgrasState *s);
 /* The answer to the 0xa104 current-attribute query for index. */
