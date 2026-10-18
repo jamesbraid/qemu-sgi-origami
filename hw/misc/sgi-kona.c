@@ -3172,19 +3172,32 @@ out:
     return result;
 }
 
-static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
-                                          const SGIRasterRules *rules,
-                                          const SGIGLDraw *d, Error **errp)
+/*
+ * Attempt a draw on Mesa for a caller that draws a refusal on the scalar
+ * path within the same frame, so only state the scalar comparisons prove
+ * is accepted. A renderer that cannot be created on this host refuses
+ * with no reason; any other creation failure fails.
+ */
+static SGIRenderDrawResult sgi_kona_mesa_draw(SGIKonaState *s,
+                                              const SGIRasterRules *rules,
+                                              const SGIGLDraw *d,
+                                              SGIRenderAttemptOutcome *outcome,
+                                              Error **errp)
 {
+    static const SGIRenderAttemptOptions opts = { .mixed_frame = true };
     SGIRasterTarget target;
-    SGIRenderResult result;
+    SGIRenderDrawResult result;
     const SGIRenderResource *resources;
     size_t count;
 
     if (!s->renderer) {
-        result = sgi_kona_renderer_create(s, errp);
-        if (result != SGI_RENDER_OK) {
-            return result;
+        outcome->status = sgi_kona_renderer_create(s, errp);
+        outcome->reason = SGI_RENDER_REFUSAL_NONE;
+        if (outcome->status == SGI_RENDER_UNSUPPORTED) {
+            return SGI_RENDER_DRAW_REFUSED;
+        }
+        if (outcome->status != SGI_RENDER_OK) {
+            return SGI_RENDER_DRAW_FAILED;
         }
     }
     sgi_kona_renderer_arm_test_fault(s);
@@ -3196,8 +3209,9 @@ static SGIRenderResult sgi_kona_mesa_draw(SGIKonaState *s,
         .resource_ops = sgi_kona_mesa_resource_ops(),
     };
     sgi_kona_mesa_refresh_board_views(s->mesa_provider);
-    result = sgi_render_draw_checked(s->renderer, rules, &target, d, errp);
-    if (result != SGI_RENDER_UNSUPPORTED) {
+    result = sgi_render_draw_attempt(s->renderer, rules, &target, d, &opts,
+                                     outcome, errp);
+    if (result != SGI_RENDER_DRAW_REFUSED) {
         s->renderer_requests++;
     }
     return result;
@@ -3271,25 +3285,28 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
          (d->polygon_modes[0] == SGI_GL_FILL &&
           d->polygon_modes[1] == SGI_GL_FILL))) {
         SGIGLDraw checked = *d;
-        SGIRenderResult result;
+        SGIRenderAttemptOutcome outcome;
 
         checked.polygon_modes = NULL;
-        result = sgi_kona_mesa_draw(s, &rules, &checked, &err);
-
-        switch (result) {
-        case SGI_RENDER_OK:
+        switch (sgi_kona_mesa_draw(s, &rules, &checked, &outcome, &err)) {
+        case SGI_RENDER_DRAW_OK:
             s->renderer_draws++;
             error_free(err);
             return SGI_GL_DRAW_OK;
-        case SGI_RENDER_OOM:
+        case SGI_RENDER_DRAW_REFUSED:
+            /*
+             * Nothing visible happened, so the scalar path draws it here,
+             * before the borrowed draw data expires. It never goes on to
+             * the legacy host batch, whose pixels mixed frames cannot use.
+             */
             error_free(err);
-            return SGI_GL_DRAW_OUT_OF_MEMORY;
-        case SGI_RENDER_UNSUPPORTED:
-            error_free(err);
-            err = NULL;
-            break;
-        case SGI_RENDER_RESOURCE_ERROR:
-        case SGI_RENDER_HOST_ERROR:
+            goto scalar;
+        case SGI_RENDER_DRAW_FAILED:
+            if (outcome.status == SGI_RENDER_OOM) {
+                error_free(err);
+                return SGI_GL_DRAW_OUT_OF_MEMORY;
+            }
+            /* Accepted work failed; a scalar retry would hide it. */
             sgi_kona_mesa_stop(s, err);
             return SGI_GL_DRAW_OK;
         default:
@@ -3317,6 +3334,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     default:
         g_assert_not_reached();
     }
+scalar:
     if (s->host_gpu) {
         s->renderer_fallbacks++;
     }
