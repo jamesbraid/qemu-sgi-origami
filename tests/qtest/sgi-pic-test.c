@@ -5,6 +5,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-migrate.h"
+#include "sgi-prom-container.h"
 #include "qemu/bswap.h"
 #include "hw/pci/pci_regs.h"
 #include "system/memory.h"
@@ -17,6 +18,7 @@
 #define CPU_BASE (BASE + 0x100000000ULL)
 #define HEAD(n) (BASE + (n) * 0x800000ULL)
 #define CPU_HEAD(n) (CPU_BASE + (n) * 0x800000ULL)
+#define PIC_HEAD_OFFSET 0x800000ULL
 #define TARGET 0x20000000ULL
 #define TARGET_NODE1 0x30000000ULL
 #define II_REGISTER (1ULL << 47)
@@ -47,6 +49,8 @@
 #define IOC4_UART_DATA 0x41
 
 static uint32_t pic_ioc4_read_reg(QTestState *qts, unsigned offset);
+static QTestState *pic_bedrock_parent_start(bool map_io_registers,
+                                            bool runtime_profile);
 #define IOC4_IRQ_DESTINATION \
     ((UINT64_C(0x1234) << 48) | II_REGISTER | II_NODE(1) | \
      II_HUB_REMOTE | 0x1000)
@@ -377,6 +381,23 @@ static uint64_t pic_metric(QTestState *qts, const char *property)
     return qdict_get_int(reply, "return");
 }
 
+static uint64_t qom_uint64(QTestState *qts, const char *path,
+                           const char *property)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    if (!qdict_haskey(reply, "return")) {
+        g_autoptr(GString) text =
+            qobject_to_json_pretty(QOBJECT(reply), true);
+
+        g_test_message("qom-get %s failed: %s", property, text->str);
+        g_assert_true(qdict_haskey(reply, "return"));
+    }
+    return qdict_get_int(reply, "return");
+}
+
 static QTestState *pic_start(bool cards, const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
@@ -460,6 +481,461 @@ static QTestState *pic_runtime_cpu_start(bool cards, const char *extra)
 
     qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
     return qts;
+}
+
+static void test_runtime_reset_compatibility_trial(void)
+{
+    static const uint64_t device_reset[] = {
+        0x18001000, 0x18001002, 0x18001004, 0x18001005,
+    };
+    QTestState *qts = pic_runtime_cpu_start(false, NULL);
+    QTestState *fixture = pic_short_start(false);
+    unsigned head, i;
+
+    for (head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x20), ==,
+                        0x0f00320f);
+        for (i = 0; i < G_N_ELEMENTS(device_reset); i++) {
+            g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x200 + i * 8),
+                            ==, device_reset[i]);
+        }
+    }
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x24, 0x0f00420f);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x24), ==,
+                    0x0f00420f);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(1) + 0x24), ==,
+                    0x0f00320f);
+
+    qtest_writeq(qts, CPU_HEAD(1) + 0x210, 0x18581007);
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(1) + 0x210), ==,
+                    0x18581007);
+
+    for (head = 0; head < 2; head++) {
+        qtest_writel(qts, CPU_HEAD(head) + 0x24, 0x0f00420f + head);
+        for (i = 0; i < G_N_ELEMENTS(device_reset); i++) {
+            qtest_writeq(qts, CPU_HEAD(head) + 0x200 + i * 8,
+                         0xdead0000 + head * 0x100 + i);
+        }
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    for (head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, CPU_HEAD(head) + 0x20), ==,
+                        0x0f00320f);
+        for (i = 0; i < G_N_ELEMENTS(device_reset); i++) {
+            g_assert_cmphex(qtest_readq(qts,
+                                       CPU_HEAD(head) + 0x200 + i * 8),
+                            ==, device_reset[i]);
+        }
+    }
+
+    for (head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(fixture, HEAD(head) + 0x20), ==, 0);
+        for (i = 0; i < G_N_ELEMENTS(device_reset); i++) {
+            g_assert_cmphex(qtest_readq(fixture,
+                                       HEAD(head) + 0x200 + i * 8), ==, 0);
+        }
+    }
+    qtest_writel(fixture, HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(fixture, HEAD(0) + 0x104), ==, 0);
+
+    qtest_quit(fixture);
+    qtest_quit(qts);
+}
+
+static char *pic_blank_backend(size_t size, const char *template)
+{
+    GError *error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp(template, &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static QTestState *pic_tezro_runtime_start(bool incoming, char **bios_path,
+                                          char **io9_data_path,
+                                          char **io9_clock_path)
+{
+    const char *incoming_arg = incoming ? "-incoming defer" : "";
+    /* Machine validation requires a full-size PROM, but qtest never runs it. */
+    g_autofree uint8_t *payload = g_malloc0(1476264);
+    char *io9_data = pic_blank_backend(
+        0x800, "sgi-pic-tezro-data-XXXXXX");
+    char *io9_clock = pic_blank_backend(
+        16, "sgi-pic-tezro-clock-XXXXXX");
+    char *bios = sgi_prom_container_write(
+        payload, 1476264, "sgi-pic-tezro-XXXXXX.img");
+    g_autofree char *io9_drives = g_strdup_printf(
+        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+        io9_data, io9_clock);
+    QTestState *qts = qtest_initf(
+        "-M tezro,topology=tezro-tower-multi,nodes=1,"
+        "ip53-experimental=on %s -bios %s %s -S",
+        incoming_arg, bios, io9_drives);
+
+    *bios_path = bios;
+    *io9_data_path = io9_data;
+    *io9_clock_path = io9_clock;
+    qtest_sysbus_mmio_map(qts, "/machine/pic-pic-xio-b", 0, CPU_BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/pic-pic-xio-f", 0,
+                          CPU_BASE + 0x10000000);
+    return qts;
+}
+
+static void assert_tezro_pic_profiles(QTestState *qts)
+{
+    static const char *const pic_path[] = {
+        "/machine/pic-pic-xio-b", "/machine/pic-pic-xio-f",
+    };
+
+    for (unsigned host = 0; host < G_N_ELEMENTS(pic_path); host++) {
+        g_autoptr(QDict) profile = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':%s,"
+            "'property':'compatibility-profile'}}", pic_path[host]);
+
+        g_assert_cmpstr(qdict_get_str(profile, "return"), ==,
+                        "pic-rev3-bedrock-tezro-experimental");
+    }
+}
+
+static void assert_tezro_pic_reset(QTestState *qts)
+{
+    static const char *const pic_path[] = {
+        "/machine/pic-pic-xio-b", "/machine/pic-pic-xio-f",
+    };
+    static const uint64_t host_base[] = {
+        CPU_BASE, CPU_BASE + 0x10000000,
+    };
+
+    for (unsigned host = 0; host < G_N_ELEMENTS(pic_path); host++) {
+        for (unsigned head = 0; head < 2; head++) {
+            uint64_t base = host_base[host] + head * PIC_HEAD_OFFSET;
+
+            g_assert_cmphex(qtest_readq(qts, base + 0x28), ==, 0xfffff);
+            g_assert_cmphex(qtest_readq(qts, base + 0x30), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, base + 0x38), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, base + 0x100), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, base + 0x128), ==, 0);
+        }
+        g_assert_cmpuint(qom_uint64(qts, pic_path[host],
+                                   "x-test-linked-packet-count"), ==, 0);
+    }
+}
+
+static void test_tezro_widget_register_profile_trial(void)
+{
+    static const char *const pic_path[] = {
+        "/machine/pic-pic-xio-b", "/machine/pic-pic-xio-f",
+    };
+    static const uint32_t timeout[] = { 0x00123456, 0x00654321 };
+    static const uint32_t upper[] = { 0x11223344, 0x55667788 };
+    static const uint32_t lower[] = { 0x99aabbcc, 0xddeeff00 };
+    static const uint64_t host_base[] = {
+        CPU_BASE, CPU_BASE + 0x10000000,
+    };
+    g_autofree char *from_bios = NULL;
+    g_autofree char *from_data = NULL;
+    g_autofree char *from_clock = NULL;
+    g_autofree char *to_bios = NULL;
+    g_autofree char *to_data = NULL;
+    g_autofree char *to_clock = NULL;
+    QTestState *qts = pic_tezro_runtime_start(false, &from_bios, &from_data,
+                                               &from_clock);
+
+    assert_tezro_pic_profiles(qts);
+    assert_tezro_pic_reset(qts);
+
+    for (unsigned host = 0; host < G_N_ELEMENTS(pic_path); host++) {
+        for (unsigned head = 0; head < 2; head++) {
+            uint64_t base = host_base[host] + head * PIC_HEAD_OFFSET;
+            uint32_t upper_word = 0x12000000 | (host << 16) | (head + 1);
+            uint32_t lower_word = 0x34000000 | (host << 8) | head;
+
+            qtest_writel(qts, base + 0x2c, 0x54321 + host * 2 + head);
+            qtest_writel(qts, base + 0x34, upper_word);
+            qtest_writel(qts, base + 0x3c, lower_word);
+            g_assert_cmphex(qtest_readq(qts, base + 0x28), ==,
+                            0x54321 + host * 2 + head);
+            g_assert_cmphex(qtest_readq(qts, base + 0x30), ==, upper_word);
+            g_assert_cmphex(qtest_readq(qts, base + 0x38), ==, lower_word);
+            g_assert_cmpuint(qom_uint64(qts, pic_path[host],
+                                       "x-test-linked-packet-count"), ==, 0);
+        }
+    }
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    assert_tezro_pic_reset(qts);
+
+    for (unsigned host = 0; host < G_N_ELEMENTS(pic_path); host++) {
+        for (unsigned head = 0; head < 2; head++) {
+            unsigned index = host * 2 + head;
+            uint64_t base = host_base[host] + head * PIC_HEAD_OFFSET;
+            uint32_t timeout_value = 0x50000 + index;
+            uint32_t upper_word = 0x34000000 | (index + 1);
+            uint32_t lower_word = 0x3000 + index * 0x1000;
+
+            qtest_writel(qts, base + 0x2c, timeout_value);
+            qtest_writel(qts, base + 0x34, upper_word);
+            qtest_writel(qts, base + 0x3c, lower_word);
+            qtest_writeq(qts, base + 0x128, index);
+            qtest_writel(qts, base + 0x7c, 0xdeadbeef);
+            g_assert_cmphex(qtest_readq(qts, base + 0x28), ==, timeout_value);
+            g_assert_cmphex(qtest_readq(qts, base + 0x30), ==, upper_word);
+            g_assert_cmphex(qtest_readq(qts, base + 0x38), ==, lower_word);
+            g_assert_cmphex(qtest_readq(qts, base + 0x128), ==, index);
+            g_assert_cmphex(qtest_readl(qts, base + 0x104), ==, 1U << 24);
+        }
+        g_assert_cmpuint(qom_uint64(qts, pic_path[host],
+                                   "x-test-linked-packet-count"), ==, 0);
+    }
+
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-tezro-migration-XXXXXX",
+                                          NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *to = pic_tezro_runtime_start(true, &to_bios, &to_data,
+                                              &to_clock);
+
+    assert_tezro_pic_profiles(to);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(qts, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    for (unsigned host = 0; host < G_N_ELEMENTS(pic_path); host++) {
+        for (unsigned head = 0; head < 2; head++) {
+            unsigned index = host * 2 + head;
+            uint64_t base = host_base[host] + head * PIC_HEAD_OFFSET;
+
+            g_assert_cmphex(qtest_readq(to, base + 0x28), ==,
+                            0x50000 + index);
+            g_assert_cmphex(qtest_readq(to, base + 0x30), ==,
+                            0x34000000 | (index + 1));
+            g_assert_cmphex(qtest_readq(to, base + 0x38), ==,
+                            0x3000 + index * 0x1000);
+            g_assert_cmphex(qtest_readq(to, base + 0x128), ==, index);
+            g_assert_cmphex(qtest_readl(to, base + 0x104), ==, 1U << 24);
+        }
+        g_assert_cmpuint(qom_uint64(to, pic_path[host],
+                                   "x-test-linked-packet-count"), ==, 0);
+    }
+    qtest_quit(qts);
+    qtest_quit(to);
+    unlink(socket);
+    unlink(from_bios);
+    unlink(from_data);
+    unlink(from_clock);
+    unlink(to_bios);
+    unlink(to_data);
+    unlink(to_clock);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+
+    qts = pic_short_start(false);
+    for (unsigned head = 0; head < 2; head++) {
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x28), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x30), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x38), ==, 0);
+        qtest_writeq(qts, HEAD(head) + 0x28, timeout[head]);
+        qtest_writeq(qts, HEAD(head) + 0x30, upper[head]);
+        qtest_writeq(qts, HEAD(head) + 0x38, lower[head]);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x28), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x30), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x38), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+static QTestState *pic_runtime_error_start(bool packet_failure)
+{
+    const char *failure = packet_failure ? ",packet-failure=on" : "";
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+        "pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off,"
+        "packet-window-base=0x100000000%s", failure);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    return qts;
+}
+
+static void test_runtime_invalid_address_error_trial(void)
+{
+    const uint64_t invalid_address = UINT64_C(1) << 24;
+    const uint64_t destination = UINT64_C(0x100003000);
+    uint8_t sentinel[8];
+    uint8_t expected[8] = { 0 };
+    uint8_t packet[8];
+    QTestState *qts = pic_runtime_error_start(false);
+    QTestState *fixture = pic_short_start(false);
+    QTestState *bedrock;
+
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x7c), ==, 0);
+    qtest_writeb(qts, CPU_HEAD(0) + 0x7c, 0x11);
+    qtest_writew(qts, CPU_HEAD(0) + 0x7c, 0x2233);
+    qtest_writel(qts, CPU_HEAD(0) + 0x78, 0x44556677);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x78, 0x8899aabbccddeeffULL);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x7c, 0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(qts, CPU_HEAD(0) + 0x100), ==, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+
+    g_assert_cmphex(qtest_readl(fixture, HEAD(0) + 0x7c), ==, 0);
+    qtest_writeb(fixture, HEAD(0) + 0x7c, 0x11);
+    qtest_writew(fixture, HEAD(0) + 0x7c, 0x2233);
+    qtest_writel(fixture, HEAD(0) + 0x78, 0x44556677);
+    qtest_writeq(fixture, HEAD(0) + 0x78, 0x8899aabbccddeeffULL);
+    qtest_writeq(fixture, HEAD(0) + 0x7c, 0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(fixture, HEAD(0) + 0x100), ==, 0);
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x3000, sentinel, sizeof(sentinel));
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(1) + 0x104), ==, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+    qtest_memread(qts, TARGET + 0x3000, packet, sizeof(packet));
+    g_assert_cmpmem(packet, sizeof(packet), sentinel, sizeof(sentinel));
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x114, invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==, 0);
+
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x34000000));
+    qtest_writeq(qts, HEAD(0) + 0x38, destination);
+    qtest_writel(qts, CPU_HEAD(0) + 0x10c, invalid_address);
+
+    qtest_writeq(qts, HEAD(0) + 0x128, 0x80);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(1) + 0x104), ==, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+    qtest_writeq(qts, HEAD(0) + 0x128, 0x100);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+
+    qtest_writeq(qts, HEAD(0) + 0x128, 0x65);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 8);
+    g_assert_cmphex(target_metric(qts, "x-test-packet-address"), ==,
+                    destination);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 15);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==, 0);
+    expected[6] = 1;
+    expected[7] = 0x65;
+    qtest_memread(qts, TARGET + 0x3000, packet, sizeof(packet));
+    g_assert_cmpmem(packet, sizeof(packet), expected, sizeof(expected));
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
+
+    /* A matching duplicate of the lower high address field is accepted. */
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x00000001));
+    qtest_writeq(qts, HEAD(0) + 0x38, destination);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x00000002));
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x34000000));
+    qtest_writeq(qts, HEAD(0) + 0x38, 0);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x0000000100000001));
+    qtest_writeq(qts, HEAD(0) + 0x38, destination);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x34000000));
+    qtest_writeq(qts, HEAD(0) + 0x38, UINT64_C(0x000f000100003000));
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x114, invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==, 0);
+    qtest_writeq(qts, HEAD(0) + 0x38, destination);
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x34000000));
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 4);
+
+    qtest_writel(qts, CPU_HEAD(1) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(1) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 4);
+    qtest_writel(qts, CPU_HEAD(1) + 0x114, invalid_address);
+    qtest_writel(qts, CPU_HEAD(0) + 0x114, invalid_address);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(1) + 0x104), ==, 0);
+
+    qtest_writeq(qts, HEAD(0) + 0x78, 0xdeadbeef);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x78), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x100), ==, 0);
+    qtest_writeq(fixture, HEAD(0) + 0x78, 0xdeadbeef);
+    g_assert_cmphex(qtest_readq(fixture, HEAD(0) + 0x78), ==, 0);
+    g_assert_cmphex(qtest_readq(fixture, HEAD(0) + 0x100), ==, 0);
+
+    qtest_quit(fixture);
+    qtest_quit(qts);
+
+    qts = pic_runtime_error_start(true);
+    qtest_writeq(qts, HEAD(0) + 0x30, UINT64_C(0x34000000));
+    qtest_writeq(qts, HEAD(0) + 0x38, destination);
+    qtest_writeq(qts, HEAD(0) + 0x128, 7);
+    qtest_writel(qts, CPU_HEAD(0) + 0x10c, invalid_address);
+    qtest_writel(qts, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    qtest_quit(qts);
+
+    bedrock = pic_bedrock_parent_start(false, true);
+    qtest_sysbus_mmio_map(bedrock, PIC_CHILD, 0, CPU_BASE);
+    uint64_t bedrock_destination = II_REGISTER | II_NODE(0) |
+                                  II_HUB_REMOTE | 0x90;
+    uint32_t destination_upper = (0x34U << 24) |
+                                ((bedrock_destination >> 32) & 0xffff);
+
+    qtest_writeq(bedrock, HEAD(0) + 0x30, destination_upper);
+    qtest_writeq(bedrock, HEAD(0) + 0x38,
+                 bedrock_destination & UINT32_MAX);
+    qtest_writeq(bedrock, HEAD(0) + 0x128, 0);
+    qtest_writel(bedrock, CPU_HEAD(0) + 0x10c, invalid_address);
+    qtest_writel(bedrock, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(bedrock, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmphex(qtest_readl(bedrock, CPU_HEAD(1) + 0x104), ==, 0);
+    g_assert_cmpuint(target_metric(bedrock, "x-test-packet-calls"), ==, 1);
+    g_assert_cmphex(target_metric(bedrock, "x-test-packet-address"), ==,
+                    bedrock_destination);
+    g_assert_cmpuint(target_metric(bedrock, "x-test-packet-size"), ==, 8);
+    g_assert_cmphex(qtest_readq(bedrock, 0x10000000 + 0x98) &
+                    1, ==, 1);
+
+    qtest_writeq(bedrock, HEAD(0) + 0x128, 7);
+    qtest_writel(bedrock, CPU_HEAD(0) + 0x7c, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(bedrock, CPU_HEAD(0) + 0x104), ==,
+                    invalid_address);
+    g_assert_cmpuint(target_metric(bedrock, "x-test-packet-calls"), ==, 2);
+    g_assert_cmphex(target_metric(bedrock, "x-test-packet-address"), ==,
+                    bedrock_destination);
+    g_assert_cmphex(qtest_readq(bedrock, 0x10000000 + 0x98) & 0x81, ==,
+                    0x81);
+    qtest_quit(bedrock);
 }
 
 static void test_cpu_pio_conventional_lanes(void)
@@ -2256,7 +2732,7 @@ static void test_runtime_identity_bit(void)
     qtest_writeq(qts, HEAD(0) + 0x20, 5);
     qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
     assert_runtime_pic_identity(qts);
-    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0x0f00320f);
     qtest_quit(qts);
 }
 
@@ -2996,7 +3472,8 @@ static void test_runtime_profile_reserved_device_and_dma(void)
     qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
     for (unsigned head = 0; head < 2; head++) {
         g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x80), ==, 0);
-        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x200), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEAD(head) + 0x200), ==,
+                        0x18001000);
     }
     qtest_quit(qts);
 
@@ -4628,6 +5105,12 @@ int main(int argc, char **argv)
                    test_runtime_profile_is_immutable_after_realize);
     qtest_add_func("/sgi-pic/runtime-profile-reserved-device-and-dma",
                    test_runtime_profile_reserved_device_and_dma);
+    qtest_add_func("/sgi-pic/runtime-reset-compatibility-trial",
+                   test_runtime_reset_compatibility_trial);
+    qtest_add_func("/sgi-pic/tezro-widget-register-profile-trial",
+                   test_tezro_widget_register_profile_trial);
+    qtest_add_func("/sgi-pic/runtime-invalid-address-error-trial",
+                   test_runtime_invalid_address_error_trial);
     qtest_add_func("/sgi-pic/runtime-dir-map-unsupported-fields",
                    test_runtime_dir_map_unsupported_fields);
     qtest_add_func("/sgi-pic/type1-configuration", test_type1_configuration);

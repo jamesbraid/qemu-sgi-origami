@@ -11,6 +11,7 @@
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_device.h"
@@ -188,16 +189,12 @@ struct SGIPICState {
 
 static bool pic_uses_runtime_profile(const SGIPICState *s)
 {
-    return s->compatibility_profile ==
-               SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL ||
-           s->compatibility_profile ==
-               SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
-}
+    SGIModelPicCompatibilityProfile profile = s->compatibility_profile;
 
-static bool pic_uses_widget_register_profile(const SGIPICState *s)
-{
-    return s->compatibility_profile ==
-        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
+    return profile ==
+       SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL ||
+       profile ==
+       SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
 }
 
 static bool pic_uses_linked_transport(const SGIPICState *s)
@@ -1024,7 +1021,7 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
     if (size == 8 && !(addr & 7) && pic_defined(addr) &&
         addr < sizeof(s->reg)) {
         if ((addr == 0x28 || addr == 0x30 || addr == 0x38) &&
-            !pic_uses_widget_register_profile(s->pic)) {
+            !pic_uses_runtime_profile(s->pic)) {
             pic_unsupported(s, addr, size, 0, false);
             return 0;
         }
@@ -1089,7 +1086,7 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         return;
     }
     if ((addr == 0x28 || addr == 0x30 || addr == 0x38) &&
-        !pic_uses_widget_register_profile(s->pic)) {
+        !pic_uses_runtime_profile(s->pic)) {
         pic_unsupported(s, addr, size, value, true);
         return;
     }
@@ -1100,7 +1097,11 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         pic_unsupported(s, addr, size, value, true);
         return;
     case 0x20:
-        if (value & ~0xfULL) {
+        if (pic_uses_runtime_profile(s->pic) &&
+            (value & ~UINT64_C(0x0f00f20f))) {
+            pic_unsupported(s, addr, size, value, true);
+            value &= UINT64_C(0x0f00f20f);
+        } else if (!pic_uses_runtime_profile(s->pic) && (value & ~0xfULL)) {
             pic_unsupported(s, addr, size, value, true);
             value &= 0xf;
         }
@@ -1158,9 +1159,15 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         }
         return;
     default:
-        if (addr >= 0x200 && addr <= 0x218 &&
-            (value & ~((1U << 19) | (1U << 20) | (1U << 13) |
-                       (1U << 12) | (1U << 22) | 0xfff))) {
+        if (pic_uses_runtime_profile(s->pic) &&
+            addr >= 0x200 && addr <= 0x218 &&
+            (value & ~UINT64_C(0x18581fff))) {
+            pic_unsupported(s, addr, size, value, true);
+            value &= UINT64_C(0x18581fff);
+        } else if (!pic_uses_runtime_profile(s->pic) &&
+                   addr >= 0x200 && addr <= 0x218 &&
+                   (value & ~((1U << 19) | (1U << 20) | (1U << 13) |
+                              (1U << 12) | (1U << 22) | 0xfff))) {
             pic_unsupported(s, addr, size, value, true);
             value &= (1U << 19) | (1U << 20) | (1U << 13) |
                      (1U << 12) | (1U << 22) | 0xfff;
@@ -1186,7 +1193,7 @@ static bool pic_cpu_word_slot(SGIPICHead *s, hwaddr addr, hwaddr *slot)
 
     *slot = addr - 4;
     if ((*slot == 0x28 || *slot == 0x30 || *slot == 0x38) &&
-        !pic_uses_widget_register_profile(s->pic)) {
+        !pic_uses_runtime_profile(s->pic)) {
         return false;
     }
     if (*slot >= 0x18000 && *slot < 0x19800) {
@@ -1313,6 +1320,8 @@ static uint64_t pic_cpu_read(void *opaque, hwaddr addr, unsigned size)
     return pic_read(head, addr, size);
 }
 
+static bool pic_error_destination(SGIPICHead *head, hwaddr *address);
+
 static void pic_cpu_write(void *opaque, hwaddr addr, uint64_t value,
                           unsigned size)
 {
@@ -1327,6 +1336,50 @@ static void pic_cpu_write(void *opaque, hwaddr addr, uint64_t value,
     }
     head = &s->head[addr / PIC_HEAD_OFFSET];
     addr %= PIC_HEAD_OFFSET;
+    if (pic_uses_runtime_profile(s) && addr == 0x7c && size == 4) {
+        const uint64_t invalid_address = UINT64_C(1) << 24;
+
+        REG(head, 0x100) |= invalid_address;
+        if (REG(head, 0x108) & invalid_address) {
+            hwaddr destination;
+            SGIXioSource source = {
+                .widget_known = true,
+                .device_known = false,
+                .widget = REG(head, 0x20) & 0xf,
+            };
+            uint8_t packet[8];
+            uint64_t number = REG(head, 0x128);
+
+            if (number > 0x7f) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-pic: head %u refused error interrupt"
+                              " number 0x%" PRIx64 "\n",
+                              head->head, number);
+            } else if (pic_error_destination(head, &destination)) {
+                MemTxResult result;
+
+                stq_be_p(packet, number | SGI_XIO_INTERRUPT_SET);
+                result = pic_send_interrupt(head->pic, destination, packet,
+                                            sizeof(packet), &source);
+                if (trace_event_get_state_backends(
+                        TRACE_SGI_PIC_INTERRUPT_PACKET)) {
+                    /* Pin count marks the separate widget error source. */
+                    trace_sgi_pic_interrupt_packet(
+                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), head->head,
+                        PIC_PIN_COUNT, true, destination,
+                        number | SGI_XIO_INTERRUPT_SET, result);
+                }
+                if (result != MEMTX_OK) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "sgi-pic: head %u error destination 0x%"
+                                  PRIx64 " refused write\n",
+                                  head->head, destination);
+                }
+            }
+        }
+        trace_sgi_pic_head_reg_write(head->head, addr, size, value);
+        return;
+    }
     if (pic_uses_runtime_profile(s) &&
         pic_short_window(addr, &(unsigned){ 0 }, &(hwaddr){ 0 },
                          &(hwaddr){ 0 })) {
@@ -1345,6 +1398,44 @@ static void pic_cpu_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     }
     pic_write(head, addr, value, size);
+}
+
+static bool pic_error_destination(SGIPICHead *head, hwaddr *address)
+{
+    uint64_t upper = REG(head, 0x30);
+    uint64_t upper_addr = upper & 0xffff;
+    uint64_t lower = REG(head, 0x38);
+    uint64_t lower_hi = lower >> 32;
+
+    if (upper >> 32) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u error destination upper 0x%016"
+                      PRIx64 " has unsupported high bits\n",
+                      head->head, upper);
+        return false;
+    }
+    if (lower >> 48) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u error destination lower 0x%016"
+                      PRIx64 " exceeds 48 bits\n", head->head, lower);
+        return false;
+    }
+    if (upper_addr && lower_hi && upper_addr != lower_hi) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u error destination has conflicting"
+                      " address fields upper=0x%04" PRIx64
+                      " lower=0x%016" PRIx64 "\n",
+                      head->head, upper_addr, lower);
+        return false;
+    }
+    *address = lower_hi ? lower : (upper_addr << 32) | (uint32_t)lower;
+    if (!*address) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u error destination is zero\n",
+                      head->head);
+        return false;
+    }
+    return true;
 }
 
 static const MemoryRegionOps pic_cpu_ops = {
@@ -1419,8 +1510,17 @@ static void pic_head_reset_hold(Object *obj, ResetType type)
     memset(s->set_requests, 0, sizeof(s->set_requests));
     memset(s->clear_requests, 0, sizeof(s->clear_requests));
     REG(s, 0x00) = pic_widget_identity(s);
-    if (pic_uses_widget_register_profile(s->pic)) {
+    if (pic_uses_runtime_profile(s->pic)) {
+        static const uint32_t device_reset[] = {
+            0x18001000, 0x18001002, 0x18001004, 0x18001005,
+        };
+        unsigned i;
+
         REG(s, 0x28) = 0xfffff;
+        REG(s, 0x20) = 0x0f00320f;
+        for (i = 0; i < G_N_ELEMENTS(device_reset); i++) {
+            REG(s, 0x200 + i * 8) = device_reset[i];
+        }
     }
 }
 
