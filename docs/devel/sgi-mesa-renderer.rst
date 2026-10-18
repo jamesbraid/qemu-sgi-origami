@@ -170,7 +170,10 @@ does. The ``LOGIC_OP`` equation and the logic operations remain unsupported.
 A textured draw requires ``GL_TEXTURE_2D``, a front RGB8 or RGBA8 colour
 resource, and one ``SGI_RENDER_TEXTURE`` resource matching a level-zero
 ``SGIGLTexImage``. The image has no stored border, positive power-of-two
-width and height, and RGBA base format. The texture resource has the same
+width and height, and RGBA base format. It is neither one-dimensional nor
+a volume, and has no shadow comparison: the scalar path drops a
+one-dimensional image under ``GL_TEXTURE_2D``, and the worker has no
+texture comparison. The texture resource has the same
 dimensions, bottom-origin rows, and four ordered 8-bit UNORM components.
 Colour and texture snapshots both finish before Mesa draws. Texture slot
 staging above 16 MiB returns ``SGI_RENDER_UNSUPPORTED``.

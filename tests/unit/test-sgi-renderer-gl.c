@@ -2519,6 +2519,22 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     image.base_format = SGI_GL_RGBA;
+    /* The scalar path drops a 1D image under the 2D enable. */
+    image.one_dimensional = true;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.one_dimensional = false;
+    /* The host program has no depth comparison. */
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.shadow_compare = 0;
     resources[1].border[0] = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,

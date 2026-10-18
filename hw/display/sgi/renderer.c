@@ -50,13 +50,16 @@ static const SGIRenderResource *sgi_render_scalar_resource(
     return found;
 }
 
-static const SGIRenderResource *sgi_render_texture_resource(
-    const SGIRasterTarget *target, const SGIGLDrawState *st)
+/*
+ * Whether the host program samples this image as the scalar path does.
+ * A one-dimensional image under the 2D enable is dropped by the scalar
+ * path, and the program has no texture comparison, so both are refused.
+ */
+static bool sgi_render_texture_image_supported(const SGIGLTexImage *image,
+                                               const SGIGLDrawState *st)
 {
-    const SGIGLTexImage *image = target->texture;
-    const SGIRenderResource *res = NULL;
-
-    if (!image || image->volume || image->pyramid || image->border ||
+    if (!image || image->one_dimensional || image->shadow_compare ||
+        image->volume || image->pyramid || image->border ||
         !is_power_of_2(image->width) ||
         !is_power_of_2(image->height) ||
         image->base_format != SGI_GL_RGBA ||
@@ -78,13 +81,25 @@ static const SGIRenderResource *sgi_render_texture_resource(
          st->texture_env_mode != SGI_GL_MODULATE &&
          st->texture_env_mode != SGI_GL_DECAL &&
          st->texture_env_mode != SGI_GL_BLEND)) {
-        return NULL;
+        return false;
     }
     for (unsigned c = 0; c < 4; c++) {
         if (!isfinite(image->border_color[c]) ||
             !isfinite(st->texture_env_color[c])) {
-            return NULL;
+            return false;
         }
+    }
+    return true;
+}
+
+static const SGIRenderResource *sgi_render_texture_resource(
+    const SGIRasterTarget *target, const SGIGLDrawState *st)
+{
+    const SGIGLTexImage *image = target->texture;
+    const SGIRenderResource *res = NULL;
+
+    if (!sgi_render_texture_image_supported(image, st)) {
+        return NULL;
     }
     for (size_t i = 0; i < target->resource_count; i++) {
         const SGIRenderResource *candidate = &target->resources[i];
