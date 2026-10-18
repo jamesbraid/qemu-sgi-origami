@@ -40,6 +40,8 @@ slow_qtests = {
   'sgi-mgras-texture-test': 1050,
   'sgi-migration-roundtrip-test': 170,
   'sgi-pci-expansion-ni-test': 2050,
+  # The expanded PIC suite passed in 86s locally; CI reached 80/85 at 60s.
+  'sgi-pic-test': 300,
   'sgi-replay-test': 330,
   # It starts every catalogue topology at its largest offering. 64.77s in a
   # parallel run of thirty SGI qtests at a load average near 60; budget
