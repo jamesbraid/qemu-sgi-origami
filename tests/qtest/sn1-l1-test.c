@@ -263,7 +263,7 @@ static void test_eeprom(void)
     g_autofree char *dir = g_dir_make_tmp("sn1-l1-eeprom-XXXXXX", &error);
     g_autofree char *spd_path = NULL;
     g_autofree char *board_path = NULL;
-    uint8_t spd[128] = { 0 }, board[17], reply[129];
+    uint8_t spd[128] = { 0 }, board[17], reply[131];
     QTestState *s;
     g_assert_no_error(error);
     spd_path = g_build_filename(dir, "spd.bin", NULL);
@@ -1918,7 +1918,7 @@ static void test_peer_nested_ctc(void)
                                's', 't', 'e', 'd', ' ', 'c', 't', 'c', ' ',
                                'i', 's', ' ', 'u', 'n', 's', 'u', 'p', 'p',
                                'o', 'r', 't', 'e', 'd', '.', '\n', 0 };
-    uint8_t request[128], reply[129];
+    uint8_t request[128], reply[131];
     size_t n;
 
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
@@ -1941,7 +1941,7 @@ static void test_peer_nested_ctc(void)
 static void test_command_interpreter(void)
 {
     QTestState *s = start();
-    uint8_t request[128], reply[129];
+    uint8_t request[128], reply[131];
     size_t n;
     const uint8_t version[] = { 0x30, 0, 0, 0, 0, 1, 1,
                                 'L', '1', ' ', 'p', 'r', 'o', 't', 'o', 'c',
@@ -2123,7 +2123,7 @@ static void test_receive_tolerance(void)
 {
     QTestState *s = start();
     const uint8_t identity[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    uint8_t reply[129], big[300];
+    uint8_t reply[131], big[300];
     uint16_t crc;
     size_t n;
 
@@ -2693,7 +2693,7 @@ static void test_general_reads(void)
                                "revision-major=1,revision-minor=44,"
                                "revision-patch=0,debug-switches=0x10d,"
                                "system-serial=L1234567,partition=3" UART);
-    uint8_t reply[129], args[10];
+    uint8_t reply[131], args[10];
     static const uint8_t revision[] = { 0x30, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1,
                                         0, 0, 0, 0, 44, 0, 0, 0, 0, 0 };
     static const uint8_t serial[] = { 0x30, 0, 0, 0, 0, 1, 1,
@@ -2868,7 +2868,7 @@ static void test_machine_port_speed_profiles(void)
  */
 static void test_ip34_identity_needs_supplied_type(void)
 {
-    uint8_t reply[129];
+    uint8_t reply[131];
     QTestState *s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,"
                                "id=l1c,brick-type=ip34" UART);
 
@@ -2938,7 +2938,7 @@ static void fuel_mac_image(uint8_t *image, const char *mac)
 static void test_fuel_mac_eeprom(void)
 {
     static const char mac[] = "02A1B2C3D4E5";
-    uint8_t image[513] = { 0 }, reply[129];
+    uint8_t image[513] = { 0 }, reply[131];
     g_autofree char *path = NULL;
     GError *error = NULL;
     QTestState *s;
@@ -3209,7 +3209,7 @@ static void test_identity_raw_override(void)
 /* The Fuel-family MAC text the firmware serves through request 0x0008. */
 static void test_identity_mac_text(void)
 {
-    uint8_t reply[129];
+    uint8_t reply[131];
     QTestState *s;
 
     s = start_identity("mac=02:a1:b2:c3:d4:e5,mac-record=mac-text");
@@ -3265,7 +3265,7 @@ static const uint8_t expected_system_logic_board[80] = {
  */
 static void test_identity_system_board(void)
 {
-    uint8_t reply[129];
+    uint8_t reply[131];
     QTestState *s = start_identity(
         "node-board-name=IP34,node-board-part=030-1707-003,"
         "node-board-revision=-G,mac=02:a1:b2:c3:d4:e5,"
@@ -3296,7 +3296,7 @@ static void test_identity_system_board_overrides(void)
     GError *error = NULL;
     g_autofree char *dir = g_dir_make_tmp("sn1-l1-system-XXXXXX", &error);
     g_autofree char *mac_path = NULL, *board_path = NULL;
-    uint8_t image[512] = { 0 }, board[24], reply[129];
+    uint8_t image[512] = { 0 }, board[24], reply[131];
     QTestState *s;
 
     g_assert_no_error(error);
@@ -3423,7 +3423,7 @@ static void test_general_actions(void)
 {
     int fd;
     QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
-    uint8_t reply[129], args[10];
+    uint8_t reply[131], args[10];
 
     console_expect(fd, POWERING ENTER_CPU0);
     qtest_irq_intercept_out_named(s, L1, "node-reset");
@@ -3582,7 +3582,7 @@ static void test_power_requests_off(void)
 {
     int fd;
     QTestState *s = console_start(&fd, ",auto-power=off", RTC);
-    uint8_t reply[129];
+    uint8_t reply[131];
     const uint8_t cycle[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x06, 0 };
 
     qtest_irq_intercept_out_named(s, L1, "node-power");
@@ -3647,7 +3647,7 @@ static void test_power_down_event(void)
 {
     int fd;
     QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
-    uint8_t reply[129], args[5];
+    uint8_t reply[131], args[5];
     /* Source: rack 1 in bits 27:18, bay 1 in 17:12, task 4. */
     const uint8_t event_head[] = { 0x40 | 23, 0, 4, 0x10, 4, 0, 0, 0x80, 0, 2,
                                    0, 0, 0, 0, 0, 1 };
