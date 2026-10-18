@@ -2125,7 +2125,7 @@ static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 35, .minimum_version_id = 35,
+    .name = TYPE_SGI_MGRAS, .version_id = 36, .minimum_version_id = 36,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {

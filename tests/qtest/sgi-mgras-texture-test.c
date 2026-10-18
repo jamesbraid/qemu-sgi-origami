@@ -4910,6 +4910,125 @@ static void test_gl_texture_stored_border_bad_upload(void)
     qtest_quit(t);
 }
 
+/*
+ * The client's wide-level branch, as distort's 512-wide bordered level
+ * traced it: the level's bracketed load, a bare 0x9c00, then 64-by-1 rows
+ * at x 512 and on under a TL_SPEC twice as wide, with no 0x9b00. What the
+ * board does with them is unknown, so the model refuses them and stores
+ * nothing: the ring the bracketed load completed is kept, and a linear
+ * sample at the left edge still blends it rather than the border colour.
+ */
+#define TEX_WIDE_SPEC_512X1   0x090
+#define TEX_WIDE_SPEC_1024X1  0x0a0
+#define TEX_WIDE_W            514
+#define TEX_WIDE_H            3
+
+static uint32_t tex_wide_edge_sample(QTestState *t)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float quad[4][4] = {
+        { 16, 16, 0, 0.5f }, { 32, 16, 0, 0.5f },
+        { 32, 32, 0, 0.5f }, { 16, 32, 0, 0.5f },
+    };
+
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_SB_CLAMP_BITS |
+             TEX_MAG_LINEAR | TEX_MIN_LINEAR);
+    tex_records(t, (const uint32_t[]) {
+        TEX_TXSIZE, 0x0909,
+        TEX_TXCLAMPSIZE, 512 << 13 | 1,
+    }, 2);
+    tex_mipmap_word(t, 4);
+    tex_quad_rect(t, white, quad);
+    return gl_window_pixel(t, 24, 24);
+}
+
+static void test_gl_texture_wide_level_branch_refused(void)
+{
+    static const uint32_t level[6] = {
+        -1, -1, TEX_WIDE_W, TEX_WIDE_H, TEX_WIDE_H << 16 | TEX_WIDE_W, 0,
+    };
+    static const uint32_t row_box[6] = { 512, -1, 64, 1, 1 << 16 | 64, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    g_autofree uint8_t *image = g_malloc(TEX_WIDE_W * TEX_WIDE_H * 4);
+    uint8_t row[64 * 4];
+
+    /* Ring (200, 40, 40), interior (40, 200, 40). */
+    for (int y = 0; y < TEX_WIDE_H; y++) {
+        for (int x = 0; x < TEX_WIDE_W; x++) {
+            uint8_t *p = &image[4 * (y * TEX_WIDE_W + x)];
+            bool ring = y != 1 || x == 0 || x == TEX_WIDE_W - 1;
+
+            p[0] = ring ? 200 : 40;
+            p[1] = ring ? 40 : 200;
+            p[2] = 40;
+            p[3] = 0xff;
+        }
+    }
+    memset(row, 0xa5, sizeof(row));
+
+    tex_sb_set_base_block(t, 0, 4);
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_WIDE_SPEC_512X1, image,
+                TEX_WIDE_W, TEX_WIDE_H, level, true);
+    tex_expect(tex_wide_edge_sample(t), 120 / 255.0, 120 / 255.0,
+               40 / 255.0);
+
+    gl_word(t, TEX_LOAD_CLOSE);
+    for (int k = 0; k < 2; k++) {
+        tex_load_as(t, false, 0, TEX_WIDE_SPEC_1024X1, row, 64, 1, row_box,
+                    false);
+    }
+
+    tex_expect(tex_wide_edge_sample(t), 120 / 255.0, 120 / 255.0,
+               40 / 255.0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * Unbracketed transfers that are not that traced shape are still taken
+ * as loads: the first one after reset, of a 2-by-1 level whose TL_SPEC
+ * happens to be twice the width of the reset TL_SPEC, and one under a
+ * doubled TL_SPEC after a bare 0x9c00 that follows a 2-wide level's
+ * bracketed load, not a 512-wide one.
+ */
+static void test_gl_texture_unbracketed_loads_taken(void)
+{
+    static const uint32_t box_2x1[6] = { 0, 0, 2, 1, 1 << 16 | 2, 0 };
+    static const uint32_t box_2x2[6] = { 0, 0, 2, 2, 2 << 16 | 2, 0 };
+    static const uint32_t box_4x2[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], other[32];
+
+    tex_texels(texels);
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, 0x010, texels, 2, 1, box_2x1,
+                false);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_records(t, (const uint32_t[]) {
+        TEX_TXSIZE, 0x0101,
+        TEX_TXCLAMPSIZE, 2 << 13 | 1,
+    }, 2);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
+                    texels[0] << 16 | texels[1] << 8 | texels[2]);
+    g_assert_cmphex(tex_texel_pixel(t, 2, 0), ==,
+                    texels[4] << 16 | texels[5] << 8 | texels[6]);
+    qtest_quit(t);
+
+    t = tex_start(TEX_ARGS);
+    for (int i = 0; i < 32; i++) {
+        other[i] = i % 4 == 3 ? 0xff : texels[i] ^ 0x5a;
+    }
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_2X2, other, 2, 2,
+                box_2x2, true);
+    gl_word(t, TEX_LOAD_CLOSE);
+    tex_load_as(t, false, 0, TEX_SPEC_4X2, texels, 4, 2, box_4x2, false);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 static void tex_sb_file_migration_check_images(QTestState *t,
                                                const uint8_t a[64],
                                                const uint8_t b[64],
@@ -5096,7 +5215,7 @@ static void test_gl_texture_stored_border_vmstate_version(void)
             memcmp(stream + i + 1, id, sizeof(id) - 1)) {
             continue;
         }
-        g_assert_cmphex(ldl_be_p(stream + i + sizeof(id) + 4), ==, 35);
+        g_assert_cmphex(ldl_be_p(stream + i + sizeof(id) + 4), ==, 36);
         found++;
     }
     g_assert_cmpuint(found, ==, 1);
@@ -5323,6 +5442,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-rejected-upload",
                    test_gl_texture_stored_border_bad_upload);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-wide-level-branch-refused",
+                   test_gl_texture_wide_level_branch_refused);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-unbracketed-loads-taken",
+                   test_gl_texture_unbracketed_loads_taken);
     qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-texture-stored-border-preserves-12bit-after-migration",

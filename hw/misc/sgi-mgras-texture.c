@@ -72,10 +72,12 @@
  *   identity, as routine 0x511a is at the default pixel transfer state, as
  *   the image path takes 0x49d0. TL_MODE is state that persists across
  *   loads, since the client skips it when reloading the image it loaded
- *   last. An unpaired 0x9c00, which the client's untraced wide-level branch
- *   sends, and a 0x511a transfer outside a bracket are logged and not
- *   rejected. An inline image or a transfer of another byte count is logged
- *   and nothing is stored. The HQ pixel-format word's GL_ABGR_EXT bit (0xe8d
+ *   last. An unpaired 0x9c00, which the client's wide-level branch sends,
+ *   and a 0x511a transfer outside a bracket are logged and not rejected,
+ *   except the branch's own transfer, under a TL_SPEC twice as wide as
+ *   the level before it, which is refused and stores nothing. An inline
+ *   image or a transfer of another byte count is logged and nothing is
+ *   stored. The HQ pixel-format word's GL_ABGR_EXT bit (0xe8d
  *   for bytes, 0xe8e for two-byte components) on an image of four components
  *   kept as RGBA reverses each texel's components; the same word reorders
  *   the image path's draw (inferred to apply here too). On two components it
@@ -184,6 +186,16 @@
 #define MGRAS_TEX_T_OFFSET       0x00005f04
 #define MGRAS_TEX_LOAD_OPEN      0x00009b00
 #define MGRAS_TEX_LOAD_CLOSE     0x00009c00
+
+/*
+ * The client's wide-level branch (see sgi_mgras_texture_load_start()):
+ * none, a bracketed load of a level 2^9 texel units wide, then the bare
+ * 0x9c00 that precedes its unbracketed transfers.
+ */
+#define MGRAS_TEX_WIDE_NONE      0
+#define MGRAS_TEX_WIDE_LOADED    1
+#define MGRAS_TEX_WIDE_CLOSED    2
+#define MGRAS_TEX_WIDE_LOG2W     9
 #define MGRAS_TEX_BASE           0x0000eb04
 #define MGRAS_TEX_RECORDS        0x00007c08
 #define MGRAS_TEX_TABLE          0x0000ec10
@@ -1195,11 +1207,15 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
                           "inside an open one\n");
         }
         t->bracket = 1;
+        t->wide_branch = MGRAS_TEX_WIDE_NONE;
         return true;
     case MGRAS_TEX_LOAD_CLOSE:
         if (!t->bracket) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load closed "
                           "without an opening 0x9b00\n");
+            /* The bare close of the wide-level branch (see load_start). */
+            t->wide_branch = t->wide_branch == MGRAS_TEX_WIDE_LOADED ?
+                             MGRAS_TEX_WIDE_CLOSED : MGRAS_TEX_WIDE_NONE;
         }
         if (t->load) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: texture load closed "
@@ -1582,6 +1598,32 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       "before its transfer by the next\n");
         t->load = 0;
     }
+    /*
+     * The client's wide-level branch: after a level whose width is 512
+     * texel units it sends a bare 0x9c00, rewrites TL_SPEC with the width
+     * doubled and sends a second transfer with no 0x9b00 (established
+     * from the client). distort's 512-wide bordered level was traced
+     * doing so: eight 64-by-1 rows at x 512 to 704 under TL_SPEC 0x9a0
+     * right after its bracketed loads under 0x990. What the board makes
+     * of them is unknown, so they are refused and nothing is stored;
+     * taking them as a load of a level twice as wide would replace the
+     * level the bracket just loaded, its ring included. Only that traced
+     * shape is refused: wide_branch says a bracketed load of a 512-wide
+     * level was followed by a bare 0x9c00 and nothing else since, and the
+     * transfer's TL_SPEC must be that level's with the width doubled.
+     * Any other unbracketed transfer is taken, as before.
+     */
+    if (!t->bracket && t->wide_branch == MGRAS_TEX_WIDE_CLOSED &&
+        MGRAS_TEX_SPEC_LEVEL(spec) == MGRAS_TEX_SPEC_LEVEL(t->load_spec) &&
+        MGRAS_TEX_SPEC_LOG2H(spec) == MGRAS_TEX_SPEC_LOG2H(t->load_spec) &&
+        MGRAS_TEX_SPEC_LOG2W(spec) == MGRAS_TEX_WIDE_LOG2W + 1) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture transfer outside a "
+                      "0x9b00 bracket under TL_SPEC 0x%x, twice the width "
+                      "of the level loaded before it (0x%x), is not "
+                      "modelled; nothing stored\n", spec, t->load_spec);
+        return true;
+    }
+    t->wide_branch = MGRAS_TEX_WIDE_NONE;
     if (!t->bracket) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture transfer outside a "
                       "0x9b00 bracket, taken as a load\n");
@@ -1664,6 +1706,9 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
         return true;
     }
     t->load = 1;
+    t->wide_branch = t->bracket && !volume &&
+                     MGRAS_TEX_SPEC_LOG2W(spec) == MGRAS_TEX_WIDE_LOG2W ?
+                     MGRAS_TEX_WIDE_LOADED : MGRAS_TEX_WIDE_NONE;
     t->load_depth = volume ? payload[5] : 1;
     t->load_volume = volume;
     memcpy(t->load_packet, payload, sizeof(t->load_packet));
@@ -2809,6 +2854,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
     uint64_t bit;
 
     if (t->on > 1 || t->bracket > 1 || t->load > 1 ||
+        t->wide_branch > MGRAS_TEX_WIDE_CLOSED ||
         (t->loaded_levels & ~((1u << SGI_MGRAS_TEX_LEVELS) - 1)) ||
         t->txaddr >= SGI_MGRAS_TEX_TABLE || t->tl_addr >= SGI_MGRAS_TEX_TABLE ||
         t->staging || t->volume_bytes > SGI_MGRAS_VOLUME_TEX_BYTES ||
@@ -3008,8 +3054,8 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 15,
-    .minimum_version_id = 15,
+    .version_id = 16,
+    .minimum_version_id = 16,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
@@ -3033,6 +3079,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(t_offset, SGIMgrasTexture),
         VMSTATE_UINT32(on, SGIMgrasTexture),
         VMSTATE_UINT32(bracket, SGIMgrasTexture),
+        VMSTATE_UINT32(wide_branch, SGIMgrasTexture),
         VMSTATE_UINT32(loaded_levels, SGIMgrasTexture),
         VMSTATE_UINT32(load, SGIMgrasTexture),
         VMSTATE_UINT32(load_base, SGIMgrasTexture),
@@ -3109,7 +3156,8 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
                    t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
-                   t->bracket | t->load | t->loaded_levels | t->load_base |
+                   t->bracket | t->wide_branch | t->load |
+                   t->loaded_levels | t->load_base |
                    t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
                    t->load_size | t->load_depth | t->load_volume |
