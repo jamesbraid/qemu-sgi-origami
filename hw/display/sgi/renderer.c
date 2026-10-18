@@ -1338,6 +1338,12 @@ static SGIRenderResult sgi_render_draw_run(
         error_setg(errp, "Unsupported SGI Mesa raster rules");
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_RULES);
     }
+    if (opts && opts->mixed_frame &&
+        !sgi_renderer_identity(renderer)->reference) {
+        error_setg(errp, "SGI Mesa mixed frames are proven only on the "
+                   "reference llvmpipe build");
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_DRIVER);
+    }
     refusal = sgi_render_draw_supported(rules, target, draw, &resource);
     if (refusal != SGI_RENDER_REFUSAL_NONE) {
         error_setg(errp, "Unsupported SGI Mesa draw state or resource (%s)",
@@ -1961,6 +1967,12 @@ static SGIRenderResult sgi_render_raster_run(
         error_setg(errp, "Missing SGI Mesa raster input");
         return SGI_RENDER_RESOURCE_ERROR;
     }
+    if (opts && opts->mixed_frame &&
+        !sgi_renderer_identity(renderer)->reference) {
+        error_setg(errp, "SGI Mesa mixed frames are proven only on the "
+                   "reference llvmpipe build");
+        return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_DRIVER);
+    }
     if (op->kind != SGI_RASTER_CLEAR ||
         (op->clear_buffers & ~(SGI_GL_COLOR_BUFFER_BIT |
                                SGI_GL_DEPTH_BUFFER_BIT |
@@ -2544,6 +2556,9 @@ static const struct {
     },
     [SGI_RENDER_REFUSAL_HOST_STAGING] = {
         "host-staging", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
+    },
+    [SGI_RENDER_REFUSAL_HOST_DRIVER] = {
+        "host-driver", SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT,
     },
     [SGI_RENDER_REFUSAL_SNAPSHOT] = {
         "snapshot", SGI_RENDER_REFUSAL_CLASS_STATE,

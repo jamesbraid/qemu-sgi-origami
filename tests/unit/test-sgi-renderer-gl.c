@@ -7309,6 +7309,91 @@ static void test_mixed_frame_set(void)
 }
 
 /*
+ * The renderer records the driver it runs on. The tests run on the
+ * reference llvmpipe build, the only driver the mixed-frame set is proven
+ * on; a different build there must fail loudly, since every proof below
+ * would then be about a driver the set does not name. Off the reference,
+ * the mixed-frame flag refuses every draw and CLEAR before any snapshot,
+ * and the same work without the flag still draws.
+ */
+static void test_driver_identity(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
+    static const SGIRenderAttemptOptions plain = { 0 };
+    static const SGIClipRect full[] = { { 0, 0, 15, 15 } };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree PrimFixture *f = g_new(PrimFixture, 1);
+    const SGIRendererIdentity *id;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    id = sgi_renderer_identity(renderer);
+    g_test_message("driver: vendor %s renderer %s version %s", id->vendor,
+                   id->renderer, id->version);
+    if (!id->reference) {
+        g_error("not the reference llvmpipe build (Mesa %s, LLVM %s, %u-bit "
+                "vectors): renderer %s, version %s",
+                SGI_RENDERER_REFERENCE_MESA, SGI_RENDERER_REFERENCE_LLVM,
+                SGI_RENDERER_REFERENCE_VECTOR_BITS, id->renderer,
+                id->version);
+    }
+    g_assert_cmpstr(id->vendor, ==, "Mesa");
+    g_assert_cmpstr(id->mesa_version, ==, SGI_RENDERER_REFERENCE_MESA);
+
+    sgi_renderer_test_set_reference(renderer, false);
+    prim_fan(p, 4);
+    p->attempt = &mixed;
+    prim_destination(f, p);
+    prim_mesa_draw(renderer, p, f, &err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpint(p->attempt_result, ==, SGI_RENDER_DRAW_REFUSED);
+    g_assert_cmpint(p->outcome.reason, ==, SGI_RENDER_REFUSAL_HOST_DRIVER);
+    g_assert_cmpint(sgi_render_refusal_class(p->outcome.reason), ==,
+                    SGI_RENDER_REFUSAL_CLASS_HOST_LIMIT);
+    g_assert_cmpuint(f->snapshots, ==, 0);
+    p->attempt = &plain;
+    prim_destination(f, p);
+    prim_mesa_draw(renderer, p, f, &err);
+    g_assert_null(err);
+    g_assert_cmpint(p->attempt_result, ==, SGI_RENDER_DRAW_OK);
+    {
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        SGIRasterTarget target = {
+            .opaque = f, .resources = res, .resource_count = 1,
+            .resource_ops = &prim_ops,
+        };
+        SGIRasterOp op = { 0 };
+        SGIRenderAttemptOutcome outcome;
+
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_destination(f, p);
+        prim_clear_op(&op, full, 1, NULL);
+        op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+        op.clear_colour_mask = SGI_GL_COLOUR_MASK_ALL;
+        g_assert_cmpint(sgi_render_raster_attempt(renderer, &rules, &target,
+                                                  &op, &mixed, &outcome,
+                                                  &err), ==,
+                        SGI_RENDER_DRAW_REFUSED);
+        g_clear_pointer(&err, error_free);
+        g_assert_cmpint(outcome.reason, ==, SGI_RENDER_REFUSAL_HOST_DRIVER);
+        g_assert_cmpuint(f->snapshots, ==, 0);
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+}
+
+/*
  * Decoded CLEAR through the attempt: it commits, refuses unsupported
  * planes, a family snapshot or precision refusal before any commit, and
  * under the mixed-frame flag widths scalar-match-clear does not prove.
@@ -7464,6 +7549,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/mixed-frame-set",
                     test_mixed_frame_set);
     g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
+    g_test_add_func("/sgi-renderer-gl/driver-identity",
+                    test_driver_identity);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",
                     test_scalar_match_cross);
     g_test_add_func("/sgi-renderer-gl/texture-invalid-clipped-vertex",

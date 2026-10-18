@@ -565,9 +565,27 @@ outside the set the cases under `Proven against the scalar path`_ prove:
 
 A family may instead refuse such state itself before calling. Widening the
 set needs a scalar-comparison case, or a reviewed change to the scalar
-contract. The set holds only for the pinned llvmpipe the cases select. On
-any other driver a family needs its own comparison results, or a precision
-check through ``check_staged``, before it mixes paths.
+contract.
+
+The set holds only on the reference driver the cases run on: llvmpipe from
+Mesa ``SGI_RENDERER_REFERENCE_MESA``, built with LLVM
+``SGI_RENDERER_REFERENCE_LLVM``, with ``SGI_RENDERER_REFERENCE_VECTOR_BITS``
+bit vectors (``include/ui/sgi-renderer.h``). The renderer reads the GL
+vendor, renderer and version strings when it creates its context and
+records them, with whether they name that build, in
+``sgi_renderer_identity()``. On any other driver, including a
+distribution's own Mesa build, the mixed-frame flag refuses every draw and
+CLEAR before the snapshot with reason ``HOST_DRIVER``, a host limit, so a
+mixing family draws everything on its scalar path. Two draws return OK
+before that check, with nothing drawn: one with no window bound, and one
+with no clip rectangles and no borrowed stipple phase. The scalar path
+draws nothing for either, so frame contents are unaffected. Malformed
+input still fails as it does on the reference driver. Another driver joins
+only with its own scalar-comparison results recorded here. A family's
+precision check through ``check_staged`` runs without the flag and is not a
+route to mixing. CPU features such as fused multiply-add are not in the
+strings; the runtime probes guard them. The ``driver-identity`` unit case
+fails if the tests run on a different build.
 
 Build and test
 --------------

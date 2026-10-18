@@ -54,6 +54,7 @@ typedef struct SGIRendererGL {
     GLint line_ends, line_inv_w, line_colour_a, line_colour_b, line_steps;
     GLint line_range, line_x_major, line_reverse, line_counter, line_stipple;
     GLint line_repeat, line_pattern, line_flat;
+    char *vendor, *renderer_name, *version;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -647,9 +648,12 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         error_setg(&renderer->error, "SGI renderer cannot bind EGL context");
         return false;
     }
+    renderer->vendor = g_strdup((const char *)glGetString(GL_VENDOR));
+    renderer->renderer_name =
+        g_strdup((const char *)glGetString(GL_RENDERER));
+    renderer->version = g_strdup((const char *)glGetString(GL_VERSION));
     info_report("SGI renderer GL vendor=%s renderer=%s version=%s",
-                glGetString(GL_VENDOR), glGetString(GL_RENDERER),
-                glGetString(GL_VERSION));
+                renderer->vendor, renderer->renderer_name, renderer->version);
     vertex = renderer_shader(renderer, GL_VERTEX_SHADER, vertex_source);
     if (!vertex) {
         return false;
@@ -1381,6 +1385,9 @@ static void renderer_gl_destroy(void *opaque)
     error_free(renderer->texture_error);
     error_free(renderer->window_error);
     error_free(renderer->line_error);
+    g_free(renderer->vendor);
+    g_free(renderer->renderer_name);
+    g_free(renderer->version);
     qemu_cond_destroy(&renderer->condition);
     qemu_mutex_destroy(&renderer->mutex);
     g_free(renderer);
@@ -1594,6 +1601,16 @@ static bool renderer_gl_clear(void *opaque, SGIRendererClear *clear,
     return success;
 }
 
+static void renderer_gl_identify(void *opaque, const char **vendor,
+                                 const char **name, const char **version)
+{
+    SGIRendererGL *renderer = opaque;
+
+    *vendor = renderer->vendor;
+    *name = renderer->renderer_name;
+    *version = renderer->version;
+}
+
 static const SGIRendererOps renderer_gl_ops = {
     .create = renderer_gl_create,
     .draw = renderer_gl_draw,
@@ -1603,6 +1620,7 @@ static const SGIRendererOps renderer_gl_ops = {
     .supports_primitive = renderer_gl_supports_primitive,
     .clear = renderer_gl_clear,
     .destroy = renderer_gl_destroy,
+    .identify = renderer_gl_identify,
 };
 
 static void renderer_gl_register(void)

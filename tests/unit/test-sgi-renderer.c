@@ -1588,6 +1588,85 @@ static void test_batch_draw_failure_staging_precedence(void)
     sgi_renderer_free(renderer);
 }
 
+/* The GL strings the reference build reports, and near misses. */
+static void test_identity_parse(void)
+{
+    static const char *ref_renderer = "llvmpipe (LLVM "
+        SGI_RENDERER_REFERENCE_LLVM ", 256 bits)";
+    static const char *ref_version = "4.5 (Compatibility Profile) Mesa "
+        SGI_RENDERER_REFERENCE_MESA;
+    static const struct {
+        const char *vendor, *renderer, *version;
+        bool reference;
+    } cases[] = {
+        { "Mesa", NULL, NULL, false },
+        { "Intel", "llvmpipe (LLVM " SGI_RENDERER_REFERENCE_LLVM
+          ", 256 bits)", "4.5 (Compatibility Profile) Mesa "
+          SGI_RENDERER_REFERENCE_MESA, false },
+        { "Mesa", "llvmpipe (LLVM " SGI_RENDERER_REFERENCE_LLVM
+          ", 128 bits)", "4.5 (Compatibility Profile) Mesa "
+          SGI_RENDERER_REFERENCE_MESA, false },
+        { "Mesa", "llvmpipe (LLVM 18.1.8, 256 bits)",
+          "4.5 (Compatibility Profile) Mesa " SGI_RENDERER_REFERENCE_MESA,
+          false },
+        { "Mesa", "llvmpipe (LLVM " SGI_RENDERER_REFERENCE_LLVM
+          ", 256 bits)", "4.5 (Compatibility Profile) Mesa 25.0.7", false },
+        { "Mesa", "llvmpipe (LLVM " SGI_RENDERER_REFERENCE_LLVM
+          ", 256 bits)", "4.5 (Core Profile) Mesa "
+          SGI_RENDERER_REFERENCE_MESA, true },
+        { "Mesa", "llvmpipe (LLVM " SGI_RENDERER_REFERENCE_LLVM
+          ", 256 bits) extra", "4.5 (Compatibility Profile) Mesa "
+          SGI_RENDERER_REFERENCE_MESA, false },
+        { "AMD", "AMD Radeon RX 7600 (radeonsi, navi33, LLVM 19.1.7)",
+          "4.6 (Compatibility Profile) Mesa " SGI_RENDERER_REFERENCE_MESA,
+          false },
+    };
+    SGIRendererIdentity id;
+    g_autofree char *long_renderer = g_strnfill(500, 'x');
+
+    sgi_renderer_identity_parse("Mesa", ref_renderer, ref_version, &id);
+    g_assert_true(id.reference);
+    g_assert_cmpstr(id.vendor, ==, "Mesa");
+    g_assert_cmpstr(id.renderer, ==, ref_renderer);
+    g_assert_cmpstr(id.version, ==, ref_version);
+    g_assert_cmpstr(id.mesa_version, ==, SGI_RENDERER_REFERENCE_MESA);
+    g_assert_cmpstr(id.llvm_version, ==, SGI_RENDERER_REFERENCE_LLVM);
+    g_assert_cmpuint(id.vector_bits, ==, 256);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        sgi_renderer_identity_parse(cases[i].vendor, cases[i].renderer,
+                                    cases[i].version, &id);
+        g_assert_cmpint(id.reference, ==, cases[i].reference);
+    }
+    /* Overlong strings are truncated and never the reference. */
+    sgi_renderer_identity_parse("Mesa", long_renderer, ref_version, &id);
+    g_assert_false(id.reference);
+    g_assert_cmpuint(strlen(id.renderer), ==, sizeof(id.renderer) - 1);
+    sgi_renderer_identity_parse(NULL, NULL, NULL, &id);
+    g_assert_false(id.reference);
+    g_assert_cmpstr(id.vendor, ==, "");
+}
+
+/* A backend without identify is never the reference driver. */
+static void test_identity_without_backend_strings(void)
+{
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    sgi_renderer_register_gl(&test_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_false(sgi_renderer_identity(renderer)->reference);
+    g_assert_cmpstr(sgi_renderer_identity(renderer)->vendor, ==, "");
+    sgi_renderer_test_set_reference(renderer, true);
+    g_assert_true(sgi_renderer_identity(renderer)->reference);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef CONFIG_MODULES
@@ -1684,6 +1763,9 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sgi-renderer/create/host-error",
                          GINT_TO_POINTER(SGI_RENDER_CREATE_HOST_ERROR),
                          test_create_result);
+    g_test_add_func("/sgi-renderer/identity/parse", test_identity_parse);
+    g_test_add_func("/sgi-renderer/identity/no-strings",
+                    test_identity_without_backend_strings);
     g_test_add_func("/sgi-renderer/create/unclassified",
                     test_create_unclassified_failure);
 #ifdef CONFIG_MODULES

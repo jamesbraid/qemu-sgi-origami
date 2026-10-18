@@ -217,6 +217,28 @@ typedef struct SGIRendererClear {
     bool colour, depth, stencil;
 } SGIRendererClear;
 
+/*
+ * The host driver as its GL strings name it. The mixed-frame set is proven
+ * only on the reference build the renderer tests select: llvmpipe from
+ * Mesa SGI_RENDERER_REFERENCE_MESA, built with LLVM
+ * SGI_RENDERER_REFERENCE_LLVM, with SGI_RENDERER_REFERENCE_VECTOR_BITS-bit
+ * vectors. CPU features such as fused multiply-add are not in the
+ * strings; the runtime probes guard those.
+ */
+#define SGI_RENDERER_REFERENCE_MESA "25.0.7-2+deb13u1"
+#define SGI_RENDERER_REFERENCE_LLVM "19.1.7"
+#define SGI_RENDERER_REFERENCE_VECTOR_BITS 256
+
+typedef struct SGIRendererIdentity {
+    char vendor[64];            /* GL_VENDOR */
+    char renderer[128];         /* GL_RENDERER */
+    char version[128];          /* GL_VERSION */
+    char mesa_version[64];      /* the word after "Mesa " in GL_VERSION */
+    char llvm_version[32];      /* from "llvmpipe (LLVM x, N bits)" */
+    unsigned vector_bits;       /* N there, zero when not llvmpipe */
+    bool reference;
+} SGIRendererIdentity;
+
 typedef struct SGIRendererOps {
     void *(*create)(SGIRenderCreateResult *result, Error **errp);
     bool (*draw)(void *opaque, SGIRendererRequest *request, Error **errp);
@@ -228,6 +250,9 @@ typedef struct SGIRendererOps {
                                Error **errp);
     bool (*clear)(void *opaque, SGIRendererClear *clear, Error **errp);
     void (*destroy)(void *opaque);
+    /* Optional: the GL strings the context reported, owned by opaque. */
+    void (*identify)(void *opaque, const char **vendor, const char **renderer,
+                     const char **version);
 } SGIRendererOps;
 
 /*
@@ -245,6 +270,14 @@ typedef enum SGIRenderDrawResult {
 } SGIRenderDrawResult;
 
 void sgi_renderer_register_gl(const SGIRendererOps *ops);
+/* Fill id from the three GL strings; any may be NULL. */
+void sgi_renderer_identity_parse(const char *vendor, const char *renderer,
+                                 const char *version,
+                                 SGIRendererIdentity *id);
+/* The driver a created renderer reported, fixed for its lifetime. */
+const SGIRendererIdentity *sgi_renderer_identity(SGIRenderer *renderer);
+/* Test-only: treat the renderer's driver as the reference build or not. */
+void sgi_renderer_test_set_reference(SGIRenderer *renderer, bool reference);
 /* Only UNAVAILABLE permits an optional caller to choose another renderer. */
 SGIRenderCreateResult sgi_renderer_create(SGIRenderer **renderer,
                                           Error **errp);
