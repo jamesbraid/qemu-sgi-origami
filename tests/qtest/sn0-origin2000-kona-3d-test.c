@@ -13764,6 +13764,259 @@ static void test_renderer_mesa_refused(gconstpointer opaque)
     qtest_quit(gpu);
 }
 
+/*
+ * An enabled texture with no image draws untextured. When the legacy host
+ * route takes such a draw, or refuses it after texture preflight (mode 0's
+ * fog), the shared incompleteness diagnostic appears once for the draw:
+ * the host attempt stays quiet and the path that finally draws reports.
+ */
+static void test_renderer_texture_incomplete(gconstpointer opaque)
+{
+    bool refused = !GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged_args(&log,
+                                         " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { s, cpu };
+    uint64_t draws, fallbacks;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_fixture(states[i]);
+        kona_command(states[i], 0x24, (uint32_t[]){ 0xde1 }, 1);
+        if (refused) {
+            kona_command(states[i], 0x24, (uint32_t[]){ 0xb60 }, 1);
+        }
+    }
+    draws = renderer_counter(s, "x-test-gpu-draws");
+    fallbacks = renderer_counter(s, "x-test-gpu-fallbacks");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_triangle(states[i]);
+    }
+    renderer_general_compare_planes(s, cpu, refused);
+    if (refused) {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws);
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                         fallbacks + 1);
+    } else {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws") +
+                         renderer_counter(s, "x-test-gpu-fallbacks"), ==,
+                         draws + fallbacks + 1);
+        if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+            g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==,
+                             draws + 1);
+        }
+    }
+    qtest_quit(cpu);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "sgi-gl: incomplete texture"),
+                     ==, 1);
+}
+
+/*
+ * A legacy host draw is committed only when the scalar path writes the
+ * same values to the same places. With one host pixel skewed the board
+ * draws the scalar result instead, exactly as a host-gpu=off board does,
+ * and counts a fallback; the next draw is confirmed on the host again.
+ */
+static void test_renderer_legacy_mismatch(void)
+{
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t requests, draws, fallbacks;
+    bool host;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_fixture(states[i]);
+    }
+    requests = renderer_counter(gpu, "x-test-gpu-requests");
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    fallbacks = renderer_counter(gpu, "x-test-gpu-fallbacks");
+    qtest_qmp_assert_success(gpu,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-skew-legacy','value':true}}");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_triangle(states[i]);
+    }
+    renderer_general_compare_planes(gpu, cpu, 0);
+    host = renderer_counter(gpu, "x-test-gpu-requests") > requests;
+    if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_true(host);
+    }
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + 1);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        kona_command_f(states[i], 0x63, (float[]){ 0, 0, 1 }, 3);
+        renderer_triangle(states[i]);
+    }
+    renderer_general_compare_planes(gpu, cpu, 1);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                     draws + host);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + 2 - host);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+}
+
+/*
+ * A legacy host draw whose held writes cannot be allocated, for the host
+ * batch (nth 1) or the confirming scalar draw (nth 2), is guest GL
+ * out-of-memory: nothing reaches the planes and no fallback is counted.
+ * The next draw is held and confirmed as usual.
+ */
+static void test_renderer_hold_oom(gconstpointer opaque)
+{
+    unsigned nth = GPOINTER_TO_UINT(opaque);
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t requests, draws, fallbacks;
+    bool host;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_fixture(states[i]);
+    }
+    requests = renderer_counter(gpu, "x-test-gpu-requests");
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    fallbacks = renderer_counter(gpu, "x-test-gpu-fallbacks");
+    qtest_qmp_assert_success(gpu,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-gpu-fail-hold','value':%u}}", nth);
+    renderer_triangle(gpu);
+    host = renderer_counter(gpu, "x-test-gpu-requests") > requests;
+    if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_true(host);
+    }
+    if (host) {
+        renderer_general_compare_planes(gpu, cpu, nth);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                         draws);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                         fallbacks);
+        assert_native_error(gpu, 0x505);
+        assert_native_error(gpu, 0);
+        renderer_triangle(gpu);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                         draws + 1);
+    }
+    renderer_triangle(cpu);
+    renderer_general_compare_planes(gpu, cpu, nth);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + !host);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+}
+
+/*
+ * A depth-tested quad over a whole 1280x1024 window takes the legacy route
+ * as two triangles in 80 tiles each, is held whole for the comparison, and
+ * is committed exactly as a host-gpu=off board draws it.
+ */
+static void test_renderer_legacy_full_window(void)
+{
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t requests, draws;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        QTestState *s = states[i];
+
+        gl_make_current_depth(s, 24);
+        kona_command_kicked(s, 0x1f3,
+                            (uint32_t[]){ 0, 0, 0x05670080, 0x05670080,
+                                          0, 0, FB_WIDTH, FB_HEIGHT, 0, 0xd,
+                                          0 }, 11);
+        kona_command_kicked(s, 0x1ee, (uint32_t[]){ 0, 0, 0 }, 3);
+        kona_command(s, 0xe3, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+        kona_command(s, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+        kona_command(s, 0x1a, (uint32_t[]){ 0x100 }, 1);
+        kona_command(s, 0x24, (uint32_t[]){ 0xb71 }, 1);
+        kona_command_f(s, 0x63, (float[]){ 0, 0.5f, 1 }, 3);
+    }
+    requests = renderer_counter(gpu, "x-test-gpu-requests");
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        gl_begin(states[i], 7);
+        gl_vertex2f(states[i], -1, -1);
+        gl_vertex2f(states[i], 1, -1);
+        gl_vertex2f(states[i], 1, 1);
+        gl_vertex2f(states[i], -1, 1);
+        gl_end(states[i]);
+    }
+    renderer_general_compare_planes(gpu, cpu, 0);
+    if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-requests"), ==,
+                         requests + 160);
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                         draws + 1);
+    }
+    g_assert_cmpuint(renderer_plane_at(gpu, 0, 0, 0), ==, 0x0080ff);
+    g_assert_cmpuint(renderer_plane_at(gpu, 0, FB_WIDTH - 1, FB_HEIGHT - 1),
+                     ==, 0x0080ff);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+}
+
+/*
+ * Two thin quads along the diagonals of a whole 1280x1024 window, each one
+ * legacy host draw. Their held writes start small and grow across the
+ * window, leftwards for the second, in the different orders the host batch
+ * and the scalar draw reach them, and each draw is committed exactly as a
+ * host-gpu=off board draws it.
+ */
+static void test_renderer_legacy_diagonals(void)
+{
+    static const float quads[2][4][2] = {
+        { { -1, -1 }, { -0.98f, -1 }, { 1, 1 }, { 0.98f, 1 } },
+        { { 0.98f, -1 }, { 1, -1 }, { -0.98f, 1 }, { -1, 1 } },
+    };
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t draws;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        QTestState *s = states[i];
+
+        gl_make_current_depth(s, 24);
+        kona_command_kicked(s, 0x1f3,
+                            (uint32_t[]){ 0, 0, 0x05670080, 0x05670080,
+                                          0, 0, FB_WIDTH, FB_HEIGHT, 0, 0xd,
+                                          0 }, 11);
+        kona_command_kicked(s, 0x1ee, (uint32_t[]){ 0, 0, 0 }, 3);
+        kona_command(s, 0xe3, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+        kona_command(s, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+        kona_command(s, 0x1a, (uint32_t[]){ 0x100 }, 1);
+        kona_command(s, 0x24, (uint32_t[]){ 0xb71 }, 1);
+        kona_command_f(s, 0x63, (float[]){ 0, 0.5f, 1 }, 3);
+    }
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        for (unsigned q = 0; q < ARRAY_SIZE(quads); q++) {
+            gl_begin(states[i], 7);
+            for (unsigned v = 0; v < 4; v++) {
+                gl_vertex2f(states[i], quads[q][v][0], quads[q][v][1]);
+            }
+            gl_end(states[i]);
+        }
+    }
+    renderer_general_compare_planes(gpu, cpu, 0);
+    if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==,
+                         draws + 2);
+    }
+    g_assert_cmpuint(renderer_plane_at(gpu, 0, FB_WIDTH / 2, FB_HEIGHT / 2),
+                     ==, 0x0080ff);
+    g_assert_cmpuint(renderer_plane_at(gpu, 0, FB_WIDTH / 2, 0), !=,
+                     0x0080ff);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+}
+
 /* Renderer cases with this flag make host renderer creation unavailable. */
 #define RENDERER_CPU (1u << 16)
 
@@ -14807,20 +15060,13 @@ static void renderer_texture_sample(double u, double v, bool linear,
     }
 }
 
-static void test_renderer_texture(gconstpointer opaque)
+/* Load and enable the 2x2 texture, in an environment from the table. */
+static void renderer_texture_bind(QTestState *s, bool linear,
+                                  unsigned environment)
 {
-    unsigned mode = renderer_mode(opaque);
-    static const float positions[4][2] = {
-        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
-    };
     static const uint32_t environments[4] = { 0x1e01, 0x2100, 0x2101, 0xbe2 };
-    unsigned environment = mode == 4 ? 1 : mode == 5 ? 2 : mode == 6 ? 3 :
-                           mode >= 7 ? 1 : 0;
     uint32_t h[20], record[22] = { 0x43, 0x101010, 256u << 10 };
-    QTestState *s = renderer_init(opaque);
-    g_autofree Expected *expected = g_new(Expected, 1);
 
-    renderer_fixture(s);
     memcpy(h, texture_header, sizeof(h));
     kona_command(s, 0x174, h, ARRAY_SIZE(h));
     for (unsigned k = 0; k < 4; k++) {
@@ -14829,7 +15075,7 @@ static void test_renderer_texture(gconstpointer opaque)
     kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
     kona_command(s, 0x1d5,
                  (uint32_t[]) { 0, (2u << 28) | (41 << 12),
-                                (0x30 << 14) | (mode == 1 ? 36 : 0), 0x11, 1 },
+                                (0x30 << 14) | (linear ? 36 : 0), 0x11, 1 },
                  5);
     kona_command(s, 0x179, record, ARRAY_SIZE(record));
     kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
@@ -14839,6 +15085,21 @@ static void test_renderer_texture(gconstpointer opaque)
     kona_command(s, 0x11,
                  (uint32_t[]) { 0x2201, fbits(0.25f), fbits(0.5f),
                                 fbits(0.75f), fbits(0.25f) }, 5);
+}
+
+static void test_renderer_texture(gconstpointer opaque)
+{
+    unsigned mode = renderer_mode(opaque);
+    static const float positions[4][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
+    };
+    unsigned environment = mode == 4 ? 1 : mode == 5 ? 2 : mode == 6 ? 3 :
+                           mode >= 7 ? 1 : 0;
+    QTestState *s = renderer_init(opaque);
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    renderer_texture_bind(s, mode == 1, environment);
     if (mode == 3) {
         kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
     } else if (mode == 7) {
@@ -14942,6 +15203,51 @@ static void test_renderer_texture(gconstpointer opaque)
         kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
     }
     qtest_quit(s);
+}
+
+/*
+ * A textured quad with a negative q at one vertex. The legacy host route
+ * refuses it before sampling, and the scalar path drops the primitive
+ * whose clipped coordinates are invalid, so the draw reports that once
+ * and never reaches a per-fragment projected-coordinate report on either
+ * path.
+ */
+static void test_renderer_texture_invalid_q_once(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *gpu = kona_init_logged_args(&log,
+                                           " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    static const float positions[4][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        QTestState *s = states[i];
+
+        renderer_fixture(s);
+        renderer_texture_bind(s, false, 0);
+        gl_begin(s, 7);
+        for (unsigned v = 0; v < 4; v++) {
+            float x = positions[v][0], y = positions[v][1];
+
+            kona_command_f(s, 0x6b,
+                           (float[]) { 0.5f, 0.25f, 0.75f, 0.5f }, 4);
+            kona_command_f(s, 0x88, (float[]) { x / 128, y / 128, 0,
+                                                v == 2 ? -0.5f : 0.5f }, 4);
+            kona_command_f(s, 0x94, (float[]) { x, y, 0, 1 }, 4);
+        }
+        gl_end(s);
+    }
+    renderer_general_compare_planes(gpu, cpu, 0);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found,
+                                       "invalid clipped coordinates"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found,
+                                       "invalid projected coordinates"), ==, 0);
 }
 
 static void test_renderer_excluded_state(void)
@@ -16017,6 +16323,24 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
                         "mesa-refused/mixed-frame",
                         GUINT_TO_POINTER(2), test_renderer_mesa_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "texture-incomplete/refused",
+                        GUINT_TO_POINTER(0), test_renderer_texture_incomplete);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "texture-incomplete/accepted",
+                        GUINT_TO_POINTER(1), test_renderer_texture_incomplete);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-mismatch",
+                   test_renderer_legacy_mismatch);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/hold-oom/host",
+                        GUINT_TO_POINTER(1), test_renderer_hold_oom);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/hold-oom/scalar",
+                        GUINT_TO_POINTER(2), test_renderer_hold_oom);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-full-window",
+                   test_renderer_legacy_full_window);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-diagonals",
+                   test_renderer_legacy_diagonals);
+    qtest_add_func("sn0/origin2000/kona-3d/renderer/texture-invalid-q-once",
+                   test_renderer_texture_invalid_q_once);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
                         "create-legacy-unavailable",
                         GUINT_TO_POINTER(1), test_renderer_create_failure);

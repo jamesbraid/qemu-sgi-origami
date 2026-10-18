@@ -806,6 +806,10 @@ struct SGIKonaState {
     /* Pending host-only test arm; cleared on reset/load, not migrated. */
     uint32_t test_renderer_fail_draw;
     uint32_t test_renderer_fail_create;
+    /* Flip one committed legacy host pixel so it differs from scalar. */
+    bool test_renderer_skew;
+    /* Fail the nth allocation of held legacy writes from now; 0 is off. */
+    uint32_t test_renderer_fail_hold;
     uint64_t renderer_generation;
     uint64_t renderer_requests;
     uint64_t renderer_draws;
