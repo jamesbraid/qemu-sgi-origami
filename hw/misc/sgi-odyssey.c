@@ -3989,12 +3989,18 @@ typedef struct OdysseyTexture {
     uint32_t words;
 } OdysseyTexture;
 
+/* First and last detail function weights, and whether the table is flat. */
+typedef struct OdysseyTextureDetailWeight {
+    bool constant;
+    double first, last;
+} OdysseyTextureDetailWeight;
+
 typedef struct OdysseyTextureVolume {
     SGIOdysseyState *s;
     uint32_t base, stride_units, level_word2;
     uint32_t width, height, depth, base_format, words;
     bool colour_table_alpha, border;
-    double detail_weight;
+    OdysseyTextureDetailWeight detail_weight;
 } OdysseyTextureVolume;
 
 typedef struct OdysseyTextureChain {
@@ -4009,7 +4015,6 @@ typedef struct OdysseyTextureChain {
     SGIGLTexPyramid pyramid;
     OdysseyTexture detail_storage;
     SGIGLTexLevel detail_image;
-    double detail_weight;
 } OdysseyTextureChain;
 
 static void odyssey_gl_transpose(const uint32_t *rows, float m[16]);
@@ -4137,14 +4142,34 @@ static bool odyssey_texture_read_detail(void *opaque, uint32_t level,
     return read;
 }
 
+/*
+ * The stock driver's two-point function (-4, 1/4), (0, 1/2) fills entry 0
+ * with 1/2, falls by 1/512 per entry to 1/4 at entry 128 and holds 1/4
+ * through entry 255. That is consistent with entry i serving LOD -i/32, so
+ * the table runs out at LOD -255/32. SGIS_detail_texture fixes the weight
+ * at and beyond each end point, and those are the only weights used here.
+ * How the board indexes and interpolates the table at LODs in between is
+ * not known, so a nonconstant table refuses them; the sampler reports the
+ * refusal and drops the fragment rather than guessing a curve.
+ */
+#define ODSY_TEX_DETAIL_FUNCTION_LAST_LOD \
+    (-(double)(SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES - 1) / 32)
+
 static bool odyssey_texture_detail_weight(void *opaque, double lambda,
                                           double *weight)
 {
     OdysseyTextureVolume *volume = opaque;
+    const OdysseyTextureDetailWeight *detail = &volume->detail_weight;
 
-    (void)lambda;
-    *weight = volume->detail_weight;
-    return true;
+    if (detail->constant || lambda <= ODSY_TEX_DETAIL_FUNCTION_LAST_LOD) {
+        *weight = detail->last;
+        return true;
+    }
+    if (lambda >= 0) {
+        *weight = detail->first;
+        return true;
+    }
+    return false;
 }
 
 static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
@@ -4247,20 +4272,9 @@ static bool odyssey_texture_detail_sampler(uint32_t sampler,
     }
 }
 
-static bool odyssey_texture_detail_function_weight(const SGIOdysseyState *s,
-                                                   double *weight)
+static bool odyssey_texture_detail_entry_weight(uint32_t value,
+                                                double *weight)
 {
-    uint32_t value;
-
-    if (s->tex_detail_function_valid != 0xffff) {
-        return false;
-    }
-    value = s->tex_detail_function[0];
-    for (unsigned i = 1; i < SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES; i++) {
-        if (s->tex_detail_function[i] != value) {
-            return false;
-        }
-    }
     switch (value) {
     case 0x00000000:
     case 0x00400000:
@@ -4272,6 +4286,26 @@ static bool odyssey_texture_detail_function_weight(const SGIOdysseyState *s,
     default:
         return false;
     }
+}
+
+static bool odyssey_texture_detail_function_weight(
+    const SGIOdysseyState *s, OdysseyTextureDetailWeight *weight)
+{
+    const uint32_t *table = s->tex_detail_function;
+    unsigned last = SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES - 1;
+
+    if (s->tex_detail_function_valid != 0xffff) {
+        return false;
+    }
+    weight->constant = true;
+    for (unsigned i = 1; i <= last; i++) {
+        if (table[i] != table[0]) {
+            weight->constant = false;
+            break;
+        }
+    }
+    return odyssey_texture_detail_entry_weight(table[0], &weight->first) &&
+           odyssey_texture_detail_entry_weight(table[last], &weight->last);
 }
 
 static uint32_t odyssey_texture_detail_filter(uint32_t word)
@@ -4340,7 +4374,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     uint32_t word = s->tex_sampler[4], components = word & 0x0f800000;
     uint32_t sampler_size = s->tex_sampler[0];
     OdysseyTextureDetailSampler detail_sampler;
-    double detail_weight = 0;
+    OdysseyTextureDetailWeight detail_weight = { 0 };
     bool detail_identity = odyssey_texture_detail_sampler(sampler_size,
                                                            &detail_sampler);
     uint32_t detail_filter = detail_identity ?
@@ -4788,7 +4822,6 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                 detail_sampler.height, image->base_format)) {
             goto unsupported;
         }
-        chain->detail_weight = detail_weight;
         chain->volume.detail_weight = detail_weight;
         image->detail_image = &chain->detail_image;
         image->detail_level = detail_sampler.level;

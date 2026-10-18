@@ -12976,6 +12976,129 @@ static void test_texture_adapter_detail_zero_alpha_reference(void)
     board_quit(qts);
 }
 
+/*
+ * A 2x2-pixel quad whose four vertices share one texture coordinate. Its
+ * derivatives are zero, so the sampler takes the minimum LOD; a point would
+ * not, because the shared rasterizer gives points a fixed footprint.
+ */
+static void texture_adapter_flat_quad(QTestState *qts, int x, int y,
+                                      float s, float t)
+{
+    const uint32_t words[] = {
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, 0,
+        ODSY_CMD_GL_BEGIN, 7,
+        0xc380c821, bitmap_rect_float(s), bitmap_rect_float(t),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x), bitmap_rect_float(y),
+        0xc380c821, bitmap_rect_float(s), bitmap_rect_float(t),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x + 2), bitmap_rect_float(y),
+        0xc380c821, bitmap_rect_float(s), bitmap_rect_float(t),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x + 2),
+        bitmap_rect_float(y + 2),
+        0xc380c821, bitmap_rect_float(s), bitmap_rect_float(t),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x), bitmap_rect_float(y + 2),
+        ODSY_CMD_GL_END,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+/*
+ * The stock driver sends the two-point function (-4, 1/4), (0, 1/2) as a
+ * table holding 1/2 at entry 0, falling to 1/4 at entry 128 and holding 1/4
+ * to the end. SGIS_detail_texture fixes the weight beyond each end point, so
+ * a draw at the lowest LOD must use 1/4 and a draw at LOD 0 must use 1/2.
+ * Weights between the ends are not known and must be refused.
+ */
+static void test_texture_adapter_detail_function_endpoints(void)
+{
+    const uint32_t detail[4] = {
+        0xff0000ff, 0x00ffffff, 0xffff0000, 0x0000ffff,
+    };
+    const uint32_t state[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x04108000, 1, 1, 1, 0x13000044, 0, 0,
+        0x0001141b, 2, 0, 0, 0, 0,
+        0x00010e80, 0x0016a800, 0x41100002, 0,
+        0x00010ebe, 0x0016a880, 0x41100002, 0,
+        0x00010406, 0,
+    };
+    /* Minimum LOD -15, the reset value, then 0 and -2; maximum LOD 15. */
+    const uint32_t lod_lowest[] = { 0x00011013, 0, 0, 0x3100, 0x0f00 };
+    const uint32_t lod_zero[] = { 0x00011013, 0, 0, 0, 0x0f00 };
+    const uint32_t lod_between[] = { 0x00011013, 0, 0, 0x3e00, 0x0f00 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    uint32_t words[16];
+    uint32_t quarter, half, lowest, zero, between;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-detail-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    upload_begin(qts, 0x16a800, 2, 0x080024d0, 1, 1);
+    upload_first_header(qts, 0x4b);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, 0x8040c080);
+    upload_end(qts);
+    texture_adapter_upload(qts, 0x16a880, detail);
+    texture_adapter_window(qts);
+
+    push_user_words(qts, state, ARRAY_SIZE(state));
+    texture_adapter_upload_detail_function(qts, 0x00400000);
+    texture_adapter_flat_quad(qts, 10, 10, 0.125f, 0.125f);
+    quarter = odsy_test_pixel(qts, 10, 10);
+    texture_adapter_upload_detail_function(qts, 0x00800000);
+    texture_adapter_flat_quad(qts, 12, 10, 0.125f, 0.125f);
+    half = odsy_test_pixel(qts, 12, 10);
+
+    for (unsigned block = 0; block < 16; block++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+            unsigned entry = block * ARRAY_SIZE(words) + i;
+
+            words[i] = entry < 128 ? 0x00800000 - entry * 0x8000 :
+                                     0x00400000;
+        }
+        user_cmd_push(qts, 0x00013e40 | block);
+        push_user_words(qts, words, ARRAY_SIZE(words));
+    }
+
+    odsy_test_pixel_write(qts, 14, 10, 0x2468ace0);
+    push_user_words(qts, lod_lowest, ARRAY_SIZE(lod_lowest));
+    texture_adapter_flat_quad(qts, 14, 10, 0.125f, 0.125f);
+    lowest = odsy_test_pixel(qts, 14, 10);
+
+    odsy_test_pixel_write(qts, 16, 10, 0x2468ace0);
+    push_user_words(qts, lod_zero, ARRAY_SIZE(lod_zero));
+    texture_adapter_flat_quad(qts, 16, 10, 0.125f, 0.125f);
+    zero = odsy_test_pixel(qts, 16, 10);
+
+    odsy_test_pixel_write(qts, 18, 10, 0x2468ace0);
+    push_user_words(qts, lod_between, ARRAY_SIZE(lod_between));
+    texture_adapter_flat_quad(qts, 18, 10, 0.125f, 0.125f);
+    between = odsy_test_pixel(qts, 18, 10);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    /* The constant-table controls must themselves differ. */
+    g_assert_cmphex(quarter, ==, 0xc00000c0);
+    g_assert_cmphex(half, !=, quarter);
+    g_assert_cmphex(lowest, ==, quarter);
+    g_assert_cmphex(zero, ==, half);
+    g_assert_cmphex(between, ==, 0x2468ace0);
+    g_assert_nonnull(strstr(log, "invalid filter weight"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_texture_adapter_detail_rectangular_migration(void)
 {
     const uint32_t primary[4] = {
@@ -17891,6 +18014,8 @@ int main(int argc, char **argv)
              test_texture_adapter_detail_zero_alpha_reference);
     add_fresh_case("sn1/odyssey/texture-adapter/detail-rectangular-migration",
                    test_texture_adapter_detail_rectangular_migration);
+    add_fresh_case("sn1/odyssey/texture-adapter/detail-function-endpoints",
+                   test_texture_adapter_detail_function_endpoints);
     add_case("sn1/odyssey/texture-adapter/nearest-clamp",
              test_texture_adapter_nearest_clamp);
     add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
