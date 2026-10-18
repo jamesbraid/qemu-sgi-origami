@@ -730,7 +730,8 @@ static void test_inbound_buffer_matches_accesses(void)
 
     dma_read(s, a - 8, whole, sizeof(whole));
     for (size_t off = 0; off < sizeof(stepped); off += 8) {
-        dma_read(s, b - 8 + off, stepped + off, 8);
+        dma_read(s, b - 8 + off, stepped + off,
+                 MIN(8, sizeof(stepped) - off));
     }
     g_assert_cmpmem(whole, sizeof(whole), stepped, sizeof(stepped));
     g_assert_cmpmem(whole + 8, LEN, pattern, LEN);
@@ -739,7 +740,8 @@ static void test_inbound_buffer_matches_accesses(void)
         g_assert_cmphex(whole[8 + LEN + i], ==, 0xa5);
     }
     for (size_t off = 0; off < sizeof(stepped); off += 8) {
-        dma_read(s, a - 8 + off, stepped + off, 8);
+        dma_read(s, a - 8 + off, stepped + off,
+                 MIN(8, sizeof(stepped) - off));
     }
     g_assert_cmpmem(whole, sizeof(whole), stepped, sizeof(stepped));
     qtest_quit(s);
