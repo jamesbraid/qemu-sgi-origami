@@ -397,6 +397,24 @@ typedef struct SGIRenderResourceOps {
         const SGIRenderRect *rect, const uint32_t *slots,
         size_t stride_slots, size_t capacity_slots,
         const SGIRenderWriteCoverage *writes, Error **errp);
+    /*
+     * An index resource's commit, the only one an indexed draw makes; an
+     * index resource without it is refused before its snapshot. slots
+     * hold final indices: the shared code has already merged the new
+     * index into the old one under effective_mask (the draw's index mask
+     * limited to the storage width), so the family stores the storage
+     * bits of each covered pixel once and never merges again. A covered
+     * pixel is one a fragment reached, whatever the mask and whether or
+     * not its value changed; the family may still apply its own policy
+     * for effective_mask, such as writing nothing while it is zero. An
+     * uncovered pixel must keep its index, tag, slot and dirty state.
+     */
+    SGIRenderCommitResult (*commit_index_covered)(
+        void *opaque, const SGIRenderResource *resource, uint32_t slice,
+        const SGIRenderRect *rect, const uint32_t *slots,
+        size_t stride_slots, size_t capacity_slots,
+        const SGIRenderWriteCoverage *writes, uint32_t effective_mask,
+        Error **errp);
 } SGIRenderResourceOps;
 
 typedef struct SGIRasterTarget {
@@ -483,6 +501,17 @@ SGIRenderCommitResult sgi_render_resource_commit_covered(
     uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
     size_t stride_slots, size_t capacity_slots,
     const SGIRenderWriteCoverage *writes, Error **errp);
+/*
+ * The checked index commit: resource must be a one-component unsigned
+ * index resource, and effective_mask may hold no bit above its storage
+ * width.
+ */
+SGIRenderCommitResult sgi_render_resource_commit_index_covered(
+    const SGIRasterTarget *target, const SGIRenderResource *resource,
+    uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, uint32_t effective_mask,
+    Error **errp);
 typedef struct SGIRenderer SGIRenderer;
 
 /*
