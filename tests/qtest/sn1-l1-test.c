@@ -2831,6 +2831,164 @@ static void assert_machine_port_speed(QTestState *s, uint32_t first)
     g_assert_cmpmem(reply, sizeof(zero_reply), expected, sizeof(zero_reply));
 }
 
+static bool identity_area_contains(const uint8_t *area, size_t length,
+                                   const char *text)
+{
+    size_t text_length = strlen(text);
+
+    for (size_t i = 0; i + text_length <= length; i++) {
+        size_t j;
+
+        for (j = 0; j < text_length; j++) {
+            if ((area[i + j] & 0x7f) != (uint8_t)text[j]) {
+                break;
+            }
+        }
+        if (j == text_length) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_machine_node_board_profiles(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *flash = NULL, *data = NULL, *clock = NULL;
+    g_autofree char *override_path = NULL;
+    QTestState *s;
+    static const struct {
+        const char *machine;
+        const char *memory;
+        unsigned int cpus;
+        const char *reset_mode;
+        const char *scache_bytes;
+        const char *name;
+        const char *part;
+        const char *revision;
+    } profiles[] = {
+        { "origin350", "2G", 4, "0x009cad85", "0x800000",
+          "IP53_4CPU", "030-1868-001", "-C" },
+        { "onyx350,topology=onyx350-compat", "8G", 4,
+          "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D" },
+        { "tezro,topology=tezro-tower-one", "4G", 1,
+          "0x009bad85", "0x400000", NULL, NULL, NULL },
+        { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
+          "0x009dad85", "0x1000000", NULL, NULL, NULL },
+    };
+    int fd;
+
+    fd = g_file_open_tmp("sn1-l1-node-board-flash-XXXXXX", &flash, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-node-board-data-XXXXXX", &data, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-node-board-clock-XXXXXX", &clock, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-node-board-override-XXXXXX",
+                         &override_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        uint8_t reply[131];
+
+        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+                        "-cpu R16000,r16000-experimental=on,"
+                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-drive if=pflash,index=0,file=%s,format=raw "
+                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                        "format=raw "
+                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                        "format=raw -display none -S",
+                        profiles[i].machine, profiles[i].memory,
+                        profiles[i].cpus, profiles[i].reset_mode,
+                        profiles[i].scache_bytes, flash, data, clock);
+        qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+        if (profiles[i].name) {
+            g_assert_cmpuint(eeprom_read(s, 0, 1, 0,
+                                         sizeof(expected_chassis), reply), ==,
+                             12 + sizeof(expected_chassis));
+            g_assert_cmpmem(reply + 12, sizeof(expected_chassis),
+                            expected_chassis, sizeof(expected_chassis));
+            g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 72, reply), ==, 84);
+            g_assert_cmphex(reply[4], ==, 0);
+            g_assert_cmphex(reply[11], ==, 0xc8);
+            g_assert_true(identity_area_contains(reply + 12, 72,
+                                                  profiles[i].name));
+            g_assert_true(identity_area_contains(reply + 12, 72,
+                                                  profiles[i].part));
+            g_assert_true(identity_area_contains(reply + 12, 72,
+                                                  profiles[i].revision));
+            qtest_system_reset(s);
+            g_assert_cmpuint(eeprom_read(s, 0, 1, 0,
+                                         sizeof(expected_chassis), reply), ==,
+                             12 + sizeof(expected_chassis));
+            g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 72, reply), ==, 84);
+            g_assert_true(identity_area_contains(reply + 12, 72,
+                                                  profiles[i].part));
+        } else {
+            g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 1, reply), ==, 6);
+            g_assert_cmphex(reply[4], ==, 0x98);
+        }
+        qtest_quit(s);
+    }
+
+    for (unsigned int i = 0; i < 2; i++) {
+        const uint8_t raw[] = { 0x46, 0xba };
+        const char *property = i == 0 ? "chassis-eeprom.0" :
+                                        "board-eeprom.0";
+        g_autofree char *machine = NULL;
+        uint8_t reply[131];
+
+        g_assert_true(g_file_set_contents(override_path, (const char *)raw,
+                                          sizeof(raw), &error));
+        g_assert_no_error(error);
+        machine = g_strdup_printf("%s,%s=%s", profiles[i].machine, property,
+                                  override_path);
+        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+                        "-cpu R16000,r16000-experimental=on,"
+                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-drive if=pflash,index=0,file=%s,format=raw "
+                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                        "format=raw "
+                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                        "format=raw -display none -S",
+                        machine, profiles[i].memory, profiles[i].cpus,
+                        profiles[i].reset_mode, profiles[i].scache_bytes,
+                        flash, data, clock);
+        qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+        if (i == 0) {
+            g_assert_cmpuint(eeprom_read(s, 0, 1, 0, sizeof(raw), reply), ==,
+                             12 + sizeof(raw));
+            g_assert_cmpmem(reply + 12, sizeof(raw), raw, sizeof(raw));
+            g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 72, reply), ==, 84);
+            g_assert_true(identity_area_contains(reply + 12, 72,
+                                                  profiles[i].part));
+        } else {
+            g_assert_cmpuint(eeprom_read(s, 0, 1, 0,
+                                         sizeof(expected_chassis), reply), ==,
+                             12 + sizeof(expected_chassis));
+            g_assert_cmpmem(reply + 12, sizeof(expected_chassis),
+                            expected_chassis, sizeof(expected_chassis));
+            g_assert_cmpuint(eeprom_read(s, 0, 2, 0, sizeof(raw), reply), ==,
+                             12 + sizeof(raw));
+            g_assert_cmpmem(reply + 12, sizeof(raw), raw, sizeof(raw));
+        }
+        qtest_quit(s);
+    }
+
+    g_unlink(flash);
+    g_unlink(data);
+    g_unlink(clock);
+    g_unlink(override_path);
+}
+
 static void test_machine_port_speed_profiles(void)
 {
     g_autoptr(GError) error = NULL;
@@ -4965,6 +5123,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/port-speed", test_port_speed);
     qtest_add_func("sn1/l1/port-speed/machine-profiles",
                    test_machine_port_speed_profiles);
+    qtest_add_func("sn1/l1/node-board/machine-profiles",
+                   test_machine_node_board_profiles);
     qtest_add_func("sn1/l1/expansion/migration", test_expansion_migration);
     qtest_add_func("sn1/l1/expansion/input-refusal",
                    test_expansion_input_refusal);
