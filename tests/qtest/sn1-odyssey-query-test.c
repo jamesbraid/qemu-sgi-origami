@@ -785,9 +785,8 @@ static void test_query_context_snapshot_failure(const void *opaque)
 
 /*
  * Formats 7, 8, 13, 21 and 22 to 24: each record answers with the complete
- * command word its last setter sent and exactly that word's raw operands
- * (docs/reviews/odyssey-query-formats-7-13-evidence-20260930.md). The decode
- * helpers apply the GL library's published consumer rules.
+ * command word its last setter sent and exactly that word's raw operands.
+ * The decode helpers apply the GL library's published consumer rules.
  */
 #define QUERY_S8 0x3b808081u
 #define QUERY_S32 0x2f800005u

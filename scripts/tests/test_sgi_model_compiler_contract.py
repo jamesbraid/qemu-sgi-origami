@@ -2643,14 +2643,7 @@ def _whole_chassis(model: dict) -> dict:
 
 def _fit_occupant(model: dict, *, board_kind: str = "pci-shoehorn",
                   bridge_attachment: dict | None = None) -> dict:
-    """Fit a one-Bridge board into origin2000-rack's IO2 connector.
-
-    The resolved-graph shape a composition produces when it instantiates
-    a board module under the connector and selects the connector occupied
-    (docs/designs/2026-09-05-origin2000-generated-descriptor.md, "A fitted
-    board in an occupied connector"). Built in memory so the compiler is
-    exercised independently of any one composition file.
-    """
+    """Build an occupied-connector fixture for the model compiler."""
     sources = ["occupied-connector compiler fixture"]
     _whole_chassis(model)
     model["components"] += [
@@ -3234,10 +3227,6 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
         )
 
     def test_bank_and_accepted_memory(self):
-        # The reviewed placement (docs/reviews/bedrock-fitted-bank-
-        # presence-contract-review-20260912.md): the shipped 512 MiB sits
-        # at locational banks two and three, not the dense bank zero
-        # today's generated input still carries.
         node = self.entry["nodes"][0]
         self.assertEqual(node["bank_mib"], [0, 0, 256, 256, 0, 0, 0, 0])
         self.assertEqual(node["accepted_memory_mib"], [512])
@@ -3514,8 +3503,6 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(catalogue["references"], [])
 
     def test_enumerations_are_lower_case_and_hyphenated(self):
-        # docs/designs/sn-machine-model-architecture.md's "The compiled
-        # catalogue" section: QAPI member names, lower-case enumerations.
         catalogue = json.loads(render_catalogue_json([_resolved("origin300")]))
         topology = catalogue["topologies"][0]
         self.assertEqual(topology["generation"], "sn1")
