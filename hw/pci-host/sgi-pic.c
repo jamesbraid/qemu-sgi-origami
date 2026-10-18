@@ -724,11 +724,16 @@ static bool pic_pio_region_leaf(MemoryRegion *mr, hwaddr offset,
 static PCIDevice *pic_pio_mapped_function(SGIPICHead *s, AddressSpace *as,
                                           hwaddr addr, unsigned size)
 {
-    MemoryRegionSection active = memory_region_find(as->root, addr, size);
+    MemoryRegionSection active;
     PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
     PCIDevice *result = NULL;
     unsigned devfn, bar;
 
+    /* memory_region_find() cannot search an address space with no mappings. */
+    if (!as->root->terminates && QTAILQ_EMPTY(&as->root->subregions)) {
+        return NULL;
+    }
+    active = memory_region_find(as->root, addr, size);
     if (!pic_pio_section_covers(&active, addr, size)) {
         if (active.mr) {
             memory_region_unref(active.mr);
