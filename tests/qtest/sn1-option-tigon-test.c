@@ -1768,9 +1768,10 @@ static void test_generic_wide_64bit_dma_write(void)
         g_autoptr(GError) error = NULL;
         Tigon t = { .placement = &p };
         uint8_t seen[16];
-        uint64_t iova = cases[i].direct32 ? UINT64_C(0x804d4000) :
-            (cases[i].bit55 ? UINT64_C(0xa9800000004d4000) :
-                              UINT64_C(0xa9000000004d4000));
+        uint32_t direct_swap = 0;
+        uint64_t iova = cases[i].direct32 ? UINT64_C(0x804d4000)
+                        : cases[i].bit55 ? UINT64_C(0xa9800000004d4000)
+                                         : UINT64_C(0xa9000000004d4000);
         int fd = g_file_open_tmp("sn1-generic-wide64-XXXXXX", &storage,
                                  &error);
 
@@ -1803,9 +1804,11 @@ static void test_generic_wide_64bit_dma_write(void)
                    (p.device + 1) << 24);
         cpu_writel(t.qts, t.pio_cpu, t.head + 0x20004 + p.device * 0x1000,
                    6);
+        if (cases[i].bit19) {
+            direct_swap = XBRIDGE_DIRECT_SWAP;
+        }
         cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
-                   0x1000 | ((p.device + 1) << 4) | (cases[i].bit19 ?
-                   XBRIDGE_DIRECT_SWAP : 0));
+                   0x1000 | ((p.device + 1) << 4) | direct_swap);
         cpu_writel(t.qts, t.pio_cpu, t.head + 0x84, 0xa << 20);
         memory_write(&t, 0, 0x4d4000, (uint8_t[16]) { 0 }, sizeof(seen));
         if (cases[i].ecc_overlay) {

@@ -1269,7 +1269,7 @@ static void test_routed_direct_then_page_same_ram(void)
     qtest_writeq(qts, h + 0x10000, ram | (0xa << 8) | 1);
     writes = qtest_readq(qts, STATUS + 120);
 
-    /* The fixture has 1 MiB RAM; this preserves the guest IOVA selector bits. */
+    /* The 1 MiB RAM fixture preserves the guest IOVA selector bits. */
     dma(qts, index, UINT64_C(0xa980000000000000) + ram,
         payload, true, MEMTX_OK);
     g_assert_cmphex(qtest_readq(qts, STATUS + 120), ==, writes + 1);
