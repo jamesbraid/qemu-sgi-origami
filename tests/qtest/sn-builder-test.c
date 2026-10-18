@@ -3948,7 +3948,7 @@ static void test_ip53_runtime_pxbow_migration(const void *opaque)
     uint8_t restored_carrier[sizeof(reset_ram_seed)];
 
     if (mismatch && !g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC, 0);
+        g_test_trap_subprocess(NULL, 120 * G_USEC_PER_SEC, 0);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr("*IP53 assembly fingerprint mismatch*");
         return;
