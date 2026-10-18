@@ -50,6 +50,11 @@ static MemoryRegion *sgi_pio_forward_lookup(SGIPioForward *f, hwaddr addr,
     }
     sgi_pio_forward_forget(f);
 
+    /* memory_region_find() cannot search an address space with no mappings. */
+    if (!f->as->root->terminates &&
+        QTAILQ_EMPTY(&f->as->root->subregions)) {
+        return NULL;
+    }
     section = memory_region_find(f->as->root, page, SGI_PIO_FORWARD_PAGE);
     if (!section.mr) {
         return NULL;
