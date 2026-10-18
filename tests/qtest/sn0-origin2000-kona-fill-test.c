@@ -3138,6 +3138,69 @@ static void test_semantic_desktop_migration(gconstpointer opaque)
     g_rmdir(dir);
 }
 
+/*
+ * Meson runs this binary once per group in
+ * sn0-origin2000-kona-fill-test-groups.txt, naming the group's GLib paths
+ * with --group-path, so that its groups run at once. Only the cases a group
+ * takes are registered. GLib's own -p selects as well, but it reports each
+ * path as a separate TAP plan, which Meson rejects. A path names one case or
+ * a suite whose cases directly under it all join the group. Without
+ * --group-path, every case runs.
+ */
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
+{
+    int kept = 1;
+
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
+        }
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+}
+
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
+
+    if (!group_paths) {
+        return true;
+    }
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
+
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_func(path, fn);
+    }
+}
+
+static void add_data_case(const char *path, gconstpointer data,
+                          GTestDataFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_data_func(path, data, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
     static const XFramingCase cases[] = {
@@ -3155,43 +3218,44 @@ int main(int argc, char **argv)
     };
     int ret;
 
+    take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
-    qtest_add_func("sn0/origin2000/kona-fill/semantic-ancillary/composition",
-                   test_semantic_ancillary);
-    qtest_add_func("sn0/origin2000/kona-fill/semantic-did/map",
-                   test_semantic_did_map);
-    qtest_add_func("sn0/origin2000/kona-fill/semantic-desktop/diagnostics",
-                   test_semantic_desktop_diagnostics);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
-                        "migration-installed-zero", GUINT_TO_POINTER(4),
-                        test_semantic_desktop_migration);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/migration",
-                        GUINT_TO_POINTER(1), test_semantic_desktop_migration);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
-                        "migration-omitted",
-                        GUINT_TO_POINTER(0), test_semantic_desktop_migration);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
-                        "migration-mode-unsupported", GUINT_TO_POINTER(2),
-                        test_semantic_desktop_migration);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
-                        "migration-range-unsupported", GUINT_TO_POINTER(3),
-                        test_semantic_desktop_migration);
+    add_case("sn0/origin2000/kona-fill/semantic-ancillary/composition",
+             test_semantic_ancillary);
+    add_case("sn0/origin2000/kona-fill/semantic-did/map",
+             test_semantic_did_map);
+    add_case("sn0/origin2000/kona-fill/semantic-desktop/diagnostics",
+             test_semantic_desktop_diagnostics);
+    add_data_case("sn0/origin2000/kona-fill/semantic-desktop/"
+                  "migration-installed-zero", GUINT_TO_POINTER(4),
+                  test_semantic_desktop_migration);
+    add_data_case("sn0/origin2000/kona-fill/semantic-desktop/migration",
+                  GUINT_TO_POINTER(1), test_semantic_desktop_migration);
+    add_data_case("sn0/origin2000/kona-fill/semantic-desktop/"
+                  "migration-omitted",
+                  GUINT_TO_POINTER(0), test_semantic_desktop_migration);
+    add_data_case("sn0/origin2000/kona-fill/semantic-desktop/"
+                  "migration-mode-unsupported", GUINT_TO_POINTER(2),
+                  test_semantic_desktop_migration);
+    add_data_case("sn0/origin2000/kona-fill/semantic-desktop/"
+                  "migration-range-unsupported", GUINT_TO_POINTER(3),
+                  test_semantic_desktop_migration);
     for (unsigned shape = 0; shape < 4; shape++) {
         static const char *names[] = { "boxes", "points", "spans", "run" };
         g_autofree char *name = g_strdup_printf(
             "sn0/origin2000/kona-fill/semantic-ci/refusal-%s", names[shape]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(shape),
-                            test_semantic_shape_refusal);
+        add_data_case(name, GUINT_TO_POINTER(shape),
+                      test_semantic_shape_refusal);
     }
-    qtest_add_func("sn0/origin2000/kona-fill/semantic-ci/refusal",
-                   test_semantic_ci_refusal);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-did/high",
-                        GUINT_TO_POINTER(0), test_semantic_did);
-    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-did/low",
-                        GUINT_TO_POINTER(1), test_semantic_did);
+    add_case("sn0/origin2000/kona-fill/semantic-ci/refusal",
+             test_semantic_ci_refusal);
+    add_data_case("sn0/origin2000/kona-fill/semantic-did/high",
+                  GUINT_TO_POINTER(0), test_semantic_did);
+    add_data_case("sn0/origin2000/kona-fill/semantic-did/low",
+                  GUINT_TO_POINTER(1), test_semantic_did);
     for (unsigned gx = 0; gx < 16; gx++) {
         static const uint8_t masks[] = { 0xff, 0x53, 0 };
 
@@ -3200,32 +3264,35 @@ int main(int argc, char **argv)
                 "sn0/origin2000/kona-fill/semantic-ci/gx-%u-mask-%02x",
                 gx, masks[i]);
 
-            qtest_add_data_func(name, GUINT_TO_POINTER((gx << 8) | masks[i]),
-                                test_semantic_ci_logic);
+            add_data_case(name, GUINT_TO_POINTER((gx << 8) | masks[i]),
+                          test_semantic_ci_logic);
             g_clear_pointer(&name, g_free);
             name = g_strdup_printf(
                 "sn0/origin2000/kona-fill/semantic-rgb/gx-%u-mask-%06x",
                 gx, masks[i] == 0xff ? 0xffffff : masks[i] ? 0x53a56c : 0);
-            qtest_add_data_func(name,
-                GUINT_TO_POINTER(0x10000 | (gx << 8) | masks[i]),
-                test_semantic_ci_logic);
+            add_data_case(name,
+                          GUINT_TO_POINTER(0x10000 | (gx << 8) | masks[i]),
+                          test_semantic_ci_logic);
         }
     }
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-reset-partial-image",
-                   test_cursor_reset_partial_image);
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-migration",
-                   test_cursor_migration);
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-migration-refuses-bounds",
-                   test_cursor_migration_refuses_bounds);
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-edges", test_cursor_edges);
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-selection-recolor",
-                   test_cursor_selection_recolor);
-    qtest_add_func("sn0/origin2000/kona-fill/cursor-refusal-abort",
-                   test_cursor_refusal_abort);
-    qtest_add_func("sn0/origin2000/kona-fill/loaded-cursor",
-                   test_loaded_cursor);
+    add_case("sn0/origin2000/kona-fill/cursor-reset-partial-image",
+             test_cursor_reset_partial_image);
+    add_case("sn0/origin2000/kona-fill/cursor-migration",
+             test_cursor_migration);
+    add_case("sn0/origin2000/kona-fill/cursor-migration-refuses-bounds",
+             test_cursor_migration_refuses_bounds);
+    add_case("sn0/origin2000/kona-fill/cursor-edges", test_cursor_edges);
+    add_case("sn0/origin2000/kona-fill/cursor-selection-recolor",
+             test_cursor_selection_recolor);
+    add_case("sn0/origin2000/kona-fill/cursor-refusal-abort",
+             test_cursor_refusal_abort);
+    add_case("sn0/origin2000/kona-fill/loaded-cursor",
+             test_loaded_cursor);
     static const char *point_batch_shapes[] = {
-        "foreground24", "background1", "background6", "background24",
+        "sn0/origin2000/kona-fill/point-batch/foreground24/%s",
+        "sn0/origin2000/kona-fill/point-batch/background1/%s",
+        "sn0/origin2000/kona-fill/point-batch/background6/%s",
+        "sn0/origin2000/kona-fill/point-batch/background24/%s",
     };
     static const char *point_batch_cases[] = {
         "copy", "masked-xor", "rgb-copy", "rgb-masked-xor", "clip",
@@ -3234,23 +3301,25 @@ int main(int argc, char **argv)
     for (unsigned shape = 0; shape < ARRAY_SIZE(point_batch_shapes); shape++) {
         for (unsigned mode = 0; mode < ARRAY_SIZE(point_batch_cases); mode++) {
             g_autofree char *name = g_strdup_printf(
-                "sn0/origin2000/kona-fill/point-batch/%s/%s",
                 point_batch_shapes[shape], point_batch_cases[mode]);
 
-            qtest_add_data_func(name, GUINT_TO_POINTER(shape * 16 + mode),
-                                test_point_batch);
+            add_data_case(name, GUINT_TO_POINTER(shape * 16 + mode),
+                          test_point_batch);
         }
     }
     for (unsigned shape = 0; shape < 3; shape++) {
-        static const char *names[] = { "one", "six", "twenty-four" };
+        static const char *names[] = {
+            "sn0/origin2000/kona-fill/relative-point/one/%s",
+            "sn0/origin2000/kona-fill/relative-point/six/%s",
+            "sn0/origin2000/kona-fill/relative-point/twenty-four/%s",
+        };
 
         for (unsigned mode = 0; mode < ARRAY_SIZE(point_batch_cases); mode++) {
             g_autofree char *name = g_strdup_printf(
-                "sn0/origin2000/kona-fill/relative-point/%s/%s",
                 names[shape], point_batch_cases[mode]);
 
-            qtest_add_data_func(name, GUINT_TO_POINTER(shape * 16 + mode),
-                                test_relative_point_batch);
+            add_data_case(name, GUINT_TO_POINTER(shape * 16 + mode),
+                          test_relative_point_batch);
         }
     }
     static const char *relative_point24_cases[] = {
@@ -3263,21 +3332,25 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-fill/relative-point24-control/%s",
             relative_point24_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_relative_point24_control);
+        add_data_case(name, GUINT_TO_POINTER(mode),
+                      test_relative_point24_control);
     }
     for (unsigned shape = 0; shape < 6; shape++) {
         static const char *names[] = {
-            "segment", "line", "line6", "relative", "relative6", "segment6",
+            "sn0/origin2000/kona-fill/solid-line/segment/%s",
+            "sn0/origin2000/kona-fill/solid-line/line/%s",
+            "sn0/origin2000/kona-fill/solid-line/line6/%s",
+            "sn0/origin2000/kona-fill/solid-line/relative/%s",
+            "sn0/origin2000/kona-fill/solid-line/relative6/%s",
+            "sn0/origin2000/kona-fill/solid-line/segment6/%s",
         };
 
         for (unsigned mode = 0; mode < ARRAY_SIZE(point_batch_cases); mode++) {
             g_autofree char *name = g_strdup_printf(
-                "sn0/origin2000/kona-fill/solid-line/%s/%s",
                 names[shape], point_batch_cases[mode]);
 
-            qtest_add_data_func(name, GUINT_TO_POINTER(shape * 16 + mode),
-                                test_solid_line_batch);
+            add_data_case(name, GUINT_TO_POINTER(shape * 16 + mode),
+                          test_solid_line_batch);
         }
     }
     static const char *segment6_cases[] = {
@@ -3289,15 +3362,15 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-fill/segment6-control/%s",
             segment6_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_segment6_control);
+        add_data_case(name, GUINT_TO_POINTER(mode),
+                      test_segment6_control);
     }
     for (unsigned octant = 0; octant < 8; octant++) {
         g_autofree char *name = g_strdup_printf(
             "sn0/origin2000/kona-fill/solid-line/octant-%u", octant);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(octant),
-                            test_solid_line_octant);
+        add_data_case(name, GUINT_TO_POINTER(octant),
+                      test_solid_line_octant);
     }
     static const char *line_control_cases[] = {
         "closed-xor", "degenerate", "odd-segment", "no-anchor", "bad-gc",
@@ -3308,8 +3381,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-fill/solid-line/control/%s",
             line_control_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_solid_line_control);
+        add_data_case(name, GUINT_TO_POINTER(mode),
+                      test_solid_line_control);
     }
     static const char *relative_line_cases[] = {
         "fresh-anchor", "closed-xor", "degenerate", "signed-clip",
@@ -3322,8 +3395,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-fill/relative-line-coordinates/%s",
             relative_line_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_relative_line_coordinates);
+        add_data_case(name, GUINT_TO_POINTER(mode),
+                      test_relative_line_coordinates);
     }
     static const char *data5_cases[] = {
         "absolute", "relative", "background", "partial-migrates",
@@ -3333,7 +3406,7 @@ int main(int argc, char **argv)
         g_autofree char *name = g_strdup_printf(
             "sn0/origin2000/kona-fill/data5/%s", data5_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode), test_data5_points);
+        add_data_case(name, GUINT_TO_POINTER(mode), test_data5_points);
     }
     static const char *relative_coordinate_cases[] = {
         "signed", "x-overflow", "y-overflow", "interrupted", "reset",
@@ -3345,60 +3418,60 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-fill/relative-coordinates/%s",
             relative_coordinate_cases[mode]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_relative_point_coordinates);
+        add_data_case(name, GUINT_TO_POINTER(mode),
+                      test_relative_point_coordinates);
     }
-    qtest_add_func("sn0/origin2000/kona-fill/absolute-points",
-                   test_absolute_points);
-    qtest_add_func("sn0/origin2000/kona-fill/point-clipping",
-                   test_point_clipping);
-    qtest_add_func("sn0/origin2000/kona-fill/point-gc-refusal",
-                   test_point_gc_refusal);
-    qtest_add_func("sn0/origin2000/kona-fill/point-run-discard",
-                   test_point_run_discard);
-    qtest_add_func("sn0/origin2000/kona-fill/single-box", test_single_box);
-    qtest_add_func("sn0/origin2000/kona-fill/first-box-covers-screen",
-                   test_first_box_covers_screen);
-    qtest_add_func("sn0/origin2000/kona-fill/box6", test_box6);
-    qtest_add_func("sn0/origin2000/kona-fill/data-run-ending-in-box",
-                   test_data_run_ending_in_box);
-    qtest_add_func("sn0/origin2000/kona-fill/data-run-not-ending-in-box",
-                   test_data_run_not_ending_in_box);
-    qtest_add_func("sn0/origin2000/kona-fill/clipping", test_clipping);
-    qtest_add_func("sn0/origin2000/kona-fill/gc-index-packing",
-                   test_gc_index_packing);
-    qtest_add_func("sn0/origin2000/kona-fill/x-map-resolves-at-scanout",
-                   test_x_map_resolves_at_scanout);
-    qtest_add_func("sn0/origin2000/kona-fill/x-map-past-table",
-                   test_x_map_past_table);
-    qtest_add_func("sn0/origin2000/kona-fill/clip-rectangle",
-                   test_clip_rectangle);
-    qtest_add_func("sn0/origin2000/kona-fill/clip-list", test_clip_list);
-    qtest_add_func("sn0/origin2000/kona-fill/rect-origin", test_rect_origin);
-    qtest_add_func("sn0/origin2000/kona-fill/rect-runs", test_rect_runs);
-    qtest_add_func("sn0/origin2000/kona-fill/reset-clears-gc-and-run",
-                   test_reset_clears_gc_and_run);
-    qtest_add_func("sn0/origin2000/kona-fill/"
-                   "reset-clears-position-and-clip-list",
-                   test_reset_clears_position_and_clip_list);
-    qtest_add_func("sn0/origin2000/kona-fill/unexpected-offset-drops-box-run",
-                   test_unexpected_offset_drops_box_run);
-    qtest_add_func("sn0/origin2000/kona-fill/"
-                   "unexpected-offset-drops-clip-list",
-                   test_unexpected_offset_drops_clip_list);
-    qtest_add_func("sn0/origin2000/kona-fill/unknown-token-drops-clip-list",
-                   test_unknown_token_drops_clip_list);
-    qtest_add_func("sn0/origin2000/kona-fill/migration-carries-gc-and-run",
-                   test_migration_carries_gc_and_run);
+    add_case("sn0/origin2000/kona-fill/absolute-points",
+             test_absolute_points);
+    add_case("sn0/origin2000/kona-fill/point-clipping",
+             test_point_clipping);
+    add_case("sn0/origin2000/kona-fill/point-gc-refusal",
+             test_point_gc_refusal);
+    add_case("sn0/origin2000/kona-fill/point-run-discard",
+             test_point_run_discard);
+    add_case("sn0/origin2000/kona-fill/single-box", test_single_box);
+    add_case("sn0/origin2000/kona-fill/first-box-covers-screen",
+             test_first_box_covers_screen);
+    add_case("sn0/origin2000/kona-fill/box6", test_box6);
+    add_case("sn0/origin2000/kona-fill/data-run-ending-in-box",
+             test_data_run_ending_in_box);
+    add_case("sn0/origin2000/kona-fill/data-run-not-ending-in-box",
+             test_data_run_not_ending_in_box);
+    add_case("sn0/origin2000/kona-fill/clipping", test_clipping);
+    add_case("sn0/origin2000/kona-fill/gc-index-packing",
+             test_gc_index_packing);
+    add_case("sn0/origin2000/kona-fill/x-map-resolves-at-scanout",
+             test_x_map_resolves_at_scanout);
+    add_case("sn0/origin2000/kona-fill/x-map-past-table",
+             test_x_map_past_table);
+    add_case("sn0/origin2000/kona-fill/clip-rectangle",
+             test_clip_rectangle);
+    add_case("sn0/origin2000/kona-fill/clip-list", test_clip_list);
+    add_case("sn0/origin2000/kona-fill/rect-origin", test_rect_origin);
+    add_case("sn0/origin2000/kona-fill/rect-runs", test_rect_runs);
+    add_case("sn0/origin2000/kona-fill/reset-clears-gc-and-run",
+             test_reset_clears_gc_and_run);
+    add_case("sn0/origin2000/kona-fill/"
+             "reset-clears-position-and-clip-list",
+             test_reset_clears_position_and_clip_list);
+    add_case("sn0/origin2000/kona-fill/unexpected-offset-drops-box-run",
+             test_unexpected_offset_drops_box_run);
+    add_case("sn0/origin2000/kona-fill/"
+             "unexpected-offset-drops-clip-list",
+             test_unexpected_offset_drops_clip_list);
+    add_case("sn0/origin2000/kona-fill/unknown-token-drops-clip-list",
+             test_unknown_token_drops_clip_list);
+    add_case("sn0/origin2000/kona-fill/migration-carries-gc-and-run",
+             test_migration_carries_gc_and_run);
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         g_autofree char *name = g_strdup_printf(
             "sn0/origin2000/kona-fill/frame-%s", cases[i].name);
 
-        qtest_add_data_func(name, &cases[i], test_point_data_framing);
+        add_data_case(name, &cases[i], test_point_data_framing);
     }
-    qtest_add_func("sn0/origin2000/kona-fill/point-framing-migrates",
-                   test_point_framing_migrates);
+    add_case("sn0/origin2000/kona-fill/point-framing-migrates",
+             test_point_framing_migrates);
     ret = g_test_run();
     qtest_quit(qts);
     return ret;
