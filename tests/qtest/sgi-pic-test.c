@@ -483,6 +483,27 @@ static QTestState *pic_runtime_cpu_start(bool cards, const char *extra)
     return qts;
 }
 
+static void test_runtime_short_device_attribute_refusal(void)
+{
+    QTestState *qts = pic_runtime_start(true, NULL);
+    const uint64_t device = 0x21 | (1U << 12);
+    const uint64_t bar = BASE + 0x40000000ULL + 0x02100024;
+    const uint64_t short_addr = PIC_SHORT_WIN(0, 2) + 0x24;
+
+    pic_short_enable_card(qts, 0, 1, 0x02100000, 0x04000000,
+                          0xffff9, PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writeq(qts, PIC_SHORT_DEVICE(0, 2), device);
+    qtest_writel(qts, short_addr, 0x13579bdf);
+    g_assert_cmphex(qtest_readl(qts, bar), ==, 0x13579bdf);
+
+    qtest_writeq(qts, PIC_SHORT_DEVICE(0, 2), device | (1U << 13));
+    g_assert_cmphex(qtest_readq(qts, PIC_SHORT_DEVICE(0, 2)), ==,
+                    device | (1U << 13));
+    qtest_writel(qts, short_addr, 0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, bar), ==, 0x13579bdf);
+    qtest_quit(qts);
+}
+
 static void test_runtime_reset_compatibility_trial(void)
 {
     static const uint64_t device_reset[] = {
@@ -5105,6 +5126,8 @@ int main(int argc, char **argv)
                    test_runtime_profile_is_immutable_after_realize);
     qtest_add_func("/sgi-pic/runtime-profile-reserved-device-and-dma",
                    test_runtime_profile_reserved_device_and_dma);
+    qtest_add_func("/sgi-pic/runtime-short-device-attribute-refusal",
+                   test_runtime_short_device_attribute_refusal);
     qtest_add_func("/sgi-pic/runtime-reset-compatibility-trial",
                    test_runtime_reset_compatibility_trial);
     qtest_add_func("/sgi-pic/tezro-widget-register-profile-trial",

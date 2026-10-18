@@ -1161,9 +1161,9 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
     default:
         if (pic_uses_runtime_profile(s->pic) &&
             addr >= 0x200 && addr <= 0x218 &&
-            (value & ~UINT64_C(0x18581fff))) {
+            (value & ~UINT64_C(0x18583fff))) {
             pic_unsupported(s, addr, size, value, true);
-            value &= UINT64_C(0x18581fff);
+            value &= UINT64_C(0x18583fff);
         } else if (!pic_uses_runtime_profile(s->pic) &&
                    addr >= 0x200 && addr <= 0x218 &&
                    (value & ~((1U << 19) | (1U << 20) | (1U << 13) |
