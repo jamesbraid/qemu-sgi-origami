@@ -989,6 +989,12 @@ struct SGIKonaState {
     Object *pi;
     uint32_t pi_held;
     bool pi_unlinked_logged;
+    /*
+     * Packets the command ports have framed, counted so a store can tell
+     * whether one ended while it was taken. Compared only within one
+     * access, so it is not migrated.
+     */
+    uint64_t pi_packets;
 
     /*
      * SGI_KONA_RETRACE_TAG as it reads, and whether the retrace now being
