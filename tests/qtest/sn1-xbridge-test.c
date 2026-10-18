@@ -2215,6 +2215,24 @@ static void test_mem64_target_width(void)
     qtest_quit(qts);
 }
 
+static void test_mem64_marked_standalone(void)
+{
+    QTestState *qts = transport_start_card_slot(
+        "sgi-bridge-dma-test-64bit",
+        "-global sgi-xbridge-head.req64-slots=0x2", 1, 1U << 1);
+    uint64_t bar = 0x01000000;
+
+    g_assert_cmphex(reg_read(qts, 0x208) & (1U << 22), ==, 0);
+    qtest_writel(qts, BASE + MEM32 + bar + 0x24, 0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x20), ==,
+                    0x12345678);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
+                    0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x24), ==,
+                    0x12345678);
+    qtest_quit(qts);
+}
+
 /* An unmapped BAR leaves the big-memory alias without a PCI target. */
 static void test_mem64_unmapped_bar(void)
 {
@@ -2429,6 +2447,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
     qtest_add_func("/sn1/xbridge/space-above-face", test_space_above_face);
     qtest_add_func("/sn1/xbridge/mem64-target-width", test_mem64_target_width);
+    qtest_add_func("/sn1/xbridge/mem64-marked-standalone",
+                   test_mem64_marked_standalone);
     qtest_add_func("/sn1/xbridge/mem64-unmapped-bar", test_mem64_unmapped_bar);
     qtest_add_data_func("/sn1/xbridge/mem64-overlapping-bars/wide-first",
                         &overlap_first_wide, test_mem64_overlapping_bars);

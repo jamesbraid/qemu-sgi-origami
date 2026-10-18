@@ -592,7 +592,7 @@ static void xbridge_pio_match_bus(PCIBus *bus, void *opaque)
 }
 
 static unsigned xbridge_range_width(struct XBridgeRange *range, hwaddr addr,
-                                    unsigned size)
+                                    unsigned size, bool write)
 {
     XBridgePIOTarget target = {
         .head = range->head,
@@ -609,14 +609,25 @@ static unsigned xbridge_range_width(struct XBridgeRange *range, hwaddr addr,
     if (target.matches != 1) {
         return range->width;
     }
-    return range->head->dma_64bit & BIT(target.slot) ? 8 : 4;
+    if (!(range->head->dma_64bit & BIT(target.slot))) {
+        return 4;
+    }
+    if (!write && size == 4 && !(addr & 3) &&
+        range->head->origin300_mem64_pio_width &&
+        range->head->packet_sender &&
+        (REG(range->head, 0) >> 28) == 2 &&
+        (range->head->wide_slot_mask & BIT(target.slot)) &&
+        !(REG(range->head, 0x200 + target.slot * 8) & BIT(22))) {
+        return 4;
+    }
+    return 8;
 }
 
 static MemTxResult xbridge_range_rw(struct XBridgeRange *range, hwaddr addr,
                                     uint8_t *bytes, unsigned size, bool write)
 {
     bool swap = REG(range->head, 0x20) & range->swap;
-    unsigned width = xbridge_range_width(range, addr, size);
+    unsigned width = xbridge_range_width(range, addr, size, write);
     MemTxResult result;
 
     if (size > width) {
@@ -1294,6 +1305,7 @@ struct SGIXBridgeState {
     MemoryRegion head_target[2][SGI_XIO_WIDGETS];
     bool superbridge;
     uint8_t packet_context;
+    bool origin300_mem64_pio_width;
     SGIXBridgePacketFrame *active_packet;
     SGIXioPeer host_peer;
     SGIXioPeer head_peer[2];
@@ -1541,6 +1553,18 @@ bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp)
     return true;
 }
 
+bool sgi_xbridge_enable_origin300_mem64_pio_width(SGIXBridgeState *s,
+                                                   Error **errp)
+{
+    if (DEVICE(s)->realized || !s->packet_context) {
+        error_setg(errp, "Origin 300 PCI memory width needs packet transport "
+                   "before XBridge realization");
+        return false;
+    }
+    s->origin300_mem64_pio_width = true;
+    return true;
+}
+
 static MemTxResult chip_peer_rw(SGIXBridgeState *s, const SGIXioPeer *peer,
                                  hwaddr address, void *buffer, size_t size,
                                  bool write, const SGIXioSource *source,
@@ -1701,6 +1725,8 @@ static void chip_build(DeviceState *dev, Error **errp)
         if (!i) {
             qdev_prop_set_uint8(DEVICE(&s->head[i]), "wide-slot-mask",
                                 s->wide_slot_mask_e);
+            s->head[i].origin300_mem64_pio_width =
+                s->origin300_mem64_pio_width;
         }
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
