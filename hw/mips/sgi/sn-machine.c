@@ -521,11 +521,14 @@ static void sgi_machine_set_module_serial(SGIMachineState *s,
 
     for (entry = s->controller_brick_serial; entry; entry = entry->next) {
         unsigned selected;
-        const char *payload;
+        const char *payload = NULL;
 
         /* The machine validated owner=serial before constructing devices. */
-        g_assert(!qemu_strtoui(entry->value, &payload, 10, &selected));
-        g_assert(*payload == '=');
+        if (qemu_strtoui(entry->value, &payload, 10, &selected) ||
+            !payload || *payload != '=') {
+            error_report("invalid validated controller brick serial");
+            continue;
+        }
         payload++;
         if (selected == owner) {
             qdev_prop_set_string(l1, "brick-serial", payload);
