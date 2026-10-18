@@ -216,6 +216,37 @@ SGIRenderCommitResult sgi_render_resource_commit(
     return sgi_render_commit_result(result, pixels, errp);
 }
 
+/* A write coverage array that holds a binary byte for each rect pixel. */
+static bool sgi_render_resource_coverage(const SGIRenderRect *rect,
+                                         const SGIRenderWriteCoverage *writes,
+                                         Error **errp)
+{
+    uint64_t width = (uint64_t)rect->x1 - rect->x0 + 1;
+    uint64_t rows = (uint64_t)rect->y1 - rect->y0 + 1;
+    size_t required;
+
+    if (!writes || !writes->pixel || width > SIZE_MAX ||
+        writes->stride_bytes < width ||
+        rows - 1 > (SIZE_MAX - width) / writes->stride_bytes) {
+        error_setg(errp, "Invalid SGI render write coverage");
+        return false;
+    }
+    required = (rows - 1) * writes->stride_bytes + width;
+    if (writes->capacity_bytes < required) {
+        error_setg(errp, "SGI render write coverage is too small");
+        return false;
+    }
+    for (uint64_t y = 0; y < rows; y++) {
+        for (uint64_t x = 0; x < width; x++) {
+            if (writes->pixel[y * writes->stride_bytes + x] > 1) {
+                error_setg(errp, "SGI render write coverage is not binary");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 SGIRenderCommitResult sgi_render_resource_commit_covered(
     const SGIRasterTarget *target, const SGIRenderResource *resource,
     uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
@@ -226,34 +257,13 @@ SGIRenderCommitResult sgi_render_resource_commit_covered(
         .status = SGI_RENDER_RESOURCE_ERROR,
         .extent_known = true,
     };
-    uint64_t pixels, width, rows;
-    size_t required;
+    uint64_t pixels;
 
     if (!sgi_render_resource_span(target, resource, slice, rect, slots,
                                   stride_slots, capacity_slots,
-                                  &pixels, errp)) {
+                                  &pixels, errp) ||
+        !sgi_render_resource_coverage(rect, writes, errp)) {
         return result;
-    }
-    width = (uint64_t)rect->x1 - rect->x0 + 1;
-    rows = (uint64_t)rect->y1 - rect->y0 + 1;
-    if (!writes || !writes->pixel || width > SIZE_MAX ||
-        writes->stride_bytes < width ||
-        rows - 1 > (SIZE_MAX - width) / writes->stride_bytes) {
-        error_setg(errp, "Invalid SGI render write coverage");
-        return result;
-    }
-    required = (rows - 1) * writes->stride_bytes + width;
-    if (writes->capacity_bytes < required) {
-        error_setg(errp, "SGI render write coverage is too small");
-        return result;
-    }
-    for (uint64_t y = 0; y < rows; y++) {
-        for (uint64_t x = 0; x < width; x++) {
-            if (writes->pixel[y * writes->stride_bytes + x] > 1) {
-                error_setg(errp, "SGI render write coverage is not binary");
-                return result;
-            }
-        }
     }
     if (!target->resource_ops->commit_covered) {
         error_setg(errp, "SGI render resource has no covered commit provider");
@@ -269,5 +279,50 @@ SGIRenderCommitResult sgi_render_resource_commit_covered(
                                                   slice, rect, slots,
                                                   stride_slots, capacity_slots,
                                                   writes, errp);
+    return sgi_render_commit_result(result, pixels, errp);
+}
+
+SGIRenderCommitResult sgi_render_resource_commit_index_covered(
+    const SGIRasterTarget *target, const SGIRenderResource *resource,
+    uint32_t slice, const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, uint32_t effective_mask,
+    Error **errp)
+{
+    SGIRenderCommitResult result = {
+        .status = SGI_RENDER_RESOURCE_ERROR,
+        .extent_known = true,
+    };
+    uint64_t pixels;
+    unsigned bits;
+
+    if (!sgi_render_resource_span(target, resource, slice, rect, slots,
+                                  stride_slots, capacity_slots,
+                                  &pixels, errp) ||
+        !sgi_render_resource_coverage(rect, writes, errp)) {
+        return result;
+    }
+    bits = resource->component[0].storage_bits;
+    if (resource->role != SGI_RENDER_INDEX ||
+        resource->component_count != 1 ||
+        resource->component[0].channel != SGI_RENDER_SCALAR ||
+        resource->component[0].numeric != SGI_RENDER_UINT ||
+        (bits < 32 && effective_mask >> bits)) {
+        error_setg(errp, "Invalid SGI render index commit");
+        return result;
+    }
+    if (!target->resource_ops->commit_index_covered) {
+        error_setg(errp, "SGI render resource has no index commit provider");
+        result.status = SGI_RENDER_UNSUPPORTED;
+        return result;
+    }
+    if (!sgi_render_resource_slots(resource, rect, slots,
+                                   stride_slots, errp)) {
+        result.status = SGI_RENDER_HOST_ERROR;
+        return result;
+    }
+    result = target->resource_ops->commit_index_covered(
+        target->opaque, resource, slice, rect, slots, stride_slots,
+        capacity_slots, writes, effective_mask, errp);
     return sgi_render_commit_result(result, pixels, errp);
 }

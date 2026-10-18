@@ -334,6 +334,126 @@ static void test_render_resource_covered_commit(void)
     g_assert_cmpuint(f.commits, ==, 0);
 }
 
+typedef struct RenderIndexFixture {
+    uint32_t native[4];
+    unsigned commits;
+    uint32_t mask;
+} RenderIndexFixture;
+
+static SGIRenderCommitResult render_index_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots,
+    size_t stride_slots, size_t capacity_slots,
+    const SGIRenderWriteCoverage *writes, uint32_t effective_mask,
+    Error **errp)
+{
+    RenderIndexFixture *f = opaque;
+    size_t width = rect->x1 - rect->x0 + 1;
+
+    f->commits++;
+    f->mask = effective_mask;
+    for (size_t i = 0; i < width; i++) {
+        if (writes->pixel[i]) {
+            f->native[rect->x0 + i] = slots[i];
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = width,
+        .extent_known = true,
+    };
+}
+
+/*
+ * The index commit takes final indices and the effective mask for a
+ * one-component unsigned index resource only, with no mask bit above its
+ * storage width, and needs its own provider.
+ */
+static void test_render_resource_index_commit(void)
+{
+    static const SGIRenderResourceOps ops = {
+        .commit_index_covered = render_index_commit,
+    };
+    RenderIndexFixture f = { .native = { 1, 2, 3, 4 } };
+    SGIRenderResource res = {
+        .role = SGI_RENDER_INDEX, .width = 4, .height = 1, .depth = 1,
+        .component_count = 1,
+        .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, 12 } },
+    };
+    SGIRasterTarget target = {
+        .opaque = &f, .resources = &res, .resource_count = 1,
+        .resource_ops = &ops,
+    };
+    SGIRenderRect rect = { 0, 0, 3, 0 };
+    uint32_t slots[4] = { 0xfff, 0x123, 0, 0x800 };
+    uint8_t mask[4] = { 1, 0, 1, 1 };
+    SGIRenderWriteCoverage writes = {
+        .pixel = mask, .stride_bytes = 4, .capacity_bytes = 4,
+    };
+    SGIRenderResourceOps none = { 0 };
+    SGIRenderCommitResult committed;
+    Error *err = NULL;
+
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xff0, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f.commits, ==, 1);
+    g_assert_cmphex(f.mask, ==, 0xff0);
+    g_assert_cmpmem(f.native, sizeof(f.native),
+                    ((uint32_t[4]) { 0xfff, 2, 0, 0x800 }), sizeof(f.native));
+
+    /* A mask bit above the storage width. */
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0x1000, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_clear_pointer(&err, error_free);
+    /* An index above the storage width. */
+    slots[0] = 0x1000;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xfff, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_HOST_ERROR);
+    g_clear_pointer(&err, error_free);
+    slots[0] = 0xfff;
+    /* Not an index resource, or not one unsigned scalar. */
+    res.role = SGI_RENDER_COLOUR;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xfff, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_clear_pointer(&err, error_free);
+    res.role = SGI_RENDER_INDEX;
+    res.component[0].numeric = SGI_RENDER_UNORM;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xfff, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_clear_pointer(&err, error_free);
+    res.component[0].numeric = SGI_RENDER_UINT;
+    /* Coverage that is not binary. */
+    mask[1] = 2;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xfff, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_clear_pointer(&err, error_free);
+    mask[1] = 0;
+    /* No provider. */
+    target.resource_ops = &none;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, 0xfff, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_UNSUPPORTED);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f.commits, ==, 1);
+    /* A 32-bit resource takes a full mask. */
+    target.resource_ops = &ops;
+    res.component[0].storage_bits = 32;
+    slots[1] = UINT32_MAX;
+    mask[1] = 1;
+    committed = sgi_render_resource_commit_index_covered(
+        &target, &res, 0, &rect, slots, 4, 4, &writes, UINT32_MAX, &err);
+    g_assert_cmpint(committed.status, ==, SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmphex(f.native[1], ==, UINT32_MAX);
+}
+
 static void test_render_resource_covered_partial(void)
 {
     RenderResourceFixture f = {
@@ -513,6 +633,8 @@ int main(int argc, char **argv)
                     test_render_resource_partial_commit);
     g_test_add_func("/sgi-render-resource/covered-commit",
                     test_render_resource_covered_commit);
+    g_test_add_func("/sgi-render-resource/index-commit",
+                    test_render_resource_index_commit);
     g_test_add_func("/sgi-render-resource/covered-partial",
                     test_render_resource_covered_partial);
     g_test_add_func("/sgi-render-resource/attachment-border",
