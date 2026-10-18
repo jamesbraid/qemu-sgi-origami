@@ -8,6 +8,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "exec/memattrs.h"
 #include "hw/pci/pci_regs.h"
 #include "sgi-test.h"
@@ -524,6 +525,331 @@ static void test_pio_sram_direct_dma_bytes(void)
 {
     test_pio_sram_direct_dma_bytes_one(1);
     test_pio_sram_direct_dma_bytes_one(3);
+}
+
+static void test_mem64_device_width(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    const uint8_t card_bytes[16] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    const uint32_t expected[2][2][4] = {
+        {
+            { 0x43322110, 0x87766554, 0xcbbaa998, 0x0ffeeddc },
+            { 0x87766554, 0x43322110, 0x0ffeeddc, 0xcbbaa998 },
+        },
+        {
+            { 0x10213243, 0x54657687, 0x98a9bacb, 0xdcedfe0f },
+            { 0x10213243, 0x54657687, 0x98a9bacb, 0xdcedfe0f },
+        },
+    };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint8_t seen[sizeof(card_bytes)];
+    uint64_t mem64;
+    uint32_t device_control, control;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-pio-width-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_WINBASE, 0x70000);
+    for (unsigned i = 0; i < sizeof(card_bytes); i++) {
+        g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                      t.window + 0x800 + (i ^ 3), &card_bytes[i], 1));
+        g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                      t.window + 0x800 + (i ^ 3), &seen[i], 1));
+    }
+    g_assert_cmpmem(seen, sizeof(seen), card_bytes, sizeof(card_bytes));
+    device_control = cpu_readl(t.qts, t.pio_cpu, t.head + 0x20c);
+    control = cpu_readl(t.qts, t.pio_cpu, t.head + 0x24);
+    mem64 = SPACE_IO + NODE(7) + 0x20000000ULL + ADAPTER_MMIO + 0x800;
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    g_assert_cmphex(cpu_readq(t.qts, t.pio_cpu, mem64), ==,
+                    UINT64_C(0x8776655443322110));
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 1), ==,
+                    0x76655443);
+    cpu_writel(t.qts, t.pio_cpu, mem64 + 0x20, 0x11223344);
+    cpu_writeq(t.qts, t.pio_cpu, mem64 + 0x30,
+               UINT64_C(0x0123456789abcdef));
+    {
+        const uint8_t word_bytes[4] = { 0x44, 0x33, 0x22, 0x11 };
+        const uint8_t wide_bytes[8] = {
+            0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+        };
+
+        for (unsigned i = 0; i < sizeof(word_bytes); i++) {
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                          t.window + 0x824 + (i ^ 3), &seen[i], 1));
+        }
+        g_assert_cmpmem(seen, sizeof(word_bytes),
+                        word_bytes, sizeof(word_bytes));
+        for (unsigned i = 0; i < sizeof(wide_bytes); i++) {
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                          t.window + 0x830 + (i ^ 3), &seen[i], 1));
+        }
+        g_assert_cmpmem(seen, sizeof(wide_bytes),
+                        wide_bytes, sizeof(wide_bytes));
+    }
+    cpu_writel(t.qts, t.pio_cpu,
+               t.head + 0x20000 + p.device * 0x1000 + PCI_COMMAND, 0);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64), ==, 0);
+    cpu_writel(t.qts, t.pio_cpu,
+               t.head + 0x20000 + p.device * 0x1000 + PCI_COMMAND,
+               PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    for (unsigned swap = 0; swap < 2; swap++) {
+        cpu_writel(t.qts, t.pio_cpu, t.head + 0x24,
+                   (control & ~(1U << 22)) | (swap << 22));
+        for (unsigned width = 0; width < 2; width++) {
+            cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c,
+                       (device_control & ~(1U << 22)) | (width << 22));
+            cpu_writeq(t.qts, t.pio_cpu,
+                       SPACE_IO + NODE(7) + 0x01c00160, 0x0e02);
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu,
+                                mem64 + i * 4), ==, expected[swap][0][i]);
+            }
+            cpu_writeq(t.qts, t.pio_cpu,
+                       SPACE_IO + NODE(7) + 0x01c00160, 0x0e04);
+            g_assert_cmphex(cpu_readq(t.qts, t.pio_cpu,
+                            SPACE_IO + NODE(7) + 0x01c00160), ==, 0x0e04);
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu,
+                                mem64 + i * 4), ==,
+                                expected[swap][width][i]);
+            }
+        }
+    }
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c, device_control);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x24, control);
+    for (unsigned i = 0; i < sizeof(card_bytes); i++) {
+        g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                      t.window + 0x800 + (i ^ 3), &seen[i], 1));
+    }
+    g_assert_cmpmem(seen, sizeof(seen), card_bytes, sizeof(card_bytes));
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_mem64_other_head(void)
+{
+    const Placement p = { .head = 3, .device = 1, .destination = 1 };
+    const uint8_t card_bytes[8] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint64_t mem64 = SPACE_IO + NODE(7) + 0x20000000ULL +
+                     ADAPTER_MMIO + 0x800;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-other-head-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_WINBASE, 0x70000);
+    for (unsigned i = 0; i < sizeof(card_bytes); i++) {
+        g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                      t.window + 0x800 + (i ^ 3), &card_bytes[i], 1));
+    }
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0f04);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64), ==, 0x87766554);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 4), ==,
+                    0x43322110);
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_mem64_overlapping_bars(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint64_t config2, mem32, mem64;
+    uint32_t first, second;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-overlap-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=1,mac=" MAC " "
+        "-device sgi-bridge-dma-test-64bit,bus=%s,addr=2",
+        prom_path, storage, bus_names[p.head], bus_names[p.head]);
+    setup_routes(&t);
+    setup_card(&t);
+    reg_write(&t, TI_WINBASE, 0x70000);
+    cpu_writel(t.qts, t.pio_cpu, t.window + 0x820, 0x11223344);
+    cpu_writel(t.qts, t.pio_cpu, t.window + 0x824, 0xaabbccdd);
+    config2 = t.head + 0x20000 + 2 * 0x1000;
+    cpu_writel(t.qts, t.pio_cpu, config2 + PCI_BASE_ADDRESS_0,
+               ADAPTER_MMIO + 0x800);
+    cpu_writel(t.qts, t.pio_cpu, config2 + PCI_COMMAND,
+               PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e02);
+    mem32 = SPACE_IO + NODE(7) + 0x20000000ULL +
+            ADAPTER_MMIO + 0x820;
+    first = cpu_readl(t.qts, t.pio_cpu, mem32);
+    second = cpu_readl(t.qts, t.pio_cpu, mem32 + 4);
+    g_assert_cmphex(first, !=, second);
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    mem64 = mem32;
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64), ==, second);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 4), ==, first);
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_mem64_failed_read(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint64_t config, mem64;
+    QDict *reply;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-mem64-fault-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-bridge-dma-test-64bit,id=fault,bus=%s,addr=1,"
+        "x-test-fault-read=on",
+        prom_path, storage, bus_names[p.head]);
+    setup_routes(&t);
+    config = t.head + 0x20000 + p.device * 0x1000;
+    cpu_writel(t.qts, t.pio_cpu, config + PCI_BASE_ADDRESS_0,
+               ADAPTER_MMIO);
+    cpu_writel(t.qts, t.pio_cpu, config + PCI_COMMAND,
+               PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c,
+               DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20));
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    mem64 = SPACE_IO + NODE(7) + 0x20000000ULL + ADAPTER_MMIO;
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 0x20), ==,
+                    0x12345678);
+    reply = qtest_qmp(t.qts, "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/peripheral/fault',"
+        "'property':'x-test-bar-read-count'}}");
+    g_assert_true(qdict_haskey(reply, "return"));
+    g_assert_cmphex(qdict_get_int(reply, "return"), ==, 1);
+    qobject_unref(reply);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 0x3c), ==, 0);
+    reply = qtest_qmp(t.qts, "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/peripheral/fault',"
+        "'property':'x-test-bar-read-count'}}");
+    g_assert_true(qdict_haskey(reply, "return"));
+    g_assert_cmphex(qdict_get_int(reply, "return"), ==, 2);
+    qobject_unref(reply);
+    reply = qtest_qmp(t.qts, "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/peripheral/fault',"
+        "'property':'x-test-fault-result'}}");
+    g_assert_cmphex(qdict_get_int(reply, "return"), ==, MEMTX_ERROR);
+    qobject_unref(reply);
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_mem64_narrow_card(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint64_t config, mem32, mem64;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-narrow-pio-width-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-bridge-dma-test,bus=%s,addr=%u",
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    config = t.head + 0x20000 + p.device * 0x1000;
+    cpu_writel(t.qts, t.pio_cpu, config + PCI_BASE_ADDRESS_0,
+               ADAPTER_MMIO);
+    cpu_writel(t.qts, t.pio_cpu, config + PCI_COMMAND,
+               PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+               DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20));
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    mem64 = SPACE_IO + NODE(7) + 0x20000000ULL + ADAPTER_MMIO;
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e02);
+    mem32 = SPACE_IO + NODE(7) + 0x20000000ULL + ADAPTER_MMIO;
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem32 + 0x38), ==, 0);
+    cpu_writel(t.qts, t.pio_cpu, mem32 + 0x24, 0xa1b2c3d4);
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    for (unsigned bit22 = 0; bit22 < 2; bit22++) {
+        cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c,
+                   DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) |
+                   (bit22 << 22));
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 0x20), ==,
+                        0x12345678);
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 0x24), ==,
+                        0xa1b2c3d4);
+    }
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
 }
 
 static void test_dma_read_sram_window_words(void)
@@ -1761,6 +2087,12 @@ static void test_pci_state_width_migration(void)
     g_autoptr(GError) error = NULL;
     Tigon t = { .placement = &p };
     Tigon dest = { .placement = &p };
+    const uint8_t card_bytes[8] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    uint64_t mem64 = SPACE_IO + NODE(7) + 0x20000000ULL +
+                     ADAPTER_MMIO + 0x800;
+    uint32_t control;
     int fd;
 
     fd = g_file_open_tmp("sn1-option-tigon-width-src-XXXXXX",
@@ -1786,6 +2118,19 @@ static void test_pci_state_width_migration(void)
     setup_routes(&t);
     setup_card(&t);
     g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_WINBASE, 0x70000);
+    for (unsigned i = 0; i < sizeof(card_bytes); i++) {
+        g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                      t.window + 0x800 + (i ^ 3), &card_bytes[i], 1));
+    }
+    cpu_writeq(t.qts, t.pio_cpu, SPACE_IO + NODE(7) + 0x01c00160,
+               0x0e04);
+    control = cpu_readl(t.qts, t.pio_cpu, t.head + 0x24);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x24,
+               control | (1U << 22));
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64), ==, 0x10213243);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, mem64 + 4), ==,
+                    0x54657687);
 
     directory = g_dir_make_tmp("sn1-option-tigon-width-migration-XXXXXX",
                                &error);
@@ -1804,8 +2149,65 @@ static void test_pci_state_width_migration(void)
     sgi_migrate_stopped(t.qts, uri);
     sgi_wait_migration(dest.qts, "completed");
     dest.pio_cpu = t.pio_cpu;
+    dest.head = t.head;
     dest.window = t.window;
     g_assert_cmphex(reg_read(&dest, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    g_assert_cmphex(reg_read(&dest, TI_WINBASE), ==, 0x70000);
+    g_assert_cmphex(cpu_readq(dest.qts, dest.pio_cpu,
+                    SPACE_IO + NODE(7) + 0x01c00160), ==, 0x0e04);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, dest.head + 0x20c) &
+                    (1U << 22), ==, 0);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, dest.head + 0x24) &
+                    (1U << 22), ==, 1U << 22);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x10213243);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64 + 4), ==,
+                    0x54657687);
+    cpu_writel(dest.qts, dest.pio_cpu, dest.head + 0x24,
+               control & ~(1U << 22));
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x43322110);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64 + 4), ==,
+                    0x87766554);
+    cpu_writel(dest.qts, dest.pio_cpu, dest.head + 0x20c,
+               DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) | (1U << 22));
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x87766554);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64 + 4), ==,
+                    0x43322110);
+    cpu_writel(dest.qts, dest.pio_cpu, dest.head + 0x24,
+               control | (1U << 22));
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x10213243);
+
+    qtest_system_reset(dest.qts);
+    setup_routes(&dest);
+    setup_card(&dest);
+    reg_write(&dest, TI_WINBASE, 0x70000);
+    for (unsigned i = 0; i < sizeof(card_bytes); i++) {
+        g_assert_true(qtest_memwrite_cpu(dest.qts, dest.pio_cpu,
+                      dest.window + 0x800 + (i ^ 3), &card_bytes[i], 1));
+    }
+    cpu_writeq(dest.qts, dest.pio_cpu,
+               SPACE_IO + NODE(7) + 0x01c00160, 0x0e04);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, dest.head + 0x20c) &
+                    (1U << 22), ==, 0);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, dest.head + 0x24) &
+                    (1U << 22), ==, 0);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x43322110);
+    cpu_writel(dest.qts, dest.pio_cpu, dest.head + 0x20c,
+               DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20) | (1U << 22));
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x87766554);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64 + 4), ==,
+                    0x43322110);
+    cpu_writel(dest.qts, dest.pio_cpu, dest.head + 0x24,
+               control | (1U << 22));
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64), ==,
+                    0x10213243);
+    g_assert_cmphex(cpu_readl(dest.qts, dest.pio_cpu, mem64 + 4), ==,
+                    0x54657687);
 
     qtest_quit(dest.qts);
     qtest_quit(t.qts);
@@ -2015,6 +2417,16 @@ int main(int argc, char **argv)
                    test_pio_sram_direct_dma_bytes);
     qtest_add_func("/sn1/option-tigon/dma-read-sram-window-words",
                    test_dma_read_sram_window_words);
+    qtest_add_func("/sn1/option-tigon/mem64-device-width",
+                   test_mem64_device_width);
+    qtest_add_func("/sn1/option-tigon/mem64-narrow-card",
+                   test_mem64_narrow_card);
+    qtest_add_func("/sn1/option-tigon/mem64-other-head",
+                   test_mem64_other_head);
+    qtest_add_func("/sn1/option-tigon/mem64-overlapping-bars",
+                   test_mem64_overlapping_bars);
+    qtest_add_func("/sn1/option-tigon/mem64-failed-read",
+                   test_mem64_failed_read);
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
     g_free(prom_path);

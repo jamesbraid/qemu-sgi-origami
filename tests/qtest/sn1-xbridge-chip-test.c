@@ -747,6 +747,29 @@ static void test_six_heads(void)
     qtest_quit(qts);
 }
 
+static void test_packet_wide_mem64_default(void)
+{
+    QTestState *qts = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-xbridge.req64-slots-e=0x2 "
+        "-global sgi-xbridge.wide-slot-mask-e=0x2 "
+        "-device sgi-bridge-dma-test-64bit,"
+        "bus=fixture0-head-e.0,addr=1");
+    uint64_t head = VIEW(0), bar = 0x01000000;
+
+    qtest_writel(qts, head + 0x21010, bar);
+    qtest_writel(qts, head + 0x21004, 6);
+    g_assert_cmphex(qtest_readl(qts, head + 0x20c) & (1U << 22), ==, 0);
+    qtest_writel(qts, head + 0x40000000 + bar + 0x24, 0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, head + 0x40000000 + bar + 0x20),
+                    ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, head + 0x80000000 + bar + 0x20),
+                    ==, 0xa1b2c3d4);
+    g_assert_cmphex(qtest_readl(qts, head + 0x80000000 + bar + 0x24),
+                    ==, 0x12345678);
+    qtest_quit(qts);
+}
+
 static void test_assembly_ingress_routes(void)
 {
     QTestState *qts = assembly_start("");
@@ -1347,6 +1370,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/superbridge-leaves",
                    test_superbridge_leaves);
     qtest_add_func("/sn1/xbridge-chip/six-heads", test_six_heads);
+    qtest_add_func("/sn1/xbridge-chip/packet-wide-mem64-default",
+                   test_packet_wide_mem64_default);
     qtest_add_func("/sn1/xbridge-chip/six-head-interrupts",
                    test_six_head_interrupts);
     qtest_add_func("/sn1/xbridge-chip/explicit-context-crossbar",

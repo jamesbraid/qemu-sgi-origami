@@ -844,6 +844,11 @@ static void expansion_realize(DeviceState *dev, Error **errp)
                 SGI_XBRIDGE(s->chip[i]), errp)) {
             return;
         }
+        if (s->ni_route && i == 0 &&
+            !sgi_xbridge_enable_origin300_mem64_pio_width(
+                SGI_XBRIDGE(s->chip[i]), errp)) {
+            return;
+        }
         qdev_prop_set_string(s->chip[i], "bus-prefix", prefix);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-e", 1);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-f", 1);

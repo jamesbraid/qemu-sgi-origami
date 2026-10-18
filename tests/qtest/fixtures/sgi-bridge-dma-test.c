@@ -74,6 +74,9 @@ struct SGIBridgeDMATestState {
     MemoryRegion *dma_memory;
     AddressSpace linked_dma_as;
     bool memory_only;
+    bool fault_read;
+    uint32_t bar_reads;
+    uint32_t fault_result;
     uint32_t result;
     uint64_t read_data;
     uint32_t repetitions;
@@ -113,6 +116,7 @@ struct SGIBridgeDMATestState {
 #define REG_DIRTY       0x34
 /* Read-only: 1 if REQ64# was asserted at the end of the last reset. */
 #define REG_REQ64       0x38
+#define REG_FAULT_READ  0x3c
 #define REG_WINDOW      0x40   /* size of the register block */
 #define IO_WINDOW       0x08   /* size of the I/O-space scratch */
 
@@ -351,6 +355,23 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
     }
 }
 
+static MemTxResult sgi_bridge_dma_test_read_attrs(void *opaque,
+    hwaddr addr, uint64_t *value, unsigned size, MemTxAttrs attrs)
+{
+    SGIBridgeDMATestState *s = opaque;
+
+    if (s->fault_read) {
+        s->bar_reads++;
+    }
+    if (s->fault_read && addr == REG_FAULT_READ) {
+        s->fault_result = MEMTX_ERROR;
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = sgi_bridge_dma_test_read(opaque, addr, size);
+    return MEMTX_OK;
+}
+
 static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
                                       unsigned size)
 {
@@ -406,7 +427,7 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
 
 /* 32-bit accesses only; both bounds declared so the core enforces it. */
 static const MemoryRegionOps sgi_bridge_dma_test_ops = {
-    .read = sgi_bridge_dma_test_read,
+    .read_with_attrs = sgi_bridge_dma_test_read_attrs,
     .write = sgi_bridge_dma_test_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
@@ -611,7 +632,19 @@ static const Property sgi_bridge_dma_test_properties[] = {
                       TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("repetitions", SGIBridgeDMATestState, repetitions, 1),
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
+    DEFINE_PROP_BOOL("x-test-fault-read", SGIBridgeDMATestState,
+                     fault_read, false),
 };
+
+static void sgi_bridge_dma_test_init(Object *obj)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    object_property_add_uint32_ptr(obj, "x-test-bar-read-count",
+                                   &s->bar_reads, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-fault-result",
+                                   &s->fault_result, OBJ_PROP_FLAG_READ);
+}
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
 {
@@ -648,6 +681,7 @@ static const TypeInfo sgi_bridge_dma_test_types[] = {
         .name = TYPE_SGI_BRIDGE_DMA_TEST,
         .parent = TYPE_PCI_DEVICE,
         .instance_size = sizeof(SGIBridgeDMATestState),
+        .instance_init = sgi_bridge_dma_test_init,
         .class_init = sgi_bridge_dma_test_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
