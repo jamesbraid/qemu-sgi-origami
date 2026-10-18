@@ -1353,6 +1353,125 @@ static void test_r10k_tlb_interleaved(void)
     qtest_quit(qts);
 }
 
+/*
+ * tlb-replaced-half: an entry TLBWR replaces is gone, so a reference to
+ * either of its pages takes TLB Refill, even through the half that was
+ * marked invalid. TLB Invalid needs an entry that still matches (R10000
+ * User's Manual version 2.0, chapter 17, TLB Refill and TLB Invalid
+ * exceptions). With Wired at the last index, Random names that index for
+ * every TLBWR, so the second write replaces the first.
+ */
+#define CP0_WIRED           6
+#define OPC_TLBWR           0x42000006u
+#define REPLACED_VPN2       0x00020000u
+#define REPLACED_ODD_PAGE   0x00021000u
+#define REPLACING_VPN2      0x00040000u
+
+static void emit_tlb_write_random(GuestImage *img, uint32_t vpn2,
+                                  uint32_t lo0, uint32_t lo1)
+{
+    emit_lui(img, R_T0, (uint16_t)(vpn2 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(vpn2 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYHI);
+    emit_lui(img, R_T0, (uint16_t)(lo0 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(lo0 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYLO0);
+    emit_lui(img, R_T0, (uint16_t)(lo1 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(lo1 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYLO1);
+    emit_ehb(img);
+    emit(img, OPC_TLBWR);
+    emit_ehb(img);
+}
+
+static void tlb_replaced_half_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(TLB_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = TLB_IMAGE_SIZE };
+    ssize_t written;
+
+    img.pos = VEC_TLB_REFILL;
+    emit_fault_handler(&img, 1);
+    img.pos = VEC_XTLB_REFILL;
+    emit_fault_handler(&img, 2);
+    img.pos = VEC_CACHE_ERROR;
+    emit_fault_handler(&img, 3);
+    img.pos = VEC_GENERAL;
+    emit_fault_handler(&img, 4);
+
+    img.pos = 0;
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_mtc0(&img, R_ZERO, CP0_PAGEMASK);
+    emit_addiu(&img, R_T0, R_ZERO, 63);
+    emit_mtc0(&img, R_T0, CP0_WIRED);
+    emit_ehb(&img);
+
+    /* Global, even page valid and uncached, odd page invalid. */
+    emit_tlb_write_random(&img, REPLACED_VPN2, (0x200 << 6) | 0x17, 0x1);
+    emit_tlb_write_random(&img, REPLACING_VPN2, (0x202 << 6) | 0x17,
+                          (0x203 << 6) | 0x17);
+
+    emit_lui(&img, R_T1, (uint16_t)(REPLACED_ODD_PAGE >> 16));
+    emit_ori(&img, R_T1, R_T1, (uint16_t)(REPLACED_ODD_PAGE & 0xffff));
+    emit_ld(&img, R_T3, R_T1, 0);
+
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_lui(&img, R_T2, (uint16_t)(TLB_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(TLB_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T0, TLB_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, TLB_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, TLB_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_tlb_replaced_half(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+    SgiWait w;
+
+    fd = g_file_open_tmp("mips64-r10k-tlb-replaced-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    tlb_replaced_half_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    /* The handler stores EPC last: a nonzero EPC means a whole record. */
+    sgi_wait_start(&w, "guest fault or done");
+    for (;;) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + TLB_DONE_OFF);
+        uint64_t epc = qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF + 24);
+
+        if (done || epc) {
+            break;
+        }
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
+    }
+
+    /* The 32-bit refill vector, TLBL, at the replaced entry's odd page. */
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF + 8) &
+                    0x7c, ==, 2 << 2);
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF + 16), ==,
+                    REPLACED_ODD_PAGE);
+
+    qtest_quit(qts);
+}
+
 #define COUNT_IMAGE_SIZE    0x1000
 #define COUNT_DONE_OFF      0x60
 #define COUNT_FAULT_OFF     0x68
@@ -2062,6 +2181,8 @@ int main(int argc, char **argv)
                    test_r10k_prefetch_hints);
     qtest_add_func("/sn0/tcg/tlb-interleaved",
                    test_r10k_tlb_interleaved);
+    qtest_add_func("/sn0/tcg/tlb-replaced-half",
+                   test_r10k_tlb_replaced_half);
     qtest_add_func("/sn0/tcg/count-chaining",
                    test_r10k_count_chaining);
     qtest_add_func("/sn0/tcg/count-interrupt-delivery",

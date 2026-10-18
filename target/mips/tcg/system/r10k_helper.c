@@ -1264,8 +1264,17 @@ static void r10k_helper_tlbwi(CPUMIPSState *env)
 static void r10k_helper_tlbwr(CPUMIPSState *env)
 {
     int r = cpu_mips_get_random(env);
+    const r4k_tlb_t *old = &env->tlb->mmu.r4k.tlb[r];
 
-    r4k_invalidate_tlb(env, r, 1);
+    /*
+     * The replaced entry may live on as a shadow so QEMU's own TLB keeps
+     * its pages, and lookups still match shadows. A shadow with an
+     * invalid half would answer a reference to that half with TLB
+     * Invalid, where the processor, which no longer holds the entry,
+     * takes TLB Refill. So only an entry whose halves both translate is
+     * kept; any other is discarded outright.
+     */
+    r4k_invalidate_tlb(env, r, old->V0 && old->V1);
     if (r4k_shadow_covers_staged(env)) {
         r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
     }
