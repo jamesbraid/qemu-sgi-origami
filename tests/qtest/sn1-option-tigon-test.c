@@ -598,12 +598,14 @@ static void test_direct_then_page_dma_readback(void)
         { 0xdcedfe0f, 0x98a9bacb },
     };
     static const uint32_t bar_words[2][2] = {
-        { 0x87766554, 0x43322110 },
-        { 0x0ffeeddc, 0xcbbaa998 },
+        { 0x43322110, 0x87766554 },
+        { 0xcbbaa998, 0x0ffeeddc },
     };
     const uint64_t target = 0x4d4000;
     const uint32_t iova[] = { 0x804d4000, 0x60000000 };
     g_autofree char *storage = NULL;
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace = NULL;
     g_autoptr(GError) error = NULL;
     Tigon t = { .placement = &p };
     uint8_t seen[8];
@@ -616,13 +618,18 @@ static void test_direct_then_page_dma_readback(void)
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-page-read-trace-XXXXXX", &trace_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
     t.qts = qtest_initf(
         "-M origin300,topology=" TOPOLOGY
         ",expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
         "-drive if=none,id=cfg,file=%s,format=raw "
-        "-device tigon,bus=%s,addr=%u,mac=" MAC,
-        prom_path, storage, bus_names[p.head], p.device);
+        "-device tigon,bus=%s,addr=%u,mac=" MAC " "
+        "-trace enable=sgi_xbridge_dma_packet,file=%s",
+        prom_path, storage, bus_names[p.head], p.device, trace_path);
     setup_routes(&t);
     setup_card(&t);
     g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
@@ -678,13 +685,27 @@ static void test_direct_then_page_dma_readback(void)
             g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
                 t.window + 0x800 + (i ^ 3), &seen[i], 1));
         }
-        g_assert_cmpmem(seen, sizeof(seen), host_bytes[path], sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), card_bytes[path], sizeof(seen));
         g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x800), ==,
                         bar_words[path][0]);
         g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x804), ==,
                         bar_words[path][1]);
     }
     qtest_quit(t.qts);
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, &error));
+    g_assert_no_error(error);
+    g_auto(GStrv) lines = g_strsplit(trace, "\n", -1);
+    unsigned reads = 0;
+
+    for (unsigned line = 0; lines[line]; line++) {
+        if (strstr(lines[line], "sgi_xbridge_dma_packet") &&
+            strstr(lines[line], "write 0")) {
+            g_assert_nonnull(strstr(lines[line], "size 8"));
+            reads++;
+        }
+    }
+    g_assert_cmpuint(reads, ==, 2);
+    g_assert_cmpint(unlink(trace_path), ==, 0);
     g_assert_cmpint(unlink(storage), ==, 0);
 }
 
@@ -694,6 +715,8 @@ static void test_direct_dma_write(void)
                           .swap_clear = true };
     g_autofree char *storage = NULL;
     g_autofree char *dest_storage = NULL;
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace = NULL;
     g_autoptr(GError) error = NULL;
     Tigon t = { .placement = &p };
     Tigon dest = { .placement = &p };
@@ -728,13 +751,19 @@ static void test_direct_dma_write(void)
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-option-tigon-page-chunks-XXXXXX",
+                         &trace_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
     t.qts = qtest_initf(
         "-M origin300,topology=" TOPOLOGY
         ",expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
         "-drive if=none,id=cfg,file=%s,format=raw "
-        "-device tigon,bus=%s,addr=%u,mac=" MAC,
-        prom_path, storage, bus_names[p.head], p.device);
+        "-device tigon,bus=%s,addr=%u,mac=" MAC " "
+        "-trace enable=sgi_xbridge_dma_packet,file=%s",
+        prom_path, storage, bus_names[p.head], p.device, trace_path);
     setup_routes(&t);
     setup_card(&t);
     g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
@@ -921,7 +950,8 @@ static void test_direct_dma_write(void)
                                         &seen[i], 1));
     }
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
+    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
+                    sizeof(wide_no_swap));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0200 - 4,
@@ -1023,6 +1053,22 @@ static void test_direct_dma_write(void)
     g_assert_cmpmem(seen, sizeof(seen), migrated, sizeof(migrated));
     qtest_quit(dest.qts);
     qtest_quit(t.qts);
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, &error));
+    g_assert_no_error(error);
+    g_auto(GStrv) lines = g_strsplit(trace, "\n", -1);
+    unsigned page_reads = 0;
+
+    for (unsigned line = 0; lines[line]; line++) {
+        if (strstr(lines[line], "sgi_xbridge_dma_packet") &&
+            strstr(lines[line], "write 0") &&
+            (strstr(lines[line], "2a0180") ||
+             strstr(lines[line], "2a0188"))) {
+            g_assert_nonnull(strstr(lines[line], "size 8"));
+            page_reads++;
+        }
+    }
+    g_assert_cmpuint(page_reads, ==, 2);
+    g_assert_cmpint(unlink(trace_path), ==, 0);
     g_rmdir(directory);
     g_assert_cmpint(unlink(storage), ==, 0);
     g_assert_cmpint(unlink(dest_storage), ==, 0);
