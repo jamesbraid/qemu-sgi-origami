@@ -12,6 +12,7 @@
 #include "hw/display/sgi/head-ops.h"
 #include "hw/display/sgi/pixel-dma.h"
 #include "hw/display/sgi/scanout.h"
+#include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "system/memory.h"
 #include "qom/object.h"
@@ -435,6 +436,8 @@ struct SGIOdysseyState {
      * scalar path; a session like that cannot count as fallback-free.
      */
     bool mesa_unavailable;
+    /* Read-only x-mesa-* properties; host diagnostics, never migrated. */
+    OdysseyMesaCounts mesa_counts;
     bool gl_in_prim;
     bool gl_begin_open;
     bool gl_integer_prim;

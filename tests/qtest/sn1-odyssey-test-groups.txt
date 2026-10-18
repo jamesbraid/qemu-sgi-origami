@@ -110,6 +110,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-integer-routing-migration-reset
 gl /mips64/sn1/odyssey/command-fifo-gl-integer-assemblies
 gl /mips64/sn1/odyssey/command-fifo-gl-integer-triangle
 gl /mips64/sn1/odyssey/command-fifo-gl-triangle
+gl /mips64/sn1/odyssey/mesa-per-draw-fallback
 gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-reverse-y
 gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-disabled
 gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-origin-clip

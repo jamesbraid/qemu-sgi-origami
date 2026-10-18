@@ -4933,64 +4933,53 @@ static void odyssey_mesa_invalidate_scanout_all(void *opaque)
     sgi_scanout_invalidate_all(&s->scanout);
 }
 
+/*
+ * With x-mesa-renderer on, each draw goes wholly to Mesa or, when Mesa
+ * refuses it, wholly to the scalar draw above, before this returns: the
+ * shared context sees only the result of the path that drew it.
+ */
 static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
                                                const SGIGLDraw *d)
 {
     SGIOdysseyState *s = opaque;
+    SGIRenderRefusal refusal = SGI_RENDER_REFUSAL_NONE;
     SGIGLDrawState state;
     SGIGLDraw draw;
     SGIRasterRules rules;
     OdysseyNativeMesa native;
-    SGIRenderResult result;
+    SGIGLDrawResult result;
     Error *err = NULL;
 
     if (!s->mesa_renderer_enabled || !s->mesa_renderer) {
         return odyssey_gl_draw_result(opaque, d);
     }
     if (odyssey_gl_index_mode(s)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: Mesa colour-index draw "
-                      "unsupported\n");
-        trace_sgi_odyssey_gl_draw_path("mesa-preflight",
-                                       SGI_RENDER_UNSUPPORTED, false);
-        return SGI_GL_DRAW_UNSUPPORTED;
-    }
-    if (!odyssey_native_mesa_bind(&native, &s->mem,
-            sgi_board_memory_plane(&s->mem, s->colour_plane),
-            &s->buffer1_mem,
-            sgi_board_memory_plane(&s->buffer1_mem, s->buffer1_plane),
-            odyssey_mesa_invalidate_scanout_all, s, &err)) {
+        /* The index planes are not the RGBA8 views the adapter binds. */
+        refusal = SGI_RENDER_REFUSAL_COLOUR_INDEX;
+    } else if (!odyssey_native_mesa_bind(&native, &s->mem,
+                   sgi_board_memory_plane(&s->mem, s->colour_plane),
+                   &s->buffer1_mem,
+                   sgi_board_memory_plane(&s->buffer1_mem, s->buffer1_plane),
+                   odyssey_mesa_invalidate_scanout_all, s, &err)) {
         error_report_err(err);
         trace_sgi_odyssey_gl_draw_path("mesa-bind",
                                        SGI_RENDER_RESOURCE_ERROR, false);
         return SGI_GL_DRAW_RESOURCE_ERROR;
     }
     state = *d->state;
-    state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
-                        ODSY_WRITE_COLOUR_MASK;
+    if (!refusal) {
+        state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
+                            ODSY_WRITE_COLOUR_MASK;
+    }
     draw = *d;
     draw.state = &state;
     rules = odyssey_gl_operation_rules(s);
-    result = odyssey_native_mesa_draw(&native, s->mesa_renderer, &rules,
-                                     &draw, odyssey_draw_buffers(s),
-                                     SGI_RENDER_MONO, s->did_compare, &err);
+    result = odyssey_native_mesa_draw_or_scalar(
+        refusal ? NULL : &native, s->mesa_renderer, &rules, &draw,
+        odyssey_draw_buffers(s), SGI_RENDER_MONO, s->did_compare, refusal,
+        odyssey_gl_draw_result, s, &s->mesa_counts);
     trace_sgi_odyssey_gl_draw_path("mesa-adapter", result, true);
-    if (err) {
-        error_report_err(err);
-    }
-    switch (result) {
-    case SGI_RENDER_OK:
-        return SGI_GL_DRAW_OK;
-    case SGI_RENDER_OOM:
-        return SGI_GL_DRAW_OUT_OF_MEMORY;
-    case SGI_RENDER_UNSUPPORTED:
-        return SGI_GL_DRAW_UNSUPPORTED;
-    case SGI_RENDER_RESOURCE_ERROR:
-        return SGI_GL_DRAW_RESOURCE_ERROR;
-    case SGI_RENDER_HOST_ERROR:
-        return SGI_GL_DRAW_HOST_ERROR;
-    default:
-        return SGI_GL_DRAW_HOST_ERROR;
-    }
+    return result;
 }
 
 /*
@@ -10313,8 +10302,21 @@ static void odyssey_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-pixel-row", "str",
                         odyssey_test_get_pixel_row, NULL, NULL, NULL);
+    object_property_add_uint64_ptr(obj, "x-mesa-draws",
+                                   &s->mesa_counts.committed,
+                                   OBJ_PROP_FLAG_READ);
     object_property_add_bool(obj, "x-mesa-unavailable",
                              odyssey_get_mesa_unavailable, NULL);
+    for (unsigned r = SGI_RENDER_REFUSAL_NONE + 1;
+         r < SGI_RENDER_REFUSAL__MAX; r++) {
+        g_autofree char *name =
+            g_strdup_printf("x-mesa-fallbacks-%s",
+                            sgi_render_refusal_name(r));
+
+        object_property_add_uint64_ptr(obj, name,
+                                       &s->mesa_counts.fallbacks[r],
+                                       OBJ_PROP_FLAG_READ);
+    }
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
     object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);

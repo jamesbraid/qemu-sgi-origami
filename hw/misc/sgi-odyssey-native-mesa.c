@@ -3,6 +3,7 @@
 #include <math.h>
 #include "qapi/error.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
+#include "qemu/error-report.h"
 #include "trace.h"
 
 static bool native_plane_valid(const SGIBoardMemory *memory,
@@ -587,27 +588,48 @@ static bool native_extent_valid(const SGIGLDrawable *d)
     return true;
 }
 
-SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
-                                         SGIRenderer *renderer,
-                                         const SGIRasterRules *rules,
-                                         const SGIGLDraw *draw,
-                                         unsigned selected_buffers,
-                                         SGIRenderEye eye, bool compare_active,
-                                         Error **errp)
+static SGIRenderDrawResult native_refuse(SGIRenderAttemptOutcome *outcome,
+                                         SGIRenderRefusal reason)
 {
+    *outcome = (SGIRenderAttemptOutcome) {
+        .status = SGI_RENDER_UNSUPPORTED,
+        .reason = reason,
+    };
+    trace_sgi_odyssey_mesa_renderer_result(SGI_RENDER_UNSUPPORTED);
+    return SGI_RENDER_DRAW_REFUSED;
+}
+
+SGIRenderDrawResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
+                                             SGIRenderer *renderer,
+                                             const SGIRasterRules *rules,
+                                             const SGIGLDraw *draw,
+                                             unsigned selected_buffers,
+                                             SGIRenderEye eye,
+                                             bool compare_active,
+                                             SGIRenderAttemptOutcome *outcome,
+                                             Error **errp)
+{
+    SGIRenderAttemptOptions opts = { .mixed_frame = true };
     SGIRasterTarget target;
     SGIGLDrawState state;
     SGIGLDraw mapped;
-    SGIRenderResult result;
+    SGIRenderDrawResult result;
 
-    if (!native || selected_buffers != 1 || eye != SGI_RENDER_MONO ||
-        compare_active) {
-        error_setg(errp, "Unsupported Odyssey native Mesa window state");
-        return SGI_RENDER_UNSUPPORTED;
-    }
-    if (!draw || !draw->state) {
+    if (!native || !draw || !draw->state) {
         error_setg(errp, "Missing Odyssey native Mesa draw state");
-        return SGI_RENDER_RESOURCE_ERROR;
+        *outcome = (SGIRenderAttemptOutcome) {
+            .status = SGI_RENDER_RESOURCE_ERROR,
+        };
+        return SGI_RENDER_DRAW_FAILED;
+    }
+    if (selected_buffers != 1 || eye != SGI_RENDER_MONO) {
+        error_setg(errp, "Unsupported Odyssey native Mesa buffers");
+        return native_refuse(outcome, SGI_RENDER_REFUSAL_BUFFERS);
+    }
+    if (compare_active) {
+        /* A drawable-id compare owns which window pixels may be written. */
+        error_setg(errp, "Unsupported Odyssey native Mesa window compare");
+        return native_refuse(outcome, SGI_RENDER_REFUSAL_WINDOW);
     }
     native->clip = draw->state->drawable.clip;
     target = odyssey_native_mesa_target(native);
@@ -618,26 +640,78 @@ SGIRenderResult odyssey_native_mesa_draw(OdysseyNativeMesa *native,
     }
     if (!native_extent_valid(&draw->state->drawable)) {
         error_setg(errp, "Unsupported Odyssey native Mesa drawable extent");
-        result = SGI_RENDER_UNSUPPORTED;
-        trace_sgi_odyssey_mesa_renderer_result(result);
-        return result;
+        return native_refuse(outcome, SGI_RENDER_REFUSAL_WINDOW);
     }
     if (!native_map_rows(draw->state, &state)) {
         error_setg(errp, "Unsupported Odyssey native Mesa row convention");
-        result = SGI_RENDER_UNSUPPORTED;
-        trace_sgi_odyssey_mesa_renderer_result(result);
-        return result;
+        return native_refuse(outcome, SGI_RENDER_REFUSAL_WINDOW);
     }
     if (!native_draw_snaps_alike(rules, draw)) {
         error_setg(errp, "Odyssey native Mesa vertex snaps differently "
                    "at the drawable origin");
-        result = SGI_RENDER_UNSUPPORTED;
-        trace_sgi_odyssey_mesa_renderer_result(result);
-        return result;
+        return native_refuse(outcome, SGI_RENDER_REFUSAL_WINDOW);
     }
     mapped = *draw;
     mapped.state = &state;
-    result = sgi_render_draw_checked(renderer, rules, &target, &mapped, errp);
-    trace_sgi_odyssey_mesa_renderer_result(result);
+    opts.check_staged = native->check_staged;
+    opts.opaque = native->check_staged_opaque;
+    result = sgi_render_draw_attempt(renderer, rules, &target, &mapped,
+                                     &opts, outcome, errp);
+    trace_sgi_odyssey_mesa_renderer_result(outcome->status);
     return result;
+}
+
+static SGIGLDrawResult native_failure(SGIRenderResult status)
+{
+    switch (status) {
+    case SGI_RENDER_OOM:
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    case SGI_RENDER_RESOURCE_ERROR:
+        return SGI_GL_DRAW_RESOURCE_ERROR;
+    default:
+        return SGI_GL_DRAW_HOST_ERROR;
+    }
+}
+
+SGIGLDrawResult odyssey_native_mesa_draw_or_scalar(
+    OdysseyNativeMesa *native, SGIRenderer *renderer,
+    const SGIRasterRules *rules, const SGIGLDraw *draw,
+    unsigned selected_buffers, SGIRenderEye eye, bool compare_active,
+    SGIRenderRefusal refusal, OdysseyScalarDraw scalar, void *scalar_opaque,
+    OdysseyMesaCounts *counts)
+{
+    SGIRenderAttemptOutcome outcome = {
+        .status = SGI_RENDER_UNSUPPORTED,
+        .reason = refusal,
+    };
+    SGIRenderDrawResult result = SGI_RENDER_DRAW_REFUSED;
+    Error *err = NULL;
+
+    if (refusal == SGI_RENDER_REFUSAL_NONE) {
+        result = odyssey_native_mesa_draw(native, renderer, rules, draw,
+                                          selected_buffers, eye,
+                                          compare_active, &outcome, &err);
+    }
+    switch (result) {
+    case SGI_RENDER_DRAW_OK:
+        counts->committed++;
+        return SGI_GL_DRAW_OK;
+    case SGI_RENDER_DRAW_REFUSED:
+        /*
+         * Nothing is visible yet, so the scalar draw is the whole draw. Its
+         * own result goes back to the shared context, which never sees the
+         * refusal. The counter and trace stand for the refusal's message,
+         * which would otherwise repeat on every such draw.
+         */
+        error_free(err);
+        counts->fallbacks[outcome.reason]++;
+        trace_sgi_odyssey_mesa_fallback(sgi_render_refusal_name(outcome.reason),
+                                        draw->mode, draw->count);
+        return scalar(scalar_opaque, draw);
+    default:
+        if (err) {
+            error_report_err(err);
+        }
+        return native_failure(outcome.status);
+    }
 }
