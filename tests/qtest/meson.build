@@ -67,8 +67,22 @@ slow_qtests = {
   'sn0-module-domain-test': 600,
   'sn0-mscsi-test': 130,
   'sn0-mttcg-test': 390,
-  # Expanded KONA coverage reached 788 of 2,092 cases at 900 s in CI.
+  # The whole binary, which only a named run uses: its groups below are
+  # what the qtest suites run. It took 1109 to 1152 s in full runs 49961,
+  # 50154 and 50244.
   'sn0-origin2000-kona-3d-test': 3600,
+  # sn0-origin2000-kona-3d-test's groups: three times each one's time in a
+  # four-process thorough run of all nine in the CI image with Mesa
+  # required, 2026-10-18.
+  'sn0-origin2000-kona-3d-test-draw': 1420,
+  'sn0-origin2000-kona-3d-test-index': 1350,
+  'sn0-origin2000-kona-3d-test-read': 1360,
+  'sn0-origin2000-kona-3d-test-renderer': 1600,
+  'sn0-origin2000-kona-3d-test-renderer-cpu': 580,
+  'sn0-origin2000-kona-3d-test-renderer-cpu-fragment': 420,
+  'sn0-origin2000-kona-3d-test-renderer-fragment': 950,
+  'sn0-origin2000-kona-3d-test-state': 180,
+  'sn0-origin2000-kona-3d-test-texture': 840,
   'sn0-origin2000-kona-bringup-test': 230,
   'sn0-origin2000-kona-fill-test': 360,
   'sn0-origin2000-kona-pixel-test': 710,

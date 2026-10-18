@@ -1,0 +1,145 @@
+# How tests/qtest/meson.build splits sn0-origin2000-kona-3d-test into
+# separate tests, qtest-mips64/sn0-origin2000-kona-3d-test-GROUP, which meson
+# runs at once. Each line is a group and a GLib test path: one case, or a
+# suite whose cases directly under it all join the group. A suite whose case
+# names the source builds from a printf template joins a group whole, by its
+# own line. Every case and suite the source registers must be in exactly one
+# group, which scripts/check-qtest-registered.py checks, so a new case or
+# suite needs a line here.
+#
+# The groups are areas: shared-renderer cases drawn with the host renderer
+# (renderer, and its fragment tests in renderer-fragment) and with it
+# unavailable (renderer-cpu and renderer-cpu-fragment), texturing, pixel
+# reads, pixel drawing and copies, colour index, and the rest of the GL
+# state.
+
+draw /mips64/sn0/origin2000/kona-3d/bitmap-dma
+draw /mips64/sn0/origin2000/kona-3d/colour-matrix
+draw /mips64/sn0/origin2000/kona-3d/copy-pixels
+draw /mips64/sn0/origin2000/kona-3d/copy-query
+draw /mips64/sn0/origin2000/kona-3d/depth-blend
+draw /mips64/sn0/origin2000/kona-3d/depth-boundaries
+draw /mips64/sn0/origin2000/kona-3d/draw-pixels
+draw /mips64/sn0/origin2000/kona-3d/draw-pixels-transfer
+draw /mips64/sn0/origin2000/kona-3d/draw-pixels-zoom
+draw /mips64/sn0/origin2000/kona-3d/image-transfer-refusal
+draw /mips64/sn0/origin2000/kona-3d/packed-ingress
+draw /mips64/sn0/origin2000/kona-3d/pixel-map-sizes
+draw /mips64/sn0/origin2000/kona-3d/raw-bitmap
+draw /mips64/sn0/origin2000/kona-3d/raw-pixels
+draw /mips64/sn0/origin2000/kona-3d/reordered-pixels
+draw /mips64/sn0/origin2000/kona-3d/scalar-pixels
+draw /mips64/sn0/origin2000/kona-3d/stencil
+draw /mips64/sn0/origin2000/kona-3d/stencil-boundaries
+draw /mips64/sn0/origin2000/kona-3d/stencil-maps
+draw /mips64/sn0/origin2000/kona-3d/stencil-pixels
+draw /mips64/sn0/origin2000/kona-3d/stencil-read-dma
+draw /mips64/sn0/origin2000/kona-3d/stencil-transport
+draw /mips64/sn0/origin2000/kona-3d/stencil/completion
+
+index /mips64/sn0/origin2000/kona-3d/bitmap-index-pixels
+index /mips64/sn0/origin2000/kona-3d/bitmap-stencil-read
+index /mips64/sn0/origin2000/kona-3d/colour-map-source-types
+index /mips64/sn0/origin2000/kona-3d/colour-maps
+index /mips64/sn0/origin2000/kona-3d/indexed-colour-pixels
+index /mips64/sn0/origin2000/kona-3d/native-bitmap
+index /mips64/sn0/origin2000/kona-3d/native-index-bitmap
+index /mips64/sn0/origin2000/kona-3d/native-index-logic
+index /mips64/sn0/origin2000/kona-3d/native-index-pixels
+index /mips64/sn0/origin2000/kona-3d/native-index-read-types
+index /mips64/sn0/origin2000/kona-3d/native-index-setters
+index /mips64/sn0/origin2000/kona-3d/native-index-sources
+index /mips64/sn0/origin2000/kona-3d/native-index-state
+index /mips64/sn0/origin2000/kona-3d/native-packed-index
+
+read /mips64/sn0/origin2000/kona-3d/abgr-dma
+read /mips64/sn0/origin2000/kona-3d/abgr-pack
+read /mips64/sn0/origin2000/kona-3d/abgr-read
+read /mips64/sn0/origin2000/kona-3d/colour-read
+read /mips64/sn0/origin2000/kona-3d/depth-pixels
+read /mips64/sn0/origin2000/kona-3d/pack-read
+read /mips64/sn0/origin2000/kona-3d/packed-read
+read /mips64/sn0/origin2000/kona-3d/pixels-dma
+read /mips64/sn0/origin2000/kona-3d/read-dma
+read /mips64/sn0/origin2000/kona-3d/read-dma-typed
+read /mips64/sn0/origin2000/kona-3d/reordered-pack
+read /mips64/sn0/origin2000/kona-3d/reordered-read
+read /mips64/sn0/origin2000/kona-3d/single-pack
+read /mips64/sn0/origin2000/kona-3d/single-pixels
+read /mips64/sn0/origin2000/kona-3d/single-read
+read /mips64/sn0/origin2000/kona-3d/typed-read
+
+renderer /mips64/sn0/origin2000/kona-3d/renderer
+renderer /mips64/sn0/origin2000/kona-3d/renderer/blend
+renderer /mips64/sn0/origin2000/kona-3d/renderer/colour-mask
+renderer /mips64/sn0/origin2000/kona-3d/renderer/culling
+renderer /mips64/sn0/origin2000/kona-3d/renderer/depth-gradient
+renderer /mips64/sn0/origin2000/kona-3d/renderer/general-triangle
+renderer /mips64/sn0/origin2000/kona-3d/renderer/hold-oom
+renderer /mips64/sn0/origin2000/kona-3d/renderer/large-polygon
+renderer /mips64/sn0/origin2000/kona-3d/renderer/legacy-raster-enable
+renderer /mips64/sn0/origin2000/kona-3d/renderer/mesa-refused
+renderer /mips64/sn0/origin2000/kona-3d/renderer/polygon
+renderer /mips64/sn0/origin2000/kona-3d/renderer/scissor
+renderer /mips64/sn0/origin2000/kona-3d/renderer/smooth
+renderer /mips64/sn0/origin2000/kona-3d/renderer/texture
+renderer /mips64/sn0/origin2000/kona-3d/renderer/texture-incomplete
+renderer /mips64/sn0/origin2000/kona-3d/renderer/tiles
+renderer /mips64/sn0/origin2000/kona-3d/renderer/user-clip
+renderer /mips64/sn0/origin2000/kona-3d/renderer/viewport
+renderer /mips64/sn0/origin2000/kona-3d/renderer/volume-clip
+
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/blend
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/colour-mask
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/culling
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/depth-gradient
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/large-polygon
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/polygon
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/scissor
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/smooth
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/stencil
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/texture
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/tiles
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/user-clip
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/viewport
+renderer-cpu /mips64/sn0/origin2000/kona-3d/renderer/cpu/volume-clip
+
+renderer-cpu-fragment /mips64/sn0/origin2000/kona-3d/renderer/cpu/alpha-test
+renderer-cpu-fragment /mips64/sn0/origin2000/kona-3d/renderer/cpu/depth
+renderer-cpu-fragment /mips64/sn0/origin2000/kona-3d/renderer/cpu/logic-op
+
+renderer-fragment /mips64/sn0/origin2000/kona-3d/renderer/alpha-test
+renderer-fragment /mips64/sn0/origin2000/kona-3d/renderer/depth
+renderer-fragment /mips64/sn0/origin2000/kona-3d/renderer/logic-op
+renderer-fragment /mips64/sn0/origin2000/kona-3d/renderer/stencil
+
+state /mips64/sn0/origin2000/kona-3d
+state /mips64/sn0/origin2000/kona-3d/attrib-depth
+state /mips64/sn0/origin2000/kona-3d/hints
+state /mips64/sn0/origin2000/kona-3d/native-error
+state /mips64/sn0/origin2000/kona-3d/native-state
+
+texture /mips64/sn0/origin2000/kona-3d/bitmap-texture-dimensions
+texture /mips64/sn0/origin2000/kona-3d/bitmap-texture-pixels
+texture /mips64/sn0/origin2000/kona-3d/indexed-texture-pixels
+texture /mips64/sn0/origin2000/kona-3d/raster-texture
+texture /mips64/sn0/origin2000/kona-3d/texture
+texture /mips64/sn0/origin2000/kona-3d/texture-8x8
+texture /mips64/sn0/origin2000/kona-3d/texture-cleanup-prefix
+texture /mips64/sn0/origin2000/kona-3d/texture-curve
+texture /mips64/sn0/origin2000/kona-3d/texture-family
+texture /mips64/sn0/origin2000/kona-3d/texture-pio-layout
+texture /mips64/sn0/origin2000/kona-3d/texture-prefix
+texture /mips64/sn0/origin2000/kona-3d/texture-transfer
+texture /mips64/sn0/origin2000/kona-3d/texture/1d
+texture /mips64/sn0/origin2000/kona-3d/texture/byte
+texture /mips64/sn0/origin2000/kona-3d/texture/depth
+texture /mips64/sn0/origin2000/kona-3d/texture/detail
+texture /mips64/sn0/origin2000/kona-3d/texture/dma
+texture /mips64/sn0/origin2000/kona-3d/texture/float
+texture /mips64/sn0/origin2000/kona-3d/texture/float/migration
+texture /mips64/sn0/origin2000/kona-3d/texture/integer
+texture /mips64/sn0/origin2000/kona-3d/texture/interior
+texture /mips64/sn0/origin2000/kona-3d/texture/rgb
+texture /mips64/sn0/origin2000/kona-3d/texture/source-colour
+texture /mips64/sn0/origin2000/kona-3d/texture/volume
