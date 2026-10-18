@@ -225,6 +225,9 @@ static void test_list_words_return_no_credit(void)
         stl_be_p(bytes, list[i]);
         qtest_memwrite(qts, POOL_BASE + 4 * i, bytes, sizeof(bytes));
     }
+    /* The kernel maps the pool's page before registering it. */
+    qtest_writel(qts, KONA_REG(0x100000 + 4 * (POOL_BASE >> 14)),
+                 0x20000000 | (uint32_t)(POOL_BASE >> 12));
     qtest_writel(qts, REG_COMMAND, DMA_POOL);
     qtest_writel(qts, REG_COMMAND, (uint32_t)(POOL_BASE >> 12));
     qtest_writel(qts, REG_COMMAND, 0x9000 | (uint32_t)(POOL_BASE & 0xfff));

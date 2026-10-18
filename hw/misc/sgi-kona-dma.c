@@ -426,7 +426,9 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
  * logged. A word 2 without the 0x9000 tag, or a pool longer than the
  * model's bound, is logged as well. The pool is one range of the device
  * address space, as its single address says, and how the pipe resolves
- * its base against the offsets is unknown: the model adds them.
+ * its base against the offsets is unknown: the model adds them, then
+ * reads the sum through the XG map RAM, as it reads a DMA packet's
+ * address (sgi_kona_dma_pool_pages()).
  */
 static void sgi_kona_dma_register_pool(SGIKonaState *s, const uint32_t *args)
 {
@@ -449,22 +451,39 @@ static void sgi_kona_dma_register_pool(SGIKonaState *s, const uint32_t *args)
     trace_sgi_kona_dma_pool(base, args[2], d->pool_valid);
 }
 
-/* The pool as a page list; pages must be freed by the caller. */
-static SGIDMAPageList sgi_kona_dma_pool_pages(SGIKonaState *s,
-                                              uint64_t **pages)
+/*
+ * The pool as a page list of host addresses; pages must be freed by the
+ * caller. The pool's address is a device address: in a traced IRIX 6.5.30
+ * run the kernel loaded map RAM entries 0xd to 0x20c, exactly the 16 KiB
+ * pages of its 8 MiB pool at device address 0x34000, before registering
+ * it, the way it loads the entries for a DMA packet's buffer. So each pool
+ * page goes through its map RAM entry when the pool is read, and a page
+ * whose entry maps nothing fails the whole read, logged. Translating at
+ * each read rather than at registration is the model's choice: nothing
+ * shows when the pipe reads the entries.
+ */
+static bool sgi_kona_dma_pool_pages(SGIKonaState *s, SGIDMAPageList *pl,
+                                    uint64_t **pages)
 {
     SGIKonaDma *d = &s->dma;
-    SGIDMAPageList pl = {
-        .npages = d->pool_len / SGI_KONA_DMA_POOL_PAGE,
-        .page_size = SGI_KONA_DMA_POOL_PAGE,
-    };
 
-    *pages = g_new(uint64_t, pl.npages);
-    for (uint32_t i = 0; i < pl.npages; i++) {
-        (*pages)[i] = d->pool_base + (uint64_t)i * SGI_KONA_DMA_POOL_PAGE;
+    pl->npages = d->pool_len / SGI_KONA_DMA_POOL_PAGE;
+    pl->page_size = SGI_KONA_DMA_POOL_PAGE;
+    *pages = g_new(uint64_t, pl->npages);
+    for (uint32_t i = 0; i < pl->npages; i++) {
+        uint64_t device = d->pool_base +
+                          (uint64_t)i * SGI_KONA_DMA_POOL_PAGE;
+
+        if (!sgi_kona_device_address(s, device, &(*pages)[i])) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-kona: dma pool page at device address 0x%"
+                          PRIx64 " has no map RAM entry; pool not read\n",
+                          device);
+            return false;
+        }
     }
-    pl.addr = *pages;
-    return pl;
+    pl->addr = *pages;
+    return true;
 }
 
 /*
@@ -544,14 +563,16 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
         d->nranges = n - 1;
     }
     if (pool) {
-        SGIDMAPageList pl = sgi_kona_dma_pool_pages(s, &pages);
+        SGIDMAPageList pl;
         const SGIDMABus bus = {
             .as = &s->fabric_as,
             .ops = &sgi_kona_dma_head_ops,
             .opaque = s,
         };
 
-        ret = sgi_fetch_map(f, &bus, &pl, pairs[0], pairs[1]);
+        ret = sgi_kona_dma_pool_pages(s, &pl, &pages) ?
+              sgi_fetch_map(f, &bus, &pl, pairs[0], pairs[1]) :
+              SGI_FAIL_BUS;
     } else {
         ret = sgi_fetch_map_plane(f, &s->mem, s->plane_list, pairs[0],
                                   pairs[1], s);
@@ -582,7 +603,10 @@ static void sgi_kona_dma_pull(SGIKonaState *s, const uint32_t *args)
         sgi_kona_dma_refuse(s, SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BOUNDS);
         return;
     }
-    pl = sgi_kona_dma_pool_pages(s, &pages);
+    if (!sgi_kona_dma_pool_pages(s, &pl, &pages)) {
+        sgi_kona_dma_refuse(s, SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BUS);
+        return;
+    }
     sgi_kona_dma_to_list(s, &pl, args[1], args[0], args[2],
                          SGI_KONA_DMA_COOKIE_NONE);
 }
