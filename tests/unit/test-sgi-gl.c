@@ -11266,15 +11266,30 @@ static void texture_1d_vertex(FragScene *f, float x, float y, float s, float t)
                  (uint32_t[]) { bits(x), bits(y) }, 2);
 }
 
+/* Added to the primitive mode: draw with polygon smoothing on. */
+#define TEXTURE_1D_SMOOTH 0x10000u
+
+/*
+ * A 1D texture's footprint ignores t and the T scale, however fast t
+ * changes and whatever the scale holds, smoothed or not.
+ */
 static void test_texture_1d_footprint(gconstpointer opaque)
 {
-    uint32_t mode = GPOINTER_TO_UINT(opaque);
+    uint32_t mode = GPOINTER_TO_UINT(opaque) & ~TEXTURE_1D_SMOOTH;
+    bool smooth = GPOINTER_TO_UINT(opaque) & TEXTURE_1D_SMOOTH;
+    SGIRasterRules smooth_rules = rules_stencil;
 
+    smooth_rules.smooth_primitives = true;
     for (unsigned minify = 0; minify < 2; minify++) {
         MipmapFixture f;
         float span = minify ? 4 : 0;
 
         texture_1d_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST);
+        f.image.lod_scale_t = INFINITY;
+        if (smooth) {
+            f.scene.rec.rules = &smooth_rules;
+            enable(&f.scene.c, SGI_GL_POLYGON_SMOOTH, true);
+        }
         frag_command(&f.scene, SGI_GL_OP_BEGIN, (uint32_t[]) { mode }, 1);
         texture_1d_vertex(&f.scene, -0.484375, -0.484375, 0.25, -1000);
         texture_1d_vertex(&f.scene, -0.359375, -0.484375, 0.25 + span, 1000);
@@ -13318,6 +13333,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-1d-sampling", test_texture_1d_sampling);
     g_test_add_data_func("/sgi-gl/texture-1d-triangle-footprint",
                         GUINT_TO_POINTER(SGI_GL_TRIANGLES),
+                        test_texture_1d_footprint);
+    g_test_add_data_func("/sgi-gl/texture-1d-smooth-triangle-footprint",
+                        GUINT_TO_POINTER(SGI_GL_TRIANGLES |
+                                         TEXTURE_1D_SMOOTH),
                         test_texture_1d_footprint);
     g_test_add_data_func("/sgi-gl/texture-1d-line-footprint",
                         GUINT_TO_POINTER(SGI_GL_LINES),
