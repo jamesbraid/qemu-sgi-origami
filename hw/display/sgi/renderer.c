@@ -54,11 +54,16 @@ static const SGIRenderResource *sgi_render_scalar_resource(
  * Whether the host program samples this image as the scalar path does.
  * A one-dimensional image under the 2D enable is dropped by the scalar
  * path, and the program has no texture comparison, so both are refused.
+ * So are raw-component images: the scalar sampler reads their components
+ * at up to 16 bits, and no comparison covers them against the 8-bit
+ * texture resource the host samples.
  */
 static bool sgi_render_texture_image_supported(const SGIGLTexImage *image,
                                                const SGIGLDrawState *st)
 {
     if (!image || image->one_dimensional || image->shadow_compare ||
+        image->read_texel_components ||
+        image->read_border_texel_components ||
         image->volume || image->pyramid || image->border ||
         !is_power_of_2(image->width) ||
         !is_power_of_2(image->height) ||
