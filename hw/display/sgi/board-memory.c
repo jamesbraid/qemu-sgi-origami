@@ -44,7 +44,12 @@ void sgi_board_memory_cleanup(SGIBoardMemory *m)
     memset(m, 0, sizeof(*m));
 }
 
-unsigned sgi_plane_bytes_per_pixel(SGIPlaneFormat format)
+/*
+ * The per-pixel paths below take a plane's pixel size once and reuse it,
+ * through these inline forms of the exported functions, instead of
+ * switching on the format again for the offset and again for the packing.
+ */
+static inline unsigned sgi_plane_bpp(SGIPlaneFormat format)
 {
     switch (format) {
     case SGI_PLANE_CI8:
@@ -62,6 +67,11 @@ unsigned sgi_plane_bytes_per_pixel(SGIPlaneFormat format)
         return 4;
     }
     g_assert_not_reached();
+}
+
+unsigned sgi_plane_bytes_per_pixel(SGIPlaneFormat format)
+{
+    return sgi_plane_bpp(format);
 }
 
 uint32_t sgi_board_memory_add_plane(SGIBoardMemory *m, const SGIPlane *plane,
@@ -171,9 +181,10 @@ static bool sgi_plane_is_le(const SGIPlane *p)
            p->packing == SGI_PACK_LE_RED_HIGH;
 }
 
-uint32_t sgi_plane_decode(const SGIPlane *p, const uint8_t *bytes)
+static inline uint32_t sgi_plane_get(const SGIPlane *p, unsigned bpp,
+                                     const uint8_t *bytes)
 {
-    switch (sgi_plane_bytes_per_pixel(p->format)) {
+    switch (bpp) {
     case 1:
         return bytes[0];
     case 2:
@@ -183,9 +194,10 @@ uint32_t sgi_plane_decode(const SGIPlane *p, const uint8_t *bytes)
     }
 }
 
-void sgi_plane_encode(const SGIPlane *p, uint32_t word, uint8_t *bytes)
+static inline void sgi_plane_put(const SGIPlane *p, unsigned bpp,
+                                 uint32_t word, uint8_t *bytes)
 {
-    switch (sgi_plane_bytes_per_pixel(p->format)) {
+    switch (bpp) {
     case 1:
         bytes[0] = word;
         break;
@@ -204,6 +216,16 @@ void sgi_plane_encode(const SGIPlane *p, uint32_t word, uint8_t *bytes)
         }
         break;
     }
+}
+
+uint32_t sgi_plane_decode(const SGIPlane *p, const uint8_t *bytes)
+{
+    return sgi_plane_get(p, sgi_plane_bpp(p->format), bytes);
+}
+
+void sgi_plane_encode(const SGIPlane *p, uint32_t word, uint8_t *bytes)
+{
+    sgi_plane_put(p, sgi_plane_bpp(p->format), word, bytes);
 }
 
 /*
@@ -281,16 +303,26 @@ bool sgi_board_memory_import(SGIBoardMemory *m, uint64_t base, uint64_t len,
     return sgi_board_memory_copy(m, base, len, (uint8_t *)src, false);
 }
 
-static uint64_t sgi_plane_offset(const SGIPlane *p, int x, int y)
+static uint64_t sgi_plane_offset(const SGIPlane *p, int x, int y,
+                                 unsigned bpp)
 {
-    return p->base + (uint64_t)y * p->stride +
-           (uint64_t)x * sgi_plane_bytes_per_pixel(p->format);
+    return p->base + (uint64_t)y * p->stride + (uint64_t)x * bpp;
+}
+
+/*
+ * A device-backed memory is one host array, so a pixel inside it is
+ * reached directly; sgi_board_memory_host() would return the same bytes.
+ */
+static inline uint8_t *sgi_board_memory_bytes(const SGIBoardMemory *m,
+                                              uint64_t at, unsigned bpp)
+{
+    return at <= m->size && bpp <= m->size - at ? m->bytes + at : NULL;
 }
 
 uint32_t sgi_plane_load(const SGIBoardMemory *m, const SGIPlane *p,
                         int x, int y)
 {
-    unsigned bpp = sgi_plane_bytes_per_pixel(p->format);
+    unsigned bpp;
     uint8_t bytes[4];
     uint64_t at;
     uint8_t *host;
@@ -298,21 +330,26 @@ uint32_t sgi_plane_load(const SGIBoardMemory *m, const SGIPlane *p,
     if (!sgi_plane_contains(p, x, y)) {
         return 0;
     }
-    at = sgi_plane_offset(p, x, y);
+    bpp = sgi_plane_bpp(p->format);
+    at = sgi_plane_offset(p, x, y, bpp);
+    if (m->bytes) {
+        host = sgi_board_memory_bytes(m, at, bpp);
+        return host ? sgi_plane_get(p, bpp, host) : 0;
+    }
     host = sgi_board_memory_host(m, at, bpp);
     if (host) {
-        return sgi_plane_decode(p, host);
+        return sgi_plane_get(p, bpp, host);
     }
     if (!sgi_board_memory_export(m, at, bpp, bytes)) {
         return 0;
     }
-    return sgi_plane_decode(p, bytes);
+    return sgi_plane_get(p, bpp, bytes);
 }
 
 void sgi_plane_store(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
                      uint32_t word)
 {
-    unsigned bpp = sgi_plane_bytes_per_pixel(p->format);
+    unsigned bpp;
     uint8_t bytes[4];
     uint64_t at;
     uint8_t *host;
@@ -320,13 +357,21 @@ void sgi_plane_store(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
     if (!sgi_plane_contains(p, x, y)) {
         return;
     }
-    at = sgi_plane_offset(p, x, y);
-    host = sgi_board_memory_host(m, at, bpp);
-    if (host) {
-        sgi_plane_encode(p, word, host);
+    bpp = sgi_plane_bpp(p->format);
+    at = sgi_plane_offset(p, x, y, bpp);
+    if (m->bytes) {
+        host = sgi_board_memory_bytes(m, at, bpp);
+        if (host) {
+            sgi_plane_put(p, bpp, word, host);
+        }
         return;
     }
-    sgi_plane_encode(p, word, bytes);
+    host = sgi_board_memory_host(m, at, bpp);
+    if (host) {
+        sgi_plane_put(p, bpp, word, host);
+        return;
+    }
+    sgi_plane_put(p, bpp, word, bytes);
     sgi_board_memory_import(m, at, bpp, bytes);
 }
 
