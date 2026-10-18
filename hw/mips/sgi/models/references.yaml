@@ -634,6 +634,15 @@ web:
     rights: public-web
     obtain:
       url: https://lore.kernel.org/r/d4ea8cf57059fa4544c7be577c6a8033d65ced9a.1790857966.git.kaloz@kernel.org
+  ip35-patch-sg0007149:
+    title: "IP35 patch SG0007149 system-controller software carrier"
+    publisher: Silicon Graphics
+    kind: capture
+    locator: entry
+    rights: obtain-only
+    obtain:
+      url: https://ftp.jurassic.nl/pub/irix/patches/6.5.30/patchSG0007149.tardist
+      sha256: 9f4b8abf97c0903f697f75888ae1363b19e385a85c9d34446973975eecf9930a
   usenet-slrndfs77l:
     title: "comp.sys.sgi.hardware, 2005-08-13, Message-ID <slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net>"
     publisher: "Usenet"
