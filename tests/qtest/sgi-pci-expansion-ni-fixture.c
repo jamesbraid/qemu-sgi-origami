@@ -11,6 +11,7 @@
 #include "hw/char/serial-mm.h"
 #include "system/reset.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/pci-64bit.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-sn1-router.h"
@@ -27,6 +28,7 @@
 #define TYPE_NI_FIXTURE "sgi-pci-expansion-ni-fixture"
 OBJECT_DECLARE_SIMPLE_TYPE(NIFixtureState, NI_FIXTURE)
 #define TYPE_NI_CARD "sgi-pci-expansion-ni-card"
+#define TYPE_NI_WIDE_CARD "sgi-pci-expansion-ni-wide-card"
 OBJECT_DECLARE_SIMPLE_TYPE(NICardState, NI_CARD)
 #define RAM_BYTES 0x100000
 #define NODE_SHIFT 33
@@ -38,7 +40,9 @@ struct NICardState {
     MemoryRegion bar;
     uint64_t address;
     uint64_t payload;
+    uint64_t second_payload;
     uint32_t transfer_length;
+    bool capture_failed_read;
     uint32_t result;
     uint32_t signature;
     uint8_t pin;
@@ -64,6 +68,10 @@ static uint64_t card_read(void *opaque, hwaddr offset, unsigned size)
         return s->result;
     case 32:
         return s->pin;
+    case 40:
+        return size == 8 ? s->second_payload : (uint32_t)s->second_payload;
+    case 44:
+        return s->second_payload >> 32;
     default: return 0;
     }
 }
@@ -100,8 +108,11 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
         } else if (value == 2) {
             s->result = pci_dma_read(PCI_DEVICE(s), s->address, buffer,
                                      s->transfer_length);
-            if (s->result == MEMTX_OK) {
+            if (s->result == MEMTX_OK || s->capture_failed_read) {
                 s->payload = ldq_be_p(buffer);
+            }
+            if (s->result == MEMTX_OK && s->transfer_length >= 16) {
+                s->second_payload = ldq_be_p(buffer + 8);
             }
         } else {
             s->result = MEMTX_ACCESS_ERROR;
@@ -139,6 +150,7 @@ static void card_reset_hold(Object *obj, ResetType type)
 
     s->address = 0;
     s->payload = 0;
+    s->second_payload = 0;
     s->result = MEMTX_DECODE_ERROR;
     s->pin = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
@@ -161,6 +173,7 @@ static const VMStateDescription card_vmstate = {
         VMSTATE_PCI_DEVICE(parent_obj, NICardState),
         VMSTATE_UINT64(address, NICardState),
         VMSTATE_UINT64(payload, NICardState),
+        VMSTATE_UINT64(second_payload, NICardState),
         VMSTATE_UINT32(result, NICardState),
         VMSTATE_UINT32_EQUAL(signature, NICardState),
         VMSTATE_UINT8_EQUAL(interrupt_pin, NICardState),
@@ -195,6 +208,8 @@ static const Property card_properties[] = {
     DEFINE_PROP_UINT64("dma-address", NICardState, address, 0),
     DEFINE_PROP_UINT64("dma-payload", NICardState, payload, 0),
     DEFINE_PROP_UINT32("transfer-length", NICardState, transfer_length, 8),
+    DEFINE_PROP_BOOL("capture-failed-read", NICardState,
+                     capture_failed_read, false),
 };
 
 static void card_class_init(ObjectClass *oc, const void *data)
@@ -278,6 +293,11 @@ struct NIFixtureState {
     MemoryRegion ram;
     MemoryRegion ram_overlay;
     bool ram_overlay_enabled;
+    MemoryRegion ram_split;
+    bool ram_split_enabled;
+    MemoryRegion ram_error;
+    bool ram_error_enabled;
+    uint64_t ram_error_reads;
     MemoryRegion ram_device;
     bool ram_device_enabled;
     bool ram_unmapped_tail;
@@ -299,6 +319,8 @@ struct NIFixtureState {
     uint8_t intx_map;
     uint8_t isp_head;
     uint8_t card_device;
+    bool wide_card;
+    bool clear_wide_mask;
     uint64_t compute_device_mask;
     uint64_t interrupt_count;
     uint64_t interrupt_address;
@@ -487,6 +509,8 @@ static uint64_t status_read(void *opaque, hwaddr offset, unsigned size)
         return s->packet_write_other;
     case 17:
         return s->packet_reads;
+    case 18:
+        return s->ram_error_reads;
     default:
         return 0;
     }
@@ -507,6 +531,24 @@ static void ram_overlay_write(void *opaque, hwaddr offset, uint64_t value,
     s->ram_overlay_value = value;
     s->ram_overlay_writes++;
 }
+
+static MemTxResult ram_error_read(void *opaque, hwaddr offset,
+                                   uint64_t *value, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    NIFixtureState *s = opaque;
+
+    s->ram_error_reads++;
+    *value = 0xdeadbeef;
+    return MEMTX_ACCESS_ERROR;
+}
+
+static const MemoryRegionOps ram_error_ops = {
+    .read_with_attrs = ram_error_read,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static const MemoryRegionOps ram_overlay_ops = {
     .write = ram_overlay_write,
@@ -987,6 +1029,21 @@ static void fixture_build(DeviceState *dev, Error **errp)
                                 ram_bytes, errp)) {
         return;
     }
+    if (s->ram_split_enabled) {
+        if (!memory_region_init_ram(&s->ram_split, OBJECT(s),
+                                    "ni-fixture.ram-split", 4, errp)) {
+            return;
+        }
+        memory_region_add_subregion_overlap(&s->ram, 0x8ffc,
+                                            &s->ram_split, 1);
+    }
+    if (s->ram_error_enabled) {
+        memory_region_init_io(&s->ram_error, OBJECT(s), &ram_error_ops, s,
+                              "ni-fixture.ram-error", 4);
+        s->ram_error.disable_reentrancy_guard = true;
+        memory_region_add_subregion_overlap(&s->ram, 0x8ffc,
+                                            &s->ram_error, 1);
+    }
     if (s->ram_overlay_enabled) {
         memory_region_init_io(&s->ram_overlay, OBJECT(s), &ram_overlay_ops, s,
                               "ni-fixture.ram-overlay", 8);
@@ -1221,7 +1278,9 @@ static void fixture_build(DeviceState *dev, Error **errp)
     }
     for (i = 0; i < 6; i++) {
         bool isp = i == s->isp_head;
-        DeviceState *card = qdev_new(isp ? "qlogic-isp1040" : TYPE_NI_CARD);
+        DeviceState *card = qdev_new(isp ? "qlogic-isp1040" :
+                                     s->wide_card ? TYPE_NI_WIDE_CARD :
+                                     TYPE_NI_CARD);
         PCIBus *bus = sgi_origin300_pci_expansion_bus(
             SGI_ORIGIN300_PCI_EXPANSION(s->chassis), i);
         g_autofree char *name = g_strdup_printf("card%u", i);
@@ -1286,8 +1345,19 @@ static void fixture_build(DeviceState *dev, Error **errp)
                               name, UINT64_C(1) << 42);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &r->view);
     }
+    if (s->clear_wide_mask) {
+        Object *chip = object_resolve_path_component(OBJECT(s->chassis), "u0");
+        Object *head = chip ? object_resolve_path_component(chip, "head-e") :
+                              NULL;
+
+        if (!head) {
+            error_setg(errp, "NI fixture has no U0 head E");
+            return;
+        }
+        SGI_XBRIDGE_HEAD(head)->wide_slot_mask &= ~BIT(s->card_device);
+    }
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "ni-fixture.status", 144);
+                          "ni-fixture.status", 152);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
         "ni-fixture.ram-observation", &s->ram, 0, ram_bytes);
@@ -1388,6 +1458,9 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 
 static const Property fixture_properties[] = {
     DEFINE_PROP_BOOL("ram-overlay", NIFixtureState, ram_overlay_enabled, false),
+    DEFINE_PROP_BOOL("ram-split", NIFixtureState, ram_split_enabled, false),
+    DEFINE_PROP_BOOL("ram-error-half", NIFixtureState,
+                     ram_error_enabled, false),
     DEFINE_PROP_BOOL("ram-device", NIFixtureState, ram_device_enabled, false),
     DEFINE_PROP_BOOL("ram-unmapped-tail", NIFixtureState, ram_unmapped_tail,
                      false),
@@ -1417,6 +1490,9 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_UINT32("attached-owner", NIFixtureState, attachment.owner, 1),
     DEFINE_PROP_UINT8("intx-map", NIFixtureState, intx_map, 0),
     DEFINE_PROP_UINT8("card-device", NIFixtureState, card_device, 1),
+    DEFINE_PROP_BOOL("wide-card", NIFixtureState, wide_card, false),
+    DEFINE_PROP_BOOL("clear-wide-mask", NIFixtureState,
+                     clear_wide_mask, false),
     DEFINE_PROP_UINT8("isp-head", NIFixtureState, isp_head, UINT8_MAX),
     DEFINE_PROP_UINT8("compute-number", NIFixtureState, compute_number, 3),
     DEFINE_PROP_UINT8("bic-number", NIFixtureState, bic_number, 7),
@@ -1449,6 +1525,14 @@ static const TypeInfo fixture_types[] = {
         .class_init = card_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { }
+        },
+    },
+    {
+        .name = TYPE_NI_WIDE_CARD,
+        .parent = TYPE_NI_CARD,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_PCI_64BIT_DEVICE },
             { }
         },
     },
