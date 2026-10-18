@@ -139,5 +139,68 @@ b /mips64/sn1/x/suite
                       self.problems("a\n"))
 
 
+class GeneratedGroupTests(unittest.TestCase):
+    SOURCE = """
+    qtest_add_func("sn1/x/plain", test_plain);
+    for (unsigned i = 0; i < 3; i++) {
+        g_autofree char *path = g_strdup_printf("sn1/x/made/%u", i);
+
+        add_data_case(path, GUINT_TO_POINTER(i), test_made);
+    }
+    add_modes("sn1/x/host/%u",
+              "sn1/x/"
+              "cpu/%u", test_mode);
+    add_data_case("sn1/x/made/extra", NULL, test_extra);
+    g_test_message("%u cases", count);
+"""
+
+    def problems(self, groups, source=SOURCE):
+        return group_problems('sn1-x-test', groups, source)
+
+    def test_templated_suites_each_in_one_group(self):
+        self.assertEqual(self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/made
+b /mips64/sn1/x/host
+b /mips64/sn1/x/cpu
+"""), [])
+
+    def test_templated_suite_in_no_group_fails(self):
+        self.assertEqual(self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/made
+b /mips64/sn1/x/host
+"""), ['sn1-x-test suite sn1/x/cpu is in no group'])
+
+    def test_templated_suite_in_two_groups_fails(self):
+        self.assertIn('sn1-x-test suite sn1/x/host is in more than one group',
+                      self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/made
+a /mips64/sn1/x/host
+b /mips64/sn1/x/host
+b /mips64/sn1/x/cpu
+"""))
+
+    def test_templated_case_alone_fails(self):
+        # Its name is not known, so a group cannot take it by name.
+        problems = self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/made
+b /mips64/sn1/x/host/0
+b /mips64/sn1/x/cpu
+""")
+        self.assertIn('sn1-x-test suite sn1/x/host is in no group', problems)
+        self.assertIn('sn1-x-test-groups.txt names sn1/x/host/0, which '
+                      'sn1-x-test does not register', problems)
+
+    def test_conversion_in_suite_fails(self):
+        source = self.SOURCE + """
+    g_strdup_printf("sn1/x/%s/%u", suite, i);
+"""
+        self.assertIn('sn1-x-test template sn1/x/%s/%u hides its suite',
+                      self.problems("""a /mips64/sn1/x/plain
+a /mips64/sn1/x/made
+b /mips64/sn1/x/host
+b /mips64/sn1/x/cpu
+""", source))
+
+
 if __name__ == '__main__':
     unittest.main()

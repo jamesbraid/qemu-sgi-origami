@@ -77,8 +77,35 @@ def registered_paths(source: str) -> list[str]:
     """
     calls = re.finditer(
         r'\b(?:qtest_add(?:_func|_data_func|_data_func_full)?|'
-        r'add_(?:fresh_)?case)\(\s*((?:"[^"]*"\s*)+)', source)
+        r'add_(?:fresh_|data_)?case)\(\s*((?:"[^"]*"\s*)+)', source)
     return ["".join(re.findall(r'"([^"]*)"', call.group(1))) for call in calls]
+
+
+def generated_suites(source: str, cases: list[str]) -> tuple[set[str],
+                                                             list[str]]:
+    """Suites whose cases a source names at run time, and bad templates.
+
+    A grouped test may build some case paths from a printf template, such
+    as "sn0/x/suite/%s", whose case names this check cannot see. Any string
+    literal that starts like a literal case's path and holds a conversion is
+    taken as such a template, and the text before its last "/" as a suite.
+    A conversion before that "/" would hide the suite as well, so it is a
+    problem.
+    """
+    roots = {case.split("/", 1)[0] for case in cases if "/" in case}
+    suites, problems = set(), []
+    for literal in re.finditer(r'(?:"[^"\n]*"\s*)+', source):
+        text = "".join(re.findall(r'"([^"\n]*)"', literal.group(0)))
+        if ("%" not in text or "/" not in text or
+                not re.fullmatch(r"[\w.%/-]+", text) or
+                text.split("/", 1)[0] not in roots):
+            continue
+        suite = text.rsplit("/", 1)[0]
+        if "%" in suite:
+            problems.append(f"template {text} hides its suite")
+        else:
+            suites.add(suite)
+    return suites, problems
 
 
 def group_problems(name: str, groups: str, source: str) -> list[str]:
@@ -86,7 +113,9 @@ def group_problems(name: str, groups: str, source: str) -> list[str]:
 
     A groups line is a group name and a GLib path, which names one case or a
     suite whose cases directly under it all join the group. The path keeps
-    its target prefix, which the source's registrations do not spell.
+    its target prefix, which the source's registrations do not spell. A
+    suite whose cases come from a template (see generated_suites()) can
+    only join a group whole, by its own line.
     """
     problems = []
     paths = []
@@ -100,6 +129,8 @@ def group_problems(name: str, groups: str, source: str) -> list[str]:
             continue
         paths.append(words[1].split("/", 2)[2])
     cases = registered_paths(source)
+    generated, bad = generated_suites(source, cases)
+    problems.extend(f"{name} {problem}" for problem in bad)
     taken = Counter()
     for case in cases:
         taken[case] = sum(path in (case, case.rsplit("/", 1)[0])
@@ -108,7 +139,14 @@ def group_problems(name: str, groups: str, source: str) -> list[str]:
                     for case in cases if not taken[case])
     problems.extend(f"{name} case {case} is in more than one group"
                     for case in cases if taken[case] > 1)
-    suites = {case.rsplit("/", 1)[0] for case in cases}
+    for suite in sorted(generated):
+        count = paths.count(suite)
+        if not count:
+            problems.append(f"{name} suite {suite} is in no group")
+        elif count > 1:
+            problems.append(f"{name} suite {suite} is in more than one "
+                            "group")
+    suites = {case.rsplit("/", 1)[0] for case in cases} | generated
     problems.extend(f"{name}-groups.txt names {path}, which {name} "
                     "does not register"
                     for path in paths
