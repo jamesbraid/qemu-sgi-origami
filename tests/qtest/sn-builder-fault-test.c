@@ -40,6 +40,25 @@
 #include "system/memory.h"
 #include "cpu.h"
 
+/*
+ * Fixture lists are built once at type registration and live as long as the
+ * process, but a construction fault then replaces some of them wholesale.
+ * Nothing points at a replaced list, which LeakSanitizer reports when QEMU
+ * exits on a refused launch. Remember every allocation so it stays reachable.
+ */
+static GPtrArray *fixture_allocations;
+
+static void *fixture_remember(void *p)
+{
+    if (!fixture_allocations) {
+        fixture_allocations = g_ptr_array_new();
+    }
+    g_ptr_array_add(fixture_allocations, p);
+    return p;
+}
+
+#define fixture_new0(type) ((type *)fixture_remember(g_new0(type, 1)))
+
 static SGIModelCpuSlotList *cpu_slot_list(SGIModelCpuSlot *items, size_t count)
 {
     SGIModelCpuSlotList *head = NULL;
@@ -47,7 +66,7 @@ static SGIModelCpuSlotList *cpu_slot_list(SGIModelCpuSlot *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelCpuSlotList *entry = g_new0(SGIModelCpuSlotList, 1);
+        SGIModelCpuSlotList *entry = fixture_new0(SGIModelCpuSlotList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -63,7 +82,7 @@ static SGIModelModuleList *module_list(SGIModelModule *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelModuleList *entry = g_new0(SGIModelModuleList, 1);
+        SGIModelModuleList *entry = fixture_new0(SGIModelModuleList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -81,7 +100,7 @@ static SGIModelXioAttachmentList *xio_attachment_list(
 
     for (i = 0; i < count; i++) {
         SGIModelXioAttachmentList *entry =
-            g_new0(SGIModelXioAttachmentList, 1);
+            fixture_new0(SGIModelXioAttachmentList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -99,7 +118,7 @@ static SGIModelPciHostBridgeList *pci_host_bridge_list(
 
     for (i = 0; i < count; i++) {
         SGIModelPciHostBridgeList *entry =
-            g_new0(SGIModelPciHostBridgeList, 1);
+            fixture_new0(SGIModelPciHostBridgeList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -115,7 +134,7 @@ static SGIModelIoBoardList *io_board_list(SGIModelIoBoard *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelIoBoardList *entry = g_new0(SGIModelIoBoardList, 1);
+        SGIModelIoBoardList *entry = fixture_new0(SGIModelIoBoardList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -133,7 +152,7 @@ static SGIModelCpuPopulationList *cpu_population_list(
 
     for (i = 0; i < count; i++) {
         SGIModelCpuPopulationList *entry =
-            g_new0(SGIModelCpuPopulationList, 1);
+            fixture_new0(SGIModelCpuPopulationList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -149,7 +168,7 @@ static SGIModelNodeList *node_list(SGIModelNode *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelNodeList *entry = g_new0(SGIModelNodeList, 1);
+        SGIModelNodeList *entry = fixture_new0(SGIModelNodeList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -165,7 +184,7 @@ static SGIModelCableList *cable_list(SGIModelCable *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelCableList *entry = g_new0(SGIModelCableList, 1);
+        SGIModelCableList *entry = fixture_new0(SGIModelCableList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -181,7 +200,7 @@ static SGIModelLinkEndList *link_end_list(SGIModelLinkEnd *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelLinkEndList *entry = g_new0(SGIModelLinkEndList, 1);
+        SGIModelLinkEndList *entry = fixture_new0(SGIModelLinkEndList);
 
         entry->value = &items[i];
         *tail = entry;
@@ -197,7 +216,7 @@ static uint32List *uint32_list(const unsigned int *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        uint32List *entry = g_new0(uint32List, 1);
+        uint32List *entry = fixture_new0(uint32List);
 
         entry->value = items[i];
         *tail = entry;
@@ -213,7 +232,7 @@ static uint64List *uint64_list(const uint64_t *items, size_t count)
     size_t i;
 
     for (i = 0; i < count; i++) {
-        uint64List *entry = g_new0(uint64List, 1);
+        uint64List *entry = fixture_new0(uint64List);
 
         entry->value = items[i];
         *tail = entry;
@@ -230,8 +249,9 @@ static uint64List *uint64_list(const uint64_t *items, size_t count)
 static SGIModelNodePopulationList *whole_population(
     const SGIModelTopology *t, SGIModelCpuPopulationList *populations)
 {
-    SGIModelNodePopulationList *entry = g_new0(SGIModelNodePopulationList, 1);
-    SGIModelNodePopulation *row = g_new0(SGIModelNodePopulation, 1);
+    SGIModelNodePopulationList *entry =
+        fixture_new0(SGIModelNodePopulationList);
+    SGIModelNodePopulation *row = fixture_new0(SGIModelNodePopulation);
     uint32List **tail;
     unsigned int i;
 
@@ -261,9 +281,10 @@ static SGIModelNodePopulationList *whole_population(
 static SGIModelNodePopulationList *node0_row(SGIModelNodePopulationList *rows,
                                              SGIModelEvidenceGrade grade)
 {
-    SGIModelNodePopulationList *entry = g_new0(SGIModelNodePopulationList, 1);
-    SGIModelNodePopulation *row = g_new0(SGIModelNodePopulation, 1);
-    SGIModelCpuPopulation *one = g_new0(SGIModelCpuPopulation, 1);
+    SGIModelNodePopulationList *entry =
+        fixture_new0(SGIModelNodePopulationList);
+    SGIModelNodePopulation *row = fixture_new0(SGIModelNodePopulation);
+    SGIModelCpuPopulation *one = fixture_new0(SGIModelCpuPopulation);
 
     QAPI_LIST_PREPEND(row->nodes, 0);
     QAPI_LIST_PREPEND(one->cpus_per_node, 1);
@@ -1781,6 +1802,7 @@ static void sn_builder_fault_test_register_types(void)
              i < ARRAY_SIZE(bedrock_test_controllers); i++) {
             QAPI_LIST_APPEND(tail, &bedrock_test_controllers[i]);
         }
+        fixture_remember(bedrock_test_topology.controllers);
         for (unsigned int i = 0;
              i < ARRAY_SIZE(bedrock_test_pci_functions); i++) {
             QAPI_LIST_APPEND(function_tail, &bedrock_test_pci_functions[i]);
