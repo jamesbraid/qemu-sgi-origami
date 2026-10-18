@@ -8235,6 +8235,85 @@ static void test_context_save_primitive_records(void)
     board_quit(qts);
 }
 
+/*
+ * Every descriptor an open-primitive save writes must select, for each
+ * attribute the IRIX 6.5.30 IP30 kernel replays (1 to 12 and 14 to 18, read
+ * from its disassembly), a ring word the kernel accepts: one with operands,
+ * or an edge-flag word. Attributes 5 and 6 carry no model record, so their
+ * selectors must keep slot 0, where the kernel's template words stay. A
+ * triangle strip interrupted after two vertices is perfly's case: selecting
+ * the second vertex's or the current slot made the kernel log an illegal
+ * restore command for both attributes.
+ */
+static bool odsy_replay_word_accepted(uint32_t word)
+{
+    return ((word >> 10) & 0xf) ||
+           (word & ~UINT32_C(0x007f0000)) == 0x2f00c02e ||
+           (word & ~UINT32_C(0x007f0000)) == 0x3000c02e;
+}
+
+static void test_context_save_unrecorded_attributes(void)
+{
+    static const uint32_t template_word[2] = { 0xc380c41e, 0xc480c426 };
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+    uint32_t state, n, r;
+    uint64_t descriptor[4];
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < 2; i++) {
+        qtest_writel(qts, p + 0x100 + 16 * (5 + i), template_word[i]);
+    }
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    push_user_words(qts, (const uint32_t[]) { ODSY_F_ONE, 0, 0 }, 3);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 5);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    push_user_words(qts, (const uint32_t[]) { 0xbf400000, 0xbf400000 }, 2);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    push_user_words(qts, (const uint32_t[]) { 0x3f400000, 0xbf200000 }, 2);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    state = qtest_readl(qts, p + ODSY_HW_PIPE_STATE);
+    g_assert_cmphex(state & 0xf, ==, 5);
+    n = (state >> 4) & 3;
+    r = (state >> 6) & 3;
+    g_assert_cmpuint(n, ==, 2);
+    for (unsigned k = 0; k < n; k++) {
+        descriptor[count++] = p + 0x8c + 8 * ((r - n + k + 4) % 4);
+    }
+    descriptor[count++] = p + 0x84;
+
+    for (unsigned d = 0; d < count; d++) {
+        uint32_t word[2] = {
+            qtest_readl(qts, descriptor[d]),
+            qtest_readl(qts, descriptor[d] + 4),
+        };
+
+        for (unsigned a = 1; a <= 18; a++) {
+            unsigned slot;
+            uint32_t ring;
+
+            if (a == 13) {
+                continue;
+            }
+            slot = a <= 16 ? (word[0] >> (2 * (16 - a))) & 3 :
+                             (word[1] >> (2 * (32 - a))) & 3;
+            ring = qtest_readl(qts, p + 0x100 + 16 * a + 4 * slot);
+            if (!odsy_replay_word_accepted(ring)) {
+                g_test_message("descriptor 0x%" PRIx64 " attribute %u "
+                               "slot %u word 0x%08x", descriptor[d] - p, a,
+                               slot, ring);
+            }
+            g_assert_true(odsy_replay_word_accepted(ring));
+            if (a == 5 || a == 6) {
+                g_assert_cmphex(ring, ==, template_word[a - 5]);
+            }
+        }
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    board_quit(qts);
+}
+
 static void test_context_save_zero_vertex_primitive(void)
 {
     const uint64_t p = ODSY_SHADOW_PAGE;
@@ -18304,6 +18383,8 @@ int main(int argc, char **argv)
                    test_context_restart_edited_page);
     add_fresh_case("sn1/odyssey/context-save-primitive-records",
                    test_context_save_primitive_records);
+    add_fresh_case("sn1/odyssey/context-save-unrecorded-attributes",
+                   test_context_save_unrecorded_attributes);
     add_fresh_case("sn1/odyssey/context-save-zero-vertex-primitive",
                    test_context_save_zero_vertex_primitive);
     add_fresh_case("sn1/odyssey/context-restart-one-vertex-strip",

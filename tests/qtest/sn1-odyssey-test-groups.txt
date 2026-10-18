@@ -216,6 +216,7 @@ context /mips64/sn1/odyssey/command-fifo-context-save-idle-state
 context /mips64/sn1/odyssey/context-restart-triangle
 context /mips64/sn1/odyssey/context-restart-edited-page
 context /mips64/sn1/odyssey/context-save-primitive-records
+context /mips64/sn1/odyssey/context-save-unrecorded-attributes
 context /mips64/sn1/odyssey/context-save-zero-vertex-primitive
 context /mips64/sn1/odyssey/context-restart-one-vertex-strip
 context /mips64/sn1/odyssey/context-restart-quad-strip-after-wrap
