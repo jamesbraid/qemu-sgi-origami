@@ -8116,6 +8116,22 @@ static void test_texture_prepare_results(void)
                     ==, SGI_RASTER_TEXTURE_INCOMPLETE);
     g_assert_null(sampler);
 
+    state.texture_2d = false;
+    state.texture_1d = true;
+    g_assert_cmpint(sgi_raster_texture_check(&state, NULL), ==,
+                    SGI_RASTER_TEXTURE_INCOMPLETE);
+    g_assert_cmpint(sgi_raster_texture_prepare(&state, NULL, &sampler),
+                    ==, SGI_RASTER_TEXTURE_INCOMPLETE);
+    g_assert_null(sampler);
+    image = texture_image(&pixels);
+    image.one_dimensional = true;
+    image.width = 0;
+    image.height = 1;
+    g_assert_cmpint(sgi_raster_texture_check(&state, &image), ==,
+                    SGI_RASTER_TEXTURE_INCOMPLETE);
+    state.texture_1d = false;
+    state.texture_2d = true;
+
     image = texture_image(&pixels);
     image.mag_filter = SGI_GL_LINEAR;
     g_assert_cmpint(sgi_raster_texture_check(&state, &image), ==,
