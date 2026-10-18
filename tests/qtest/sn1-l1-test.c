@@ -2684,6 +2684,20 @@ static void integer(uint8_t *out, uint32_t value)
     out[4] = value;
 }
 
+static void assert_l1_revision(QTestState *s, uint32_t major,
+                               uint32_t minor, uint32_t patch)
+{
+    uint8_t expected[21] = { 0x30, 0, 0, 0, 0, 3 };
+    uint8_t reply[131];
+
+    integer(expected + 6, major);
+    integer(expected + 11, minor);
+    integer(expected + 16, patch);
+    g_assert_cmpuint(general(s, 0x0005, NULL, 0, 0, reply), ==,
+                     sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
 /*
  * The read-only rows the firmware serves that the model answers from state.
  */
@@ -2769,6 +2783,19 @@ static void test_general_reads(void)
     g_assert_cmphex(reply[4], ==, 0x9b);
     g_assert_cmpuint(general(s, 0x4001, NULL, 0, 0, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x9b);
+    qtest_quit(s);
+}
+
+static void test_missing_revision(void)
+{
+    QTestState *s = start();
+    uint8_t reply[131];
+    const uint8_t unavailable[] = { 0x30, 0xff, 0xff, 0xff, 0x98, 0 };
+
+    g_assert_cmpuint(general(s, 0x0005, NULL, 0, 0, reply), ==,
+                     sizeof(unavailable));
+    g_assert_cmpmem(reply, sizeof(unavailable), unavailable,
+                    sizeof(unavailable));
     qtest_quit(s);
 }
 
@@ -2867,24 +2894,30 @@ static void test_machine_node_board_profiles(void)
         const char *part;
         const char *revision;
         uint8_t brick_type;
+        int l1_revision[3];
     } profiles[] = {
         { "origin350", "2G", 4, "0x009cad85", "0x800000",
-          "IP53_4CPU", "030-1868-001", "-C", 0x37 },
+          "IP53_4CPU", "030-1868-001", "-C", 0x37, { 1, 18, 5 } },
         { "onyx350,topology=onyx350-compat", "8G", 4,
           "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D",
-          0x37 },
+          0x37, { 1, 18, 5 } },
         { "tezro,topology=tezro-tower-one", "4G", 1,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
+          { 1, 48, 1 } },
         { "tezro,topology=tezro-tower-one,l1-type-code=55", "4G", 1,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37 },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37,
+          { 1, 48, 1 } },
         { "tezro,topology=tezro-tower-multi", "4G", 4,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
+          { 1, 48, 1 } },
         { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
+          { 1, 48, 1 } },
         { "tezro,topology=tezro-rack-base", "4G", 1,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51 },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51,
+          { 1, 48, 1 } },
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
-          "0x009dad85", "0x1000000", NULL, NULL, NULL, 0x37 },
+          "0x009dad85", "0x1000000", NULL, NULL, NULL, 0x37, { 1, 18, 5 } },
     };
     int fd;
 
@@ -2920,6 +2953,11 @@ static void test_machine_node_board_profiles(void)
                         profiles[i].cpus, profiles[i].reset_mode,
                         profiles[i].scache_bytes, flash, data, clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+        {
+            assert_l1_revision(s, profiles[i].l1_revision[0],
+                               profiles[i].l1_revision[1],
+                               profiles[i].l1_revision[2]);
+        }
         g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
         g_assert_cmphex(reply[15], ==, profiles[i].brick_type);
         if (profiles[i].name) {
@@ -2949,8 +2987,34 @@ static void test_machine_node_board_profiles(void)
             g_assert_cmphex(reply[4], ==, 0x98);
             qtest_system_reset(s);
         }
+        {
+            assert_l1_revision(s, profiles[i].l1_revision[0],
+                               profiles[i].l1_revision[1],
+                               profiles[i].l1_revision[2]);
+        }
         g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
         g_assert_cmphex(reply[15], ==, profiles[i].brick_type);
+        qtest_quit(s);
+    }
+
+    {
+        const char *machine =
+            "tezro,topology=tezro-tower-one,l1-revision=2.3.4";
+
+        s = qtest_initf("-M %s,ip53-experimental=on -m 4G -smp 1 "
+                        "-cpu R16000,r16000-experimental=on,"
+                        "r16000-reset-mode=0x009bad85,"
+                        "r16000-scache-bytes=0x400000 "
+                        "-drive if=pflash,index=0,file=%s,format=raw "
+                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                        "format=raw "
+                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                        "format=raw -display none -S", machine, flash, data,
+                        clock);
+        qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+        assert_l1_revision(s, 2, 3, 4);
+        qtest_system_reset(s);
+        assert_l1_revision(s, 2, 3, 4);
         qtest_quit(s);
     }
 
@@ -3002,6 +3066,73 @@ static void test_machine_node_board_profiles(void)
     g_unlink(data);
     g_unlink(clock);
     g_unlink(override_path);
+}
+
+static QTestState *start_tezro_revision_profile(const char *incoming,
+                                                const char *flash,
+                                                const char *data,
+                                                const char *clock)
+{
+    return qtest_initf("-M tezro,topology=tezro-tower-one,ip53-experimental=on "
+                       "-m 4G -smp 1 -cpu R16000,r16000-experimental=on,"
+                       "r16000-reset-mode=0x009bad85,"
+                       "r16000-scache-bytes=0x400000 "
+                       "-drive if=pflash,index=0,file=%s,format=raw "
+                       "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                       "format=raw "
+                       "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+                       "format=raw -display none -S %s",
+                       flash, data, clock, incoming);
+}
+
+static void test_machine_l1_revision_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp(
+        "sn1-l1-tezro-revision-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    g_autofree char *flash = NULL, *data = NULL, *clock = NULL;
+    QTestState *from, *to;
+    int fd;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    fd = g_file_open_tmp("sn1-l1-tezro-migrate-flash-XXXXXX", &flash,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-tezro-migrate-data-XXXXXX", &data,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-l1-tezro-migrate-clock-XXXXXX", &clock,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    from = start_tezro_revision_profile("", flash, data, clock);
+    to = start_tezro_revision_profile("-incoming defer", flash, data, clock);
+    qtest_sysbus_mmio_map(from, "/machine/node0/l1-uart", 0, BASE);
+    qtest_sysbus_mmio_map(to, "/machine/node0/l1-uart", 0, BASE);
+    assert_l1_revision(from, 1, 48, 1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
+    assert_l1_revision(to, 1, 48, 1);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_unlink(flash);
+    g_unlink(data);
+    g_unlink(clock);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 static void test_machine_port_speed_profiles(void)
@@ -5140,6 +5271,8 @@ int main(int argc, char **argv)
                    test_machine_port_speed_profiles);
     qtest_add_func("sn1/l1/node-board/machine-profiles",
                    test_machine_node_board_profiles);
+    qtest_add_func("sn1/l1/node-board/revision-migration",
+                   test_machine_l1_revision_migration);
     qtest_add_func("sn1/l1/expansion/migration", test_expansion_migration);
     qtest_add_func("sn1/l1/expansion/input-refusal",
                    test_expansion_input_refusal);
@@ -5178,6 +5311,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/console-short-frames", test_console_short_frames);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
+    qtest_add_func("sn1/l1/missing-revision", test_missing_revision);
     qtest_add_func("sn1/l1/ip34-identity-needs-supplied-type",
                    test_ip34_identity_needs_supplied_type);
     qtest_add_func("sn1/l1/fuel-mac-eeprom", test_fuel_mac_eeprom);

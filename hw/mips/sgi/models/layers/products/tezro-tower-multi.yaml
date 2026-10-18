@@ -3,6 +3,7 @@ layer_version: 1
 sources:
   tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
   tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
   tezro-software-choice-limit: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
@@ -85,9 +86,14 @@ layer:
         l1_controllers:
           l1:
             reported_type: 57
-            provenance: guest-source
-            sources: ["web:lore-kaloz-ip35-35 brick type '9' is Tezro deskside"]
-            notes: Public Linux maps type 0x39 to Tezro deskside. The physical L1 response and firmware revision remain unmeasured.
+            revision: {major: 1, minor: 48, patch: 1}
+            provenance: derived
+            sources: ["web:lore-kaloz-ip35-35 brick type '9' is Tezro deskside", tezro-l1-version-compatibility]
+            notes: >-
+              The Linux mapping supports the reported brick type. The public
+              SG0007149 IP35 update contains an L1 image identified as 1.48.1;
+              selecting it supports software compatibility and does not
+              establish Tezro fitment or a factory revision.
         firmware_payload:
           argument: -bios
           path: firmware/6.5.30/ip35prom.payload.bin
