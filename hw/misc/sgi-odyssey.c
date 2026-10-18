@@ -4982,7 +4982,7 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
     SGIRenderResult result;
     Error *err = NULL;
 
-    if (!s->mesa_renderer_enabled) {
+    if (!s->mesa_renderer_enabled || !s->mesa_renderer) {
         return odyssey_gl_draw_result(opaque, d);
     }
     if (odyssey_gl_index_mode(s)) {
@@ -5031,14 +5031,37 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
     }
 }
 
+/*
+ * Only a host without the renderer selects the scalar path for the whole
+ * device; any other creation failure is a failure.
+ */
 static bool odyssey_mesa_recreate(SGIOdysseyState *s, Error **errp)
 {
+    SGIRenderCreateResult created;
+    Error *err = NULL;
+
     if (!s->mesa_renderer_enabled) {
         return true;
     }
     sgi_renderer_free(s->mesa_renderer);
-    s->mesa_renderer = sgi_renderer_new(errp);
-    return s->mesa_renderer != NULL;
+    s->mesa_renderer = NULL;
+    created = sgi_renderer_create(&s->mesa_renderer, &err);
+    if (created == SGI_RENDER_CREATE_UNAVAILABLE) {
+        if (!s->mesa_unavailable) {
+            warn_reportf_err(err, "sgi-odyssey: drawing every Mesa draw "
+                             "on the scalar path: ");
+        } else {
+            error_free(err);
+        }
+        s->mesa_unavailable = true;
+        return true;
+    }
+    if (created != SGI_RENDER_CREATE_OK) {
+        error_propagate(errp, err);
+        return false;
+    }
+    s->mesa_unavailable = false;
+    return true;
 }
 
 /* glClear's raster op: not on the first-triangle path, wired for later. */
@@ -10301,6 +10324,11 @@ static void odyssey_test_fire_retrace(Object *obj, Visitor *v, const char *name,
     }
 }
 
+static bool odyssey_get_mesa_unavailable(Object *obj, Error **errp)
+{
+    return SGI_ODYSSEY(obj)->mesa_unavailable;
+}
+
 static void odyssey_instance_init(Object *obj)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
@@ -10327,6 +10355,8 @@ static void odyssey_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-pixel-row", "str",
                         odyssey_test_get_pixel_row, NULL, NULL, NULL);
+    object_property_add_bool(obj, "x-mesa-unavailable",
+                             odyssey_get_mesa_unavailable, NULL);
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
     object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);
