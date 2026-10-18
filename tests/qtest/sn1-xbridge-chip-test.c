@@ -767,6 +767,9 @@ static void test_packet_wide_mem64_default(void)
                     ==, 0xa1b2c3d4);
     g_assert_cmphex(qtest_readl(qts, head + 0x80000000 + bar + 0x24),
                     ==, 0x12345678);
+    qtest_writel(qts, head + 0x80000000 + bar + 0x20, 0x10213243);
+    g_assert_cmphex(qtest_readl(qts, head + 0x40000000 + bar + 0x24),
+                    ==, 0x10213243);
     qtest_quit(qts);
 }
 

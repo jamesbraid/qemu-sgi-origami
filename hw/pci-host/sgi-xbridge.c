@@ -612,7 +612,7 @@ static unsigned xbridge_range_width(struct XBridgeRange *range, hwaddr addr,
     if (!(range->head->dma_64bit & BIT(target.slot))) {
         return 4;
     }
-    if (!write && size == 4 && !(addr & 3) &&
+    if (size == 4 && !(addr & 3) &&
         range->head->origin300_mem64_pio_width &&
         range->head->packet_sender &&
         (REG(range->head, 0) >> 28) == 2 &&
