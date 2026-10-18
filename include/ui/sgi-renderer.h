@@ -199,8 +199,16 @@ typedef struct SGIRendererFrame {
     uint32_t clip_count; /* Zero means the full plane. */
     SGIRendererClearRect clips[SGI_RENDERER_CLEAR_RECTS];
     float modelview[16], projection[16];
-    uint16_t *rgba; /* width * height * 4 host slots, bottom row first */
-    uint8_t *written; /* width * height binary bytes, bottom row first */
+    /*
+     * Without region_given, rgba and written cover the whole frame. With
+     * it they cover only this inclusive rectangle of frame pixels, rows
+     * from its bottom, and the worker uploads, draws in and reads back
+     * just that rectangle; every clip rectangle must lie inside it.
+     */
+    bool region_given;
+    SGIRendererClearRect region;
+    uint16_t *rgba; /* region pixels * 4 host slots, bottom row first */
+    uint8_t *written; /* region pixels, binary bytes, bottom row first */
     size_t written_capacity;
 } SGIRendererFrame;
 
