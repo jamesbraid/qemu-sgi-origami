@@ -453,7 +453,70 @@ typedef struct SGIRenderPieces {
     /* A textured triangle the scalar path drops whole; see below. */
     bool texture_invalid;
     const SGIGLTexImage *image;     /* a textured draw's level-zero image */
+    /* With extent set, pieces only widen it; see sgi_render_piece_extent. */
+    struct SGIRenderExtent *extent;
+    float point_size;
 } SGIRenderPieces;
+
+/*
+ * Window pixels, rows up, that bound everything a draw can write. Unknown
+ * when a vertex cannot be placed, and then the whole clip union is used.
+ */
+typedef struct SGIRenderExtent {
+    bool known;
+    double x0, y0, x1, y1;
+} SGIRenderExtent;
+
+static void sgi_render_extent_add(SGIRenderExtent *e, double x, double y,
+                                  double pad)
+{
+    if (!isfinite(x) || !isfinite(y)) {
+        e->known = false;
+        return;
+    }
+    e->x0 = MIN(e->x0, x - pad);
+    e->y0 = MIN(e->y0, y - pad);
+    e->x1 = MAX(e->x1, x + pad);
+    e->y1 = MAX(e->y1, y + pad);
+}
+
+/*
+ * Widen the extent by one point or triangle as GL draws it: a triangle
+ * clipped to the view volume, each vertex mapped to the window, or a
+ * point's centre and half its size. Two pixels of margin cover snapping
+ * and the pixel-centre rules. A clipped vertex at w <= 0 has no window
+ * position, so the extent becomes unknown.
+ */
+static void sgi_render_piece_extent(SGIRenderPieces *p, const SGIGLDraw *draw,
+                                    const uint32_t *index, unsigned n)
+{
+    SGIVolumeVertex in[3], poly[SGI_VOLUME_TRIANGLE_MAX];
+    double pad = n == 1 ? p->point_size / 2 + 2 : 2;
+    unsigned m;
+
+    for (unsigned i = 0; i < n; i++) {
+        sgi_volume_from_draw_vertex(draw->state,
+            draw->vertices + (size_t)index[i] * SGI_GL_VERTEX_FLOATS, &in[i]);
+    }
+    if (n == 3) {
+        m = sgi_volume_clip_triangle(in, poly);
+    } else if (sgi_volume_contains(&in[0])) {
+        poly[0] = in[0];
+        m = 1;
+    } else {
+        return;
+    }
+    for (unsigned i = 0; i < m; i++) {
+        double win[3];
+
+        if (!(poly[i].clip[3] > 0)) {
+            p->extent->known = false;
+            return;
+        }
+        sgi_gl_clip_to_window(draw->state, poly[i].clip, win);
+        sgi_render_extent_add(p->extent, win[0], win[1], pad);
+    }
+}
 
 static int sgi_render_test_shift;
 
@@ -495,6 +558,10 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
                           SGI_GL_V_COLOR;
     float rounded[4];
 
+    if (p->extent) {
+        sgi_render_piece_extent(p, draw, index, n);
+        return;
+    }
     if (n == 3 && p->rules) {
         SGIRasterTriangle t[SGI_VOLUME_TRIANGLE_MAX - 2];
         unsigned count = sgi_raster_triangle_pieces(p->rules, draw->state,
@@ -1539,6 +1606,11 @@ static SGIRenderResult sgi_render_draw_run(
     SGIRenderCommitResult committed;
     SGIRenderResult status;
     SGIRenderRefusal refusal;
+    SGIRendererClearRect region;
+    SGIRenderExtent extent;
+    uint32_t region_width, region_height;
+    unsigned kept;
+    bool flipped;
 
     if (!renderer || !rules || !target || !draw || !draw->state ||
         !draw->vertices) {
@@ -1853,13 +1925,104 @@ static SGIRenderResult sgi_render_draw_run(
         sgi_render_commit_phase(draw, lines ? &line_set : NULL);
         return SGI_RENDER_OK;
     }
-    if (resource->width > SIZE_MAX / resource->height ||
-        (uint64_t)resource->width * resource->height >
+    /*
+     * Only the region the draw can write moves between native storage and
+     * the host: the clip union, bounded by the geometry's window extent.
+     * The geometry, viewport and clips are unchanged, so what the host
+     * draws is too; pixels outside the region are never written.
+     */
+    region = frame.clips[0];
+    for (unsigned i = 1; i < frame.clip_count; i++) {
+        region.x0 = MIN(region.x0, frame.clips[i].x0);
+        region.y0 = MIN(region.y0, frame.clips[i].y0);
+        region.x1 = MAX(region.x1, frame.clips[i].x1);
+        region.y1 = MAX(region.y1, frame.clips[i].y1);
+    }
+    extent = (SGIRenderExtent) {
+        .known = true, .x0 = INFINITY, .y0 = INFINITY,
+        .x1 = -INFINITY, .y1 = -INFINITY,
+    };
+    if (window) {
+        for (uint32_t i = 0; i < pieces.window_count; i++) {
+            for (unsigned v = 0; v < 3; v++) {
+                sgi_render_extent_add(&extent, window_storage[i].x[v] / 256,
+                                      window_storage[i].y[v] / 256, 2);
+            }
+        }
+    } else if (lines) {
+        for (uint32_t i = 0; i < line_set.count; i++) {
+            for (unsigned v = 0; v < 4; v++) {
+                sgi_render_extent_add(&extent, line_set.lines[i].quad[v][0],
+                                      line_set.lines[i].quad[v][1], 2);
+            }
+        }
+    } else {
+        SGIRenderPieces bound = {
+            .extent = &extent, .point_size = point_size,
+        };
+
+        sgi_render_decompose(&bound, draw);
+    }
+    if (extent.known) {
+        int64_t x0, y0, x1, y1;
+
+        if (!(extent.x0 <= extent.x1)) {
+            /* Nothing to draw: no piece survived clipping. */
+            sgi_render_commit_phase(draw, lines ? &line_set : NULL);
+            return SGI_RENDER_OK;
+        }
+        x0 = MAX(floor(extent.x0), -1.0);
+        y0 = MAX(floor(extent.y0), -1.0);
+        x1 = MIN(ceil(extent.x1), (double)resource->width);
+        y1 = MIN(ceil(extent.y1), (double)resource->height);
+        if (upside_down) {
+            int64_t window_y0 = y0;
+
+            y0 = (int64_t)resource->height - 1 - y1;
+            y1 = (int64_t)resource->height - 1 - window_y0;
+        }
+        region.x0 = MAX((int64_t)region.x0, x0);
+        region.y0 = MAX((int64_t)region.y0, y0);
+        region.x1 = MIN((int64_t)region.x1, x1);
+        region.y1 = MIN((int64_t)region.y1, y1);
+        if (region.x0 > region.x1 || region.y0 > region.y1) {
+            sgi_render_commit_phase(draw, lines ? &line_set : NULL);
+            return SGI_RENDER_OK;
+        }
+        /* Clips stay in the region, so the host never draws outside it. */
+        kept = 0;
+        for (unsigned i = 0; i < frame.clip_count; i++) {
+            SGIRendererClearRect c = frame.clips[i];
+
+            c.x0 = MAX(c.x0, region.x0);
+            c.y0 = MAX(c.y0, region.y0);
+            c.x1 = MIN(c.x1, region.x1);
+            c.y1 = MIN(c.y1, region.y1);
+            if (c.x0 <= c.x1 && c.y0 <= c.y1) {
+                frame.clips[kept++] = c;
+            }
+        }
+        frame.clip_count = kept;
+        if (!frame.clip_count) {
+            sgi_render_commit_phase(draw, lines ? &line_set : NULL);
+            return SGI_RENDER_OK;
+        }
+    }
+    region_width = region.x1 - region.x0 + 1;
+    region_height = region.y1 - region.y0 + 1;
+    /* The region's native rows, which may run the other way. */
+    flipped = resource->bottom_origin == upside_down;
+    rect = (SGIRenderRect) {
+        .x0 = region.x0, .x1 = region.x1,
+        .y0 = flipped ? resource->height - 1 - region.y1 : region.y0,
+        .y1 = flipped ? resource->height - 1 - region.y0 : region.y1,
+    };
+    if ((uint64_t)region_width * region_height >
             SIZE_MAX / 4 / sizeof(*rgba)) {
         error_setg(errp, "SGI Mesa draw exceeds host address space");
         return SGI_RENDER_RESOURCE_ERROR;
     }
-    pixels = (size_t)resource->width * resource->height;
+    pixels = (size_t)region_width * region_height;
     if (pixels > SIZE_MAX / resource->component_count) {
         error_setg(errp, "SGI Mesa component array is too large");
         return SGI_RENDER_RESOURCE_ERROR;
@@ -1873,13 +2036,9 @@ static SGIRenderResult sgi_render_draw_run(
         error_setg(errp, "Cannot allocate SGI Mesa draw buffers");
         return SGI_RENDER_OOM;
     }
-    rect = (SGIRenderRect) {
-        .x1 = resource->width - 1,
-        .y1 = resource->height - 1,
-    };
     status = sgi_render_resource_snapshot(target, resource, 0, &rect,
                                           slots,
-                                          resource->width *
+                                          region_width *
                                           resource->component_count,
                                           nslots, errp);
     if (status != SGI_RENDER_OK) {
@@ -1934,13 +2093,13 @@ static SGIRenderResult sgi_render_draw_run(
                 MIN(MAX(draw->state->texture_env_color[c], 0.0), 1.0);
         }
     }
-    for (uint32_t y = 0; y < resource->height; y++) {
-        size_t native_row = (size_t)y * resource->width;
-        size_t frame_row = (size_t)(resource->bottom_origin != upside_down ?
-                                    y : resource->height - 1 - y) *
-                           resource->width;
+    /* Region rows in the frame's order, native slots in native order. */
+    for (uint32_t y = 0; y < region_height; y++) {
+        size_t native_row = (size_t)y * region_width;
+        size_t frame_row = (size_t)(flipped ? region_height - 1 - y : y) *
+                           region_width;
 
-        for (uint32_t x = 0; x < resource->width; x++) {
+        for (uint32_t x = 0; x < region_width; x++) {
             size_t native_pixel = native_row + x;
             size_t frame_pixel = frame_row + x;
 
@@ -1995,6 +2154,8 @@ static SGIRenderResult sgi_render_draw_run(
     frame.blend_src = draw->state->blend_src;
     frame.blend_dst = draw->state->blend_dst;
     frame.blend_equation = draw->state->blend_equation;
+    frame.region_given = true;
+    frame.region = region;
     frame.rgba = rgba;
     frame.written = written;
     frame.written_capacity = pixels;
@@ -2019,13 +2180,12 @@ static SGIRenderResult sgi_render_draw_run(
         sgi_render_commit_phase(draw, lines ? &line_set : NULL);
         return SGI_RENDER_OK;
     }
-    for (uint32_t y = 0; y < resource->height; y++) {
-        size_t native_row = (size_t)y * resource->width;
-        size_t frame_row = (size_t)(resource->bottom_origin != upside_down ?
-                                    y : resource->height - 1 - y) *
-                           resource->width;
+    for (uint32_t y = 0; y < region_height; y++) {
+        size_t native_row = (size_t)y * region_width;
+        size_t frame_row = (size_t)(flipped ? region_height - 1 - y : y) *
+                           region_width;
 
-        for (uint32_t x = 0; x < resource->width; x++) {
+        for (uint32_t x = 0; x < region_width; x++) {
             size_t native_pixel = native_row + x;
             size_t frame_pixel = frame_row + x;
 
@@ -2043,14 +2203,14 @@ static SGIRenderResult sgi_render_draw_run(
         }
     }
     /* Coverage returns to native rows. */
-    if (resource->bottom_origin == upside_down) {
-        for (uint32_t y = 0; y < resource->height / 2; y++) {
-            uint8_t *top = written + (size_t)y * resource->width;
+    if (flipped) {
+        for (uint32_t y = 0; y < region_height / 2; y++) {
+            uint8_t *top = written + (size_t)y * region_width;
             uint8_t *bottom = written +
-                              (size_t)(resource->height - 1 - y) *
-                              resource->width;
+                              (size_t)(region_height - 1 - y) *
+                              region_width;
 
-            for (uint32_t x = 0; x < resource->width; x++) {
+            for (uint32_t x = 0; x < region_width; x++) {
                 uint8_t value = top[x];
 
                 top[x] = bottom[x];
@@ -2060,13 +2220,13 @@ static SGIRenderResult sgi_render_draw_run(
     }
     SGIRenderWriteCoverage writes = {
         .pixel = written,
-        .stride_bytes = resource->width,
+        .stride_bytes = region_width,
         .capacity_bytes = pixels,
     };
 
     if (opts && opts->check_staged) {
         status = opts->check_staged(opts->opaque, resource, &rect, slots,
-                                    resource->width *
+                                    region_width *
                                     resource->component_count, nslots,
                                     &writes, errp);
         if (status != SGI_RENDER_OK) {
@@ -2081,7 +2241,7 @@ static SGIRenderResult sgi_render_draw_run(
 
     committed = sgi_render_resource_commit_covered(target, resource, 0,
                                                    &rect, slots,
-                                                   resource->width *
+                                                   region_width *
                                                    resource->component_count,
                                                    nslots, &writes, errp);
     return committed.status;

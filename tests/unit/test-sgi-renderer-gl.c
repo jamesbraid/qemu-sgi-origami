@@ -5614,6 +5614,303 @@ static void test_scalar_match_clear(void)
 }
 
 /*
+ * A draw on a large resource moves only the region it can write: the
+ * snapshot and commit rectangles stay near the geometry, pixels outside it
+ * keep their values, and every pixel equals the scalar path's. Region
+ * cases cover flat and smooth triangles, points, lines, a blended and a
+ * textured triangle, several clips and a scissor, on both row origins.
+ */
+#define REGION_W 300
+#define REGION_H 200
+
+typedef struct RegionFixture {
+    uint32_t *rgba;             /* REGION_W * REGION_H * 4, native rows */
+    uint8_t *written;
+    bool top_origin;
+    uint64_t largest_rect;      /* the largest snapshot or commit area */
+    const PrimCase *p;          /* its texels, for a textured draw */
+} RegionFixture;
+
+static unsigned region_row(const RegionFixture *f, int y)
+{
+    return f->top_origin ? REGION_H - 1 - y : y;
+}
+
+static void region_scalar_store(void *opaque, SGIColourTarget target, int x,
+                                int y, const SGIRasterColour *colour)
+{
+    RegionFixture *f = opaque;
+    size_t at;
+
+    if (x < 0 || x >= REGION_W || y < 0 || y >= REGION_H) {
+        return;
+    }
+    at = (size_t)region_row(f, y) * REGION_W + x;
+    memcpy(&f->rgba[at * 4], colour->component, 4 * sizeof(uint32_t));
+    f->written[at] = 1;
+}
+
+static bool region_scalar_load(void *opaque, SGIColourTarget target, int x,
+                               int y, SGIRasterColour *colour)
+{
+    RegionFixture *f = opaque;
+
+    if (x < 0 || x >= REGION_W || y < 0 || y >= REGION_H) {
+        return false;
+    }
+    memcpy(colour->component,
+           &f->rgba[((size_t)region_row(f, y) * REGION_W + x) * 4],
+           4 * sizeof(uint32_t));
+    return true;
+}
+
+static SGIRenderResult region_snapshot(void *opaque,
+                                       const SGIRenderResource *res,
+                                       uint32_t slice,
+                                       const SGIRenderRect *rect,
+                                       uint32_t *slots, size_t stride_slots,
+                                       size_t capacity_slots, Error **errp)
+{
+    RegionFixture *f = opaque;
+    uint64_t area = (uint64_t)(rect->x1 - rect->x0 + 1) *
+                    (rect->y1 - rect->y0 + 1);
+
+    if (res->role == SGI_RENDER_TEXTURE) {
+        for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+            for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+                memcpy(&slots[(y - rect->y0) * stride_slots +
+                              (x - rect->x0) * 4],
+                       f->p->texels[y][x], 4 * sizeof(uint32_t));
+            }
+        }
+        return SGI_RENDER_OK;
+    }
+    f->largest_rect = MAX(f->largest_rect, area);
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            memcpy(&slots[(y - rect->y0) * stride_slots + (x - rect->x0) * 4],
+                   &f->rgba[((size_t)y * REGION_W + x) * 4],
+                   4 * sizeof(uint32_t));
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult region_commit_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    RegionFixture *f = opaque;
+    uint64_t area = (uint64_t)(rect->x1 - rect->x0 + 1) *
+                    (rect->y1 - rect->y0 + 1);
+
+    f->largest_rect = MAX(f->largest_rect, area);
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            size_t at = (size_t)y * REGION_W + x;
+
+            if (!writes->pixel[(size_t)(y - rect->y0) * writes->stride_bytes +
+                               x - rect->x0]) {
+                continue;
+            }
+            memcpy(&f->rgba[at * 4],
+                   &slots[(y - rect->y0) * stride_slots + (x - rect->x0) * 4],
+                   4 * sizeof(uint32_t));
+            f->written[at] = 1;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK, .complete_pixels = area,
+        .extent_known = true,
+    };
+}
+
+static const SGIRenderResourceOps region_ops = {
+    .snapshot = region_snapshot,
+    .commit_covered = region_commit_covered,
+};
+
+static void region_fill(RegionFixture *f)
+{
+    memset(f->written, 0, REGION_W * REGION_H);
+    for (size_t i = 0; i < (size_t)REGION_W * REGION_H; i++) {
+        f->rgba[i * 4] = i * 7 & 255;
+        f->rgba[i * 4 + 1] = i * 13 & 255;
+        f->rgba[i * 4 + 2] = i * 29 & 255;
+        f->rgba[i * 4 + 3] = i * 3 & 255;
+    }
+}
+
+static void test_draw_region(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect several[] = {
+        { 0, 0, 299, 199 },
+        { 20, 15, 140, 90 }, { 120, 60, 260, 180 },
+    };
+    RegionFixture scalar = { 0 }, mesa = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    scalar.rgba = g_new(uint32_t, REGION_W * REGION_H * 4);
+    mesa.rgba = g_new(uint32_t, REGION_W * REGION_H * 4);
+    scalar.written = g_new(uint8_t, REGION_W * REGION_H);
+    mesa.written = g_new(uint8_t, REGION_W * REGION_H);
+    for (unsigned k = 0; k < 2 * 8; k++) {
+        unsigned kind = k / 2;
+        bool top = k & 1;
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        SGIRasterTarget scalar_target = {
+            .opaque = &scalar, .store_rgba = region_scalar_store,
+            .load_rgba = region_scalar_load,
+        };
+        SGIRasterTarget mesa_target = {
+            .opaque = &mesa, .resources = res, .resource_count = 1,
+            .resource_ops = &region_ops,
+        };
+        SGIGLDraw draw;
+        SGIRenderResult result;
+        unsigned differences = 0;
+        /* The geometry's window box, plus margin, bounds the region. */
+        uint64_t bound = 40 * 40;
+        const char *names[] = {
+            "flat fan", "smooth fan", "points", "lines", "blended triangle",
+            "textured triangle", "several clips", "scissor",
+        };
+
+        prim_case_init(p, kind == 2 ? SGI_GL_POINTS :
+                          kind == 3 ? SGI_GL_LINE_STRIP :
+                          kind == 0 || kind == 1 ? SGI_GL_TRIANGLE_FAN :
+                          SGI_GL_TRIANGLES, 4);
+        p->state.viewport[2] = REGION_W;
+        p->state.viewport[3] = REGION_H;
+        p->state.drawable.clip.r[0] = (SGIClipRect) {
+            0, 0, REGION_W - 1, REGION_H - 1,
+        };
+        if (kind == 5) {
+            prim_texture(p, 4, SGI_GL_LINEAR, SGI_GL_REPEAT, SGI_GL_CLAMP,
+                         SGI_GL_MODULATE);
+            p->draw.count = 0;
+        }
+        /* Window positions in a 300x200 viewport, near (150,100). */
+#define V(x, y, r) do { \
+            float *v_ = p->vertices[p->draw.count]; \
+            prim_vertex(p, 0, 0, r, 0.6f, 0.3f, 0.8f); \
+            v_[SGI_GL_V_POSITION] = (x) * 2.0f / REGION_W - 1; \
+            v_[SGI_GL_V_POSITION + 1] = (y) * 2.0f / REGION_H - 1; \
+        } while (0)
+        V(131.25f, 93.5f, 0.1f);
+        V(160.5f, 95.25f, 0.5f);
+        V(155.75f, 121, 0.9f);
+        if (kind <= 1 || kind >= 6) {
+            V(133, 117.5f, 0.4f);
+        }
+#undef V
+        if (kind == 5) {
+            for (unsigned v = 0; v < 3; v++) {
+                p->vertices[v][SGI_GL_V_TEXCOORD] = v * 0.7f;
+                p->vertices[v][SGI_GL_V_TEXCOORD + 1] = v ? 1.3f : -0.2f;
+                p->vertices[v][SGI_GL_V_TEXCOORD + 3] = 1;
+            }
+        }
+        p->state.shade_model = kind == 1 || kind == 3 ? SGI_GL_SMOOTH :
+                                                      SGI_GL_FLAT;
+        p->draw.point_size = 3;
+        p->draw.line_width = 2;
+        if (kind == 4) {
+            p->state.blend = 1;
+            p->state.blend_equation = SGI_GL_FUNC_ADD;
+            p->state.blend_src = SGI_GL_SRC_ALPHA;
+            p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+        }
+        if (kind == 6) {
+            prim_set_clips(p, several, ARRAY_SIZE(several));
+        }
+        if (kind == 7) {
+            p->state.scissor_test = 1;
+            memcpy(p->state.scissor, (int32_t[4]) { 140, 0, 300, 105 },
+                   sizeof(p->state.scissor));
+        }
+        scalar.top_origin = mesa.top_origin = top;
+        scalar.p = mesa.p = p;
+        region_fill(&scalar);
+        region_fill(&mesa);
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        res[0].width = REGION_W;
+        res[0].height = REGION_H;
+        res[0].bottom_origin = !top;
+        draw = p->draw;
+        p->image.read_texel = prim_read_texel;
+        p->image.opaque = p;
+        scalar_target.texture = mesa_target.texture =
+            p->state.texture_2d ? &p->image : NULL;
+        mesa_target.resource_count = p->state.texture_2d ? 2 : 1;
+        g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &draw), ==,
+                        SGI_GL_DRAW_OK);
+        if (top) {
+            /* Drawable clips arrive in native rows. */
+            for (unsigned i = 0; i < p->state.drawable.clip.n; i++) {
+                SGIClipRect *r = &p->state.drawable.clip.r[i];
+                int32_t y0 = r->y0;
+
+                r->y0 = REGION_H - 1 - r->y1;
+                r->y1 = REGION_H - 1 - y0;
+            }
+        }
+        mesa.largest_rect = 0;
+        result = sgi_render_draw_checked(renderer, &rules, &mesa_target,
+                                         &draw, &err);
+        if (result != SGI_RENDER_OK) {
+            g_test_message("%s %s: result %d: %s", names[kind],
+                           top ? "top" : "bottom", result,
+                           err ? error_get_pretty(err) : "");
+            g_clear_pointer(&err, error_free);
+            failures++;
+            continue;
+        }
+        for (size_t i = 0; i < (size_t)REGION_W * REGION_H; i++) {
+            if (memcmp(&scalar.rgba[i * 4], &mesa.rgba[i * 4],
+                       4 * sizeof(uint32_t)) ||
+                scalar.written[i] != mesa.written[i]) {
+                if (!differences++) {
+                    g_test_message("%s %s: first difference at (%zu,%zu)",
+                                   names[kind], top ? "top" : "bottom",
+                                   i % REGION_W, i / REGION_W);
+                }
+            }
+        }
+        g_test_message("%s %s: largest rectangle %" PRIu64 " pixels, "
+                       "%u differ", names[kind], top ? "top" : "bottom",
+                       mesa.largest_rect, differences);
+        if (differences || mesa.largest_rect > bound) {
+            failures++;
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(scalar.rgba);
+    g_free(mesa.rgba);
+    g_free(scalar.written);
+    g_free(mesa.written);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
  * Stores whose widths differ from the rules' are refused, for draws and
  * CLEAR, because the scalar path rounds to the rules' widths: with 10-bit
  * colour and 2-bit stored alpha, alpha 0.5 rounds to 512 of 1023 and
@@ -8139,6 +8436,7 @@ int main(int argc, char **argv)
                     test_scalar_match_texture);
     g_test_add_func("/sgi-renderer-gl/scalar-match-clear",
                     test_scalar_match_clear);
+    g_test_add_func("/sgi-renderer-gl/draw-region", test_draw_region);
     g_test_add_func("/sgi-renderer-gl/scalar-match-store-widths",
                     test_scalar_match_store_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",

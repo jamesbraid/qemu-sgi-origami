@@ -55,6 +55,9 @@ typedef struct SGIRendererGL {
     GLint line_range, line_x_major, line_reverse, line_counter, line_stipple;
     GLint line_repeat, line_pattern, line_flat;
     char *vendor, *renderer_name, *version;
+    /* The cached frame target; see renderer_gl_frame_target(). */
+    GLuint frame_texture, frame_framebuffer, frame_stencil;
+    uint32_t frame_width, frame_height;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -915,44 +918,90 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     return !renderer_gl_error(renderer, "draw");
 }
 
+/* Drop the cached frame target, after a failure or for a new size. */
+static void renderer_gl_frame_target_free(SGIRendererGL *renderer)
+{
+    glDeleteRenderbuffers(1, &renderer->frame_stencil);
+    glDeleteFramebuffers(1, &renderer->frame_framebuffer);
+    glDeleteTextures(1, &renderer->frame_texture);
+    renderer->frame_stencil = 0;
+    renderer->frame_framebuffer = 0;
+    renderer->frame_texture = 0;
+    renderer->frame_width = renderer->frame_height = 0;
+}
+
+/*
+ * The float colour texture, stencil and framebuffer a frame draws into,
+ * kept for the next frame of the same size: every frame uploads, clears
+ * and reads back the region it uses, so nothing earlier shows through.
+ */
+static bool renderer_gl_frame_target(SGIRendererGL *renderer,
+                                     uint32_t width, uint32_t height)
+{
+    if (renderer->frame_framebuffer && renderer->frame_width == width &&
+        renderer->frame_height == height) {
+        glBindFramebuffer(GL_FRAMEBUFFER, renderer->frame_framebuffer);
+        glBindTexture(GL_TEXTURE_2D, renderer->frame_texture);
+        return true;
+    }
+    renderer_gl_frame_target_free(renderer);
+    glGenTextures(1, &renderer->frame_texture);
+    glBindTexture(GL_TEXTURE_2D, renderer->frame_texture);
+    /*
+     * Float storage keeps blending free of intermediate fixed point
+     * rounding; readback clamps as a native store does.
+     */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA,
+                 GL_UNSIGNED_SHORT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &renderer->frame_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, renderer->frame_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, renderer->frame_texture, 0);
+    glGenRenderbuffers(1, &renderer->frame_stencil);
+    glBindRenderbuffer(GL_RENDERBUFFER, renderer->frame_stencil);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, renderer->frame_stencil);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        error_setg(&renderer->error, "SGI renderer native framebuffer failed");
+        renderer_gl_frame_target_free(renderer);
+        return false;
+    }
+    renderer->frame_width = width;
+    renderer->frame_height = height;
+    return true;
+}
+
 static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
-    GLuint texture = 0, sample = 0, framebuffer = 0, stencil = 0;
+    GLuint sample = 0;
     const SGIWindowUniforms *window = frame->texture.slots ?
                                       &renderer->texture_window :
                                       &renderer->window;
+    /* The region the frame uploads, draws and reads back. */
+    SGIRendererClearRect region = frame->region_given ? frame->region :
+        (SGIRendererClearRect) { 0, 0, frame->width - 1, frame->height - 1 };
+    GLsizei region_width = region.x1 - region.x0 + 1;
+    GLsizei region_height = region.y1 - region.y0 + 1;
     GLenum error;
 
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
         error_setg(&renderer->error, "SGI renderer EGL display is quarantined");
         return false;
     }
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    /*
-     * Float storage keeps blending free of intermediate fixed point
-     * rounding; readback clamps as a native store does.
-     */
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, frame->width, frame->height,
-                 0, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glGenFramebuffers(1, &framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, texture, 0);
-    glGenRenderbuffers(1, &stencil);
-    glBindRenderbuffer(GL_RENDERBUFFER, stencil);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8,
-                          frame->width, frame->height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
-                              GL_RENDERBUFFER, stencil);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        error_setg(&renderer->error, "SGI renderer native framebuffer failed");
+    if (!renderer_gl_frame_target(renderer, frame->width, frame->height)) {
         goto out;
     }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, region.x0, region.y0, region_width,
+                    region_height, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
@@ -1045,6 +1094,9 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glStencilMask(0xff);
     glClearStencil(0);
+    /* Outside the region the stencil is stale, and the scissor keeps out. */
+    glScissor(region.x0, region.y0, region_width, region_height);
+    glEnable(GL_SCISSOR_TEST);
     glClear(GL_STENCIL_BUFFER_BIT);
     /*
      * Stencil bit 0 marks the clip union and bit 1 a written pixel, so
@@ -1063,12 +1115,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
                       rect->y1 - rect->y0 + 1);
             glClear(GL_STENCIL_BUFFER_BIT);
         }
-        glDisable(GL_SCISSOR_TEST);
         glStencilMask(0x2);
         glStencilFunc(GL_EQUAL, 3, 0x1);
     } else {
         glStencilFunc(GL_ALWAYS, 3, 0xff);
     }
+    glScissor(region.x0, region.y0, region_width, region_height);
     glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
     glShadeModel(frame->shade_model);
     glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
@@ -1154,19 +1206,19 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glPixelStorei(GL_PACK_SKIP_ROWS, 0);
     glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-    glReadPixels(0, 0, frame->width, frame->height, GL_RGBA,
+    glReadPixels(region.x0, region.y0, region_width, region_height, GL_RGBA,
                  GL_UNSIGNED_SHORT, frame->rgba);
     if (renderer_gl_error(renderer, "native colour readback")) {
         goto out;
     }
-    glReadPixels(0, 0, frame->width, frame->height, GL_STENCIL_INDEX,
-                 GL_UNSIGNED_BYTE, frame->written);
+    glReadPixels(region.x0, region.y0, region_width, region_height,
+                 GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, frame->written);
     error = glGetError();
     if (error != GL_NO_ERROR) {
         error_setg(&renderer->error, "SGI renderer native draw failed: "
                    "GL error 0x%x", error);
     } else {
-        size_t pixels = (size_t)frame->width * frame->height;
+        size_t pixels = (size_t)region_width * region_height;
 
         for (size_t i = 0; i < pixels; i++) {
             uint8_t s = frame->written[i];
@@ -1188,10 +1240,11 @@ out:
     glStencilMask(0xff);
     glStencilFunc(GL_ALWAYS, 0, 0xff);
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-    glDeleteRenderbuffers(1, &stencil);
-    glDeleteFramebuffers(1, &framebuffer);
-    glDeleteTextures(1, &texture);
     glDeleteTextures(1, &sample);
+    if (renderer->error) {
+        /* Rebuild the frame target rather than trust it after a failure. */
+        renderer_gl_frame_target_free(renderer);
+    }
     return !renderer->error;
 }
 
@@ -1301,6 +1354,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
 
     if (renderer->context != EGL_NO_CONTEXT) {
         if (eglGetCurrentContext() == renderer->context) {
+            renderer_gl_frame_target_free(renderer);
             glDeleteFramebuffers(1, &renderer->framebuffer);
             glDeleteTextures(1, &renderer->texture);
             glDeleteTextures(1, &renderer->sampled_texture);

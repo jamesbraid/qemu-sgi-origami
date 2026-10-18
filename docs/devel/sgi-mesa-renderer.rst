@@ -233,9 +233,16 @@ unsupported.
 
 The path also rejects colour-index drawing, depth and stencil tests, client
 clip planes, ordered dithering, accumulation, and other draw states it has
-not mapped to Mesa. It snapshots the full colour resource. A draw renders
-into a 32-bit float host buffer, which is rounded to the native steps only
-at readback. That is why a blended draw is limited to one primitive. One
+not mapped to Mesa. It snapshots, uploads, reads back and commits only the
+region the draw can write: the union of its clip rectangles bounded by the
+geometry's window extent with two pixels of margin, where the extent comes
+from the scalar path's window triangles, the line parallelograms, or each
+triangle clipped to the view volume and each point's centre and size. Clip
+rectangles are cut to the region, so the host cannot write outside it. When
+a clipped vertex has no window position the region is the whole clip union.
+The geometry, viewport and clips the host draws with are unchanged, so the
+pixels are too. A draw renders into a 32-bit float host buffer, which is
+rounded to the native steps only at readback. That is why a blended draw is limited to one primitive. One
 private stencil bit marks the clip
 union and another marks written pixels, so primitives of one draw that
 overlap each still draw. The worker reads back colour and coverage before any
@@ -322,6 +329,10 @@ with the rules named above. Any other driver is unproven.
   texels a side, square or not, on top-origin rows or under a scissor,
   several clips, an offset viewport or orthographic and perspective
   matrices.
+- ``draw-region``: flat and smooth fans, points, lines, a blended and a
+  textured triangle, several clips and a scissor on a 300 by 200 resource of
+  both row origins equal the scalar path everywhere, and their snapshot and
+  commit rectangles stay within 40 by 40 pixels of the geometry.
 - ``scalar-match-store-widths``: refused width pairings for draws and CLEAR,
   and RGB stores under alpha rules.
 - ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
@@ -429,6 +440,11 @@ Submissions are synchronous. The worker uses host arrays and immutable draw
 data for each call. It does not access guest memory, call family resource
 callbacks, or acquire QEMU's big lock. A host draw failure latches the
 renderer's failed state, so later draw requests fail.
+
+The worker keeps the float colour texture, stencil and framebuffer a frame
+draws into for the next frame of the same size, and uploads, clears and
+reads back only the frame's region, with the draw scissored to it. After a
+host failure it rebuilds them.
 
 A legacy request is one 128 by 128 tile of a triangle, and a family splits
 each triangle over every tile of its window. A request whose clip holds no

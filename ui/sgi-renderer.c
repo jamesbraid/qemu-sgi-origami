@@ -765,7 +765,16 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         frame->height > INT_MAX || !sgi_renderer_frame_count_valid(frame) ||
         frame->width > SIZE_MAX / frame->height / 4 /
                        sizeof(*frame->rgba) ||
-        frame->written_capacity < (size_t)frame->width * frame->height ||
+        frame->written_capacity <
+            (frame->region_given ?
+             (size_t)(frame->region.x1 - frame->region.x0 + 1) *
+             (frame->region.y1 - frame->region.y0 + 1) :
+             (size_t)frame->width * frame->height) ||
+        (frame->region_given &&
+         (frame->region.x0 > frame->region.x1 ||
+          frame->region.y0 > frame->region.y1 ||
+          frame->region.x1 >= frame->width ||
+          frame->region.y1 >= frame->height)) ||
         frame->clip_count > SGI_RENDERER_CLEAR_RECTS ||
         (frame->viewport_given &&
          (frame->viewport[2] < 0 || frame->viewport[3] < 0))) {
@@ -836,7 +845,10 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         const SGIRendererClearRect *rect = &frame->clips[i];
 
         if (rect->x0 > rect->x1 || rect->y0 > rect->y1 ||
-            rect->x1 >= frame->width || rect->y1 >= frame->height) {
+            rect->x1 >= frame->width || rect->y1 >= frame->height ||
+            (frame->region_given &&
+             (rect->x0 < frame->region.x0 || rect->y0 < frame->region.y0 ||
+              rect->x1 > frame->region.x1 || rect->y1 > frame->region.y1))) {
             error_setg(errp, "Invalid SGI OpenGL frame clip rectangle");
             return false;
         }
