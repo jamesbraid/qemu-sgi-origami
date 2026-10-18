@@ -725,6 +725,10 @@ static void test_model_did_pixel_accessors(void)
 
     qts = board_start(" -global sgi-odyssey.x-mesa-renderer=on");
     g_assert_true(odsy_qom_get_bool(qts, "x-mesa-renderer"));
+    /* Only a host without the renderer draws the whole device scalar. */
+    if (g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_assert_false(odsy_qom_get_bool(qts, "x-mesa-unavailable"));
+    }
     /* Model storage only: alternate write order; no GL draw is exercised. */
     for (y = 0; y < 4; y++) {
         for (x = 0; x < 4; x++) {

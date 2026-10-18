@@ -430,6 +430,11 @@ struct SGIOdysseyState {
      */
     SGIGLContext gl_ctx;
     SGIRenderer *mesa_renderer;
+    /*
+     * The host has no renderer, so x-mesa-renderer draws everything on the
+     * scalar path; a session like that cannot count as fallback-free.
+     */
+    bool mesa_unavailable;
     bool gl_in_prim;
     bool gl_begin_open;
     bool gl_integer_prim;
