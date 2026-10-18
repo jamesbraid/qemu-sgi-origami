@@ -20,7 +20,7 @@
     "-M none -cpu R10000 -m 256M " \
     "-object memory-backend-ram,id=dma,size=2M " \
     "-device sgi-bedrock,id=a,revision=2,dma-memory=/objects/dma/dma[0] " \
-    "-device sgi-bedrock,id=b,revision=2,dma-memory=/objects/dma/dma[0] "
+    "-device sgi-bedrock,id=b,revision=2,dma-memory=/objects/dma/dma[0]%s "
 #define MACHINE MACHINE_BASE \
     "-device sgi-net-cable,id=cable,end0=" A_PATH ",end1=" B_PATH " -S"
 
@@ -81,9 +81,9 @@ static void cable_down(QTestState *s, const char *path, bool down)
         "{'path':%s,'property':'down','value':%i}}", path, down);
 }
 
-static QTestState *routers_start(void)
+static QTestState *routers_start(const char *target_options)
 {
-    QTestState *s = qtest_init(MACHINE_BASE
+    QTestState *s = qtest_initf(MACHINE_BASE
         "-device sgi-l1,id=l1,brick-type=router "
         "-device sgi-l1-uart,id=uart,controller=l1 "
         "-device sgi-sn1-router,id=ra,l1-uart=uart "
@@ -93,7 +93,7 @@ static QTestState *routers_start(void)
         "-device sgi-net-cable,id=middle,end0=" RA_PATH
         ",end0-index=5,end1=" RB_PATH ",end1-index=7 "
         "-device sgi-net-cable,id=target,end0=" RB_PATH
-        ",end0-index=4,end1=" B_PATH " -S");
+        ",end0-index=4,end1=" B_PATH " -S", target_options);
 
     attach(s, A_PATH, "net-cable", "/machine/peripheral/source");
     attach(s, B_PATH, "net-cable", "/machine/peripheral/target");
@@ -115,7 +115,7 @@ static void set_down(QTestState *s, bool down)
 
 static QTestState *pair_start(const char *extra)
 {
-    QTestState *s = qtest_initf(MACHINE " %s", extra);
+    QTestState *s = qtest_initf(MACHINE " %s", "", extra);
 
     wire(s, A_PATH);
     wire(s, B_PATH);
@@ -182,7 +182,7 @@ static void test_link_follows_the_cable(void)
 /* A Bedrock whose cable reference is never wired has no link. */
 static void test_unwired_port_has_no_link(void)
 {
-    QTestState *s = qtest_initf(MACHINE);
+    QTestState *s = qtest_initf(MACHINE, "");
 
     qtest_sysbus_mmio_map(s, A_PATH, 0, A_BASE);
     g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 0);
@@ -398,7 +398,7 @@ static void test_peer_scratch1_write_follows_withheld_posts(void)
 
 static void test_two_router_vector_reply(void)
 {
-    QTestState *s = routers_start();
+    QTestState *s = routers_start("");
     const uint64_t params = HUB_SCRATCH(0) | REQUEST_ID(0x1c8);
     uint64_t status;
 
@@ -429,9 +429,20 @@ static void test_two_router_vector_reply(void)
     qtest_quit(s);
 }
 
+static void test_routed_powered_off_target_has_no_reply(void)
+{
+    QTestState *s = routers_start(",x-test-power-off=on");
+    const uint64_t params = HUB_SCRATCH(0) | REQUEST_ID(0x1c8);
+
+    g_assert_cmphex(vector_launch(s, A_BASE, 0x45, params, 0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
+    qtest_quit(s);
+}
+
 static void test_router_table_vector_words(void)
 {
-    QTestState *s = routers_start();
+    QTestState *s = routers_start("");
     const uint64_t addresses[] = { 0x10118, 0x10228, 0x40968, 0x40de8 };
     const uint64_t values[] = {
         UINT64_C(0xa5c3f00d17654321), UINT64_C(0x5a3c0ff0fedcba98),
@@ -461,7 +472,7 @@ static void test_router_table_vector_words(void)
 
 static void test_unsupported_vector_type(void)
 {
-    QTestState *s = routers_start();
+    QTestState *s = routers_start("");
     const uint64_t baseline = UINT64_C(0x123456789abcdef0);
     uint64_t status = vector_launch(s, A_BASE, 0, 0x10100 | TYPE_WRITE,
                                     baseline);
@@ -485,7 +496,7 @@ static void test_unsupported_vector_type(void)
 
 static void test_router_uart_vector(void)
 {
-    QTestState *s = routers_start();
+    QTestState *s = routers_start("");
     uint64_t status;
 
     status = vector_launch(s, A_BASE, 0, 0x258 | TYPE_WRITE, 0x80);
@@ -554,6 +565,8 @@ int main(int argc, char **argv)
                    test_unsupported_vector_type);
     qtest_add_func("sn1/bedrock-link/two-router-vector-reply",
                    test_two_router_vector_reply);
+    qtest_add_func("sn1/bedrock-link/routed-powered-off-target-no-reply",
+                   test_routed_powered_off_target_has_no_reply);
     qtest_add_func("sn1/bedrock-link/router-uart-vector",
                    test_router_uart_vector);
     qtest_add_func("sn1/bedrock-link/route-zero-reads-the-peer",

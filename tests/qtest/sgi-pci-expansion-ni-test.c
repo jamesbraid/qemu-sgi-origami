@@ -3131,23 +3131,54 @@ static void test_power_error_permissions(void)
 static void test_power_vector(void)
 {
     QTestState *qts = management_start(POWER_OPTIONS);
+    const uint64_t params[] = { 0x600000, 0x600001 };
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
 
     qtest_readq(qts, COMPUTE + 0x60c038);
     qtest_writeq(qts, COMPUTE + 0x60c008, 0);
     qtest_writeq(qts, COMPUTE + 0x60c000, 0x600000);
     g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, ==, 0);
     power_set(qts, false);
-    qtest_readq(qts, COMPUTE + 0x60c038);
-    qtest_writeq(qts, COMPUTE + 0x60c008, 0);
-    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600000);
-    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, !=, 0);
-    qtest_readq(qts, COMPUTE + 0x60c038);
-    qtest_writeq(qts, COMPUTE + 0x60c010, UINT64_C(9) << 32);
-    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600001);
-    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, !=, 1);
+    for (unsigned i = 0; i < G_N_ELEMENTS(params); i++) {
+        qtest_readq(qts, COMPUTE + 0x60c038);
+        qtest_writeq(qts, COMPUTE + 0x60c028, sentinel);
+        qtest_writeq(qts, COMPUTE + 0x60c030, sentinel);
+        qtest_writeq(qts, COMPUTE + 0x60c008, 0);
+        qtest_writeq(qts, COMPUTE + 0x60c010, UINT64_C(9) << 32);
+        qtest_writeq(qts, COMPUTE + 0x60c000, params[i]);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020), ==,
+                        (UINT64_C(1) << 63) | 0x600004);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c028), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c030), ==, sentinel);
+    }
     power_set(qts, true);
     g_assert_cmphex((qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000)
                      >> 32) & 0xff, ==, 7);
+    qtest_readq(qts, COMPUTE + 0x60c038);
+    qtest_writeq(qts, COMPUTE + 0x60c008, 0);
+    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600000);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_power_vector_nonzero_route(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+    const uint64_t params[] = { 0x600000, 0x600001 };
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+
+    power_set(qts, false);
+    for (unsigned i = 0; i < G_N_ELEMENTS(params); i++) {
+        qtest_readq(qts, COMPUTE + 0x60c038);
+        qtest_writeq(qts, COMPUTE + 0x60c028, sentinel);
+        qtest_writeq(qts, COMPUTE + 0x60c030, sentinel);
+        qtest_writeq(qts, COMPUTE + 0x60c008, 1);
+        qtest_writeq(qts, COMPUTE + 0x60c010, UINT64_C(9) << 32);
+        qtest_writeq(qts, COMPUTE + 0x60c000, params[i]);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c028), ==, sentinel);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c030), ==, sentinel);
+    }
     qtest_quit(qts);
 }
 
@@ -3945,6 +3976,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/pci-expansion-ni/power-owner", test_power_owner);
     qtest_add_func("/sgi/pci-expansion-ni/power-dma-irq", test_power_dma_irq);
     qtest_add_func("/sgi/pci-expansion-ni/power-vector", test_power_vector);
+    qtest_add_func("/sgi/pci-expansion-ni/power-vector-nonzero-route",
+                   test_power_vector_nonzero_route);
     qtest_add_func("/sgi/pci-expansion-ni/power-bte-completion",
                    test_power_bte_completion);
     qtest_add_func("/sgi/pci-expansion-ni/power-errors", test_power_errors);

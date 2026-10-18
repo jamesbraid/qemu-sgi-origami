@@ -83,6 +83,8 @@ typedef enum SGINetPacketFailure {
 typedef struct SGINetPacket {
     SGINetPacketOp op;
     SGINetPacketFailure failure;
+    /* The destination Bedrock refused because its main power is off. */
+    bool power_off_refusal;
     /* The register address the request carries (bits 19:3). */
     hwaddr addr;
     /* Write or exchange data in; read or exchange data out. */
