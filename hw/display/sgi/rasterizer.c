@@ -1243,6 +1243,29 @@ static void sgi_soft_texture_shadow(const SGIGLTexImage *im, double depth,
     out[3] = 1;
 }
 
+/*
+ * GL_REPEAT's wrap of a texel index into [0, n). Image and level sizes are
+ * powers of two wherever setup admits them, and there the mask gives the
+ * remainder without two 64-bit divisions a tap.
+ */
+static inline int64_t sgi_soft_texture_repeat(int64_t i, uint32_t n)
+{
+    return is_power_of_2(n) ? i & (n - 1) : (i % n + n) % n;
+}
+
+/*
+ * An 8-bit channel normalized, k / 255.0 for each byte k: the same
+ * quotients the division gives, computed once instead of four times a tap.
+ */
+static double sgi_soft_unorm8[256];
+
+static void __attribute__((constructor)) sgi_soft_unorm8_init(void)
+{
+    for (unsigned k = 0; k < ARRAY_SIZE(sgi_soft_unorm8); k++) {
+        sgi_soft_unorm8[k] = k / 255.0;
+    }
+}
+
 static bool sgi_soft_texture_tap(const SGISoftDraw *r,
                                   const SGIGLTexLevel *level,
                                   int64_t x, int64_t y, int64_t z,
@@ -1259,13 +1282,13 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     bool raw_components = false;
 
     if (im->wrap_s == SGI_GL_REPEAT) {
-        x = (x % width + width) % width;
+        x = sgi_soft_texture_repeat(x, width);
     }
     if (!im->one_dimensional && im->wrap_t == SGI_GL_REPEAT) {
-        y = (y % height + height) % height;
+        y = sgi_soft_texture_repeat(y, height);
     }
     if (im->volume && im->wrap_r == SGI_GL_REPEAT) {
-        z = (z % depth + depth) % depth;
+        z = sgi_soft_texture_repeat(z, depth);
     }
     if (x < 0 || y < 0 || z < 0 || x >= width || y >= height || z >= depth) {
         uint32_t border = level ? level->border : im->border;
@@ -1385,7 +1408,7 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         }
     } else {
         for (int k = 0; k < 4; k++) {
-            out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
+            out[k] = sgi_soft_unorm8[(rgba >> (24 - k * 8)) & 255];
         }
     }
     sgi_soft_texture_components(format, out);
