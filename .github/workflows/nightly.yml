@@ -204,3 +204,18 @@ jobs:
             python3 "$checker" --junit "$report" --expect "$expected"
             exit "$test_rc"
           '
+
+      - name: retain failure diagnostics
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: nightly-failure-diagnostics-${{ env.NIGHTLY_WORKLOAD }}
+          # Guest consoles and per-test logs, excluding guest disks and assets.
+          path: |
+            build-nightly/meson-logs/*.txt
+            build-nightly/meson-logs/*.json
+            build-nightly/meson-logs/*.xml
+            build-nightly/tests/functional/**/*.log
+            !build-nightly/tests/functional/**/scratch/**
+          if-no-files-found: warn
+          retention-days: 7
