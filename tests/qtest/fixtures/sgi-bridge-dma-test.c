@@ -75,7 +75,9 @@ struct SGIBridgeDMATestState {
     AddressSpace linked_dma_as;
     bool memory_only;
     bool fault_read;
+    bool fault_write;
     uint32_t bar_reads;
+    uint32_t bar_writes;
     uint32_t fault_result;
     uint32_t result;
     uint64_t read_data;
@@ -425,10 +427,26 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
+static MemTxResult sgi_bridge_dma_test_write_attrs(void *opaque,
+    hwaddr addr, uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    SGIBridgeDMATestState *s = opaque;
+
+    if (s->fault_write) {
+        s->bar_writes++;
+    }
+    if (s->fault_write && addr == REG_FAULT_READ) {
+        s->fault_result = MEMTX_ERROR;
+        return MEMTX_ERROR;
+    }
+    sgi_bridge_dma_test_write(opaque, addr, value, size);
+    return MEMTX_OK;
+}
+
 /* 32-bit accesses only; both bounds declared so the core enforces it. */
 static const MemoryRegionOps sgi_bridge_dma_test_ops = {
     .read_with_attrs = sgi_bridge_dma_test_read_attrs,
-    .write = sgi_bridge_dma_test_write,
+    .write_with_attrs = sgi_bridge_dma_test_write_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
@@ -634,6 +652,8 @@ static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
     DEFINE_PROP_BOOL("x-test-fault-read", SGIBridgeDMATestState,
                      fault_read, false),
+    DEFINE_PROP_BOOL("x-test-fault-write", SGIBridgeDMATestState,
+                     fault_write, false),
 };
 
 static void sgi_bridge_dma_test_init(Object *obj)
@@ -642,6 +662,8 @@ static void sgi_bridge_dma_test_init(Object *obj)
 
     object_property_add_uint32_ptr(obj, "x-test-bar-read-count",
                                    &s->bar_reads, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-bar-write-count",
+                                   &s->bar_writes, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-fault-result",
                                    &s->fault_result, OBJ_PROP_FLAG_READ);
 }

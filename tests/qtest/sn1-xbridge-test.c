@@ -2230,6 +2230,9 @@ static void test_mem64_marked_standalone(void)
                     0xa1b2c3d4);
     g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x24), ==,
                     0x12345678);
+    qtest_writel(qts, BASE + MEM64 + bar + 0x20, 0x10213243);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x24), ==,
+                    0x10213243);
     qtest_quit(qts);
 }
 
@@ -2241,12 +2244,16 @@ static void test_mem64_unmapped_bar(void)
 
     g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
                     0x12345678);
+    qtest_writel(qts, BASE + MEM32 + bar + 0x24, 0xa1b2c3d4);
     qtest_writel(qts, BASE + 0x20004, 4);
     g_assert_cmphex(qtest_readl(qts, BASE + 0x20004), ==, 4);
     g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==, 0);
+    qtest_writel(qts, BASE + MEM64 + bar + 0x20, 0x10213243);
     qtest_writel(qts, BASE + 0x20004, 6);
     g_assert_cmphex(qtest_readl(qts, BASE + MEM64 + bar + 0x20), ==,
                     0x12345678);
+    g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + bar + 0x24), ==,
+                    0xa1b2c3d4);
     qtest_quit(qts);
 }
 
