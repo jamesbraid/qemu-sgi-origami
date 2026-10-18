@@ -236,10 +236,11 @@ unsupported.
 The path also rejects colour-index drawing outside the subset below, depth
 and stencil tests, client clip planes, ordered dithering, accumulation, and
 other draw states it has not mapped to Mesa. It snapshots, uploads, reads
-back and commits only the region the draw can write: the union of its clip rectangles bounded by the
-geometry's window extent with two pixels of margin, where the extent comes
-from the scalar path's window triangles, the line parallelograms, or each
-triangle clipped to the view volume and each point's centre and size. Clip
+back and commits only the region the draw can write: the union of its clip
+rectangles bounded by the geometry's window extent with two pixels of
+margin, where the extent comes from the scalar path's window triangles, the
+line parallelograms, or each triangle clipped to the view volume and each
+point's centre and size. Clip
 rectangles are cut to the region, so the host cannot write outside it. When
 a clipped vertex has no window position the region is the whole clip union.
 The geometry, viewport and clips the host draws with are unchanged, so the
