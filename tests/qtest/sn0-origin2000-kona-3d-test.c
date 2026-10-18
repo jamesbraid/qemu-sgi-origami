@@ -14079,6 +14079,69 @@ static void test_renderer_legacy_diagonals(void)
     qtest_quit(gpu);
 }
 
+/*
+ * Meson runs this binary once per group in
+ * sn0-origin2000-kona-3d-test-groups.txt, naming the group's GLib paths with
+ * --group-path, so that its groups run at once. Only the cases a group takes
+ * are registered. GLib's own -p selects as well, but it reports each path as
+ * a separate TAP plan, which Meson rejects. A path names one case or a suite
+ * whose cases directly under it all join the group. Without --group-path,
+ * every case runs.
+ */
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
+{
+    int kept = 1;
+
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
+        }
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+}
+
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
+
+    if (!group_paths) {
+        return true;
+    }
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
+
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_func(path, fn);
+    }
+}
+
+static void add_data_case(const char *path, gconstpointer data,
+                          GTestDataFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_data_func(path, data, fn);
+    }
+}
+
 /* Renderer cases with this flag make host renderer creation unavailable. */
 #define RENDERER_CPU (1u << 16)
 
@@ -14121,19 +14184,23 @@ static void renderer_assert_draws(QTestState *s, gconstpointer opaque,
     }
 }
 
-static void renderer_add_modes(const char *suite, unsigned modes,
-                               GTestDataFunc fn)
+/*
+ * Register modes 0 to modes - 1 of a renderer case, at path templates that
+ * spell their suites in full, so scripts/check-qtest-registered.py can see
+ * them: host is drawn with the host renderer, cpu with it unavailable.
+ */
+static void renderer_add_modes(const char *host, const char *cpu,
+                               unsigned modes, GTestDataFunc fn)
 {
-    for (unsigned cpu = 0; cpu < 2; cpu++) {
+    for (unsigned unavailable = 0; unavailable < 2; unavailable++) {
         for (unsigned mode = 0; mode < modes; mode++) {
-            g_autofree char *path = g_strdup_printf(
-                "sn0/origin2000/kona-3d/renderer/%s%s/%u",
-                cpu ? "cpu/" : "", suite, mode);
+            g_autofree char *path = g_strdup_printf(unavailable ? cpu : host,
+                                                    mode);
 
-            qtest_add_data_func(path,
-                                GUINT_TO_POINTER(mode |
-                                                 (cpu ? RENDERER_CPU : 0)),
-                                fn);
+            add_data_case(path,
+                          GUINT_TO_POINTER(mode |
+                                           (unavailable ? RENDERER_CPU : 0)),
+                          fn);
         }
     }
 }
@@ -15819,197 +15886,198 @@ int main(int argc, char **argv)
 
     int ret;
 
+    take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_func("sn0/origin2000/kona-3d/texture-curve/transport",
-                   test_texture_curve_transport);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-empty",
-                        GUINT_TO_POINTER(0), test_texture_curve_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-partial",
-                        GUINT_TO_POINTER(13), test_texture_curve_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-padding",
-                        GUINT_TO_POINTER(32), test_texture_curve_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-complete",
-                        GUINT_TO_POINTER(33), test_texture_curve_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/every-command-frames",
-                   test_every_command_frames);
-    qtest_add_func("sn0/origin2000/kona-3d/packed-forms-frame",
-                   test_packed_forms_frame);
-    qtest_add_func("sn0/origin2000/kona-3d/light-model-not-bitmap",
-                   test_light_model_not_bitmap);
-    qtest_add_func("sn0/origin2000/kona-3d/migration-mid-data-run",
-                   test_migration_mid_data_run);
-    qtest_add_func("sn0/origin2000/kona-3d/ortho-half-size",
-                   test_ortho_half_size);
-    qtest_add_func("sn0/origin2000/kona-3d/rotated-triangle",
-                   test_rotated_triangle);
-    qtest_add_func("sn0/origin2000/kona-3d/perspective-quad",
-                   test_perspective_quad);
-    qtest_add_func("sn0/origin2000/kona-3d/lit-flat-triangle",
-                   test_lit_flat_triangle);
-    qtest_add_func("sn0/origin2000/kona-3d/packed-colour-across-migration",
-                   test_packed_colour_across_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-less-and-greater",
-                   test_depth_less_and_greater);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-without-buffer",
-                   test_depth_without_buffer);
-    qtest_add_func("sn0/origin2000/kona-3d/blended-triangle",
-                   test_blended_triangle);
-    qtest_add_func("sn0/origin2000/kona-3d/culled-triangle",
-                   test_culled_triangle);
-    qtest_add_func("sn0/origin2000/kona-3d/draw-pixels-begin-with-skips",
-                   test_draw_pixels_begin_with_skips);
-    qtest_add_func("sn0/origin2000/kona-3d/read-pixels", test_read_pixels);
-    qtest_add_func("sn0/origin2000/kona-3d/read-capacity",
-                   test_read_pixels_capacity);
-    qtest_add_func("sn0/origin2000/kona-3d/read-visual-records",
-                   test_read_visual_records);
-    qtest_add_func("sn0/origin2000/kona-3d/read-ambiguous-level",
-                   test_read_ambiguous_level_preserves_source);
-    qtest_add_func("sn0/origin2000/kona-3d/read-partial-records",
-                   test_read_partial_records);
-    qtest_add_func("sn0/origin2000/kona-3d/read-reply-order",
-                   test_read_reply_order);
-    qtest_add_func("sn0/origin2000/kona-3d/read-coordinates",
-                   test_read_coordinates);
-    qtest_add_func("sn0/origin2000/kona-3d/read-indexed-source-refused",
-                   test_read_indexed_source_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/read-double-buffers",
-                   test_read_double_buffers);
-    qtest_add_func("sn0/origin2000/kona-3d/read-selection",
-                   test_read_selection);
-    qtest_add_func("sn0/origin2000/kona-3d/get-queries", test_get_queries);
-    qtest_add_func("sn0/origin2000/kona-3d/native-depth-state",
-                   test_native_depth_state);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state-migrates",
-                   test_native_state_migrates);
-    qtest_add_func("sn0/origin2000/kona-3d/push-and-pop-attrib",
-                   test_push_and_pop_attrib);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/bytes",
-                   test_native_query_bytes);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/indexed-bits",
-                   test_native_indexed_query_bits);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/invalid",
-                   test_native_query_invalid);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/attrib",
-                   test_native_query_attrib);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/stencil-pixels",
-                   test_native_stencil_query_pixels);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/contexts",
-                   test_native_query_contexts);
-    qtest_add_func("sn0/origin2000/kona-3d/native-state/reset",
-                   test_native_query_reset);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/migration",
-                        GUINT_TO_POINTER(0), test_native_query_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/"
-                        "function-migration",
-                        GUINT_TO_POINTER(1), test_native_query_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/"
-                        "operations-migration",
-                        GUINT_TO_POINTER(2), test_native_query_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/enable-migration",
-                        GUINT_TO_POINTER(3), test_native_query_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/default-migration",
-                        GUINT_TO_POINTER(4), test_native_query_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/no-context",
-                        GUINT_TO_POINTER(0), test_native_query_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/missing-page",
-                        GUINT_TO_POINTER(1), test_native_query_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/failed-page",
-                        GUINT_TO_POINTER(2), test_native_query_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/hints/invalid",
-                   test_native_hints_invalid);
-    qtest_add_func("sn0/origin2000/kona-3d/hints/attrib",
-                   test_native_hints_attrib);
-    qtest_add_func("sn0/origin2000/kona-3d/hints/contexts",
-                   test_native_hints_contexts);
-    qtest_add_func("sn0/origin2000/kona-3d/hints/reset",
-                   test_native_hints_reset);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/migration",
-                        GUINT_TO_POINTER(0), test_native_hints_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/"
-                        "partial-selector-migration",
-                        GUINT_TO_POINTER(1), test_native_hints_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/partial-target-migration",
-                        GUINT_TO_POINTER(2), test_native_hints_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/omitted-migration",
-                        GUINT_TO_POINTER(3), test_native_hints_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/no-context",
-                        GUINT_TO_POINTER(0), test_native_hints_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/missing-page",
-                        GUINT_TO_POINTER(1), test_native_hints_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/hints/failed-page",
-                        GUINT_TO_POINTER(2), test_native_hints_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/hints/basic",
-                   test_native_hints);
-    qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/basic",
-                   test_native_attrib_depth);
-    qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/limits",
-                   test_native_attrib_depth_limits);
-    qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/reset",
-                   test_native_attrib_depth_reset);
-    qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/contexts",
-                   test_native_attrib_depth_contexts);
-    qtest_add_data_func("sn0/origin2000/kona-3d/attrib-depth/migrates",
-                        GINT_TO_POINTER(false),
-                        test_native_attrib_depth_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/attrib-depth/empty-migrates",
-                        GINT_TO_POINTER(true),
-                        test_native_attrib_depth_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/attrib-depth/no-context",
-                        GUINT_TO_POINTER(0), test_native_attrib_depth_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/attrib-depth/missing-page",
-                        GUINT_TO_POINTER(1), test_native_attrib_depth_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/attrib-depth/failed-page",
-                        GUINT_TO_POINTER(2), test_native_attrib_depth_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/attrib-stack-migrates",
-                   test_attrib_stack_migrates);
+    add_case("sn0/origin2000/kona-3d/texture-curve/transport",
+             test_texture_curve_transport);
+    add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-empty",
+                  GUINT_TO_POINTER(0), test_texture_curve_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-partial",
+                  GUINT_TO_POINTER(13), test_texture_curve_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-padding",
+                  GUINT_TO_POINTER(32), test_texture_curve_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-complete",
+                  GUINT_TO_POINTER(33), test_texture_curve_migration);
+    add_case("sn0/origin2000/kona-3d/every-command-frames",
+             test_every_command_frames);
+    add_case("sn0/origin2000/kona-3d/packed-forms-frame",
+             test_packed_forms_frame);
+    add_case("sn0/origin2000/kona-3d/light-model-not-bitmap",
+             test_light_model_not_bitmap);
+    add_case("sn0/origin2000/kona-3d/migration-mid-data-run",
+             test_migration_mid_data_run);
+    add_case("sn0/origin2000/kona-3d/ortho-half-size",
+             test_ortho_half_size);
+    add_case("sn0/origin2000/kona-3d/rotated-triangle",
+             test_rotated_triangle);
+    add_case("sn0/origin2000/kona-3d/perspective-quad",
+             test_perspective_quad);
+    add_case("sn0/origin2000/kona-3d/lit-flat-triangle",
+             test_lit_flat_triangle);
+    add_case("sn0/origin2000/kona-3d/packed-colour-across-migration",
+             test_packed_colour_across_migration);
+    add_case("sn0/origin2000/kona-3d/depth-less-and-greater",
+             test_depth_less_and_greater);
+    add_case("sn0/origin2000/kona-3d/depth-without-buffer",
+             test_depth_without_buffer);
+    add_case("sn0/origin2000/kona-3d/blended-triangle",
+             test_blended_triangle);
+    add_case("sn0/origin2000/kona-3d/culled-triangle",
+             test_culled_triangle);
+    add_case("sn0/origin2000/kona-3d/draw-pixels-begin-with-skips",
+             test_draw_pixels_begin_with_skips);
+    add_case("sn0/origin2000/kona-3d/read-pixels", test_read_pixels);
+    add_case("sn0/origin2000/kona-3d/read-capacity",
+             test_read_pixels_capacity);
+    add_case("sn0/origin2000/kona-3d/read-visual-records",
+             test_read_visual_records);
+    add_case("sn0/origin2000/kona-3d/read-ambiguous-level",
+             test_read_ambiguous_level_preserves_source);
+    add_case("sn0/origin2000/kona-3d/read-partial-records",
+             test_read_partial_records);
+    add_case("sn0/origin2000/kona-3d/read-reply-order",
+             test_read_reply_order);
+    add_case("sn0/origin2000/kona-3d/read-coordinates",
+             test_read_coordinates);
+    add_case("sn0/origin2000/kona-3d/read-indexed-source-refused",
+             test_read_indexed_source_refused);
+    add_case("sn0/origin2000/kona-3d/read-double-buffers",
+             test_read_double_buffers);
+    add_case("sn0/origin2000/kona-3d/read-selection",
+             test_read_selection);
+    add_case("sn0/origin2000/kona-3d/get-queries", test_get_queries);
+    add_case("sn0/origin2000/kona-3d/native-depth-state",
+             test_native_depth_state);
+    add_case("sn0/origin2000/kona-3d/native-state-migrates",
+             test_native_state_migrates);
+    add_case("sn0/origin2000/kona-3d/push-and-pop-attrib",
+             test_push_and_pop_attrib);
+    add_case("sn0/origin2000/kona-3d/native-state/bytes",
+             test_native_query_bytes);
+    add_case("sn0/origin2000/kona-3d/native-state/indexed-bits",
+             test_native_indexed_query_bits);
+    add_case("sn0/origin2000/kona-3d/native-state/invalid",
+             test_native_query_invalid);
+    add_case("sn0/origin2000/kona-3d/native-state/attrib",
+             test_native_query_attrib);
+    add_case("sn0/origin2000/kona-3d/native-state/stencil-pixels",
+             test_native_stencil_query_pixels);
+    add_case("sn0/origin2000/kona-3d/native-state/contexts",
+             test_native_query_contexts);
+    add_case("sn0/origin2000/kona-3d/native-state/reset",
+             test_native_query_reset);
+    add_data_case("sn0/origin2000/kona-3d/native-state/migration",
+                  GUINT_TO_POINTER(0), test_native_query_migration);
+    add_data_case("sn0/origin2000/kona-3d/native-state/"
+                  "function-migration",
+                  GUINT_TO_POINTER(1), test_native_query_migration);
+    add_data_case("sn0/origin2000/kona-3d/native-state/"
+                  "operations-migration",
+                  GUINT_TO_POINTER(2), test_native_query_migration);
+    add_data_case("sn0/origin2000/kona-3d/native-state/enable-migration",
+                  GUINT_TO_POINTER(3), test_native_query_migration);
+    add_data_case("sn0/origin2000/kona-3d/native-state/default-migration",
+                  GUINT_TO_POINTER(4), test_native_query_migration);
+    add_data_case("sn0/origin2000/kona-3d/native-state/no-context",
+                  GUINT_TO_POINTER(0), test_native_query_refused);
+    add_data_case("sn0/origin2000/kona-3d/native-state/missing-page",
+                  GUINT_TO_POINTER(1), test_native_query_refused);
+    add_data_case("sn0/origin2000/kona-3d/native-state/failed-page",
+                  GUINT_TO_POINTER(2), test_native_query_refused);
+    add_case("sn0/origin2000/kona-3d/hints/invalid",
+             test_native_hints_invalid);
+    add_case("sn0/origin2000/kona-3d/hints/attrib",
+             test_native_hints_attrib);
+    add_case("sn0/origin2000/kona-3d/hints/contexts",
+             test_native_hints_contexts);
+    add_case("sn0/origin2000/kona-3d/hints/reset",
+             test_native_hints_reset);
+    add_data_case("sn0/origin2000/kona-3d/hints/migration",
+                  GUINT_TO_POINTER(0), test_native_hints_migration);
+    add_data_case("sn0/origin2000/kona-3d/hints/"
+                  "partial-selector-migration",
+                  GUINT_TO_POINTER(1), test_native_hints_migration);
+    add_data_case("sn0/origin2000/kona-3d/hints/partial-target-migration",
+                  GUINT_TO_POINTER(2), test_native_hints_migration);
+    add_data_case("sn0/origin2000/kona-3d/hints/omitted-migration",
+                  GUINT_TO_POINTER(3), test_native_hints_migration);
+    add_data_case("sn0/origin2000/kona-3d/hints/no-context",
+                  GUINT_TO_POINTER(0), test_native_hints_refused);
+    add_data_case("sn0/origin2000/kona-3d/hints/missing-page",
+                  GUINT_TO_POINTER(1), test_native_hints_refused);
+    add_data_case("sn0/origin2000/kona-3d/hints/failed-page",
+                  GUINT_TO_POINTER(2), test_native_hints_refused);
+    add_case("sn0/origin2000/kona-3d/hints/basic",
+             test_native_hints);
+    add_case("sn0/origin2000/kona-3d/attrib-depth/basic",
+             test_native_attrib_depth);
+    add_case("sn0/origin2000/kona-3d/attrib-depth/limits",
+             test_native_attrib_depth_limits);
+    add_case("sn0/origin2000/kona-3d/attrib-depth/reset",
+             test_native_attrib_depth_reset);
+    add_case("sn0/origin2000/kona-3d/attrib-depth/contexts",
+             test_native_attrib_depth_contexts);
+    add_data_case("sn0/origin2000/kona-3d/attrib-depth/migrates",
+                  GINT_TO_POINTER(false),
+                  test_native_attrib_depth_migrates);
+    add_data_case("sn0/origin2000/kona-3d/attrib-depth/empty-migrates",
+                  GINT_TO_POINTER(true),
+                  test_native_attrib_depth_migrates);
+    add_data_case("sn0/origin2000/kona-3d/attrib-depth/no-context",
+                  GUINT_TO_POINTER(0), test_native_attrib_depth_refused);
+    add_data_case("sn0/origin2000/kona-3d/attrib-depth/missing-page",
+                  GUINT_TO_POINTER(1), test_native_attrib_depth_refused);
+    add_data_case("sn0/origin2000/kona-3d/attrib-depth/failed-page",
+                  GUINT_TO_POINTER(2), test_native_attrib_depth_refused);
+    add_case("sn0/origin2000/kona-3d/attrib-stack-migrates",
+             test_attrib_stack_migrates);
 
 
-    qtest_add_func("sn0/origin2000/kona-3d/texture/widths",
-                   test_texture_widths);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/reset",
-                   test_texture_reset);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/migrates",
-                   test_texture_migrates);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/refused",
-                   test_texture_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/alpha",
-                        GUINT_TO_POINTER(0), test_texture_native_byte_formats);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/rgb-to-luminance",
-                        GUINT_TO_POINTER(1), test_texture_native_byte_formats);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/luminance",
-                        GUINT_TO_POINTER(2), test_texture_native_byte_formats);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/luminance-alpha",
-                        GUINT_TO_POINTER(3), test_texture_native_byte_formats);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/migrate-rows",
-                        GUINT_TO_POINTER(2), test_texture_byte_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/byte/migrate-complete",
-                        GUINT_TO_POINTER(5), test_texture_byte_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/contiguous",
-                        GUINT_TO_POINTER(0), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/strided",
-                        GUINT_TO_POINTER(1), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/unmapped",
-                        GUINT_TO_POINTER(2), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/short",
-                        GUINT_TO_POINTER(3), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/extra",
-                        GUINT_TO_POINTER(4), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/prefix-mismatch",
-                        GUINT_TO_POINTER(5), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/chunk-boundary",
-                        GUINT_TO_POINTER(6), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/migrate-pending",
-                        GUINT_TO_POINTER(7), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/migrate-complete",
-                        GUINT_TO_POINTER(8), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/reset",
-                        GUINT_TO_POINTER(9), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/overlap-refused",
-                        GUINT_TO_POINTER(10), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/page-boundary",
-                        GUINT_TO_POINTER(11), test_texture_native_dma);
+    add_case("sn0/origin2000/kona-3d/texture/widths",
+             test_texture_widths);
+    add_case("sn0/origin2000/kona-3d/texture/reset",
+             test_texture_reset);
+    add_case("sn0/origin2000/kona-3d/texture/migrates",
+             test_texture_migrates);
+    add_case("sn0/origin2000/kona-3d/texture/refused",
+             test_texture_refused);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/alpha",
+                  GUINT_TO_POINTER(0), test_texture_native_byte_formats);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/rgb-to-luminance",
+                  GUINT_TO_POINTER(1), test_texture_native_byte_formats);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/luminance",
+                  GUINT_TO_POINTER(2), test_texture_native_byte_formats);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/luminance-alpha",
+                  GUINT_TO_POINTER(3), test_texture_native_byte_formats);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/migrate-rows",
+                  GUINT_TO_POINTER(2), test_texture_byte_migrates);
+    add_data_case("sn0/origin2000/kona-3d/texture/byte/migrate-complete",
+                  GUINT_TO_POINTER(5), test_texture_byte_migrates);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/contiguous",
+                  GUINT_TO_POINTER(0), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/strided",
+                  GUINT_TO_POINTER(1), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/unmapped",
+                  GUINT_TO_POINTER(2), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/short",
+                  GUINT_TO_POINTER(3), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/extra",
+                  GUINT_TO_POINTER(4), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/prefix-mismatch",
+                  GUINT_TO_POINTER(5), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/chunk-boundary",
+                  GUINT_TO_POINTER(6), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/migrate-pending",
+                  GUINT_TO_POINTER(7), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/migrate-complete",
+                  GUINT_TO_POINTER(8), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/reset",
+                  GUINT_TO_POINTER(9), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/overlap-refused",
+                  GUINT_TO_POINTER(10), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/page-boundary",
+                  GUINT_TO_POINTER(11), test_texture_native_dma);
     static const char *texture_dma_skip_cases[] = {
         "contiguous-row-skips", "whole-pixel-skips", "strided-row-skips",
         "skips-pending-migrates", "captured-transfer", "skipped-phase-refused",
@@ -16019,8 +16087,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/dma/%s", texture_dma_skip_cases[k]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(13 + k),
-                            test_texture_native_dma);
+        add_data_case(path, GUINT_TO_POINTER(13 + k),
+                      test_texture_native_dma);
     }
     static const char *texture_source_cases[] = {
         "red-pio", "green-pio", "blue-pio", "alpha-pio", "luminance-pio",
@@ -16035,17 +16103,17 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture/source-colour/%s",
             texture_source_cases[k]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(k),
-                            test_texture_ordinary_source);
+        add_data_case(path, GUINT_TO_POINTER(k),
+                      test_texture_ordinary_source);
     }
-    qtest_add_func("sn0/origin2000/kona-3d/texture/native-draw",
-                   test_texture_native_draw);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/native-rows",
-                   test_texture_native_rows);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rgb/source-rgb",
-                        GUINT_TO_POINTER(4), test_texture_native_rgb);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rgb/source-rgba",
-                        GUINT_TO_POINTER(5), test_texture_native_rgb);
+    add_case("sn0/origin2000/kona-3d/texture/native-draw",
+             test_texture_native_draw);
+    add_case("sn0/origin2000/kona-3d/texture/native-rows",
+             test_texture_native_rows);
+    add_data_case("sn0/origin2000/kona-3d/texture/rgb/source-rgb",
+                  GUINT_TO_POINTER(4), test_texture_native_rgb);
+    add_data_case("sn0/origin2000/kona-3d/texture/rgb/source-rgba",
+                  GUINT_TO_POINTER(5), test_texture_native_rgb);
     static const char *volume_cases[] = {
         "nearest", "linear", "dma", "migrate-partial", "missing-slice",
         "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
@@ -16056,11 +16124,11 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/volume/%s", volume_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_texture_native_volume);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_texture_native_volume);
     }
-    qtest_add_func("sn0/origin2000/kona-3d/texture/negative-bound-filters",
-                   test_texture_negative_bound_filters);
+    add_case("sn0/origin2000/kona-3d/texture/negative-bound-filters",
+             test_texture_negative_bound_filters);
     static const char *detail_cases[] = {
         "add", "modulate", "colour", "alpha", "absent", "missing",
         "migrates", "invalid-retained", "scaled", "minimum-rho-quarter",
@@ -16072,8 +16140,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/detail/%s", detail_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_texture_native_detail);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_texture_native_detail);
     }
     /*
      * Every integer type converts through PIO. The quick setup sends one
@@ -16091,390 +16159,424 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture/integer/swap-dma-%u", type);
         bool every = g_test_slow();
 
-        qtest_add_data_func(pio, GUINT_TO_POINTER(type),
-                            test_texture_native_integer);
+        add_data_case(pio, GUINT_TO_POINTER(type),
+                      test_texture_native_integer);
         if (every || type == 4) {
-            qtest_add_data_func(dma, GUINT_TO_POINTER(type | 8),
-                                test_texture_native_integer);
+            add_data_case(dma, GUINT_TO_POINTER(type | 8),
+                          test_texture_native_integer);
         }
         if (every || type == 2) {
-            qtest_add_data_func(swap_pio, GUINT_TO_POINTER(type | 32),
-                                test_texture_native_integer);
+            add_data_case(swap_pio, GUINT_TO_POINTER(type | 32),
+                          test_texture_native_integer);
         }
         if (every || type == 4) {
-            qtest_add_data_func(swap_dma, GUINT_TO_POINTER(type | 32 | 8),
-                                test_texture_native_integer);
+            add_data_case(swap_dma, GUINT_TO_POINTER(type | 32 | 8),
+                          test_texture_native_integer);
         }
     }
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/integer/"
-                        "migrate-partial", GUINT_TO_POINTER(3 | 16),
-                        test_texture_native_integer);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/integer/"
-                        "swap-migrate-partial", GUINT_TO_POINTER(3 | 32 | 16),
-                        test_texture_native_integer);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/integer/"
-                        "swap-migrate-state", GUINT_TO_POINTER(3 | 32 | 64),
-                        test_texture_native_integer);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/pio",
-                        GUINT_TO_POINTER(0), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/dma",
-                        GUINT_TO_POINTER(1), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/nonfinite",
-                        GUINT_TO_POINTER(2), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/swap-pio",
-                        GUINT_TO_POINTER(3), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/swap-dma",
-                        GUINT_TO_POINTER(4), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/swap-nonfinite",
-                        GUINT_TO_POINTER(5), test_texture_native_float);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
-                        "migration/partial-pio",
-                        GUINT_TO_POINTER(0), test_texture_float_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
-                        "migration/complete-pio",
-                        GUINT_TO_POINTER(1), test_texture_float_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
-                        "migration/pending-dma",
-                        GUINT_TO_POINTER(2), test_texture_float_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
-                        "migration/complete-dma",
-                        GUINT_TO_POINTER(3), test_texture_float_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/trace-source",
-                        GUINT_TO_POINTER(12), test_texture_native_dma);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/native-migrate-rows",
-                        GUINT_TO_POINTER(2), test_texture_native_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/"
-                        "native-migrate-complete", GUINT_TO_POINTER(4),
-                        test_texture_native_migrates);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/publication",
-                   test_texture_native_publication);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
-                        GUINT_TO_POINTER(0), test_texture_rebind_control);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",
-                        GUINT_TO_POINTER(1), test_texture_rebind_control);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/rebind-8x8-normal",
-                        GUINT_TO_POINTER(2), test_texture_rebind_control);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-refusals",
-                   test_texture_rebind_refusals);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-missing-draw",
-                   test_texture_rebind_missing_draw);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-missing-migration",
-                   test_texture_rebind_missing_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-recovery-migration",
-                   test_texture_rebind_recovery_migration);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/texture/rebind-refusal-context",
-        GUINT_TO_POINTER(1), test_texture_rebind_refusal_lifetime);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/texture/rebind-refusal-invalid-bind",
-        GUINT_TO_POINTER(0), test_texture_rebind_refusal_lifetime);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/texture/rebind-refusal-interrupted",
-        GUINT_TO_POINTER(2), test_texture_rebind_refusal_lifetime);
-    qtest_add_func(
-        "sn0/origin2000/kona-3d/texture/rebind-standalone-recovery",
-        test_texture_rebind_standalone_recovery);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-contexts",
-                   test_texture_rebind_contexts);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-reset",
-                   test_texture_rebind_reset);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-migration",
-                   test_texture_rebind_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/"
-                   "rebind-migration-missing-object",
-                   test_texture_rebind_migration_rejects_missing_object);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/"
-                   "rebind-migration-absent-table",
-                   test_texture_rebind_migration_rejects_absent_table);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-pending-migration",
-                   test_texture_rebind_pending_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-split-record",
-                   test_texture_rebind_split_record);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-split-bind",
-                   test_texture_rebind_split_bind);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/rebind-interrupted",
-                   test_texture_rebind_interrupted);
-    qtest_add_func("sn0/origin2000/kona-3d/texture/captured",
-                   test_texture_captured);
-    qtest_add_func("sn0/origin2000/kona-3d/unmodeled-queries-refused",
-                   test_unmodeled_queries_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/unknown-query-refused",
-                   test_unknown_query_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-format-refused",
-                        bad_format, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-type-refused",
-                        bad_type, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-size-refused",
-                        too_large, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-huge-width-refused",
-                        huge_width, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-raw-enums-refused",
-                        raw_enums, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-low-bits-refused",
-                        low_bits, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-zero-width-refused",
-                        zero_width, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-zero-height-refused",
-                        zero_height, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-negative-width-refused",
-                        negative_width, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-ambiguous-extent-refused",
-                        ambiguous, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-clipped-refused",
-                        clipped, test_read_pixels_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-missing-page-refused",
-                        GINT_TO_POINTER(false), test_read_destination_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-failed-page-refused",
-                        GINT_TO_POINTER(true), test_read_destination_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/push-texture-refused",
-                        GUINT_TO_POINTER(0x40000), test_push_attrib_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/push-transform-refused",
-                        GUINT_TO_POINTER(0x1000), test_push_attrib_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/reply-without-context-refused",
-                   test_reply_without_context_refused);
+    add_data_case("sn0/origin2000/kona-3d/texture/integer/"
+                  "migrate-partial", GUINT_TO_POINTER(3 | 16),
+                  test_texture_native_integer);
+    add_data_case("sn0/origin2000/kona-3d/texture/integer/"
+                  "swap-migrate-partial", GUINT_TO_POINTER(3 | 32 | 16),
+                  test_texture_native_integer);
+    add_data_case("sn0/origin2000/kona-3d/texture/integer/"
+                  "swap-migrate-state", GUINT_TO_POINTER(3 | 32 | 64),
+                  test_texture_native_integer);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/pio",
+                  GUINT_TO_POINTER(0), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/dma",
+                  GUINT_TO_POINTER(1), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/nonfinite",
+                  GUINT_TO_POINTER(2), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/swap-pio",
+                  GUINT_TO_POINTER(3), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/swap-dma",
+                  GUINT_TO_POINTER(4), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/swap-nonfinite",
+                  GUINT_TO_POINTER(5), test_texture_native_float);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/"
+                  "migration/partial-pio",
+                  GUINT_TO_POINTER(0), test_texture_float_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/"
+                  "migration/complete-pio",
+                  GUINT_TO_POINTER(1), test_texture_float_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/"
+                  "migration/pending-dma",
+                  GUINT_TO_POINTER(2), test_texture_float_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture/float/"
+                  "migration/complete-dma",
+                  GUINT_TO_POINTER(3), test_texture_float_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture/dma/trace-source",
+                  GUINT_TO_POINTER(12), test_texture_native_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/native-migrate-rows",
+                  GUINT_TO_POINTER(2), test_texture_native_migrates);
+    add_data_case("sn0/origin2000/kona-3d/texture/"
+                  "native-migrate-complete", GUINT_TO_POINTER(4),
+                  test_texture_native_migrates);
+    add_case("sn0/origin2000/kona-3d/texture/publication",
+             test_texture_native_publication);
+    add_data_case("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
+                  GUINT_TO_POINTER(0), test_texture_rebind_control);
+    add_data_case("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",
+                  GUINT_TO_POINTER(1), test_texture_rebind_control);
+    add_data_case("sn0/origin2000/kona-3d/texture/rebind-8x8-normal",
+                  GUINT_TO_POINTER(2), test_texture_rebind_control);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-refusals",
+             test_texture_rebind_refusals);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-missing-draw",
+             test_texture_rebind_missing_draw);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-missing-migration",
+             test_texture_rebind_missing_migration);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-recovery-migration",
+             test_texture_rebind_recovery_migration);
+    add_data_case(
+  "sn0/origin2000/kona-3d/texture/rebind-refusal-context",
+  GUINT_TO_POINTER(1), test_texture_rebind_refusal_lifetime);
+    add_data_case(
+  "sn0/origin2000/kona-3d/texture/rebind-refusal-invalid-bind",
+  GUINT_TO_POINTER(0), test_texture_rebind_refusal_lifetime);
+    add_data_case(
+  "sn0/origin2000/kona-3d/texture/rebind-refusal-interrupted",
+  GUINT_TO_POINTER(2), test_texture_rebind_refusal_lifetime);
+    add_case(
+  "sn0/origin2000/kona-3d/texture/rebind-standalone-recovery",
+  test_texture_rebind_standalone_recovery);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-contexts",
+             test_texture_rebind_contexts);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-reset",
+             test_texture_rebind_reset);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-migration",
+             test_texture_rebind_migration);
+    add_case("sn0/origin2000/kona-3d/texture/"
+             "rebind-migration-missing-object",
+             test_texture_rebind_migration_rejects_missing_object);
+    add_case("sn0/origin2000/kona-3d/texture/"
+             "rebind-migration-absent-table",
+             test_texture_rebind_migration_rejects_absent_table);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-pending-migration",
+             test_texture_rebind_pending_migration);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-split-record",
+             test_texture_rebind_split_record);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-split-bind",
+             test_texture_rebind_split_bind);
+    add_case("sn0/origin2000/kona-3d/texture/rebind-interrupted",
+             test_texture_rebind_interrupted);
+    add_case("sn0/origin2000/kona-3d/texture/captured",
+             test_texture_captured);
+    add_case("sn0/origin2000/kona-3d/unmodeled-queries-refused",
+             test_unmodeled_queries_refused);
+    add_case("sn0/origin2000/kona-3d/unknown-query-refused",
+             test_unknown_query_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-format-refused",
+                  bad_format, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-type-refused",
+                  bad_type, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-size-refused",
+                  too_large, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-huge-width-refused",
+                  huge_width, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-raw-enums-refused",
+                  raw_enums, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-low-bits-refused",
+                  low_bits, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-zero-width-refused",
+                  zero_width, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-zero-height-refused",
+                  zero_height, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-negative-width-refused",
+                  negative_width, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-ambiguous-extent-refused",
+                  ambiguous, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-clipped-refused",
+                  clipped, test_read_pixels_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-missing-page-refused",
+                  GINT_TO_POINTER(false), test_read_destination_refused);
+    add_data_case("sn0/origin2000/kona-3d/read-failed-page-refused",
+                  GINT_TO_POINTER(true), test_read_destination_refused);
+    add_data_case("sn0/origin2000/kona-3d/push-texture-refused",
+                  GUINT_TO_POINTER(0x40000), test_push_attrib_refused);
+    add_data_case("sn0/origin2000/kona-3d/push-transform-refused",
+                  GUINT_TO_POINTER(0x1000), test_push_attrib_refused);
+    add_case("sn0/origin2000/kona-3d/reply-without-context-refused",
+             test_reply_without_context_refused);
 
-    qtest_add_func("sn0/origin2000/kona-3d/current-colour-rgb",
-                   test_current_colour_rgb);
-    qtest_add_func("sn0/origin2000/kona-3d/return-context-isolation",
-                   test_return_context_isolation);
-    qtest_add_data_func("sn0/origin2000/kona-3d/invalid-draw-migrates",
-                        GUINT_TO_POINTER(1), test_return_source_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/invalid-read-migrates",
-                        GUINT_TO_POINTER(4), test_return_source_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/unknown-binding-migrates",
-                        GUINT_TO_POINTER(0x114), test_return_source_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/partial-draw-migrates",
-                        GUINT_TO_POINTER(0x1001), test_return_source_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/partial-read-migrates",
-                        GUINT_TO_POINTER(0x1004), test_return_source_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/partial-binding-migrates",
-                        GUINT_TO_POINTER(0x1114), test_return_source_migrates);
+    add_case("sn0/origin2000/kona-3d/current-colour-rgb",
+             test_current_colour_rgb);
+    add_case("sn0/origin2000/kona-3d/return-context-isolation",
+             test_return_context_isolation);
+    add_data_case("sn0/origin2000/kona-3d/invalid-draw-migrates",
+                  GUINT_TO_POINTER(1), test_return_source_migrates);
+    add_data_case("sn0/origin2000/kona-3d/invalid-read-migrates",
+                  GUINT_TO_POINTER(4), test_return_source_migrates);
+    add_data_case("sn0/origin2000/kona-3d/unknown-binding-migrates",
+                  GUINT_TO_POINTER(0x114), test_return_source_migrates);
+    add_data_case("sn0/origin2000/kona-3d/partial-draw-migrates",
+                  GUINT_TO_POINTER(0x1001), test_return_source_migrates);
+    add_data_case("sn0/origin2000/kona-3d/partial-read-migrates",
+                  GUINT_TO_POINTER(0x1004), test_return_source_migrates);
+    add_data_case("sn0/origin2000/kona-3d/partial-binding-migrates",
+                  GUINT_TO_POINTER(0x1114), test_return_source_migrates);
 
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-destroyed-replaced",
-                        GINT_TO_POINTER(false),
-                        test_read_destroyed_window_replaced);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-replaced-migrates",
-                        GINT_TO_POINTER(true),
-                        test_read_destroyed_window_replaced);
+    add_data_case("sn0/origin2000/kona-3d/read-destroyed-replaced",
+                  GINT_TO_POINTER(false),
+                  test_read_destroyed_window_replaced);
+    add_data_case("sn0/origin2000/kona-3d/read-replaced-migrates",
+                  GINT_TO_POINTER(true),
+                  test_read_destroyed_window_replaced);
 
-    qtest_add_data_func("sn0/origin2000/kona-3d/retired-invalid-draw",
-                        GUINT_TO_POINTER(1), test_read_retired_state);
-    qtest_add_data_func("sn0/origin2000/kona-3d/retired-invalid-read",
-                        GUINT_TO_POINTER(4), test_read_retired_state);
-    qtest_add_data_func("sn0/origin2000/kona-3d/retired-unknown-binding",
-                        GUINT_TO_POINTER(0x114), test_read_retired_state);
-    qtest_add_func("sn0/origin2000/kona-3d/placed-move-keeps-swap",
-                   test_read_placed_move_keeps_swap);
+    add_data_case("sn0/origin2000/kona-3d/retired-invalid-draw",
+                  GUINT_TO_POINTER(1), test_read_retired_state);
+    add_data_case("sn0/origin2000/kona-3d/retired-invalid-read",
+                  GUINT_TO_POINTER(4), test_read_retired_state);
+    add_data_case("sn0/origin2000/kona-3d/retired-unknown-binding",
+                  GUINT_TO_POINTER(0x114), test_read_retired_state);
+    add_case("sn0/origin2000/kona-3d/placed-move-keeps-swap",
+             test_read_placed_move_keeps_swap);
 
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-single-retired-replaced",
-                        GINT_TO_POINTER(false),
-                        test_read_single_retired_replaced);
-    qtest_add_data_func("sn0/origin2000/kona-3d/read-single-retired-migrates",
-                        GINT_TO_POINTER(true),
-                        test_read_single_retired_replaced);
+    add_data_case("sn0/origin2000/kona-3d/read-single-retired-replaced",
+                  GINT_TO_POINTER(false),
+                  test_read_single_retired_replaced);
+    add_data_case("sn0/origin2000/kona-3d/read-single-retired-migrates",
+                  GINT_TO_POINTER(true),
+                  test_read_single_retired_replaced);
 
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/visual-present-and-absent",
-                   test_stencil_visual_present_and_absent);
+    add_case("sn0/origin2000/kona-3d/stencil/visual-present-and-absent",
+             test_stencil_visual_present_and_absent);
 
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/comparison-order-and-mask",
-                   test_stencil_comparison_order_and_mask);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/operation-range",
-                   test_stencil_operation_range);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/outcome-operations",
-                   test_stencil_outcome_operations);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/only-clear",
-                   test_stencil_only_clear);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/alpha-and-disabled-tests",
-                   test_stencil_alpha_and_disabled_tests);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/masks-and-colour-targets",
-                   test_stencil_masks_and_colour_targets);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/"
-                   "incomplete-or-invalid-visual-refused",
-                   test_stencil_incomplete_or_invalid_visual_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/clear-scissor-and-clip",
-                   test_stencil_clear_scissor_and_clip);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/context-and-attrib",
-                   test_stencil_context_and_attrib);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/reset-and-partial-packets",
-                   test_stencil_reset_and_partial_packets);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/state-and-plane-migrate",
-                   test_stencil_state_and_plane_migrate);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/"
-                   "visual-readback-remains-refused",
-                   test_stencil_visual_readback_remains_refused);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
-                   "partial-visual-migration",
-                   test_stencil_partial_visual_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
-                   "accumulation-clear-diagnostic",
-                   test_stencil_accumulation_clear_diagnostic);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
-                   "invalid-state-enumerants",
-                   test_stencil_invalid_state_enumerants);
-    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
-                   "destroyed-context-pixels-retained",
-                   test_stencil_destroyed_context_pixels_retained);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
-                   "depth-clear-preserves-colour",
-                   test_depth_clear_preserves_colour);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
-                   "colour-masks-preserve-channels",
-                   test_colour_masks_preserve_channels);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
-                   "depth-plane-migration",
-                   test_depth_plane_migration);
-    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
-                   "blend-without-alpha-plane",
-                   test_blend_without_alpha_plane);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/captured",
-                   test_texture_8x8_captured);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/native-prefix",
-                   test_texture_8x8_native_prefix);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-prefix/native-cleanup",
-                   test_texture_native_cleanup);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/widths",
-                        GUINT_TO_POINTER(0x1c4), test_texture_prefix_widths);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/widths",
-                        GUINT_TO_POINTER(0x1c5), test_texture_prefix_widths);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/reset",
-                        GUINT_TO_POINTER(0x1c4), test_texture_prefix_reset);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/reset",
-                        GUINT_TO_POINTER(0x1c5), test_texture_prefix_reset);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/migration",
-                        GUINT_TO_POINTER(0x1c4), test_texture_prefix_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
-                        "migration",
-                        GUINT_TO_POINTER(0x1c5), test_texture_prefix_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/handles",
-                        GUINT_TO_POINTER(0x1c4),
-                        test_texture_prefix_handles);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
-                        "handles",
-                        GUINT_TO_POINTER(0x1c5),
-                        test_texture_prefix_handles);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/widths",
-                   test_texture_8x8_widths);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/reset",
-                   test_texture_8x8_reset);
-    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/migration",
-                   test_texture_8x8_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-8x8/refused",
-                        GUINT_TO_POINTER(1), test_texture_8x8_refused);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/texture-8x8/refused-unknown-span",
-                        GUINT_TO_POINTER(0), test_texture_8x8_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/no-render-node",
-                        GUINT_TO_POINTER(0), test_renderer_fixture);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/typed-coverage",
-                        GUINT_TO_POINTER(0), test_renderer_typed_coverage);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/typed-same-rgb",
-                        GUINT_TO_POINTER(1), test_renderer_typed_coverage);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-ortho-excluded",
-                   test_renderer_typed_ortho_excluded);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-failure-reset",
-                   test_renderer_typed_failure_reset);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-partial-window",
-                   test_renderer_typed_partial_window);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/typed-checked-failure",
-                   test_renderer_typed_checked_failure);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
-                   test_renderer_legacy_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/mesa-refused/fog",
-                        GUINT_TO_POINTER(0), test_renderer_mesa_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "mesa-refused/alpha-test",
-                        GUINT_TO_POINTER(1), test_renderer_mesa_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "mesa-refused/mixed-frame",
-                        GUINT_TO_POINTER(2), test_renderer_mesa_refused);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "texture-incomplete/refused",
-                        GUINT_TO_POINTER(0), test_renderer_texture_incomplete);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "texture-incomplete/accepted",
-                        GUINT_TO_POINTER(1), test_renderer_texture_incomplete);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "legacy-raster-enable/line-stipple",
-                        GUINT_TO_POINTER(0),
-                        test_renderer_legacy_raster_enable);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "legacy-raster-enable/line-smooth",
-                        GUINT_TO_POINTER(1),
-                        test_renderer_legacy_raster_enable);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-mismatch",
-                   test_renderer_legacy_mismatch);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/hold-oom/host",
-                        GUINT_TO_POINTER(1), test_renderer_hold_oom);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/hold-oom/scalar",
-                        GUINT_TO_POINTER(2), test_renderer_hold_oom);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-full-window",
-                   test_renderer_legacy_full_window);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-diagonals",
-                   test_renderer_legacy_diagonals);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/texture-invalid-q-once",
-                   test_renderer_texture_invalid_q_once);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "create-legacy-unavailable",
-                        GUINT_TO_POINTER(1), test_renderer_create_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/create-legacy-oom",
-                        GUINT_TO_POINTER(2), test_renderer_create_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "create-legacy-host-error",
-                        GUINT_TO_POINTER(3), test_renderer_create_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "create-typed-unavailable",
-                        GUINT_TO_POINTER(5), test_renderer_create_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/create-typed-oom",
-                        GUINT_TO_POINTER(6), test_renderer_create_failure);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "create-typed-host-error",
-                        GUINT_TO_POINTER(7), test_renderer_create_failure);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/"
-                   "create-arm-cleared-on-load",
-                   test_renderer_create_arm_cleared_on_load);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
-                        GUINT_TO_POINTER(1), test_renderer_fixture);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "gpu-to-cpu-migration",
-                        GUINT_TO_POINTER(1), test_renderer_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "cpu-to-gpu-migration",
-                        GUINT_TO_POINTER(0), test_renderer_migration);
+    add_case("sn0/origin2000/kona-3d/stencil/comparison-order-and-mask",
+             test_stencil_comparison_order_and_mask);
+    add_case("sn0/origin2000/kona-3d/stencil/operation-range",
+             test_stencil_operation_range);
+    add_case("sn0/origin2000/kona-3d/stencil/outcome-operations",
+             test_stencil_outcome_operations);
+    add_case("sn0/origin2000/kona-3d/stencil/only-clear",
+             test_stencil_only_clear);
+    add_case("sn0/origin2000/kona-3d/stencil/alpha-and-disabled-tests",
+             test_stencil_alpha_and_disabled_tests);
+    add_case("sn0/origin2000/kona-3d/stencil/masks-and-colour-targets",
+             test_stencil_masks_and_colour_targets);
+    add_case("sn0/origin2000/kona-3d/stencil/"
+             "incomplete-or-invalid-visual-refused",
+             test_stencil_incomplete_or_invalid_visual_refused);
+    add_case("sn0/origin2000/kona-3d/stencil/clear-scissor-and-clip",
+             test_stencil_clear_scissor_and_clip);
+    add_case("sn0/origin2000/kona-3d/stencil/context-and-attrib",
+             test_stencil_context_and_attrib);
+    add_case("sn0/origin2000/kona-3d/stencil/reset-and-partial-packets",
+             test_stencil_reset_and_partial_packets);
+    add_case("sn0/origin2000/kona-3d/stencil/state-and-plane-migrate",
+             test_stencil_state_and_plane_migrate);
+    add_case("sn0/origin2000/kona-3d/stencil/"
+             "visual-readback-remains-refused",
+             test_stencil_visual_readback_remains_refused);
+    add_case("sn0/origin2000/kona-3d/stencil/completion/"
+             "partial-visual-migration",
+             test_stencil_partial_visual_migration);
+    add_case("sn0/origin2000/kona-3d/stencil/completion/"
+             "accumulation-clear-diagnostic",
+             test_stencil_accumulation_clear_diagnostic);
+    add_case("sn0/origin2000/kona-3d/stencil/completion/"
+             "invalid-state-enumerants",
+             test_stencil_invalid_state_enumerants);
+    add_case("sn0/origin2000/kona-3d/stencil/completion/"
+             "destroyed-context-pixels-retained",
+             test_stencil_destroyed_context_pixels_retained);
+    add_case("sn0/origin2000/kona-3d/depth-blend/"
+             "depth-clear-preserves-colour",
+             test_depth_clear_preserves_colour);
+    add_case("sn0/origin2000/kona-3d/depth-blend/"
+             "colour-masks-preserve-channels",
+             test_colour_masks_preserve_channels);
+    add_case("sn0/origin2000/kona-3d/depth-blend/"
+             "depth-plane-migration",
+             test_depth_plane_migration);
+    add_case("sn0/origin2000/kona-3d/depth-blend/"
+             "blend-without-alpha-plane",
+             test_blend_without_alpha_plane);
+    add_case("sn0/origin2000/kona-3d/texture-8x8/captured",
+             test_texture_8x8_captured);
+    add_case("sn0/origin2000/kona-3d/texture-8x8/native-prefix",
+             test_texture_8x8_native_prefix);
+    add_case("sn0/origin2000/kona-3d/texture-prefix/native-cleanup",
+             test_texture_native_cleanup);
+    add_data_case("sn0/origin2000/kona-3d/texture-prefix/widths",
+                  GUINT_TO_POINTER(0x1c4), test_texture_prefix_widths);
+    add_data_case("sn0/origin2000/kona-3d/texture-cleanup-prefix/widths",
+                  GUINT_TO_POINTER(0x1c5), test_texture_prefix_widths);
+    add_data_case("sn0/origin2000/kona-3d/texture-prefix/reset",
+                  GUINT_TO_POINTER(0x1c4), test_texture_prefix_reset);
+    add_data_case("sn0/origin2000/kona-3d/texture-cleanup-prefix/reset",
+                  GUINT_TO_POINTER(0x1c5), test_texture_prefix_reset);
+    add_data_case("sn0/origin2000/kona-3d/texture-prefix/migration",
+                  GUINT_TO_POINTER(0x1c4), test_texture_prefix_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
+                  "migration",
+                  GUINT_TO_POINTER(0x1c5), test_texture_prefix_migration);
+    add_data_case("sn0/origin2000/kona-3d/texture-prefix/handles",
+                  GUINT_TO_POINTER(0x1c4),
+                  test_texture_prefix_handles);
+    add_data_case("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
+                  "handles",
+                  GUINT_TO_POINTER(0x1c5),
+                  test_texture_prefix_handles);
+    add_case("sn0/origin2000/kona-3d/texture-8x8/widths",
+             test_texture_8x8_widths);
+    add_case("sn0/origin2000/kona-3d/texture-8x8/reset",
+             test_texture_8x8_reset);
+    add_case("sn0/origin2000/kona-3d/texture-8x8/migration",
+             test_texture_8x8_migrates);
+    add_data_case("sn0/origin2000/kona-3d/texture-8x8/refused",
+                  GUINT_TO_POINTER(1), test_texture_8x8_refused);
+    add_data_case(
+  "sn0/origin2000/kona-3d/texture-8x8/refused-unknown-span",
+                  GUINT_TO_POINTER(0), test_texture_8x8_refused);
+    add_data_case("sn0/origin2000/kona-3d/renderer/no-render-node",
+                  GUINT_TO_POINTER(0), test_renderer_fixture);
+    add_data_case("sn0/origin2000/kona-3d/renderer/typed-coverage",
+                  GUINT_TO_POINTER(0), test_renderer_typed_coverage);
+    add_data_case("sn0/origin2000/kona-3d/renderer/typed-same-rgb",
+                  GUINT_TO_POINTER(1), test_renderer_typed_coverage);
+    add_case("sn0/origin2000/kona-3d/renderer/typed-ortho-excluded",
+             test_renderer_typed_ortho_excluded);
+    add_case("sn0/origin2000/kona-3d/renderer/typed-failure-reset",
+             test_renderer_typed_failure_reset);
+    add_case("sn0/origin2000/kona-3d/renderer/typed-partial-window",
+             test_renderer_typed_partial_window);
+    add_case("sn0/origin2000/kona-3d/renderer/typed-checked-failure",
+             test_renderer_typed_checked_failure);
+    add_case("sn0/origin2000/kona-3d/renderer/legacy-supported-failure",
+             test_renderer_legacy_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/mesa-refused/fog",
+                  GUINT_TO_POINTER(0), test_renderer_mesa_refused);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "mesa-refused/alpha-test",
+                  GUINT_TO_POINTER(1), test_renderer_mesa_refused);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "mesa-refused/mixed-frame",
+                  GUINT_TO_POINTER(2), test_renderer_mesa_refused);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "texture-incomplete/refused",
+                  GUINT_TO_POINTER(0), test_renderer_texture_incomplete);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "texture-incomplete/accepted",
+                  GUINT_TO_POINTER(1), test_renderer_texture_incomplete);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "legacy-raster-enable/line-stipple",
+                  GUINT_TO_POINTER(0),
+                  test_renderer_legacy_raster_enable);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "legacy-raster-enable/line-smooth",
+                  GUINT_TO_POINTER(1),
+                  test_renderer_legacy_raster_enable);
+    add_case("sn0/origin2000/kona-3d/renderer/legacy-mismatch",
+             test_renderer_legacy_mismatch);
+    add_data_case("sn0/origin2000/kona-3d/renderer/hold-oom/host",
+                  GUINT_TO_POINTER(1), test_renderer_hold_oom);
+    add_data_case("sn0/origin2000/kona-3d/renderer/hold-oom/scalar",
+                  GUINT_TO_POINTER(2), test_renderer_hold_oom);
+    add_case("sn0/origin2000/kona-3d/renderer/legacy-full-window",
+             test_renderer_legacy_full_window);
+    add_case("sn0/origin2000/kona-3d/renderer/legacy-diagonals",
+             test_renderer_legacy_diagonals);
+    add_case("sn0/origin2000/kona-3d/renderer/texture-invalid-q-once",
+             test_renderer_texture_invalid_q_once);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "create-legacy-unavailable",
+                  GUINT_TO_POINTER(1), test_renderer_create_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/create-legacy-oom",
+                  GUINT_TO_POINTER(2), test_renderer_create_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "create-legacy-host-error",
+                  GUINT_TO_POINTER(3), test_renderer_create_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "create-typed-unavailable",
+                  GUINT_TO_POINTER(5), test_renderer_create_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/create-typed-oom",
+                  GUINT_TO_POINTER(6), test_renderer_create_failure);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "create-typed-host-error",
+                  GUINT_TO_POINTER(7), test_renderer_create_failure);
+    add_case("sn0/origin2000/kona-3d/renderer/"
+             "create-arm-cleared-on-load",
+             test_renderer_create_arm_cleared_on_load);
+    add_data_case("sn0/origin2000/kona-3d/renderer/real-gl",
+                  GUINT_TO_POINTER(1), test_renderer_fixture);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "gpu-to-cpu-migration",
+                  GUINT_TO_POINTER(1), test_renderer_migration);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "cpu-to-gpu-migration",
+                  GUINT_TO_POINTER(0), test_renderer_migration);
     for (unsigned mode = 0; mode < 10; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/renderer/general-triangle/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_renderer_general_triangle);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_renderer_general_triangle);
     }
-    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
-                        "general-triangle/no-gpu",
-                        GUINT_TO_POINTER(RENDERER_GENERAL_NO_GPU),
-                        test_renderer_general_triangle);
-    renderer_add_modes("polygon", 4, test_renderer_polygon);
-    renderer_add_modes("large-polygon", 6, test_renderer_large_polygon);
-    renderer_add_modes("scissor", 8, test_renderer_scissor);
-    renderer_add_modes("viewport", 8, test_renderer_viewport);
-    renderer_add_modes("tiles", 9, test_renderer_tiles);
-    renderer_add_modes("culling", 8, test_renderer_culling);
-    renderer_add_modes("colour-mask", 32, test_renderer_colour_mask);
-    renderer_add_modes("logic-op", 80, test_renderer_logic_op);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/renderer/smooth-gpu-precision",
-        GUINT_TO_POINTER(13), test_renderer_smooth);
-    renderer_add_modes("alpha-test", 64, test_renderer_alpha_test);
-    renderer_add_modes("blend", 54, test_renderer_blend);
-    renderer_add_modes("smooth", 13, test_renderer_smooth);
-    renderer_add_modes("depth", 64, test_renderer_depth);
-    renderer_add_modes("stencil", 54, test_renderer_stencil);
-    renderer_add_modes("depth-gradient", 12, test_renderer_depth_gradient);
-    renderer_add_modes("volume-clip", 10, test_renderer_volume_clip);
-    renderer_add_modes("user-clip", 12, test_renderer_user_clip);
-    renderer_add_modes("texture", 13, test_renderer_texture);
-    qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
-                   test_renderer_excluded_state);
-    qtest_add_func("sn0/origin2000/kona-3d/native-bitmap/stale-destination",
-                   test_bitmap_stale_destination);
+    add_data_case("sn0/origin2000/kona-3d/renderer/"
+                  "general-triangle/no-gpu",
+                  GUINT_TO_POINTER(RENDERER_GENERAL_NO_GPU),
+                  test_renderer_general_triangle);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/polygon/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/polygon/%u",
+                       4, test_renderer_polygon);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/large-polygon/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/large-polygon/%u",
+                       6, test_renderer_large_polygon);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/scissor/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/scissor/%u",
+                       8, test_renderer_scissor);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/viewport/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/viewport/%u",
+                       8, test_renderer_viewport);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/tiles/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/tiles/%u",
+                       9, test_renderer_tiles);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/culling/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/culling/%u",
+                       8, test_renderer_culling);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/colour-mask/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/colour-mask/%u",
+                       32, test_renderer_colour_mask);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/logic-op/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/logic-op/%u",
+                       80, test_renderer_logic_op);
+    add_data_case(
+  "sn0/origin2000/kona-3d/renderer/smooth-gpu-precision",
+  GUINT_TO_POINTER(13), test_renderer_smooth);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/alpha-test/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/alpha-test/%u",
+                       64, test_renderer_alpha_test);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/blend/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/blend/%u",
+                       54, test_renderer_blend);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/smooth/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/smooth/%u",
+                       13, test_renderer_smooth);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/depth/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/depth/%u",
+                       64, test_renderer_depth);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/stencil/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/stencil/%u",
+                       54, test_renderer_stencil);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/depth-gradient/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/depth-gradient/%u",
+                       12, test_renderer_depth_gradient);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/volume-clip/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/volume-clip/%u",
+                       10, test_renderer_volume_clip);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/user-clip/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/user-clip/%u",
+                       12, test_renderer_user_clip);
+    renderer_add_modes("sn0/origin2000/kona-3d/renderer/texture/%u",
+                       "sn0/origin2000/kona-3d/renderer/cpu/texture/%u",
+                       13, test_renderer_texture);
+    add_case("sn0/origin2000/kona-3d/renderer/excluded-state",
+             test_renderer_excluded_state);
+    add_case("sn0/origin2000/kona-3d/native-bitmap/stale-destination",
+             test_bitmap_stale_destination);
     static const char *native_family_cases[] = {
         "luminance16", "depth-format-refused", "comparison-refused",
         "unknown-comparison-refused", "record-family-refused",
@@ -16485,8 +16587,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture-family/%s",
             native_family_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_texture_native_family);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_texture_native_family);
     }
     static const char *native_bitmap_cases[] = {
         "placement-move", "zoom-ignored", "normalized-bitorder",
@@ -16503,23 +16605,23 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/native-bitmap/%s",
             native_bitmap_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_native_bitmap);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_native_bitmap);
     }
-    qtest_add_data_func("sn0/origin2000/kona-3d/image-transfer-refusal/scale",
-                        GUINT_TO_POINTER(0), test_native_image_state_refusal);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/unknown-transfer",
-                        GUINT_TO_POINTER(1), test_native_image_state_refusal);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/contradictory-source",
-        GUINT_TO_POINTER(2), test_native_image_state_refusal);
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/pending-source",
-        GUINT_TO_POINTER(3), test_native_image_state_refusal);
-    qtest_add_func("sn0/origin2000/kona-3d/raw-bitmap/large-record",
-                   test_raw_bitmap_large);
-    qtest_add_func("sn0/origin2000/kona-3d/copy-pixels/indexed-source-refused",
-                   test_copy_pixels_indexed_source);
+    add_data_case("sn0/origin2000/kona-3d/image-transfer-refusal/scale",
+                  GUINT_TO_POINTER(0), test_native_image_state_refusal);
+    add_data_case(
+  "sn0/origin2000/kona-3d/image-transfer-refusal/unknown-transfer",
+                  GUINT_TO_POINTER(1), test_native_image_state_refusal);
+    add_data_case(
+  "sn0/origin2000/kona-3d/image-transfer-refusal/contradictory-source",
+  GUINT_TO_POINTER(2), test_native_image_state_refusal);
+    add_data_case(
+  "sn0/origin2000/kona-3d/image-transfer-refusal/pending-source",
+  GUINT_TO_POINTER(3), test_native_image_state_refusal);
+    add_case("sn0/origin2000/kona-3d/raw-bitmap/large-record",
+             test_raw_bitmap_large);
+    add_case("sn0/origin2000/kona-3d/copy-pixels/indexed-source-refused",
+             test_copy_pixels_indexed_source);
     static const char *copy_query_cases[] = {
         "positive-zoom", "negative-zoom", "overlap-snapshot", "transfer",
         "clipped-source", "nonfinite-zoom", "nonfinite-transfer", "map-color",
@@ -16532,11 +16634,11 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/copy-query/%s", copy_query_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_copy_pixels_query);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_copy_pixels_query);
     }
-    qtest_add_func("sn0/origin2000/kona-3d/copy-query/context-pages",
-                   test_copy_query_context_pages);
+    add_case("sn0/origin2000/kona-3d/copy-query/context-pages",
+             test_copy_query_context_pages);
     static const char *copy_pixels_cases[] = {
         "color", "overlap", "transfer", "queried-zero-flags",
         "unknown-flags-refused", "split-refused", "depth-refused",
@@ -16549,7 +16651,7 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/copy-pixels/%s", copy_pixels_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_copy_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_copy_pixels);
     }
     static const char *bitmap_dma_cases[] = {
         "msb", "lsb", "skip-rows", "pending-migrates", "short-descriptor",
@@ -16567,7 +16669,7 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/bitmap-dma/%s", bitmap_dma_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_raw_bitmap_dma);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_raw_bitmap_dma);
     }
     static const char *raw_bitmap_cases[] = {
         "strided", "contiguous", "skips", "lsb-first", "skips-migrates",
@@ -16579,7 +16681,7 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/raw-bitmap/%s", raw_bitmap_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_raw_bitmap);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_raw_bitmap);
     }
     static const char *transfer_cases[] = {
         "pio", "dma", "partial-migrates", "pixel-mode-pop", "combined-pop",
@@ -16594,8 +16696,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/draw-pixels-transfer/%s",
             transfer_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_draw_pixels_transfer);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_draw_pixels_transfer);
     }
     static const char *draw_pixels_zoom_cases[] = {
         "pio", "dma", "negative-pio", "negative-dma", "downscale",
@@ -16608,8 +16710,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/draw-pixels-zoom/%s",
             draw_pixels_zoom_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_draw_pixels_zoom);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_draw_pixels_zoom);
     }
     static const char *texture_layout_cases[] = {
         "rgb-contiguous-prefix", "rgb-contiguous-row-gap", "rgb-changing-phase",
@@ -16623,8 +16725,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture-pio-layout/%s",
             texture_layout_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_texture_pio_layout);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_texture_pio_layout);
     }
     static const char *texture_transfer_cases[] = {
         "pio", "dma", "partial-pio-migrates", "pending-dma-migrates",
@@ -16639,8 +16741,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture-transfer/%s",
             texture_transfer_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_texture_pixel_transfer);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_texture_pixel_transfer);
     }
     static const char *read_dma_cases[] = {
         "contiguous-phase0", "contiguous-phase1", "contiguous-phase2",
@@ -16666,7 +16768,7 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/read-dma/%s", read_dma_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_read_pixels_dma);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_read_pixels_dma);
     }
     static const char *colour_formats[] = {
         "alpha", "rgb", "rgba", "luminance", "luminance-alpha",
@@ -16683,8 +16785,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/read-dma-typed/%s-%s",
             read_dma_formats[mode / 7], colour_types[mode % 7]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(64 + mode),
-                            test_read_pixels_dma);
+        add_data_case(path, GUINT_TO_POINTER(64 + mode),
+                      test_read_pixels_dma);
     }
     for (unsigned type = 0; type < 7; type++) {
         g_autofree char *read = g_strdup_printf(
@@ -16694,12 +16796,12 @@ int main(int argc, char **argv)
         g_autofree char *dma = g_strdup_printf(
             "sn0/origin2000/kona-3d/abgr-dma/%s", colour_types[type]);
 
-        qtest_add_data_func(read, GUINT_TO_POINTER(110 + type),
-                            test_read_pixels_colour);
-        qtest_add_data_func(pack, GUINT_TO_POINTER(68 + type),
-                            test_read_pixels_pack_swap);
-        qtest_add_data_func(dma, GUINT_TO_POINTER(134 + type),
-                            test_read_pixels_dma);
+        add_data_case(read, GUINT_TO_POINTER(110 + type),
+                      test_read_pixels_colour);
+        add_data_case(pack, GUINT_TO_POINTER(68 + type),
+                      test_read_pixels_pack_swap);
+        add_data_case(dma, GUINT_TO_POINTER(134 + type),
+                      test_read_pixels_dma);
     }
     static const char *depth_pixel_names[] = {
         "read-clear", "byte", "ubyte", "short", "ushort", "int", "uint",
@@ -16710,21 +16812,21 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/depth-pixels/%s", depth_pixel_names[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_depth_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_depth_pixels);
     }
     for (unsigned mode = 0; mode < 19; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/depth-boundaries/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_depth_pixel_boundaries);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_depth_pixel_boundaries);
     }
     for (unsigned mode = 0; mode < 48; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/colour-map-source-types/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_colour_map_source_types);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_colour_map_source_types);
     }
     static const char *colour_map_names[] = {
         "draw", "read", "copy-overlap", "texture-pio", "texture-dma",
@@ -16738,43 +16840,43 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/colour-maps/%s", colour_map_names[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_colour_pixel_maps);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_colour_pixel_maps);
     }
     for (unsigned mode = 0; mode < 37; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/indexed-colour-pixels/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_indexed_colour_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_indexed_colour_pixels);
     }
     for (unsigned mode = 0; mode < 46; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/bitmap-index-pixels/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_bitmap_index_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_bitmap_index_pixels);
     }
     for (unsigned mode = 0; mode < 7; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/bitmap-texture-dimensions/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_bitmap_texture_dimensions);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_bitmap_texture_dimensions);
     }
     for (unsigned mode = 0; mode < 45; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/bitmap-texture-pixels/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_bitmap_texture_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_bitmap_texture_pixels);
     }
     for (unsigned mode = 0; mode < 42; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/indexed-texture-pixels/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_indexed_texture_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_indexed_texture_pixels);
     }
     for (unsigned mode = 0; mode < 36; mode++) {
         g_autofree char *path = g_strdup_printf(
@@ -16783,57 +16885,57 @@ int main(int argc, char **argv)
         if (mode >= 20 && mode < 24) {
             continue;
         }
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_bitmap_stencil_read);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_bitmap_stencil_read);
     }
     for (unsigned mode = 0; mode < 22; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-packed-index/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_packed_index);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_packed_index);
     }
     for (unsigned mode = 0; mode < 16; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-setters/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_setters);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_setters);
     }
     for (unsigned mode = 0; mode < 32; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-logic/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_logic);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_logic);
     }
     for (unsigned mode = 0; mode < 4; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-state/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_state);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_state);
     }
     for (unsigned mode = 0; mode < 34; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-bitmap/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_bitmap);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_bitmap);
     }
     for (unsigned mode = 0; mode < 56; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-sources/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_sources);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_sources);
     }
     for (unsigned type = 0; type < 7; type++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-index-read-types/%u", type);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(type),
-                           test_native_index_read_types);
+        add_data_case(path, GUINT_TO_POINTER(type),
+                     test_native_index_read_types);
     }
     for (unsigned mode = 0; mode < 25; mode++) {
         g_autofree char *path = g_strdup_printf(
@@ -16842,8 +16944,8 @@ int main(int argc, char **argv)
         if (mode == 16 || mode == 17) {
             continue;
         }
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_index_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_index_pixels);
     }
     static const char *pixel_map_size_names[] = {
         "default", "published", "replaced", "rejected", "attributes",
@@ -16854,7 +16956,7 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/pixel-map-sizes/%s",
             pixel_map_size_names[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_pixel_map_sizes);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_pixel_map_sizes);
     }
     static const char *stencil_map_names[] = {
         "float", "uint", "ushort", "default", "read", "copy", "attributes",
@@ -16866,8 +16968,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/stencil-maps/%s", stencil_map_names[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_stencil_pixel_maps);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_stencil_pixel_maps);
     }
     static const char *stencil_pixel_names[] = {
         "draw-read", "bypass-fragment-tests", "copy-overlap",
@@ -16877,28 +16979,28 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/stencil-pixels/%s",
             stencil_pixel_names[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_stencil_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_stencil_pixels);
     }
     for (unsigned mode = 0; mode < 61; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/stencil-transport/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_stencil_pixels_transport);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_stencil_pixels_transport);
     }
     for (unsigned mode = 0; mode < 10; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/stencil-boundaries/%u", mode);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_stencil_pixels_boundaries);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_stencil_pixels_boundaries);
     }
     for (unsigned type = 0; type <= 6; type++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/stencil-read-dma/%u", type);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(type),
-                           test_stencil_pixels_read_dma);
+        add_data_case(path, GUINT_TO_POINTER(type),
+                     test_stencil_pixels_read_dma);
     }
     static const char *packed_names[] = {
         "rgb-332", "rgba-4444", "rgba-5551", "rgba-8888", "rgba-1010102",
@@ -16914,10 +17016,10 @@ int main(int argc, char **argv)
             packed_names[mode % 9], (mode / 9) & 1 ? "dma" : "pio",
             (mode / 9) & 2 ? "-swapped" : "");
 
-        qtest_add_data_func(ingress, GUINT_TO_POINTER(mode),
-                            test_packed_pixel_ingress);
-        qtest_add_data_func(read, GUINT_TO_POINTER(mode),
-                            test_packed_pixel_read);
+        add_data_case(ingress, GUINT_TO_POINTER(mode),
+                      test_packed_pixel_ingress);
+        add_data_case(read, GUINT_TO_POINTER(mode),
+                      test_packed_pixel_read);
     }
     static const char *reordered_pixels_cases[] = {
         "bgr-pio", "bgra-pio", "bgr-ushort-swapped-dma", "bgra-float-dma",
@@ -16928,7 +17030,7 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/reordered-pixels/%s",
             reordered_pixels_cases[k]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(k), test_reordered_pixels);
+        add_data_case(path, GUINT_TO_POINTER(k), test_reordered_pixels);
     }
     for (unsigned mode = 0; mode < 14; mode++) {
         g_autofree char *read = g_strdup_printf(
@@ -16938,10 +17040,10 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/reordered-pack/%s-%s",
             mode < 7 ? "bgr" : "bgra", colour_types[mode % 7]);
 
-        qtest_add_data_func(read, GUINT_TO_POINTER(96 + mode),
-                            test_read_pixels_colour);
-        qtest_add_data_func(pack, GUINT_TO_POINTER(54 + mode),
-                            test_read_pixels_pack_swap);
+        add_data_case(read, GUINT_TO_POINTER(96 + mode),
+                      test_read_pixels_colour);
+        add_data_case(pack, GUINT_TO_POINTER(54 + mode),
+                      test_read_pixels_pack_swap);
     }
     static const char *single_formats[] = { "red", "green", "blue" };
     for (unsigned mode = 0; mode < 42; mode++) {
@@ -16950,8 +17052,8 @@ int main(int argc, char **argv)
             mode < 21 ? "pio" : "dma", single_formats[(mode % 21) / 7],
             colour_types[mode % 7]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_single_channel_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_single_channel_pixels);
     }
     static const char *single_pixels_cases[] = {
         "partial-pio-migrates", "pending-dma-migrates", "context-refused",
@@ -16961,8 +17063,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/single-pixels/%s", single_pixels_cases[k]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(42 + k),
-                            test_single_channel_pixels);
+        add_data_case(path, GUINT_TO_POINTER(42 + k),
+                      test_single_channel_pixels);
     }
     for (unsigned mode = 0; mode < 21; mode++) {
         g_autofree char *read = g_strdup_printf(
@@ -16972,26 +17074,26 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/single-pack/%s-%s",
             single_formats[mode / 7], colour_types[mode % 7]);
 
-        qtest_add_data_func(read, GUINT_TO_POINTER(64 + mode),
-                            test_read_pixels_colour);
-        qtest_add_data_func(pack, GUINT_TO_POINTER(32 + mode),
-                            test_read_pixels_pack_swap);
+        add_data_case(read, GUINT_TO_POINTER(64 + mode),
+                      test_read_pixels_colour);
+        add_data_case(pack, GUINT_TO_POINTER(32 + mode),
+                      test_read_pixels_pack_swap);
     }
-    qtest_add_data_func("sn0/origin2000/kona-3d/single-pack/partial-migrates",
-                        GUINT_TO_POINTER(53), test_read_pixels_pack_swap);
+    add_data_case("sn0/origin2000/kona-3d/single-pack/partial-migrates",
+                  GUINT_TO_POINTER(53), test_read_pixels_pack_swap);
     for (unsigned mode = 0; mode < 35; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/colour-read/%s-%s",
             colour_formats[mode / 7], colour_types[mode % 7]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_read_pixels_colour);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_read_pixels_colour);
     }
-    qtest_add_data_func(
-        "sn0/origin2000/kona-3d/colour-read/uint-rgb8-expansion",
-                        GUINT_TO_POINTER(35), test_read_pixels_colour);
-    qtest_add_data_func("sn0/origin2000/kona-3d/colour-read/int-rgb8-expansion",
-                        GUINT_TO_POINTER(36), test_read_pixels_colour);
+    add_data_case(
+  "sn0/origin2000/kona-3d/colour-read/uint-rgb8-expansion",
+                  GUINT_TO_POINTER(35), test_read_pixels_colour);
+    add_data_case("sn0/origin2000/kona-3d/colour-read/int-rgb8-expansion",
+                  GUINT_TO_POINTER(36), test_read_pixels_colour);
     static const char *luminance_cases[] = {
         "luminance-transfer-ubyte", "luminance-alpha-transfer-ushort",
         "luminance-transfer-float", "luminance-wide-cancellation",
@@ -17000,8 +17102,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/colour-read/%s", luminance_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_read_pixels_luminance_transfer);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_read_pixels_luminance_transfer);
     }
     static const char *typed_extent_cases[] = {
         "float-capacity", "float-capacity-exceeded", "ushort-ambiguous",
@@ -17011,8 +17113,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/typed-read/%s", typed_extent_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_read_pixels_typed_extent);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_read_pixels_typed_extent);
     }
     static const char *pack_read_cases[] = {
         "rgb-byte", "rgb-ubyte", "rgb-short", "rgb-ushort", "rgb-int",
@@ -17027,8 +17129,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/pack-read/%s", pack_read_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_read_pixels_pack_swap);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_read_pixels_pack_swap);
     }
     static const char *typed_read_cases[] = {
         "rgb-ubyte", "rgb-ushort", "rgb-float", "rgba-ubyte", "rgba-ushort",
@@ -17039,16 +17141,16 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/typed-read/%s", typed_read_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_read_pixels_typed);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_read_pixels_typed);
     }
     for (unsigned mode = 0; mode < 35; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/pixels-dma/%s-%s",
             colour_formats[mode / 7], colour_types[mode % 7]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_draw_pixels_native_dma);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_draw_pixels_native_dma);
     }
     static const char *pixels_dma_cases[] = {
         "ushort-swap", "float-swap-migrates", "uint-transfer",
@@ -17061,8 +17163,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/pixels-dma/%s", pixels_dma_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(35 + mode),
-                           test_draw_pixels_native_dma);
+        add_data_case(path, GUINT_TO_POINTER(35 + mode),
+                     test_draw_pixels_native_dma);
     }
     static const char *raster_texture_cases[] = {
         "pixels-pio", "scalar-pio", "pixels-dma", "scalar-dma", "bitmap-pio",
@@ -17077,8 +17179,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/raster-texture/%s",
             raster_texture_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_native_raster_texture);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_native_raster_texture);
     }
     static const char *scalar_pixels_cases[] = {
         "byte", "short", "ushort", "int", "uint", "float",
@@ -17091,8 +17193,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/scalar-pixels/%s",
             scalar_pixels_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_draw_pixels_scalar_pio);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_draw_pixels_scalar_pio);
     }
     static const char *raw_pixels_cases[] = {
         "rgb-row-gap", "luminance-phase", "luminance-alpha-strided",
@@ -17102,8 +17204,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/raw-pixels/%s", raw_pixels_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                           test_draw_pixels_raw_pio);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                     test_draw_pixels_raw_pio);
     }
     static const char *draw_pixels_cases[] = {
         "pio", "pio-padded", "dma", "dma-padded", "partial-migrates",
@@ -17120,24 +17222,24 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/draw-pixels/%s", draw_pixels_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_draw_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode), test_draw_pixels);
     }
-    qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/native",
-                        GINT_TO_POINTER(0), test_native_colour_matrix);
-    qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",
-                        GINT_TO_POINTER(1), test_native_colour_matrix);
-    qtest_add_func("sn0/origin2000/kona-3d/native-error/state",
-                   test_native_error_state);
-    qtest_add_func("sn0/origin2000/kona-3d/native-error/failed-reply",
-                   test_native_error_failed_reply);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-error/migrates",
-                        GINT_TO_POINTER(0), test_native_error_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/native-error/partial-migrates",
-                        GINT_TO_POINTER(1), test_native_error_migrates);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/interior/native",
-                        GINT_TO_POINTER(0), test_texture_native_interior);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture/interior/migrates",
-                        GINT_TO_POINTER(1), test_texture_native_interior);
+    add_data_case("sn0/origin2000/kona-3d/colour-matrix/native",
+                  GINT_TO_POINTER(0), test_native_colour_matrix);
+    add_data_case("sn0/origin2000/kona-3d/colour-matrix/migrates",
+                  GINT_TO_POINTER(1), test_native_colour_matrix);
+    add_case("sn0/origin2000/kona-3d/native-error/state",
+             test_native_error_state);
+    add_case("sn0/origin2000/kona-3d/native-error/failed-reply",
+             test_native_error_failed_reply);
+    add_data_case("sn0/origin2000/kona-3d/native-error/migrates",
+                  GINT_TO_POINTER(0), test_native_error_migrates);
+    add_data_case("sn0/origin2000/kona-3d/native-error/partial-migrates",
+                  GINT_TO_POINTER(1), test_native_error_migrates);
+    add_data_case("sn0/origin2000/kona-3d/texture/interior/native",
+                  GINT_TO_POINTER(0), test_texture_native_interior);
+    add_data_case("sn0/origin2000/kona-3d/texture/interior/migrates",
+                  GINT_TO_POINTER(1), test_texture_native_interior);
     static const char *one_d_cases[] = {
         "pio-byte", "dma-byte", "pio-halfword", "dma-halfword", "ignore-t",
         "migrates", "restore-enabled", "restore-disabled", "targets-refused",
@@ -17148,8 +17250,8 @@ int main(int argc, char **argv)
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/texture/1d/%s", one_d_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_texture_native_1d);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_texture_native_1d);
     }
     static const char *depth_texture_cases[] = {
         "pio", "dma", "partial-pio-migrates", "pending-dma-migrates",
@@ -17165,8 +17267,8 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/texture/depth/%s",
             depth_texture_cases[mode]);
 
-        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
-                            test_depth_texture_pixels);
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_depth_texture_pixels);
     }
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
