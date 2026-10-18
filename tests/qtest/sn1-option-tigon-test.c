@@ -1419,7 +1419,7 @@ static void test_direct_dma_write(void)
             g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
                           t.window + 0x800 + (i ^ 3), &chunk_raw[i], 1));
             g_assert_cmphex(chunk_raw[i], ==, chunk_source[i ^ 3]);
-            chunk_expected[i] = chunk_source[i ^ (direct_swap ? 7 : 4)];
+            chunk_expected[i] = chunk_source[direct_swap ? i ^ 7 : i];
         }
         g_assert_cmphex(reg_read(&t, TI_PCI_STATE) &
                         (TI_PCI_NO_WORD_SWAP | TI_PCI_32BIT_BUS), ==,

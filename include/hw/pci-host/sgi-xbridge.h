@@ -124,6 +124,8 @@ unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
 bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp);
 bool sgi_xbridge_enable_origin300_mem64_pio_width(SGIXBridgeState *s,
                                                    Error **errp);
+bool sgi_xbridge_enable_origin300_direct32_dma_word_write(
+    SGIXBridgeState *s, Error **errp);
 
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
 void sgi_xbridge_reevaluate_assertions(SGIXBridgeState *s);
@@ -156,6 +158,7 @@ struct SGIXBridgeHeadState {
     uint8_t req64_slots;
     uint8_t wide_slot_mask;
     bool origin300_mem64_pio_width;
+    bool origin300_direct32_dma_word_write;
     /* Slots whose DMA runs 64-bit data phases, settled at each reset. */
     uint8_t dma_64bit;
     /*
