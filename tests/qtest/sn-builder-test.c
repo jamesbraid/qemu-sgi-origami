@@ -6569,13 +6569,20 @@ static void routed_diagnostic_vector_route(QTestState *qts, uint64_t address,
     const uint64_t params = address | (UINT64_C(0x1c8) << 40);
 
     qtest_readq(qts, lb + 0x38);
+    qtest_writeq(qts, lb + 0x28, sentinel);
     qtest_writeq(qts, lb + 0x30, sentinel);
     qtest_writeq(qts, lb + 0x08, route);
     qtest_writeq(qts, lb + 0x10, data);
     qtest_writeq(qts, lb, params | write);
-    g_assert_cmphex(qtest_readq(qts, lb + 0x20), ==,
-                    (UINT64_C(1) << 63) | params |
-                    (failure ? failure : write));
+    if (failure) {
+        /* A router refusal has no Bedrock reply. */
+        g_assert_cmphex(qtest_readq(qts, lb + 0x20), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, lb + 0x28), ==, sentinel);
+    } else {
+        g_assert_cmphex(qtest_readq(qts, lb + 0x20), ==,
+                        (UINT64_C(1) << 63) | params | write);
+        g_assert_cmphex(qtest_readq(qts, lb + 0x28), ==, 0);
+    }
     g_assert_cmphex(qtest_readq(qts, lb + 0x30), ==,
                     failure || write ? sentinel : result);
 }
@@ -6604,13 +6611,23 @@ static void test_routed_synthetic_diagnostics(void)
     uint8_t l1_before[16], l1_after[16];
     g_autofree char *prom = expansion_prom();
     g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
-    QTestState *qts = qtest_initf(
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("routed-router-refusals-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
         "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
         "-cpu R14000 -smp 4 -m 1G -S -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-device sgi-sn1-router-test,id=router-test,"
         "router=/machine/module3/router "
-        "-nodefaults -display none", prom, image);
+        "-nodefaults -display none -d guest_errors -D %s",
+        prom, image, log);
     const uint64_t patterns[] = { UINT64_MAX, UINT64_C(0x123456789abcdef0),
                                   UINT64_C(0xaaaaaaaaaaaaaaaa) };
 
@@ -6673,6 +6690,15 @@ static void test_routed_synthetic_diagnostics(void)
         routed_diagnostic_vector(qts, addresses[i], false, 0, 0, initial[i]);
     }
     qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents,
+        "vector write of 0x30 on route 0x0 refused (error 5)"));
+    g_assert_nonnull(strstr(contents,
+        "vector read of 0x10030 on route 0x0 refused (error 4)"));
+    g_assert_nonnull(strstr(contents,
+        "vector read of 0x38 on route 0x9 refused (error 4)"));
+    g_assert_cmpint(unlink(log), ==, 0);
     g_unlink(image);
     g_unlink(prom);
 }
@@ -6701,13 +6727,23 @@ static void test_routed_synthetic_port_storage(void)
     uint8_t l1_before[16], l1_after[16];
     g_autofree char *prom = expansion_prom();
     g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
-    QTestState *qts = qtest_initf(
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("routed-router-refusals-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
         "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
         "-cpu R14000 -smp 4 -m 1G -S -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-device sgi-sn1-router-test,id=router-test,"
         "router=/machine/module3/router "
-        "-nodefaults -display none", prom, image);
+        "-nodefaults -display none -d guest_errors -D %s",
+        prom, image, log);
 
     for (unsigned p = 0; p < G_N_ELEMENTS(banks); p++) {
         for (unsigned r = 0; r < G_N_ELEMENTS(offsets); r++) {
@@ -6779,6 +6815,17 @@ static void test_routed_synthetic_port_storage(void)
         }
     }
     qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents,
+        "vector read of 0x10020 on route 0x0 refused (error 4)"));
+    g_assert_nonnull(strstr(contents,
+        "vector write of 0x10008 on route 0x0 refused (error 4)"));
+    g_assert_nonnull(strstr(contents,
+        "vector write of 0x10088 on route 0x0 refused (error 4)"));
+    g_assert_nonnull(strstr(contents,
+        "vector read of 0x10010 on route 0x9 refused (error 4)"));
+    g_assert_cmpint(unlink(log), ==, 0);
     g_unlink(image);
     g_unlink(prom);
 }
