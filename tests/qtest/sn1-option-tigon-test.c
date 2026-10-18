@@ -526,6 +526,168 @@ static void test_pio_sram_direct_dma_bytes(void)
     test_pio_sram_direct_dma_bytes_one(3);
 }
 
+static void test_dma_read_sram_window_words(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 1 };
+    const uint8_t source[8] = {
+        0xaa, 0xaa, 0xaa, 0xaa, 0x55, 0x55, 0x55, 0x55,
+    };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint64_t address;
+    uint8_t seen[sizeof(source)];
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-window-XXXXXX", &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    reg_write(&t, TI_WINBASE, 0x1000);
+    memory_write(&t, p.destination, 0x2a1000, source, sizeof(source));
+    address = dma_address(&t, 0x2a1000);
+    reg_write(&t, TI_DMA_READ_HOST_HI, address >> 32);
+    reg_write(&t, TI_DMA_READ_HOST_LO, address);
+    reg_write(&t, TI_DMA_READ_LOCAL, 0x1000);
+    reg_write(&t, TI_DMA_READ_LENGTH, sizeof(source));
+    reg_write(&t, TI_DMA_READ_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_STATE) & TI_DMA_ACTIVE, ==, 0);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_LENGTH), ==, 0);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_LOCAL), ==,
+                    0x1000 + sizeof(source));
+    for (unsigned i = 0; i < sizeof(seen); i++) {
+        g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                                        t.window + 0x800 + (i ^ 3),
+                                        &seen[i], 1));
+    }
+    g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x800), ==,
+                    0xaaaaaaaa);
+    g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x804), ==,
+                    0x55555555);
+    g_assert_cmphex(cpu_readq(t.qts, t.pio_cpu, t.window + 0x800), ==,
+                    UINT64_C(0xaaaaaaaa55555555));
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_direct_then_page_dma_readback(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 0 };
+    static const uint8_t card_bytes[2][8] = {
+        { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87 },
+        { 0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f },
+    };
+    static const uint8_t host_bytes[2][8] = {
+        { 0x54, 0x65, 0x76, 0x87, 0x10, 0x21, 0x32, 0x43 },
+        { 0xdc, 0xed, 0xfe, 0x0f, 0x98, 0xa9, 0xba, 0xcb },
+    };
+    static const uint32_t cpu_words[2][2] = {
+        { 0x54657687, 0x10213243 },
+        { 0xdcedfe0f, 0x98a9bacb },
+    };
+    static const uint32_t bar_words[2][2] = {
+        { 0x87766554, 0x43322110 },
+        { 0x0ffeeddc, 0xcbbaa998 },
+    };
+    const uint64_t target = 0x4d4000;
+    const uint32_t iova[] = { 0x804d4000, 0x60000000 };
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint8_t seen[8];
+    uint32_t control;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-readback-XXXXXX", &storage,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    reg_write(&t, TI_WINBASE, 0x1000);
+    control = cpu_readl(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8);
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x204 + p.device * 8,
+               control | XBRIDGE_DIRECT_SWAP);
+    cpu_writeq(t.qts, t.pio_cpu, t.head + 0x10000,
+               target | (0xa << 8) | 1);
+
+    memory_write(&t, 0, target, (uint8_t[8]) { 0 }, sizeof(seen));
+
+    for (unsigned path = 0; path < G_N_ELEMENTS(iova); path++) {
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800 + (i ^ 3), &card_bytes[path][i], 1));
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800 + (i ^ 3), &seen[i], 1));
+        }
+        g_assert_cmpmem(seen, sizeof(seen), card_bytes[path], sizeof(seen));
+        reg_write(&t, TI_DMA_WRITE_HOST_HI, 0);
+        reg_write(&t, TI_DMA_WRITE_HOST_LO, iova[path]);
+        reg_write(&t, TI_DMA_WRITE_LOCAL, 0x1000);
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_NO_SWAP);
+        reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(seen));
+        reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_ACTIVE,
+                        ==, 0);
+        g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, 0);
+        memory_read(&t, 0, target, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), host_bytes[path], sizeof(seen));
+        g_assert_cmphex(cpu_readl(t.qts, 0, target), ==,
+                        cpu_words[path][0]);
+        g_assert_cmphex(cpu_readl(t.qts, 0, target + 4), ==,
+                        cpu_words[path][1]);
+
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            uint8_t zero = 0;
+
+            g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800 + (i ^ 3), &zero, 1));
+        }
+        reg_write(&t, TI_DMA_READ_HOST_HI, 0);
+        reg_write(&t, TI_DMA_READ_HOST_LO, iova[path]);
+        reg_write(&t, TI_DMA_READ_LOCAL, 0x1000);
+        reg_write(&t, TI_DMA_READ_LENGTH, sizeof(seen));
+        reg_write(&t, TI_DMA_READ_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+        g_assert_cmphex(reg_read(&t, TI_DMA_READ_STATE) & TI_DMA_ACTIVE,
+                        ==, 0);
+        g_assert_cmphex(reg_read(&t, TI_DMA_READ_LENGTH), ==, 0);
+        for (unsigned i = 0; i < sizeof(seen); i++) {
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800 + (i ^ 3), &seen[i], 1));
+        }
+        g_assert_cmpmem(seen, sizeof(seen), host_bytes[path], sizeof(seen));
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x800), ==,
+                        bar_words[path][0]);
+        g_assert_cmphex(cpu_readl(t.qts, t.pio_cpu, t.window + 0x804), ==,
+                        bar_words[path][1]);
+    }
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
 static void test_direct_dma_write(void)
 {
     const Placement p = { .head = 2, .device = 1, .destination = 1,
@@ -732,6 +894,34 @@ static void test_direct_dma_write(void)
     g_assert_cmpmem(seen, 4, guard, 4);
     g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
                     sizeof(wide_no_swap));
+    g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
+
+    memory_write(&t, p.destination, 0x2a0180, source, sizeof(source));
+    reg_write(&t, TI_WINBASE, 0x2200);
+    g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                                     t.window + 0x800, guard,
+                                     sizeof(guard)));
+    cpu_writeq(t.qts, t.pio_cpu, t.head + 0x10000,
+               memory_address(p.destination, 0x2a0000) | (0xa << 8) | 1);
+    address = 0x60000180;
+    reg_write(&t, TI_DMA_READ_HOST_HI, 0);
+    reg_write(&t, TI_DMA_READ_HOST_LO, address);
+    reg_write(&t, TI_DMA_READ_LOCAL, 0x2204);
+    reg_write(&t, TI_DMA_READ_LENGTH, sizeof(source));
+    reg_write(&t, TI_DMA_READ_STATE, TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_STATE) & TI_DMA_ACTIVE, ==, 0);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_LENGTH), ==, 0);
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_HOST_LO), ==,
+                    (uint32_t)address + sizeof(source));
+    g_assert_cmphex(reg_read(&t, TI_DMA_READ_LOCAL), ==,
+                    0x2204 + sizeof(source));
+    for (unsigned i = 0; i < sizeof(seen); i++) {
+        g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                                        t.window + 0x800 + (i ^ 3),
+                                        &seen[i], 1));
+    }
+    g_assert_cmpmem(seen, 4, guard, 4);
+    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0200 - 4,
@@ -1767,6 +1957,8 @@ int main(int argc, char **argv)
                    test_pci_state_width);
     qtest_add_func("/sn1/option-tigon/pci-state-width-migration",
                    test_pci_state_width_migration);
+    qtest_add_func("/sn1/option-tigon/direct-then-page-dma-readback",
+                   test_direct_then_page_dma_readback);
     qtest_add_func("/sn1/option-tigon/direct-dma-write",
                    test_direct_dma_write);
     qtest_add_func("/sn1/option-tigon/wide-64bit-dma-write",
@@ -1775,6 +1967,8 @@ int main(int argc, char **argv)
                    test_generic_wide_64bit_dma_write);
     qtest_add_func("/sn1/option-tigon/pio-sram-direct-dma-bytes",
                    test_pio_sram_direct_dma_bytes);
+    qtest_add_func("/sn1/option-tigon/dma-read-sram-window-words",
+                   test_dma_read_sram_window_words);
     result = g_test_run();
     g_assert_cmpint(unlink(prom_path), ==, 0);
     g_free(prom_path);
