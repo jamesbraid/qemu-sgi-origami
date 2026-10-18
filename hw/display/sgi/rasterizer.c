@@ -4763,6 +4763,23 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
 }
 
 /*
+ * Whether one rectangle of a non-empty clip list holds all of row y from
+ * x0 to x1, so that each pixel's own test would pass.
+ */
+static bool sgi_soft_clip_covers_row(const SGIClipList *clip, int x0, int x1,
+                                     int y)
+{
+    for (uint32_t i = 0; i < MIN(clip->n, SGI_CLIP_MAX); i++) {
+        const SGIClipRect *r = &clip->r[i];
+
+        if (y >= r->y0 && y <= r->y1 && x0 >= r->x0 && x1 <= r->x1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
  * CLEAR writes the clear colour under the colour mask, or in colour-index
  * mode the clear index under the index mask, to the op's targets, the
  * clear depth to the depth plane and the clear stencil value under its
@@ -4786,10 +4803,15 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     uint32_t ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     bool rgba_reported = false;
     SGIRasterColour clear = { 0 };
+    /* Only a read fills it, and only a read's targets are read back. */
+    SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
+    uint32_t depth_value;
 
     if (!sgi_soft_check_rules(rules)) {
         return;
     }
+    /* After the check: the depth maximum shifts by 32 - depth_bits. */
+    depth_value = op->clear_depth24 & sgi_soft_depth_max(rules);
     if (op->kind == SGI_RASTER_PIXELS) {
         sgi_soft_pixels(rules, t, op);
         return;
@@ -4833,22 +4855,24 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         clear = sgi_soft_rgba_value(rules, rgb, op->clear_rgba[3]);
     }
     for (int y = op->y0; y <= op->y1; y++) {
-        for (int x = op->x0; x <= op->x1; x++) {
-            SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
+        bool whole_row = op->clip.n <= 1 ||
+                         sgi_soft_clip_covers_row(&op->clip, op->x0, op->x1,
+                                                  y);
 
-            if (op->clip.n > 1 && !sgi_clip_contains(&op->clip, x, y)) {
+        for (int x = op->x0; x <= op->x1; x++) {
+            if (!whole_row && !sgi_clip_contains(&op->clip, x, y)) {
                 continue;
             }
 
-            if (rgba && rgba_read &&
-                !sgi_soft_rgba_load(rules, t, op->targets,
-                                    ntargets, x, y, dest, &rgba_reported)) {
-                continue;
+            if (rgba && rgba_read) {
+                memset(dest, 0, sizeof(dest));
+                if (!sgi_soft_rgba_load(rules, t, op->targets, ntargets,
+                                        x, y, dest, &rgba_reported)) {
+                    continue;
+                }
             }
             if (depth) {
-                t->store_depth(t->opaque, x, y,
-                               op->clear_depth24 &
-                               sgi_soft_depth_max(rules));
+                t->store_depth(t->opaque, x, y, depth_value);
             }
             if (stencil) {
                 uint32_t smask = op->stencil_mask & smax;
