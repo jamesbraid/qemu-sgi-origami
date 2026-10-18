@@ -68,13 +68,12 @@ layer:
               trial. It is not established as the physical Tezro board value.
         l1_controllers:
           l1:
-            reported_type: 55
-            provenance: derived
-            sources: [tezro-deskside-trial, tezro-deskside-trial-review]
+            reported_type: 57
+            provenance: guest-source
+            sources: ["web:lore-kaloz-ip35-35 brick type '9' is Tezro deskside"]
             notes: >-
-              L1 type 0x37 is a software compatibility input. The revision is
-              deliberately omitted because the trial contract leaves it
-              unspecified.
+              Public Linux maps type 0x39 to Tezro deskside. The physical L1
+              response and firmware revision remain unmeasured.
         firmware_payload:
           argument: -bios
           path: firmware/6.5.30/ip35prom.payload.bin
