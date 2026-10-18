@@ -461,6 +461,418 @@ static void test_routed_wide_direct_dma(void)
     qtest_quit(qts);
 }
 
+static void test_routed_wide64_read_groups(void)
+{
+    static const unsigned lengths[] = { 8, 16, 256 };
+    static const uint8_t groups[16] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    static const uint64_t expected[] = {
+        UINT64_C(0x5465768710213243),
+        UINT64_C(0xdcedfe0f98a9bacb),
+    };
+    const uint64_t ram = NODE(3) + 0x8000;
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(lengths); n++) {
+        g_autofree char *options = g_strdup_printf(
+            "-global sgi-pci-expansion-ni-card.transfer-length=%u "
+            "-global sgi-pci-expansion-ni-fixture.wide-card=on",
+            lengths[n]);
+        g_autofree char *trace_path = NULL;
+        g_autofree char *trace_arg = NULL;
+        g_autofree char *trace = NULL;
+        g_autoptr(GError) error = NULL;
+        QTestState *qts;
+        uint8_t before[264], after[264];
+
+        if (lengths[n] == 16) {
+            int fd = g_file_open_tmp("ni-wide64-read-trace-XXXXXX",
+                                     &trace_path, &error);
+
+            g_assert_no_error(error);
+            g_assert_cmpint(fd, >=, 0);
+            g_assert_cmpint(close(fd), ==, 0);
+            trace_arg = g_strdup_printf(
+                "%s -trace enable=sgi_xbridge_dma_packet,file=%s",
+                options, trace_path);
+        }
+        qts = routed_start(trace_arg ? trace_arg : options);
+
+        for (unsigned i = 0; i < sizeof(before); i++) {
+            before[i] = 0x40 + i;
+        }
+        memcpy(before, groups, sizeof(groups));
+        routed_program(qts);
+        configure_card(qts, 0);
+        qtest_memwrite(qts, RAM + 0x8000, before, sizeof(before));
+        for (unsigned group = 0; group < 2; group++) {
+            uint64_t reads = qtest_readq(qts, STATUS + 136);
+            uint64_t iova = UINT64_C(0xa980000000000000) + ram + group * 8;
+
+            dma_read_expect(qts, 0, iova, expected[group], MEMTX_OK);
+            g_assert_cmphex(qtest_readq(qts, STATUS + 136), ==,
+                            reads + lengths[n] / 8);
+            if (group == 0 && lengths[n] >= 16) {
+                uint64_t second = qtest_readl(qts, card_bar(0) + 40) |
+                                  (uint64_t)qtest_readl(qts,
+                                                        card_bar(0) + 44) << 32;
+
+                g_assert_cmphex(second, ==, expected[1]);
+            }
+        }
+        qtest_memread(qts, RAM + 0x8000, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+        qtest_quit(qts);
+        if (trace_path) {
+            g_auto(GStrv) lines = NULL;
+            unsigned reads = 0;
+
+            g_assert_true(g_file_get_contents(trace_path, &trace,
+                                              NULL, &error));
+            g_assert_no_error(error);
+            lines = g_strsplit(trace, "\n", -1);
+            for (unsigned line = 0; lines[line]; line++) {
+                if (strstr(lines[line], "sgi_xbridge_dma_packet") &&
+                    strstr(lines[line], "write 0")) {
+                    g_assert_nonnull(strstr(lines[line], "size 8"));
+                    reads++;
+                }
+            }
+            g_assert_cmpuint(reads, ==, 4);
+            g_assert_cmpint(unlink(trace_path), ==, 0);
+        }
+    }
+}
+
+static void test_routed_wide64_read_selectors(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    static const struct {
+        unsigned head;
+        unsigned slot;
+        bool narrow_secondary;
+        bool clear_wide_mask;
+        bool address_swap;
+        bool device_swap;
+        uint64_t expected;
+    } cases[] = {
+        { 0, 1, false, false, true, true,
+          UINT64_C(0x5465768710213243) },
+        { 0, 1, false, false, false, true,
+          UINT64_C(0x8776655443322110) },
+        { 0, 1, false, false, true, false,
+          UINT64_C(0x1021324354657687) },
+        { 0, 1, true, false, true, true,
+          UINT64_C(0x1021324354657687) },
+        { 0, 1, false, true, true, true,
+          UINT64_C(0x1021324354657687) },
+        { 1, 1, false, false, true, true,
+          UINT64_C(0x1021324354657687) },
+        { 0, 0, false, false, true, true,
+          UINT64_C(0x1021324354657687) },
+    };
+    const uint64_t ram = NODE(3) + 0x8000;
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {
+        g_autofree char *options = NULL;
+        g_autofree char *trace_path = NULL;
+        g_autofree char *trace_arg = NULL;
+        g_autofree char *trace = NULL;
+        g_autoptr(GError) error = NULL;
+        uint64_t iova = UINT64_C(0xa900000000000000) + ram;
+        QTestState *qts;
+        uint64_t h;
+        uint8_t after[sizeof(source)];
+        const char *clear_mask = "off";
+        unsigned intx_map = 0;
+        int fd;
+
+        if (cases[n].address_swap) {
+            iova |= UINT64_C(1) << 55;
+        }
+        if (cases[n].clear_wide_mask) {
+            clear_mask = "on";
+        }
+        if (cases[n].narrow_secondary) {
+            intx_map = 1;
+        }
+        options = g_strdup_printf(
+            "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+            "-global sgi-pci-expansion-ni-fixture.card-device=%u "
+            "-global sgi-pci-expansion-ni-fixture.intx-map=%u "
+            "-global sgi-pci-expansion-ni-fixture.clear-wide-mask=%s",
+            cases[n].slot, intx_map, clear_mask);
+        fd = g_file_open_tmp("ni-wide64-selector-trace-XXXXXX",
+                             &trace_path, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        trace_arg = g_strdup_printf(
+            "%s -trace enable=sgi_xbridge_dma_packet,file=%s",
+            options, trace_path);
+        card_device = cases[n].slot;
+        qts = routed_start(trace_arg);
+        h = head(0, cases[n].head);
+        routed_program(qts);
+        configure_card(qts, cases[n].head);
+        if (!cases[n].device_swap) {
+            qtest_writel(qts, h + 0x204 + card_device * 8, 0x1012);
+        }
+        qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+        dma_read_expect(qts, cases[n].head, iova,
+                        cases[n].expected, MEMTX_OK);
+        qtest_memread(qts, RAM + 0x8000, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), source, sizeof(source));
+        qtest_quit(qts);
+        g_assert_true(g_file_get_contents(trace_path, &trace,
+                                          NULL, &error));
+        g_assert_no_error(error);
+        g_auto(GStrv) lines = g_strsplit(trace, "\n", -1);
+        unsigned reads = 0;
+
+        for (unsigned line = 0; lines[line]; line++) {
+            if (strstr(lines[line], "sgi_xbridge_dma_packet") &&
+                strstr(lines[line], "write 0")) {
+                g_assert_nonnull(strstr(lines[line], "size 8"));
+                reads++;
+            }
+        }
+        g_assert_cmpuint(reads, ==, 1);
+        g_assert_cmpint(unlink(trace_path), ==, 0);
+    }
+    card_device = 1;
+}
+
+static void test_routed_wide64_read_short(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98,
+    };
+    const uint64_t iova = UINT64_C(0xa980000000000000) + NODE(3) + 0x8000;
+    static const struct {
+        unsigned length;
+        unsigned offset;
+        uint64_t expected;
+    } cases[] = {
+        { 4, 0, UINT64_C(0x1021324300000000) },
+        { 8, 1, UINT64_C(0x2132435465768798) },
+    };
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {
+        g_autofree char *options = g_strdup_printf(
+            "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+            "-global sgi-pci-expansion-ni-card.transfer-length=%u",
+            cases[n].length);
+        QTestState *qts = routed_start(options);
+        uint8_t after[sizeof(source)];
+
+        routed_program(qts);
+        configure_card(qts, 0);
+        qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+        dma_read_expect(qts, 0, iova + cases[n].offset,
+                        cases[n].expected, MEMTX_OK);
+        qtest_memread(qts, RAM + 0x8000, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), source, sizeof(source));
+        qtest_quit(qts);
+    }
+}
+
+static void test_routed_wide64_read_cross_leaf(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    const uint64_t ram = NODE(3) + 0x8ff8;
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+        "-global sgi-pci-expansion-ni-fixture.ram-split=on");
+    uint8_t after[sizeof(source)];
+
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_memwrite(qts, RAM + 0x8ff8, source, sizeof(source));
+    dma_read_expect(qts, 0, UINT64_C(0xa980000000000000) + ram,
+                    UINT64_C(0x1021324354657687), MEMTX_OK);
+    qtest_memread(qts, RAM + 0x8ff8, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), source, sizeof(source));
+    qtest_quit(qts);
+}
+
+static void test_routed_wide64_read_other_targets(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    const uint64_t ram = NODE(3) + 0xa000;
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+        "-global sgi-pci-expansion-ni-fixture.ram-device=on");
+    uint8_t after[sizeof(source)];
+
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_memwrite(qts, RAM + 0xa000, source, sizeof(source));
+    dma_read_expect(qts, 0, UINT64_C(0xa980000000000000) + ram,
+                    UINT64_C(0x1021324354657687), MEMTX_OK);
+    qtest_memread(qts, RAM + 0xa000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), source, sizeof(source));
+    qtest_quit(qts);
+}
+
+static void test_routed_wide64_read_errors(void)
+{
+    const uint64_t sentinel = UINT64_C(0x1021324354657687);
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+        "-global sgi-pci-expansion-ni-fixture.ram-unmapped-tail=on");
+    uint64_t reads;
+
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_writeq(qts, RAM + 0x8000, sentinel);
+    qtest_writeq(qts, COMPUTE + 0x400118,
+                 ~(UINT64_C(1) << widget[0]));
+    reads = qtest_readq(qts, STATUS + 136);
+    dma_read_expect(qts, 0,
+        UINT64_C(0xa980000000000000) + NODE(3) + 0x8000,
+        sentinel, MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 136), ==, reads);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel);
+
+    qtest_writeq(qts, COMPUTE + 0x400118, UINT64_MAX);
+    dma_read_expect(qts, 0,
+        UINT64_C(0xa980000000000000) + NODE(3) + 0xff000,
+        sentinel, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_routed_wide64_read_partial_error(void)
+{
+    const uint64_t iova = UINT64_C(0xa980000000000000) + NODE(3) + 0x8ff8;
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_arg = NULL;
+    g_autofree char *trace = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    uint64_t bar, packets, target_reads, seen;
+    int fd = g_file_open_tmp("ni-wide64-error-trace-XXXXXX",
+                             &trace_path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    trace_arg = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+        "-global sgi-pci-expansion-ni-fixture.ram-error-half=on "
+        "-global sgi-pci-expansion-ni-card.capture-failed-read=on "
+        "-trace enable=sgi_xbridge_dma_packet,file=%s", trace_path);
+    qts = routed_start(trace_arg);
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_writel(qts, RAM + 0x8ff8, 0x10213243);
+    bar = card_bar(0);
+    qtest_writel(qts, bar + 8, (uint32_t)iova);
+    qtest_writel(qts, bar + 12, iova >> 32);
+    qtest_writel(qts, bar + 16, 0x66778899);
+    qtest_writel(qts, bar + 20, 0xaabbccdd);
+    packets = qtest_readq(qts, STATUS + 136);
+    target_reads = qtest_readq(qts, STATUS + 144);
+    qtest_writel(qts, bar + 24, 2);
+    g_assert_cmphex(qtest_readl(qts, bar + 24), ==, MEMTX_ACCESS_ERROR);
+    seen = qtest_readl(qts, bar + 16) |
+           (uint64_t)qtest_readl(qts, bar + 20) << 32;
+    g_assert_cmphex(seen, ==, UINT64_C(0x10213243deadbeef));
+    g_assert_cmphex(qtest_readq(qts, STATUS + 136), ==, packets + 1);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 144), ==, target_reads + 1);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, &error));
+    g_assert_no_error(error);
+    g_auto(GStrv) lines = g_strsplit(trace, "\n", -1);
+    unsigned reads = 0;
+
+    for (unsigned line = 0; lines[line]; line++) {
+        if (strstr(lines[line], "sgi_xbridge_dma_packet") &&
+            strstr(lines[line], "write 0")) {
+            g_assert_nonnull(strstr(lines[line], "size 8"));
+            reads++;
+        }
+    }
+    g_assert_cmpuint(reads, ==, 1);
+    g_assert_cmpint(unlink(trace_path), ==, 0);
+}
+
+static void test_routed_wide64_read_reset(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    const uint64_t iova = UINT64_C(0xa980000000000000) + NODE(3) + 0x8000;
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on");
+    uint64_t h = head(0, 0);
+
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+    dma_read_expect(qts, 0, iova,
+                    UINT64_C(0x5465768710213243), MEMTX_OK);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, h + 0x204 + card_device * 8) &
+                    0x80000, ==, 0);
+    routed_program(qts);
+    configure_card(qts, 0);
+    qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+    qtest_writel(qts, h + 0x204 + card_device * 8, 0x1012);
+    dma_read_expect(qts, 0, iova,
+                    UINT64_C(0x1021324354657687), MEMTX_OK);
+    qtest_writel(qts, h + 0x204 + card_device * 8, 0x81012);
+    dma_read_expect(qts, 0, iova,
+                    UINT64_C(0x5465768710213243), MEMTX_OK);
+    qtest_quit(qts);
+}
+
+static void test_routed_wide64_read_migration(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+    };
+    const uint64_t base = UINT64_C(0xa900000000000000) + NODE(3) + 0x8000;
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("routed-ni-wide64-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on");
+    QTestState *to = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on -incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    routed_program(from);
+    configure_card(from, 0);
+    qtest_memwrite(from, RAM + 0x8000, source, sizeof(source));
+    dma_read_expect(from, 0, base | (UINT64_C(1) << 55),
+                    UINT64_C(0x5465768710213243), MEMTX_OK);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    dma_read_expect(to, 0, base | (UINT64_C(1) << 55),
+                    UINT64_C(0x5465768710213243), MEMTX_OK);
+    dma_read_expect(to, 0, base,
+                    UINT64_C(0x8776655443322110), MEMTX_OK);
+    qtest_writel(to, head(0, 0) + 0x204 + card_device * 8, 0x1012);
+    dma_read_expect(to, 0, base | (UINT64_C(1) << 55),
+                    UINT64_C(0x1021324354657687), MEMTX_OK);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_routed_direct_read_groups(void)
 {
     static const unsigned lengths[] = { 8, 16, 256 };
@@ -4347,6 +4759,24 @@ int main(int argc, char **argv)
                    test_routed_dma);
     qtest_add_func("/sgi/pci-expansion-ni/routed/wide-direct-dma",
                    test_routed_wide_direct_dma);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-groups",
+                   test_routed_wide64_read_groups);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-selectors",
+                   test_routed_wide64_read_selectors);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-short",
+                   test_routed_wide64_read_short);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-cross-leaf",
+                   test_routed_wide64_read_cross_leaf);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-other-targets",
+                   test_routed_wide64_read_other_targets);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-errors",
+                   test_routed_wide64_read_errors);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-partial-error",
+                   test_routed_wide64_read_partial_error);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-reset",
+                   test_routed_wide64_read_reset);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/wide64-read-migration",
+                   test_routed_wide64_read_migration);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct-read-groups",
                    test_routed_direct_read_groups);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct-read-other-routes",
