@@ -9166,6 +9166,99 @@ static void push_bare_triangle(QTestState *qts)
     user_cmd_push(qts, ODSY_CMD_GL_END);
 }
 
+/* The x-mesa-fallbacks-* counters, one per refusal reason. */
+static const char *const odsy_mesa_fallback_reasons[] = {
+    "rules", "dither", "primitive", "smoothing", "colour-index", "buffers",
+    "fragment-tests", "fog", "facing", "clip-planes", "logic-op",
+    "polygon-offset", "window", "geometry", "line-shape",
+    "resource", "store-width", "blend", "blend-overlap", "texture",
+    "provider", "raster-op", "mixed-frame", "host-viewport",
+    "host-point-size", "host-program", "host-probe", "host-staging",
+    "snapshot", "precision",
+};
+
+static uint64_t odsy_mesa_fallbacks(QTestState *qts, const char *reason)
+{
+    g_autofree char *name = g_strdup_printf("x-mesa-fallbacks-%s", reason);
+
+    return odsy_qom_get_uint(qts, name);
+}
+
+static uint64_t odsy_mesa_fallback_total(QTestState *qts)
+{
+    uint64_t total = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(odsy_mesa_fallback_reasons); i++) {
+        total += odsy_mesa_fallbacks(qts, odsy_mesa_fallback_reasons[i]);
+    }
+    return total;
+}
+
+/*
+ * The probe window's plane pixels after an RGBA triangle, and after a
+ * colour-index triangle over it. With x-mesa-renderer=on, @mesa says the
+ * renderer exists; the RGBA triangle is then drawn on Mesa and the
+ * colour-index one, which Mesa refuses, on the scalar path, counted once
+ * by its reason.
+ */
+static void mesa_fallback_scene(QTestState *qts, bool mesa,
+                                uint32_t *rgba, uint32_t *index)
+{
+    probe_window(qts);
+    push_captured_triangle(qts);
+    odsy_test_pixels(qts, 256, 256, 128, 128, rgba);
+    if (mesa) {
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 1);
+        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 0);
+    }
+    user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
+    user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+    user_cmd_push(qts, 5);
+    push_bare_triangle(qts);
+    odsy_test_pixels(qts, 256, 256, 128, 128, index);
+    if (mesa) {
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 1);
+        g_assert_cmpuint(odsy_mesa_fallbacks(qts, "colour-index"), ==, 1);
+        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 1);
+    }
+}
+
+/*
+ * Per-draw fallback: with the Mesa renderer on, a draw it refuses is drawn
+ * on the scalar path inside the same callback, so the frame is the one a
+ * scalar-only board draws, pixel for pixel, and the refusal is counted.
+ */
+static void test_mesa_per_draw_fallback(void)
+{
+    g_autofree uint32_t *scalar_rgba = g_new(uint32_t, 128 * 128);
+    g_autofree uint32_t *scalar_index = g_new(uint32_t, 128 * 128);
+    g_autofree uint32_t *mesa_rgba = g_new(uint32_t, 128 * 128);
+    g_autofree uint32_t *mesa_index = g_new(uint32_t, 128 * 128);
+    QTestState *qts = board_start("");
+    bool mesa;
+
+    mesa_fallback_scene(qts, false, scalar_rgba, scalar_index);
+    board_quit(qts);
+    /* The scene draws: yellow inside the triangle, then index 5 over it. */
+    g_assert_cmphex(scalar_rgba[(333 - 256) * 128 + 317 - 256], ==,
+                    0xffff00ff);
+    g_assert_cmphex(scalar_index[(333 - 256) * 128 + 317 - 256], ==, 5);
+
+    qts = board_start(" -global sgi-odyssey.x-mesa-renderer=on");
+    mesa = !odsy_qom_get_bool(qts, "x-mesa-unavailable");
+    if (!mesa && g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_error("QEMU_TEST_SGI_REQUIRE_MESA is set, but the device found "
+                "no Mesa renderer");
+    }
+    mesa_fallback_scene(qts, mesa, mesa_rgba, mesa_index);
+    board_quit(qts);
+    g_assert_cmpmem(mesa_rgba, 128 * 128 * 4, scalar_rgba, 128 * 128 * 4);
+    g_assert_cmpmem(mesa_index, 128 * 128 * 4, scalar_index, 128 * 128 * 4);
+    if (!mesa) {
+        g_test_skip("No Mesa renderer: drew every draw on the scalar path");
+    }
+}
+
 /*
  * A colour-index context that never sets an index draws GL vertices in
  * index 1, GL's initial index, which is also what the save writes and a
@@ -17618,6 +17711,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_integer_triangle);
     add_case("sn1/odyssey/command-fifo-gl-triangle",
              test_command_fifo_gl_triangle);
+    add_case("sn1/odyssey/mesa-per-draw-fallback",
+             test_mesa_per_draw_fallback);
     add_case("sn1/odyssey/command-fifo-lines",
              test_command_fifo_lines);
     add_case("sn1/odyssey/command-fifo-lines-cross-screen-edge",

@@ -298,6 +298,40 @@ static void test_native_reject_alias(void)
 }
 
 #ifdef CONFIG_OPENGL
+static SGIRenderRefusal last_reason;
+
+/*
+ * One attempt, returned as its status; the outcome's reason is kept in
+ * last_reason. The attempt's result must agree with the status.
+ */
+static SGIRenderResult native_draw(OdysseyNativeMesa *native,
+                                   SGIRenderer *renderer,
+                                   const SGIRasterRules *rules,
+                                   const SGIGLDraw *draw,
+                                   unsigned selected_buffers,
+                                   SGIRenderEye eye, bool compare_active,
+                                   Error **errp)
+{
+    SGIRenderAttemptOutcome outcome = { .reason = SGI_RENDER_REFUSAL__MAX };
+    SGIRenderDrawResult result;
+
+    result = odyssey_native_mesa_draw(native, renderer, rules, draw,
+                                      selected_buffers, eye, compare_active,
+                                      &outcome, errp);
+    last_reason = outcome.reason;
+    if (outcome.status == SGI_RENDER_OK) {
+        g_assert_cmpint(result, ==, SGI_RENDER_DRAW_OK);
+        g_assert_cmpint(outcome.reason, ==, SGI_RENDER_REFUSAL_NONE);
+    } else if (outcome.status == SGI_RENDER_UNSUPPORTED) {
+        g_assert_cmpint(result, ==, SGI_RENDER_DRAW_REFUSED);
+        g_assert_cmpint(outcome.reason, >, SGI_RENDER_REFUSAL_NONE);
+        g_assert_cmpint(outcome.reason, <, SGI_RENDER_REFUSAL__MAX);
+    } else {
+        g_assert_cmpint(result, ==, SGI_RENDER_DRAW_FAILED);
+    }
+    return outcome.status;
+}
+
 /*
  * The rules the device draws under (odyssey_gl_operation_rules() in RGBA
  * mode), which the shared Mesa renderer requires.
@@ -364,7 +398,7 @@ static void test_native_mesa_clip_scissor(void)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
-    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+    g_assert_cmpint(native_draw(&f.native, renderer, &rules,
                     &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
@@ -387,11 +421,14 @@ static void test_native_mesa_clip_scissor(void)
 
         /* An attempted snapshot would report a resource failure here. */
         f.memory[0].size = 0;
-        g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+        g_assert_cmpint(native_draw(&f.native, renderer, &rules,
                         &draw, rejected == 0 ? 2 : 1,
                         rejected == 1 ? SGI_RENDER_LEFT : SGI_RENDER_MONO,
                         rejected == 2, &err), ==,
                         SGI_RENDER_UNSUPPORTED);
+        g_assert_cmpint(last_reason, ==, rejected == 2 ?
+                        SGI_RENDER_REFUSAL_WINDOW :
+                        SGI_RENDER_REFUSAL_BUFFERS);
         f.memory[0].size = saved_size;
         g_assert_nonnull(err);
         error_free(err);
@@ -460,7 +497,7 @@ static void test_native_mesa_preserves_tags(void)
     g_assert_nonnull(renderer);
     g_assert_null(err);
 
-    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+    g_assert_cmpint(native_draw(&f.native, renderer, &rules,
                     &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
@@ -493,7 +530,7 @@ static void test_native_mesa_preserves_tags(void)
     f.completed_stores = 0;
     f.fail_store = 2;
     f.failure = ODYSSEY_NATIVE_STORE_UNCHANGED;
-    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+    g_assert_cmpint(native_draw(&f.native, renderer, &rules,
                     &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_RESOURCE_ERROR);
     g_assert_nonnull(err);
@@ -647,7 +684,7 @@ static void native_rows_compare(const SGIGLDrawState *in,
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
-    g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer,
+    g_assert_cmpint(native_draw(&f.native, renderer,
                     &mesa_rules, &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_OK);
     g_assert_null(err);
@@ -974,9 +1011,10 @@ static void native_rows_refused(NativeFixture *f, SGIRenderer *renderer,
     memcpy(before, f->memory[0].bytes, sizeof(before));
     /* An attempted snapshot would report a resource failure here. */
     f->memory[0].size = 0;
-    g_assert_cmpint(odyssey_native_mesa_draw(&f->native, renderer, &rules,
+    g_assert_cmpint(native_draw(&f->native, renderer, &rules,
                     draw, 1, SGI_RENDER_MONO, false, &err), ==,
                     SGI_RENDER_UNSUPPORTED);
+    g_assert_cmpint(last_reason, ==, SGI_RENDER_REFUSAL_WINDOW);
     f->memory[0].size = saved_size;
     g_assert_nonnull(err);
     g_assert_nonnull(strstr(error_get_pretty(err), message));
@@ -1106,9 +1144,10 @@ static void test_native_rows_unsupported_profile(void)
         }
         /* An attempted snapshot would report a resource failure here. */
         f.memory[0].size = 0;
-        g_assert_cmpint(odyssey_native_mesa_draw(&f.native, renderer, &rules,
+        g_assert_cmpint(native_draw(&f.native, renderer, &rules,
                         &draw, 1, SGI_RENDER_MONO, false, &err), ==,
                         SGI_RENDER_UNSUPPORTED);
+        g_assert_cmpint(last_reason, ==, SGI_RENDER_REFUSAL_WINDOW);
         f.memory[0].size = saved_size;
         g_assert_nonnull(err);
         /* The shared renderer refuses some of these too; require ours. */
@@ -1124,10 +1163,10 @@ static void test_native_rows_unsupported_profile(void)
 }
 
 /*
- * Shared edges: an 8 by 8 pair of planes the device's way round, drawn by
- * the adapter or by the scalar rasterizer storing as the device does, at
- * plane pixel (origin + window pixel) when inside the plane and a drawable
- * clip rectangle.
+ * Per-draw fallback: an 8 by 8 pair of planes the device's way round,
+ * drawn by the adapter or by the scalar rasterizer storing as the device
+ * does, at plane pixel (origin + window pixel) when inside the plane and a
+ * drawable clip rectangle.
  */
 #define EDGE_SIZE 8
 
@@ -1136,7 +1175,17 @@ typedef struct EdgeFixture {
     const SGIPlane *plane[2];
     OdysseyNativeMesa native;
     SGIRenderer *renderer;
+    OdysseyMesaCounts counts;
     unsigned invalidations;
+    /* The scalar draws, and the last draw they were given. */
+    unsigned scalar_calls;
+    const SGIGLDraw *scalar_draw;
+    SGIGLDrawResult scalar_result;
+    /* Staged-pixel checks so far, and which of them refuse. */
+    unsigned staged_checks;
+    unsigned refuse_parity;
+    /* Colour writes to buffer 0 by either path, per plane pixel. */
+    unsigned writes[EDGE_SIZE][EDGE_SIZE];
 } EdgeFixture;
 
 static void edge_invalidate(void *opaque)
@@ -1149,6 +1198,21 @@ static void edge_invalidate(void *opaque)
 static uint32_t edge_sentinel(unsigned b, uint32_t x, uint32_t y)
 {
     return 0x10203000 + b * 0x01000000 + y * EDGE_SIZE + x;
+}
+
+static OdysseyNativeStoreResult edge_native_store(void *opaque,
+                                                  SGIBoardMemory *memory,
+                                                  const SGIPlane *plane,
+                                                  uint32_t x, uint32_t y,
+                                                  uint32_t word)
+{
+    EdgeFixture *f = opaque;
+
+    sgi_plane_store(memory, plane, x, y, word);
+    if (memory == &f->memory[0]) {
+        f->writes[y][x]++;
+    }
+    return ODYSSEY_NATIVE_STORE_OK;
 }
 
 static void edge_fixture_init(EdgeFixture *f)
@@ -1180,8 +1244,10 @@ static void edge_fixture_init(EdgeFixture *f)
                   &f->memory[1], f->plane[1],
                   edge_invalidate, f, &err));
     g_assert_null(err);
-    f->renderer = sgi_renderer_new(&err);
-    g_assert_nonnull(f->renderer);
+    f->native.store = edge_native_store;
+    f->native.store_opaque = f;
+    g_assert_cmpint(sgi_renderer_create(&f->renderer, &err), ==,
+                    SGI_RENDER_CREATE_OK);
     g_assert_null(err);
 }
 
@@ -1211,6 +1277,7 @@ static void edge_store_rgba(void *opaque, SGIColourTarget target, int x,
             y >= clip->r[i].y0 && y <= clip->r[i].y1) {
             sgi_plane_store(&f->memory[0], f->plane[0], x, y,
                             (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]);
+            f->writes[y][x]++;
             return;
         }
     }
@@ -1226,10 +1293,41 @@ static SGIGLDrawResult edge_scalar_draw(void *opaque, const SGIGLDraw *draw)
     };
     SGIGLDrawResult result;
 
+    f->scalar_calls++;
+    f->scalar_draw = draw;
     edge_store_draw = draw;
     result = sgi_soft_draw(&native_rules, &target, draw);
     edge_store_draw = NULL;
-    return result;
+    return f->scalar_result != SGI_GL_DRAW_OK ? f->scalar_result : result;
+}
+
+static SGIGLDrawResult edge_scalar_nothing(void *opaque,
+                                           const SGIGLDraw *draw)
+{
+    EdgeFixture *f = opaque;
+
+    f->scalar_calls++;
+    f->scalar_draw = draw;
+    return SGI_GL_DRAW_OK;
+}
+
+/* Refuse every other attempt that reaches its staged pixels. */
+static SGIRenderResult edge_check_staged(void *opaque,
+                                         const SGIRenderResource *resource,
+                                         const SGIRenderRect *rect,
+                                         const uint32_t *slots,
+                                         size_t stride_slots,
+                                         size_t capacity_slots,
+                                         const SGIRenderWriteCoverage *writes,
+                                         Error **errp)
+{
+    EdgeFixture *f = opaque;
+
+    if (f->staged_checks++ % 2 == f->refuse_parity) {
+        error_setg(errp, "test refusal");
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    return SGI_RENDER_OK;
 }
 
 /*
@@ -1281,25 +1379,198 @@ static void edge_triangle(EdgeTriangle *t, SGIGLDrawState *state,
     };
 }
 
-static void edge_mesa_draw(EdgeFixture *f, const SGIGLDraw *draw)
+static SGIGLDrawResult edge_draw(EdgeFixture *f, const SGIGLDraw *draw)
 {
-    Error *err = NULL;
+    return odyssey_native_mesa_draw_or_scalar(&f->native, f->renderer,
+                                              &native_rules, draw, 1,
+                                              SGI_RENDER_MONO, false,
+                                              SGI_RENDER_REFUSAL_NONE,
+                                              edge_scalar_draw, f,
+                                              &f->counts);
+}
 
-    g_assert_cmpint(odyssey_native_mesa_draw(&f->native, f->renderer,
-                    &native_rules, draw, 1, SGI_RENDER_MONO, false, &err), ==,
-                    SGI_RENDER_OK);
-    g_assert_null(err);
+static void assert_planes_untouched(const EdgeFixture *f)
+{
+    for (unsigned b = 0; b < 2; b++) {
+        for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+            for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                g_assert_cmphex(sgi_plane_load(&f->memory[b], f->plane[b],
+                                x, y), ==, edge_sentinel(b, x, y));
+            }
+        }
+    }
+}
+
+static uint64_t edge_fallbacks(const EdgeFixture *f)
+{
+    uint64_t total = 0;
+
+    for (unsigned r = 0; r < SGI_RENDER_REFUSAL__MAX; r++) {
+        total += f->counts.fallbacks[r];
+    }
+    return total;
 }
 
 static const float edge_red[4] = { 1, 0, 0, 1 };
 static const float edge_green[4] = { 0, 1, 0, 1 };
 
 /*
+ * State the shared renderer refuses goes to the scalar path: the same draw,
+ * whose result is returned as it is, counted once by reason, after a
+ * refusal that touched nothing.
+ */
+static void test_native_fallback_refused_state(void)
+{
+    static const float window[3][2] = { { 1, 1 }, { 7, 1 }, { 1, 7 } };
+    SGIGLDrawState state = edge_state(0, 0);
+    EdgeTriangle t;
+    EdgeFixture f;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    edge_fixture_init(&f);
+    state.fog = 1;
+    edge_triangle(&t, &state, window, edge_red);
+    f.scalar_result = SGI_GL_DRAW_OUT_OF_MEMORY;
+    /* The scalar draw's own result reaches the shared context. */
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_OUT_OF_MEMORY);
+    g_assert_cmpuint(f.scalar_calls, ==, 1);
+    g_assert_true(f.scalar_draw == &t.draw);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_FOG], ==, 1);
+    g_assert_cmpuint(edge_fallbacks(&f), ==, 1);
+    g_assert_cmpuint(f.counts.committed, ==, 0);
+    g_assert_cmpuint(f.invalidations, ==, 0);
+
+    /* The scalar draw wrote the pixels; the next draw tries Mesa again. */
+    g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0], 2, 2), ==,
+                    0xff0000ff);
+    state.fog = 0;
+    f.scalar_result = SGI_GL_DRAW_OK;
+    edge_triangle(&t, &state, window, edge_green);
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.scalar_calls, ==, 1);
+    g_assert_cmpuint(f.counts.committed, ==, 1);
+    g_assert_cmpuint(edge_fallbacks(&f), ==, 1);
+    g_assert_cmpuint(f.invalidations, ==, 1);
+    g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0], 2, 2), ==,
+                    0x00ff00ff);
+    edge_fixture_cleanup(&f);
+}
+
+/*
+ * The device's own refusals, and the adapter's, fall back the same way:
+ * colour-index before binding, unmappable rows, both buffers, and state
+ * that only the mixed-frame set excludes, here blending away from the
+ * comparisons' fixture.
+ */
+static void test_native_fallback_family_refusals(void)
+{
+    static const float window[3][2] = { { 1, 1 }, { 7, 1 }, { 1, 7 } };
+    SGIGLDrawState state = edge_state(0, 0);
+    EdgeTriangle t;
+    EdgeFixture f;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    edge_fixture_init(&f);
+    edge_triangle(&t, &state, window, edge_red);
+    g_assert_cmpint(odyssey_native_mesa_draw_or_scalar(NULL, f.renderer,
+                    &native_rules, &t.draw, 1, SGI_RENDER_MONO, false,
+                    SGI_RENDER_REFUSAL_COLOUR_INDEX, edge_scalar_draw, &f,
+                    &f.counts), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_COLOUR_INDEX], ==,
+                     1);
+    g_assert_cmpint(odyssey_native_mesa_draw_or_scalar(&f.native, f.renderer,
+                    &native_rules, &t.draw, 3, SGI_RENDER_MONO, false,
+                    SGI_RENDER_REFUSAL_NONE, edge_scalar_draw, &f,
+                    &f.counts), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_BUFFERS], ==, 1);
+    state.window_rows_down = 1;
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_WINDOW], ==, 1);
+    state.window_rows_down = 0;
+    state.blend = 1;
+    state.blend_src = SGI_GL_SRC_ALPHA;
+    state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    state.blend_equation = SGI_GL_FUNC_ADD;
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_MIXED_FRAME], ==,
+                     1);
+    g_assert_cmpuint(f.scalar_calls, ==, 4);
+    g_assert_cmpuint(edge_fallbacks(&f), ==, 4);
+    g_assert_cmpuint(f.counts.committed, ==, 0);
+    g_assert_cmpuint(f.invalidations, ==, 0);
+    g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0], 2, 2), ==,
+                    0xff0000ff);
+    edge_fixture_cleanup(&f);
+}
+
+/*
+ * A refusal after host readback, from the staged-pixel check, also leaves
+ * native storage, scanout and every other buffer as they were before the
+ * scalar draw.
+ */
+static void test_native_fallback_staged_refusal(void)
+{
+    static const float window[3][2] = { { 1, 1 }, { 7, 1 }, { 1, 7 } };
+    SGIGLDrawState state = edge_state(0, 0);
+    EdgeTriangle t;
+    EdgeFixture f;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    edge_fixture_init(&f);
+    f.native.check_staged = edge_check_staged;
+    f.native.check_staged_opaque = &f;
+    edge_triangle(&t, &state, window, edge_red);
+    /* A scalar draw that draws nothing: whatever changed was Mesa's. */
+    g_assert_cmpint(odyssey_native_mesa_draw_or_scalar(&f.native, f.renderer,
+                    &native_rules, &t.draw, 1, SGI_RENDER_MONO, false,
+                    SGI_RENDER_REFUSAL_NONE, edge_scalar_nothing, &f,
+                    &f.counts), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.scalar_calls, ==, 1);
+    g_assert_cmpuint(f.staged_checks, ==, 1);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_PRECISION], ==, 1);
+    g_assert_cmpuint(f.invalidations, ==, 0);
+    assert_planes_untouched(&f);
+    edge_fixture_cleanup(&f);
+}
+
+/*
+ * A Mesa failure is reported as itself and never drawn again on the
+ * scalar path, nor counted as a fallback.
+ */
+static void test_native_fallback_failure_not_retried(void)
+{
+    static const float window[3][2] = { { 1, 1 }, { 7, 1 }, { 1, 7 } };
+    SGIGLDrawState state = edge_state(0, 0);
+    EdgeTriangle t;
+    EdgeFixture f;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    edge_fixture_init(&f);
+    edge_triangle(&t, &state, window, edge_red);
+    /* An attempted snapshot reports a resource failure. */
+    f.memory[0].size = 0;
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_RESOURCE_ERROR);
+    g_assert_cmpuint(f.scalar_calls, ==, 0);
+    g_assert_cmpuint(edge_fallbacks(&f), ==, 0);
+    g_assert_cmpuint(f.counts.committed, ==, 0);
+    edge_fixture_cleanup(&f);
+}
+
+/*
  * Two triangles sharing an edge through a line of pixel centres. Which
  * triangle owns those centres follows the scalar path's tie rule in the
- * device's own window rows. A frame that splits the pair between the
- * paths must equal the all-scalar frame: every edge centre drawn once, by
- * the triangle the scalar path gives it to.
+ * device's own window rows, which the adapter gives Mesa unmirrored. A
+ * frame that splits the pair between the paths, in either order, must
+ * equal the all-scalar frame, with every edge centre written exactly once,
+ * by the triangle the scalar path gives it to.
  */
 static const struct {
     const char *name;
@@ -1350,6 +1621,24 @@ static void edge_plane_copy(const EdgeFixture *f,
     }
 }
 
+/*
+ * No pixel written twice, and every edge centre in the plane written,
+ * which together mean each edge centre was drawn exactly once.
+ */
+static void edge_assert_writes(const EdgeFixture *f, unsigned p,
+                               const int32_t origin[2])
+{
+    for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+        for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+            g_assert_cmpuint(f->writes[y][x], <=, 1);
+            if (edge_centre(p, (int32_t)x - origin[0],
+                            (int32_t)y - origin[1])) {
+                g_assert_cmpuint(f->writes[y][x], ==, 1);
+            }
+        }
+    }
+}
+
 static void test_native_rows_shared_edges(void)
 {
     if (!native_rows_require_mesa()) {
@@ -1374,6 +1663,7 @@ static void test_native_rows_shared_edges(void)
             g_assert_cmpint(edge_scalar_draw(&f, &b.draw), ==,
                             SGI_GL_DRAW_OK);
             edge_plane_copy(&f, scalar);
+            edge_assert_writes(&f, p, edge_origins[o]);
             edge_fixture_cleanup(&f);
             /* Both draw, and every centre on the shared edge is drawn. */
             for (uint32_t y = 0; y < EDGE_SIZE; y++) {
@@ -1392,31 +1682,45 @@ static void test_native_rows_shared_edges(void)
             g_assert_cmpuint(edge_red_pixels, >, 0);
             g_assert_cmpuint(edge_green_pixels, >, 0);
 
-            /* Split 0 draws a on the scalar path, split 1 draws b there. */
-            for (unsigned split = 0; split < 2; split++) {
+            /*
+             * Order 1 draws b first. Parity 0 sends the first draw to the
+             * scalar path, parity 1 the second.
+             */
+            for (unsigned split = 0; split < 4; split++) {
+                unsigned order = split / 2, parity = split % 2;
+                const SGIGLDraw *first = order ? &b.draw : &a.draw;
+                const SGIGLDraw *second = order ? &a.draw : &b.draw;
+
                 edge_fixture_init(&f);
-                if (split) {
-                    edge_mesa_draw(&f, &a.draw);
-                    edge_scalar_draw(&f, &b.draw);
-                } else {
-                    edge_scalar_draw(&f, &a.draw);
-                    edge_mesa_draw(&f, &b.draw);
-                }
+                f.native.check_staged = edge_check_staged;
+                f.native.check_staged_opaque = &f;
+                f.refuse_parity = parity;
+                g_assert_cmpint(edge_draw(&f, first), ==, SGI_GL_DRAW_OK);
+                g_assert_cmpint(edge_draw(&f, second), ==, SGI_GL_DRAW_OK);
+                g_assert_cmpuint(f.counts.committed, ==, 1);
+                g_assert_cmpuint(
+                    f.counts.fallbacks[SGI_RENDER_REFUSAL_PRECISION], ==, 1);
+                g_assert_cmpuint(f.scalar_calls, ==, 1);
+                g_assert_true(f.scalar_draw == (parity ? second : first));
                 edge_plane_copy(&f, mixed);
                 for (uint32_t y = 0; y < EDGE_SIZE; y++) {
                     for (uint32_t x = 0; x < EDGE_SIZE; x++) {
-                        if (mixed[y][x] != scalar[y][x]) {
+                        if (mixed[y][x] != scalar[y][x] ||
+                            f.writes[y][x] > 1) {
                             g_test_message("%s origin %d,%d split %u: "
-                                           "pixel %u,%u is %08x, all-scalar "
-                                           "%08x", edge_pairs[p].name,
+                                           "pixel %u,%u is %08x written "
+                                           "%u times, all-scalar %08x",
+                                           edge_pairs[p].name,
                                            edge_origins[o][0],
                                            edge_origins[o][1], split, x, y,
-                                           mixed[y][x], scalar[y][x]);
+                                           mixed[y][x], f.writes[y][x],
+                                           scalar[y][x]);
                         }
                     }
                 }
                 g_assert_cmpmem(mixed, sizeof(mixed), scalar,
                                 sizeof(scalar));
+                edge_assert_writes(&f, p, edge_origins[o]);
                 for (uint32_t y = 0; y < EDGE_SIZE; y++) {
                     for (uint32_t x = 0; x < EDGE_SIZE; x++) {
                         g_assert_cmphex(sgi_plane_load(&f.memory[1],
@@ -1472,9 +1776,9 @@ static void test_native_rows_origin_half_subpixel(void)
         if (cases[c].result != SGI_RENDER_OK) {
             f.memory[0].size = 0;
         }
-        g_assert_cmpint(odyssey_native_mesa_draw(&f.native, f.renderer,
-                        &native_rules, &t.draw, 1, SGI_RENDER_MONO, false,
-                        &err), ==, cases[c].result);
+        g_assert_cmpint(native_draw(&f.native, f.renderer, &native_rules,
+                        &t.draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                        cases[c].result);
         f.memory[0].size = saved_size;
         if (cases[c].result == SGI_RENDER_OK) {
             g_assert_null(err);
@@ -1482,6 +1786,7 @@ static void test_native_rows_origin_half_subpixel(void)
         } else {
             g_assert_nonnull(err);
             g_assert_nonnull(strstr(error_get_pretty(err), "snaps"));
+            g_assert_cmpint(last_reason, ==, SGI_RENDER_REFUSAL_WINDOW);
             error_free(err);
             g_assert_cmpuint(f.invalidations, ==, 0);
             for (uint32_t y = 0; y < EDGE_SIZE; y++) {
@@ -1493,6 +1798,42 @@ static void test_native_rows_origin_half_subpixel(void)
         }
         edge_fixture_cleanup(&f);
     }
+}
+/*
+ * The draw above that would snap differently at origin x 1 falls back:
+ * counted under window, and the frame is the all-scalar one exactly.
+ */
+static void test_native_fallback_origin_half_subpixel(void)
+{
+    static const float window[3][2] = {
+        { -1.0f / 512, 1 }, { 7, 1 }, { -1.0f / 512, 7 },
+    };
+    SGIGLDrawState state = edge_state(1, 0);
+    uint32_t scalar[EDGE_SIZE][EDGE_SIZE], mixed[EDGE_SIZE][EDGE_SIZE];
+    EdgeTriangle t;
+    EdgeFixture f;
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    edge_triangle(&t, &state, window, edge_red);
+    edge_fixture_init(&f);
+    g_assert_cmpint(edge_scalar_draw(&f, &t.draw), ==, SGI_GL_DRAW_OK);
+    edge_plane_copy(&f, scalar);
+    edge_fixture_cleanup(&f);
+
+    edge_fixture_init(&f);
+    g_assert_cmpint(edge_draw(&f, &t.draw), ==, SGI_GL_DRAW_OK);
+    g_assert_cmpuint(f.counts.fallbacks[SGI_RENDER_REFUSAL_WINDOW], ==, 1);
+    g_assert_cmpuint(edge_fallbacks(&f), ==, 1);
+    g_assert_cmpuint(f.counts.committed, ==, 0);
+    g_assert_cmpuint(f.scalar_calls, ==, 1);
+    g_assert_cmpuint(f.invalidations, ==, 0);
+    edge_plane_copy(&f, mixed);
+    g_assert_cmpmem(mixed, sizeof(mixed), scalar, sizeof(scalar));
+    /* The triangle drew: plane column 1 is window column 0. */
+    g_assert_cmphex(mixed[2][1], ==, 0xff0000ff);
+    edge_fixture_cleanup(&f);
 }
 #endif
 
@@ -1541,6 +1882,16 @@ int main(int argc, char **argv)
                     test_native_rows_shared_edges);
     g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-half-subpixel",
                     test_native_rows_origin_half_subpixel);
+    g_test_add_func("/sgi-odyssey-native/fallback-refused-state",
+                    test_native_fallback_refused_state);
+    g_test_add_func("/sgi-odyssey-native/fallback-family-refusals",
+                    test_native_fallback_family_refusals);
+    g_test_add_func("/sgi-odyssey-native/fallback-staged-refusal",
+                    test_native_fallback_staged_refusal);
+    g_test_add_func("/sgi-odyssey-native/fallback-failure-not-retried",
+                    test_native_fallback_failure_not_retried);
+    g_test_add_func("/sgi-odyssey-native/fallback-origin-half-subpixel",
+                    test_native_fallback_origin_half_subpixel);
 #endif
     return g_test_run();
 }

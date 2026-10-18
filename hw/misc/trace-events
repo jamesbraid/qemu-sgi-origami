@@ -192,6 +192,7 @@ sgi_odyssey_mesa_draw_input(uint32_t mode, uint32_t count, uint32_t draw_flags, 
 sgi_odyssey_mesa_draw_window(int32_t ox, int32_t oy, uint32_t dw, uint32_t dh, int32_t vx, int32_t vy, int32_t vw, int32_t vh, uint32_t rw, uint32_t rh) "origin %d,%d extent %ux%u viewport %d,%d %dx%d resource %ux%u"
 sgi_odyssey_mesa_draw_resource(bool finite_matrices, bool finite_vertices, bool found, uint32_t buffer, uint32_t depth, uint32_t components) "finite-matrices=%d finite-vertices=%d found=%d buffer %u depth %u components %u"
 sgi_odyssey_mesa_renderer_result(int result) "render-result %d"
+sgi_odyssey_mesa_fallback(const char *reason, uint32_t mode, uint32_t count) "reason %s mode %u count %u"
 sgi_odyssey_native_commit_covered(int buffer, uint64_t processed_pixels, uint32_t successful_stores, bool partial_pixel, bool extent_known, int result) "buffer %d processed-pixels %" PRIu64 " successful-stores %u partial-pixel=%d extent-known=%d render-result %d"
 
 # sgi-mgras-gl.c
