@@ -1089,8 +1089,9 @@ static void test_native_rows_unsupported_profile(void)
             state.viewport[0] = 1;
             break;
         case 3:
-            /* Height minus viewport y and height. */
-            state.viewport[1] = INT32_MIN;
+            /* Viewport y plus origin y; scissor y is 0 + origin y. */
+            state.drawable.origin[1] = INT32_MAX;
+            state.viewport[1] = 1;
             break;
         case 4:
             /* Scissor x plus origin x; viewport x is 0 + origin x. */
@@ -1098,8 +1099,9 @@ static void test_native_rows_unsupported_profile(void)
             state.scissor[0] = INT32_MAX;
             break;
         default:
-            /* Height minus scissor y and height. */
-            state.scissor[1] = INT32_MIN;
+            /* Scissor y plus origin y; viewport y is 0 + origin y. */
+            state.drawable.origin[1] = 1;
+            state.scissor[1] = INT32_MAX;
             break;
         }
         /* An attempted snapshot would report a resource failure here. */
@@ -1119,6 +1121,378 @@ static void test_native_rows_unsupported_profile(void)
     }
     sgi_renderer_free(renderer);
     native_fixture_cleanup(&f);
+}
+
+/*
+ * Shared edges: an 8 by 8 pair of planes the device's way round, drawn by
+ * the adapter or by the scalar rasterizer storing as the device does, at
+ * plane pixel (origin + window pixel) when inside the plane and a drawable
+ * clip rectangle.
+ */
+#define EDGE_SIZE 8
+
+typedef struct EdgeFixture {
+    SGIBoardMemory memory[2];
+    const SGIPlane *plane[2];
+    OdysseyNativeMesa native;
+    SGIRenderer *renderer;
+    unsigned invalidations;
+} EdgeFixture;
+
+static void edge_invalidate(void *opaque)
+{
+    EdgeFixture *f = opaque;
+
+    f->invalidations++;
+}
+
+static uint32_t edge_sentinel(unsigned b, uint32_t x, uint32_t y)
+{
+    return 0x10203000 + b * 0x01000000 + y * EDGE_SIZE + x;
+}
+
+static void edge_fixture_init(EdgeFixture *f)
+{
+    SGIPlane plane = {
+        .format = SGI_PLANE_RGBA8,
+        .packing = SGI_PACK_BE_RED_HIGH,
+        .width = EDGE_SIZE, .height = EDGE_SIZE,
+        .stride = EDGE_SIZE * 4, .len = EDGE_SIZE * EDGE_SIZE * 4,
+    };
+    Error *err = NULL;
+
+    memset(f, 0, sizeof(*f));
+    for (unsigned b = 0; b < 2; b++) {
+        uint32_t id;
+
+        sgi_board_memory_init(&f->memory[b], plane.len);
+        id = sgi_board_memory_add_plane(&f->memory[b], &plane, &error_abort);
+        f->plane[b] = sgi_board_memory_plane(&f->memory[b], id);
+        for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+            for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                sgi_plane_store(&f->memory[b], f->plane[b], x, y,
+                                edge_sentinel(b, x, y));
+            }
+        }
+    }
+    g_assert_true(odyssey_native_mesa_bind(&f->native,
+                  &f->memory[0], f->plane[0],
+                  &f->memory[1], f->plane[1],
+                  edge_invalidate, f, &err));
+    g_assert_null(err);
+    f->renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(f->renderer);
+    g_assert_null(err);
+}
+
+static void edge_fixture_cleanup(EdgeFixture *f)
+{
+    sgi_renderer_free(f->renderer);
+    for (unsigned b = 0; b < 2; b++) {
+        sgi_board_memory_cleanup(&f->memory[b]);
+    }
+}
+
+static const SGIGLDraw *edge_store_draw;
+
+static void edge_store_rgba(void *opaque, SGIColourTarget target, int x,
+                            int y, const SGIRasterColour *colour)
+{
+    EdgeFixture *f = opaque;
+    const SGIClipList *clip = &edge_store_draw->state->drawable.clip;
+    const uint32_t *c = colour->component;
+
+    g_assert_cmpint(target, ==, 0);
+    if (x < 0 || y < 0 || x >= EDGE_SIZE || y >= EDGE_SIZE) {
+        return;
+    }
+    for (uint32_t i = 0; i < clip->n; i++) {
+        if (x >= clip->r[i].x0 && x <= clip->r[i].x1 &&
+            y >= clip->r[i].y0 && y <= clip->r[i].y1) {
+            sgi_plane_store(&f->memory[0], f->plane[0], x, y,
+                            (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]);
+            return;
+        }
+    }
+}
+
+/* The device's scalar draw: the shared rasterizer under its RGBA rules. */
+static SGIGLDrawResult edge_scalar_draw(void *opaque, const SGIGLDraw *draw)
+{
+    EdgeFixture *f = opaque;
+    SGIRasterTarget target = {
+        .store_rgba = edge_store_rgba,
+        .opaque = f,
+    };
+    SGIGLDrawResult result;
+
+    edge_store_draw = draw;
+    result = sgi_soft_draw(&native_rules, &target, draw);
+    edge_store_draw = NULL;
+    return result;
+}
+
+/*
+ * Window pixels map to the plane through viewport (-8, -8, 32, 32) and
+ * identity matrices: window = 16 * ndc + 8. Rows run down the plane from
+ * the drawable origin, as the device's do.
+ */
+static SGIGLDrawState edge_state(int32_t ox, int32_t oy)
+{
+    SGIGLDrawState state = {
+        .shade_model = SGI_GL_FLAT,
+        .draw_buffers = SGI_GL_DRAW_FRONT,
+        .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        .front_face = SGI_GL_CCW,
+        .drawable = {
+            .bound = true, .front = 0, .origin = { ox, oy },
+            .clip = { .n = 1,
+                      .r[0] = { 0, 0, EDGE_SIZE - 1, EDGE_SIZE - 1 } },
+        },
+        .viewport = { -8, -8, 32, 32 },
+        .scissor_test = 1, .scissor = { -8, -8, 32, 32 },
+    };
+
+    for (unsigned i = 0; i < 4; i++) {
+        state.modelview[i * 5] = 1;
+        state.projection[i * 5] = 1;
+    }
+    return state;
+}
+
+typedef struct EdgeTriangle {
+    float vertices[3][SGI_GL_VERTEX_FLOATS];
+    SGIGLDraw draw;
+} EdgeTriangle;
+
+static void edge_triangle(EdgeTriangle *t, SGIGLDrawState *state,
+                          const float window[3][2], const float colour[4])
+{
+    memset(t, 0, sizeof(*t));
+    for (unsigned i = 0; i < 3; i++) {
+        t->vertices[i][SGI_GL_V_POSITION] = (window[i][0] - 8) / 16;
+        t->vertices[i][SGI_GL_V_POSITION + 1] = (window[i][1] - 8) / 16;
+        t->vertices[i][SGI_GL_V_POSITION + 3] = 1;
+        memcpy(&t->vertices[i][SGI_GL_V_COLOR], colour, sizeof(float) * 4);
+    }
+    t->draw = (SGIGLDraw) {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &t->vertices[0][0], .state = state,
+    };
+}
+
+static void edge_mesa_draw(EdgeFixture *f, const SGIGLDraw *draw)
+{
+    Error *err = NULL;
+
+    g_assert_cmpint(odyssey_native_mesa_draw(&f->native, f->renderer,
+                    &native_rules, draw, 1, SGI_RENDER_MONO, false, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+}
+
+static const float edge_red[4] = { 1, 0, 0, 1 };
+static const float edge_green[4] = { 0, 1, 0, 1 };
+
+/*
+ * Two triangles sharing an edge through a line of pixel centres. Which
+ * triangle owns those centres follows the scalar path's tie rule in the
+ * device's own window rows. A frame that splits the pair between the
+ * paths must equal the all-scalar frame: every edge centre drawn once, by
+ * the triangle the scalar path gives it to.
+ */
+static const struct {
+    const char *name;
+    float a[3][2], b[3][2];
+} edge_pairs[] = {
+    { "horizontal",
+      { { -1, 3.5 }, { 9, 3.5 }, { 4, -1 } },
+      { { 9, 3.5 }, { -1, 3.5 }, { 4, 9 } } },
+    { "vertical",
+      { { 3.5, -1 }, { 3.5, 9 }, { -1, 4 } },
+      { { 3.5, 9 }, { 3.5, -1 }, { 9, 4 } } },
+    { "diagonal",
+      { { -0.5, -0.5 }, { 8.5, 8.5 }, { -0.5, 8.5 } },
+      { { -0.5, -0.5 }, { 8.5, -0.5 }, { 8.5, 8.5 } } },
+    { "antidiagonal",
+      { { -0.5, 8.5 }, { 8.5, -0.5 }, { -0.5, -0.5 } },
+      { { 8.5, -0.5 }, { -0.5, 8.5 }, { 8.5, 8.5 } } },
+};
+
+/* Whether window pixel (x, y)'s centre lies on pair p's shared edge. */
+static bool edge_centre(unsigned p, int32_t x, int32_t y)
+{
+    if (x < 0 || y < 0 || x >= EDGE_SIZE || y >= EDGE_SIZE) {
+        return false;
+    }
+    switch (p) {
+    case 0:
+        return y == 3;
+    case 1:
+        return x == 3;
+    case 2:
+        return x == y;
+    default:
+        return x + y == EDGE_SIZE - 1;
+    }
+}
+
+/* Drawable origins: the plane's top row, and rows partway down it. */
+static const int32_t edge_origins[][2] = { { 0, 0 }, { 1, 3 } };
+
+static void edge_plane_copy(const EdgeFixture *f,
+                            uint32_t out[EDGE_SIZE][EDGE_SIZE])
+{
+    for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+        for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+            out[y][x] = sgi_plane_load(&f->memory[0], f->plane[0], x, y);
+        }
+    }
+}
+
+static void test_native_rows_shared_edges(void)
+{
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    for (unsigned p = 0; p < ARRAY_SIZE(edge_pairs); p++) {
+        for (unsigned o = 0; o < ARRAY_SIZE(edge_origins); o++) {
+            SGIGLDrawState state = edge_state(edge_origins[o][0],
+                                              edge_origins[o][1]);
+            uint32_t scalar[EDGE_SIZE][EDGE_SIZE];
+            uint32_t mixed[EDGE_SIZE][EDGE_SIZE];
+            unsigned edge_red_pixels = 0, edge_green_pixels = 0;
+            EdgeTriangle a, b;
+            EdgeFixture f;
+
+            edge_triangle(&a, &state, edge_pairs[p].a, edge_red);
+            edge_triangle(&b, &state, edge_pairs[p].b, edge_green);
+
+            edge_fixture_init(&f);
+            g_assert_cmpint(edge_scalar_draw(&f, &a.draw), ==,
+                            SGI_GL_DRAW_OK);
+            g_assert_cmpint(edge_scalar_draw(&f, &b.draw), ==,
+                            SGI_GL_DRAW_OK);
+            edge_plane_copy(&f, scalar);
+            edge_fixture_cleanup(&f);
+            /* Both draw, and every centre on the shared edge is drawn. */
+            for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+                for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                    int32_t wx = x - edge_origins[o][0];
+                    int32_t wy = y - edge_origins[o][1];
+
+                    edge_red_pixels += scalar[y][x] == 0xff0000ff;
+                    edge_green_pixels += scalar[y][x] == 0x00ff00ff;
+                    if (edge_centre(p, wx, wy)) {
+                        g_assert_true(scalar[y][x] == 0xff0000ff ||
+                                      scalar[y][x] == 0x00ff00ff);
+                    }
+                }
+            }
+            g_assert_cmpuint(edge_red_pixels, >, 0);
+            g_assert_cmpuint(edge_green_pixels, >, 0);
+
+            /* Split 0 draws a on the scalar path, split 1 draws b there. */
+            for (unsigned split = 0; split < 2; split++) {
+                edge_fixture_init(&f);
+                if (split) {
+                    edge_mesa_draw(&f, &a.draw);
+                    edge_scalar_draw(&f, &b.draw);
+                } else {
+                    edge_scalar_draw(&f, &a.draw);
+                    edge_mesa_draw(&f, &b.draw);
+                }
+                edge_plane_copy(&f, mixed);
+                for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+                    for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                        if (mixed[y][x] != scalar[y][x]) {
+                            g_test_message("%s origin %d,%d split %u: "
+                                           "pixel %u,%u is %08x, all-scalar "
+                                           "%08x", edge_pairs[p].name,
+                                           edge_origins[o][0],
+                                           edge_origins[o][1], split, x, y,
+                                           mixed[y][x], scalar[y][x]);
+                        }
+                    }
+                }
+                g_assert_cmpmem(mixed, sizeof(mixed), scalar,
+                                sizeof(scalar));
+                for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+                    for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                        g_assert_cmphex(sgi_plane_load(&f.memory[1],
+                                        f.plane[1], x, y), ==,
+                                        edge_sentinel(1, x, y));
+                    }
+                }
+                edge_fixture_cleanup(&f);
+            }
+        }
+    }
+}
+/*
+ * The scalar path snaps window coordinates and adds the drawable origin
+ * after; Mesa snaps with the origin folded in. Window x = -1/512 is half a
+ * subpixel below zero and rounds away from zero to -1/256, but 1 - 1/512
+ * rounds up to 1. At origin x 1 the adapter refuses the draw before any
+ * native access. The same vertex at origin 0, and +1/512 at origin 1,
+ * keep their sign and draw on Mesa.
+ */
+static void test_native_rows_origin_half_subpixel(void)
+{
+    static const float minus[3][2] = {
+        { -1.0f / 512, 1 }, { 7, 1 }, { -1.0f / 512, 7 },
+    };
+    static const float plus[3][2] = {
+        { 1.0f / 512, 1 }, { 7, 1 }, { 1.0f / 512, 7 },
+    };
+    static const struct {
+        const float (*window)[2];
+        int32_t ox;
+        SGIRenderResult result;
+    } cases[] = {
+        { minus, 1, SGI_RENDER_UNSUPPORTED },
+        { minus, 0, SGI_RENDER_OK },
+        { plus, 1, SGI_RENDER_OK },
+    };
+
+    if (!native_rows_require_mesa()) {
+        return;
+    }
+    for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
+        SGIGLDrawState state = edge_state(cases[c].ox, 0);
+        EdgeTriangle t;
+        EdgeFixture f;
+        Error *err = NULL;
+        uint64_t saved_size;
+
+        edge_fixture_init(&f);
+        edge_triangle(&t, &state, cases[c].window, edge_red);
+        /* A refused draw must not reach the snapshot. */
+        saved_size = f.memory[0].size;
+        if (cases[c].result != SGI_RENDER_OK) {
+            f.memory[0].size = 0;
+        }
+        g_assert_cmpint(odyssey_native_mesa_draw(&f.native, f.renderer,
+                        &native_rules, &t.draw, 1, SGI_RENDER_MONO, false,
+                        &err), ==, cases[c].result);
+        f.memory[0].size = saved_size;
+        if (cases[c].result == SGI_RENDER_OK) {
+            g_assert_null(err);
+            g_assert_cmpuint(f.invalidations, ==, 1);
+        } else {
+            g_assert_nonnull(err);
+            g_assert_nonnull(strstr(error_get_pretty(err), "snaps"));
+            error_free(err);
+            g_assert_cmpuint(f.invalidations, ==, 0);
+            for (uint32_t y = 0; y < EDGE_SIZE; y++) {
+                for (uint32_t x = 0; x < EDGE_SIZE; x++) {
+                    g_assert_cmphex(sgi_plane_load(&f.memory[0], f.plane[0],
+                                    x, y), ==, edge_sentinel(0, x, y));
+                }
+            }
+        }
+        edge_fixture_cleanup(&f);
+    }
 }
 #endif
 
@@ -1163,6 +1537,10 @@ int main(int argc, char **argv)
                     test_native_rows_extent_refused);
     g_test_add_func("/sgi-odyssey-native/mesa-rows-unsupported-profile",
                     test_native_rows_unsupported_profile);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-shared-edges",
+                    test_native_rows_shared_edges);
+    g_test_add_func("/sgi-odyssey-native/mesa-rows-origin-half-subpixel",
+                    test_native_rows_origin_half_subpixel);
 #endif
     return g_test_run();
 }
