@@ -2016,10 +2016,12 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/route-table-words",
                    test_route_table_words);
     qtest_add_func("/sgi/sn1-router/migration", test_migration);
-    qtest_add_data_func("/sgi/sn1-router/migration-profile/ordinary-destination",
-                        GINT_TO_POINTER(false), test_migration_profile_mismatch);
-    qtest_add_data_func("/sgi/sn1-router/migration-profile/synthetic-destination",
-                        GINT_TO_POINTER(true), test_migration_profile_mismatch);
+    qtest_add_data_func(
+        "/sgi/sn1-router/migration-profile/ordinary-destination",
+        GINT_TO_POINTER(false), test_migration_profile_mismatch);
+    qtest_add_data_func(
+        "/sgi/sn1-router/migration-profile/synthetic-destination",
+        GINT_TO_POINTER(true), test_migration_profile_mismatch);
     qtest_add_func("/sgi/sn1-router/revision-range", test_revision_range);
     qtest_add_func("/sgi/sn1-router/revision-overflow",
                    test_revision_overflow);

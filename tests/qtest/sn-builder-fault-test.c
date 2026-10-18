@@ -1934,8 +1934,10 @@ static const TypeInfo routed_memory_type = {
     .class_init = routed_memory_class_init,
 };
 
-/* Keep the older notification fixture's cables while testing the public
- * two-router route on its specified ports. */
+/*
+ * Keep the older notification fixture's cables while testing the public
+ * two-router route on its specified ports.
+ */
 static void routed_memory_public_class_init(ObjectClass *oc, const void *data)
 {
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);

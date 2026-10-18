@@ -2176,7 +2176,7 @@ static void test_origin300_xbridge_revisions(void)
     qtest_quit(qts);
 }
 
-/* A unique mapped BAR makes the 64-bit alias use its card's cached reset width. */
+/* A unique mapped BAR makes the alias use the card's cached reset width. */
 static void test_mem64_target_width(void)
 {
     QTestState *qts = transport_start_card("sgi-bridge-dma-test",
