@@ -2930,7 +2930,7 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
     g_assert_cmpstr(pic, ==, "sgi-pic");
     g_assert_cmpstr(ioc4, ==, "sgi-ioc4");
     g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/l1",
-                                  "port-speed-first"), ==, 0);
+                                  "port-speed-first"), ==, 1);
     g_assert_cmpstr(scsi, ==, "qlogic-isp12160");
     g_assert_cmpstr(ethernet, ==, "bcm570x");
     g_assert_cmpstr(rtc, ==, "ds1742");
