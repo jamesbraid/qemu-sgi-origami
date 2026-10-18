@@ -230,6 +230,7 @@ texture /mips64/sn1/odyssey/texture-adapter/nearest
 texture /mips64/sn1/odyssey/texture-adapter/detail-zero-identity
 texture /mips64/sn1/odyssey/texture-adapter/detail-zero-alpha-reference
 texture /mips64/sn1/odyssey/texture-adapter/detail-rectangular-migration
+texture /mips64/sn1/odyssey/texture-adapter/detail-function-endpoints
 texture /mips64/sn1/odyssey/texture-adapter/nearest-clamp
 texture /mips64/sn1/odyssey/texture-adapter/nearest-clamp-border
 texture /mips64/sn1/odyssey/texture-adapter/clamp-border-state-restore
