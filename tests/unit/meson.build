@@ -216,6 +216,7 @@ endif
 if have_system and opengl.found()
   renderer_gl_test = ['../../hw/display/sgi/renderer-gl.c',
                       '../../hw/display/sgi/renderer.c',
+                      '../../hw/display/sgi/render-shadow.c',
                       '../../hw/display/sgi/render-resource.c',
                       '../../hw/display/sgi/gl-context.c',
                       '../../hw/display/sgi/rasterizer.c',

@@ -587,6 +587,97 @@ route to mixing. CPU features such as fused multiply-add are not in the
 strings; the runtime probes guard them. The ``driver-identity`` unit case
 fails if the tests run on a different build.
 
+Shadow comparison
+-----------------
+
+Shadow comparison is a test mode that measures Mesa against the scalar path
+on real guest work. The scalar path stays authoritative and is the only
+path that writes native storage, so the guest sees exactly scalar
+behaviour. ``include/hw/display/sgi/render-shadow.h`` holds the shared
+part; a family enables it with a test property and supplies a private
+target, the same resources in the same order with callbacks over private
+host storage: a snapshot, a dense commit and a covered commit.
+
+For each draw the family:
+
+1. calls ``sgi_render_shadow_capture()`` before the scalar draw, which
+   snapshots every native resource at full extent, the texture included,
+   and commits it densely into the private copy;
+2. runs the scalar draw against native storage as usual;
+3. calls ``sgi_render_shadow_draw()`` with the stipple phase as it was
+   before the scalar draw, or ``sgi_render_shadow_raster()`` for a decoded
+   raster operation such as CLEAR.
+
+The shadow call attempts the draw on its own renderer against the private
+target, with the mixed-frame flag clear so that every state Mesa accepts is
+exercised, and with the ``quiet`` option, which suppresses the renderer's
+own once-per-draw reports. The family's commit callbacks write the result
+into the private copy under the family's commit rules. The attempt counts a
+borrowed stipple phase in its own copy, started from the value given, and
+leaves the scalar draw's phase alone. The call then compares every
+non-texture resource of the private copy with native storage, slot by slot
+in resource, row and column order, and the two final phases.
+
+It also compares write coverage. The shadow wraps the private target's
+commit callbacks and records every pixel the Mesa attempt writes. The
+family records the pixels its scalar store callbacks write during the
+scalar draw, one byte a pixel per resource in the resource's row order,
+and passes them as ``scalar_writes``. A pixel one path wrote and the other
+did not is then a mismatch even where both leave the same value: a write
+of the colour already held, as in an edge-ownership swap between two
+triangles of one colour, or a store whose side effect, such as a tag, the
+other path lacks. Without masks for every compared resource only contents
+are compared; the outcome's ``coverage_compared`` is false and such draws
+are counted apart as ``without_coverage``. A session counts as evidence for
+the default only with coverage compared. The call returns:
+
+- ``MATCH``;
+- ``MISMATCH``, with the first differing pixel, each path's slots and
+  whether each wrote it, or the two phases;
+- ``REFUSED``, with the refusal reason; nothing is compared, and it is a
+  shadow refusal, not a fallback;
+- ``FAILED``, with the cause. A Mesa failure never stops the VM, never
+  becomes guest out-of-memory and latches nothing the scalar path uses: the
+  shadow renderer is freed and a new one created for the next draw. A
+  failed family callback is a failure too, but keeps the renderer;
+- ``DISABLED`` when the shadow renderer could not be created, whose reason
+  ``sgi_render_shadow_disabled()`` reports for the session.
+
+Each compared draw carries the version 1 signature from
+``sgi_render_draw_signature()``: canonical text naming the primitive class,
+aliased point size, line width and stipple enables, shade model, blending,
+texture environment, filters, wraps and image size, the raster rules, the
+colour and alpha storage widths, the row origin, whether the viewport,
+scissor, clips and matrices each meet the comparison fixture, and whether
+any clipped vertex has a depth within 2^-32 of a plane. Rules are written
+by name, so renumbering an enum cannot change a signature, and text that
+would not fit is counted as the one signature ``v1 overflow`` rather than
+cut. A decoded raster operation's signature names the operation, the
+buffers it clears, the colour storage widths and row origin and the rules'
+bit widths. Depth and stencil
+functions, colour masks, logic op, alpha test and dither are not in
+version 1; adding a field the mixed-frame check accepts increments the
+version. The signature also says whether the draw is in-set, that is
+whether the mixed-frame check accepts it on the reference driver; the tag
+and the draw path call the same acceptance function, so they agree. The
+session counts matches, mismatches, refusals and failures per signature
+(``sgi_render_shadow_counts()``, ``sgi_render_shadow_foreach()``) and in
+total, and emits the trace events ``sgi_render_shadow_mismatch``, naming
+the signature and the first differing pixel, ``sgi_render_shadow_refused``,
+``sgi_render_shadow_failed`` and ``sgi_render_shadow_disabled``. Keeping a
+mismatching draw's inputs as a replay vector is the family's part, since
+only the family can serialize its draw. Shadow comparison doubles the
+rendering work and is a test mode only.
+
+``draw-signature`` checks the signature's stability, its fields, the rule
+names, the overflow signature and the in-set tag. ``shadow-comparison``
+checks a match, a mismatch from smooth triangles moved one subpixel with
+its first differing pixel, a refusal, a failure that does not latch, the
+stipple phase compared on its own copy, the count without coverage and a
+private target with other rows. ``shadow-coverage`` checks coverage
+mismatches where contents agree, and ``shadow-raster`` a matching,
+refused, unmasked and coverage-mismatched CLEAR.
+
 Build and test
 --------------
 

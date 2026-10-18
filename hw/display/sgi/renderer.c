@@ -1318,6 +1318,14 @@ static const char *sgi_render_rule_name(const char *const *names, size_t n,
     return value < n && names[value] ? names[value] : "unknown";
 }
 
+/* scalar-match-clear proves CLEAR at 4, 8 and 10 bits. */
+static bool sgi_render_clear_mixed_proven(const SGIRasterRules *rules)
+{
+    return sgi_raster_rules_supported(rules) &&
+           (rules->color_bits == 4 || rules->color_bits == 8 ||
+            rules->color_bits == 10);
+}
+
 /* Whether any clipped vertex of the draw lies within the depth margin. */
 static bool sgi_render_draw_near_plane(const SGIRasterRules *rules,
                                        const SGIGLDraw *draw)
@@ -1443,6 +1451,58 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
             SGI_RENDER_REFUSAL_NONE;
 }
 
+void sgi_render_raster_signature(const SGIRasterRules *rules,
+                                 const SGIRasterTarget *target,
+                                 const SGIRasterOp *op,
+                                 SGIRenderSignature *signature)
+{
+    const SGIRenderResource *res = op->ntargets ?
+        sgi_render_colour_resource(target, op->targets[0]) : NULL;
+    bool colour = (op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT) &&
+                  op->clear_colour_mask;
+    bool depth = op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT;
+    bool stencil = (op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT) &&
+                   (op->stencil_mask & 0xff);
+    unsigned widths[4] = { 0 };
+    bool in_set;
+
+    memset(signature, 0, sizeof(*signature));
+    signature->version = SGI_RENDER_SIGNATURE_VERSION;
+    for (unsigned c = 0; res && c < res->component_count && c < 4; c++) {
+        widths[c] = res->component[c].storage_bits;
+    }
+    if (g_snprintf(signature->text, sizeof(signature->text),
+                   "v%u %s buffers=0x%x index=%u widths=%u/%u/%u/%u "
+                   "rows=%s rules=%u/%u/%u", SGI_RENDER_SIGNATURE_VERSION,
+                   op->kind == SGI_RASTER_CLEAR ? "clear" : "raster-op",
+                   op->clear_buffers, op->index_bits, widths[0], widths[1],
+                   widths[2], widths[3],
+                   !res ? "none" : res->bottom_origin ? "bottom" : "top",
+                   rules->color_bits, rules->depth_bits,
+                   rules->stencil_bits) >=
+        MIN(sizeof(signature->text), sgi_render_signature_limit)) {
+        g_strlcpy(signature->text, "v1 overflow", sizeof(signature->text));
+    }
+    /* What sgi_render_raster_run() accepts with the mixed-frame flag. */
+    in_set = op->kind == SGI_RASTER_CLEAR && !op->index_bits &&
+             !(op->clear_buffers & ~(SGI_GL_COLOR_BUFFER_BIT |
+                                     SGI_GL_DEPTH_BUFFER_BIT |
+                                     SGI_GL_STENCIL_BUFFER_BIT)) &&
+             (colour || depth || stencil) &&
+             (!depth || rules->depth_bits == 24) &&
+             (!stencil || rules->stencil_bits == 8) &&
+             sgi_render_clear_mixed_proven(rules);
+    for (unsigned i = 0; in_set && colour && i < op->ntargets; i++) {
+        const SGIRenderResource *t = sgi_render_colour_resource(
+            target, op->targets[i]);
+
+        in_set = t && t->bottom_origin && t->depth == 1 &&
+                 (t->component_count == 3 || t->component_count == 4) &&
+                 sgi_render_widths_proven(rules, t);
+    }
+    signature->in_set = in_set;
+}
+
 /*
  * A checked draw. Every UNSUPPORTED result before the snapshot sets
  * *reason; one without a reason came from native work and is a failure.
@@ -1487,8 +1547,10 @@ static SGIRenderResult sgi_render_draw_run(
     }
     clip = &draw->state->drawable.clip;
     if (!draw->state->drawable.bound) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: draw with no window bound "
-                      "dropped\n");
+        if (!opts || !opts->quiet) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: draw with no window bound "
+                          "dropped\n");
+        }
         return SGI_RENDER_OK;
     }
     /* A line draw still counts its stipple phase with nothing visible. */
@@ -2218,11 +2280,8 @@ static SGIRenderResult sgi_render_raster_run(
             error_setg(errp, "Unsupported SGI Mesa clear component widths");
             return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_STORE_WIDTH);
         }
-        /* scalar-match-clear proves 4, 8 and 10 bits. */
         if (opts && opts->mixed_frame &&
-            (!sgi_raster_rules_supported(rules) ||
-             (rules->color_bits != 4 && rules->color_bits != 8 &&
-              rules->color_bits != 10))) {
+            !sgi_render_clear_mixed_proven(rules)) {
             error_setg(errp, "SGI Mesa clear width is not proven identical "
                        "to the scalar path for a mixed frame");
             return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_MIXED_FRAME);

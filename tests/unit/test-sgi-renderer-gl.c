@@ -5,6 +5,7 @@
 #include "ui/egl-helpers.h"
 #include "ui/sgi-renderer.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "hw/display/sgi/render-shadow.h"
 #include "../qtest/prereq.h"
 
 int display_opengl;
@@ -7672,6 +7673,401 @@ static void test_attempt_clear(void)
     }
 }
 
+/*
+ * One shadow-compared draw: capture native into private, draw the scalar
+ * path into native, then compare Mesa against it. phase_offset shifts the
+ * phase the shadow is told the draw started from.
+ */
+static SGIRenderShadowResult prim_shadow_with(SGIRenderShadow *shadow,
+                                              PrimCase *p,
+                                              PrimFixture *native,
+                                              PrimFixture *private,
+                                              uint32_t phase_offset,
+                                              unsigned flags,
+                                              SGIRenderShadowOutcome *out);
+
+/* With masks, the scalar store callbacks' written bytes are passed. */
+#define PRIM_SHADOW_MASKS 1
+/* A stray scalar-only side effect at pixel (1,14), as a tag write. */
+#define PRIM_SHADOW_STRAY 2
+
+static SGIRenderShadowResult prim_shadow(SGIRenderShadow *shadow,
+                                         PrimCase *p, PrimFixture *native,
+                                         PrimFixture *private,
+                                         uint32_t phase_offset,
+                                         SGIRenderShadowOutcome *out)
+{
+    return prim_shadow_with(shadow, p, native, private, phase_offset,
+                            PRIM_SHADOW_MASKS, out);
+}
+
+static SGIRenderShadowResult prim_shadow_with(SGIRenderShadow *shadow,
+                                              PrimCase *p,
+                                              PrimFixture *native,
+                                              PrimFixture *private,
+                                              uint32_t phase_offset,
+                                              unsigned flags,
+                                              SGIRenderShadowOutcome *out)
+{
+    SGIRenderResource res[2];
+    SGIRasterRules rules;
+    SGIRasterTarget native_target = {
+        .opaque = native, .resources = res,
+        .resource_count = p->state.texture_2d ? 2 : 1,
+        .resource_ops = &prim_ops,
+        .texture = p->state.texture_2d ? &p->image : NULL,
+    };
+    SGIRasterTarget private_target = native_target;
+    g_autofree PrimFixture *after = g_new(PrimFixture, 1);
+    const uint8_t *masks[2] = { NULL, NULL };
+    uint32_t before = p->phase[0];
+    Error *err = NULL;
+    SGIRenderShadowResult result;
+
+    private_target.opaque = private;
+    prim_rules(p, &rules);
+    prim_resources(p, res);
+    prim_destination(native, p);
+    memset(private, 0, sizeof(*private));
+    private->components = p->components;
+    g_assert_cmpint(sgi_render_shadow_capture(shadow, &native_target,
+                                              &private_target, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpmem(private->rgba, sizeof(private->rgba), native->rgba,
+                    sizeof(native->rgba));
+    prim_scalar_draw(p, native);
+    if (flags & PRIM_SHADOW_STRAY) {
+        native->written[14][1] = 1;
+    }
+    memcpy(after, native, sizeof(*after));
+    masks[0] = &native->written[0][0];
+    result = sgi_render_shadow_draw(shadow, &rules, &native_target,
+                                    &private_target, &p->draw,
+                                    before + phase_offset,
+                                    flags & PRIM_SHADOW_MASKS ? masks : NULL,
+                                    out);
+    /* The shadow never writes native storage or the scalar phase. */
+    g_assert_cmpmem(native->rgba, sizeof(native->rgba), after->rgba,
+                    sizeof(after->rgba));
+    if (p->use_phase) {
+        g_assert_true(p->draw.line_phase == &p->phase[0]);
+    }
+    return result;
+}
+
+/*
+ * Shadow comparison: a draw both paths render alike matches; one Mesa
+ * draws differently, here smooth triangles moved one subpixel, mismatches
+ * at its first differing pixel; state Mesa refuses is a refusal; a Mesa
+ * failure is counted without latching and the next draw gets a new
+ * renderer; and a borrowed stipple phase is compared on its own copy.
+ */
+static void test_shadow_comparison(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree PrimFixture *native = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *private = g_new(PrimFixture, 1);
+    SGIRenderShadowOutcome out;
+    SGIRenderShadowCounts counts;
+    SGIRenderShadow *shadow;
+    SGIRenderer *before;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    shadow = sgi_render_shadow_new();
+    g_assert_null(sgi_render_shadow_disabled(shadow));
+
+    prim_fan(p, 4);
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_MATCH);
+    g_assert_true(out.signature.in_set);
+    counts = sgi_render_shadow_counts(shadow, out.signature.text);
+    g_assert_cmpuint(counts.matches, ==, 1);
+
+    /* Smooth, once to pass the probe, then moved one subpixel. */
+    prim_fan(p, 4);
+    p->state.shade_model = SGI_GL_SMOOTH;
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_MATCH);
+    sgi_render_test_window_shift(1);
+    prim_fan(p, 4);
+    p->state.shade_model = SGI_GL_SMOOTH;
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_MISMATCH);
+    sgi_render_test_window_shift(0);
+    g_test_message("mismatch at resource %zu (%u,%u): scalar %u,%u,%u,%u "
+                   "mesa %u,%u,%u,%u", out.resource, out.x, out.y,
+                   out.scalar[0], out.scalar[1], out.scalar[2],
+                   out.scalar[3], out.mesa[0], out.mesa[1], out.mesa[2],
+                   out.mesa[3]);
+    g_assert_cmpuint(out.resource, ==, 0);
+    g_assert_cmpuint(out.components, ==, 4);
+    g_assert_false(out.phase_differs);
+    g_assert_cmpmem(out.scalar, sizeof(out.scalar),
+                    native->rgba[out.y][out.x], sizeof(out.scalar));
+    g_assert_cmpmem(out.mesa, sizeof(out.mesa), private->rgba[out.y][out.x],
+                    sizeof(out.mesa));
+    counts = sgi_render_shadow_counts(shadow, out.signature.text);
+    g_assert_cmpuint(counts.matches, ==, 1);
+    g_assert_cmpuint(counts.mismatches, ==, 1);
+
+    /* A constant-colour blend Mesa refuses outright. */
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    p->state.blend = 1;
+    p->state.blend_equation = SGI_GL_FUNC_ADD;
+    p->state.blend_src = SGI_GL_CONSTANT_COLOR;
+    p->state.blend_dst = 0;
+    prim_vertex_n(p, 1, 1.25f);
+    prim_vertex_n(p, 14.5f, 2);
+    prim_vertex_n(p, 7, 13.75f);
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_REFUSED);
+    g_assert_cmpint(out.refusal, ==, SGI_RENDER_REFUSAL_BLEND);
+    g_assert_false(out.signature.in_set);
+
+    /* A failed Mesa draw is counted, never latched, and not repeated. */
+    before = sgi_render_shadow_test_renderer(shadow);
+    sgi_renderer_test_fail_draw(before, 1);
+    prim_fan(p, 4);
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_FAILED);
+    g_assert_cmpint(out.status, ==, SGI_RENDER_HOST_ERROR);
+    g_assert_null(sgi_render_shadow_disabled(shadow));
+    g_assert_nonnull(sgi_render_shadow_test_renderer(shadow));
+    prim_fan(p, 4);
+    g_assert_cmpint(prim_shadow(shadow, p, native, private, 0, &out), ==,
+                    SGI_RENDER_SHADOW_MATCH);
+    counts = sgi_render_shadow_counts(shadow, out.signature.text);
+    g_assert_cmpuint(counts.matches, ==, 2);
+    g_assert_cmpuint(counts.failures, ==, 1);
+
+    /*
+     * A stippled strip with no visible pixel still counts its phase, so
+     * the pixels agree and only the phase can differ.
+     */
+    for (unsigned offset = 0; offset < 2; offset++) {
+        prim_case_init(p, SGI_GL_LINE_STRIP, 4);
+        p->draw.line_stipple_enabled = true;
+        p->draw.line_stipple_repeat = 2;
+        p->draw.line_stipple_pattern = 0x3c5a;
+        p->state.drawable.clip.n = 0;
+        p->use_phase = true;
+        p->phase[0] = 5;
+        prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+        prim_vertex_window(p, 3.5f, 13.25f);
+        g_assert_cmpint(prim_shadow(shadow, p, native, private, offset,
+                                    &out), ==,
+                        offset ? SGI_RENDER_SHADOW_MISMATCH :
+                                 SGI_RENDER_SHADOW_MATCH);
+        g_assert_cmpuint(p->phase[0], !=, 5);
+        g_assert_cmpint(out.phase_differs, ==, offset != 0);
+        if (offset) {
+            g_assert_cmpuint(out.scalar_phase, ==, p->phase[0]);
+            g_assert_cmpuint(out.mesa_phase, !=, p->phase[0]);
+        }
+    }
+    counts = sgi_render_shadow_totals(shadow);
+    g_assert_cmpuint(counts.matches, ==, 4);
+    g_assert_cmpuint(counts.mismatches, ==, 2);
+    g_assert_cmpuint(counts.refusals, ==, 1);
+    g_assert_cmpuint(counts.failures, ==, 1);
+    g_assert_cmpuint(counts.without_coverage, ==, 0);
+
+    /* Without scalar masks only contents are compared, and counted apart. */
+    prim_fan(p, 4);
+    g_assert_cmpint(prim_shadow_with(shadow, p, native, private, 0, 0,
+                                     &out), ==, SGI_RENDER_SHADOW_MATCH);
+    g_assert_false(out.coverage_compared);
+    g_assert_cmpuint(sgi_render_shadow_totals(shadow).without_coverage, ==,
+                     1);
+
+    /* A private target describing other rows does not pair. */
+    {
+        SGIRenderResource res[2], other[2];
+        SGIRasterRules rules;
+        SGIRasterTarget native_target = {
+            .opaque = native, .resources = res, .resource_count = 1,
+            .resource_ops = &prim_ops,
+        };
+        SGIRasterTarget private_target = {
+            .opaque = private, .resources = other, .resource_count = 1,
+            .resource_ops = &prim_ops,
+        };
+
+        before = sgi_render_shadow_test_renderer(shadow);
+        prim_fan(p, 4);
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_resources(p, other);
+        other[0].bottom_origin = false;
+        g_assert_cmpint(sgi_render_shadow_draw(shadow, &rules, &native_target,
+                                               &private_target, &p->draw, 0,
+                                               NULL, &out), ==,
+                        SGI_RENDER_SHADOW_FAILED);
+        g_assert_cmpint(out.status, ==, SGI_RENDER_RESOURCE_ERROR);
+        g_assert_true(sgi_render_shadow_test_renderer(shadow) == before);
+    }
+    sgi_render_shadow_free(shadow);
+    g_free(p);
+}
+
+/*
+ * Write coverage: a pixel one path writes and the other does not is a
+ * mismatch even when both leave the same value there. Here every pixel
+ * already holds the draw's colour, so contents always agree: smooth
+ * triangles of one colour moved one subpixel change only which pixels
+ * Mesa writes, as an edge-ownership swap between two triangles of one
+ * colour would; and a scalar store with a side effect Mesa lacks, as a
+ * tag write, shows only in the scalar mask.
+ */
+static void test_shadow_coverage(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree PrimFixture *native = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *private = g_new(PrimFixture, 1);
+    SGIRenderShadowOutcome out;
+    SGIRenderShadow *shadow;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    shadow = sgi_render_shadow_new();
+    for (unsigned k = 0; k < 4; k++) {
+        prim_case_init(p, SGI_GL_TRIANGLE_FAN, 4);
+        p->state.shade_model = k ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+        /* 0.5 stores as 128 at 8 bits; the destination already holds it. */
+        p->dest_value = 129;
+        prim_vertex(p, 1, 1.25f, 0.5f, 0.5f, 0.5f, 0.5f);
+        prim_vertex(p, 14.5f, 2, 0.5f, 0.5f, 0.5f, 0.5f);
+        prim_vertex(p, 13, 13.75f, 0.5f, 0.5f, 0.5f, 0.5f);
+        prim_vertex(p, 2.25f, 12, 0.5f, 0.5f, 0.5f, 0.5f);
+        if (k == 2) {
+            sgi_render_test_window_shift(1);
+        }
+        prim_shadow_with(shadow, p, native, private, 0,
+                         PRIM_SHADOW_MASKS |
+                         (k == 3 ? PRIM_SHADOW_STRAY : 0), &out);
+        sgi_render_test_window_shift(0);
+        g_test_message("case %u: result %d at (%u,%u) scalar %s mesa %s", k,
+                       out.result, out.x, out.y,
+                       out.scalar_wrote ? "wrote" : "kept",
+                       out.mesa_wrote ? "wrote" : "kept");
+        g_assert_true(out.coverage_compared);
+        if (k < 2) {
+            /* Flat, then smooth, which also passes the probe. */
+            g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_MATCH);
+            continue;
+        }
+        g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_MISMATCH);
+        g_assert_cmpmem(out.scalar, sizeof(out.scalar), out.mesa,
+                        sizeof(out.mesa));
+        g_assert_cmpint(out.scalar_wrote, !=, out.mesa_wrote);
+        if (k == 3) {
+            g_assert_cmpuint(out.x, ==, 1);
+            g_assert_cmpuint(out.y, ==, 14);
+            g_assert_true(out.scalar_wrote);
+        }
+    }
+    sgi_render_shadow_free(shadow);
+    g_free(p);
+}
+
+/* Decoded CLEAR in shadow, as draws are. */
+static void test_shadow_raster(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIClipRect several[] = {
+        { 1, 1, 5, 4 }, { 4, 3, 12, 9 }, { 13, 0, 15, 15 },
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree PrimFixture *native = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *private = g_new(PrimFixture, 1);
+    SGIRenderShadowOutcome out;
+    SGIRenderShadow *shadow;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    shadow = sgi_render_shadow_new();
+    for (unsigned k = 0; k < 5; k++) {
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        SGIRasterTarget native_target = {
+            .opaque = native, .resources = res, .resource_count = 1,
+            .resource_ops = &prim_ops,
+            .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
+        };
+        SGIRasterTarget private_target = native_target;
+        SGIRasterOp op = { 0 };
+        const uint8_t *masks[1] = { &native->written[0][0] };
+        prim_case_init(p, SGI_GL_TRIANGLES, 4);
+        p->bits = k == 4 ? 5 : 8;
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        prim_destination(native, p);
+        memset(private, 0, sizeof(*private));
+        private->components = 4;
+        private_target.opaque = private;
+        prim_clear_op(&op, several, ARRAY_SIZE(several), NULL);
+        op.clear_buffers = SGI_GL_COLOR_BUFFER_BIT;
+        op.clear_colour_mask = SGI_GL_COLOUR_MASK_ALL;
+        op.clear_rgba[0] = 0.25f;
+        op.clear_rgba[3] = 1;
+        op.index_bits = k == 1 ? 8 : 0;
+        g_assert_cmpint(sgi_render_shadow_capture(shadow, &native_target,
+                                                  &private_target, NULL), ==,
+                        SGI_RENDER_OK);
+        if (k != 1) {
+            sgi_soft_raster(&rules, &native_target, &op);
+        }
+        if (k == 3) {
+            native->written[14][1] = 1;
+        }
+        sgi_render_shadow_raster(shadow, &rules, &native_target,
+                                 &private_target, &op,
+                                 k == 2 ? NULL : masks, &out);
+        g_test_message("clear %u: %s result %d", k, out.signature.text,
+                       out.result);
+        g_assert_true(g_str_has_prefix(out.signature.text, "v1 "));
+        switch (k) {
+        case 0:
+        case 4:
+            g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_MATCH);
+            g_assert_true(out.coverage_compared);
+            g_assert_cmpint(out.signature.in_set, ==, k == 0);
+            break;
+        case 1:
+            g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_REFUSED);
+            g_assert_cmpint(out.refusal, ==, SGI_RENDER_REFUSAL_RASTER_OP);
+            g_assert_false(out.signature.in_set);
+            break;
+        case 2:
+            g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_MATCH);
+            g_assert_false(out.coverage_compared);
+            break;
+        case 3:
+            g_assert_cmpint(out.result, ==, SGI_RENDER_SHADOW_MISMATCH);
+            g_assert_cmpuint(out.x, ==, 1);
+            g_assert_cmpuint(out.y, ==, 14);
+            g_assert_true(out.scalar_wrote);
+            g_assert_false(out.mesa_wrote);
+            break;
+        }
+    }
+    sgi_render_shadow_free(shadow);
+    g_free(p);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -7719,6 +8115,10 @@ int main(int argc, char **argv)
                     test_mixed_frame_set);
     g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
     g_test_add_func("/sgi-renderer-gl/draw-signature", test_draw_signature);
+    g_test_add_func("/sgi-renderer-gl/shadow-comparison",
+                    test_shadow_comparison);
+    g_test_add_func("/sgi-renderer-gl/shadow-coverage", test_shadow_coverage);
+    g_test_add_func("/sgi-renderer-gl/shadow-raster", test_shadow_raster);
     g_test_add_func("/sgi-renderer-gl/driver-identity",
                     test_driver_identity);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",
