@@ -4040,6 +4040,7 @@ static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
                             r->texture_base->width *
                             sgi_soft_texture_lod_scale(
                                 r->texture->lod_scale_s),
+                            r->texture->one_dimensional ? 0 :
                             r->texture_base->height *
                             sgi_soft_texture_lod_scale(
                                 r->texture->lod_scale_t),
