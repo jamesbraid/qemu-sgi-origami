@@ -210,6 +210,30 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
 MemTxResult sn1_fabric_packet_target_rw(AddressSpace *as, hwaddr offset,
     void *buffer, size_t size, bool write, SGIXioPacketAttrs packet_attrs)
 {
+    if (!write && packet_attrs.half_read_requested && size == 8 &&
+        !(offset & 7)) {
+        hwaddr xlat, span = size;
+        MemoryRegion *leaf;
+        MemTxResult result;
+        bool exchange;
+        uint8_t first[4];
+
+        rcu_read_lock();
+        leaf = address_space_translate(as, offset, &xlat, &span, false,
+                                       MEMTXATTRS_UNSPECIFIED);
+        exchange = span == size && leaf && memory_region_is_ram(leaf) &&
+                   !memory_region_is_ram_device(leaf) &&
+                   !memory_region_is_rom(leaf);
+        result = address_space_read(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                    buffer, size);
+        if (exchange && result == MEMTX_OK) {
+            memcpy(first, buffer, sizeof(first));
+            memcpy(buffer, (uint8_t *)buffer + 4, sizeof(first));
+            memcpy((uint8_t *)buffer + 4, first, sizeof(first));
+        }
+        rcu_read_unlock();
+        return result;
+    }
     if (write && packet_attrs.half_write_requested && size == 8 &&
         !(offset & 7)) {
         hwaddr xlat, span = size;
