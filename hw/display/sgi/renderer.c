@@ -1971,24 +1971,32 @@ static SGIRenderResult sgi_render_draw_run(
             sgi_render_commit_phase(draw, lines ? &line_set : NULL);
             return SGI_RENDER_OK;
         }
-        x0 = MAX(floor(extent.x0), -1.0);
-        y0 = MAX(floor(extent.y0), -1.0);
-        x1 = MIN(ceil(extent.x1), (double)resource->width);
-        y1 = MIN(ceil(extent.y1), (double)resource->height);
+        /* Bounded both ways, so every conversion to int64_t is defined. */
+        x0 = MIN(MAX(floor(extent.x0), -1.0), (double)resource->width);
+        y0 = MIN(MAX(floor(extent.y0), -1.0), (double)resource->height);
+        x1 = MIN(MAX(ceil(extent.x1), -1.0), (double)resource->width);
+        y1 = MIN(MAX(ceil(extent.y1), -1.0), (double)resource->height);
         if (upside_down) {
             int64_t window_y0 = y0;
 
             y0 = (int64_t)resource->height - 1 - y1;
             y1 = (int64_t)resource->height - 1 - window_y0;
         }
-        region.x0 = MAX((int64_t)region.x0, x0);
-        region.y0 = MAX((int64_t)region.y0, y0);
-        region.x1 = MIN((int64_t)region.x1, x1);
-        region.y1 = MIN((int64_t)region.y1, y1);
-        if (region.x0 > region.x1 || region.y0 > region.y1) {
+        /*
+         * Intersect in signed arithmetic. Geometry wholly before the first
+         * column or row has a negative far edge, which the region's
+         * unsigned fields would wrap to a huge one, and the draw would
+         * fail to allocate instead of writing nothing.
+         */
+        x0 = MAX((int64_t)region.x0, x0);
+        y0 = MAX((int64_t)region.y0, y0);
+        x1 = MIN((int64_t)region.x1, x1);
+        y1 = MIN((int64_t)region.y1, y1);
+        if (x0 > x1 || y0 > y1) {
             sgi_render_commit_phase(draw, lines ? &line_set : NULL);
             return SGI_RENDER_OK;
         }
+        region = (SGIRendererClearRect) { x0, y0, x1, y1 };
         /* Clips stay in the region, so the host never draws outside it. */
         kept = 0;
         for (unsigned i = 0; i < frame.clip_count; i++) {
