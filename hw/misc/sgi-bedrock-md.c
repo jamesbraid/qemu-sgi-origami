@@ -6,6 +6,7 @@
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
+#include "migration/qemu-file.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/bitmap.h"
@@ -3800,6 +3801,58 @@ static int md_pre_load(void *opaque)
     return 0;
 }
 
+/*
+ * The directory, page-counter and protection arrays run to millions of
+ * 64-bit words on a full node.  The migration stream wants each word big
+ * endian, one call at a time through the stock array type, which takes
+ * seconds under a sanitizer.  These move the identical bytes in blocks.
+ */
+static bool md_load_be64_block(QEMUFile *f, void *pv, size_t size,
+                               const VMStateField *field, Error **errp)
+{
+    uint64_t *words = pv;
+
+    qemu_get_buffer(f, (uint8_t *)words, size);
+    for (size_t i = 0; i < size / sizeof(*words); i++) {
+        words[i] = be64_to_cpu(words[i]);
+    }
+    return true;
+}
+
+static bool md_save_be64_block(QEMUFile *f, void *pv, size_t size,
+                               const VMStateField *field, JSONWriter *vmdesc,
+                               Error **errp)
+{
+    const uint64_t *words = pv;
+    uint64_t block[1024];
+
+    for (size_t done = 0; done < size / sizeof(*words);) {
+        size_t n = MIN(size / sizeof(*words) - done, ARRAY_SIZE(block));
+
+        for (size_t i = 0; i < n; i++) {
+            block[i] = cpu_to_be64(words[done + i]);
+        }
+        qemu_put_buffer(f, (uint8_t *)block, n * sizeof(*block));
+        done += n;
+    }
+    return true;
+}
+
+static const VMStateInfo vmstate_info_md_be64_block = {
+    .name = "sgi-bedrock-md-be64-block",
+    .load = md_load_be64_block,
+    .save = md_save_be64_block,
+};
+
+#define VMSTATE_MD_BE64_BLOCK(_field, _count) {                         \
+    .name         = (stringify(_field)),                                \
+    .size_indirect  = vmstate_field_offset(SGIBedrockMDState, _count),  \
+    .size         = sizeof(uint64_t),                                   \
+    .info         = &vmstate_info_md_be64_block,                        \
+    .flags        = VMS_VBUFFER | VMS_POINTER | VMS_MULTIPLY,           \
+    .offset       = offsetof(SGIBedrockMDState, _field),                \
+}
+
 static const VMStateDescription vmstate_md = {
     .name = TYPE_SGI_BEDROCK_MD, .version_id = 8, .minimum_version_id = 8,
     .pre_load = md_pre_load,
@@ -3811,22 +3864,21 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_UINT64(directory_config, SGIBedrockMDState),
         VMSTATE_UINT64_ARRAY(storage, SGIBedrockMDState,
                              SGI_BEDROCK_MD_STORAGE),
-        VMSTATE_VARRAY_UINT32(directory, SGIBedrockMDState,
-                              directory_entries, 0,
-                              vmstate_info_uint64, uint64_t),
-        VMSTATE_VARRAY_UINT32(page_counters, SGIBedrockMDState,
-                              directory_entries, 0,
-                              vmstate_info_uint64, uint64_t),
-        VMSTATE_VARRAY_UINT32(protection, SGIBedrockMDState,
-                              protection_entries, 0,
-                              vmstate_info_uint64, uint64_t),
+        VMSTATE_MD_BE64_BLOCK(directory, directory_entries),
+        VMSTATE_MD_BE64_BLOCK(page_counters, directory_entries),
+        VMSTATE_MD_BE64_BLOCK(protection, protection_entries),
         VMSTATE_UINT64_ARRAY(directory_compat_offsets, SGIBedrockMDState,
                              SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES),
         VMSTATE_UINT64_ARRAY(directory_compat_values, SGIBedrockMDState,
                              SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES),
         VMSTATE_UINT8(directory_compat_count, SGIBedrockMDState),
-        VMSTATE_VARRAY_UINT32(ecc, SGIBedrockMDState, ecc_entries, 0,
-                              vmstate_info_uint8, uint8_t),
+        /*
+         * One byte per 64-bit memory word, so 256M bytes on a 2 GiB node.
+         * A buffer writes the same stream as the byte array it replaces
+         * but in blocks, not through one call per byte.
+         */
+        VMSTATE_VBUFFER_UINT32(ecc, SGIBedrockMDState, 0, NULL,
+                               ecc_entries),
         VMSTATE_UINT16(ecc_admitted_halfword, SGIBedrockMDState),
         VMSTATE_UINT16(ecc_admitted_halfword_low, SGIBedrockMDState),
         VMSTATE_BOOL(selftest_running, SGIBedrockMDState),
