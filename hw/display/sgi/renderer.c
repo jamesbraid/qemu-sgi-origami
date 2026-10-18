@@ -461,6 +461,13 @@ typedef struct SGIRenderPieces {
     /* With extent set, pieces only widen it; see sgi_render_piece_extent. */
     struct SGIRenderExtent *extent;
     float point_size;
+    /*
+     * With index set (an indexed draw, steps NULL), each vertex written
+     * to v also writes its piece's index: the provoking vertex's, as the
+     * scalar path converts it at index_bits.
+     */
+    uint32_t *index;
+    uint32_t index_bits;
 } SGIRenderPieces;
 
 /*
@@ -621,7 +628,7 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
      * rounds it, so a product exactly on a half step in float32, such as
      * 0.9 * 255, reaches the worker already on a step.
      */
-    if (p->flat || n == 1) {
+    if (p->steps && (p->flat || n == 1)) {
         for (unsigned c = 0; c < 4; c++) {
             uint32_t s = p->steps[c];
             double v = colour[c];
@@ -637,9 +644,14 @@ static void sgi_render_piece(SGIRenderPieces *p, const SGIGLDraw *draw,
                            (size_t)index[i] * SGI_GL_VERTEX_FLOATS;
         float *dst = p->v[p->count++];
 
+        if (p->index) {
+            p->index[p->count - 1] = sgi_gl_index_value(p->index_bits,
+                draw->vertices[(size_t)provoking * SGI_GL_VERTEX_FLOATS +
+                               SGI_GL_V_INDEX]);
+        }
         memcpy(dst, &src[SGI_GL_V_POSITION], 4 * sizeof(float));
-        memcpy(dst + 4, p->flat || n == 1 ? rounded : &src[SGI_GL_V_COLOR],
-               4 * sizeof(float));
+        memcpy(dst + 4, p->steps && (p->flat || n == 1) ? rounded :
+               &src[SGI_GL_V_COLOR], 4 * sizeof(float));
         memset(dst + 8, 0, 4 * sizeof(float));
     }
 }
@@ -1308,6 +1320,170 @@ static bool sgi_render_mixed_fixture(const SGIGLDrawState *st,
 }
 
 /*
+ * The front index resource of an indexed draw: one unsigned scalar of the
+ * draw's index width. An indexed draw never selects a colour resource.
+ */
+static const SGIRenderResource *sgi_render_index_resource(
+    const SGIRasterTarget *target, const SGIGLDrawState *st)
+{
+    const SGIRenderResource *found = NULL;
+
+    for (size_t i = 0; target->resources && i < target->resource_count;
+         i++) {
+        const SGIRenderResource *res = &target->resources[i];
+
+        if (res->role == SGI_RENDER_INDEX &&
+            res->target == st->drawable.front) {
+            if (found) {
+                return NULL;
+            }
+            found = res;
+        }
+    }
+    if (!found || !found->width || !found->height ||
+        found->width > INT_MAX || found->height > INT_MAX ||
+        found->depth != 1 || found->buffer != SGI_RENDER_FRONT ||
+        found->component_count != 1 ||
+        found->component[0].channel != SGI_RENDER_SCALAR ||
+        found->component[0].numeric != SGI_RENDER_UINT) {
+        return NULL;
+    }
+    return found;
+}
+
+/*
+ * Colour-index draws, inside the mixed-frame set only: points of sizes up
+ * to 4 and filled polygons, into the front index resource whose storage
+ * width is the index width, in the comparison fixture under the rules the
+ * set names. Shading is flat, or smooth with every vertex index bitwise
+ * equal and no vertex outside the view volume: the scalar path gives a
+ * clipped vertex an interpolated index that need not floor to the shared
+ * one. The scalar path ignores blending, the alpha test, the colour mask,
+ * the RGBA logical operation and dithering in index mode, and so does
+ * this path. Everything else is refused for the scalar path to draw.
+ */
+static SGIRenderRefusal sgi_render_index_supported(
+    const SGIRasterRules *rules, const SGIRasterTarget *target,
+    const SGIGLDraw *draw, const SGIRenderResource **result)
+{
+    const SGIGLDrawState *st = draw->state;
+    const SGIRenderResource *res;
+    SGIRenderPieces check = { .rules = rules };
+
+    if (draw->mode > SGI_GL_POLYGON || sgi_render_mode_lines(draw->mode) ||
+        (draw->mode == SGI_GL_POINTS &&
+         (!isfinite(draw->point_size) || draw->point_size < 0)) ||
+        (sgi_render_mode_polygons(draw->mode) && draw->polygon_modes &&
+         (draw->polygon_modes[0] != SGI_GL_FILL ||
+          draw->polygon_modes[1] != SGI_GL_FILL)) ||
+        draw->polygon_stipple_enabled || draw->line_stipple_enabled ||
+        (st->shade_model != SGI_GL_SMOOTH &&
+         st->shade_model != SGI_GL_FLAT)) {
+        return SGI_RENDER_REFUSAL_PRIMITIVE;
+    }
+    if ((draw->mode == SGI_GL_POINTS && rules->smooth_primitives &&
+         draw->point_smooth) ||
+        (sgi_render_mode_polygons(draw->mode) && rules->smooth_primitives &&
+         draw->polygon_smooth)) {
+        return SGI_RENDER_REFUSAL_SMOOTHING;
+    }
+    if (st->texture_1d || st->texture_2d || st->texture_3d) {
+        return SGI_RENDER_REFUSAL_TEXTURE;
+    }
+    if (draw->back_colors || st->cull_face) {
+        return SGI_RENDER_REFUSAL_FACING;
+    }
+    if (st->draw_buffers != SGI_GL_DRAW_FRONT) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
+    }
+    if (st->depth_test || st->stencil_test) {
+        return SGI_RENDER_REFUSAL_FRAGMENT_TESTS;
+    }
+    if (st->fog) {
+        return SGI_RENDER_REFUSAL_FOG;
+    }
+    if (st->clip_planes) {
+        return SGI_RENDER_REFUSAL_CLIP_PLANES;
+    }
+    if (st->index_logic_op) {
+        return SGI_RENDER_REFUSAL_LOGIC_OP;
+    }
+    if (st->polygon_offset) {
+        return SGI_RENDER_REFUSAL_POLYGON_OFFSET;
+    }
+    if (st->window_matrix_given || !st->drawable.bound ||
+        st->drawable.origin[0] || st->drawable.origin[1]) {
+        return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return SGI_RENDER_REFUSAL_GEOMETRY;
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        if (!isfinite(st->modelview[i]) || !isfinite(st->projection[i])) {
+            return SGI_RENDER_REFUSAL_GEOMETRY;
+        }
+    }
+    for (uint32_t i = 0; i < draw->count; i++) {
+        const float *vertex = draw->vertices +
+                              (size_t)i * SGI_GL_VERTEX_FLOATS;
+
+        for (unsigned c = 0; c < 4; c++) {
+            if (!isfinite(vertex[SGI_GL_V_POSITION + c])) {
+                return SGI_RENDER_REFUSAL_GEOMETRY;
+            }
+        }
+        if (!isfinite(vertex[SGI_GL_V_INDEX])) {
+            return SGI_RENDER_REFUSAL_GEOMETRY;
+        }
+    }
+    res = sgi_render_index_resource(target, st);
+    if (!res) {
+        return SGI_RENDER_REFUSAL_RESOURCE;
+    }
+    if (res->component[0].storage_bits != st->index_bits) {
+        return SGI_RENDER_REFUSAL_STORE_WIDTH;
+    }
+    if (!sgi_raster_rules_supported(rules)) {
+        return SGI_RENDER_REFUSAL_RULES;
+    }
+    /* State outside the mixed-frame set, as the RGBA path names it. */
+    if (!sgi_render_mixed_fixture(st, res) ||
+        (draw->mode == SGI_GL_POINTS &&
+         sgi_render_aliased_size(draw->point_size) > 4)) {
+        return SGI_RENDER_REFUSAL_MIXED_FRAME;
+    }
+    if (st->shade_model == SGI_GL_SMOOTH) {
+        for (uint32_t i = 0; i < draw->count; i++) {
+            SGIVolumeVertex v;
+
+            if (memcmp(&draw->vertices[(size_t)i * SGI_GL_VERTEX_FLOATS +
+                                       SGI_GL_V_INDEX],
+                       &draw->vertices[SGI_GL_V_INDEX], sizeof(float))) {
+                return SGI_RENDER_REFUSAL_COLOUR_INDEX;
+            }
+            sgi_volume_from_draw_vertex(st, draw->vertices +
+                                        (size_t)i * SGI_GL_VERTEX_FLOATS,
+                                        &v);
+            if (!sgi_volume_contains(&v)) {
+                return SGI_RENDER_REFUSAL_INDEX_CLIPPED;
+            }
+        }
+    }
+    /*
+     * The integer program has no depth drop, so a triangle whose depth
+     * the scalar path may round past a plane stays there.
+     */
+    if (draw->mode != SGI_GL_POINTS) {
+        sgi_render_decompose(&check, draw);
+        if (check.depth_inexact) {
+            return SGI_RENDER_REFUSAL_GEOMETRY;
+        }
+    }
+    *result = res;
+    return SGI_RENDER_REFUSAL_NONE;
+}
+
+/*
  * Whether a draw lies inside the set the scalar comparisons prove
  * pixel-identical on the pinned llvmpipe, so that a frame mixing it with
  * scalar draws equals an all-scalar frame. Each limit names what is not
@@ -1360,11 +1536,17 @@ static SGIRenderRefusal sgi_render_draw_accepts(
 {
     SGIRenderRefusal refusal;
 
-    if (draw->state->dither && rules->dither != SGI_DITHER_NONE) {
+    /* An index is never dithered. */
+    if (!draw->state->index_bits && draw->state->dither &&
+        rules->dither != SGI_DITHER_NONE) {
         return SGI_RENDER_REFUSAL_DITHER;
     }
     if (!sgi_render_rules_supported(rules)) {
         return SGI_RENDER_REFUSAL_RULES;
+    }
+    /* The indexed subset lies inside the mixed-frame set already. */
+    if (draw->state->index_bits) {
+        return sgi_render_index_supported(rules, target, draw, resource);
     }
     refusal = sgi_render_draw_supported(rules, target, draw, resource);
     if (refusal != SGI_RENDER_REFUSAL_NONE) {
@@ -1431,8 +1613,10 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
                                SGIRenderSignature *signature)
 {
     const SGIGLDrawState *st = draw->state;
-    const SGIRenderResource *res = st ?
-        sgi_render_colour_resource(target, st->drawable.front) : NULL;
+    /* An indexed draw's storage is its index resource. */
+    const SGIRenderResource *res = !st ? NULL :
+        st->index_bits ? sgi_render_index_resource(target, st) :
+        sgi_render_colour_resource(target, st->drawable.front);
     const SGIGLTexImage *image = st && st->texture_2d ? target->texture :
                                  NULL;
     const SGIRenderResource *proven;
@@ -1460,7 +1644,8 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
     memset(signature, 0, sizeof(*signature));
     signature->version = SGI_RENDER_SIGNATURE_VERSION;
     if (!st) {
-        g_strlcpy(signature->text, "v1 invalid", sizeof(signature->text));
+        g_strlcpy(signature->text, SGI_RENDER_SIGNATURE_PREFIX "invalid",
+                  sizeof(signature->text));
         return;
     }
     for (unsigned c = 0; res && c < res->component_count && c < 4; c++) {
@@ -1483,7 +1668,7 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
                "v%u %s point=%g line=%g stipple=%u/%u shade=0x%x "
                "blend=%u/0x%x/0x%x/0x%x texture=%u/0x%x/0x%x/0x%x/0x%x/"
                "0x%x/%ux%u rules=%u/%s/%s/%s/%u widths=%u/%u/%u/%u "
-               "rows=%s fixture=%u/%u/%u/%u near-plane=%u",
+               "rows=%s fixture=%u/%u/%u/%u near-plane=%u index=%u",
                SGI_RENDER_SIGNATURE_VERSION, class,
                draw->mode == SGI_GL_POINTS ?
                    sgi_render_aliased_size(draw->point_size) : 0,
@@ -1513,10 +1698,12 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
                    st->viewport[2] == (int64_t)res->width &&
                    st->viewport[3] == (int64_t)res->height,
                !st->scissor_test, clips, matrices,
-               draw->vertices && sgi_render_draw_near_plane(rules, draw));
+               draw->vertices && sgi_render_draw_near_plane(rules, draw),
+               st->index_bits);
     /* Truncation would merge distinct signatures; count them as one. */
     if (length >= MIN(sizeof(signature->text), sgi_render_signature_limit)) {
-        g_strlcpy(signature->text, "v1 overflow", sizeof(signature->text));
+        g_strlcpy(signature->text, SGI_RENDER_SIGNATURE_PREFIX "overflow",
+                  sizeof(signature->text));
     }
     signature->in_set = draw->vertices &&
         sgi_render_draw_accepts(rules, target, draw, true, &proven) ==
@@ -1553,7 +1740,8 @@ void sgi_render_raster_signature(const SGIRasterRules *rules,
                    rules->color_bits, rules->depth_bits,
                    rules->stencil_bits) >=
         MIN(sizeof(signature->text), sgi_render_signature_limit)) {
-        g_strlcpy(signature->text, "v1 overflow", sizeof(signature->text));
+        g_strlcpy(signature->text, SGI_RENDER_SIGNATURE_PREFIX "overflow",
+                  sizeof(signature->text));
     }
     /* What sgi_render_raster_run() accepts with the mixed-frame flag. */
     in_set = op->kind == SGI_RASTER_CLEAR && !op->index_bits &&
@@ -1616,12 +1804,17 @@ static SGIRenderResult sgi_render_draw_run(
     uint32_t region_width, region_height;
     unsigned kept;
     bool flipped;
+    bool indexed;
+    uint32_t effective_mask = 0;
+    g_autofree uint32_t *index_out = NULL;
+    g_autofree uint32_t *piece_index = NULL;
 
     if (!renderer || !rules || !target || !draw || !draw->state ||
         !draw->vertices) {
         error_setg(errp, "Missing SGI Mesa draw input");
         return SGI_RENDER_RESOURCE_ERROR;
     }
+    indexed = draw->state->index_bits != 0;
     clip = &draw->state->drawable.clip;
     if (!draw->state->drawable.bound) {
         if (!opts || !opts->quiet) {
@@ -1643,10 +1836,11 @@ static SGIRenderResult sgi_render_draw_run(
         error_setg(errp, "Invalid SGI Mesa scissor dimensions");
         return SGI_RENDER_RESOURCE_ERROR;
     }
-    if (opts && opts->mixed_frame &&
+    /* Indexed draws are accepted only inside the mixed-frame set. */
+    if (((opts && opts->mixed_frame) || indexed) &&
         !sgi_renderer_identity(renderer)->reference) {
-        error_setg(errp, "SGI Mesa mixed frames are proven only on the "
-                   "reference llvmpipe build");
+        error_setg(errp, "SGI Mesa mixed frames and colour-index draws are "
+                   "proven only on the reference llvmpipe build");
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_DRIVER);
     }
     refusal = sgi_render_draw_accepts(rules, target, draw,
@@ -1669,10 +1863,15 @@ static SGIRenderResult sgi_render_draw_run(
                    sgi_render_refusal_name(refusal));
         return sgi_render_refuse(reason, refusal);
     }
-    for (unsigned c = 0; c < resource->component_count; c++) {
+    for (unsigned c = 0; !indexed && c < resource->component_count; c++) {
         steps[c] = (1u << resource->component[c].storage_bits) - 1;
     }
-    if (draw->state->blend) {
+    if (indexed) {
+        unsigned bits = resource->component[0].storage_bits;
+
+        effective_mask = draw->state->index_mask &
+                         (bits >= 32 ? UINT32_MAX : (1u << bits) - 1);
+    } else if (draw->state->blend) {
         /* sgi_render_blend_supported() matched these to the storage. */
         for (unsigned c = 0; c < 3; c++) {
             steps[c] = (1u << rules->color_bits) - 1;
@@ -1724,7 +1923,7 @@ static SGIRenderResult sgi_render_draw_run(
          * target rounds per primitive but llvmpipe's fixed-point blend
          * then differs from the scalar path for single primitives.
          */
-        if (draw->state->blend &&
+        if (draw->state->blend && !indexed &&
             piece_vertices > (draw->mode == SGI_GL_POINTS ? 1 : 3)) {
             error_setg(errp, "SGI Mesa blending of more than one primitive "
                        "in a draw is unsupported");
@@ -1744,11 +1943,14 @@ static SGIRenderResult sgi_render_draw_run(
          * own clipped triangles, drawn at its window positions and
          * interpolated in double.
          */
-        window = draw->mode != SGI_GL_POINTS &&
+        window = !indexed && draw->mode != SGI_GL_POINTS &&
                  (draw->state->shade_model == SGI_GL_SMOOTH ||
                   draw->state->texture_2d);
-        /* So are flat triangles whose depth may round past a plane. */
-        if (!window && draw->mode != SGI_GL_POINTS) {
+        /*
+         * So are flat triangles whose depth may round past a plane; the
+         * indexed preflight has refused those.
+         */
+        if (!window && !indexed && draw->mode != SGI_GL_POINTS) {
             SGIRenderPieces check = { .rules = rules };
 
             sgi_render_decompose(&check, draw);
@@ -1844,9 +2046,10 @@ static SGIRenderResult sgi_render_draw_run(
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_HOST_VIEWPORT);
     }
     if (!target->resource_ops || !target->resource_ops->snapshot ||
-        !target->resource_ops->commit_covered) {
-        error_setg(errp, "SGI Mesa draw needs snapshot and covered commit "
-                   "providers");
+        (indexed ? !target->resource_ops->commit_index_covered :
+                   !target->resource_ops->commit_covered)) {
+        error_setg(errp, "SGI Mesa draw needs snapshot and %s commit "
+                   "providers", indexed ? "index" : "covered");
         return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_PROVIDER);
     }
     /*
@@ -2043,9 +2246,14 @@ static SGIRenderResult sgi_render_draw_run(
     nslots = pixels * resource->component_count;
     nrgba = pixels * 4;
     slots = g_try_new(uint32_t, nslots);
-    rgba = g_try_new(uint16_t, nrgba);
+    /* An indexed draw stages integers instead of RGBA. */
+    if (indexed) {
+        index_out = g_try_new(uint32_t, pixels);
+    } else {
+        rgba = g_try_new(uint16_t, nrgba);
+    }
     written = g_try_new(uint8_t, pixels);
-    if (!slots || !rgba || !written) {
+    if (!slots || (indexed ? !index_out : !rgba) || !written) {
         error_setg(errp, "Cannot allocate SGI Mesa draw buffers");
         return SGI_RENDER_OOM;
     }
@@ -2107,7 +2315,7 @@ static SGIRenderResult sgi_render_draw_run(
         }
     }
     /* Region rows in the frame's order, native slots in native order. */
-    for (uint32_t y = 0; y < region_height; y++) {
+    for (uint32_t y = 0; !indexed && y < region_height; y++) {
         size_t native_row = (size_t)y * region_width;
         size_t frame_row = (size_t)(flipped ? region_height - 1 - y : y) *
                            region_width;
@@ -2153,8 +2361,20 @@ static SGIRenderResult sgi_render_draw_run(
         }
         pieces.v = (float (*)[SGI_RENDERER_FRAME_VERTEX_FLOATS])piece_storage;
         pieces.flat = draw->state->shade_model == SGI_GL_FLAT;
-        memcpy(frame.colour_steps, steps, sizeof(steps));
-        pieces.steps = frame.colour_steps;
+        if (indexed) {
+            piece_index = g_try_new(uint32_t, piece_vertices);
+            if (!piece_index) {
+                error_setg(errp, "Cannot allocate SGI Mesa draw indices");
+                return SGI_RENDER_OOM;
+            }
+            pieces.index = piece_index;
+            pieces.index_bits = draw->state->index_bits;
+            frame.indices = piece_index;
+            frame.index = index_out;
+        } else {
+            memcpy(frame.colour_steps, steps, sizeof(steps));
+            pieces.steps = frame.colour_steps;
+        }
         sgi_render_decompose(&pieces, draw);
         assert(pieces.count == piece_vertices);
         frame.primitive = pieces.primitive;
@@ -2163,7 +2383,8 @@ static SGIRenderResult sgi_render_draw_run(
         frame.vertices = piece_storage;
     }
     frame.shade_model = draw->state->shade_model;
-    frame.blend = draw->state->blend;
+    /* An index is never blended. */
+    frame.blend = indexed ? 0 : draw->state->blend;
     frame.blend_src = draw->state->blend_src;
     frame.blend_dst = draw->state->blend_dst;
     frame.blend_equation = draw->state->blend_equation;
@@ -2203,6 +2424,20 @@ static SGIRenderResult sgi_render_draw_run(
             size_t frame_pixel = frame_row + x;
 
             if (!written[frame_pixel]) {
+                continue;
+            }
+            /* The only merge: new bits under the mask, old bits elsewhere. */
+            if (indexed) {
+                unsigned bits = resource->component[0].storage_bits;
+                uint32_t value = index_out[frame_pixel];
+
+                if (bits < 32 && value >> bits) {
+                    error_setg(errp, "SGI Mesa draw returned an index wider "
+                               "than its resource");
+                    return SGI_RENDER_HOST_ERROR;
+                }
+                slots[native_pixel] = (slots[native_pixel] & ~effective_mask) |
+                                      (value & effective_mask);
                 continue;
             }
             for (unsigned c = 0; c < resource->component_count; c++) {
@@ -2252,11 +2487,16 @@ static SGIRenderResult sgi_render_draw_run(
     /* A failed commit is never retried, so the phase is counted here. */
     sgi_render_commit_phase(draw, lines ? &line_set : NULL);
 
-    committed = sgi_render_resource_commit_covered(target, resource, 0,
-                                                   &rect, slots,
-                                                   region_width *
-                                                   resource->component_count,
-                                                   nslots, &writes, errp);
+    if (indexed) {
+        committed = sgi_render_resource_commit_index_covered(
+            target, resource, 0, &rect, slots, region_width, nslots,
+            &writes, effective_mask, errp);
+    } else {
+        committed = sgi_render_resource_commit_covered(
+            target, resource, 0, &rect, slots,
+            region_width * resource->component_count, nslots, &writes,
+            errp);
+    }
     return committed.status;
 }
 
@@ -2893,6 +3133,9 @@ static const struct {
     },
     [SGI_RENDER_REFUSAL_COLOUR_INDEX] = {
         "colour-index", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_INDEX_CLIPPED] = {
+        "index-clipped", SGI_RENDER_REFUSAL_CLASS_STATE,
     },
     [SGI_RENDER_REFUSAL_BUFFERS] = {
         "buffers", SGI_RENDER_REFUSAL_CLASS_STATE,

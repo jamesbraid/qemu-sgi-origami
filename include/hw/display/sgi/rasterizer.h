@@ -527,7 +527,10 @@ typedef enum SGIRenderRefusal {
     SGI_RENDER_REFUSAL_DITHER,          /* ordered dithering */
     SGI_RENDER_REFUSAL_PRIMITIVE,       /* mode, polygon mode, stipple */
     SGI_RENDER_REFUSAL_SMOOTHING,       /* smoothed points and lines */
+    /* Smooth colour-index shading between different vertex indices. */
     SGI_RENDER_REFUSAL_COLOUR_INDEX,
+    /* A smooth colour-index draw with a vertex outside the view volume. */
+    SGI_RENDER_REFUSAL_INDEX_CLIPPED,
     SGI_RENDER_REFUSAL_BUFFERS,         /* draw buffers, colour mask */
     SGI_RENDER_REFUSAL_FRAGMENT_TESTS,  /* depth, stencil and alpha tests */
     SGI_RENDER_REFUSAL_FOG,
@@ -641,15 +644,20 @@ SGIRenderDrawResult sgi_render_raster_attempt(
  * the viewport, scissor, clip rectangles and matrices each meet the
  * comparison fixture's conditions; and whether any vertex, after the
  * scalar path clips it, has a depth within 2^-32 of the near or far plane.
- * Adding a field the mixed-frame check accepts increments the version.
+ * Version 2 adds the colour-index width, zero for RGBA; an indexed draw's
+ * storage widths and row origin are its index resource's. Adding a field
+ * the mixed-frame check accepts and that can change the result increments
+ * the version; state neither path reads, such as the colour mask in index
+ * mode, stays out.
  */
-#define SGI_RENDER_SIGNATURE_VERSION 1
+#define SGI_RENDER_SIGNATURE_VERSION 2
+#define SGI_RENDER_SIGNATURE_PREFIX "v2 "
 
 typedef struct SGIRenderSignature {
     uint32_t version;
     /*
-     * Canonical text, equal exactly when the signatures are, "v1 ...".
-     * Text that would not fit becomes "v1 overflow" rather than truncate.
+     * Canonical text, equal exactly when the signatures are, "v2 ...".
+     * Text that would not fit becomes "v2 overflow" rather than truncate.
      */
     char text[512];
     /* The mixed-frame check accepts the draw on the reference driver. */
@@ -662,15 +670,15 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
                                SGIRenderSignature *signature);
 /*
  * Test-only: treat signature text of this many characters or more as
- * truncated, which makes it the single signature "v1 overflow"; zero
+ * truncated, which makes it the single signature "v2 overflow"; zero
  * restores the buffer's own bound.
  */
 void sgi_render_test_signature_limit(size_t length);
 /*
- * A decoded raster operation's signature, version 1: the operation, the
- * buffers it clears, the first colour target's storage widths and row
- * origin, and the raster rules; in-set when the mixed-frame check accepts
- * it on the reference driver.
+ * A decoded raster operation's signature, under the same version: the
+ * operation, the buffers it clears, the first colour target's storage
+ * widths and row origin, and the raster rules; in-set when the mixed-frame
+ * check accepts it on the reference driver.
  */
 void sgi_render_raster_signature(const SGIRasterRules *rules,
                                  const SGIRasterTarget *target,
