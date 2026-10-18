@@ -233,10 +233,10 @@ at a t of 0.5 within rounding on a 2 by 2 image. Mixed or mipmap filters,
 stored borders, other texture formats, and other environment modes remain
 unsupported.
 
-The path also rejects colour-index drawing, depth and stencil tests, client
-clip planes, ordered dithering, accumulation, and other draw states it has
-not mapped to Mesa. It snapshots, uploads, reads back and commits only the
-region the draw can write: the union of its clip rectangles bounded by the
+The path also rejects colour-index drawing outside the subset below, depth
+and stencil tests, client clip planes, ordered dithering, accumulation, and
+other draw states it has not mapped to Mesa. It snapshots, uploads, reads
+back and commits only the region the draw can write: the union of its clip rectangles bounded by the
 geometry's window extent with two pixels of margin, where the extent comes
 from the scalar path's window triangles, the line parallelograms, or each
 triangle clipped to the view volume and each point's centre and size. Clip
@@ -244,15 +244,57 @@ rectangles are cut to the region, so the host cannot write outside it. When
 a clipped vertex has no window position the region is the whole clip union.
 The geometry, viewport and clips the host draws with are unchanged, so the
 pixels are too. A draw renders into a 32-bit float host buffer, which is
-rounded to the native steps only at readback. That is why a blended draw is limited to one primitive. One
-private stencil bit marks the clip
-union and another marks written pixels, so primitives of one draw that
-overlap each still draw. The worker reads back colour and coverage before any
+rounded to the native steps only at readback. That is why a blended draw is
+limited to one primitive. One private stencil bit marks the clip union and
+another marks written pixels, so primitives of one draw that overlap each
+still draw. The worker reads back colour and coverage before any
 native commit. The shared code passes the bottom-origin binary write mask
 to ``commit_covered``. The provider must leave zero-mask pixels untouched.
 Equal-colour writes remain marked. A missing sparse callback returns
 ``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
 path yet, and KONA's tag meaning remains a family contract.
+
+Colour-index draws
+------------------
+
+A draw whose state has a nonzero ``index_bits`` selects only an
+``SGI_RENDER_INDEX`` resource for its front target: one component,
+``SGI_RENDER_SCALAR`` and ``SGI_RENDER_UINT``, whose storage width equals
+``index_bits``. It never selects a colour resource, and an RGBA draw never
+selects an index resource. A target without such a resource, or whose
+provider has no ``commit_index_covered``, is refused before the snapshot.
+
+The accepted subset lies inside the mixed-frame set, whether or not the
+caller asks for a mixed frame, and only on the pinned llvmpipe: points of
+sizes 1 to 4 and filled triangles, strips, fans, quadrilaterals, quad strips
+and polygons, in the comparison fixture (one clip covering a bottom-origin
+resource, no scissor, the viewport equal to the resource, identity
+matrices). Shading is flat, or smooth with every vertex index bitwise equal
+and no vertex outside the view volume, because the scalar path gives a
+clipped vertex an interpolated index that need not floor to the shared one.
+Any index mask is accepted. Blending, the alpha test, the colour mask, the
+RGBA logical operation and dithering are ignored, as the scalar path
+ignores them in index mode. Lines, smooth draws with different indices,
+fog, the index logical operation, texturing, depth and stencil tests, client
+clip planes, polygon offset, culling, smoothing under rules that smooth,
+non-fill polygon modes, stipples, other draw buffers, a width mismatch, a
+non-finite index, flat triangles whose depth may round past a plane, and
+state outside the fixture are refused before the snapshot, each with its own
+reason. An indexed CLEAR is still refused.
+
+The host converts each piece's index with ``sgi_gl_index_value()``, from the
+provoking vertex as the scalar path picks it. The worker draws into a
+cleared 32-bit unsigned integer target with the private stencil coverage
+marker; its program passes the vertex index through unchanged, with no alpha
+test or discard, and the target is read back as ``GL_RED_INTEGER`` and
+``GL_UNSIGNED_INT``. The shared code then merges once: for a covered pixel,
+``(old & ~mask) | (new & mask)``, where ``old`` is the snapshot and ``mask``
+is ``index_mask`` limited to the storage width; an uncovered pixel keeps its
+value. ``commit_index_covered`` receives those final values, the coverage
+and the effective mask. The family stores the storage bits of each covered
+pixel once, and may apply its own policy for the mask, such as writing
+nothing while it is zero; it never merges again. A covered pixel is one a
+fragment reached, whether or not its value changed.
 
 Proven against the scalar path
 ------------------------------
@@ -335,6 +377,21 @@ with the rules named above. Any other driver is unproven.
   textured triangle, several clips and a scissor on a 300 by 200 resource of
   both row origins equal the scalar path everywhere, and their snapshot and
   commit rectangles stay within 40 by 40 pixels of the geometry.
+- ``index-primitives``: points of sizes 1 to 4, triangles, strips, fans,
+  quadrilaterals, quad strips and polygons into an 8-bit index resource,
+  flat with a different index per vertex and smooth with one index, equal
+  to the scalar path in values and coverage.
+- ``index-values-and-masks``: flat triangles and quadrilaterals at widths
+  8, 12 and 32 with indices 0, 1, 255, 4095, 4294967040, negative and
+  fractional ones, under full, zero and partial masks over varied old
+  values.
+- ``index-ignored-states``: blending, the alpha test, the colour mask, the
+  RGBA logical operation and dithering change nothing.
+- ``index-refusals``, ``index-resource-selection``, ``index-failures`` and
+  ``index-carry-over``: each refused state before the snapshot and out of
+  the set; the index resource chosen beside a colour one; framebuffer and
+  partial commit failures; and an indexed draw between RGBA draws on one
+  renderer.
 - ``scalar-match-store-widths``: refused width pairings for draws and CLEAR,
   and RGB stores under alpha rules.
 - ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
@@ -667,22 +724,27 @@ the default only with coverage compared. The call returns:
 - ``DISABLED`` when the shadow renderer could not be created, whose reason
   ``sgi_render_shadow_disabled()`` reports for the session.
 
-Each compared draw carries the version 1 signature from
+Each compared draw carries the version 2 signature from
 ``sgi_render_draw_signature()``: canonical text naming the primitive class,
 aliased point size, line width and stipple enables, shade model, blending,
 texture environment, filters, wraps and image size, the raster rules, the
 colour and alpha storage widths, the row origin, whether the viewport,
 scissor, clips and matrices each meet the comparison fixture, and whether
-any clipped vertex has a depth within 2^-32 of a plane. Rules are written
+any clipped vertex has a depth within 2^-32 of a plane, and the colour-index
+width, zero for RGBA; an indexed draw's storage widths and row origin are its
+index resource's. Rules are written
 by name, so renumbering an enum cannot change a signature, and text that
-would not fit is counted as the one signature ``v1 overflow`` rather than
+would not fit is counted as the one signature ``v2 overflow`` rather than
 cut. A decoded raster operation's signature names the operation, the
 buffers it clears, the colour storage widths and row origin and the rules'
-bit widths. Depth and stencil
-functions, colour masks, logic op, alpha test and dither are not in
-version 1; adding a field the mixed-frame check accepts increments the
-version. The signature also says whether the draw is in-set, that is
-whether the mixed-frame check accepts it on the reference driver; the tag
+bit widths. Depth and stencil functions, colour masks, logic op, alpha
+test and dither are not in version 2. The RGBA check refuses them, and the
+indexed check accepts them only because neither path reads them in index
+mode, so they are left out deliberately: they cannot make the two paths
+differ. Adding a field the mixed-frame check accepts and that can change
+the result increments the version. The signature also says whether the
+draw is in-set, that is whether the mixed-frame check accepts it on the
+reference driver; the tag
 and the draw path call the same acceptance function, so they agree. The
 session counts matches, mismatches, refusals and failures per signature
 (``sgi_render_shadow_counts()``, ``sgi_render_shadow_foreach()``) and in

@@ -827,13 +827,13 @@ static void fail_nth_program_link(GLuint program, GLenum name, GLint *value)
  * A program that fails to build when the host has the OpenGL it needs is a
  * host setup failure, reported by renderer creation, not a refusal of each
  * later draw that would use it. The worker builds, in order, its request,
- * colour, texture, smooth triangle and line programs.
+ * colour, index, texture, smooth triangle and line programs.
  */
 static void test_program_failure_fails_creation(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
     static const char *const programs[] = {
-        "texture", "window", "line",
+        "index", "texture", "window", "line",
     };
 
     mesa_test_env_set(&mesa_env);
@@ -7473,7 +7473,8 @@ static void test_attempt_outcomes(void)
     REFUSED("fog", p->state.fog = 1, FOG);
     REFUSED("depth test", p->state.depth_test = 1, FRAGMENT_TESTS);
     REFUSED("cull", p->state.cull_face = 1, FACING);
-    REFUSED("colour index", p->state.index_bits = 8, COLOUR_INDEX);
+    REFUSED("colour index without an index view", p->state.index_bits = 8,
+            RESOURCE);
     REFUSED("colour mask", p->state.colour_mask = SGI_GL_COLOUR_MASK_RED,
             BUFFERS);
     REFUSED("polygon stipple", p->draw.polygon_stipple_enabled = true,
@@ -7880,8 +7881,8 @@ static void test_draw_signature(void)
     prim_fan(p, 4);
     prim_signature(p, &base);
     g_test_message("fan: %s", base.text);
-    g_assert_cmpuint(base.version, ==, 1);
-    g_assert_true(g_str_has_prefix(base.text, "v1 polygon "));
+    g_assert_cmpuint(base.version, ==, 2);
+    g_assert_true(g_str_has_prefix(base.text, "v2 polygon "));
     g_assert_true(base.in_set);
     prim_signature(p, &other);
     g_assert_cmpstr(other.text, ==, base.text);
@@ -7935,7 +7936,7 @@ static void test_draw_signature(void)
     sgi_render_test_signature_limit(64);
     prim_fan(p, 4);
     prim_signature(p, &other);
-    g_assert_cmpstr(other.text, ==, "v1 overflow");
+    g_assert_cmpstr(other.text, ==, "v2 overflow");
     sgi_render_test_signature_limit(0);
     /* The largest field values still fit the real bound. */
     prim_case_init(p, SGI_GL_POINTS, 4);
@@ -7957,7 +7958,7 @@ static void test_draw_signature(void)
     prim_vertex_n(p, 1, 1);
     prim_signature(p, &other);
     g_test_message("largest: %s (%zu)", other.text, strlen(other.text));
-    g_assert_cmpstr(other.text, !=, "v1 overflow");
+    g_assert_cmpstr(other.text, !=, "v2 overflow");
 
     /*
      * Texture state the scalar path draws or drops by rules the host
@@ -8491,7 +8492,7 @@ static void test_shadow_raster(void)
                                  k == 2 ? NULL : masks, &out);
         g_test_message("clear %u: %s result %d", k, out.signature.text,
                        out.result);
-        g_assert_true(g_str_has_prefix(out.signature.text, "v1 "));
+        g_assert_true(g_str_has_prefix(out.signature.text, "v2 "));
         switch (k) {
         case 0:
         case 4:
@@ -8519,6 +8520,1022 @@ static void test_shadow_raster(void)
     }
     sgi_render_shadow_free(shadow);
     g_free(p);
+}
+
+/*
+ * Colour-index comparisons: a 16 by 16 bottom-origin front index resource
+ * in the mixed-frame fixture, against sgi_soft_draw() through a scalar
+ * store_index that merges under the mask as the families do. Each index
+ * pixel records whether a fragment reached it.
+ */
+typedef struct IndexFixture {
+    uint32_t index[PRIM_SIZE][PRIM_SIZE];
+    uint8_t written[PRIM_SIZE][PRIM_SIZE];
+    unsigned bits;
+    unsigned snapshots, commits;
+    uint32_t effective_mask;
+    /* Nonzero: the index commit stops after this many pixels. */
+    unsigned fail_after;
+} IndexFixture;
+
+static uint32_t index_width_mask(unsigned bits)
+{
+    return bits >= 32 ? UINT32_MAX : (1u << bits) - 1;
+}
+
+static void index_destination(IndexFixture *f, unsigned bits)
+{
+    memset(f, 0, sizeof(*f));
+    f->bits = bits;
+    for (unsigned y = 0; y < PRIM_SIZE; y++) {
+        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+            f->index[y][x] = (x * 0x9e3779b1u + y * 0x85ebca6bu + 0x1234) &
+                             index_width_mask(bits);
+        }
+    }
+}
+
+static void index_scalar_store(void *opaque, SGIColourTarget target, int x,
+                               int y, uint32_t index, uint32_t mask)
+{
+    IndexFixture *f = opaque;
+    uint32_t m = mask & index_width_mask(f->bits);
+
+    if (target != 7 || x < 0 || x >= PRIM_SIZE || y < 0 || y >= PRIM_SIZE) {
+        return;
+    }
+    f->index[y][x] = (f->index[y][x] & ~m) | (index & m);
+    f->written[y][x] = 1;
+}
+
+static SGIRenderResult index_snapshot(void *opaque,
+                                      const SGIRenderResource *resource,
+                                      uint32_t slice,
+                                      const SGIRenderRect *rect,
+                                      uint32_t *slots, size_t stride_slots,
+                                      size_t capacity_slots, Error **errp)
+{
+    IndexFixture *f = opaque;
+
+    g_assert_cmpint(resource->role, ==, SGI_RENDER_INDEX);
+    f->snapshots++;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            slots[(y - rect->y0) * stride_slots + x - rect->x0] =
+                f->index[y][x];
+        }
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult index_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    uint32_t effective_mask, Error **errp)
+{
+    IndexFixture *f = opaque;
+    uint64_t complete = 0;
+
+    f->commits++;
+    f->effective_mask = effective_mask;
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            if (f->fail_after && complete == f->fail_after) {
+                error_setg(errp, "index commit stopped at pixel %" PRIu64,
+                           complete);
+                return (SGIRenderCommitResult) {
+                    .status = SGI_RENDER_RESOURCE_ERROR,
+                    .complete_pixels = complete,
+                    .extent_known = true,
+                };
+            }
+            complete++;
+            if (!writes->pixel[(y - rect->y0) * writes->stride_bytes +
+                               x - rect->x0]) {
+                continue;
+            }
+            /* The final value arrives merged; store it once. */
+            f->index[y][x] = slots[(y - rect->y0) * stride_slots +
+                                   x - rect->x0];
+            f->written[y][x] = 1;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
+/* A colour commit, which an indexed draw must never call. */
+static SGIRenderCommitResult index_colour_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    g_assert_not_reached();
+}
+
+static const SGIRenderResourceOps index_ops = {
+    .snapshot = index_snapshot,
+    .commit_covered = index_colour_commit,
+    .commit_index_covered = index_commit,
+};
+
+static SGIRenderResource index_resource(unsigned bits)
+{
+    return (SGIRenderResource) {
+        .backing_id = 5, .backing_generation = 1,
+        .view_id = 6, .view_generation = 1,
+        .role = SGI_RENDER_INDEX, .target = 7,
+        .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+        .width = PRIM_SIZE, .height = PRIM_SIZE, .depth = 1,
+        .bottom_origin = true, .component_count = 1,
+        .component = { { SGI_RENDER_SCALAR, SGI_RENDER_UINT, bits } },
+    };
+}
+
+/*
+ * An indexed case: prim_case_init() state in index mode at bits, mask
+ * all ones, flat shading.
+ */
+static void index_case_init(PrimCase *p, uint32_t mode, unsigned bits)
+{
+    prim_case_init(p, mode, 4);
+    p->state.index_bits = bits;
+    p->state.index_mask = UINT32_MAX;
+}
+
+/* A vertex at window (x, y) carrying index. */
+static void index_vertex(PrimCase *p, float x, float y, float index)
+{
+    prim_vertex_n(p, x, y);
+    p->vertices[p->draw.count - 1][SGI_GL_V_INDEX] = index;
+}
+
+/* Rules for both paths of an indexed case; true names a dither. */
+static bool index_rules_dither;
+
+static void index_rules(const PrimCase *p, SGIRasterRules *rules)
+{
+    prim_rules(p, rules);
+    if (index_rules_dither) {
+        rules->dither = SGI_DITHER_BAYER4_TOP_ROWS;
+    }
+}
+
+static void index_scalar_draw(PrimCase *p, IndexFixture *f)
+{
+    SGIRasterRules rules;
+    SGIRasterTarget target = {
+        .opaque = f, .store_index = index_scalar_store,
+    };
+
+    index_rules(p, &rules);
+    g_assert_cmpint(sgi_soft_draw(&rules, &target, &p->draw), ==,
+                    SGI_GL_DRAW_OK);
+}
+
+/*
+ * The Mesa attempt into f, with res_bits the index resource's width (zero
+ * for the draw's own) and ops replacing index_ops when set.
+ */
+static SGIRenderDrawResult index_mesa_draw(SGIRenderer *renderer,
+                                           PrimCase *p, IndexFixture *f,
+                                           unsigned res_bits,
+                                           const SGIRenderResourceOps *ops,
+                                           const SGIRenderAttemptOptions *o,
+                                           SGIRenderAttemptOutcome *outcome,
+                                           Error **errp)
+{
+    SGIRenderResource res = index_resource(res_bits ? res_bits :
+                                           p->state.index_bits);
+    SGIRasterRules rules;
+    SGIRasterTarget target = {
+        .opaque = f, .resources = &res, .resource_count = 1,
+        .resource_ops = ops ? ops : &index_ops,
+    };
+
+    index_rules(p, &rules);
+    return sgi_render_draw_attempt(renderer, &rules, &target, &p->draw, o,
+                                   outcome, errp);
+}
+
+/* Returns the number of pixels whose index or coverage differ. */
+static unsigned index_compare(SGIRenderer *renderer, const char *name,
+                              PrimCase *p)
+{
+    static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
+    g_autofree IndexFixture *scalar = g_new(IndexFixture, 1);
+    g_autofree IndexFixture *mesa = g_new(IndexFixture, 1);
+    SGIRenderAttemptOutcome outcome;
+    SGIRenderDrawResult result;
+    unsigned differences = 0, drawn = 0;
+    Error *err = NULL;
+
+    index_destination(scalar, p->state.index_bits);
+    index_destination(mesa, p->state.index_bits);
+    index_scalar_draw(p, scalar);
+    result = index_mesa_draw(renderer, p, mesa, 0, NULL, &mixed, &outcome,
+                             &err);
+    if (result != SGI_RENDER_DRAW_OK) {
+        g_test_message("%s: attempt returned %d (%s): %s", name, result,
+                       sgi_render_refusal_name(outcome.reason),
+                       err ? error_get_pretty(err) : "(no error)");
+        g_clear_pointer(&err, error_free);
+        return PRIM_SIZE * PRIM_SIZE;
+    }
+    for (unsigned y = 0; y < PRIM_SIZE; y++) {
+        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+            drawn += scalar->written[y][x];
+            if (scalar->index[y][x] != mesa->index[y][x] ||
+                scalar->written[y][x] != mesa->written[y][x]) {
+                differences++;
+                g_test_message("%s: pixel (%u,%u) scalar %s 0x%x mesa %s "
+                               "0x%x", name, x, y,
+                               scalar->written[y][x] ? "drawn" : "kept",
+                               scalar->index[y][x],
+                               mesa->written[y][x] ? "drawn" : "kept",
+                               mesa->index[y][x]);
+            }
+        }
+    }
+    /* A case that draws nothing proves nothing. */
+    if (!drawn) {
+        g_test_message("%s: the scalar path drew no pixel", name);
+        differences++;
+    }
+    return differences;
+}
+
+static void index_expect(SGIRenderer *renderer, const char *name, PrimCase *p,
+                         unsigned *failures)
+{
+    unsigned differences = index_compare(renderer, name, p);
+
+    if (differences) {
+        g_test_message("%s: %u pixels differ", name, differences);
+        (*failures)++;
+    }
+}
+
+/* Vertices for each accepted primitive, inside the window. */
+static void index_shape(PrimCase *p, uint32_t mode, const float *indices)
+{
+    static const float points[][2] = {
+        { 3.5f, 3.5f }, { 10.25f, 4.75f }, { 6.5f, 12.5f }, { 13.5f, 13.5f },
+    };
+    static const float strip[][2] = {
+        { 1.25f, 2.5f }, { 2.75f, 13.5f }, { 7.5f, 1.75f }, { 8.25f, 14.25f },
+        { 14.5f, 3.25f }, { 13.75f, 12.5f },
+    };
+    static const float fan[][2] = {
+        { 8.25f, 8.5f }, { 1.5f, 2.25f }, { 14.25f, 1.75f },
+        { 14.5f, 14.25f }, { 1.75f, 13.5f },
+    };
+    static const unsigned quad_order[] = { 0, 2, 3, 1 };
+    const float (*xy)[2] = mode == SGI_GL_POINTS ? points :
+                           mode == SGI_GL_TRIANGLE_FAN ||
+                           mode == SGI_GL_POLYGON ? fan : strip;
+    unsigned n = mode == SGI_GL_POINTS ? ARRAY_SIZE(points) :
+                 mode == SGI_GL_TRIANGLE_FAN ? ARRAY_SIZE(fan) :
+                 mode == SGI_GL_POLYGON ? 4 :
+                 mode == SGI_GL_TRIANGLES ? 6 :
+                 mode == SGI_GL_QUADS ? 4 : ARRAY_SIZE(strip);
+
+    for (unsigned i = 0; i < n; i++) {
+        /* Quads and polygons take their corners in order round the edge. */
+        unsigned k = mode == SGI_GL_QUADS ? quad_order[i] :
+                     mode == SGI_GL_POLYGON ? i + 1 : i;
+
+        index_vertex(p, xy[k][0], xy[k][1], indices[i]);
+    }
+}
+
+/*
+ * Each accepted primitive, flat with a different index per vertex so the
+ * provoking vertex shows, and smooth with one index throughout: points of
+ * sizes 1 to 4, triangles, strips, fans, quadrilaterals, quad strips and
+ * polygons, all bit-identical to the scalar path with matching coverage.
+ */
+static void test_index_primitives(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const uint32_t modes[] = {
+        SGI_GL_POINTS, SGI_GL_TRIANGLES, SGI_GL_TRIANGLE_STRIP,
+        SGI_GL_TRIANGLE_FAN, SGI_GL_QUADS, SGI_GL_QUAD_STRIP, SGI_GL_POLYGON,
+    };
+    static const float distinct[] = { 3, 17, 42, 99, 200, 7 };
+    static const float same[] = { 77, 77, 77, 77, 77, 77 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        for (unsigned smooth = 0; smooth < 2; smooth++) {
+            unsigned sizes = modes[i] == SGI_GL_POINTS ? 4 : 1;
+
+            for (unsigned size = 1; size <= sizes; size++) {
+                g_autofree char *name = g_strdup_printf(
+                    "mode %u %s size %u", modes[i],
+                    smooth ? "smooth" : "flat", size);
+
+                index_case_init(p, modes[i], 8);
+                p->state.shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+                p->draw.point_size = size;
+                index_shape(p, modes[i], smooth ? same : distinct);
+                index_expect(renderer, name, p, &failures);
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Index values at widths 8, 12 and 32, including the largest, negative
+ * and fractional ones, through flat triangles and quads, and index masks:
+ * full, zero and partial over the destination's old values. A covered
+ * pixel whose value does not change is still written; an uncovered one
+ * never is.
+ */
+static void test_index_values_and_masks(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const unsigned widths[] = { 8, 12, 32 };
+    static const float values[] = {
+        0, 1, 255, 4095, 4294967040.0f, -1, -2.5f, 300.75f, -70000.25f,
+    };
+    static const uint32_t masks[] = {
+        UINT32_MAX, 0, 0x0f0, 0xa5a5a5a5, 0x80000001,
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+        for (unsigned v = 0; v < ARRAY_SIZE(values); v++) {
+            for (unsigned m = 0; m < ARRAY_SIZE(masks); m++) {
+                for (unsigned quad = 0; quad < 2; quad++) {
+                    float idx[6];
+                    g_autofree char *name = g_strdup_printf(
+                        "width %u value %g mask 0x%x %s", widths[w],
+                        values[v], masks[m], quad ? "quad" : "triangles");
+
+                    for (unsigned k = 0; k < 6; k++) {
+                        idx[k] = values[v];
+                    }
+                    index_case_init(p, quad ? SGI_GL_QUADS :
+                                    SGI_GL_TRIANGLES, widths[w]);
+                    p->state.index_mask = masks[m];
+                    index_shape(p, p->draw.mode, idx);
+                    index_expect(renderer, name, p, &failures);
+                }
+            }
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * States the scalar path ignores in index mode change nothing here
+ * either: blending, the alpha test, the colour mask, the RGBA logical
+ * operation and dithering under rules that dither.
+ */
+static void test_index_ignored_states(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 9, 9, 9, 9, 9, 9 };
+    static const char *const names[] = {
+        "blend", "alpha test", "colour mask", "colour logic op", "dither",
+    };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; i < ARRAY_SIZE(names); i++) {
+        index_case_init(p, SGI_GL_TRIANGLES, 8);
+        index_shape(p, SGI_GL_TRIANGLES, idx);
+        switch (i) {
+        case 0:
+            p->state.blend = 1;
+            p->state.blend_equation = SGI_GL_FUNC_ADD;
+            p->state.blend_src = SGI_GL_SRC_ALPHA;
+            p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+            break;
+        case 1:
+            p->state.alpha_test = 1;
+            p->state.alpha_func = 0x0200; /* GL_NEVER */
+            break;
+        case 2:
+            p->state.colour_mask = 0;
+            break;
+        case 3:
+            p->state.color_logic_op = 1;
+            p->state.logic_op_mode = 0x1500; /* GL_CLEAR */
+            break;
+        case 4:
+            p->state.dither = 1;
+            index_rules_dither = true;
+            break;
+        }
+        index_expect(renderer, names[i], p, &failures);
+        index_rules_dither = false;
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * Apply refused case i to an accepted indexed draw p: returns its name and
+ * expected reason, or NULL past the last case.
+ */
+static const char *index_refusal_case(PrimCase *p, unsigned i,
+                                      SGIRenderRefusal *reason,
+                                      unsigned *res_bits, bool *no_commit)
+{
+    static const float unequal[] = { 5, 6, 5, 5, 5, 5 };
+    static const uint32_t line_modes[2] = { SGI_GL_LINE, SGI_GL_LINE };
+
+    switch (i) {
+    case 0:
+        p->draw.mode = SGI_GL_LINES;
+        *reason = SGI_RENDER_REFUSAL_PRIMITIVE;
+        return "lines";
+    case 1:
+        p->state.shade_model = SGI_GL_SMOOTH;
+        p->draw.count = 0;
+        index_shape(p, SGI_GL_TRIANGLES, unequal);
+        *reason = SGI_RENDER_REFUSAL_COLOUR_INDEX;
+        return "smooth unequal";
+    case 2:
+        p->state.shade_model = SGI_GL_SMOOTH;
+        p->vertices[1][SGI_GL_V_POSITION + 2] = -1.5f;
+        *reason = SGI_RENDER_REFUSAL_INDEX_CLIPPED;
+        return "smooth past the near plane";
+    case 3:
+        p->state.fog = 1;
+        *reason = SGI_RENDER_REFUSAL_FOG;
+        return "fog";
+    case 4:
+        p->state.index_logic_op = 1;
+        *reason = SGI_RENDER_REFUSAL_LOGIC_OP;
+        return "index logic op";
+    case 5:
+        p->state.texture_2d = 1;
+        *reason = SGI_RENDER_REFUSAL_TEXTURE;
+        return "texture";
+    case 6:
+        p->state.depth_test = 1;
+        *reason = SGI_RENDER_REFUSAL_FRAGMENT_TESTS;
+        return "depth test";
+    case 7:
+        p->state.stencil_test = 1;
+        *reason = SGI_RENDER_REFUSAL_FRAGMENT_TESTS;
+        return "stencil test";
+    case 8:
+        p->state.clip_planes = 1;
+        *reason = SGI_RENDER_REFUSAL_CLIP_PLANES;
+        return "clip plane";
+    case 9:
+        p->state.polygon_offset = 1;
+        *reason = SGI_RENDER_REFUSAL_POLYGON_OFFSET;
+        return "polygon offset";
+    case 10:
+        p->state.cull_face = 1;
+        *reason = SGI_RENDER_REFUSAL_FACING;
+        return "culling";
+    case 11:
+        p->smooth_rules = true;
+        p->draw.polygon_smooth = true;
+        *reason = SGI_RENDER_REFUSAL_SMOOTHING;
+        return "polygon smoothing";
+    case 12:
+        p->draw.polygon_modes = line_modes;
+        *reason = SGI_RENDER_REFUSAL_PRIMITIVE;
+        return "polygon mode";
+    case 13:
+        p->draw.polygon_stipple_enabled = true;
+        *reason = SGI_RENDER_REFUSAL_PRIMITIVE;
+        return "polygon stipple";
+    case 14:
+        p->state.draw_buffers = SGI_GL_DRAW_BACK;
+        *reason = SGI_RENDER_REFUSAL_BUFFERS;
+        return "back buffer";
+    case 15:
+        *res_bits = 12;
+        *reason = SGI_RENDER_REFUSAL_STORE_WIDTH;
+        return "width mismatch";
+    case 16:
+        p->vertices[2][SGI_GL_V_INDEX] = INFINITY;
+        *reason = SGI_RENDER_REFUSAL_GEOMETRY;
+        return "non-finite index";
+    case 17:
+        *no_commit = true;
+        *reason = SGI_RENDER_REFUSAL_PROVIDER;
+        return "no index commit";
+    case 18:
+        p->state.scissor_test = 1;
+        *reason = SGI_RENDER_REFUSAL_MIXED_FRAME;
+        return "scissor";
+    case 19:
+        p->state.drawable.clip.n = 2;
+        p->state.drawable.clip.r[1] = p->state.drawable.clip.r[0];
+        *reason = SGI_RENDER_REFUSAL_MIXED_FRAME;
+        return "two clips";
+    case 20:
+        p->state.viewport[0] = 1;
+        *reason = SGI_RENDER_REFUSAL_MIXED_FRAME;
+        return "offset viewport";
+    case 21:
+        p->state.modelview[0] = 0.5f;
+        *reason = SGI_RENDER_REFUSAL_MIXED_FRAME;
+        return "matrix";
+    case 22:
+        p->draw.mode = SGI_GL_POINTS;
+        p->draw.point_size = 5;
+        *reason = SGI_RENDER_REFUSAL_MIXED_FRAME;
+        return "point size 5";
+    default:
+        return NULL;
+    }
+}
+
+/*
+ * Every refused state returns its reason before the snapshot, commits
+ * nothing, and is out of the set; an accepted draw is in it.
+ */
+static void test_index_refusals(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const SGIRenderResourceOps no_index_commit = {
+        .snapshot = index_snapshot,
+        .commit_covered = index_colour_commit,
+    };
+    static const float idx[] = { 5, 5, 5, 5, 5, 5 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned i = 0; ; i++) {
+        g_autofree IndexFixture *f = g_new(IndexFixture, 1);
+        static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
+        const SGIRenderResourceOps *ops;
+        SGIRenderRefusal expected;
+        SGIRenderAttemptOutcome outcome;
+        SGIRenderSignature signature;
+        SGIRenderResource res;
+        SGIRasterRules rules;
+        SGIRasterTarget target;
+        SGIRenderDrawResult result;
+        unsigned res_bits = 0;
+        bool no_commit = false;
+        const char *name;
+
+        index_case_init(p, SGI_GL_TRIANGLES, 8);
+        index_shape(p, SGI_GL_TRIANGLES, idx);
+        name = index_refusal_case(p, i, &expected, &res_bits, &no_commit);
+        ops = no_commit ? &no_index_commit : NULL;
+        if (!name) {
+            break;
+        }
+        index_destination(f, 8);
+        result = index_mesa_draw(renderer, p, f, res_bits, ops, &mixed,
+                                 &outcome, &err);
+        res = index_resource(res_bits ? res_bits : 8);
+        target = (SGIRasterTarget) {
+            .resources = &res, .resource_count = 1,
+            .resource_ops = ops ? ops : &index_ops,
+        };
+        prim_rules(p, &rules);
+        sgi_render_draw_signature(&rules, &target, &p->draw, &signature);
+        if (result != SGI_RENDER_DRAW_REFUSED || outcome.reason != expected ||
+            f->snapshots || f->commits || !err ||
+            (ops != &no_index_commit && signature.in_set)) {
+            g_test_message("%s: result %d reason %s, %u snapshots, "
+                           "%u commits, in-set %d", name, result,
+                           sgi_render_refusal_name(outcome.reason),
+                           f->snapshots, f->commits, signature.in_set);
+            failures++;
+        }
+        g_clear_pointer(&err, error_free);
+    }
+    /* An accepted indexed draw is in the set, and says it is indexed. */
+    {
+        SGIRenderResource res = index_resource(8);
+        SGIRasterTarget target = {
+            .resources = &res, .resource_count = 1,
+            .resource_ops = &index_ops,
+        };
+        SGIRenderSignature signature;
+        SGIRasterRules rules;
+
+        index_case_init(p, SGI_GL_TRIANGLES, 8);
+        index_shape(p, SGI_GL_TRIANGLES, idx);
+        prim_rules(p, &rules);
+        sgi_render_draw_signature(&rules, &target, &p->draw, &signature);
+        g_assert_true(signature.in_set);
+        g_assert_true(g_str_has_suffix(signature.text, " index=8"));
+    }
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * An indexed draw selects only the index resource, even beside a colour
+ * resource for the same target; a colour draw never selects it.
+ */
+static void test_index_resource_selection(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 33, 33, 33, 33, 33, 33 };
+    static const SGIRenderAttemptOptions none = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree IndexFixture *f = g_new(IndexFixture, 1);
+    SGIRenderResource res[2];
+    SGIRasterRules rules;
+    SGIRasterTarget target = {
+        .opaque = f, .resources = res, .resource_count = 2,
+        .resource_ops = &index_ops,
+    };
+    SGIRenderAttemptOutcome outcome;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    index_case_init(p, SGI_GL_TRIANGLES, 8);
+    index_shape(p, SGI_GL_TRIANGLES, idx);
+    prim_rules(p, &rules);
+    prim_resources(p, res);
+    res[1] = index_resource(8);
+    index_destination(f, 8);
+    g_assert_cmpint(sgi_render_draw_attempt(renderer, &rules, &target,
+                                            &p->draw, &none, &outcome,
+                                            &err), ==, SGI_RENDER_DRAW_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(f->commits, ==, 1);
+    g_assert_cmphex(f->effective_mask, ==, 0xff);
+    /* Only the index resource: an RGBA draw refuses for want of colour. */
+    p->state.index_bits = 0;
+    target.resources = &res[1];
+    target.resource_count = 1;
+    g_assert_cmpint(sgi_render_draw_attempt(renderer, &rules, &target,
+                                            &p->draw, &none, &outcome,
+                                            &err), ==,
+                    SGI_RENDER_DRAW_REFUSED);
+    g_assert_cmpint(outcome.reason, ==, SGI_RENDER_REFUSAL_RESOURCE);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f->commits, ==, 1);
+    sgi_renderer_free(renderer);
+    g_free(p);
+}
+
+static void fail_index_read_pixels(GLint x, GLint y, GLsizei width,
+                                   GLsizei height, GLenum format,
+                                   GLenum type, void *pixels)
+{
+    saved_read_pixels(x, y, width, height,
+                      format == GL_RED_INTEGER ? GL_NONE : format,
+                      type, pixels);
+}
+
+/*
+ * Failures: an incomplete index framebuffer, a failed integer readback
+ * and a failed coverage readback commit nothing and fail the renderer; a
+ * commit that stops partway reports its prefix as a failure.
+ */
+static void test_index_failures(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 12, 12, 12, 12, 12, 12 };
+    static const SGIRenderAttemptOptions none = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree IndexFixture *f = g_new(IndexFixture, 1);
+    SGIRenderAttemptOutcome outcome;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    index_case_init(p, SGI_GL_TRIANGLES, 8);
+    index_shape(p, SGI_GL_TRIANGLES, idx);
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    index_destination(f, 8);
+    saved_framebuffer_status = epoxy_glCheckFramebufferStatus;
+    epoxy_glCheckFramebufferStatus = fail_framebuffer_status;
+    g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none, &outcome,
+                                    &err), ==, SGI_RENDER_DRAW_FAILED);
+    epoxy_glCheckFramebufferStatus = saved_framebuffer_status;
+    g_assert_cmpint(outcome.status, ==, SGI_RENDER_HOST_ERROR);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f->snapshots, ==, 1);
+    g_assert_cmpuint(f->commits, ==, 0);
+    sgi_renderer_free(renderer);
+
+    for (unsigned stencil = 0; stencil < 2; stencil++) {
+        renderer = sgi_renderer_new(&err);
+        g_assert_nonnull(renderer);
+        index_destination(f, 8);
+        saved_read_pixels = epoxy_glReadPixels;
+        epoxy_glReadPixels = stencil ? fail_stencil_read_pixels :
+                                       fail_index_read_pixels;
+        g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none,
+                                        &outcome, &err), ==,
+                        SGI_RENDER_DRAW_FAILED);
+        epoxy_glReadPixels = saved_read_pixels;
+        g_assert_cmpint(outcome.status, ==, SGI_RENDER_HOST_ERROR);
+        g_assert_nonnull(err);
+        g_clear_pointer(&err, error_free);
+        g_assert_cmpuint(f->snapshots, ==, 1);
+        g_assert_cmpuint(f->commits, ==, 0);
+        sgi_renderer_free(renderer);
+    }
+
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    index_destination(f, 8);
+    f->fail_after = 5;
+    g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none, &outcome,
+                                    &err), ==, SGI_RENDER_DRAW_FAILED);
+    g_assert_cmpint(outcome.status, ==, SGI_RENDER_RESOURCE_ERROR);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f->commits, ==, 1);
+    sgi_renderer_free(renderer);
+    g_free(p);
+}
+
+/*
+ * Off the reference driver an indexed draw is refused as host-driver
+ * before any snapshot even without the mixed-frame flag, since its subset
+ * is proven only there; an RGBA draw with the flag clear still draws.
+ */
+static void test_index_off_reference(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 40, 40, 40, 40, 40, 40 };
+    static const SGIRenderAttemptOptions none = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree IndexFixture *f = g_new(IndexFixture, 1);
+    g_autofree PrimFixture *rgba = g_new(PrimFixture, 1);
+    SGIRenderAttemptOutcome outcome;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    index_case_init(p, SGI_GL_TRIANGLES, 8);
+    index_shape(p, SGI_GL_TRIANGLES, idx);
+    index_destination(f, 8);
+    g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none, &outcome,
+                                    &err), ==, SGI_RENDER_DRAW_OK);
+    g_assert_null(err);
+
+    sgi_renderer_test_set_reference(renderer, false);
+    index_destination(f, 8);
+    g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none, &outcome,
+                                    &err), ==, SGI_RENDER_DRAW_REFUSED);
+    g_assert_cmpint(outcome.reason, ==, SGI_RENDER_REFUSAL_HOST_DRIVER);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    g_assert_cmpuint(f->snapshots, ==, 0);
+    g_assert_cmpuint(f->commits, ==, 0);
+
+    prim_fan(p, 4);
+    prim_destination(rgba, p);
+    g_assert_cmpint(prim_mesa_draw(renderer, p, rgba, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    sgi_renderer_free(renderer);
+    g_free(p);
+}
+
+/*
+ * The RGBA depth-plane vectors as flat indexed triangles: with an edge on
+ * the near or far plane the scalar path may drop fragments whose depth
+ * rounds past it, which the integer program cannot follow, so each such
+ * draw is refused before the snapshot, and every draw accepted equals the
+ * scalar path.
+ */
+static void test_index_depth_planes(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float shapes[][3][2] = {
+        { { 2.5f, 1.5f }, { 2.5f, 14.5f }, { 13.25f, 7.75f } },
+        { { 13.5f, 14.5f }, { 13.5f, 1.5f }, { 2.25f, 8.25f } },
+        { { 14.5f, 13.5f }, { 1.5f, 13.5f }, { 7.75f, 2.25f } },
+        { { 1.5f, 2.5f }, { 14.5f, 2.5f }, { 8.25f, 13.75f } },
+        { { 13.5f, 13.5f }, { 1.5f, 1.5f }, { 1.75f, 12.25f } },
+    };
+    static const float apex[] = { -0.37f, 0.1f, 0.53f, 0.9f, -0.85f };
+    static const float planes[] = { -1, 1, 0.25f };
+    static const SGIRenderAttemptOptions mixed = { .mixed_frame = true };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0, accepted = 0, refused = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    for (unsigned s = 0; s < ARRAY_SIZE(shapes); s++) {
+        for (unsigned z = 0; z < ARRAY_SIZE(planes); z++) {
+            for (unsigned a = 0; a < ARRAY_SIZE(apex); a++) {
+                for (unsigned first = 0; first < 3; first++) {
+                    g_autofree IndexFixture *scalar = g_new(IndexFixture, 1);
+                    g_autofree IndexFixture *mesa = g_new(IndexFixture, 1);
+                    SGIRenderAttemptOutcome outcome;
+                    SGIRenderDrawResult result;
+                    unsigned differences = 0;
+
+                    index_case_init(p, SGI_GL_TRIANGLES, 12);
+                    for (unsigned i = 0; i < 3; i++) {
+                        unsigned v = (first + i) % 3;
+
+                        index_vertex(p, shapes[s][v][0], shapes[s][v][1],
+                                     100 + i);
+                        p->vertices[i][SGI_GL_V_POSITION + 2] =
+                            v < 2 ? planes[z] : apex[a];
+                    }
+                    index_destination(scalar, 12);
+                    index_destination(mesa, 12);
+                    index_scalar_draw(p, scalar);
+                    result = index_mesa_draw(renderer, p, mesa, 0, NULL,
+                                             &mixed, &outcome, &err);
+                    g_clear_pointer(&err, error_free);
+                    if (result == SGI_RENDER_DRAW_REFUSED &&
+                        outcome.reason == SGI_RENDER_REFUSAL_GEOMETRY &&
+                        !mesa->snapshots) {
+                        refused++;
+                        continue;
+                    }
+                    if (result != SGI_RENDER_DRAW_OK) {
+                        g_test_message("shape %u plane %g apex %g from %u: "
+                                       "result %d (%s)", s, planes[z],
+                                       apex[a], first, result,
+                                       sgi_render_refusal_name(
+                                           outcome.reason));
+                        failures++;
+                        continue;
+                    }
+                    accepted++;
+                    for (unsigned y = 0; y < PRIM_SIZE; y++) {
+                        for (unsigned x = 0; x < PRIM_SIZE; x++) {
+                            differences +=
+                                scalar->index[y][x] != mesa->index[y][x] ||
+                                scalar->written[y][x] != mesa->written[y][x];
+                        }
+                    }
+                    if (differences) {
+                        g_test_message("shape %u plane %g apex %g from %u: "
+                                       "%u pixels differ", s, planes[z],
+                                       apex[a], first, differences);
+                        failures++;
+                    }
+                }
+            }
+        }
+    }
+    g_test_message("depth planes: %u accepted, %u refused, %u differ",
+                   accepted, refused, failures);
+    /* Both outcomes occur, so the case cannot pass vacuously. */
+    g_assert_cmpuint(accepted, >, 0);
+    g_assert_cmpuint(refused, >, 0);
+    sgi_renderer_free(renderer);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
+ * An indexed draw after an RGBA draw, and an RGBA draw after it, on one
+ * renderer give the results each gives on a fresh renderer.
+ */
+static void test_index_carry_over(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 21, 21, 21, 21, 21, 21 };
+    static const SGIRenderAttemptOptions none = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    PrimCase *rgba = g_new(PrimCase, 1);
+    g_autofree IndexFixture *fresh = g_new(IndexFixture, 1);
+    g_autofree IndexFixture *after = g_new(IndexFixture, 1);
+    g_autofree PrimFixture *rgba_fresh = g_new(PrimFixture, 1);
+    g_autofree PrimFixture *rgba_after = g_new(PrimFixture, 1);
+    SGIRenderAttemptOutcome outcome;
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        g_free(rgba);
+        return;
+    }
+    index_case_init(p, SGI_GL_TRIANGLE_FAN, 12);
+    index_shape(p, SGI_GL_TRIANGLE_FAN, idx);
+    prim_fan(rgba, 4);
+
+    renderer = sgi_renderer_new(&err);
+    index_destination(fresh, 12);
+    g_assert_cmpint(index_mesa_draw(renderer, p, fresh, 0, NULL, &none,
+                                    &outcome, &err), ==, SGI_RENDER_DRAW_OK);
+    sgi_renderer_free(renderer);
+    renderer = sgi_renderer_new(&err);
+    prim_destination(rgba_fresh, rgba);
+    g_assert_cmpint(prim_mesa_draw(renderer, rgba, rgba_fresh, &err), ==,
+                    SGI_RENDER_OK);
+    sgi_renderer_free(renderer);
+
+    renderer = sgi_renderer_new(&err);
+    prim_destination(rgba_after, rgba);
+    g_assert_cmpint(prim_mesa_draw(renderer, rgba, rgba_after, &err), ==,
+                    SGI_RENDER_OK);
+    index_destination(after, 12);
+    g_assert_cmpint(index_mesa_draw(renderer, p, after, 0, NULL, &none,
+                                    &outcome, &err), ==, SGI_RENDER_DRAW_OK);
+    prim_destination(rgba_after, rgba);
+    g_assert_cmpint(prim_mesa_draw(renderer, rgba, rgba_after, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    sgi_renderer_free(renderer);
+    g_assert_cmpmem(fresh->index, sizeof(fresh->index), after->index,
+                    sizeof(after->index));
+    g_assert_cmpmem(fresh->written, sizeof(fresh->written), after->written,
+                    sizeof(after->written));
+    g_assert_cmpmem(rgba_fresh->rgba, sizeof(rgba_fresh->rgba),
+                    rgba_after->rgba, sizeof(rgba_after->rgba));
+    g_free(p);
+    g_free(rgba);
 }
 
 /*
@@ -8789,6 +9806,22 @@ int main(int argc, char **argv)
                     test_shadow_comparison);
     g_test_add_func("/sgi-renderer-gl/shadow-coverage", test_shadow_coverage);
     g_test_add_func("/sgi-renderer-gl/shadow-raster", test_shadow_raster);
+    g_test_add_func("/sgi-renderer-gl/index-primitives",
+                    test_index_primitives);
+    g_test_add_func("/sgi-renderer-gl/index-values-and-masks",
+                    test_index_values_and_masks);
+    g_test_add_func("/sgi-renderer-gl/index-ignored-states",
+                    test_index_ignored_states);
+    g_test_add_func("/sgi-renderer-gl/index-refusals", test_index_refusals);
+    g_test_add_func("/sgi-renderer-gl/index-resource-selection",
+                    test_index_resource_selection);
+    g_test_add_func("/sgi-renderer-gl/index-failures", test_index_failures);
+    g_test_add_func("/sgi-renderer-gl/index-off-reference",
+                    test_index_off_reference);
+    g_test_add_func("/sgi-renderer-gl/index-depth-planes",
+                    test_index_depth_planes);
+    g_test_add_func("/sgi-renderer-gl/index-carry-over",
+                    test_index_carry_over);
     g_test_add_func("/sgi-renderer-gl/driver-identity",
                     test_driver_identity);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",

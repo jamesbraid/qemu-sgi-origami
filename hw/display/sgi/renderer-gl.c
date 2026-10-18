@@ -46,6 +46,7 @@ typedef struct SGIRendererGL {
     GLfloat point_range[2];
     GLuint colour_program;
     GLint colour_steps, colour_flat;
+    GLuint index_program;
     GLuint window_program;
     Error *window_error;
     SGIWindowUniforms window;
@@ -55,9 +56,11 @@ typedef struct SGIRendererGL {
     GLint line_range, line_x_major, line_reverse, line_counter, line_stipple;
     GLint line_repeat, line_pattern, line_flat;
     char *vendor, *renderer_name, *version;
-    /* The cached frame target; see renderer_gl_frame_target(). */
+    /* The cached frame targets; see renderer_gl_frame_target(). */
     GLuint frame_texture, frame_framebuffer, frame_stencil;
     uint32_t frame_width, frame_height;
+    GLuint index_texture, index_framebuffer, index_stencil;
+    uint32_t index_width, index_height;
     GLuint vao;
     GLuint vbo;
     GLuint texture;
@@ -259,6 +262,36 @@ static GLuint renderer_gl_link(SGIRendererGL *renderer, const char *name,
         return 0;
     }
     return program;
+}
+
+/*
+ * Indexed frames: each vertex carries its index as an unsigned integer
+ * attribute, and the fragment stores it unchanged in the integer target.
+ * There is no alpha test or discard, so coverage is the rasterized
+ * coverage after clipping and the scissor, as the scalar path's is in
+ * colour-index mode, where it skips the alpha test.
+ */
+static bool renderer_gl_index_program(SGIRendererGL *renderer)
+{
+    static const char *vertex_source =
+        "#version 330 compatibility\n"
+        "layout(location=1) in uint vertex_index;\n"
+        "flat out uint fragment_index;\n"
+        "void main() {\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+        "  fragment_index = vertex_index;\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 330 compatibility\n"
+        "flat in uint fragment_index;\n"
+        "layout(location=0) out uvec4 pixel;\n"
+        "void main() { pixel = uvec4(fragment_index, 0u, 0u, 0u); }\n";
+
+    renderer->index_program = renderer_gl_link(renderer, "index",
+                                               vertex_source,
+                                               fragment_source);
+    return renderer->index_program &&
+           !renderer_gl_error(renderer, "index program setup");
 }
 
 static bool renderer_gl_uniform(SGIRendererGL *renderer, GLuint program,
@@ -716,7 +749,8 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     }
     glGetIntegerv(GL_MAX_VIEWPORT_DIMS, renderer->max_viewport);
     glGetFloatv(GL_ALIASED_POINT_SIZE_RANGE, renderer->point_range);
-    if (!renderer_gl_colour_program(renderer)) {
+    if (!renderer_gl_colour_program(renderer) ||
+        !renderer_gl_index_program(renderer)) {
         return false;
     }
     glGetIntegerv(GL_MAJOR_VERSION, &major);
@@ -974,6 +1008,56 @@ static bool renderer_gl_frame_target(SGIRendererGL *renderer,
     return true;
 }
 
+static void renderer_gl_index_target_free(SGIRendererGL *renderer)
+{
+    glDeleteRenderbuffers(1, &renderer->index_stencil);
+    glDeleteFramebuffers(1, &renderer->index_framebuffer);
+    glDeleteTextures(1, &renderer->index_texture);
+    renderer->index_stencil = 0;
+    renderer->index_framebuffer = 0;
+    renderer->index_texture = 0;
+    renderer->index_width = renderer->index_height = 0;
+}
+
+/*
+ * The indexed frame target: a single 32-bit unsigned integer channel with
+ * the same stencil marker, kept like the colour target. Every indexed
+ * frame clears and reads back the region it uses.
+ */
+static bool renderer_gl_index_target(SGIRendererGL *renderer,
+                                     uint32_t width, uint32_t height)
+{
+    if (renderer->index_framebuffer && renderer->index_width == width &&
+        renderer->index_height == height) {
+        glBindFramebuffer(GL_FRAMEBUFFER, renderer->index_framebuffer);
+        return true;
+    }
+    renderer_gl_index_target_free(renderer);
+    glGenTextures(1, &renderer->index_texture);
+    glBindTexture(GL_TEXTURE_2D, renderer->index_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0,
+                 GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &renderer->index_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, renderer->index_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, renderer->index_texture, 0);
+    glGenRenderbuffers(1, &renderer->index_stencil);
+    glBindRenderbuffer(GL_RENDERBUFFER, renderer->index_stencil);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, renderer->index_stencil);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        error_setg(&renderer->error, "SGI renderer index framebuffer failed");
+        renderer_gl_index_target_free(renderer);
+        return false;
+    }
+    renderer->index_width = width;
+    renderer->index_height = height;
+    return true;
+}
+
 static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
 {
     SGIRendererFrame *frame = &renderer->frame;
@@ -992,16 +1076,25 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         error_setg(&renderer->error, "SGI renderer EGL display is quarantined");
         return false;
     }
-    if (!renderer_gl_frame_target(renderer, frame->width, frame->height)) {
-        goto out;
+    if (frame->indices) {
+        if (!renderer_gl_index_target(renderer, frame->width,
+                                      frame->height)) {
+            goto out;
+        }
+    } else {
+        if (!renderer_gl_frame_target(renderer, frame->width,
+                                      frame->height)) {
+            goto out;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, region.x0, region.y0, region_width,
+                        region_height, GL_RGBA, GL_UNSIGNED_SHORT,
+                        frame->rgba);
     }
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, region.x0, region.y0, region_width,
-                    region_height, GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     if (frame->primitive == SGI_RENDERER_WINDOW_TRIANGLES) {
@@ -1084,6 +1177,8 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         glUniform1i(renderer->line_stipple, frame->line_stipple);
         glUniform1i(renderer->line_repeat, MAX(frame->line_stipple_repeat, 1));
         glUniform1i(renderer->line_pattern, frame->line_stipple_pattern);
+    } else if (frame->indices) {
+        glUseProgram(renderer->index_program);
     } else {
         glUseProgram(renderer->colour_program);
         glUniform4f(renderer->colour_steps, frame->colour_steps[0],
@@ -1098,6 +1193,12 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glScissor(region.x0, region.y0, region_width, region_height);
     glEnable(GL_SCISSOR_TEST);
     glClear(GL_STENCIL_BUFFER_BIT);
+    if (frame->indices) {
+        static const GLuint zero[4];
+
+        /* The region starts at zero; only covered pixels are used. */
+        glClearBufferuiv(GL_COLOR, 0, zero);
+    }
     /*
      * Stencil bit 0 marks the clip union and bit 1 a written pixel, so
      * primitives of one frame that overlap still each draw.
@@ -1192,7 +1293,11 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
         const float *vertex = frame->vertices +
                               i * SGI_RENDERER_FRAME_VERTEX_FLOATS;
 
-        glColor4fv(vertex + 4);
+        if (frame->indices) {
+            glVertexAttribI1ui(1, frame->indices[i]);
+        } else {
+            glColor4fv(vertex + 4);
+        }
         glVertex4fv(vertex);
     }
     if (frame->primitive != SGI_RENDERER_WINDOW_TRIANGLES &&
@@ -1206,10 +1311,18 @@ static bool renderer_gl_execute_frame(SGIRendererGL *renderer)
     glPixelStorei(GL_PACK_ROW_LENGTH, 0);
     glPixelStorei(GL_PACK_SKIP_ROWS, 0);
     glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-    glReadPixels(region.x0, region.y0, region_width, region_height, GL_RGBA,
-                 GL_UNSIGNED_SHORT, frame->rgba);
-    if (renderer_gl_error(renderer, "native colour readback")) {
-        goto out;
+    if (frame->indices) {
+        glReadPixels(region.x0, region.y0, region_width, region_height,
+                     GL_RED_INTEGER, GL_UNSIGNED_INT, frame->index);
+        if (renderer_gl_error(renderer, "native index readback")) {
+            goto out;
+        }
+    } else {
+        glReadPixels(region.x0, region.y0, region_width, region_height,
+                     GL_RGBA, GL_UNSIGNED_SHORT, frame->rgba);
+        if (renderer_gl_error(renderer, "native colour readback")) {
+            goto out;
+        }
     }
     glReadPixels(region.x0, region.y0, region_width, region_height,
                  GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, frame->written);
@@ -1242,8 +1355,9 @@ out:
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
     glDeleteTextures(1, &sample);
     if (renderer->error) {
-        /* Rebuild the frame target rather than trust it after a failure. */
+        /* Rebuild the frame targets rather than trust them after a failure. */
         renderer_gl_frame_target_free(renderer);
+        renderer_gl_index_target_free(renderer);
     }
     return !renderer->error;
 }
@@ -1355,6 +1469,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
     if (renderer->context != EGL_NO_CONTEXT) {
         if (eglGetCurrentContext() == renderer->context) {
             renderer_gl_frame_target_free(renderer);
+            renderer_gl_index_target_free(renderer);
             glDeleteFramebuffers(1, &renderer->framebuffer);
             glDeleteTextures(1, &renderer->texture);
             glDeleteTextures(1, &renderer->sampled_texture);
@@ -1363,6 +1478,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
             glDeleteProgram(renderer->program);
             glDeleteProgram(renderer->texture_program);
             glDeleteProgram(renderer->colour_program);
+            glDeleteProgram(renderer->index_program);
             glDeleteProgram(renderer->window_program);
             glDeleteProgram(renderer->line_program);
             clean = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,

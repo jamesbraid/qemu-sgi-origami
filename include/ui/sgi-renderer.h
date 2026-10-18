@@ -210,6 +210,17 @@ typedef struct SGIRendererFrame {
     uint16_t *rgba; /* region pixels * 4 host slots, bottom row first */
     uint8_t *written; /* region pixels, binary bytes, bottom row first */
     size_t written_capacity;
+    /*
+     * An indexed frame sets indices, one unsigned index per vertex, and
+     * index, which receives the region's pixels bottom row first. Its
+     * points or triangles draw into a 32-bit unsigned integer target
+     * cleared to zero, and each fragment stores its vertex index
+     * unchanged: no conversion, interpolation, blending or alpha test.
+     * Its vertices are flat, so every vertex of a primitive carries the
+     * same index. rgba, colour steps, texture and blending are unused.
+     */
+    const uint32_t *indices;
+    uint32_t *index;
 } SGIRendererFrame;
 
 typedef struct SGIRendererClear {

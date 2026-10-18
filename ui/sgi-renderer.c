@@ -760,7 +760,8 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
 bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
                              Error **errp)
 {
-    if (!renderer || !frame || !frame->rgba || !frame->written ||
+    if (!renderer || !frame ||
+        (frame->indices ? !frame->index : !frame->rgba) || !frame->written ||
         !frame->width || !frame->height || frame->width > INT_MAX ||
         frame->height > INT_MAX || !sgi_renderer_frame_count_valid(frame) ||
         frame->width > SIZE_MAX / frame->height / 4 /
@@ -779,6 +780,13 @@ bool sgi_renderer_draw_frame(SGIRenderer *renderer, SGIRendererFrame *frame,
         (frame->viewport_given &&
          (frame->viewport[2] < 0 || frame->viewport[3] < 0))) {
         error_setg(errp, "Invalid SGI OpenGL frame request");
+        return false;
+    }
+    if (frame->indices &&
+        ((frame->primitive != SGI_RENDERER_POINTS &&
+          frame->primitive != SGI_RENDERER_TRIANGLES) ||
+         !frame->vertices || frame->texture.slots || frame->blend)) {
+        error_setg(errp, "Invalid SGI OpenGL indexed frame request");
         return false;
     }
     if (frame->viewport_given &&
