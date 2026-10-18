@@ -408,6 +408,22 @@ static GLenum fail_framebuffer_status(GLenum target)
     return GL_FRAMEBUFFER_UNSUPPORTED;
 }
 
+/*
+ * The driver's glReadPixels, for a hook that wraps it. Before the first
+ * call, epoxy_glReadPixels is libepoxy's resolver stub; saved there, the
+ * stub finds the pointer already replaced by the hook, calls the hook,
+ * which calls the stub again, and the test never ends when it is the
+ * first in the process to read pixels.
+ */
+static PFNGLREADPIXELSPROC resolved_read_pixels(void)
+{
+    PFNGLREADPIXELSPROC read = (PFNGLREADPIXELSPROC)
+                               eglGetProcAddress("glReadPixels");
+
+    g_assert_nonnull(read);
+    return read;
+}
+
 static void fail_read_pixels(GLint x, GLint y, GLsizei width, GLsizei height,
                               GLenum format, GLenum type, void *pixels)
 {
@@ -523,7 +539,7 @@ static void test_worker_fault(gconstpointer opaque)
     saved_shader_status = (PFNGLGETSHADERIVPROC)
                           eglGetProcAddress("glGetShaderiv");
     saved_framebuffer_status = epoxy_glCheckFramebufferStatus;
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     saved_make_current = epoxy_eglMakeCurrent;
     saved_destroy = epoxy_eglDestroyContext;
     saved_release = epoxy_eglReleaseThread;
@@ -1402,7 +1418,7 @@ static void test_decoded_triangle_native_commit(void)
     /* The fault must reach this draw, not the smooth triangle probe. */
     g_assert_cmpint(sgi_render_test_window_probe(renderer, &err), ==,
                     SGI_RENDER_OK);
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_stencil_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
@@ -1421,7 +1437,7 @@ static void test_decoded_triangle_native_commit(void)
     /* The fault must reach this draw, not the smooth triangle probe. */
     g_assert_cmpint(sgi_render_test_window_probe(renderer, &err), ==,
                     SGI_RENDER_OK);
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_colour_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
@@ -2212,7 +2228,7 @@ static void test_flat_triangle_alpha_blend(void)
     g_assert_cmpuint(f.colour[0][0][0], ==, 0x40);
     g_assert_cmpuint(f.tag[0][0], ==, 9);
 
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_colour_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
@@ -2390,7 +2406,7 @@ static void test_blend_without_native_alpha(void)
         for (unsigned v = 0; v < 3; v++) {
             vertices[v][SGI_GL_V_COLOR + 3] = 0.25f;
         }
-        saved_read_pixels = epoxy_glReadPixels;
+        saved_read_pixels = resolved_read_pixels();
         epoxy_glReadPixels = fail_colour_read_pixels;
         g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                                  &draw, &err), ==,
@@ -2984,7 +3000,7 @@ static void test_typed_texture_multi_texel(void)
     g_assert_cmpuint(f.colour[0][0][0], ==, 5);
     g_assert_cmpuint(f.written[0][0], ==, 0);
     f.fail_texture_snapshot = false;
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_colour_read_pixels;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
@@ -3411,7 +3427,7 @@ static void test_decoded_clear_native_commit(void)
         }
     }
     clear_readback_count = 0;
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_second_clear_read_pixels;
     result = sgi_render_raster_checked(renderer, &rules, &target, &op, &err);
     epoxy_glReadPixels = saved_read_pixels;
@@ -3768,7 +3784,7 @@ static void test_decoded_clear_depth_stencil(void)
                        SGI_GL_DEPTH_BUFFER_BIT |
                        SGI_GL_STENCIL_BUFFER_BIT;
     op.clear_rgba[0] = 1;
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_scalar_clear_read_pixels;
     g_assert_cmpint(sgi_render_raster_checked(renderer, &rules, &target,
                                                &op, &err), ==,
@@ -7540,7 +7556,7 @@ static void test_attempt_outcomes(void)
     /* None of the refusals above latched: the renderer still draws. */
     EXPECT("ok after refusals", , SGI_RENDER_DRAW_OK, SGI_RENDER_OK,
            SGI_RENDER_REFUSAL_NONE, 1, 1);
-    saved_read_pixels = epoxy_glReadPixels;
+    saved_read_pixels = resolved_read_pixels();
     epoxy_glReadPixels = fail_colour_read_pixels;
     EXPECT("host failure", , SGI_RENDER_DRAW_FAILED, SGI_RENDER_HOST_ERROR,
            SGI_RENDER_REFUSAL_NONE, 1, 0);
@@ -9295,7 +9311,7 @@ static void test_index_failures(void)
         renderer = sgi_renderer_new(&err);
         g_assert_nonnull(renderer);
         index_destination(f, 8);
-        saved_read_pixels = epoxy_glReadPixels;
+        saved_read_pixels = resolved_read_pixels();
         epoxy_glReadPixels = stencil ? fail_stencil_read_pixels :
                                        fail_index_read_pixels;
         g_assert_cmpint(index_mesa_draw(renderer, p, f, 0, NULL, &none,
