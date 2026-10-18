@@ -9320,6 +9320,10 @@ static void test_index_failures(void)
         epoxy_glReadPixels = saved_read_pixels;
         g_assert_cmpint(outcome.status, ==, SGI_RENDER_HOST_ERROR);
         g_assert_nonnull(err);
+        /* The failure is the readback's own, not a later check's. */
+        g_assert_nonnull(strstr(error_get_pretty(err),
+                                stencil ? "native draw failed" :
+                                          "native index readback"));
         g_clear_pointer(&err, error_free);
         g_assert_cmpuint(f->snapshots, ==, 1);
         g_assert_cmpuint(f->commits, ==, 0);
