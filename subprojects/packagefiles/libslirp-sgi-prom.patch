@@ -17,6 +17,10 @@ This is the squash of the two-commit series prepared for upstream,
 applying to libslirp v4.8.0 with `git apply`. The QEMU fork's meson
 wrap carries the same squash and applies it to the vendored subproject.
 
+Changes to existing libslirp files follow their upstream license notices.
+The new test/bootptest.c and test/tftptest.c files are BSD-3-Clause, as
+their SPDX headers state.
+
 diff --git a/meson.build b/meson.build
 index d20cec4..38ada96 100644
 --- a/meson.build
