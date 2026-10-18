@@ -2414,6 +2414,18 @@ static bool unexpected_texture_read(void *opaque, uint32_t x, uint32_t y,
     g_assert_not_reached();
 }
 
+static bool unexpected_texture_components(void *opaque, uint32_t x,
+                                          uint32_t y, uint16_t component[4])
+{
+    g_assert_not_reached();
+}
+
+static bool unexpected_border_components(void *opaque, int32_t x, int32_t y,
+                                         uint16_t component[4])
+{
+    g_assert_not_reached();
+}
+
 static void test_typed_texture_triangle(void)
 {
     g_auto(MesaTestEnv) mesa_env = { 0 };
@@ -2595,6 +2607,27 @@ static void test_typed_texture_triangle(void)
     g_assert_nonnull(err);
     g_clear_pointer(&err, error_free);
     image.shadow_compare = 0;
+    /*
+     * Raw components reach the scalar sampler at up to 16 bits, while the
+     * host samples the 8-bit texture resource; no comparison covers them.
+     */
+    image.component_bits[0] = image.component_bits[1] = 8;
+    image.component_bits[2] = image.component_bits[3] = 8;
+    image.read_texel_components = unexpected_texture_components;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.read_texel_components = NULL;
+    image.read_border_texel_components = unexpected_border_components;
+    g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
+                                             &draw, &err), ==,
+                    SGI_RENDER_UNSUPPORTED);
+    g_assert_nonnull(err);
+    g_clear_pointer(&err, error_free);
+    image.read_border_texel_components = NULL;
+    memset(image.component_bits, 0, sizeof(image.component_bits));
     resources[1].border[0] = 1;
     g_assert_cmpint(sgi_render_draw_checked(renderer, &rules, &target,
                                              &draw, &err), ==,
