@@ -1964,13 +1964,27 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
 {
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
+    g_autofree char *topology_property = object_property_get_str(
+        OBJECT(machine), "topology", &error_abort);
+    const char *topology = topology_property[0] ? topology_property :
+        SGI_MACHINE_GET_CLASS(machine)->default_topology;
+    const char *product = SGI_MACHINE_GET_CLASS(machine)->product;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
-    if (g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "origin350") == 0 &&
-        node->model_node->has_board_kind &&
-        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+    if (node->model_node->has_board_kind &&
+        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53 &&
+        ((g_strcmp0(product, "origin350") == 0 &&
+          g_strcmp0(topology, "origin350") == 0) ||
+         (g_strcmp0(product, "onyx350") == 0 &&
+          g_strcmp0(topology, "onyx350-compat") == 0) ||
+         (g_strcmp0(product, "tezro") == 0 &&
+          (g_strcmp0(topology, "tezro-tower-one") == 0 ||
+           g_strcmp0(topology, "tezro-tower-multi") == 0 ||
+           g_strcmp0(topology, "tezro-rack-base") == 0)) ||
+         (g_strcmp0(product, "onyx4-host") == 0 &&
+          g_strcmp0(topology, "onyx4-host-serial-compat") == 0))) {
         qdev_prop_set_uint32(node->l1, "port-speed-first", 1);
     }
     if (node->l1_mac_eeprom) {
