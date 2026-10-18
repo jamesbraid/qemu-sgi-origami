@@ -3956,14 +3956,16 @@ class Origin300RoutedContractTests(unittest.TestCase):
         self.assertEqual(len(links), 3)
         self.assertEqual({end["port"] for link in links for end in link["ends"]
                           if end["kind"] == "ROUTER"}, {1, 4, 6})
-        self.assertEqual(len({c["module_index"] for c in topology["controllers"]}), 4)
+        self.assertEqual(
+            len({c["module_index"] for c in topology["controllers"]}), 4)
 
     def test_connector_annotations_do_not_hide_extra_link_endpoints(self):
         from sgi_model.model_validation import check_widget_and_pci_uniqueness
         model = self.model()
         components = {c["id"]: c for c in model["components"]}
         buses = {b["id"]: b for b in model["buses"]}
-        self.assertFalse(check_widget_and_pci_uniqueness(model, components, buses))
+        self.assertFalse(
+            check_widget_and_pci_uniqueness(model, components, buses))
         model["connections"].append({"component": "router-port-8",
                                      "bus": "master-route", "role": "endpoint"})
         problems = check_widget_and_pci_uniqueness(model, components, buses)
@@ -3975,11 +3977,12 @@ class Origin300RoutedContractTests(unittest.TestCase):
         model = self.model()
         for cid, peer in [("router-port-7", "router-port-8"),
                           ("router-port-8", "router-port-7")]:
-            selection = next(s for s in model["composition"]["connector_population"]
-                             if s["component"] == cid)
+            selection = next(
+                s for s in model["composition"]["connector_population"]
+                if s["component"] == cid)
             selection.update(occupancy="cabled", peer=peer)
-            model["connections"].append({"component": cid, "bus": "master-route",
-                                         "role": "endpoint"})
+            model["connections"].append({
+                "component": cid, "bus": "master-route", "role": "endpoint"})
         components = {c["id"]: c for c in model["components"]}
         buses = {b["id"]: b for b in model["buses"]}
         problems = check_widget_and_pci_uniqueness(model, components, buses)
@@ -3990,10 +3993,13 @@ class Origin300RoutedContractTests(unittest.TestCase):
         for part, ports in [(0xc002, 8), (0x3017, 6)]:
             with self.subTest(part=part, ports=ports):
                 model = self.model()
-                router = next(c for c in model["components"] if c["id"] == "router-router")
+                router = next(
+                    c for c in model["components"]
+                    if c["id"] == "router-router")
                 router["identity"]["part"] = part
                 router["router_asic"]["port_count"] = ports
-                with self.assertRaisesRegex(CompileError, "eight ports and part"):
+                with self.assertRaisesRegex(
+                        CompileError, "eight ports and part"):
                     compile_model(model)
 
     def test_router_link_port_bounds_and_reuse(self):

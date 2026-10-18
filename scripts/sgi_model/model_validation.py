@@ -327,7 +327,8 @@ def check_widget_and_pci_uniqueness(
                      != "connector"]
         annotations = [entry for entry in attachments if entry not in endpoints]
         populations = {entry["component"]: entry for entry in
-                       model.get("composition", {}).get("connector_population", [])
+                       model.get("composition", {}).get(
+                           "connector_population", [])
                        if isinstance(entry, dict)
                        and isinstance(entry.get("component"), str)}
         annotation_ids = {entry["component"] for entry in annotations}
@@ -335,8 +336,10 @@ def check_widget_and_pci_uniqueness(
                              and len(annotations) == 2
                              and len(annotation_ids) == 2
                              and all(
-                                 populations.get(cid, {}).get("occupancy") == "cabled"
-                                 and isinstance(populations.get(cid, {}).get("peer"), str)
+                                 populations.get(cid, {}).get("occupancy")
+                                 == "cabled"
+                                 and isinstance(
+                                     populations.get(cid, {}).get("peer"), str)
                                  and populations[cid]["peer"] in annotation_ids
                                  and populations[cid]["peer"] != cid
                                  for cid in annotation_ids))

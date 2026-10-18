@@ -614,8 +614,11 @@ def validate_connector_population(model: dict[str, Any]) -> None:
         raise ResolutionError("connector_population must be a list")
     components = {item["id"]: item for item in model.get("components", [])}
     selected: set[str] = set()
-    selections_by_id = {item.get("component"): item for item in selections
-                        if isinstance(item, dict) and isinstance(item.get("component"), str)}
+    selections_by_id = {
+        item.get("component"): item for item in selections
+        if isinstance(item, dict)
+        and isinstance(item.get("component"), str)
+    }
     occupants: set[str] = set()
     buses: dict[str, set[str]] = {}
     for connection in model.get("connections", []):
@@ -653,20 +656,24 @@ def validate_connector_population(model: dict[str, Any]) -> None:
                           if isinstance(peer, str) else {})
             if (occupant is not None or not isinstance(peer, str) or peer == cid
                     or target is None or target.get("kind") != "connector"
-                    or target["connector"]["interface"] != connector["connector"]["interface"]
+                    or target["connector"]["interface"]
+                    != connector["connector"]["interface"]
                     or reciprocal.get("occupancy") != "cabled"
                     or reciprocal.get("peer") != cid):
                 raise ResolutionError(
-                    f"cabled connector '{cid}' needs a reciprocal matching peer")
+                    f"cabled connector '{cid}' needs a reciprocal "
+                    "matching peer")
             shared = buses.get(cid, set()) & buses.get(peer, set())
             if not any(bus["id"] in shared and bus.get("kind") == "fabric"
                        and bus.get("link", {}).get("kind") == "cable"
                        for bus in model.get("buses", [])):
                 raise ResolutionError(
-                    f"cabled connectors '{cid}' and '{peer}' share no cable bus")
+                    f"cabled connectors '{cid}' and '{peer}' share no "
+                    "cable bus")
             continue
         if "peer" in selection:
-            raise ResolutionError(f"connector '{cid}' peer requires cabled occupancy")
+            raise ResolutionError(
+                f"connector '{cid}' peer requires cabled occupancy")
         if occupancy == "empty":
             if "occupant" in selection:
                 raise ResolutionError(f"empty connector '{cid}' cannot name an occupant")
