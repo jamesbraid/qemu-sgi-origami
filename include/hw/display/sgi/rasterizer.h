@@ -549,6 +549,11 @@ typedef struct SGIRenderAttemptOptions {
      */
     bool mixed_frame;
     /*
+     * Shadow comparison: the scalar draw has already made this draw's
+     * once-per-draw reports, so the attempt makes none of its own.
+     */
+    bool quiet;
+    /*
      * Optional precision check of each resource's staged pixels, after
      * host readback and before the first native commit. slots and writes
      * are as the commit would receive them. OK accepts, UNSUPPORTED
@@ -632,6 +637,16 @@ void sgi_render_draw_signature(const SGIRasterRules *rules,
  * restores the buffer's own bound.
  */
 void sgi_render_test_signature_limit(size_t length);
+/*
+ * A decoded raster operation's signature, version 1: the operation, the
+ * buffers it clears, the first colour target's storage widths and row
+ * origin, and the raster rules; in-set when the mixed-frame check accepts
+ * it on the reference driver.
+ */
+void sgi_render_raster_signature(const SGIRasterRules *rules,
+                                 const SGIRasterTarget *target,
+                                 const SGIRasterOp *op,
+                                 SGIRenderSignature *signature);
 
 SGIRenderResult sgi_render_draw_checked(SGIRenderer *renderer,
                                         const SGIRasterRules *rules,

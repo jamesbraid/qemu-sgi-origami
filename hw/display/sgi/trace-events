@@ -20,3 +20,10 @@ sgi_scanout_mode(uint32_t width, uint32_t height, uint64_t frame_clocks, uint32_
 sgi_scanout_retrace(uint64_t frame, uint32_t swaps) "frame %" PRIu64 " swaps waiting %u"
 sgi_scanout_swap(uint64_t seq, uint64_t cookie, uint64_t frame) "seq %" PRIu64 " cookie 0x%" PRIx64 " frame %" PRIu64
 sgi_scanout_update(unsigned first, unsigned last) "lines %u-%u"
+
+# render-shadow.c
+sgi_render_shadow_mismatch(const char *signature, unsigned resource, uint32_t x, uint32_t y) "%s resource %u at %u,%u"
+sgi_render_shadow_phase_mismatch(const char *signature, uint32_t scalar, uint32_t mesa) "%s stipple phase scalar %u mesa %u"
+sgi_render_shadow_refused(const char *signature, const char *reason) "%s reason %s"
+sgi_render_shadow_failed(const char *signature, int status, const char *error) "%s status %d: %s"
+sgi_render_shadow_disabled(const char *error) "%s"
