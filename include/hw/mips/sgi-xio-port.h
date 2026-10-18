@@ -73,6 +73,7 @@ typedef struct SGIXioSource {
 /* Model-only metadata for one packet, separate from source identity. */
 typedef struct SGIXioPacketAttrs {
     bool half_write_requested;
+    bool half_read_requested;
 } SGIXioPacketAttrs;
 
 struct SGIXioPortClass {
