@@ -2866,15 +2866,25 @@ static void test_machine_node_board_profiles(void)
         const char *name;
         const char *part;
         const char *revision;
+        uint8_t brick_type;
     } profiles[] = {
         { "origin350", "2G", 4, "0x009cad85", "0x800000",
-          "IP53_4CPU", "030-1868-001", "-C" },
+          "IP53_4CPU", "030-1868-001", "-C", 0x37 },
         { "onyx350,topology=onyx350-compat", "8G", 4,
-          "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D" },
+          "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D",
+          0x37 },
         { "tezro,topology=tezro-tower-one", "4G", 1,
-          "0x009bad85", "0x400000", NULL, NULL, NULL },
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+        { "tezro,topology=tezro-tower-one,l1-type-code=55", "4G", 1,
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37 },
+        { "tezro,topology=tezro-tower-multi", "4G", 4,
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+        { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39 },
+        { "tezro,topology=tezro-rack-base", "4G", 1,
+          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51 },
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
-          "0x009dad85", "0x1000000", NULL, NULL, NULL },
+          "0x009dad85", "0x1000000", NULL, NULL, NULL, 0x37 },
     };
     int fd;
 
@@ -2910,6 +2920,8 @@ static void test_machine_node_board_profiles(void)
                         profiles[i].cpus, profiles[i].reset_mode,
                         profiles[i].scache_bytes, flash, data, clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+        g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
+        g_assert_cmphex(reply[15], ==, profiles[i].brick_type);
         if (profiles[i].name) {
             g_assert_cmpuint(eeprom_read(s, 0, 1, 0,
                                          sizeof(expected_chassis), reply), ==,
@@ -2935,7 +2947,10 @@ static void test_machine_node_board_profiles(void)
         } else {
             g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 1, reply), ==, 6);
             g_assert_cmphex(reply[4], ==, 0x98);
+            qtest_system_reset(s);
         }
+        g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
+        g_assert_cmphex(reply[15], ==, profiles[i].brick_type);
         qtest_quit(s);
     }
 

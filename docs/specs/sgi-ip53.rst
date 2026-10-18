@@ -135,7 +135,9 @@ These profiles select an IP35 PROM 6.210 payload and a profile-specific flash
 seed. Flash read and write cycle inputs are both 16, and the machine-type
 input is 1. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
 clock; Tezro selects 66,666,667 Hz. The linked clock resource uses a 1968
-fresh-year base. Platform identity ``0x2001`` and L1 product input ``0x37``
-are selected software identities. The public captures do not establish those
-electrical values, an installed flash image, or the complete PIC and IO9
-interrupt wiring.
+fresh-year base. Platform identity ``0x2001`` is a selected software input.
+Origin 350, Onyx 350 and the Onyx 4 host select L1 type ``0x37``. The Tezro
+deskside and rack profiles select ``0x39`` and ``0x51`` respectively, following
+the published Linux IP35 machine-name mapping. Physical L1 type replies
+remain unmeasured. The public captures do not establish the selected clocks,
+an installed flash image, or the complete PIC and IO9 interrupt wiring.
