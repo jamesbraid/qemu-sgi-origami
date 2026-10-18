@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "qemu/timer.h"
 #include <math.h>
 #include "qemu/module.h"
 #include "ui/egl-helpers.h"
@@ -8365,10 +8366,227 @@ static void test_shadow_raster(void)
     g_free(p);
 }
 
+/*
+ * Timing of a small draw through the two host routes, enabled by
+ * QEMU_TEST_SGI_BENCH: the legacy batch KONA sends for one small quad in
+ * a 1280x1024 window (two triangles over 10 by 8 tiles of 128 pixels),
+ * and the checked draw path with one small triangle on a 1280x1024
+ * RGBA8 resource. It records numbers and asserts nothing about them.
+ */
+#define BENCH_W 1280
+#define BENCH_H 1024
+#define BENCH_REPS 10
+
+typedef struct BenchPlane {
+    uint32_t *slots;            /* BENCH_W * BENCH_H * 4 */
+} BenchPlane;
+
+static SGIRenderResult bench_snapshot(void *opaque,
+                                      const SGIRenderResource *resource,
+                                      uint32_t slice,
+                                      const SGIRenderRect *rect,
+                                      uint32_t *slots, size_t stride_slots,
+                                      size_t capacity_slots, Error **errp)
+{
+    BenchPlane *p = opaque;
+    size_t n = resource->component_count;
+
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        memcpy(&slots[(y - rect->y0) * stride_slots],
+               &p->slots[((size_t)y * BENCH_W + rect->x0) * n],
+               (size_t)(rect->x1 - rect->x0 + 1) * n * sizeof(*slots));
+    }
+    return SGI_RENDER_OK;
+}
+
+static SGIRenderCommitResult bench_commit_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    Error **errp)
+{
+    BenchPlane *p = opaque;
+    size_t n = res->component_count;
+
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            if (writes->pixel[(size_t)(y - rect->y0) * writes->stride_bytes +
+                              x - rect->x0]) {
+                memcpy(&p->slots[((size_t)y * BENCH_W + x) * n],
+                       &slots[(y - rect->y0) * stride_slots +
+                              (x - rect->x0) * n], n * sizeof(*slots));
+            }
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = (uint64_t)(rect->x1 - rect->x0 + 1) *
+                           (rect->y1 - rect->y0 + 1),
+        .extent_known = true,
+    };
+}
+
+static const SGIRenderResourceOps bench_ops = {
+    .snapshot = bench_snapshot,
+    .commit_covered = bench_commit_covered,
+};
+
+static void bench_report(const char *label, double wall_ms, unsigned reps)
+{
+    g_test_message("%s: %.3f ms per call (%u calls)", label,
+                   wall_ms / reps, reps);
+}
+
+static void test_benchmark(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float quad[4][2] = {
+        { 100, 100 }, { 116, 100 }, { 116, 116 }, { 100, 116 },
+    };
+    static const unsigned tri[2][3] = { { 0, 1, 2 }, { 0, 2, 3 } };
+    const int64_t bounds[4] = { 0, 0, BENCH_W - 1, BENCH_H - 1 };
+    unsigned columns = BENCH_W / SGI_RENDERER_SIZE;
+    unsigned rows = BENCH_H / SGI_RENDERER_SIZE;
+    unsigned count = 2 * columns * rows;
+    g_autofree SGIRendererRequest *requests = NULL;
+    g_autofree BenchPlane *plane = g_new0(BenchPlane, 1);
+    SGIRenderer *renderer;
+    Error *err = NULL;
+    int64_t t;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        return;
+    }
+    g_test_message("LP_NUM_THREADS=%s", g_getenv("LP_NUM_THREADS") ?:
+                   "(unset)");
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    requests = g_new0(SGIRendererRequest, count);
+
+    /* (a) The legacy batch for one small flat quad. */
+    for (unsigned rep = 0; rep <= BENCH_REPS; rep++) {
+        for (unsigned i = 0; i < count; i++) {
+            SGIRendererRequest *r = &requests[i];
+            unsigned tile = i % (columns * rows);
+            const unsigned *v = tri[i / (columns * rows)];
+
+            memset(r, 0, sizeof(*r));
+            r->generation = 1;
+            r->rgb[0] = 200;
+            r->alpha = 1;
+            for (unsigned k = 0; k < 3; k++) {
+                r->vertices[k][0] = quad[v[k]][0];
+                r->vertices[k][1] = quad[v[k]][1];
+                r->vertices[k][3] = 1;
+                r->depth[k] = 0.5;
+            }
+            g_assert_true(sgi_renderer_request_tile(
+                r, (int64_t)(tile % columns) * SGI_RENDERER_SIZE,
+                (int64_t)(tile / columns) * SGI_RENDERER_SIZE,
+                SGI_RENDERER_SIZE, SGI_RENDERER_SIZE, bounds));
+        }
+        if (!rep) {
+            /* The first batch warms the context; it is not counted. */
+            g_assert_cmpint(sgi_renderer_draw_batch_checked(renderer, requests,
+                                                            count, &err), ==,
+                            SGI_RENDER_DRAW_OK);
+            t = get_clock();
+            continue;
+        }
+        g_assert_cmpint(sgi_renderer_draw_batch_checked(renderer, requests,
+                                                        count, &err), ==,
+                        SGI_RENDER_DRAW_OK);
+    }
+    bench_report("legacy batch, one 16x16 quad in 1280x1024 (160 requests)",
+                 (get_clock() - t) / 1e6, BENCH_REPS);
+
+    /* (b) The checked draw path, flat then smooth. */
+    plane->slots = g_new0(uint32_t, (size_t)BENCH_W * BENCH_H * 4);
+    for (unsigned smooth = 0; smooth < 2; smooth++) {
+        SGIRenderResource res = {
+            .backing_id = 1, .backing_generation = 1,
+            .view_id = 2, .view_generation = 1,
+            .role = SGI_RENDER_COLOUR, .target = 7,
+            .buffer = SGI_RENDER_FRONT, .eye = SGI_RENDER_MONO,
+            .width = BENCH_W, .height = BENCH_H, .depth = 1,
+            .bottom_origin = true, .component_count = 4,
+            .component = {
+                { SGI_RENDER_R, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_G, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_B, SGI_RENDER_UNORM, 8 },
+                { SGI_RENDER_A, SGI_RENDER_UNORM, 8 },
+            },
+        };
+        SGIRasterTarget target = {
+            .opaque = plane, .resources = &res, .resource_count = 1,
+            .resource_ops = &bench_ops,
+        };
+        SGIRasterRules rules = {
+            .subpixel_bits = 8, .color_bits = 8, .alpha_bits = 8,
+            .depth_bits = 24, .stencil_bits = 8,
+            .rounding = SGI_ROUND_HALF_AWAY,
+            .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+            .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        };
+        SGIGLDrawState st = {
+            .shade_model = smooth ? SGI_GL_SMOOTH : SGI_GL_FLAT,
+            .draw_buffers = SGI_GL_DRAW_FRONT,
+            .colour_mask = SGI_GL_COLOUR_MASK_ALL,
+            .drawable = {
+                .bound = true,
+                .clip = { .n = 1, .r[0] = { 0, 0, BENCH_W - 1,
+                                            BENCH_H - 1 } },
+                .front = 7,
+            },
+            .viewport = { 0, 0, BENCH_W, BENCH_H },
+            .depth_range = { 0, 1 },
+        };
+        float v[3][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+        SGIGLDraw draw = {
+            .mode = SGI_GL_TRIANGLES, .count = 3, .vertices = &v[0][0],
+            .state = &st,
+        };
+
+        for (unsigned i = 0; i < 4; i++) {
+            st.modelview[i * 5] = 1;
+            st.projection[i * 5] = 1;
+        }
+        for (unsigned k = 0; k < 3; k++) {
+            v[k][SGI_GL_V_POSITION] = (quad[k][0] * 2) / BENCH_W - 1;
+            v[k][SGI_GL_V_POSITION + 1] = (quad[k][1] * 2) / BENCH_H - 1;
+            v[k][SGI_GL_V_POSITION + 3] = 1;
+            v[k][SGI_GL_V_COLOR] = 0.25f * (k + 1);
+            v[k][SGI_GL_V_COLOR + 3] = 1;
+        }
+        for (unsigned rep = 0; rep <= BENCH_REPS; rep++) {
+            SGIRenderAttemptOutcome outcome;
+
+            g_assert_cmpint(sgi_render_draw_attempt(renderer, &rules, &target,
+                                                    &draw, NULL, &outcome,
+                                                    &err), ==,
+                            SGI_RENDER_DRAW_OK);
+            if (!rep) {
+                t = get_clock();
+            }
+        }
+        bench_report(smooth ?
+                     "checked draw, one smooth 16-pixel triangle, 1280x1024" :
+                     "checked draw, one flat 16-pixel triangle, 1280x1024",
+                     (get_clock() - t) / 1e6, BENCH_REPS);
+    }
+    g_free(plane->slots);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
+    /* Registered only on request: the CI report check rejects skips. */
+    if (g_getenv("QEMU_TEST_SGI_BENCH")) {
+        g_test_add_func("/sgi-renderer-gl/benchmark", test_benchmark);
+    }
     g_test_add_func("/sgi-renderer-gl/surfaceless-llvmpipe-pixels",
                     test_surfaceless_llvmpipe_pixels);
     g_test_add_func("/sgi-renderer-gl/program-failure-fails-creation",
