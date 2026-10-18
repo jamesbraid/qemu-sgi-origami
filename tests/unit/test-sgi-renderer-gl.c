@@ -5912,6 +5912,128 @@ static void test_draw_region(void)
 }
 
 /*
+ * A draw whose window extent lies wholly off the resource, in the part of
+ * a viewport that hangs off it, writes nothing on the scalar path. The
+ * checked draw must agree: OK, no snapshot, no pixel changed. Left of or
+ * below the resource, or above it for triangles, which run upside down,
+ * the region's far edge is negative, so it must come out empty rather
+ * than wrap in the region's unsigned fields.
+ */
+static void test_draw_region_off_resource(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    RegionFixture scalar = { 0 }, mesa = { 0 };
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderer *renderer;
+    unsigned failures = 0;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(true)) {
+        g_free(p);
+        return;
+    }
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    scalar.rgba = g_new(uint32_t, REGION_W * REGION_H * 4);
+    mesa.rgba = g_new(uint32_t, REGION_W * REGION_H * 4);
+    scalar.written = g_new(uint8_t, REGION_W * REGION_H);
+    mesa.written = g_new(uint8_t, REGION_W * REGION_H);
+    for (unsigned k = 0; k < 2 * 3 * 2; k++) {
+        static const char *const sides[] = { "left", "below", "above" };
+        bool triangle = k & 1, top = k / 6;
+        unsigned side = k / 2 % 3;
+        SGIRenderResource res[2];
+        SGIRasterRules rules;
+        SGIRasterTarget scalar_target = {
+            .opaque = &scalar, .store_rgba = region_scalar_store,
+            .load_rgba = region_scalar_load,
+        };
+        SGIRasterTarget mesa_target = {
+            .opaque = &mesa, .resources = res, .resource_count = 1,
+            .resource_ops = &region_ops,
+        };
+        const char *name = triangle ? "triangle" : "line";
+        SGIGLDraw draw;
+        SGIRenderResult result;
+        unsigned differences = 0;
+
+        prim_case_init(p, triangle ? SGI_GL_TRIANGLES : SGI_GL_LINES, 4);
+        /* A 300x200 viewport with 100 columns or rows off one edge. */
+        p->state.viewport[0] = side == 0 ? -100 : 0;
+        p->state.viewport[1] = side == 1 ? -100 : side == 2 ? 100 : 0;
+        p->state.viewport[2] = REGION_W;
+        p->state.viewport[3] = REGION_H;
+        p->state.drawable.clip.r[0] = (SGIClipRect) {
+            0, 0, REGION_W - 1, REGION_H - 1,
+        };
+        /*
+         * a runs 20 to 60 viewport pixels in from the off edge, 80 to 40
+         * pixels off the resource; b runs along that edge.
+         */
+#define V(a, b) do { \
+            float *v_ = p->vertices[p->draw.count]; \
+            float x_ = side ? (b) : (a); \
+            float y_ = side == 1 ? (a) : side == 2 ? REGION_H - (a) : (b); \
+            prim_vertex(p, 0, 0, 0.6f, 0.3f, 0.8f, 1); \
+            v_[SGI_GL_V_POSITION] = x_ * 2.0f / REGION_W - 1; \
+            v_[SGI_GL_V_POSITION + 1] = y_ * 2.0f / REGION_H - 1; \
+        } while (0)
+        V(20.5f, 40.5f);
+        V(60.5f, 70.5f);
+        if (triangle) {
+            V(30.5f, 90.5f);
+        }
+#undef V
+        p->draw.line_width = 1;
+        scalar.top_origin = mesa.top_origin = top;
+        scalar.p = mesa.p = p;
+        region_fill(&scalar);
+        region_fill(&mesa);
+        prim_rules(p, &rules);
+        prim_resources(p, res);
+        res[0].width = REGION_W;
+        res[0].height = REGION_H;
+        res[0].bottom_origin = !top;
+        draw = p->draw;
+        g_assert_cmpint(sgi_soft_draw(&rules, &scalar_target, &draw), ==,
+                        SGI_GL_DRAW_OK);
+        mesa.largest_rect = 0;
+        result = sgi_render_draw_checked(renderer, &rules, &mesa_target,
+                                         &draw, &err);
+        if (result != SGI_RENDER_OK) {
+            g_test_message("%s %s %s: result %d: %s", name, sides[side],
+                           top ? "top" : "bottom", result,
+                           err ? error_get_pretty(err) : "");
+            g_clear_pointer(&err, error_free);
+            failures++;
+            continue;
+        }
+        for (size_t i = 0; i < (size_t)REGION_W * REGION_H; i++) {
+            differences += scalar.written[i] || mesa.written[i] ||
+                           memcmp(&scalar.rgba[i * 4], &mesa.rgba[i * 4],
+                                  4 * sizeof(uint32_t));
+        }
+        g_test_message("%s %s %s: largest rectangle %" PRIu64 " pixels, "
+                       "%u differ", name, sides[side],
+                       top ? "top" : "bottom", mesa.largest_rect,
+                       differences);
+        if (differences || mesa.largest_rect) {
+            failures++;
+        }
+    }
+    sgi_renderer_free(renderer);
+    g_free(scalar.rgba);
+    g_free(mesa.rgba);
+    g_free(scalar.written);
+    g_free(mesa.written);
+    g_free(p);
+    if (failures) {
+        g_test_fail();
+    }
+}
+
+/*
  * Stores whose widths differ from the rules' are refused, for draws and
  * CLEAR, because the scalar path rounds to the rules' widths: with 10-bit
  * colour and 2-bit stored alpha, alpha 0.5 rounds to 512 of 1023 and
@@ -8655,6 +8777,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/scalar-match-clear",
                     test_scalar_match_clear);
     g_test_add_func("/sgi-renderer-gl/draw-region", test_draw_region);
+    g_test_add_func("/sgi-renderer-gl/draw-region-off-resource",
+                    test_draw_region_off_resource);
     g_test_add_func("/sgi-renderer-gl/scalar-match-store-widths",
                     test_scalar_match_store_widths);
     g_test_add_func("/sgi-renderer-gl/scalar-match-points",
