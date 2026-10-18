@@ -1270,13 +1270,26 @@ static void mgras_gl_get_fallbacks(Object *obj, Visitor *v, const char *name,
     for (unsigned i = 0; i < SGI_RENDER_REFUSAL__MAX; i++) {
         total += s->gl_mesa_fallbacks[i];
     }
+    /* A board drawing without Mesa is never a zero-fallback session. */
+    total += s->gl_renderer_scalar;
     visit_type_uint64(v, name, &total, errp);
+}
+
+static void mgras_gl_get_unavailable(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = s->gl_renderer_scalar;
+
+    visit_type_uint32(v, name, &value, errp);
 }
 
 /*
  * Host diagnostics for measuring what the opt-in Mesa path still refuses:
- * one read-only count per refusal reason and their sum. They count for the
- * life of the process, across resets, and are not migrated.
+ * one read-only count per refusal reason and their sum, which also counts
+ * a board without Mesa on its host once. They count for the life of the
+ * process, across resets, and are not migrated.
  */
 static void mgras_gl_init_fallbacks(SGIMgrasState *s)
 {
@@ -1296,6 +1309,8 @@ static void mgras_gl_init_fallbacks(SGIMgrasState *s)
 void sgi_mgras_gl_init(SGIMgrasState *s)
 {
     mgras_gl_init_fallbacks(s);
+    object_property_add(OBJECT(s), "x-mesa-fallback-unavailable", "uint32",
+                        mgras_gl_get_unavailable, NULL, NULL, NULL);
     object_property_add(OBJECT(s), "x-test-render-validated", "uint32",
                         mgras_gl_test_get_validated, NULL, NULL, NULL);
     object_property_add(OBJECT(s), "x-test-gl-draw-error", "uint32",
@@ -1327,6 +1342,44 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
     }
 }
 
+/*
+ * Only a host without Mesa lets an opt-in board run without it, drawing
+ * every draw on the scalar path and recording that once. Running out of
+ * memory or a host error while creating the renderer fails realization,
+ * so a board that asked for Mesa never silently draws without it.
+ */
+bool sgi_mgras_gl_realize(SGIMgrasState *s, Error **errp)
+{
+    SGIRenderCreateResult result;
+    Error *err = NULL;
+
+    if (!s->gl_renderer_opt_in) {
+        return true;
+    }
+    if (s->gl_render_create_fault) {
+        result = s->gl_render_create_fault;
+        error_setg(&err, "injected creation result %u", result);
+    } else {
+        result = sgi_renderer_create(&s->gl_renderer, &err);
+    }
+    switch (result) {
+    case SGI_RENDER_CREATE_OK:
+        return true;
+    case SGI_RENDER_CREATE_UNAVAILABLE:
+        s->gl_renderer_scalar = true;
+        warn_report("sgi-mgras: Mesa renderer unavailable; every draw "
+                    "takes the scalar path: %s", error_get_pretty(err));
+        error_free(err);
+        return true;
+    default:
+        if (!err) {
+            error_setg(&err, "creation failed");
+        }
+        error_propagate_prepend(errp, err, "sgi-mgras: Mesa renderer: ");
+        return false;
+    }
+}
+
 void sgi_mgras_gl_cleanup(SGIMgrasState *s)
 {
     sgi_renderer_free(s->gl_renderer);
@@ -1341,8 +1394,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
 {
     SGIGLSink sink = mgras_gl_sink(s);
 
-    sgi_renderer_free(s->gl_renderer);
-    s->gl_renderer = NULL;
+    /* The renderer holds no guest state; it lives as long as the board. */
     s->gl_render_validated = false;
     s->gl_render_snapshots = 0;
     s->gl_render_commits = 0;
@@ -3770,7 +3822,7 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
     SGIRenderRefusal refusal;
     Error *err = NULL;
 
-    if (!s->gl_renderer_opt_in) {
+    if (!s->gl_renderer_opt_in || s->gl_renderer_scalar) {
         return mgras_gl_soft_draw(s, d);
     }
     /*
@@ -3796,7 +3848,7 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
                injected == SGI_GL_DRAW_HOST_ERROR ? injected :
                                                    SGI_GL_DRAW_RESOURCE_ERROR;
     }
-    if (s->gl_renderer_unavailable) {
+    if (s->gl_renderer_unavailable || !s->gl_renderer) {
         s->gl_render_validated = true;
         return s->gl_render_result != SGI_GL_DRAW_OK ?
                s->gl_render_result : SGI_GL_DRAW_HOST_ERROR;
@@ -3811,19 +3863,6 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
     t.resources = &resource;
     t.resource_count = 1;
     t.resource_ops = &mgras_gl_render_ops;
-    if (!s->gl_renderer) {
-        s->gl_renderer = sgi_renderer_new(&err);
-        if (!s->gl_renderer) {
-            s->gl_renderer_unavailable = true;
-            s->gl_render_validated = true;
-            if (err) {
-                error_report("sgi-mgras: Mesa renderer: %s",
-                             error_get_pretty(err));
-                error_free(err);
-            }
-            return SGI_GL_DRAW_HOST_ERROR;
-        }
-    }
     attempt = sgi_render_draw_attempt(s->gl_renderer, &mgras_gl_raster_rules,
                                       &t, &render_draw, &opts, &outcome,
                                       &err);
@@ -3921,7 +3960,11 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
     SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
     SGIGLDrawResult checked = SGI_GL_DRAW_OK;
 
-    if (s->gl_renderer_opt_in) {
+    /*
+     * A board without Mesa on this host draws as a board that never asked
+     * for it, with no Mesa result for the command.
+     */
+    if (s->gl_renderer_opt_in && !s->gl_renderer_scalar) {
         sink.result = &checked;
     }
     s->gl_render_validated = false;
