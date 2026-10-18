@@ -2631,10 +2631,14 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     const SGIVolumeVertex *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
     const float *flat_index = &provoking[SGI_GL_V_INDEX];
-    SGISoftFrag flat_frag;
+    /*
+     * Outside the loop: a fragment declared per pixel without an
+     * initializer is zeroed per pixel under -ftrivial-auto-var-init.
+     */
+    SGISoftFrag flat_frag, frag;
     SGISoftVertex v[3];
     SGISoftTexPlane gradient;
-    int64_t min_x, max_x, min_y, max_y, area;
+    int64_t min_x, max_x, min_y, max_y, area, step0, step1, step2;
     double offset;
     bool ccw, front;
     int px0, px1, py0, py1;
@@ -2706,18 +2710,25 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     py0 = MAX((int)min_y, py0);
     py1 = MIN((int)max_y, py1);
 
+    /*
+     * Each edge function is linear in x, so across a row it steps by an
+     * exact integer: the same values sgi_soft_edge() gives at each centre.
+     */
+    step0 = -(v[2].y - v[1].y) * (1 << sub);
+    step1 = -(v[0].y - v[2].y) * (1 << sub);
+    step2 = -(v[1].y - v[0].y) * (1 << sub);
     for (int py = py0; py <= py1; py++) {
         int64_t cy = ((int64_t)py * (1 << sub)) +
                      (1 << (sub - 1));
+        int64_t cx = ((int64_t)px0 * (1 << sub)) +
+                     (1 << (sub - 1));
+        int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
+        int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
+        int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
 
-        for (int px = px0; px <= px1; px++) {
-            int64_t cx = ((int64_t)px * (1 << sub)) +
-                         (1 << (sub - 1));
-            int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
-            int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
-            int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
+        for (int px = px0; px <= px1;
+             px++, e0 += step0, e1 += step1, e2 += step2) {
             double b1, b2, z, w0, w1, w2, sum;
-            SGISoftFrag frag = flat_frag;
 
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
                 !sgi_soft_owns(&v[2], &v[0], e1) ||
@@ -2730,6 +2741,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                   (1u << ((uint32_t)px & 31)))) {
                 continue;
             }
+            frag = flat_frag;
             b1 = (double)e1 / area;
             b2 = (double)e2 / area;
             z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
@@ -2737,12 +2749,18 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             w1 = b1 * v[1].inv_w;
             w2 = b2 * v[2].inv_w;
             sum = w0 + w1 + w2;
-            for (int k = 0; k < 4; k++) {
-                frag.texcoord[k] = (w0 * v[0].texcoord[k] +
-                                    w1 * v[1].texcoord[k] +
-                                    w2 * v[2].texcoord[k]) / sum;
+            /* Only texturing reads the coordinates, only fog the distance. */
+            if (r->texture) {
+                for (int k = 0; k < 4; k++) {
+                    frag.texcoord[k] = (w0 * v[0].texcoord[k] +
+                                        w1 * v[1].texcoord[k] +
+                                        w2 * v[2].texcoord[k]) / sum;
+                }
             }
-            frag.fog = (w0 * v[0].fog + w1 * v[1].fog + w2 * v[2].fog) / sum;
+            if (st->fog) {
+                frag.fog = (w0 * v[0].fog + w1 * v[1].fog +
+                            w2 * v[2].fog) / sum;
+            }
             if (st->clip_planes) {
                 double d[SGI_GL_CLIP_PLANES];
 
