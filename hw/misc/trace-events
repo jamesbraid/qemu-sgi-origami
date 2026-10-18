@@ -198,6 +198,7 @@ sgi_odyssey_native_commit_covered(int buffer, uint64_t processed_pixels, uint32_
 # The window a completed context image binds: image words 0, 2 and 3,
 # rectangles 0 and 1 (words 11-12 and 9-10), and whether anything draws.
 sgi_mgras_gl_bind(uint32_t slot, uint32_t origin, uint32_t clip_mode, uint32_t r0x, uint32_t r0y, uint32_t r1x, uint32_t r1y, bool bound) "slot 0x%x origin 0x%08x clip 0x%x rect0 0x%08x 0x%08x rect1 0x%08x 0x%08x bound %d"
+sgi_mgras_gl_mesa_fallback(const char *reason, uint32_t op, uint32_t mode, uint32_t count) "reason %s command %u mode %u count %u"
 
 # sgi-mgras-texture.c
 # A texture level stored from its load: the base block, TL_SPEC's level,

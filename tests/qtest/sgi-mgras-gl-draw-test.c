@@ -412,16 +412,20 @@ static void test_gl_mesa_triangle_ordinary_readback(void)
     qtest_quit(test);
 }
 
-/* Checked failures on an ordinary triangle must leave native pixels alone. */
+/*
+ * Failures of an accepted Mesa draw must leave native pixels alone: an
+ * allocation failure becomes the guest's GL out-of-memory error, and a
+ * resource or host failure stops the VM. None is retried on the scalar
+ * path.
+ */
 static void test_gl_mesa_checked_failures(void)
 {
-    static const uint32_t failures[] = { 1, 2, 3, 4 };
+    static const uint32_t failures[] = { 1, 3, 4 };
 
-    /* After the injected results: a scissor, then a client clip plane. */
-    for (unsigned i = 0; i < ARRAY_SIZE(failures) + 2; i++) {
+    for (unsigned i = 0; i < ARRAY_SIZE(failures); i++) {
         QTestState *test = qtest_init(
             MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
-        uint32_t expected = i < ARRAY_SIZE(failures) ? failures[i] : 2;
+        uint32_t expected = failures[i];
 
         mgras_reset_state(test);
         mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
@@ -430,45 +434,35 @@ static void test_gl_mesa_checked_failures(void)
         gl_draw_buffer(test, 1);
         gl_clear_color(test, 0, 0, 0, 1);
         gl_word(test, GL_CLEAR_COLOR_BUFFER);
-        if (i < ARRAY_SIZE(failures)) {
-            qtest_qmp_assert_success(test,
-                "{'execute': 'qom-set', 'arguments': {'path': %s, "
-                "'property': 'x-test-render-inject-result', 'value': %u}}",
-                MGRAS_QOM_PATH, expected);
-        } else if (i == ARRAY_SIZE(failures)) {
-            gl_scissor(test, 0, 0, 1, 1);
-            gl_one(test, GL_SCISSOR_TEST_HDR, 1);
-        } else {
-            gl_clip_plane(test, 0, 1, 0, 0, 0);
-            gl_one(test, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
-        }
+        qtest_qmp_assert_success(test,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-render-inject-result', 'value': %u}}",
+            MGRAS_QOM_PATH, expected);
         gl_color3f(test, 1, 0, 0);
         gl_word(test, GL_BEGIN_TRIANGLES);
         gl_vertex2f(test, -1, -1);
         gl_vertex2f(test, 1, -1);
         gl_vertex2f(test, -1, 1);
-        if (i == 0 || i >= ARRAY_SIZE(failures)) {
+        if (i == 0) {
             gl_word(test, GL_END_TRIANGLES);
         }
         g_assert_cmpuint(mgras_qom_get_uint(test,
             "x-test-render-result"), ==, expected);
         g_assert_cmpuint(mgras_qom_get_uint(test,
-            "x-test-render-failed"), ==,
-            i > 0 && i < ARRAY_SIZE(failures));
+            "x-test-render-failed"), ==, i > 0);
         {
             QDict *reply = qtest_qmp(test, "{'execute':'query-status'}");
             const char *status = qdict_get_str(
                 qdict_get_qdict(reply, "return"), "status");
 
-            g_assert_cmpstr(status, ==,
-                i > 0 && i < ARRAY_SIZE(failures) ?
-                "internal-error" : "running");
+            g_assert_cmpstr(status, ==, i > 0 ? "internal-error" : "running");
             qobject_unref(reply);
         }
         g_assert_cmpuint(mgras_qom_get_uint(test,
             "x-test-render-snapshots"), ==, 0);
         g_assert_cmpuint(mgras_qom_get_uint(test,
             "x-test-render-commits"), ==, 0);
+        g_assert_cmpuint(mgras_qom_get_uint(test, "x-mesa-fallbacks"), ==, 0);
         g_assert_cmphex(mgras_test_pixel(test, 100, 923), ==, 0);
         g_assert_cmphex(mgras_test_format(test, 100, 923), ==,
                         MGRAS_PIXEL_FORMAT_RGB);
@@ -476,6 +470,409 @@ static void test_gl_mesa_checked_failures(void)
             "x-test-back-pixel"), ==, 0);
         qtest_quit(test);
     }
+}
+
+/*
+ * A state the opt-in Mesa path refuses, the property counting it, and
+ * pixels only the refused state gives, so a draw that ignored the state
+ * cannot match.
+ */
+typedef struct MgrasMesaRefusal {
+    const char *state;
+    const char *counter;
+    uint32_t x, y, colour;
+} MgrasMesaRefusal;
+
+static const MgrasMesaRefusal mgras_mesa_refusals[] = {
+    /* The shared renderer refuses depth testing. */
+    { "depth-test", "x-mesa-fallback-fragment-tests", 100, 923, 0xff0000 },
+    /* The board's own check refuses a scissor box. */
+    { "scissor", "x-mesa-fallback-window", 0, 1023, 0xff0000 },
+    /* And a client clip plane. */
+    { "clip-plane", "x-mesa-fallback-clip-planes", 768, 767, 0xff0000 },
+};
+
+static void mgras_mesa_scene(QTestState *test)
+{
+    mgras_reset_state(test);
+    mgras_enter_gl_window(test, 0, 0, 1280, 1024, 0x11);
+    gl_viewport(test, 0, 0, 1280, 1024);
+    gl_one(test, GL_SHADE_MODEL_HDR, 0x1d01);
+    gl_draw_buffer(test, 1);
+    gl_clear_color(test, 0, 0, 1, 1);
+    gl_word(test, GL_CLEAR_COLOR_BUFFER);
+}
+
+static void mgras_mesa_refused_state(QTestState *test, const char *state)
+{
+    if (!strcmp(state, "depth-test")) {
+        gl_one(test, GL_DEPTH_TEST_HDR, 1);
+        gl_one(test, GL_DEPTH_FUNC_HDR, GL_DEPTH_ALWAYS);
+    } else if (!strcmp(state, "scissor")) {
+        gl_scissor(test, 0, 0, 1, 1);
+        gl_one(test, GL_SCISSOR_TEST_HDR, 1);
+    } else {
+        gl_clip_plane(test, 0, 1, 0, 0, 0);
+        gl_one(test, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
+    }
+}
+
+/*
+ * A triangle draws at its third vertex. Without the End the vertex stays
+ * the last command, so x-test-render-validated still describes it.
+ */
+static void mgras_mesa_triangle(QTestState *test, float r, float g, float b,
+                                bool upper, bool end)
+{
+    gl_color3f(test, r, g, b);
+    gl_word(test, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(test, upper ? 1 : -1, -1);
+    gl_vertex2f(test, upper ? 1 : 1, upper ? 1 : -1);
+    gl_vertex2f(test, -1, 1);
+    if (end) {
+        gl_word(test, GL_END_TRIANGLES);
+    }
+}
+
+static void mgras_assert_running(QTestState *test)
+{
+    QDict *reply = qtest_qmp(test, "{'execute':'query-status'}");
+
+    g_assert_cmpstr(qdict_get_str(qdict_get_qdict(reply, "return"),
+                                  "status"), ==, "running");
+    qobject_unref(reply);
+}
+
+/* Every pixel of the rows both boards drew must be identical. */
+static void mgras_assert_rows_match(QTestState *a, QTestState *b)
+{
+    static const uint32_t rows[] = { 0, 123, 511, 512, 767, 923, 1023 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+        g_autofree uint32_t *ra = mgras_test_pixel_row(a, 0, rows[i], 1280);
+        g_autofree uint32_t *rb = mgras_test_pixel_row(b, 0, rows[i], 1280);
+
+        for (uint32_t x = 0; x < 1280; x++) {
+            if (ra[x] != rb[x]) {
+                g_error("row %u pixel %u: 0x%08x, scalar 0x%08x",
+                        rows[i], x, ra[x], rb[x]);
+            }
+        }
+    }
+}
+
+/*
+ * A draw the opt-in Mesa path refuses is drawn by the scalar path inside
+ * the same callback, with exactly the pixels a board without Mesa draws.
+ * The refusal counts once by its reason and leaves no other trace: no
+ * snapshot, commit, failure or validated command, and the VM keeps
+ * running.
+ */
+static void test_gl_mesa_refusal_draws_scalar(const void *opaque)
+{
+    const MgrasMesaRefusal *c = opaque;
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        mgras_mesa_refused_state(both[i], c->state);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, false);
+    }
+    mgras_assert_running(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-failed"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-result"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-validated"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-commits"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, c->counter), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(mesa, c->x, c->y), ==, c->colour);
+    g_assert_cmphex(mgras_test_pixel(mesa, 1100, 123), ==, 0x0000ff);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/*
+ * After a refusal the next draw tries Mesa again. A frame with one scalar
+ * and one Mesa draw equals the frame a board without Mesa draws.
+ */
+static void test_gl_mesa_mixed_frame(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        mgras_mesa_refused_state(both[i], "depth-test");
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, true);
+        gl_one(both[i], GL_DEPTH_TEST_HDR, 0);
+        mgras_mesa_triangle(both[i], 0, 1, 0, true, false);
+    }
+    mgras_assert_running(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-failed"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-test-render-result"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-validated"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-commits"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-mesa-fallback-fragment-tests"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(mesa, 100, 923), ==, 0xff0000);
+    g_assert_cmphex(mgras_test_pixel(mesa, 1100, 123), ==, 0x00ff00);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/* The board drew nothing on Mesa and latched nothing. */
+static void mgras_assert_no_mesa_draw(QTestState *test)
+{
+    mgras_assert_running(test);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-failed"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test, "x-test-render-result"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-validated"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(test,
+        "x-test-render-commits"), ==, 0);
+}
+
+#define GL_BEGIN_POINTS       0x00001600
+
+/*
+ * Points, lines and line strips reach the board's check as points and
+ * segments, which it refuses as primitives: one point, one segment and a
+ * two-segment strip count four.
+ */
+static void test_gl_mesa_primitive_refusal_draws_scalar(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        gl_color3f(both[i], 1, 0, 0);
+        gl_word(both[i], GL_BEGIN_POINTS);
+        gl_vertex2f(both[i], 0.5f, 0.5f);
+        gl_word(both[i], GL_END_OF(GL_BEGIN_POINTS));
+        gl_word(both[i], GL_BEGIN_LINES);
+        gl_vertex2f(both[i], -1, -0.5f);
+        gl_vertex2f(both[i], 1, -0.5f);
+        gl_word(both[i], GL_END_OF(GL_BEGIN_LINES));
+        gl_word(both[i], GL_BEGIN_LINE_STRIP);
+        gl_vertex2f(both[i], -1, 0);
+        gl_vertex2f(both[i], 0, 0.25f);
+        gl_vertex2f(both[i], 1, 0);
+        gl_word(both[i], GL_END_OF(GL_BEGIN_LINE_STRIP));
+    }
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-mesa-fallback-primitive"), ==, 4);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 4);
+    /* The segment at y -0.5 lies on one of the rows about screen row 767. */
+    {
+        bool red = false;
+
+        for (uint32_t y = 766; y <= 768; y++) {
+            red |= mgras_test_pixel(mesa, 640, y) == 0xff0000;
+        }
+        g_assert_true(red);
+    }
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/*
+ * A bank that still holds indexed pixels under the triangle cannot be
+ * shown to Mesa as RGB8, so the board's snapshot refuses after reading it.
+ * The read advances only the test snapshot counter; the draw is drawn on
+ * the scalar path and counted as a snapshot refusal.
+ */
+static void test_gl_mesa_snapshot_refusal_draws_scalar(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_reset_state(both[i]);
+        mgras_enter_gl_window(both[i], 0, 0, 1280, 1024, 0x11);
+        gl_viewport(both[i], 0, 0, 1280, 1024);
+        gl_one(both[i], GL_SHADE_MODEL_HDR, 0x1d01);
+        gl_draw_buffer(both[i], 1);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, false);
+    }
+    g_assert_cmphex(mgras_test_format(mesa, 1100, 123), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-mesa-fallback-snapshot"), ==, 1);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 1);
+    g_assert_cmphex(mgras_test_pixel(mesa, 100, 923), ==, 0xff0000);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/*
+ * A draw with no clip rectangle to land in puts no pixels on either path,
+ * so Mesa could never take it over and it is not a fallback: a bound
+ * window with every rectangle disabled (0x10), and no window (0).
+ */
+static void test_gl_mesa_unlanded_draw_uncounted(const void *data)
+{
+    uint32_t clip = GPOINTER_TO_UINT(data);
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_reset_state(both[i]);
+        mgras_enter_gl_window(both[i], 0, 0, 1280, 1024, clip);
+        gl_viewport(both[i], 0, 0, 1280, 1024);
+        gl_draw_buffer(both[i], 1);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, true);
+    }
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(mesa, 100, 923), ==, 0);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+#define GL_RENDER_SELECT      0x0000cb04
+#define GL_RENDER             0x0000c900
+#define GL_INIT_NAMES         0x0000c400
+#define GL_PUSH_NAME          0x0000c704
+#define GL_SELECTION_SELECTOR 0x00000cec
+
+/* The client's 0xa20c query, as the selection tests read hit records. */
+static uint32_t gl_selection_query(QTestState *test, uint32_t index,
+                                   uint32_t a1, uint32_t a2)
+{
+    qtest_writel(test, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(test, MGRAS_QUERY_TOKEN);
+    gl_word(test, index);
+    gl_word(test, a1);
+    gl_word(test, a2);
+    g_assert_cmphex(qtest_readl(test, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY,
+                    ==, MGRAS_HQ_FLAG_QUERY);
+    return qtest_readl(test, REG_QUERY_ANSWER);
+}
+
+/*
+ * Selection draws no pixels on either path, so with Mesa on a selected
+ * triangle goes to the selection path uncounted and records the same hit
+ * as a board without Mesa.
+ */
+static void test_gl_mesa_selection_uncounted(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        gl_word(both[i], GL_RENDER_SELECT);
+        gl_word(both[i], 0);
+        gl_word(both[i], GL_INIT_NAMES);
+        gl_word(both[i], GL_PUSH_NAME);
+        gl_word(both[i], 7);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, true);
+        gl_word(both[i], GL_RENDER);
+    }
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-test-render-snapshots"), ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 0);
+    g_assert_cmphex(gl_selection_query(mesa, GL_SELECTION_SELECTOR, 1, 1),
+                    ==, 5);
+    g_assert_cmphex(gl_selection_query(mesa, 1, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(mesa, 4, UINT32_MAX, 0), ==, 7);
+    for (uint32_t index = 2; index <= 3; index++) {
+        g_assert_cmphex(gl_selection_query(mesa, index, UINT32_MAX, 0), ==,
+                        gl_selection_query(soft, index, UINT32_MAX, 0));
+    }
+    g_assert_cmphex(mgras_test_pixel(mesa, 100, 923), ==, 0x0000ff);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
+}
+
+/*
+ * On a board without Mesa a scalar allocation failure retains the shared
+ * GL out-of-memory error, and the command's later draws still run. A
+ * refused draw whose scalar draw runs out of memory behaves the same: the
+ * error is retained, nothing is latched or reported as a Mesa failure, and
+ * the next draw runs.
+ */
+static void test_gl_mesa_fallback_scalar_oom(void)
+{
+    QTestState *mesa = qtest_init(
+        MACHINE_ARGS " -global sgi-mgras.x-mesa-renderer=on");
+    QTestState *soft = qtest_init(MACHINE_ARGS);
+    QTestState *both[] = { mesa, soft };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        mgras_mesa_scene(both[i]);
+        mgras_mesa_refused_state(both[i], "scissor");
+        qtest_qmp_assert_success(both[i],
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-scalar-inject-oom', 'value': 1}}",
+            MGRAS_QOM_PATH);
+        mgras_mesa_triangle(both[i], 1, 0, 0, false, false);
+    }
+    /* The failed scalar draw's vertex is still the last command. */
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmphex(mgras_test_pixel(mesa, 0, 1023), ==, 0x0000ff);
+    /* Both boards retain the shared GL out-of-memory error (0x0505). */
+    g_assert_cmphex(mgras_qom_get_uint(soft, "x-test-gl-draw-error"), ==,
+                    0x0505);
+    g_assert_cmphex(mgras_qom_get_uint(mesa, "x-test-gl-draw-error"), ==,
+                    mgras_qom_get_uint(soft, "x-test-gl-draw-error"));
+    for (unsigned i = 0; i < ARRAY_SIZE(both); i++) {
+        gl_word(both[i], GL_END_TRIANGLES);
+        mgras_mesa_triangle(both[i], 0, 1, 0, false, false);
+    }
+    mgras_assert_no_mesa_draw(mesa);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa,
+        "x-mesa-fallback-window"), ==, 2);
+    g_assert_cmpuint(mgras_qom_get_uint(mesa, "x-mesa-fallbacks"), ==, 2);
+    g_assert_cmphex(mgras_test_pixel(mesa, 0, 1023), ==, 0x00ff00);
+    mgras_assert_rows_match(mesa, soft);
+
+    qtest_quit(soft);
+    qtest_quit(mesa);
 }
 
 static void test_gl_mesa_native_commit_failure(void)
@@ -1781,7 +2178,6 @@ typedef struct GlPrimCase {
     GlPrimVertex v[8];
 } GlPrimCase;
 /* glBegin's token; glEnd's is 0x0a00 above it. */
-#define GL_BEGIN_POINTS       0x00001600
 #define GL_BEGIN_TRI_FAN      0x00001c00
 #define GL_BEGIN_QUAD_STRIP   0x00001e00
 
@@ -4134,6 +4530,35 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-mesa-native-commit-failure",
         test_gl_mesa_native_commit_failure, false);
+    for (unsigned i = 0; i < ARRAY_SIZE(mgras_mesa_refusals); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/mgras/gl-mesa-refusal-draws-scalar/%s",
+            mgras_mesa_refusals[i].state);
+
+        mgras_qtest_add_data_func(path, &mgras_mesa_refusals[i],
+                                  test_gl_mesa_refusal_draws_scalar, false);
+    }
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-mixed-frame",
+        test_gl_mesa_mixed_frame, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-primitive-refusal-draws-scalar",
+        test_gl_mesa_primitive_refusal_draws_scalar, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-snapshot-refusal-draws-scalar",
+        test_gl_mesa_snapshot_refusal_draws_scalar, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-mesa-unlanded-draw-uncounted/no-rectangle",
+        GUINT_TO_POINTER(0x10), test_gl_mesa_unlanded_draw_uncounted, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-mesa-unlanded-draw-uncounted/unbound",
+        GUINT_TO_POINTER(0), test_gl_mesa_unlanded_draw_uncounted, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-selection-uncounted",
+        test_gl_mesa_selection_uncounted, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-mesa-fallback-scalar-oom",
+        test_gl_mesa_fallback_scalar_oom, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-clear-captured-readpixels-alpha-zero",

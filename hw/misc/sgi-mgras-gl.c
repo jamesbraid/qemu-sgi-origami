@@ -1240,8 +1240,66 @@ static void mgras_gl_test_get_failed(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static void mgras_gl_test_get_validated(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = s->gl_render_validated;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+/* The current context's retained shared GL error, for host-only qtests. */
+static void mgras_gl_test_get_draw_error(Object *obj, Visitor *v,
+                                         const char *name, void *opaque,
+                                         Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = mgras_gl(s)->polygon.error;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_gl_get_fallbacks(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint64_t total = 0;
+
+    for (unsigned i = 0; i < SGI_RENDER_REFUSAL__MAX; i++) {
+        total += s->gl_mesa_fallbacks[i];
+    }
+    visit_type_uint64(v, name, &total, errp);
+}
+
+/*
+ * Host diagnostics for measuring what the opt-in Mesa path still refuses:
+ * one read-only count per refusal reason and their sum. They count for the
+ * life of the process, across resets, and are not migrated.
+ */
+static void mgras_gl_init_fallbacks(SGIMgrasState *s)
+{
+    for (unsigned i = SGI_RENDER_REFUSAL_NONE + 1;
+         i < SGI_RENDER_REFUSAL__MAX; i++) {
+        g_autofree char *name = g_strdup_printf(
+            "x-mesa-fallback-%s", sgi_render_refusal_name(i));
+
+        object_property_add_uint64_ptr(OBJECT(s), name,
+                                       &s->gl_mesa_fallbacks[i],
+                                       OBJ_PROP_FLAG_READ);
+    }
+    object_property_add(OBJECT(s), "x-mesa-fallbacks", "uint64",
+                        mgras_gl_get_fallbacks, NULL, NULL, NULL);
+}
+
 void sgi_mgras_gl_init(SGIMgrasState *s)
 {
+    mgras_gl_init_fallbacks(s);
+    object_property_add(OBJECT(s), "x-test-render-validated", "uint32",
+                        mgras_gl_test_get_validated, NULL, NULL, NULL);
+    object_property_add(OBJECT(s), "x-test-gl-draw-error", "uint32",
+                        mgras_gl_test_get_draw_error, NULL, NULL, NULL);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-render-snapshots",
                                    &s->gl_render_snapshots, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-render-commits",
@@ -1250,6 +1308,9 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
                                    &s->gl_render_result, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(OBJECT(s), "x-test-render-inject-result",
                                    &s->gl_render_inject_result,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(OBJECT(s), "x-test-scalar-inject-oom",
+                                   &s->gl_scalar_inject_oom,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(OBJECT(s),
                                    "x-test-render-inject-commit-failure",
@@ -1290,6 +1351,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     }
     s->gl_render_inject_result = 0;
     s->gl_render_inject_commit_failure = 0;
+    s->gl_scalar_inject_oom = 0;
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
@@ -3602,52 +3664,140 @@ static SGIGLDrawResult mgras_gl_selection_draw(SGIMgrasState *s,
     return SGI_GL_DRAW_OK;
 }
 
-/* A GL context's draw, rasterized into the banks and the depth plane. */
+/* The scalar path: the draw as a board without Mesa makes it. */
+static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
+                                          const SGIGLDraw *d)
+{
+    SGIRasterTarget t = mgras_gl_target;
+    SGIGLTexImage image;
+    SGIGLDrawResult result;
+
+    if (s->gl_selection[s->gl_current].active) {
+        return mgras_gl_selection_draw(s, d);
+    }
+    /* Stands for the rasterizer failing an allocation before it draws. */
+    if (s->gl_scalar_inject_oom) {
+        s->gl_scalar_inject_oom = 0;
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    }
+    t.opaque = s;
+    t.texture = sgi_mgras_texture_image(s, &image);
+    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+    s->dirty = true;
+    return result;
+}
+
+/*
+ * A draw that ends on the scalar path on a board with Mesa, committed and
+ * reported as a board without Mesa does. That board also draws through the
+ * checked callback, because its polygon modes are always on, but with no
+ * result consumer: a scalar allocation failure there retains the shared
+ * GL out-of-memory error and the command's later draws still run. Here
+ * the command's result belongs to Mesa, so retain the error directly and
+ * report success, which latches nothing and ends no command.
+ */
+static SGIGLDrawResult mgras_gl_scalar(SGIMgrasState *s, const SGIGLDraw *d)
+{
+    SGIGLContext *c = mgras_gl(s);
+
+    if (mgras_gl_soft_draw(s, d) == SGI_GL_DRAW_OUT_OF_MEMORY &&
+        !c->polygon.error) {
+        c->polygon.error = SGI_GL_OUT_OF_MEMORY;
+    }
+    return SGI_GL_DRAW_OK;
+}
+
+/*
+ * A refused Mesa attempt changed nothing, so the scalar path draws the same
+ * draw here, before the callback returns.
+ */
+static SGIGLDrawResult mgras_gl_fall_back(SGIMgrasState *s,
+                                          const SGIGLDraw *d,
+                                          SGIRenderRefusal reason)
+{
+    s->gl_mesa_fallbacks[reason]++;
+    trace_sgi_mgras_gl_mesa_fallback(sgi_render_refusal_name(reason),
+                                     s->gl_render_op, d->mode, d->count);
+    return mgras_gl_scalar(s, d);
+}
+
+/*
+ * The draws this caller sends to Mesa: one triangle in a bound drawable at
+ * the origin, with one clip rectangle covering the board, no scissor box
+ * and no client clip plane, into a bank the resource bridge can expose.
+ * Everything else is refused here, before any native access.
+ */
+static SGIRenderRefusal mgras_gl_mesa_preflight(const SGIMgrasState *s,
+                                                const SGIGLDraw *d)
+{
+    const SGIGLDrawState *st = d->state;
+
+    if (d->mode != SGI_GL_TRIANGLES || d->count != 3) {
+        return SGI_RENDER_REFUSAL_PRIMITIVE;
+    }
+    if (!st->drawable.bound || st->drawable.origin[0] ||
+        st->drawable.origin[1] || st->drawable.clip.n != 1 ||
+        st->drawable.clip.r[0].x0 != 0 || st->drawable.clip.r[0].y0 != 0 ||
+        st->drawable.clip.r[0].x1 != s->width - 1 ||
+        st->drawable.clip.r[0].y1 != s->height - 1 || st->scissor_test) {
+        return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (st->drawable.front != 1 && st->drawable.front != 2) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
+    }
+    if (st->clip_planes) {
+        return SGI_RENDER_REFUSAL_CLIP_PLANES;
+    }
+    return SGI_RENDER_REFUSAL_NONE;
+}
+
+/*
+ * A GL context's draw, rasterized into the banks and the depth plane. With
+ * the opt-in Mesa renderer each draw runs wholly on Mesa or wholly on the
+ * scalar path. Mesa runs as for a frame mixed with scalar draws, so it
+ * accepts only state whose pixels are proven identical to the scalar
+ * path's. A refusal falls back here; a failure is never retried.
+ */
 static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
-    SGIGLTexImage image;
     SGIGLDraw render_draw = *d;
     SGIRenderResource resource;
-    SGIRenderResult status;
+    SGIRenderAttemptOptions opts = { .mixed_frame = true };
+    SGIRenderAttemptOutcome outcome = { 0 };
+    SGIRenderDrawResult attempt;
+    SGIRenderRefusal refusal;
     Error *err = NULL;
 
     if (!s->gl_renderer_opt_in) {
-        SGIGLDrawResult result;
-
-        if (s->gl_selection[s->gl_current].active) {
-            return mgras_gl_selection_draw(s, d);
-        }
-        t.opaque = s;
-        t.texture = sgi_mgras_texture_image(s, &image);
-        result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
-        s->dirty = true;
-        return result;
+        return mgras_gl_soft_draw(s, d);
     }
+    /*
+     * Selection draws, and draws with no clip rectangle to land in, put no
+     * pixels on either path, so Mesa could never take them over: they are
+     * not fallbacks.
+     */
     if (s->gl_selection[s->gl_current].active ||
-        !d->state->drawable.bound || d->mode != SGI_GL_TRIANGLES ||
-        d->count != 3 || d->state->drawable.origin[0] ||
-        d->state->drawable.origin[1] ||
-        (d->state->drawable.front != 1 &&
-         d->state->drawable.front != 2) ||
-        d->state->drawable.clip.n != 1 ||
-        d->state->drawable.clip.r[0].x0 != 0 ||
-        d->state->drawable.clip.r[0].y0 != 0 ||
-        d->state->drawable.clip.r[0].x1 != s->width - 1 ||
-        d->state->drawable.clip.r[0].y1 != s->height - 1 ||
-        d->state->scissor_test || d->state->clip_planes) {
-        return SGI_GL_DRAW_UNSUPPORTED;
+        !d->state->drawable.bound || !d->state->drawable.clip.n) {
+        return mgras_gl_scalar(s, d);
     }
-    s->gl_render_validated = true;
+    refusal = mgras_gl_mesa_preflight(s, d);
+    if (refusal != SGI_RENDER_REFUSAL_NONE) {
+        return mgras_gl_fall_back(s, d, refusal);
+    }
+    /* An injected failure stands for a failed attempt. */
     if (s->gl_render_inject_result) {
         uint32_t injected = s->gl_render_inject_result;
 
         s->gl_render_inject_result = 0;
-        return injected <= SGI_GL_DRAW_HOST_ERROR ? injected :
+        s->gl_render_validated = true;
+        return injected == SGI_GL_DRAW_OUT_OF_MEMORY ||
+               injected == SGI_GL_DRAW_HOST_ERROR ? injected :
                                                    SGI_GL_DRAW_RESOURCE_ERROR;
     }
     if (s->gl_renderer_unavailable) {
+        s->gl_render_validated = true;
         return s->gl_render_result != SGI_GL_DRAW_OK ?
                s->gl_render_result : SGI_GL_DRAW_HOST_ERROR;
     }
@@ -3665,6 +3815,7 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
         s->gl_renderer = sgi_renderer_new(&err);
         if (!s->gl_renderer) {
             s->gl_renderer_unavailable = true;
+            s->gl_render_validated = true;
             if (err) {
                 error_report("sgi-mgras: Mesa renderer: %s",
                              error_get_pretty(err));
@@ -3673,12 +3824,22 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
             return SGI_GL_DRAW_HOST_ERROR;
         }
     }
-    status = sgi_render_draw_checked(s->gl_renderer, &mgras_gl_raster_rules,
-                                     &t, &render_draw, &err);
-    if (status == SGI_RENDER_OK) {
+    attempt = sgi_render_draw_attempt(s->gl_renderer, &mgras_gl_raster_rules,
+                                      &t, &render_draw, &opts, &outcome,
+                                      &err);
+    if (attempt == SGI_RENDER_DRAW_REFUSED &&
+        outcome.reason > SGI_RENDER_REFUSAL_NONE &&
+        outcome.reason < SGI_RENDER_REFUSAL__MAX) {
+        /* The reason is counted; the error text would repeat per draw. */
+        error_free(err);
+        return mgras_gl_fall_back(s, d, outcome.reason);
+    }
+    s->gl_render_validated = true;
+    if (attempt == SGI_RENDER_DRAW_OK) {
         s->dirty = true;
-    } else if (status == SGI_RENDER_HOST_ERROR ||
-               status == SGI_RENDER_RESOURCE_ERROR) {
+        return SGI_GL_DRAW_OK;
+    }
+    if (outcome.status != SGI_RENDER_OOM) {
         sgi_renderer_free(s->gl_renderer);
         s->gl_renderer = NULL;
         s->gl_renderer_unavailable = true;
@@ -3688,15 +3849,9 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
                      error_get_pretty(err));
         error_free(err);
     }
-    switch (status) {
-    case SGI_RENDER_OK:
-        return SGI_GL_DRAW_OK;
+    switch (outcome.status) {
     case SGI_RENDER_OOM:
         return SGI_GL_DRAW_OUT_OF_MEMORY;
-    case SGI_RENDER_UNSUPPORTED:
-        return SGI_GL_DRAW_UNSUPPORTED;
-    case SGI_RENDER_RESOURCE_ERROR:
-        return SGI_GL_DRAW_RESOURCE_ERROR;
     case SGI_RENDER_HOST_ERROR:
         return SGI_GL_DRAW_HOST_ERROR;
     default:
@@ -3770,6 +3925,7 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
         sink.result = &checked;
     }
     s->gl_render_validated = false;
+    s->gl_render_op = op;
     if (op == SGI_GL_OP_BEGIN && !s->gl_renderer_unavailable) {
         s->gl_render_result = SGI_GL_DRAW_OK;
     }
@@ -3786,9 +3942,7 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
         error_report("sgi-mgras: Mesa checked draw %s in GL command %u",
                      failure, op);
         if (checked == SGI_GL_DRAW_HOST_ERROR ||
-            checked == SGI_GL_DRAW_RESOURCE_ERROR ||
-            (checked == SGI_GL_DRAW_UNSUPPORTED &&
-             s->gl_render_validated)) {
+            checked == SGI_GL_DRAW_RESOURCE_ERROR) {
             s->gl_renderer_unavailable = true;
             assert(bql_locked());
             vm_stop(RUN_STATE_INTERNAL_ERROR);

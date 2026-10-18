@@ -834,11 +834,16 @@ struct SGIMgrasState {
     SGIRenderer *gl_renderer;
     bool gl_renderer_opt_in;
     bool gl_renderer_unavailable; /* Failure latched for this device. */
-    bool gl_render_validated; /* Current checked command only. */
+    /* The current checked command ended on Mesa, accepted or failed. */
+    bool gl_render_validated;
+    uint32_t gl_render_op; /* The GL command decoding, for traces. */
+    /* Draws Mesa refused and the scalar path drew, by reason. */
+    uint64_t gl_mesa_fallbacks[SGI_RENDER_REFUSAL__MAX];
     uint64_t gl_render_snapshots;
     uint64_t gl_render_commits;
     uint32_t gl_render_result;
     uint32_t gl_render_inject_result; /* Host-only qtest fault. */
+    uint32_t gl_scalar_inject_oom; /* One-shot host-only scalar fault. */
     uint32_t gl_render_inject_commit_failure; /* One-shot host-only fault. */
     /* GE-port traffic logged since the last switch; not migrated. */
     bool gl_ge_port_logged;
