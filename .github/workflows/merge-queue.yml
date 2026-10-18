@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   queue:
-    if: ${{ github.server_url != 'https://github.com' }}
+    if: ${{ github.server_url != 'https://github.com' && vars.CI_QUEUE_PAUSED != 'true' }}
     runs-on: ${{ vars.CI_QUEUE_RUNNER }}
     # The driver may wait 22 minutes for a full suite and run for 25 minutes.
     # Leave five more minutes for setup and teardown while bounding a stalled
