@@ -832,6 +832,11 @@ SGIRasterTextureResult sgi_raster_texture_prepare_with_allocator(
     const SGIGLDrawState *state, const SGIGLTexImage *texture,
     SGIRasterTexture **out, void *(*allocate)(size_t));
 void sgi_raster_texture_free(SGIRasterTexture *texture);
+/*
+ * Stop the sampler's reports, for a caller whose scalar draw of the same
+ * fragments makes the draw's reports, so none appears twice.
+ */
+void sgi_raster_texture_quiet(SGIRasterTexture *texture);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(SGIRasterTexture, sgi_raster_texture_free)
 bool sgi_raster_texture_fragment(SGIRasterTexture *texture,
                                  const double coord[4], double color[4]);
