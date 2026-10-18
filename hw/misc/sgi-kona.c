@@ -821,6 +821,7 @@ void sgi_kona_publish(void *opaque, const SGICompletion *c)
  */
 void sgi_kona_port_consumed(SGIKonaState *s, uint32_t words)
 {
+    s->pi_packets++;
     if (s->dma.fetch.open) {
         return;
     }
@@ -872,6 +873,19 @@ static bool sgi_kona_store_counted(void)
  * two words and earns one credit, as the interface charged one. Words a
  * display list fetched from memory were never stored and earn none.
  *
+ * So the stores still owed are those whose last word went into the
+ * packet a framer holds after this store. If a packet ended while this
+ * store was taken (`packets` is the framed-packet count before it) and
+ * another is open now, the open one began in this store: every earlier
+ * store's words are taken and its credit goes back, and only this store
+ * stays owed. A GL client's doubleword stores often end that way, a
+ * vertex's last float and the next selector in one store; returning
+ * credits only when no packet was open ran the counter past zero there.
+ * The rule assumes one framer holds a partial packet at a time, which is
+ * always so on the command page; a DMA push packet open on its own port
+ * while command-page packets complete would have its stores' credits
+ * returned early, never twice.
+ *
  * Inferred: that the pipe returns a credit when its front end takes a
  * store's words, and holds the credits of a packet still arriving, which
  * is the same reading SGI_KONA_CREDIT gives the board's own credit
@@ -881,21 +895,28 @@ static bool sgi_kona_store_counted(void)
  * driver programs for its widget; with no "pi" link the board logs once
  * and returns nothing.
  */
-static void sgi_kona_pi_credits(SGIKonaState *s, bool counted)
+static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
+                                uint64_t packets)
 {
+    bool open = sgi_kona_port_held(&s->textport) ||
+                sgi_kona_port_held(&s->kernel_port) ||
+                sgi_kona_port_held(&s->gl_port) ||
+                sgi_kona_port_held(&s->dma.fifo_port);
     uint32_t credits;
 
-    if (counted) {
-        s->pi_held++;
-    }
-    if (!s->pi_held || sgi_kona_port_held(&s->textport) ||
-        sgi_kona_port_held(&s->kernel_port) ||
-        sgi_kona_port_held(&s->gl_port) ||
-        sgi_kona_port_held(&s->dma.fifo_port)) {
+    if (!open) {
+        credits = s->pi_held + counted;
+        s->pi_held = 0;
+    } else if (s->pi_packets != packets) {
+        credits = s->pi_held;
+        s->pi_held = counted;
+    } else {
+        s->pi_held += counted;
         return;
     }
-    credits = s->pi_held;
-    s->pi_held = 0;
+    if (!credits) {
+        return;
+    }
     if (!s->pi) {
         if (!s->pi_unlinked_logged) {
             s->pi_unlinked_logged = true;
@@ -11608,6 +11629,7 @@ static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
 {
     SGIKonaState *s = opaque;
     bool counted = sgi_kona_store_counted();
+    uint64_t packets = s->pi_packets;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
     if (s->context_failed) {
@@ -11625,7 +11647,7 @@ static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
         sgi_kona_write_word(opaque, addr, value >> 32, 4);
         sgi_kona_write_word(opaque, addr + 4, (uint32_t)value, 4);
     }
-    sgi_kona_pi_credits(s, counted);
+    sgi_kona_pi_credits(s, counted, packets);
 }
 
 /*

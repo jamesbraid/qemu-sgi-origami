@@ -262,6 +262,40 @@ static void test_gl_buffer_holds_credits(void)
     qtest_quit(qts);
 }
 
+/*
+ * A GL client's doubleword stores rarely end on a packet boundary: ivview
+ * stored a vertex's last float and the next command's selector together,
+ * so a packet was open after every store. A store's credit comes back
+ * once all its words are taken, so here, with a three-float colour 0x63
+ * opened by one word and then two doubleword stores per colour, at most
+ * the two stores of the open packet stay charged: the counter swings
+ * between two and one below the total. A board that returned credits
+ * only when no packet was open after a store returned none in this
+ * stream, and the counter ran down past zero long before 150 colours.
+ */
+static void test_straddling_stores_return_credits(void)
+{
+    const uint64_t one = 0x3f800000;
+    QTestState *qts = start();
+
+    qtest_writel(qts, REG_COMMAND, 0x1fd);
+    qtest_writel(qts, REG_COMMAND, 0x10000340);
+    qtest_writel(qts, REG_COMMAND, 0x9000);
+    qtest_writel(qts, REG_COMMAND, 0x10000);
+    store_word(qts, 0x63);
+    g_assert_cmpuint(credit(qts), ==, TOTAL - 1);
+    for (unsigned i = 0; i < 150; i++) {
+        store(qts, COMMAND_IO, (one << 32) | one, 8);
+        g_assert_cmpuint(credit(qts), ==, TOTAL - 2);
+        store(qts, COMMAND_IO, (one << 32) | 0x63, 8);
+        g_assert_cmpuint(credit(qts), ==, TOTAL - 1);
+    }
+    store(qts, COMMAND_IO, (one << 32) | one, 8);
+    store_word(qts, one);
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    qtest_quit(qts);
+}
+
 /* The DMA push page costs the same credits as the command page. */
 static void test_dma_push_holds_credits(void)
 {
@@ -324,6 +358,8 @@ int main(int argc, char **argv)
                    test_gl_buffer_holds_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/dma-push-holds",
                    test_dma_push_holds_credits);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/straddling-stores",
+                   test_straddling_stores_return_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/owed-credits-migrate",
                    test_owed_credits_migrate);
     return g_test_run();
