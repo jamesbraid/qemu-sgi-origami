@@ -683,12 +683,30 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
 static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                         unsigned int node_index, Error **errp)
 {
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(s);
+    const char *topology = s->topology_name ? s->topology_name :
+                           smc->default_topology;
     SGIModelIoBoardPreset preset;
     uint32_t processors;
+    bool origin350 = g_strcmp0(smc->product, "origin350") == 0 &&
+                     g_strcmp0(topology, "origin350") == 0;
+    bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0 &&
+                   g_strcmp0(topology, "onyx350-compat") == 0;
     g_autofree char *address = NULL;
 
-    if (!s->view || !sgi_machine_node_io_preset(s->view, node_index,
-                                                &preset)) {
+    if (!s->view) {
+        return true;
+    }
+    processors = sgi_machine_l1_node_processors(s, l1);
+    if (processors == 4 && (origin350 || onyx350)) {
+        qdev_prop_set_string(l1, "node-board-name", "IP53_4CPU");
+        qdev_prop_set_string(l1, "node-board-part",
+                             origin350 ? "030-1868-001" : "030-2013-001");
+        qdev_prop_set_string(l1, "node-board-revision",
+                             origin350 ? "-C" : "-D");
+        return true;
+    }
+    if (!sgi_machine_node_io_preset(s->view, node_index, &preset)) {
         return true;
     }
     address = sgi_board_mac(s->mac, node_index, errp);
@@ -707,7 +725,6 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
         return true;
     }
     qdev_prop_set_string(l1, "mac-record", "io8-board");
-    processors = sgi_machine_l1_node_processors(s, l1);
     for (size_t i = 0; i < ARRAY_SIZE(sgi_ip45_node_boards); i++) {
         if (sgi_ip45_node_boards[i].processors == processors) {
             qdev_prop_set_string(l1, "node-board-name",
