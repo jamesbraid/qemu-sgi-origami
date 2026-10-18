@@ -141,6 +141,73 @@ static uint32_t front_tag_at(QTestState *s, uint32_t x, uint32_t y)
     return kona_plane_word(s, PLANE_FRONT_TAG, x, KONA_FB_HEIGHT - 1 - y);
 }
 
+/*
+ * The front pixels of an X rectangle, each what front_at() returns there,
+ * read a row at a time through x-test-plane-row: one command per plane
+ * row instead of two per pixel. front_rect_at() picks one out.
+ */
+typedef struct FrontRect {
+    uint32_t x0, y0, width, height;
+    uint32_t *pixels;
+} FrontRect;
+
+static void plane_row(QTestState *s, uint32_t plane, uint32_t x,
+                      uint32_t row, uint32_t count, uint32_t *words)
+{
+    QDict *reply;
+    const char *hex;
+
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-select', 'value': %" PRIu64 "}}",
+        KONA_QOM_PATH, ((uint64_t)plane << 48) | ((uint64_t)row << 24) | x);
+    reply = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-row'}}", KONA_QOM_PATH);
+    hex = qdict_get_str(reply, "return");
+    g_assert_cmpuint(strlen(hex), ==, count * 8);
+    for (uint32_t i = 0; i < count; i++) {
+        char digits[9] = { 0 };
+
+        memcpy(digits, hex + i * 8, 8);
+        words[i] = g_ascii_strtoull(digits, NULL, 16);
+    }
+    qobject_unref(reply);
+}
+
+static void front_rect(QTestState *s, FrontRect *r, uint32_t x0,
+                       uint32_t y0, uint32_t x1, uint32_t y1)
+{
+    g_autofree uint32_t *tags = NULL;
+
+    r->x0 = x0;
+    r->y0 = y0;
+    r->width = x1 - x0 + 1;
+    r->height = y1 - y0 + 1;
+    r->pixels = g_new(uint32_t, r->width * r->height);
+    tags = g_new(uint32_t, r->width);
+    kona_qom_set_uint(s, "x-test-pixel-count", r->width);
+    for (uint32_t y = 0; y < r->height; y++) {
+        uint32_t row = KONA_FB_HEIGHT - 1 - (y0 + y);
+        uint32_t *words = r->pixels + y * r->width;
+
+        plane_row(s, PLANE_FRONT, x0, row, r->width, words);
+        plane_row(s, PLANE_FRONT_TAG, x0, row, r->width, tags);
+        for (uint32_t x = 0; x < r->width; x++) {
+            if (tags[x] == TAG_X_INDEX) {
+                words[x] >>= 8;
+            }
+        }
+    }
+}
+
+static uint32_t front_rect_at(const FrontRect *r, uint32_t x, uint32_t y)
+{
+    g_assert(x >= r->x0 && x - r->x0 < r->width);
+    g_assert(y >= r->y0 && y - r->y0 < r->height);
+    return r->pixels[(y - r->y0) * r->width + (x - r->x0)];
+}
+
 /* The front pixel at X coordinates (x, y), resolved by its tag. */
 static uint32_t resolved_at(QTestState *s, uint32_t x, uint32_t y)
 {
@@ -1817,6 +1884,7 @@ static void test_solid_line_batch(gconstpointer opaque)
                      six ? 0x15c : shape ? 0x15b : 0x159;
     unsigned bad_x = segments6 ? 22 : six ? 26 : shape ? 14 : 22;
     unsigned bad_y = segments6 ? 32 : six ? 35 : shape ? 24 : 22;
+    FrontRect rect;
     g_autofree char *dir = NULL, *uri = NULL;
     GError *error = NULL;
     QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
@@ -1868,6 +1936,7 @@ static void test_solid_line_batch(gconstpointer opaque)
     } else {
         kona_command(s, token, args, count);
     }
+    front_rect(s, &rect, 8, 18, 35, 39);
     for (unsigned y = 18; y < 40; y++) {
         for (unsigned x = 8; x < 36; x++) {
             bool covered = y == 20 && x >= 10 && x < 14;
@@ -1894,11 +1963,12 @@ static void test_solid_line_batch(gconstpointer opaque)
             drawn = covered && mode != 5 &&
                     (mode != 4 || (x >= 12 && x < 24 && y >= 20 &&
                                    y < 32 && x % 4 == 0));
-            g_assert_cmphex(front_at(s, x, y), ==,
+            g_assert_cmphex(front_rect_at(&rect, x, y), ==,
                             mode == 5 && x == bad_x && y == bad_y ?
                             0x123456 : drawn ? result : dest);
         }
     }
+    g_free(rect.pixels);
     if (six && mode != 5) {
         kona_command(s, 0x141, (uint32_t[]) { XY(26, 36) }, 1);
         if (relative) {
@@ -1993,20 +2063,28 @@ static void test_segment6_control(gconstpointer opaque)
                             x >= 10 && x <= 18 && x != 14 ? 0x3c : 0);
         }
     } else {
+        FrontRect rect;
+
+        front_rect(s, &rect, 17, 20, 23, 31);
         for (unsigned y = 20; y <= 31; y++) {
             for (unsigned x = 17; x <= 23; x++) {
                 bool drawn = mode != 2 && x >= 18 && x <= 22 && y % 2 == 0;
 
-                g_assert_cmphex(front_at(s, x, y), ==, drawn ? 0x3c : 0);
+                g_assert_cmphex(front_rect_at(&rect, x, y), ==,
+                                drawn ? 0x3c : 0);
             }
         }
+        g_free(rect.pixels);
+        front_rect(s, &rect, 9, 100, 15, 131);
         for (unsigned y = 100; y <= 131; y++) {
             for (unsigned x = 9; x <= 15; x++) {
                 bool drawn = mode <= 1 && x >= 10 && x <= 14 && y % 2 == 0;
 
-                g_assert_cmphex(front_at(s, x, y), ==, drawn ? 0x3c : 0);
+                g_assert_cmphex(front_rect_at(&rect, x, y), ==,
+                                drawn ? 0x3c : 0);
             }
         }
+        g_free(rect.pixels);
     }
     kona_command(s, 0x159, (uint32_t[]) { XY(30, 20), XY(34, 20) }, 2);
     for (unsigned x = 30; x <= 34; x++) {
@@ -2031,10 +2109,12 @@ static void test_solid_line_octant(gconstpointer opaque)
     QTestState *s = qtest_init(MACHINE_ARGS);
     int end_x = 20 + dx * (transpose ? 2 : 5);
     int end_y = 20 + dy * (transpose ? 5 : 2);
+    FrontRect rect;
 
     load_gc(s, 0x3c);
     kona_command(s, 0x159,
                  (uint32_t[]) { XY(20, 20), XY(end_x, end_y) }, 2);
+    front_rect(s, &rect, 14, 14, 26, 26);
     for (int y = 14; y <= 26; y++) {
         for (int x = 14; x <= 26; x++) {
             bool covered = false;
@@ -2043,9 +2123,11 @@ static void test_solid_line_octant(gconstpointer opaque)
                 covered |= x == 20 + dx * coverage[i][transpose ? 1 : 0] &&
                            y == 20 + dy * coverage[i][transpose ? 0 : 1];
             }
-            g_assert_cmphex(front_at(s, x, y), ==, covered ? 0x3c : 0);
+            g_assert_cmphex(front_rect_at(&rect, x, y), ==,
+                            covered ? 0x3c : 0);
         }
     }
+    g_free(rect.pixels);
     qtest_quit(s);
 }
 
