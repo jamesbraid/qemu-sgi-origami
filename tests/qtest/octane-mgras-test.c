@@ -460,7 +460,12 @@ static void test_reset(gconstpointer data)
     qtest_quit(qts);
 }
 
-/* Existing HQ4 fixture grammar, local mapped SDRAM only. */
+/*
+ * HQ4 DMA through HEART SDRAM. On Octane the page list holds 32-bit
+ * page-frame numbers from a list address that is only 4-byte aligned:
+ * IRIX 6.5.30's IP30 X server lists that way, and the Linux IMPACTSR
+ * driver's table is an array of 32-bit words too.
+ */
 #define RSS(reg, value) \
     (((uint64_t)(0x60001 | ((reg) << 6)) << 34) | (uint32_t)(value))
 #define RSS_EXEC(reg, value) \
@@ -485,14 +490,20 @@ static void local_dma(QTestState *qts, uint64_t sh, uint64_t lo)
     const uint8_t source[] = { 0, 0x11, 0x22, 0x33, 0, 0x44, 0x55, 0x66 };
     uint8_t returned[sizeof(source)];
 
-    /* Split the two pixels across two ordinary HEART SDRAM pages. */
-    g_assert_cmpuint(memtx_writel(qts, 0x20008018, 0), ==, 0);
-    qtest_writeq(qts, 0x20008018, 0x20010);
-    qtest_writeq(qts, 0x20008020, 0x20011);
+    /*
+     * Split the two pixels across two ordinary HEART SDRAM pages. The list
+     * starts 12 bytes into its page, as the IRIX ones do, so rounding its
+     * address down to 8 bytes or reading 64-bit entries loses the second
+     * page.
+     */
+    g_assert_cmpuint(memtx_writel(qts, 0x20008008, 0), ==, 0);
+    qtest_writel(qts, 0x2000800c, 0x20010);
+    qtest_writel(qts, 0x20008010, 0x20011);
+    qtest_writel(qts, 0x20008014, 0);
     qtest_memwrite(qts, 0x20010ffc, source, sizeof(source));
     enter_context(qts, sh);
     qtest_writel(qts, sh + MAPPING, 0x00482008);
-    qtest_writeq(qts, lo + MAPPING, 0x20008018);
+    qtest_writeq(qts, lo + MAPPING, 0x2000800c);
     qtest_writeq(qts, sh + MAPPING, 0x0048300400000002ULL);
     qtest_writeq(qts, lo + MAPPING, 0x00484b0400080000ULL);
     qtest_writeq(qts, sh + COMMAND, RSS(0x162, 0));
