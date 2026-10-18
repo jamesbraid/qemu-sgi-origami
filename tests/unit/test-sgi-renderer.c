@@ -1667,6 +1667,74 @@ static void test_identity_without_backend_strings(void)
     sgi_renderer_free(renderer);
 }
 
+/*
+ * A request whose triangle can reach no pixel centre of its clip, as most
+ * of the tiles a small triangle is split into, stages zeros without a host
+ * round trip; one that can reach a pixel still goes to the host. Both
+ * count as draws for the test fault hook.
+ */
+static void test_unreachable_tile(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    draw_count = 0;
+    sgi_renderer_register_gl(&test_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+
+    /* The clip holds only pixels right of the triangle's last centre. */
+    memset(request->rgba, 0xa5, sizeof(request->rgba));
+    request->clip[0] = 111;
+    request->clip[1] = 16;
+    request->clip[2] = 127;
+    request->clip[3] = 127;
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_OK);
+    g_assert_null(err);
+    g_assert_cmpuint(draw_count, ==, 0);
+    for (size_t i = 0; i < sizeof(request->rgba); i++) {
+        g_assert_cmpuint(request->rgba[i], ==, 0);
+    }
+    /* An empty clip stages nothing either. */
+    request->clip[0] = request->clip[1] = 0;
+    request->clip[2] = request->clip[3] = -1;
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_OK);
+    g_assert_cmpuint(draw_count, ==, 0);
+
+    /*
+     * Column 110's centre, 110.5, lies inside the bounding box, so the
+     * host draws; this backend stages nothing, which the check refuses.
+     */
+    g_free(request);
+    request = fixture();
+    request->clip[0] = 110;
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_REFUSED);
+    g_assert_cmpuint(draw_count, ==, 1);
+    error_free(err);
+    err = NULL;
+    sgi_renderer_free(renderer);
+
+    /* A skipped tile still counts towards an injected fault. */
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    request->clip[0] = 111;
+    sgi_renderer_test_fail_draw(renderer, 1);
+    g_assert_cmpint(sgi_renderer_draw_checked(renderer, request, &err), ==,
+                    SGI_RENDER_DRAW_FAILED);
+    g_assert_nonnull(err);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef CONFIG_MODULES
@@ -1763,6 +1831,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sgi-renderer/create/host-error",
                          GINT_TO_POINTER(SGI_RENDER_CREATE_HOST_ERROR),
                          test_create_result);
+    g_test_add_func("/sgi-renderer/unreachable-tile", test_unreachable_tile);
     g_test_add_func("/sgi-renderer/identity/parse", test_identity_parse);
     g_test_add_func("/sgi-renderer/identity/no-strings",
                     test_identity_without_backend_strings);
