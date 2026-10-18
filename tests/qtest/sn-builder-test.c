@@ -5580,13 +5580,13 @@ static void test_expansion_composed_adapters(void)
     g_autoptr(GError) error = NULL;
     int fd = g_file_open_tmp("expansion-adapter-errors-XXXXXX", &log, &error);
     QTestState *qts;
-    uint8_t bytes[8];
-    uint8_t expected[6][2][8];
+    uint8_t bytes[8], copied[8];
+    uint8_t source_expected[6][2][8];
 
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(close(fd), ==, 0);
-    memset(expected, 0xcc, sizeof(expected));
+    memset(source_expected, 0xcc, sizeof(source_expected));
     /* Device numbers are synthetic positions, not physical slot labels. */
     for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
         for (unsigned device = 1; device <= 2; device++) {
@@ -5631,7 +5631,7 @@ static void test_expansion_composed_adapters(void)
                                  0x81000 | (0x10 + device * 2), 4);
             expansion_card_write(qts, bar + 0x24, identity, 4);
             qtest_memwrite(qts, target + (device - 1) * 0x100,
-                           expected[head][device - 1], sizeof(bytes));
+                           source_expected[head][device - 1], sizeof(bytes));
         }
     }
     for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
@@ -5652,15 +5652,18 @@ static void test_expansion_composed_adapters(void)
             expansion_card_write(qts, bar + DMA_REG_LENGTH, sizeof(bytes), 4);
             expansion_card_write(qts, bar + DMA_REG_SEED, seed, 4);
             expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+            /* U0 head E exchanges marked page writes into ordinary RAM. */
             for (unsigned i = 0; i < sizeof(bytes); i++) {
-                expected[head][device - 1][i] = seed + i;
+                copied[i] = seed + i;
+                source_expected[head][device - 1][i] =
+                    head == 0 ? seed + (i ^ 4) : copied[i];
             }
             for (unsigned other = 0; other < G_N_ELEMENTS(widgets); other++) {
                 for (unsigned slot = 0; slot < 2; slot++) {
                     qtest_memread(qts, 0x8000 + other * 0x1000 + slot * 0x100,
                                   bytes, sizeof(bytes));
-                    g_assert_cmpmem(bytes, sizeof(bytes), expected[other][slot],
-                                    sizeof(bytes));
+                    g_assert_cmpmem(bytes, sizeof(bytes),
+                                    source_expected[other][slot], sizeof(bytes));
                 }
             }
             /* A read then write must use this head's same translation. */
@@ -5670,7 +5673,7 @@ static void test_expansion_composed_adapters(void)
                                  0x40000200 + offset, 4);
             expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
             qtest_memread(qts, target + 0x200 + offset, bytes, sizeof(bytes));
-            g_assert_cmpmem(bytes, sizeof(bytes), expected[head][device - 1],
+            g_assert_cmpmem(bytes, sizeof(bytes), copied,
                             sizeof(bytes));
             /* A RAM-less BIC destination cannot fall back to compute RAM. */
             expansion_card_write(qts, base + 0x10000,
@@ -5678,7 +5681,7 @@ static void test_expansion_composed_adapters(void)
             expansion_card_write(qts, bar + DMA_REG_SEED, seed + 1, 4);
             expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
             qtest_memread(qts, target + 0x200 + offset, bytes, sizeof(bytes));
-            g_assert_cmpmem(bytes, sizeof(bytes), expected[head][device - 1],
+            g_assert_cmpmem(bytes, sizeof(bytes), copied,
                             sizeof(bytes));
             expansion_card_write(qts, base + 0x10000,
                                  target | 0x21 | (0xa << 8), 8);
@@ -5749,7 +5752,7 @@ static void test_expansion_dma_memory_decode(void)
     g_autofree char *log = NULL;
     g_autofree char *contents = NULL;
     g_autoptr(GError) error = NULL;
-    uint8_t bytes[8], expected[8];
+    uint8_t bytes[8], expected[8], written[8];
     int fd = g_file_open_tmp("expansion-md-dma-XXXXXX", &log, &error);
     QTestState *qts;
 
@@ -5784,8 +5787,12 @@ static void test_expansion_dma_memory_decode(void)
     for (unsigned i = 0; i < sizeof(expected); i++) {
         expected[i] = 0x51 + i;
     }
+    /* The marked page write exchanges its two four-byte halves in RAM. */
+    for (unsigned i = 0; i < sizeof(written); i++) {
+        written[i] = expected[i ^ 4];
+    }
     g_assert_true(qtest_memread_cpu(qts, 1, target, bytes, sizeof(bytes)));
-    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    g_assert_cmpmem(bytes, sizeof(bytes), written, sizeof(written));
     /* Exercise incoming reads as well as writes through the relocated bank. */
     expansion_card_write(qts, bar + DMA_REG_SOURCE, 0x40000000, 4);
     expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x40000200, 4);
@@ -5806,7 +5813,7 @@ static void test_expansion_dma_memory_decode(void)
     qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
                  (UINT64_C(2) << 32) | 0x3300);
     g_assert_true(qtest_memread_cpu(qts, 1, target, bytes, sizeof(bytes)));
-    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    g_assert_cmpmem(bytes, sizeof(bytes), written, sizeof(written));
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
     g_assert_no_error(error);
