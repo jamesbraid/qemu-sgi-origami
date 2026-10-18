@@ -1832,9 +1832,8 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
     size_t i;
 
     /*
-     * The XBridge is a fitted part of the IP45 node board itself, as the
-     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
-     * "Node devices"): this file creates it directly, the family builder's
+     * The XBridge is fitted to the IP45 node board alongside the L1 and
+     * boot flash. This file creates it directly, the family builder's
      * own device like every other product's onboard base I/O. An XIO
      * link joins it to the Bedrock's own XIO port before either
      * realizes: the link (hw/mips/sgi/xio-link.c) hands the XBridge the

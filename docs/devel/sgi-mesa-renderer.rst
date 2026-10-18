@@ -572,40 +572,20 @@ check through ``check_staged``, before it mixes paths.
 Build and test
 --------------
 
-From an Origami worktree, select the QEMU source worktree explicitly. These
-wrappers run the build and tests in the project's rootless Podman environment:
+Configure a QEMU build with OpenGL and the MIPS64 system target as described
+in :doc:`testing/sgi`. From the QEMU source root, run the named unit tests:
 
 .. code-block:: sh
 
-   cd /absolute/path/to/origami-worktree
-   tools/build-env/qemu-build --src /absolute/path/to/qemu-worktree \
-       --build build -j4
-   UV_CACHE_DIR=/storage/nvme/origami/uv QEMU_TEST_SGI_REQUIRE_MESA=1 \
-       tools/qtest --src /absolute/path/to/qemu-worktree --suite unit \
-       test-sgi-renderer-gl test-sgi-render-resource
-
-On this host, ``/storage/nvme/origami/uv`` is the configured uv cache.
-``tools/qtest`` starts through a uv shebang before it can read Origami's
-scratch configuration, so set ``UV_CACHE_DIR`` on the command line. Use the
-configured cache path on another host. The ``build`` flavor is the one used
-for tests. ``-j4`` limits compilation to four workers.
+   QEMU_TEST_SGI_REQUIRE_MESA=1 build/pyvenv/bin/meson test -C build \
+       --print-errorlogs test-sgi-renderer-gl test-sgi-render-resource
 
 The renderer test selects software llvmpipe and checks the reported GL
-renderer. Origami's ``qtest`` wrapper forwards ``QEMU_TEST_SGI_REQUIRE_MESA``
-into the test container, so missing surfaceless Mesa fails instead of skipping.
-The optional render-node case needs ``QEMU_TEST_SGI_RENDER_NODE`` and device
-access inside that container. Setting the variable only on the host does not
-configure either. The required SGI unit selection is documented in
-:doc:`testing/sgi`. The renderer test exercises Linux surfaceless EGL.
-Neither named test exercises a GBM render node or qualifies macOS or Windows
-context creation.
-
-``qemu-build`` compiles ``qemu-system-mips64`` from the selected QEMU worktree.
-``qtest --suite unit`` rebuilds the named unit binaries but does not rebuild
-that emulator. The wrapper retains source revision, local changes, binary
-hashes, and test results under the configured scratch root. Check that
-evidence before claiming a pass. Another worktree's build or an older binary
-does not verify the edited source.
+renderer. Setting ``QEMU_TEST_SGI_REQUIRE_MESA`` makes missing surfaceless
+Mesa fail instead of skipping. The optional render-node case also needs
+``QEMU_TEST_SGI_RENDER_NODE`` and device access in the test environment.
+These tests exercise Linux surfaceless EGL. They do not qualify GBM render
+nodes or macOS and Windows context creation.
 
 Evidence boundary
 -----------------
@@ -616,4 +596,4 @@ contract, public evidence, and separate device register and guest acceptance
 tests. Do not copy SGI or IRIX source text or identifiers into this tree.
 Someone exposed to restricted source for a device cannot implement or
 independently review that device's emulator code. Record hardware facts in
-the owning reviewed datasheet with citations to permitted sources.
+the owning public specification with citations to permitted sources.

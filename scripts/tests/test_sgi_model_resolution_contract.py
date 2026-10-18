@@ -280,10 +280,6 @@ class SystemModelResolutionTests(unittest.TestCase):
             ])
 
     def test_memory_kits_place_banks_at_their_named_bank_positions(self):
-        # ip45.yaml's kit-512-at-banks-2-3: the reviewed Origin 300
-        # placement (docs/reviews/bedrock-fitted-bank-presence-contract-
-        # review-20260912.md) sits at locational banks two and three, not
-        # bank zero.
         model = self.real_model("origin300")
         population = model["composition"]["population"]
         self.assertEqual(population["dimms_per_node"], [2])
@@ -667,9 +663,6 @@ class SystemModelResolutionTests(unittest.TestCase):
         self.assertEqual(model["population"]["cpus_per_node"], [2])
         self.assertEqual(model["population"]["dimms_per_node"], [2])
         self.assertEqual(model["population"]["memory_mib_per_node"], [512])
-        # The reviewed placement (docs/reviews/bedrock-fitted-bank-presence-
-        # contract-review-20260912.md): the shipped 512 MiB sits at
-        # locational banks two and three, not bank zero.
         self.assertEqual(
             model["population"]["memory_bank_mib_per_node"],
             [[0, 0, 256, 256, 0, 0, 0, 0]],

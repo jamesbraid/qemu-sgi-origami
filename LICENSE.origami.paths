@@ -4,10 +4,8 @@
 .github/workflows/nightly.yml
 .github/workflows/sanitizer.yml
 README.md
-docs/designs/2026-09-24-mgras-family-architecture.md
 docs/devel/sgi-byte-order.rst
 docs/devel/testing/sgi.rst
-docs/reviews/origin2000-firmware-configuration-review-20260905.md
 docs/specs/sgi-bridge.rst
 docs/specs/sgi-elsc.rst
 docs/specs/sgi-hub.rst
