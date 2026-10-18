@@ -7393,6 +7393,175 @@ static void test_driver_identity(void)
     g_free(p);
 }
 
+/* A draw's signature as prim_mesa_draw() would present it. */
+static void prim_signature(PrimCase *p, SGIRenderSignature *signature)
+{
+    SGIRenderResource res[2];
+    SGIRasterRules rules;
+    SGIRasterTarget target = {
+        .resources = res, .resource_count = p->state.texture_2d ? 2 : 1,
+        .resource_ops = &prim_ops,
+        .texture = p->state.texture_2d ? &p->image : NULL,
+    };
+
+    prim_rules(p, &rules);
+    prim_resources(p, res);
+    if (p->rules_case == 1) {
+        rules.subpixel_bits = 4;
+    }
+    sgi_render_draw_signature(&rules, &target, &p->draw, signature);
+}
+
+/*
+ * Signatures are stable text: the same draw always gives the same one,
+ * colours, vertex positions and state outside version 1 do not change it,
+ * and each version 1 field does. The in-set tag follows the mixed-frame
+ * check.
+ */
+static void test_draw_signature(void)
+{
+    PrimCase *p = g_new(PrimCase, 1);
+    SGIRenderSignature base, other;
+
+    prim_fan(p, 4);
+    prim_signature(p, &base);
+    g_test_message("fan: %s", base.text);
+    g_assert_cmpuint(base.version, ==, 1);
+    g_assert_true(g_str_has_prefix(base.text, "v1 polygon "));
+    g_assert_true(base.in_set);
+    prim_signature(p, &other);
+    g_assert_cmpstr(other.text, ==, base.text);
+
+#define SAME(change) do { \
+        prim_fan(p, 4); \
+        change; \
+        prim_signature(p, &other); \
+        g_assert_cmpstr(other.text, ==, base.text); \
+    } while (0)
+#define DIFFERENT(change) do { \
+        prim_fan(p, 4); \
+        change; \
+        prim_signature(p, &other); \
+        g_assert_cmpstr(other.text, !=, base.text); \
+    } while (0)
+    SAME(p->vertices[0][SGI_GL_V_COLOR] = 0.125f);
+    SAME(p->vertices[1][SGI_GL_V_POSITION] += 0.25f);
+    SAME(p->state.colour_mask = SGI_GL_COLOUR_MASK_RED);
+    SAME(p->state.depth_test = 1);
+    SAME(p->state.dither = 1);
+    DIFFERENT(p->draw.mode = SGI_GL_POINTS);
+    DIFFERENT(p->draw.polygon_stipple_enabled = true);
+    DIFFERENT(p->state.shade_model = SGI_GL_SMOOTH);
+    DIFFERENT((p->state.blend = 1, p->state.blend_src = SGI_GL_SRC_ALPHA));
+    DIFFERENT(prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT,
+                           SGI_GL_REPEAT, SGI_GL_REPLACE));
+    DIFFERENT(p->smooth_rules = true);
+    DIFFERENT(p->bits = 5);
+    DIFFERENT(p->alpha_storage = 4);
+    DIFFERENT(p->top_origin = true);
+    DIFFERENT(memcpy(p->state.viewport, (int32_t[4]) { 1, 0, 16, 16 },
+                     sizeof(p->state.viewport)));
+    DIFFERENT(p->state.scissor_test = 1);
+    DIFFERENT(p->state.drawable.clip.r[0].x1 = 7);
+    DIFFERENT(p->state.modelview[0] = 0.5f);
+    DIFFERENT(p->vertices[0][SGI_GL_V_POSITION + 2] = -1);
+#undef SAME
+#undef DIFFERENT
+
+    /* Rules are named, so renumbering an enum cannot change the text. */
+    g_assert_nonnull(strstr(base.text, " rules=8/half-away/"
+                            "top-left-bottom-origin/double/0 "));
+    /* Rules the scalar path implements but Mesa refuses are not in-set. */
+    prim_fan(p, 4);
+    p->rules_case = 1;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+
+    /* Text that would not fit is one overflow signature, never cut. */
+    sgi_render_test_signature_limit(64);
+    prim_fan(p, 4);
+    prim_signature(p, &other);
+    g_assert_cmpstr(other.text, ==, "v1 overflow");
+    sgi_render_test_signature_limit(0);
+    /* The largest field values still fit the real bound. */
+    prim_case_init(p, SGI_GL_POINTS, 4);
+    prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                 SGI_GL_REPLACE);
+    p->draw.point_size = FLT_MAX;
+    p->draw.line_stipple_enabled = true;
+    p->draw.polygon_stipple_enabled = true;
+    p->state.blend = UINT32_MAX;
+    p->state.blend_equation = UINT32_MAX;
+    p->state.blend_src = UINT32_MAX;
+    p->state.blend_dst = UINT32_MAX;
+    p->state.texture_env_mode = UINT32_MAX;
+    p->image.min_filter = p->image.mag_filter = UINT32_MAX;
+    p->image.wrap_s = p->image.wrap_t = UINT32_MAX;
+    p->image.width = p->image.height = UINT32_MAX;
+    p->state.shade_model = UINT32_MAX;
+    p->top_origin = true;
+    prim_vertex_n(p, 1, 1);
+    prim_signature(p, &other);
+    g_test_message("largest: %s (%zu)", other.text, strlen(other.text));
+    g_assert_cmpstr(other.text, !=, "v1 overflow");
+
+    /*
+     * Texture state the scalar path draws or drops by rules the host
+     * program lacks is out of the set: the 1D enable, a one-dimensional
+     * image under the 2D enable, and a shadow comparison.
+     */
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    prim_texture(p, 2, SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT,
+                 SGI_GL_REPLACE);
+    prim_signature(p, &other);
+    g_assert_true(other.in_set);
+    p->state.texture_1d = 1;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    p->state.texture_1d = 0;
+    p->image.one_dimensional = true;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    p->image.one_dimensional = false;
+    p->image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    /* So is a polygon the scalar path smooths. */
+    prim_fan(p, 4);
+    p->smooth_rules = true;
+    p->draw.polygon_smooth = true;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    p->smooth_rules = false;
+    prim_signature(p, &other);
+    g_assert_true(other.in_set);
+
+    /* Out of the set: a constant-colour blend Mesa refuses outright. */
+    prim_fan(p, 4);
+    p->state.blend = 1;
+    p->state.blend_equation = SGI_GL_FUNC_ADD;
+    p->state.blend_src = SGI_GL_CONSTANT_COLOR;
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    /* A blended triangle under a scissor, accepted but not proven. */
+    prim_case_init(p, SGI_GL_TRIANGLES, 4);
+    p->state.blend = 1;
+    p->state.blend_equation = SGI_GL_FUNC_ADD;
+    p->state.blend_src = SGI_GL_SRC_ALPHA;
+    p->state.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    prim_vertex_n(p, 1, 1.25f);
+    prim_vertex_n(p, 14.5f, 2);
+    prim_vertex_n(p, 7, 13.75f);
+    prim_signature(p, &other);
+    g_assert_true(other.in_set);
+    p->state.scissor_test = 1;
+    memcpy(p->state.scissor, (int32_t[4]) { 0, 0, 16, 16 },
+           sizeof(p->state.scissor));
+    prim_signature(p, &other);
+    g_assert_false(other.in_set);
+    g_free(p);
+}
+
 /*
  * Decoded CLEAR through the attempt: it commits, refuses unsupported
  * planes, a family snapshot or precision refusal before any commit, and
@@ -7549,6 +7718,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer-gl/mixed-frame-set",
                     test_mixed_frame_set);
     g_test_add_func("/sgi-renderer-gl/attempt-clear", test_attempt_clear);
+    g_test_add_func("/sgi-renderer-gl/draw-signature", test_draw_signature);
     g_test_add_func("/sgi-renderer-gl/driver-identity",
                     test_driver_identity);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",
