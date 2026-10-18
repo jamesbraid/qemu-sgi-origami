@@ -37,6 +37,8 @@ struct SGIBedrockState {
     SysBusDevice parent_obj;
     bool (*available)(void *opaque);
     void *available_opaque;
+    /* A bare routed qtest Bedrock has no power controller to toggle. */
+    bool x_test_power_off;
     MemoryRegion mmio;
     /*
      * A zero-based view of the register window, so a vector request from a

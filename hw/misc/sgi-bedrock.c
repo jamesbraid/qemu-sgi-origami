@@ -1553,6 +1553,8 @@ static const VMStateDescription vmstate_sgi_bedrock = {
 };
 
 static const Property bedrock_properties[] = {
+    DEFINE_PROP_BOOL("x-test-power-off", SGIBedrockState,
+                     x_test_power_off, false),
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
     DEFINE_PROP_UINT32("processor-mask", SGIBedrockState,
@@ -1890,7 +1892,8 @@ static const char *bedrock_net_describe(Object *port, unsigned int index)
  */
 bool sgi_bedrock_available(SGIBedrockState *s)
 {
-    return !s || !s->available || s->available(s->available_opaque);
+    return !s || (!s->x_test_power_off &&
+                  (!s->available || s->available(s->available_opaque)));
 }
 
 static SGINetPacketResult bedrock_net_receive(Object *port,
@@ -1903,6 +1906,7 @@ static SGINetPacketResult bedrock_net_receive(Object *port,
 
     if (!sgi_bedrock_available(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: main power off\n");
+        packet->power_off_refusal = true;
         return SGI_NET_PACKET_ERROR;
     }
     if (packet->vector) {

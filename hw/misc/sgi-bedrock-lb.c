@@ -298,6 +298,12 @@ static void lb_vector_launch(SGIBedrockLBState *s)
                       packet.addr, s->vector_route);
         return;
     case SGI_NET_PACKET_ERROR:
+        if (packet.power_off_refusal && packet.hops == 0 &&
+            s->vector_route == 0) {
+            s->vector_return = 0;
+            s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_ADDR_ERROR;
+            return;
+        }
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-lb: vector %s of 0x%" HWADDR_PRIx
                       " on route 0x%" PRIx64 " refused (error %u)\n",
