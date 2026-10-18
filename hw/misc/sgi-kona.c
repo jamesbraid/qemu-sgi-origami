@@ -2507,9 +2507,15 @@ static bool sgi_kona_renderer_texture_apply(void *opaque,
     return sgi_raster_texture_fragment(opaque, coord, colour);
 }
 
+/*
+ * The draw's texture staged for the legacy host batch. An unsupported
+ * result sets reason: texture for sampler state the batch cannot draw,
+ * host-staging for an image past the host copy's size bound.
+ */
 static SGIRasterTextureResult sgi_kona_renderer_texture(
     SGIKonaState *s, const SGIGLDraw *d, const SGIRasterTarget *target,
-    SGIRendererTexture *texture, SGIRasterTexture **sampler, uint8_t **pixels)
+    SGIRendererTexture *texture, SGIRasterTexture **sampler, uint8_t **pixels,
+    unsigned *reason)
 {
     static const uint32_t formats[] = {
         SGI_GL_ALPHA, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE_ALPHA,
@@ -2530,6 +2536,7 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
     unsigned format, environment;
     SGIRasterTextureResult result;
 
+    *reason = SGI_RENDER_REFUSAL_TEXTURE;
     /*
      * Quiet, like the sampler below: the scalar draw that confirms or
      * replaces a host draw makes the draw's reports, so an incomplete
@@ -2599,6 +2606,7 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
     }
     bytes = (uint64_t)base->width * base->height * 4;
     if (bytes > SGI_KONA_TEXTURE_BYTES) {
+        *reason = SGI_RENDER_REFUSAL_HOST_STAGING;
         return SGI_RASTER_TEXTURE_UNSUPPORTED;
     }
     result = sgi_raster_texture_prepare(st, image, sampler);
@@ -2632,14 +2640,17 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
     return SGI_RASTER_TEXTURE_READY;
 }
 
-static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
-                                      const SGIVolumeVertex vertices[3],
-                                      const float *provoking,
-                                      const SGIClipRect *tile,
-                                      SGIRendererRequest *request,
-                                      SGIColourTarget *target,
-                                      const SGIRasterRules *rules,
-                                      const SGIRendererTexture *texture)
+/*
+ * One host request for a triangle in a tile, or the feature-matrix row
+ * that keeps the legacy route from drawing it. Lighting and per-vertex
+ * materials have no row of their own; the batch draws only unlit
+ * triangles, so they count as the primitive row.
+ */
+static SGIRenderRefusal sgi_kona_renderer_request(
+    SGIKonaState *s, const SGIGLDraw *d, const SGIVolumeVertex vertices[3],
+    const float *provoking, const SGIClipRect *tile,
+    SGIRendererRequest *request, SGIColourTarget *target,
+    const SGIRasterRules *rules, const SGIRendererTexture *texture)
 {
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
@@ -2658,34 +2669,48 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         !s->gl_grammar ||
         !s->contexts[d->context].valid ||
         !s->state[d->context]->pipe.draw_config_received) {
-        return false;
+        return SGI_RENDER_REFUSAL_RESOURCE;
     }
     visual = s->state[d->context]->pipe.draw_config;
     if (visual[0] || (visual[1] != 8 && visual[1] != 12) || visual[2] ||
         visual[3] > 1 || visual[4] || visual[5] ||
         visual[6] > 32 || (visual[7] != 0 && visual[7] != 8) ||
         visual[8] || visual[9]) {
-        return false;
+        return SGI_RENDER_REFUSAL_RESOURCE;
     }
-    if (d->mode != SGI_GL_TRIANGLES || d->count != 3 || d->back_colors ||
+    if (d->mode != SGI_GL_TRIANGLES || d->count != 3 ||
         d->nmaterials || d->polygon_stipple_enabled ||
         d->line_stipple_enabled || d->line_phase ||
+        (s->state[d->context]->gl.raster_enables &
+         (SGI_GL_RASTER_LINE_STIPPLE | SGI_GL_RASTER_POLYGON_STIPPLE)) ||
         (d->polygon_modes && (d->polygon_modes[0] != SGI_GL_FILL ||
                               d->polygon_modes[1] != SGI_GL_FILL)) ||
-        s->state[d->context]->gl.raster_enables ||
-        s->state[d->context]->gl.lighting ||
-        s->state[d->context]->gl.light_model_two_side) {
-        return false;
+        s->state[d->context]->gl.lighting) {
+        return SGI_RENDER_REFUSAL_PRIMITIVE;
     }
-    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty ||
-        st->index_bits || (st->draw_buffers != SGI_GL_DRAW_FRONT &&
-                           st->draw_buffers != SGI_GL_DRAW_BACK)) {
-        return false;
+    if (s->state[d->context]->gl.raster_enables) {
+        return SGI_RENDER_REFUSAL_SMOOTHING;
+    }
+    if (d->back_colors || s->state[d->context]->gl.light_model_two_side) {
+        return SGI_RENDER_REFUSAL_FACING;
+    }
+    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
+        return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (st->index_bits) {
+        return SGI_RENDER_REFUSAL_COLOUR_INDEX;
+    }
+    if (st->draw_buffers != SGI_GL_DRAW_FRONT &&
+        st->draw_buffers != SGI_GL_DRAW_BACK) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
     }
     *target = st->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
                                                     drawable->back;
     bank = sgi_kona_target_bank(s, *target);
-    if (bank < 0 || width > SGI_RENDERER_SIZE || height > SGI_RENDERER_SIZE ||
+    if (bank < 0) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
+    }
+    if (width > SGI_RENDERER_SIZE || height > SGI_RENDERER_SIZE ||
         !s->mem.bytes || s->mem.pages || !s->scanout.dirty ||
         x < 0 || y < 0 || x + width > s->scanout.frame_width ||
         y + height > s->scanout.frame_height ||
@@ -2695,19 +2720,34 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         !sgi_kona_renderer_plane(s, sgi_kona_plane(s,
                                    sgi_kona_bank_tag_plane(s, bank)),
                                   SGI_PLANE_TAG, x, y, width, height)) {
-        return false;
+        return SGI_RENDER_REFUSAL_RESOURCE;
     }
-    if ((st->shade_model != SGI_GL_FLAT && st->shade_model != SGI_GL_SMOOTH) ||
-        (st->colour_mask & ~15) ||
-        st->fog ||
-        (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
-                                SGI_GL_OFFSET_POINT)) ||
-        st->texture_1d || st->texture_3d || st->dither ||
-        st->window_matrix_given || st->window_rows_down ||
-        !(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
+    if (st->shade_model != SGI_GL_FLAT && st->shade_model != SGI_GL_SMOOTH) {
+        return SGI_RENDER_REFUSAL_PRIMITIVE;
+    }
+    if (st->colour_mask & ~15) {
+        return SGI_RENDER_REFUSAL_BUFFERS;
+    }
+    if (st->fog) {
+        return SGI_RENDER_REFUSAL_FOG;
+    }
+    if (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
+                               SGI_GL_OFFSET_POINT)) {
+        return SGI_RENDER_REFUSAL_POLYGON_OFFSET;
+    }
+    if (st->texture_1d || st->texture_3d) {
+        return SGI_RENDER_REFUSAL_TEXTURE;
+    }
+    if (st->dither) {
+        return SGI_RENDER_REFUSAL_DITHER;
+    }
+    if (st->window_matrix_given || st->window_rows_down) {
+        return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (!(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
         !(st->depth_range[1] >= 0 && st->depth_range[1] <= 1) ||
         st->viewport[2] < 0 || st->viewport[3] < 0) {
-        return false;
+        return SGI_RENDER_REFUSAL_GEOMETRY;
     }
     if ((st->depth_test &&
          !sgi_kona_renderer_plane(s, sgi_kona_plane(s, s->plane_depth),
@@ -2715,19 +2755,19 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         (st->stencil_test && rules->stencil_bits &&
          !sgi_kona_renderer_plane(s, sgi_kona_plane(s, s->plane_stencil),
                                    SGI_PLANE_S8, x, y, width, height))) {
-        return false;
+        return SGI_RENDER_REFUSAL_RESOURCE;
     }
     if (st->alpha_test && st->alpha_func > SGI_GL_ALWAYS) {
-        return false;
+        return SGI_RENDER_REFUSAL_FRAGMENT_TESTS;
     }
     if (logic_op &&
         st->logic_op_mode - SGI_GL_CLEAR > SGI_GL_SET - SGI_GL_CLEAR) {
-        return false;
+        return SGI_RENDER_REFUSAL_LOGIC_OP;
     }
     if (st->cull_face && st->cull_face_mode != SGI_GL_FRONT &&
         st->cull_face_mode != SGI_GL_BACK &&
         st->cull_face_mode != SGI_GL_FRONT_AND_BACK) {
-        return false;
+        return SGI_RENDER_REFUSAL_FACING;
     }
     G_STATIC_ASSERT(SGI_GL_CLIP_PLANES == SGI_RENDERER_CLIP_PLANES);
     request->clip_planes = st->clip_planes;
@@ -2739,20 +2779,22 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         double window[3];
 
         if (!isfinite(clip_position[3]) || clip_position[3] <= 0) {
-            return false;
+            return SGI_RENDER_REFUSAL_GEOMETRY;
         }
         for (unsigned axis = 0; axis < 3; axis++) {
             if (!isfinite(clip_position[axis])) {
-                return false;
+                return SGI_RENDER_REFUSAL_GEOMETRY;
             }
         }
         sgi_gl_clip_to_window(st, clip_position, window);
         for (unsigned axis = 0; axis < 2; axis++) {
             double position = window[axis];
 
-            if (!isfinite(position) ||
-                fabs(position) > SGI_RENDERER_COORD_LIMIT) {
-                return false;
+            if (!isfinite(position)) {
+                return SGI_RENDER_REFUSAL_GEOMETRY;
+            }
+            if (fabs(position) > SGI_RENDERER_COORD_LIMIT) {
+                return SGI_RENDER_REFUSAL_HOST_STAGING;
             }
             request->vertices[i][axis] = round(position * 256) / 256;
         }
@@ -2780,7 +2822,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                provoking[SGI_GL_V_COLOR + c];
 
                 if (!isfinite(value)) {
-                    return false;
+                    return SGI_RENDER_REFUSAL_GEOMETRY;
                 }
                 request->colour[i][c] = CLAMP(value, 0, 1);
             }
@@ -2792,27 +2834,27 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                 request->texcoord[i][c] =
                     vertices[i].attr[SGI_GL_V_TEXCOORD + c];
                 if (!isfinite(request->texcoord[i][c])) {
-                    return false;
+                    return SGI_RENDER_REFUSAL_GEOMETRY;
                 }
             }
             if (request->texcoord[i][3] <= 0) {
-                return false;
+                return SGI_RENDER_REFUSAL_GEOMETRY;
             }
         }
     }
     request->offset = sgi_raster_polygon_offset(rules, st, window_vertices);
     if (!isfinite(request->offset)) {
-        return false;
+        return SGI_RENDER_REFUSAL_GEOMETRY;
     }
     request->alpha = provoking[SGI_GL_V_COLOR + 3];
     if (!isfinite(request->alpha)) {
-        return false;
+        return SGI_RENDER_REFUSAL_GEOMETRY;
     }
     for (unsigned c = 0; c < 3; c++) {
         float colour = provoking[SGI_GL_V_COLOR + c];
 
         if (!isfinite(colour)) {
-            return false;
+            return SGI_RENDER_REFUSAL_GEOMETRY;
         }
         request->rgb[c] = floor(CLAMP((double)colour, 0, 1) * 255 + 0.5);
     }
@@ -2826,7 +2868,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     }
     request->generation = s->renderer_generation;
     if (!sgi_renderer_request_tile(request, tx, ty, width, height, bounds)) {
-        return false;
+        return SGI_RENDER_REFUSAL_HOST_STAGING;
     }
     if (!request->smooth && !texture && st->alpha_test &&
         !sgi_raster_alpha_test(rules, st->alpha_func,
@@ -2834,12 +2876,15 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         request->clip[0] = request->clip[1] = 0;
         request->clip[2] = request->clip[3] = -1;
     }
-    return !st->cull_face || sgi_renderer_request_cull(request,
-        st->front_face == SGI_GL_CW,
-        st->cull_face_mode == SGI_GL_FRONT ||
-        st->cull_face_mode == SGI_GL_FRONT_AND_BACK,
-        st->cull_face_mode == SGI_GL_BACK ||
-        st->cull_face_mode == SGI_GL_FRONT_AND_BACK);
+    if (st->cull_face && !sgi_renderer_request_cull(request,
+            st->front_face == SGI_GL_CW,
+            st->cull_face_mode == SGI_GL_FRONT ||
+            st->cull_face_mode == SGI_GL_FRONT_AND_BACK,
+            st->cull_face_mode == SGI_GL_BACK ||
+            st->cull_face_mode == SGI_GL_FRONT_AND_BACK)) {
+        return SGI_RENDER_REFUSAL_HOST_STAGING;
+    }
+    return SGI_RENDER_REFUSAL_NONE;
 }
 
 static unsigned sgi_kona_renderer_count(const SGIGLDraw *d)
@@ -2882,9 +2927,14 @@ typedef struct SGIKonaRendererTriangle {
     const float *provoking;
 } SGIKonaRendererTriangle;
 
-static bool sgi_kona_renderer_triangles(const SGIGLDraw *d, unsigned pieces,
-                                        SGIKonaRendererTriangle *triangles,
-                                        unsigned limit, unsigned *count)
+/*
+ * The draw's triangles after view-volume clipping, or the row that keeps
+ * the legacy route from drawing them. A draw clipped away entirely is
+ * refused as geometry and drawn, as nothing, by the scalar path.
+ */
+static SGIRenderRefusal sgi_kona_renderer_triangles(
+    const SGIGLDraw *d, unsigned pieces, SGIKonaRendererTriangle *triangles,
+    unsigned limit, unsigned *count)
 {
     unsigned indices[4];
 
@@ -2899,7 +2949,7 @@ static bool sgi_kona_renderer_triangles(const SGIGLDraw *d, unsigned pieces,
                 d->vertices + indices[v] * SGI_GL_VERTEX_FLOATS, &in[v]);
             for (unsigned k = 0; k < 4; k++) {
                 if (!isfinite(in[v].clip[k]) || !isfinite(in[v].eye[k])) {
-                    return false;
+                    return SGI_RENDER_REFUSAL_GEOMETRY;
                 }
             }
         }
@@ -2908,7 +2958,7 @@ static bool sgi_kona_renderer_triangles(const SGIGLDraw *d, unsigned pieces,
             SGIKonaRendererTriangle *triangle;
 
             if (*count == limit) {
-                return false;
+                return SGI_RENDER_REFUSAL_HOST_STAGING;
             }
             triangle = &triangles[(*count)++];
             triangle->vertices[0] = poly[0];
@@ -2918,7 +2968,7 @@ static bool sgi_kona_renderer_triangles(const SGIGLDraw *d, unsigned pieces,
                                   indices[3] * SGI_GL_VERTEX_FLOATS;
         }
     }
-    return *count != 0;
+    return *count ? SGI_RENDER_REFUSAL_NONE : SGI_RENDER_REFUSAL_GEOMETRY;
 }
 
 static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
@@ -2971,6 +3021,22 @@ static SGIRenderResult sgi_kona_renderer_create(SGIKonaState *s,
     default:
         g_assert_not_reached();
     }
+}
+
+static const char *sgi_kona_fallback_name(unsigned reason)
+{
+    return reason == SGI_KONA_FALLBACK_UNAVAILABLE ? "unavailable" :
+           sgi_render_refusal_name(reason);
+}
+
+static void sgi_kona_count_fallback(SGIKonaState *s, unsigned reason,
+                                    const SGIGLDraw *d)
+{
+    assert(reason > SGI_RENDER_REFUSAL_NONE &&
+           reason < SGI_KONA_FALLBACK__MAX);
+    s->renderer_fallbacks[reason]++;
+    trace_sgi_kona_gpu_fallback(sgi_kona_fallback_name(reason), d->context,
+                                d->mode);
 }
 
 /* The planes a draw's writes are held for: colour banks 0 and 1 first. */
@@ -3403,14 +3469,15 @@ static SGIGLDrawResult sgi_kona_renderer_confirm(SGIKonaState *s,
 
 /*
  * The legacy host batch. On success its writes are held in out for
- * sgi_kona_renderer_confirm(), not stored on the planes.
+ * sgi_kona_renderer_confirm(), not stored on the planes. A refusal sets
+ * reason.
  */
 static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
                                             const SGIGLDraw *d,
                                             const SGIRasterRules *rules,
                                             const SGIRasterTarget *t,
                                             const SGIRasterTarget *out,
-                                            Error **errp)
+                                            unsigned *reason, Error **errp)
 {
     SGIRendererRequest *requests;
     g_autofree SGIKonaRendererTriangle *triangles = NULL;
@@ -3425,29 +3492,44 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
     uint64_t tile_count;
     uint32_t colour_mask;
     int bank;
+    unsigned texture_reason;
     SGIGLDraw triangle = *d;
     SGIRenderResult result = SGI_RENDER_UNSUPPORTED;
     bool logic_op = sgi_kona_renderer_logic_op(d->state);
     bool blend = d->state->blend && !logic_op;
     SGIRasterTextureResult texture_result;
 
+    *reason = SGI_KONA_FALLBACK_UNAVAILABLE;
     if (!s->host_gpu) {
         return SGI_RENDER_UNSUPPORTED;
     }
     assert(bql_locked());
+    if (s->renderer_failed) {
+        return SGI_RENDER_UNSUPPORTED;
+    }
     count = sgi_kona_renderer_count(d);
-    if (s->renderer_failed || !count || count > 256 ||
-        drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
+    if (!count) {
+        *reason = SGI_RENDER_REFUSAL_PRIMITIVE;
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    if (count > 256) {
+        *reason = SGI_RENDER_REFUSAL_HOST_STAGING;
+        return SGI_RENDER_UNSUPPORTED;
+    }
+    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
+        *reason = SGI_RENDER_REFUSAL_WINDOW;
         return SGI_RENDER_UNSUPPORTED;
     }
     target = d->state->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
                                                          drawable->back;
     bank = sgi_kona_target_bank(s, target);
     if (bank < 0) {
+        *reason = SGI_RENDER_REFUSAL_BUFFERS;
         return SGI_RENDER_UNSUPPORTED;
     }
     plane = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
     if (!plane) {
+        *reason = SGI_RENDER_REFUSAL_RESOURCE;
         return SGI_RENDER_UNSUPPORTED;
     }
     bounds = drawable->clip.r[0];
@@ -3456,6 +3538,7 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
     bounds.x1 = MIN((int64_t)bounds.x1, (int64_t)plane->width - 1);
     bounds.y1 = MIN((int64_t)bounds.y1, (int64_t)plane->height - 1);
     if (bounds.x0 > bounds.x1 || bounds.y0 > bounds.y1) {
+        *reason = SGI_RENDER_REFUSAL_WINDOW;
         return SGI_RENDER_UNSUPPORTED;
     }
     columns = DIV_ROUND_UP(bounds.x1 - bounds.x0 + 1, SGI_RENDERER_SIZE);
@@ -3463,16 +3546,19 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
     tile_count = (uint64_t)columns * rows;
     /* Bound staging across all triangles and tiles before allocating. */
     if (tile_count > 256 / count) {
+        *reason = SGI_RENDER_REFUSAL_HOST_STAGING;
         return SGI_RENDER_UNSUPPORTED;
     }
     texture_result = sgi_kona_renderer_texture(s, d, t, &texture, &sampler,
-                                                &texture_pixels);
+                                                &texture_pixels,
+                                                &texture_reason);
     switch (texture_result) {
     case SGI_RASTER_TEXTURE_READY:
     case SGI_RASTER_TEXTURE_DISABLED:
     case SGI_RASTER_TEXTURE_INCOMPLETE:
         break;
     case SGI_RASTER_TEXTURE_UNSUPPORTED:
+        *reason = texture_reason;
         return SGI_RENDER_UNSUPPORTED;
     case SGI_RASTER_TEXTURE_OOM:
         return SGI_RENDER_OOM;
@@ -3483,8 +3569,9 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
     if (!triangles) {
         return SGI_RENDER_OOM;
     }
-    if (!sgi_kona_renderer_triangles(d, count, triangles, 256 / tile_count,
-                                    &count)) {
+    *reason = sgi_kona_renderer_triangles(d, count, triangles,
+                                          256 / tile_count, &count);
+    if (*reason != SGI_RENDER_REFUSAL_NONE) {
         return SGI_RENDER_UNSUPPORTED;
     }
     tiles = tile_count;
@@ -3499,10 +3586,11 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
         const SGIKonaRendererTriangle *piece = &triangles[i / tiles];
         SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
 
-        if (!sgi_kona_renderer_request(s, &triangle, piece->vertices,
-                                       piece->provoking, &tile, &requests[i],
-                                       &target, rules,
-                                       texture_pixels ? &texture : NULL)) {
+        *reason = sgi_kona_renderer_request(s, &triangle, piece->vertices,
+                                            piece->provoking, &tile,
+                                            &requests[i], &target, rules,
+                                            texture_pixels ? &texture : NULL);
+        if (*reason != SGI_RENDER_REFUSAL_NONE) {
             goto out;
         }
     }
@@ -3512,6 +3600,7 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
 
         result = sgi_kona_renderer_create(s, &create_err);
         if (result != SGI_RENDER_OK) {
+            *reason = SGI_KONA_FALLBACK_UNAVAILABLE;
             error_propagate(errp, create_err);
             goto out;
         }
@@ -3524,6 +3613,7 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
         break;
     case SGI_RENDER_DRAW_REFUSED:
         /* A precision refusal draws in software and keeps the renderer. */
+        *reason = SGI_RENDER_REFUSAL_PRECISION;
         result = SGI_RENDER_UNSUPPORTED;
         goto out;
     case SGI_RENDER_DRAW_FAILED:
@@ -3696,6 +3786,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIGLDrawResult ret;
     SGIRenderResult legacy_result;
     SGIKonaShadow host;
+    unsigned reason;
     Error *err = NULL;
 
     if (s->mesa_failed) {
@@ -3744,6 +3835,8 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
              * the legacy host batch, whose pixels mixed frames cannot use.
              */
             error_free(err);
+            reason = outcome.reason != SGI_RENDER_REFUSAL_NONE ?
+                     outcome.reason : SGI_KONA_FALLBACK_UNAVAILABLE;
             goto scalar;
         case SGI_RENDER_DRAW_FAILED:
             if (outcome.status == SGI_RENDER_OOM) {
@@ -3759,7 +3852,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     }
     sgi_kona_shadow_init(&host, s, &t, &d->state->drawable);
     legacy_result = sgi_kona_renderer_draw(s, d, &rules, &t, &host.target,
-                                           &err);
+                                           &reason, &err);
     if (legacy_result == SGI_RENDER_OK && host.oom) {
         /* The host writes could not be held; nothing reached the planes. */
         legacy_result = SGI_RENDER_OOM;
@@ -3775,7 +3868,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
             return SGI_GL_DRAW_OK;
         }
         if (ret != SGI_GL_DRAW_OUT_OF_MEMORY) {
-            s->renderer_fallbacks++;
+            sgi_kona_count_fallback(s, SGI_RENDER_REFUSAL_PRECISION, d);
         }
         goto report;
     }
@@ -3799,7 +3892,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     }
 scalar:
     if (s->host_gpu) {
-        s->renderer_fallbacks++;
+        sgi_kona_count_fallback(s, reason, d);
     }
     ret = sgi_soft_draw(&rules, &t, d);
 report:
@@ -12115,6 +12208,20 @@ static void sgi_kona_test_get_texture_curve_valid(Object *obj, Visitor *v,
     visit_type_bool(v, name, &valid, errp);
 }
 
+/* Every draw a host-gpu board drew scalar, whatever its reason. */
+static void sgi_kona_test_get_gpu_fallbacks(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint64_t total = 0;
+
+    for (unsigned i = 0; i < SGI_KONA_FALLBACK__MAX; i++) {
+        total += s->renderer_fallbacks[i];
+    }
+    visit_type_uint64(v, name, &total, errp);
+}
+
 static void sgi_kona_test_set_renderer_failure(Object *obj, Visitor *v,
                                                const char *name, void *opaque,
                                                Error **errp)
@@ -12331,8 +12438,16 @@ static void sgi_kona_instance_init(Object *obj)
                                    &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add_uint64_ptr(obj, "x-test-gpu-fallbacks",
-                                   &s->renderer_fallbacks, OBJ_PROP_FLAG_READ);
+    object_property_add(obj, "x-test-gpu-fallbacks", "uint64",
+                        sgi_kona_test_get_gpu_fallbacks, NULL, NULL, NULL);
+    for (unsigned i = SGI_RENDER_REFUSAL_NONE + 1; i < SGI_KONA_FALLBACK__MAX;
+         i++) {
+        g_autofree char *name = g_strdup_printf("x-gpu-fallbacks-%s",
+                                                sgi_kona_fallback_name(i));
+
+        object_property_add_uint64_ptr(obj, name, &s->renderer_fallbacks[i],
+                                       OBJ_PROP_FLAG_READ);
+    }
     sgi_kona_dma_test_props_init(obj, &s->dma);
 }
 
