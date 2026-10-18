@@ -17,6 +17,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/gl-context.h"
+#include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-dma.h"
@@ -794,6 +795,17 @@ typedef struct SGIKonaGLReadDMA {
     uint8_t *data;
 } SGIKonaGLReadDMA;
 
+/*
+ * Why a host-gpu board drew a draw on its scalar path: a feature-matrix row
+ * of the shared renderer's refusal reasons, indexed by SGIRenderRefusal,
+ * for either host route, or KONA's own.
+ */
+enum {
+    /* No host renderer on this host: the whole board draws scalar. */
+    SGI_KONA_FALLBACK_UNAVAILABLE = SGI_RENDER_REFUSAL__MAX,
+    SGI_KONA_FALLBACK__MAX,
+};
+
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
@@ -813,7 +825,8 @@ struct SGIKonaState {
     uint64_t renderer_generation;
     uint64_t renderer_requests;
     uint64_t renderer_draws;
-    uint64_t renderer_fallbacks;
+    /* Host diagnostics by SGI_KONA_FALLBACK_* reason; not migrated. */
+    uint64_t renderer_fallbacks[SGI_KONA_FALLBACK__MAX];
 
     /*
      * Set by build_widget(), before this board re-parents: the XIO

@@ -12778,6 +12778,13 @@ static uint64_t renderer_counter(QTestState *s, const char *name)
     return count;
 }
 
+static uint64_t renderer_fallback_reason(QTestState *s, const char *reason)
+{
+    g_autofree char *name = g_strdup_printf("x-gpu-fallbacks-%s", reason);
+
+    return renderer_counter(s, name);
+}
+
 static char *renderer_plane_digest(QTestState *s, unsigned plane)
 {
     QDict *reply;
@@ -13385,6 +13392,10 @@ static void test_renderer_typed_checked_failure(void)
                      fallbacks);
     g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
                      >, generation);
+    /* A failure is not a refusal under any reason. */
+    g_assert_cmpuint(renderer_fallback_reason(s, "precision"), ==, 0);
+    g_assert_cmpuint(renderer_fallback_reason(s, "mixed-frame"), ==, 0);
+    g_assert_cmpuint(renderer_fallback_reason(s, "fog"), ==, 0);
     texture_assert_planes(s, planes);
     assert_reply_unchanged(s);
 
@@ -13512,6 +13523,7 @@ static void test_renderer_fixture(gconstpointer opaque)
                      using_gpu ? 2 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
                      using_gpu ? 1 : 3);
+    g_assert_cmpuint(renderer_fallback_reason(s, "dither"), ==, using_gpu);
     /* So does one-dimensional texturing, which the host path lacks. */
     qtest_system_reset(s);
     renderer_fixture(s);
@@ -13701,20 +13713,22 @@ static void test_renderer_general_triangle(gconstpointer opaque)
 /*
  * A Mesa-route draw the shared renderer refuses is drawn by the scalar path
  * inside the same callback, exactly as a host-gpu=off board draws it, and
- * is counted. It does not go on to the legacy host batch: mode 1's alpha
- * test is state that batch would otherwise draw. Mode 2 blends under a
- * scissor test, which the shared renderer draws but the scalar comparisons
- * do not prove, so only the mixed-frame option refuses it. Once the
- * refused state is gone the next draw is accepted by Mesa again.
+ * is counted under its reason. It does not go on to the legacy host batch:
+ * mode 1's alpha test is state that batch would otherwise draw. Mode 2
+ * blends under a scissor test, which the shared renderer draws but the
+ * scalar comparisons do not prove, so only the mixed-frame option refuses
+ * it. Once the refused state is gone the next draw is accepted by Mesa
+ * again.
  */
 static void test_renderer_mesa_refused(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     static const uint32_t enables[] = { 0xb60, 0xbc0, 0xbe2 };
+    static const char *reasons[] = { "fog", "fragment-tests", "mixed-frame" };
     QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
     QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
     QTestState *states[] = { gpu, cpu };
-    uint64_t requests, draws, fallbacks, generation;
+    uint64_t requests, draws, fallbacks, reason, generation;
 
     for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
         renderer_typed_setup(states[i]);
@@ -13729,6 +13743,7 @@ static void test_renderer_mesa_refused(gconstpointer opaque)
     requests = renderer_counter(gpu, "x-test-gpu-requests");
     draws = renderer_counter(gpu, "x-test-gpu-draws");
     fallbacks = renderer_counter(gpu, "x-test-gpu-fallbacks");
+    reason = renderer_fallback_reason(gpu, reasons[mode]);
     for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
         kona_command(states[i], 0x24, &enables[mode], 1);
         gl_begin(states[i], 4);
@@ -13743,6 +13758,9 @@ static void test_renderer_mesa_refused(gconstpointer opaque)
     g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, draws);
     g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
                      fallbacks + 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu, reasons[mode]), ==,
+                     reason + 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu, "precision"), ==, 0);
     g_assert_cmpuint(renderer_counter(cpu, "x-test-gpu-fallbacks"), ==, 0);
 
     kona_command(gpu, 0x25, &enables[mode], 1);
@@ -13758,6 +13776,8 @@ static void test_renderer_mesa_refused(gconstpointer opaque)
                      draws + 1);
     g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
                      fallbacks + 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu, reasons[mode]), ==,
+                     reason + 1);
     g_assert_cmpuint(renderer_counter(gpu, "x-test-mesa-front-generation"),
                      >, generation);
     qtest_quit(cpu);
@@ -13797,6 +13817,7 @@ static void test_renderer_texture_incomplete(gconstpointer opaque)
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, draws);
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
                          fallbacks + 1);
+        g_assert_cmpuint(renderer_fallback_reason(s, "fog"), ==, 1);
     } else {
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws") +
                          renderer_counter(s, "x-test-gpu-fallbacks"), ==,
@@ -13811,6 +13832,45 @@ static void test_renderer_texture_incomplete(gconstpointer opaque)
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "sgi-gl: incomplete texture"),
                      ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_gpu_fallback "
+                                              "reason fog"),
+                     ==, refused);
+}
+
+/*
+ * The legacy route declines a triangle while a context keeps line stipple
+ * (mode 0) or line smoothing (mode 1) enabled, draws it on the scalar path
+ * exactly as a host-gpu=off board does, and counts it under the shared
+ * row: stipple is the primitive row, smoothing its own.
+ */
+static void test_renderer_legacy_raster_enable(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t enables[] = { 0xb24, 0xb20 };
+    static const char *reasons[] = { "primitive", "smoothing" };
+    QTestState *gpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *cpu = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=off");
+    QTestState *states[] = { gpu, cpu };
+    uint64_t draws, fallbacks;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_fixture(states[i]);
+        kona_command(states[i], 0x24, (uint32_t[]){ 0xde1 }, 1);
+        kona_command(states[i], 0x24, &enables[mode], 1);
+    }
+    draws = renderer_counter(gpu, "x-test-gpu-draws");
+    fallbacks = renderer_counter(gpu, "x-test-gpu-fallbacks");
+    for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
+        renderer_triangle(states[i]);
+    }
+    renderer_general_compare_planes(gpu, cpu, mode);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, draws);
+    g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
+                     fallbacks + 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu, reasons[mode]), ==, 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu, reasons[!mode]), ==, 0);
+    qtest_quit(cpu);
+    qtest_quit(gpu);
 }
 
 /*
@@ -13847,6 +13907,8 @@ static void test_renderer_legacy_mismatch(void)
     g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-draws"), ==, draws);
     g_assert_cmpuint(renderer_counter(gpu, "x-test-gpu-fallbacks"), ==,
                      fallbacks + 1);
+    g_assert_cmpuint(renderer_fallback_reason(gpu,
+                         host ? "precision" : "unavailable"), ==, 1);
 
     for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
         kona_command_f(states[i], 0x63, (float[]){ 0, 0, 1 }, 3);
@@ -14152,6 +14214,8 @@ static void test_renderer_large_polygon(gconstpointer opaque)
     expected_clear(expected, 0xff0000);
     assert_window_matches(s, expected);
     if (mode == 4) {
+        /* More triangles than the host batch stages is a host limit. */
+        g_assert_cmpuint(renderer_fallback_reason(s, "host-staging"), ==, 1);
         kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
         renderer_triangle(s);
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 1);
@@ -16329,6 +16393,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
                         "texture-incomplete/accepted",
                         GUINT_TO_POINTER(1), test_renderer_texture_incomplete);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "legacy-raster-enable/line-stipple",
+                        GUINT_TO_POINTER(0),
+                        test_renderer_legacy_raster_enable);
+    qtest_add_data_func("sn0/origin2000/kona-3d/renderer/"
+                        "legacy-raster-enable/line-smooth",
+                        GUINT_TO_POINTER(1),
+                        test_renderer_legacy_raster_enable);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/legacy-mismatch",
                    test_renderer_legacy_mismatch);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/hold-oom/host",

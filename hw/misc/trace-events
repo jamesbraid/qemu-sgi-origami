@@ -21,6 +21,8 @@ sgi_kona_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *h
 # sgi_kona_textport_push() intercepts and consumes them itself, in front of
 # the generic command-port framer.
 sgi_kona_bitmap_blit(uint32_t width, uint32_t height, int32_t xorigin, int32_t yorigin, int32_t xadvance, int32_t yadvance) "width %u height %u xorigin %d yorigin %d xadvance %d yadvance %d"
+# A host-gpu GL draw drawn on the scalar path instead, with its reason.
+sgi_kona_gpu_fallback(const char *reason, uint32_t context, uint32_t mode) "reason %s context %u mode 0x%x"
 # The XG map RAM (widget +0x100000-+0x1fffff): one line for the first
 # access and each power-of-two access-count milestone after it, not one
 # per entry -- kona_mapram_init()'s own attach-time sweep alone touches
