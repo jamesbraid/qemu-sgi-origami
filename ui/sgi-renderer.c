@@ -11,6 +11,7 @@ struct SGIRenderer {
     unsigned test_draw_countdown;
     int line_probe;
     int window_probe;
+    SGIRendererIdentity identity;
 };
 
 static const SGIRendererOps *gl_ops;
@@ -111,6 +112,48 @@ void sgi_renderer_register_gl(const SGIRendererOps *ops)
     gl_ops = ops;
 }
 
+static void sgi_renderer_copy_string(char *dst, size_t size,
+                                     const char *src)
+{
+    g_strlcpy(dst, src ? src : "", size);
+}
+
+void sgi_renderer_identity_parse(const char *vendor, const char *renderer,
+                                 const char *version,
+                                 SGIRendererIdentity *id)
+{
+    const char *mesa;
+    char llvm[sizeof(id->llvm_version)];
+    unsigned bits;
+    int end = -1;
+
+    memset(id, 0, sizeof(*id));
+    sgi_renderer_copy_string(id->vendor, sizeof(id->vendor), vendor);
+    sgi_renderer_copy_string(id->renderer, sizeof(id->renderer), renderer);
+    sgi_renderer_copy_string(id->version, sizeof(id->version), version);
+    mesa = version ? strstr(version, " Mesa ") : NULL;
+    if (mesa) {
+        mesa += strlen(" Mesa ");
+        g_strlcpy(id->mesa_version, mesa,
+                  MIN(sizeof(id->mesa_version), strcspn(mesa, " ") + 1));
+    }
+    /* "llvmpipe (LLVM 19.1.7, 256 bits)", and nothing after it. */
+    if (renderer &&
+        sscanf(renderer, "llvmpipe (LLVM %31[^,], %u bits)%n", llvm, &bits,
+               &end) == 2 && end == (int)strlen(renderer)) {
+        g_strlcpy(id->llvm_version, llvm, sizeof(id->llvm_version));
+        id->vector_bits = bits;
+    }
+    id->reference = vendor && renderer && version &&
+                    !strcmp(id->vendor, "Mesa") && id->vector_bits &&
+                    !strcmp(id->mesa_version, SGI_RENDERER_REFERENCE_MESA) &&
+                    !strcmp(id->llvm_version, SGI_RENDERER_REFERENCE_LLVM) &&
+                    id->vector_bits == SGI_RENDERER_REFERENCE_VECTOR_BITS &&
+                    strlen(vendor) < sizeof(id->vendor) &&
+                    strlen(renderer) < sizeof(id->renderer) &&
+                    strlen(version) < sizeof(id->version);
+}
+
 SGIRenderCreateResult sgi_renderer_create(SGIRenderer **out, Error **errp)
 {
     Error *local_err = NULL;
@@ -171,8 +214,27 @@ SGIRenderCreateResult sgi_renderer_create(SGIRenderer **out, Error **errp)
         error_propagate(errp, backend_err);
         return backend_result;
     }
+    if (gl_ops->identify) {
+        const char *vendor = NULL, *name = NULL, *version = NULL;
+
+        gl_ops->identify(renderer->opaque, &vendor, &name, &version);
+        sgi_renderer_identity_parse(vendor, name, version,
+                                    &renderer->identity);
+    } else {
+        sgi_renderer_identity_parse(NULL, NULL, NULL, &renderer->identity);
+    }
     *out = renderer;
     return SGI_RENDER_CREATE_OK;
+}
+
+const SGIRendererIdentity *sgi_renderer_identity(SGIRenderer *renderer)
+{
+    return &renderer->identity;
+}
+
+void sgi_renderer_test_set_reference(SGIRenderer *renderer, bool reference)
+{
+    renderer->identity.reference = reference;
 }
 
 SGIRenderer *sgi_renderer_new(Error **errp)

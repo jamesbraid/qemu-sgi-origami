@@ -523,6 +523,7 @@ typedef enum SGIRenderRefusal {
     SGI_RENDER_REFUSAL_HOST_PROGRAM,    /* OpenGL too old for a program */
     SGI_RENDER_REFUSAL_HOST_PROBE,      /* lines or smooth triangles differ */
     SGI_RENDER_REFUSAL_HOST_STAGING,    /* host vertex or texture bounds */
+    SGI_RENDER_REFUSAL_HOST_DRIVER,     /* mixed frame off the reference */
     /* The family's own refusals. */
     SGI_RENDER_REFUSAL_SNAPSHOT,        /* a view cannot hold stored data */
     SGI_RENDER_REFUSAL_PRECISION,       /* staged pixels differ */
