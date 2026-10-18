@@ -2734,7 +2734,7 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
  */
 static void test_nic_onewire_identity(const void *data)
 {
-    uint8_t req[16], resp[RESP_CAP];
+    uint8_t req[32], resp[RESP_CAP];
     unsigned req_len, resp_len;
 
     elsc_reset();
