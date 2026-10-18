@@ -602,6 +602,14 @@ typedef struct SGIKonaPendingSwap {
  */
 #define SGI_KONA_DMA_FIFO_PUSH 0x80007c
 #define SGI_KONA_DMA_FIFO_KICK 0xc00108
+/*
+ * Its bits: force (17) ends argument collection of any open command and
+ * makes the next word a token; privileged (16) makes the words a kernel
+ * command's. Inferred from the pipe-manager tool's register table; the
+ * kernel writes only 0x30000, 0x10000 and 0.
+ */
+#define SGI_KONA_BRACKET_FORCE      0x20000u
+#define SGI_KONA_BRACKET_PRIVILEGED 0x10000u
 
 /*
  * The textport's colour map: 256 entries, each a resolved 0x00RRGGBB host
@@ -948,6 +956,16 @@ struct SGIKonaState {
      * context's.
      */
     SGICommandPort kernel_port;
+    /*
+     * The kernel's bracket, the register SGI_KONA_DMA_FIFO_KICK names:
+     * kernel_input is set while the privileged bit is, and the command
+     * page's words then go to kernel_port alone. A forced store leaves any
+     * user command that was open where it stands, as the context's
+     * suspended command, and suspended_owner names that context (or is
+     * SGI_KONA_CONTEXT_NONE). See sgi_kona_bracket_write().
+     */
+    bool kernel_input;
+    int32_t suspended_owner;
     /*
      * The GL client's commands, framed by sgi_kona_gl_tokens[] on a port
      * of their own because several of their numbers are the textport's.

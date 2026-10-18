@@ -616,6 +616,85 @@ static void test_deactivate_writes_save_area(void)
 }
 
 /*
+ * The kernel switches contexts while a user command may be part-way
+ * through its words, as when the X server was preempted inside a pixel
+ * write. Its forced, privileged bracket (kick 0x30000) suspends the open
+ * command, so 0x1fc and its index frame as a kernel command and the
+ * deactivate is answered; restored, the context's remaining words finish
+ * the same command. Here a viewport, 0xe3 and four words, is cut after
+ * two. A pipe framing one stream takes 0x1fc 1 as the viewport's last
+ * two words and never answers the kernel, which kills the pipe.
+ */
+static void test_deactivate_mid_user_command(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    const char *deactivated;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    qtest_writel(s, REG_COMMAND, 1280);
+    qtest_writel(s, REG_COMMAND, 0xe3000000);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    deactivated = strstr(found, "sgi_kona_context_deactivate outgoing"
+                                " context 1\n");
+    g_assert_nonnull(deactivated);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(deactivated, "token 0xe3 args 0x1 0x9 0x500"
+                                         " argc 4\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_suspend "),
+                     ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_resume "),
+                     ==, 1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
+}
+
+/*
+ * A suspended command whose context does not come back before another
+ * context sends words cannot continue: the model keeps no per-context
+ * copy of it, so it ends, logged, and the new context's commands frame
+ * from their own first word.
+ */
+static void test_suspended_command_ends_at_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "open command was not resumed"));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
+                                   " argc 1\n"));
+    g_assert_null(strstr(found, "token 0xe3 args"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_drop "), ==,
+                     1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_resume "));
+}
+
+/*
  * The same through the map RAM, as the driver's own save areas are: 0x1fd
  * 0x14 0x9010 names device address 0x14010, entry 5 maps its 16 KiB page
  * to SAVE_B, and the words land at SAVE_B + 0x10 and + 0x18. A second
@@ -2045,6 +2124,11 @@ int main(int argc, char **argv)
                    "retrace-request-without-context",
                    test_retrace_request_without_context);
 
+    qtest_add_func("sn0/origin2000/kona-context/deactivate-mid-user-command",
+                   test_deactivate_mid_user_command);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "suspended-command-ends-at-other-context",
+                   test_suspended_command_ends_at_other_context);
     qtest_add_func("sn0/origin2000/kona-context/reply-after-deactivation",
                    test_reply_after_deactivation);
     return g_test_run();

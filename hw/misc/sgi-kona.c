@@ -881,10 +881,14 @@ static bool sgi_kona_store_counted(void)
  * stays owed. A GL client's doubleword stores often end that way, a
  * vertex's last float and the next selector in one store; returning
  * credits only when no packet was open ran the counter past zero there.
- * The rule assumes one framer holds a partial packet at a time, which is
- * always so on the command page; a DMA push packet open on its own port
- * while command-page packets complete would have its stores' credits
- * returned early, never twice.
+ * The rule assumes one framer holds a partial packet at a time. Two cases
+ * break it, each returning some stores' credits early and none twice: a
+ * DMA push packet open on its own port while command-page packets
+ * complete, and a user command suspended by the kernel's forced bracket
+ * (sgi_kona_bracket_write()) while the kernel framer takes its packet.
+ * When that kernel packet ends, the suspended command's stores go back
+ * although their words are still held, and the kernel's last store stays
+ * owed until a store ends with nothing open.
  *
  * Inferred: that the pipe returns a credit when its front end takes a
  * store's words, and holds the credits of a packet still arriving, which
@@ -10944,6 +10948,148 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
 }
 
 /*
+ * Whether a user command is part-way through its words: any framer or
+ * data run of the textport, GL and X grammars still waiting for more.
+ */
+static bool sgi_kona_user_command_open(SGIKonaState *s)
+{
+    return s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
+           s->video_open || s->color_map_remaining || s->gamma_remaining ||
+           s->cursor_remaining || s->gl_tex_table_remaining ||
+           s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
+           s->x_pixel_remaining || s->x_stipple_store_remaining ||
+           s->bitmap_state != SGI_KONA_BITMAP_IDLE;
+}
+
+/*
+ * Drop a suspended user command whose context is no longer current. The
+ * pipe keeps an open command with its context and resumes it on restore
+ * (inferred); the model keeps one in place only, so a word of another
+ * context ends it, logged. The cost: when the dropped context is restored
+ * its remaining words arrive with no command open and are misframed, most
+ * dropped as neither a token nor a sync word, until one opens a command.
+ */
+static void sgi_kona_user_command_drop(SGIKonaState *s)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's open command was not"
+                  " resumed before context %d sent words; the model keeps"
+                  " no per-context copy, so it ends here\n",
+                  s->suspended_owner, s->context_current);
+    trace_sgi_kona_bracket_drop(s->suspended_owner, s->context_current);
+    sgi_kona_x_read_invalidate(s);
+    sgi_kona_gl_read_dma_refuse(s);
+    sgi_command_port_reset(&s->textport);
+    sgi_command_port_reset(&s->gl_port);
+    s->gl_sync_held = false;
+    s->textport_expect_sync = true;
+    s->video_open = false;
+    s->color_map_remaining = 0;
+    s->gamma_remaining = 0;
+    s->cursor_remaining = 0;
+    s->cursor_stage_words = 0;
+    memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
+    if (s->gl_tex_table_remaining) {
+        sgi_kona_gl_tex_table_clear(s);
+    }
+    if (s->gl_data_remaining) {
+        sgi_kona_texture_upload_clear(s);
+        sgi_kona_gl_image_clear(s);
+        memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+        memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
+        s->gl_data_remaining = 0;
+        s->gl_data_token = 0;
+        s->gl_data_have = 0;
+    }
+    sgi_kona_dma_calls_drop(s);
+    if (s->x_pixel_remaining) {
+        s->x_pixel_remaining = 0;
+        s->x_write_refused = true;
+    }
+    s->x_stipple_store_remaining = 0;
+    sgi_kona_bitmap_reset(s);
+}
+
+/* The tokens only the kernel sends: the context switch and teardown. */
+static bool sgi_kona_kernel_only_token(uint32_t word)
+{
+    return word == SGI_KONA_CMD_CONTEXT_DEACTIVATE ||
+           word == SGI_KONA_CMD_CONTEXT_RESTORE ||
+           word == SGI_KONA_CMD_CONTEXT_MAP ||
+           word == SGI_KONA_CMD_POST_REASON;
+}
+
+/*
+ * A word on the command page. While the kernel's privileged bit is set
+ * the word belongs to a kernel command and goes to the kernel framer
+ * alone, leaving any suspended user command untouched. A privileged word
+ * that opens no kernel command is logged and ignored while a user command
+ * is suspended; with none suspended it takes the ordinary path, as the
+ * kernel's own textport commands did before. Otherwise a suspended
+ * command resumes if its context is current again, and the word takes the
+ * ordinary path. That a user word naming a kernel-only token is logged,
+ * not refused, is the model's choice: what the pipe does then is unknown.
+ */
+static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
+{
+    if (s->kernel_input) {
+        if (s->kernel_port.framing || sgi_kona_kernel_token_known(word)) {
+            sgi_command_port_write(&s->kernel_port, word, 4);
+            return;
+        }
+        if (s->suspended_owner != SGI_KONA_CONTEXT_NONE) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: privileged word 0x%"
+                          PRIx32 " opens no kernel command; ignored\n",
+                          word);
+            return;
+        }
+    } else if (s->suspended_owner != SGI_KONA_CONTEXT_NONE) {
+        if (s->suspended_owner != s->context_current &&
+            sgi_kona_user_command_open(s)) {
+            sgi_kona_user_command_drop(s);
+        } else {
+            trace_sgi_kona_bracket_resume(s->suspended_owner);
+        }
+        s->suspended_owner = SGI_KONA_CONTEXT_NONE;
+    } else if (s->gl_grammar && sgi_kona_kernel_only_token(word) &&
+               !sgi_kona_user_command_open(s) && !s->kernel_port.framing) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: kernel-only token 0x%"
+                      PRIx32 " without the privileged bit\n", word);
+    }
+    sgi_kona_textport_push(s, word);
+}
+
+/*
+ * A store to the bracket register. Force ends argument collection: a
+ * kernel command still open is abandoned, logged, and an open user
+ * command is suspended with the current context. Privileged, with or
+ * without force, makes the following words a kernel command's; 0 returns
+ * the input to user commands. Force with no command open does nothing
+ * more (assumed). The low sixteen bits are written zero by the only
+ * sender; other values are logged.
+ */
+static void sgi_kona_bracket_write(SGIKonaState *s, uint32_t value)
+{
+    if (value & ~(SGI_KONA_BRACKET_FORCE | SGI_KONA_BRACKET_PRIVILEGED)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: bracket store 0x%" PRIx32
+                      " sets bits the kernel never sets\n", value);
+    }
+    if (value & SGI_KONA_BRACKET_FORCE) {
+        if (s->kernel_port.framing) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: forced store ends"
+                          " kernel command 0x%" PRIx32 " short of its"
+                          " words\n", s->kernel_port.selector);
+            sgi_command_port_reset(&s->kernel_port);
+        }
+        if (s->suspended_owner == SGI_KONA_CONTEXT_NONE &&
+            sgi_kona_user_command_open(s)) {
+            s->suspended_owner = s->context_current;
+            trace_sgi_kona_bracket_suspend(s->suspended_owner);
+        }
+    }
+    s->kernel_input = value & SGI_KONA_BRACKET_PRIVILEGED;
+}
+
+/*
  * A plain word on the command page, as offset 0 takes it: the decoder a
  * fetched display list's words go through (hw/misc/sgi-kona-dma.c).
  */
@@ -10979,7 +11125,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
 
     if (offset == 0 || offset == SGI_KONA_COMMAND_DATA_SLOT) {
         s->activity = true;
-        sgi_kona_textport_push(s, value);
+        sgi_kona_command_input(s, value);
         return;
     }
     if (token == 0 ||
@@ -11540,6 +11686,7 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         break;
     case SGI_KONA_DMA_FIFO_KICK:
         sgi_command_port_kick_write(&s->dma.fifo_port, value);
+        sgi_kona_bracket_write(s, value);
         break;
     default:
         if (addr >= SGI_KONA_TEXTPORT_PORT &&
@@ -12641,6 +12788,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_command_port_reset(&s->gl_port);
     s->gl_grammar = false;
     s->gl_sync_held = false;
+    s->kernel_input = false;
+    s->suspended_owner = SGI_KONA_CONTEXT_NONE;
     s->reason_page_valid = false;
     s->reason_page = 0;
     s->return_page_valid = false;
@@ -13350,6 +13499,38 @@ static bool sgi_kona_credit_needed(void *opaque)
 {
     return true;
 }
+
+/* The bracket's input state, only while it differs from reset. */
+static bool sgi_kona_bracket_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->kernel_input || s->suspended_owner != SGI_KONA_CONTEXT_NONE;
+}
+
+static int sgi_kona_bracket_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (s->suspended_owner != SGI_KONA_CONTEXT_NONE &&
+        (s->suspended_owner < 0 || s->suspended_owner >= SGI_KONA_CONTEXTS)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_bracket = {
+    .name = TYPE_SGI_KONA "/bracket",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_bracket_needed,
+    .post_load = sgi_kona_bracket_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(kernel_input, SGIKonaState),
+        VMSTATE_INT32(suspended_owner, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static const VMStateDescription vmstate_sgi_kona_credit = {
     .name = TYPE_SGI_KONA "/credit",
@@ -15024,6 +15205,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_contexts,
         &vmstate_sgi_kona_dma,
         &vmstate_sgi_kona_credit,
+        &vmstate_sgi_kona_bracket,
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,
