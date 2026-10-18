@@ -387,11 +387,11 @@ with the rules named above. Any other driver is unproven.
   values.
 - ``index-ignored-states``: blending, the alpha test, the colour mask, the
   RGBA logical operation and dithering change nothing.
-- ``index-refusals``, ``index-resource-selection``, ``index-failures`` and
-  ``index-carry-over``: each refused state before the snapshot and out of
-  the set; the index resource chosen beside a colour one; framebuffer and
-  partial commit failures; and an indexed draw between RGBA draws on one
-  renderer.
+- ``index-refusals``, ``index-resource-selection``, ``index-failures``,
+  ``index-carry-over`` and ``index-shadow``: each refused state before the
+  snapshot and out of the set; the index resource chosen beside a colour
+  one; framebuffer and partial commit failures; an indexed draw between
+  RGBA draws on one renderer; and shadow comparison of an indexed draw.
 - ``scalar-match-store-widths``: refused width pairings for draws and CLEAR,
   and RGB stores under alpha rules.
 - ``scalar-match-clear``: colour, depth and stencil CLEAR at 4, 8 and 10 bits,
@@ -677,7 +677,8 @@ path that writes native storage, so the guest sees exactly scalar
 behaviour. ``include/hw/display/sgi/render-shadow.h`` holds the shared
 part; a family enables it with a test property and supplies a private
 target, the same resources in the same order with callbacks over private
-host storage: a snapshot, a dense commit and a covered commit.
+host storage: a snapshot, a dense commit and a covered commit, and an
+index commit for any index resource.
 
 For each draw the family:
 

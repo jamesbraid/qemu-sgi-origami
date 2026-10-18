@@ -9538,6 +9538,107 @@ static void test_index_carry_over(void)
     g_free(rgba);
 }
 
+/* The shadow capture's dense copy into a private index resource. */
+static SGIRenderCommitResult index_dense_commit(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, Error **errp)
+{
+    IndexFixture *f = opaque;
+    uint64_t complete = 0;
+
+    for (uint32_t y = rect->y0; y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            f->index[y][x] = slots[(y - rect->y0) * stride_slots +
+                                   x - rect->x0];
+            complete++;
+        }
+    }
+    return (SGIRenderCommitResult) {
+        .status = SGI_RENDER_OK,
+        .complete_pixels = complete,
+        .extent_known = true,
+    };
+}
+
+static const SGIRenderResourceOps index_shadow_ops = {
+    .snapshot = index_snapshot,
+    .commit = index_dense_commit,
+    .commit_covered = index_colour_commit,
+    .commit_index_covered = index_commit,
+};
+
+/*
+ * Shadow comparison of an indexed draw: Mesa's result through the private
+ * copy matches the scalar draw, coverage included, and a native result
+ * that differs is a mismatch at its pixel.
+ */
+static void test_index_shadow(void)
+{
+    g_auto(MesaTestEnv) mesa_env = { 0 };
+    static const float idx[] = { 3, 17, 42, 99, 200, 7 };
+    PrimCase *p = g_new(PrimCase, 1);
+    g_autofree IndexFixture *native = g_new(IndexFixture, 1);
+    g_autofree IndexFixture *private = g_new(IndexFixture, 1);
+    SGIRenderResource res = index_resource(8);
+    SGIRasterTarget native_target = {
+        .opaque = native, .resources = &res, .resource_count = 1,
+        .resource_ops = &index_ops,
+    };
+    SGIRasterTarget private_target = native_target;
+    SGIRenderShadowOutcome out;
+    const uint8_t *masks[1];
+    SGIRenderShadow *shadow;
+    SGIRasterRules rules;
+    Error *err = NULL;
+
+    mesa_test_env_set(&mesa_env);
+    if (!mesa_test_available(false)) {
+        g_free(p);
+        return;
+    }
+    shadow = sgi_render_shadow_new();
+    g_assert_null(sgi_render_shadow_disabled(shadow));
+    index_case_init(p, SGI_GL_QUAD_STRIP, 8);
+    index_shape(p, SGI_GL_QUAD_STRIP, idx);
+    prim_rules(p, &rules);
+    private_target.opaque = private;
+    private_target.resource_ops = &index_shadow_ops;
+    index_destination(native, 8);
+    index_destination(private, 8);
+    memset(private->index, 0, sizeof(private->index));
+    g_assert_cmpint(sgi_render_shadow_capture(shadow, &native_target,
+                                              &private_target, &err), ==,
+                    SGI_RENDER_OK);
+    g_assert_null(err);
+    g_assert_cmpmem(private->index, sizeof(private->index), native->index,
+                    sizeof(native->index));
+    index_scalar_draw(p, native);
+    masks[0] = &native->written[0][0];
+    g_assert_cmpint(sgi_render_shadow_draw(shadow, &rules, &native_target,
+                                           &private_target, &p->draw, 0,
+                                           masks, &out), ==,
+                    SGI_RENDER_SHADOW_MATCH);
+    g_assert_true(out.coverage_compared);
+    g_assert_true(out.signature.in_set);
+    /* A Mesa result that differs is a mismatch at its first pixel. */
+    index_destination(native, 8);
+    index_destination(private, 8);
+    g_assert_cmpint(sgi_render_shadow_capture(shadow, &native_target,
+                                              &private_target, &err), ==,
+                    SGI_RENDER_OK);
+    index_scalar_draw(p, native);
+    native->index[8][8] ^= 1;
+    g_assert_cmpint(sgi_render_shadow_draw(shadow, &rules, &native_target,
+                                           &private_target, &p->draw, 0,
+                                           masks, &out), ==,
+                    SGI_RENDER_SHADOW_MISMATCH);
+    g_assert_cmpuint(out.x, ==, 8);
+    g_assert_cmpuint(out.y, ==, 8);
+    sgi_render_shadow_free(shadow);
+    g_free(p);
+}
+
 /*
  * Timing of a small draw through the two host routes, enabled by
  * QEMU_TEST_SGI_BENCH: the legacy batch KONA sends for one small quad in
@@ -9822,6 +9923,7 @@ int main(int argc, char **argv)
                     test_index_depth_planes);
     g_test_add_func("/sgi-renderer-gl/index-carry-over",
                     test_index_carry_over);
+    g_test_add_func("/sgi-renderer-gl/index-shadow", test_index_shadow);
     g_test_add_func("/sgi-renderer-gl/driver-identity",
                     test_driver_identity);
     g_test_add_func("/sgi-renderer-gl/scalar-match-cross",

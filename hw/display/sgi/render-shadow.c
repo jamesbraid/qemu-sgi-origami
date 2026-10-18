@@ -109,6 +109,12 @@ static bool sgi_render_shadow_pair(const SGIRasterTarget *native,
         const SGIRenderResource *a = &native->resources[i];
         const SGIRenderResource *b = &private->resources[i];
 
+        if (b->role == SGI_RENDER_INDEX &&
+            !private->resource_ops->commit_index_covered) {
+            error_setg(errp, "SGI shadow index resource %zu has no index "
+                       "commit", i);
+            return false;
+        }
         if (a->role != b->role || a->target != b->target ||
             a->width != b->width || a->height != b->height ||
             a->depth != b->depth || a->bottom_origin != b->bottom_origin ||
@@ -288,10 +294,34 @@ static SGIRenderCommitResult sgi_render_shadow_rec_commit_covered(
         capacity_slots, writes, errp);
 }
 
+static SGIRenderCommitResult sgi_render_shadow_rec_commit_index_covered(
+    void *opaque, const SGIRenderResource *res, uint32_t slice,
+    const SGIRenderRect *rect, const uint32_t *slots, size_t stride_slots,
+    size_t capacity_slots, const SGIRenderWriteCoverage *writes,
+    uint32_t effective_mask, Error **errp)
+{
+    SGIRenderShadowRecorder *rec = opaque;
+    const SGIRenderResource *orig;
+    uint8_t *written = sgi_render_shadow_written(rec, res, &orig);
+
+    for (uint32_t y = rect->y0; written && y <= rect->y1; y++) {
+        for (uint32_t x = rect->x0; x <= rect->x1; x++) {
+            if (writes->pixel[(size_t)(y - rect->y0) * writes->stride_bytes +
+                              x - rect->x0]) {
+                written[(size_t)y * orig->width + x] = 1;
+            }
+        }
+    }
+    return rec->private->resource_ops->commit_index_covered(
+        rec->private->opaque, res, slice, rect, slots, stride_slots,
+        capacity_slots, writes, effective_mask, errp);
+}
+
 static const SGIRenderResourceOps sgi_render_shadow_rec_ops = {
     .snapshot = sgi_render_shadow_rec_snapshot,
     .commit = sgi_render_shadow_rec_commit,
     .commit_covered = sgi_render_shadow_rec_commit_covered,
+    .commit_index_covered = sgi_render_shadow_rec_commit_index_covered,
 };
 
 /*
