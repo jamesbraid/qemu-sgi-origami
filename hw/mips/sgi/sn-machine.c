@@ -524,8 +524,9 @@ static void sgi_machine_set_module_serial(SGIMachineState *s,
         const char *payload;
 
         /* The machine validated owner=serial before constructing devices. */
-        selected = strtoul(entry->value, NULL, 10);
-        payload = strchr(entry->value, '=') + 1;
+        g_assert(!qemu_strtoui(entry->value, &payload, 10, &selected));
+        g_assert(*payload == '=');
+        payload++;
         if (selected == owner) {
             qdev_prop_set_string(l1, "brick-serial", payload);
         }
