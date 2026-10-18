@@ -31,50 +31,6 @@ QEMU as a whole is released under the GNU General Public License,
 version 2. For full licensing details, consult the LICENSE file.
 
 
-Origami SGI branch
-==================
-
-This repository also maintains Origami's experimental SGI emulator on the
-``sgi-origami`` branch. The project is a hobby effort developed largely with
-AI assistance. Hardware behavior and guest compatibility are incomplete.
-
-Use `Origami QEMU issues and pull requests
-<https://github.com/jamesbraid/qemu>`_ for this branch. Its
-`contribution guide <.github/CONTRIBUTING.md>`_ describes how to report
-problems and propose changes. The sections below describe the upstream QEMU
-project.
-
-SGI model catalogue
--------------------
-
-The SGI machine-model inputs and schema are in ``hw/mips/sgi/models/``.
-``scripts/sgi-model.py`` validates those files and regenerates the checked-in
-``hw/mips/sgi/sgi-machines.json`` and ``sn-model.json`` outputs. The original
-project-authored model inputs, schema and generator are licensed under
-BSD-3-Clause; see ``hw/mips/sgi/models/LICENSE`` and the SPDX notices in the
-Python files. Cited sources remain under their own terms.
-
-From the QEMU source root, configure a build directory and install the
-generator's optional Python dependencies:
-
-.. code-block:: shell
-
-  mkdir build
-  cd build
-  ../configure --target-list=mips64-softmmu --disable-docs
-  cd ..
-  build/pyvenv/bin/python3 python/scripts/mkvenv.py ensuregroup \
-    --online pythondeps.toml sgi-model
-
-Regenerate the checked-in outputs and run the model tests with:
-
-.. code-block:: shell
-
-  build/pyvenv/bin/python3 scripts/sgi-model.py
-  build/pyvenv/bin/python3 -m unittest discover \
-    -s scripts/tests -p 'test_sgi_model_*.py'
-
-
 Documentation
 =============
 

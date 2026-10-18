@@ -3,6 +3,7 @@
 .github/workflows/merge-queue.yml
 .github/workflows/nightly.yml
 .github/workflows/sanitizer.yml
+README.md
 docs/designs/2026-09-24-mgras-family-architecture.md
 docs/devel/sgi-byte-order.rst
 docs/devel/testing/sgi.rst
