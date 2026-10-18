@@ -2332,6 +2332,47 @@ static void odyssey_shadow_ring(SGIOdysseyState *s, uint64_t base,
     }
 }
 
+/*
+ * One two-word descriptor of an open-primitive save. Attribute A's 2-bit
+ * ring-slot selector is at bit 2 * (16 - A) of the first word for A 1..16
+ * and at bit 2 * (32 - A) of the second for A 17 and 18. ESTABLISHED for the
+ * attributes the IRIX 6.5.30 IP30 kernel replays, 1 to 12 and 14 to 18, as
+ * the fields its attribute replay reads (from its disassembly); the other
+ * bits are not read there and are written zero.
+ *
+ * An attribute the model keeps no record of (record[A][0] zero: 5 and 6,
+ * which that kernel's log calls texcoordA and texcoordB, and 13) selects
+ * slot 0, which this save never writes for it, so the replay sends back
+ * what that slot already holds: on a page the board has never filled, the
+ * kernel template's word. Selecting a held vertex's or the current slot
+ * instead pointed the replay at a slot the save left empty, and the kernel
+ * rejects a ring word with no operands that is not an edge-flag word: it
+ * logged an illegal restore command for both attributes, for each held
+ * vertex after the first and for the current values. This is an
+ * approximation: the board's values for these attributes, and the slots
+ * it saves them in, are unknown, and the model keeps no state for them.
+ */
+static void odyssey_shadow_descriptor(SGIOdysseyState *s, uint64_t base,
+                                      uint32_t off,
+                                      const uint32_t record[19][5],
+                                      unsigned slot)
+{
+    uint32_t word[2] = { 0, 0 };
+
+    for (unsigned a = 1; a < 19; a++) {
+        if (!record[a][0]) {
+            continue;
+        }
+        if (a <= 16) {
+            word[0] |= slot << (2 * (16 - a));
+        } else {
+            word[1] |= slot << (2 * (32 - a));
+        }
+    }
+    odyssey_shadow_put(s, base, off, word[0]);
+    odyssey_shadow_put(s, base, off + 4, word[1]);
+}
+
 static void odyssey_open_current_records(SGIOdysseyState *s,
                                          uint32_t record[19][5])
 {
@@ -2495,12 +2536,14 @@ static void odyssey_restart_finish(SGIOdysseyState *s)
  * Every save writes all ten descriptor words. Idle selects ring slot 0. A
  * float primitive of type 0..8 packs its retained raw attribute records into
  * ring slots 0..N-1 at save time, and current records into slot 3. Its
- * descriptors point to those slots, while the raw vertex words retain their
- * model cursor slots. The store itself leaves the primitive open, including
- * for the 0x7f snapshot. Integer 2D, type 10 and type 9 polygon assembly
- * still report an unsupported switch and save idle. Type 9's assembler holds
- * every vertex, beyond this page policy's retained set. This producer and its
- * restart decode are model approximations, not established board behavior.
+ * descriptors point to those slots for the attributes the model keeps
+ * records of, and to slot 0 for the rest (odyssey_shadow_descriptor()),
+ * while the raw vertex words retain their model cursor slots. The store
+ * itself leaves the primitive open, including for the 0x7f snapshot.
+ * Integer 2D, type 10 and type 9 polygon assembly still report an
+ * unsupported switch and save idle. Type 9's assembler holds every vertex,
+ * beyond this page policy's retained set. This producer and its restart
+ * decode are model approximations, not established board behavior.
  */
 static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
 {
@@ -2589,12 +2632,11 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
         for (i = 0; i < s->gl_open_held; i++) {
             const SGIOdysseyOpenVertex *v = &s->gl_open_vertex[i];
             unsigned slot = v->slot;
-            uint32_t selector = UINT32_C(0x55555555) * i;
 
             odyssey_shadow_ring(s, base, 0, slot, v->word,
                                 v->operands, odyssey_cmd_arity(v->word));
-            odyssey_shadow_put(s, base, 0x8c + 8 * slot, selector);
-            odyssey_shadow_put(s, base, 0x90 + 8 * slot, selector);
+            odyssey_shadow_descriptor(s, base, 0x8c + 8 * slot,
+                                      v->attribute, i);
             for (unsigned a = 1; a < 19; a++) {
                 if (!v->attribute[a][0]) {
                     continue;
@@ -2604,8 +2646,8 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
                                     odyssey_cmd_arity(v->attribute[a][0]));
             }
         }
-        odyssey_shadow_put(s, base, 0x84, UINT32_MAX);
-        odyssey_shadow_put(s, base, 0x88, UINT32_MAX);
+        odyssey_shadow_descriptor(s, base, ODSY_HW_CURRENT_ATTRIBUTES,
+                                  current, 3);
         for (i = 0; i < 19; i++) {
             if (!current[i][0]) {
                 continue;
