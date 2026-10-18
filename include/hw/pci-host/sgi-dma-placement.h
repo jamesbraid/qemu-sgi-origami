@@ -22,6 +22,7 @@ typedef enum SGIDMAPlacement {
     SGI_DMA_PLACEMENT_WORD,         /* PCI byte k is host byte k ^ 3 */
     SGI_DMA_PLACEMENT_DOUBLEWORD,   /* PCI byte k is host byte 7 - k */
     SGI_DMA_PLACEMENT_HALF_WRITE,   /* synthetic XBridge direct write */
+    SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE,
     SGI_DMA_PLACEMENTS,
 } SGIDMAPlacement;
 

@@ -234,7 +234,8 @@ MemTxResult sn1_fabric_packet_target_rw(AddressSpace *as, hwaddr offset,
         rcu_read_unlock();
         return result;
     }
-    if (write && packet_attrs.half_write_requested && size == 8 &&
+    if (write && (packet_attrs.half_write_requested ||
+                  packet_attrs.word_write_requested) && size == 8 &&
         !(offset & 7)) {
         hwaddr xlat, span = size;
         uint8_t swapped[8];

@@ -235,6 +235,12 @@ typedef struct NIRequester {
     uint32_t result;
 } NIRequester;
 
+typedef struct NISplitWriteLeaf {
+    MemoryRegion region;
+    uint32_t value;
+    uint64_t writes;
+} NISplitWriteLeaf;
+
 struct NIFixtureState {
     SysBusDevice parent_obj;
     DeviceState *compute;
@@ -295,11 +301,19 @@ struct NIFixtureState {
     bool ram_overlay_enabled;
     MemoryRegion ram_split;
     bool ram_split_enabled;
+    NISplitWriteLeaf split_write_leaf[2];
+    bool split_write_observed;
     MemoryRegion ram_error;
     bool ram_error_enabled;
     uint64_t ram_error_reads;
     MemoryRegion ram_device;
     bool ram_device_enabled;
+    MemoryRegion ram_rom;
+    bool ram_rom_enabled;
+    MemoryRegion ram_write_error;
+    bool ram_write_error_enabled;
+    uint64_t ram_write_error_count;
+    uint64_t ram_write_error_value;
     bool ram_unmapped_tail;
     uint8_t ram_device_bytes[8];
     uint64_t ram_overlay_value;
@@ -511,6 +525,18 @@ static uint64_t status_read(void *opaque, hwaddr offset, unsigned size)
         return s->packet_reads;
     case 18:
         return s->ram_error_reads;
+    case 19:
+        return s->ram_write_error_count;
+    case 20:
+        return s->ram_write_error_value;
+    case 21:
+        return s->split_write_leaf[0].writes;
+    case 22:
+        return s->split_write_leaf[1].writes;
+    case 23:
+        return s->split_write_leaf[0].value;
+    case 24:
+        return s->split_write_leaf[1].value;
     default:
         return 0;
     }
@@ -545,6 +571,47 @@ static MemTxResult ram_error_read(void *opaque, hwaddr offset,
 
 static const MemoryRegionOps ram_error_ops = {
     .read_with_attrs = ram_error_read,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static MemTxResult ram_write_error(void *opaque, hwaddr offset,
+                                   uint64_t value, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    NIFixtureState *s = opaque;
+
+    s->ram_write_error_count++;
+    s->ram_write_error_value = value;
+    return MEMTX_ACCESS_ERROR;
+}
+
+static const MemoryRegionOps ram_write_error_ops = {
+    .write_with_attrs = ram_write_error,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
+};
+
+static uint64_t split_write_leaf_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    return ((NISplitWriteLeaf *)opaque)->value;
+}
+
+static void split_write_leaf_write(void *opaque, hwaddr offset,
+                                   uint64_t value, unsigned size)
+{
+    NISplitWriteLeaf *leaf = opaque;
+
+    leaf->value = value;
+    leaf->writes++;
+}
+
+static const MemoryRegionOps split_write_leaf_ops = {
+    .read = split_write_leaf_read,
+    .write = split_write_leaf_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 4, .max_access_size = 4 },
     .impl = { .min_access_size = 4, .max_access_size = 4 },
@@ -1017,6 +1084,10 @@ static void fixture_build(DeviceState *dev, Error **errp)
                    "management=false");
         return;
     }
+    if (s->ram_split_enabled && s->split_write_observed) {
+        error_setg(errp, "choose one split RAM observation fixture");
+        return;
+    }
     if (s->card_device > 2) {
         error_setg(errp, "Card device must be 0, 1 or 2");
         return;
@@ -1036,6 +1107,19 @@ static void fixture_build(DeviceState *dev, Error **errp)
         }
         memory_region_add_subregion_overlap(&s->ram, 0x8ffc,
                                             &s->ram_split, 1);
+    }
+    if (s->split_write_observed) {
+        for (i = 0; i < 2; i++) {
+            NISplitWriteLeaf *leaf = &s->split_write_leaf[i];
+            g_autofree char *name = g_strdup_printf(
+                "ni-fixture.split-write-%u", i);
+
+            memory_region_init_io(&leaf->region, OBJECT(s),
+                                  &split_write_leaf_ops, leaf, name, 4);
+            leaf->region.disable_reentrancy_guard = true;
+            memory_region_add_subregion_overlap(&s->ram, 0x8ff8 + i * 4,
+                                                &leaf->region, 1);
+        }
     }
     if (s->ram_error_enabled) {
         memory_region_init_io(&s->ram_error, OBJECT(s), &ram_error_ops, s,
@@ -1058,6 +1142,22 @@ static void fixture_build(DeviceState *dev, Error **errp)
                                           s->ram_device_bytes);
         memory_region_add_subregion_overlap(&s->ram, 0xa000,
                                             &s->ram_device, 1);
+    }
+    if (s->ram_rom_enabled) {
+        if (!memory_region_init_rom(&s->ram_rom, OBJECT(s),
+                                    "ni-fixture.ram-rom", 8, errp)) {
+            return;
+        }
+        memory_region_add_subregion_overlap(&s->ram, 0xb000,
+                                            &s->ram_rom, 1);
+    }
+    if (s->ram_write_error_enabled) {
+        memory_region_init_io(&s->ram_write_error, OBJECT(s),
+                              &ram_write_error_ops, s,
+                              "ni-fixture.ram-write-error", 8);
+        s->ram_write_error.disable_reentrancy_guard = true;
+        memory_region_add_subregion_overlap(&s->ram, 0xc000,
+                                            &s->ram_write_error, 1);
     }
     address_space_init(&s->ram_as, &s->ram, "ni-fixture.ram");
     s->compute = qdev_new(TYPE_SGI_BEDROCK);
@@ -1357,7 +1457,7 @@ static void fixture_build(DeviceState *dev, Error **errp)
         SGI_XBRIDGE_HEAD(head)->wide_slot_mask &= ~BIT(s->card_device);
     }
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "ni-fixture.status", 152);
+                          "ni-fixture.status", 200);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
         "ni-fixture.ram-observation", &s->ram, 0, ram_bytes);
@@ -1459,9 +1559,14 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 static const Property fixture_properties[] = {
     DEFINE_PROP_BOOL("ram-overlay", NIFixtureState, ram_overlay_enabled, false),
     DEFINE_PROP_BOOL("ram-split", NIFixtureState, ram_split_enabled, false),
+    DEFINE_PROP_BOOL("split-write-observed", NIFixtureState,
+                     split_write_observed, false),
     DEFINE_PROP_BOOL("ram-error-half", NIFixtureState,
                      ram_error_enabled, false),
     DEFINE_PROP_BOOL("ram-device", NIFixtureState, ram_device_enabled, false),
+    DEFINE_PROP_BOOL("ram-rom", NIFixtureState, ram_rom_enabled, false),
+    DEFINE_PROP_BOOL("ram-write-error", NIFixtureState,
+                     ram_write_error_enabled, false),
     DEFINE_PROP_BOOL("ram-unmapped-tail", NIFixtureState, ram_unmapped_tail,
                      false),
     DEFINE_PROP_UINT32("compute-origins", NIFixtureState, compute_origins, 2),

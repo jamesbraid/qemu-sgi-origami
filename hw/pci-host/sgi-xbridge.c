@@ -188,6 +188,9 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
                                 write && size == 8 && !(address & 7),
         .half_read_requested = placement == SGI_DMA_PLACEMENT_HALF_WRITE &&
                                !write && size == 8 && !(address & 7),
+        .word_write_requested =
+            placement == SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE &&
+            write && size == 8 && !(address & 7),
     };
     MemTxResult result;
 
@@ -293,6 +296,12 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
          (flag == IOMMU_RO &&
           (direct_window || wide64_read || page_alias_read)))) {
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;
+    }
+    if (s->origin300_direct32_dma_word_write && s->packet_sender && rev2 &&
+        direct_window && (flag & IOMMU_WO) && !device_swap &&
+        (s->wide_slot_mask & BIT(dma->slot)) &&
+        (s->dma_64bit & BIT(dma->slot))) {
+        placement = SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE;
     }
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
@@ -1096,16 +1105,20 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         if (s->packet_sender) {
             g_autofree char *source_name = g_strdup_printf(
                 "xbridge.source-%u", i);
+            unsigned needed = BIT(SGI_DMA_PLACEMENT_IDENTITY) |
+                sgi_dma_placement_needed(s->req64_slots & BIT(i));
 
+            if (s->wide_slot_mask & BIT(i)) {
+                needed |= BIT(SGI_DMA_PLACEMENT_HALF_WRITE);
+                if (s->origin300_direct32_dma_word_write) {
+                    needed |= BIT(SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE);
+                }
+            }
             sgi_dma_placement_init_send(&s->dma[i].source, OBJECT(s),
                                         source_name,
                                         SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE,
-                                        BIT(SGI_DMA_PLACEMENT_IDENTITY) |
-                                        sgi_dma_placement_needed(
-                                            s->req64_slots & BIT(i)) |
-                                        ((s->wide_slot_mask & BIT(i)) ?
-                                         BIT(SGI_DMA_PLACEMENT_HALF_WRITE) : 0),
-                                        xbridge_source_send, &s->dma[i]);
+                                        needed, xbridge_source_send,
+                                        &s->dma[i]);
         }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
                                  TYPE_XBRIDGE_IOMMU, OBJECT(s), name,
@@ -1306,6 +1319,7 @@ struct SGIXBridgeState {
     bool superbridge;
     uint8_t packet_context;
     bool origin300_mem64_pio_width;
+    bool origin300_direct32_dma_word_write;
     SGIXBridgePacketFrame *active_packet;
     SGIXioPeer host_peer;
     SGIXioPeer head_peer[2];
@@ -1553,6 +1567,18 @@ bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp)
     return true;
 }
 
+bool sgi_xbridge_enable_origin300_direct32_dma_word_write(
+    SGIXBridgeState *s, Error **errp)
+{
+    if (DEVICE(s)->realized || !s->packet_context) {
+        error_setg(errp, "Origin 300 direct32 DMA write needs packet transport "
+                   "before XBridge realization");
+        return false;
+    }
+    s->origin300_direct32_dma_word_write = true;
+    return true;
+}
+
 bool sgi_xbridge_enable_origin300_mem64_pio_width(SGIXBridgeState *s,
                                                    Error **errp)
 {
@@ -1727,6 +1753,8 @@ static void chip_build(DeviceState *dev, Error **errp)
                                 s->wide_slot_mask_e);
             s->head[i].origin300_mem64_pio_width =
                 s->origin300_mem64_pio_width;
+            s->head[i].origin300_direct32_dma_word_write =
+                s->origin300_direct32_dma_word_write;
         }
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",

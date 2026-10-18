@@ -74,6 +74,7 @@ typedef struct SGIXioSource {
 typedef struct SGIXioPacketAttrs {
     bool half_write_requested;
     bool half_read_requested;
+    bool word_write_requested;
 } SGIXioPacketAttrs;
 
 struct SGIXioPortClass {
