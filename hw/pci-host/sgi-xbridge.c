@@ -279,17 +279,19 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     }
     placement = sgi_dma_placement_select(
         swap, s->dma_64bit & (1U << dma->slot));
-    /* Keep read exchange to marked direct32 and wide64 packets. */
+    /* Select read exchange only for the reviewed address classes. */
     bool device_swap = REG(s, 0x200 + dma->slot * 8) & (1U << 19);
     bool wide64_read = wide_64bit &&
                        (s->dma_64bit & BIT(dma->slot)) && device_swap;
+    bool page_alias_read = page_window && (addr & (1U << 29));
 
     if (s->packet_sender && rev2 && swap &&
         (s->wide_slot_mask & BIT(dma->slot)) &&
         ((flag != IOMMU_RO &&
           (direct_window || page_window ||
            (wide_64bit && device_swap))) ||
-         (flag == IOMMU_RO && (direct_window || wide64_read)))) {
+         (flag == IOMMU_RO &&
+          (direct_window || wide64_read || page_alias_read)))) {
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;
     }
     entry.translated_addr = destination & ~entry.addr_mask;
