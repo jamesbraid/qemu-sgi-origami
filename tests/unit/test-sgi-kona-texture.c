@@ -2399,6 +2399,67 @@ static void test_native_repeat_interior_mipmaps(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+/*
+ * tex_cube's small levels: an 8x8 texture whose 4x4, 2x2 and 1x1 levels
+ * arrive in 8x4 tiles at (4, 0), (6, 2) and (7, 3), the tile's extent
+ * minus the level's. The pyramid is complete, and level 2 samples the
+ * texels received at (6, 2).
+ */
+static void test_native_small_levels_far_corner(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    static const uint32_t origin[4][2] = { { 0, 0 }, { 4, 0 }, { 6, 2 },
+                                           { 7, 3 } };
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [9] = 0x30, [10] = 9,
+    };
+    uint32_t pixels[64], table[16];
+    SGIGLDrawState state = { .texture_2d = true,
+                            .texture_env_mode = SGI_GL_REPLACE };
+    const float color[4] = { 1, 1, 1, 1 };
+    const float coord[4] = { .5, .5, 0, 1 };
+    float out[4];
+    const SGIGLTexImage *im;
+
+    sgi_kona_texture_init(&s);
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
+    p.mag_filter = SGI_GL_NEAREST;
+    p.min_lod = p.max_lod = 2;
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = 23 + k;
+    }
+    g_assert_true(sgi_kona_texture_native_table(&s, 9, table));
+    g_assert_true(sgi_kona_texture_native_dimensions(&s, 9, 8, 8));
+    g_assert_true(sgi_kona_texture_native_layout(&s, 9, 0x33));
+    g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
+    for (unsigned level = 0; level < 4; level++) {
+        uint32_t w = 8u >> level;
+
+        h[1] = h[2] = w;
+        h[11] = origin[level][0];
+        h[12] = origin[level][1];
+        h[13] = h[11] + w - 1;
+        h[14] = h[12] + w - 1;
+        h[16] = level ? 0x23 : 0x33;
+        h[17] = level & 1 ? 8 : 0;
+        h[18] = level & 1 ? 0 : table[level];
+        h[19] = level & 1 ? table[level] : 0;
+        for (unsigned k = 0; k < w * w; k++) {
+            pixels[k] = level == 2 ? green[0] : red[0];
+        }
+        g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                    SGI_GL_RGBA, SGI_GL_RGBA));
+    }
+    im = sgi_kona_texture_resolve(&s);
+    g_assert_cmpuint(im->pyramid->count, ==, 4);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    g_assert_cmpfloat(out[1], ==, 1);
+    sgi_kona_texture_cleanup(&s);
+}
+
 static void test_filter_curve_budget(void)
 {
     SGIKonaTextureState s;
@@ -2516,6 +2577,8 @@ int main(int argc, char **argv)
                          test_native_border_interior_alias);
     g_test_add_func("/sgi/kona/texture/native-repeat-interior-mipmaps",
                     test_native_repeat_interior_mipmaps);
+    g_test_add_func("/sgi/kona/texture/native-small-levels-far-corner",
+                    test_native_small_levels_far_corner);
     g_test_add_func("/sgi/kona/texture/native-mixed-transport",
                     test_native_mixed_transport);
     g_test_add_func("/sgi/kona/texture/native-duplicate-transport-stream",

@@ -691,8 +691,9 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
     if (x >= l->width || y >= l->height || !l->pixels) {
         return false;
     }
-    *rgba = l->pixels[(size_t)y * (l->stride_width ? l->stride_width :
-                                  l->width) + x];
+    *rgba = l->pixels[(size_t)(y + l->origin_y) *
+                      (l->stride_width ? l->stride_width : l->width) +
+                      x + l->origin_x];
     if (l->base_format == SGI_GL_RGB) {
         *rgba |= 0xff;
     }
@@ -791,9 +792,42 @@ static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
     return true;
 }
 
+static bool texture_native_covers(const SGIKonaTextureNativeImage *n,
+                                   uint32_t x0, uint32_t y0, uint32_t width,
+                                   uint32_t height, uint32_t depth)
+{
+    for (uint32_t z = 0; z < depth; z++) {
+        for (uint32_t y = 0; y < height; y++) {
+            uint64_t row = ((uint64_t)z * n->image.height + y0 + y) *
+                           n->image.width + x0;
+
+            for (uint32_t x = 0; x < width; x++) {
+                if (!native_covered(n->coverage, row + x)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/*
+ * Whether native image n holds level `level` of o's interior, and where:
+ * *x0 and *y0 are the level's texel (0, 0) in the image.
+ *
+ * A 2D level smaller than its tile minimum (eight by four texels in
+ * layout mode zero) is either at the tile's origin or in its far corner,
+ * at the tile's extent minus the level's. tex_cube (IRIX 6.5.30) loaded
+ * its 4x4, 2x2 and 1x1 levels into 8x4 tiles at (4, 0), (6, 2) and
+ * (7, 3), each header naming its own origin; perfly's first two textures
+ * put theirs at the origin under the same tile size. What makes the
+ * library choose one placement is not read, so the model takes the level
+ * where its texels were received: the origin first, then the far corner.
+ */
 static bool texture_native_interior(const SGIKonaTextureObject *o,
                                       const SGIKonaTextureNativeImage *n,
-                                      unsigned level)
+                                      unsigned level, uint32_t *x0,
+                                      uint32_t *y0)
 {
     bool volume = o->native_depth != 0;
     uint32_t width = MAX(1u, o->native_width >> level);
@@ -808,24 +842,22 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
     if (volume) {
         geometry |= MAX(pr - (int)level, 1) << 8;
     }
+    *x0 = *y0 = 0;
     if (o->params.base_level || !o->native_width ||
         (n->header[17] & 0x60) != (volume ? 0x40 : 0) ||
         n->header[16] != geometry || width > n->image.width ||
         height > n->image.height || depth > n->image.depth) {
         return false;
     }
-    for (uint32_t z = 0; z < depth; z++) {
-        for (uint32_t y = 0; y < height; y++) {
-            uint64_t row = ((uint64_t)z * n->image.height + y) * n->image.width;
-
-            for (uint32_t x = 0; x < width; x++) {
-                if (!native_covered(n->coverage, row + x)) {
-                    return false;
-                }
-            }
-        }
+    if (texture_native_covers(n, 0, 0, width, height, depth)) {
+        return true;
     }
-    return true;
+    if (volume || (width == n->image.width && height == n->image.height)) {
+        return false;
+    }
+    *x0 = n->image.width - width;
+    *y0 = n->image.height - height;
+    return texture_native_covers(n, *x0, *y0, width, height, 1);
 }
 
 static uint32_t texture_native_view(SGIKonaTextureObject *o)
@@ -840,6 +872,7 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
     for (unsigned level = 0; level < limit; level++) {
         SGIKonaTextureNativeImage *interior = NULL;
         SGIKonaTextureLevel *image = NULL;
+        uint32_t image_x = 0, image_y = 0, ox = 0, oy = 0;
         uint32_t descriptor = o->native_table[level];
         bool ambiguous = false;
 
@@ -874,7 +907,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             matches = matches &&
                       (!o->native_format_valid || h[9] == o->native_format);
             if (o->native_layout_valid) {
-                matches = matches && texture_native_interior(o, n, level);
+                matches = matches &&
+                          texture_native_interior(o, n, level, &ox, &oy);
             } else {
                 matches = matches && n->covered == native_pixels(n) &&
                           texture_dimensions(n->image.width, n->image.height);
@@ -890,6 +924,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 }
                 image = &n->image;
                 interior = n;
+                image_x = ox;
+                image_y = oy;
             }
         }
         if (ambiguous) {
@@ -923,6 +959,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 view->width = MAX(1u, o->native_width >> level);
                 view->height = MAX(1u, o->native_height >> level);
             }
+            view->origin_x = image_x;
+            view->origin_y = image_y;
             if (o->native_internal_valid) {
                 view->base_format = o->native_base_format;
                 view->internal_format = o->native_internal_format;
