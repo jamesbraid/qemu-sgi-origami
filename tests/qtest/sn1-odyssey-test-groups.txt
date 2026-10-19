@@ -200,6 +200,10 @@ gl /mips64/sn1/odyssey/command-fifo-gl-window-restore
 gl /mips64/sn1/odyssey/command-fifo-gl-window-offscreen-tail
 gl /mips64/sn1/odyssey/command-fifo-gl-window-tail-migration
 gl /mips64/sn1/odyssey/command-fifo-gl-window-tail-migration-absent
+gl /mips64/sn1/odyssey/command-fifo-gl-window-id-compare
+gl /mips64/sn1/odyssey/command-fifo-gl-window-id-compare-restore
+gl /mips64/sn1/odyssey/command-fifo-gl-window-id-compare-migration
+gl /mips64/sn1/odyssey/command-fifo-gl-window-id-compare-triangle
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-luminance
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-rgb
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-rgba

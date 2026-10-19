@@ -5434,6 +5434,10 @@ static void test_command_fifo_compare_neutral_user(void)
     test_command_fifo_compare_neutral(true);
 }
 
+/*
+ * A non-zero 0x840 pair whose second operand has bit 16 clear is a decoded,
+ * disabled id test: nothing is reported and every later write lands.
+ */
 static void test_command_fifo_compare_nonzero(bool user, bool second)
 {
     g_autoptr(GError) error = NULL;
@@ -5481,8 +5485,7 @@ static void test_command_fifo_compare_nonzero(bool user, bool second)
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
-    g_assert_nonnull(strstr(log,
-                            "command FIFO word 0x00010840 is not modeled"));
+    g_assert_null(strstr(log, "0x00010840"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -10387,6 +10390,202 @@ static void test_scanout_overlay_unselected_mask(void)
     g_assert_cmpuint(count_substr(log, "selects neither the id nor the "
                                        "overlay byte"), ==, 1);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * The 0x840 drawable-id test. When a window's visible region needs more than
+ * four rectangles, the X server sends its bounding rectangle alone and the
+ * kernel enables the test in 0x840's second operand: bit 16 on, the id mask
+ * in bits 15:8 (0xf8 for the main id) and the window's id in bits 7:0
+ * (id << 3). Writes then land only where the id byte matches. Here the probe
+ * window has id 25 and a window with id 3 covers part of it; the clear
+ * spans the probe window's whole rectangle but leaves the other window's
+ * pixels alone. With bit 16 clear nothing is tested, whatever else the word
+ * holds; the low-field form (mask 0x07) compares only the id's low field.
+ */
+#define ODSY_ID_PLANE_BASE 0x142000
+#define ODSY_ID_COMPARE_ON 0x00010000u
+#define ODSY_ID_COMPARE_MAIN(id) (ODSY_ID_COMPARE_ON | 0xf800u | ((id) << 3))
+
+static void id_compare(QTestState *qts, bool user, uint32_t test)
+{
+    compare_push(qts, user, ODSY_CMD_DID_COMPARE);
+    compare_push(qts, user, ODSY_ID_PLANE_BASE);
+    compare_push(qts, user, test);
+}
+
+/* The probe window, id 25, under an id-3 window at [300, 340) x [320, 350). */
+static void id_compare_windows(QTestState *qts)
+{
+    id_plane_write(qts, 25, 0xf8, 256, 256, 384, 384);
+    id_plane_write(qts, 3, 0xf8, 300, 320, 340, 350);
+}
+
+static bool id_compare_covered(uint32_t x, uint32_t y)
+{
+    return x >= 300 && x < 340 && y >= 320 && y < 350;
+}
+
+static void assert_id_compare_clear(QTestState *qts, bool tested)
+{
+    g_assert_cmphex(odsy_test_pixel(qts, 260, 260), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 299, 320), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 340, 349), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 383, 383), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 320), ==,
+                    tested ? 0 : ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 339, 349), ==,
+                    tested ? 0 : ODSY_PLANE_BLUE);
+}
+
+static void test_command_fifo_gl_window_id_compare(void)
+{
+    QTestState *qts = board_start("");
+
+    id_compare_windows(qts);
+    probe_window(qts);
+    id_compare(qts, false, ODSY_ID_COMPARE_MAIN(25));
+    push_captured_clear(qts);
+    assert_id_compare_clear(qts, true);
+    board_quit(qts);
+
+    qts = board_start("");
+    id_compare_windows(qts);
+    probe_window(qts);
+    id_compare(qts, false, 0x2ee4f8c8);
+    push_captured_clear(qts);
+    assert_id_compare_clear(qts, false);
+    board_quit(qts);
+
+    /* Low field 5 under the probe window, 2 under the other; bits 31:17 set. */
+    qts = board_start("");
+    id_compare_windows(qts);
+    aux_write(qts, 5, 0x07, 0x3, 256, 256, 384, 384);
+    aux_write(qts, 2, 0x07, 0x3, 300, 320, 340, 350);
+    probe_window(qts);
+    id_compare(qts, false, 0xfffe0000u | ODSY_ID_COMPARE_ON | 0x0705);
+    push_captured_clear(qts);
+    assert_id_compare_clear(qts, true);
+    board_quit(qts);
+}
+
+/*
+ * The test is part of the window the kernel pushes. The off-screen tail's
+ * zero 0x840 does not replace it, a user-port 0x840 overrides it only until
+ * the library's 0x90008116, and the restore brings it back with the window.
+ */
+static void test_command_fifo_gl_window_id_compare_restore(void)
+{
+    QTestState *qts = board_start("");
+
+    id_compare_windows(qts);
+    probe_window(qts);
+    id_compare(qts, false, ODSY_ID_COMPARE_MAIN(25));
+    kernel_offscreen_tail(qts);
+    user_window_override(qts);
+    id_compare(qts, true, 0);
+    user_cmd_push(qts, ODSY_CMD_WINDOW_RESTORE);
+    push_captured_clear(qts);
+    assert_id_compare_clear(qts, true);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * Saved between the tail's 0x204b and its 0x840, the destination still
+ * knows the next kernel 0x840 belongs to the tail and keeps the window's
+ * test for the restore.
+ */
+static void test_command_fifo_gl_window_id_compare_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-id-compare-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    id_compare_windows(from);
+    probe_window(from);
+    id_compare(from, false, ODSY_ID_COMPARE_MAIN(25));
+    window_origin(from, 0, 0);
+    kernel_offscreen_clip(from);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    id_compare(to, false, 0);
+    user_cmd_push(to, ODSY_CMD_WINDOW_RESTORE);
+    push_captured_clear(to);
+    assert_id_compare_clear(to, true);
+    board_quit(from);
+    board_quit(to);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A GL triangle under the test: every pixel is the untested draw's where the
+ * id matches and untouched where it does not. With the Mesa renderer on, the
+ * draw is refused for the window test and drawn on the scalar path.
+ */
+static void id_compare_triangle(QTestState *qts, bool tested, uint32_t *out)
+{
+    id_compare_windows(qts);
+    probe_window(qts);
+    if (tested) {
+        id_compare(qts, false, ODSY_ID_COMPARE_MAIN(25));
+    }
+    push_captured_triangle(qts);
+    odsy_test_pixels(qts, 256, 256, 128, 128, out);
+}
+
+static void test_command_fifo_gl_window_id_compare_triangle(void)
+{
+    g_autofree uint32_t *plain = g_new(uint32_t, 128 * 128);
+    g_autofree uint32_t *tested = g_new(uint32_t, 128 * 128);
+    g_autofree uint32_t *mesa = g_new(uint32_t, 128 * 128);
+    unsigned covered_drawn = 0;
+    QTestState *qts = board_start("");
+    bool have_mesa;
+
+    id_compare_triangle(qts, false, plain);
+    board_quit(qts);
+    qts = board_start("");
+    id_compare_triangle(qts, true, tested);
+    board_quit(qts);
+    for (uint32_t y = 0; y < 128; y++) {
+        for (uint32_t x = 0; x < 128; x++) {
+            uint32_t i = y * 128 + x;
+
+            if (id_compare_covered(256 + x, 256 + y)) {
+                covered_drawn += plain[i] != 0;
+                g_assert_cmphex(tested[i], ==, 0);
+            } else {
+                g_assert_cmphex(tested[i], ==, plain[i]);
+            }
+        }
+    }
+    /* The triangle does reach the covered window. */
+    g_assert_cmpuint(covered_drawn, >, 0);
+
+    qts = board_start(" -global sgi-odyssey.x-mesa-renderer=on");
+    have_mesa = !odsy_qom_get_bool(qts, "x-mesa-unavailable");
+    if (!have_mesa && g_getenv("QEMU_TEST_SGI_REQUIRE_MESA")) {
+        g_error("QEMU_TEST_SGI_REQUIRE_MESA is set, but the device found "
+                "no Mesa renderer");
+    }
+    id_compare_triangle(qts, true, mesa);
+    if (have_mesa) {
+        g_assert_cmpuint(odsy_mesa_fallbacks(qts, "window"), ==, 1);
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 0);
+    }
+    board_quit(qts);
+    g_assert_cmpmem(mesa, 128 * 128 * 4, tested, 128 * 128 * 4);
 }
 
 static void test_command_fifo_gl_colour_index(void)
@@ -19501,6 +19700,14 @@ int main(int argc, char **argv)
              test_command_fifo_gl_window_tail_migration);
     add_case("sn1/odyssey/command-fifo-gl-window-tail-migration-absent",
              test_command_fifo_gl_window_tail_migration_absent);
+    add_case("sn1/odyssey/command-fifo-gl-window-id-compare",
+             test_command_fifo_gl_window_id_compare);
+    add_case("sn1/odyssey/command-fifo-gl-window-id-compare-restore",
+             test_command_fifo_gl_window_id_compare_restore);
+    add_case("sn1/odyssey/command-fifo-gl-window-id-compare-migration",
+             test_command_fifo_gl_window_id_compare_migration);
+    add_case("sn1/odyssey/command-fifo-gl-window-id-compare-triangle",
+             test_command_fifo_gl_window_id_compare_triangle);
     add_case("sn1/odyssey/command-fifo-gl-texture-luminance",
              test_command_fifo_gl_texture_luminance);
     add_case("sn1/odyssey/command-fifo-gl-texture-rgb",

@@ -1856,21 +1856,41 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  *   (ESTABLISHED). A rectangle whose minimum exceeds its maximum is empty; the
  *   kernel marks unused ones (1, 1) .. (0, 0). The top byte is preserved by
  *   the kernel and ignored here.
- * - The compare record has no reviewed decode; encountering it stops command
- *   execution without drawing or publishing a completion.
+ * - 0x840, two operands: the drawable-id ownership test. Operand 0 is the
+ *   board address of the id planes; the kernel sends one per-board value,
+ *   0x142000 on the traced V12, the base the X server's id-plane writes also
+ *   select. The model has one id plane and does not decode it. Operand 1:
+ *   bit 16 enables the test, bits 15:8 are its mask and bits 7:0 its value.
+ *   Bits 31:17 are ignored: the kernel carries them over from whatever its
+ *   per-window word held, and traced pushes differ there.
+ *   ESTABLISHED as the software contract from the IRIX 6.5.30 IP30 kernel's
+ *   window push and the X server's clip validation (disassembly): the X
+ *   server describes a window by at most four rectangles; when the visible
+ *   region needs five or more it sends the window's bounding rectangle alone
+ *   and flags the window, and only then does the kernel set bit 16, with
+ *   mask 0xf8 and value id << 3 -- the main id field the X server's id-plane
+ *   writes fill -- or, for a window whose mode has any of bits 13:10 set,
+ *   mask 0x07 and the low id field (INFERRED: an overlay window).
+ *   INFERRED board behaviour: a pixel may be written only where its id
+ *   byte equals the value under the mask, the only reading under which one
+ *   bounding rectangle keeps a partly covered window's drawing off the
+ *   windows above it (bgpaste's full-screen background draws grey over
+ *   every window without it).
  *
  * The board adds the origin to window coordinates and keeps only pixels inside
  * one of the rectangles (INFERRED: the only reading under which the client's
  * window-relative clear
- * and the kernel's screen rectangle describe the same window). Both ports
- * write the one copy: the kernel re-pushes the window state at switch-in, so no
+ * and the kernel's screen rectangle describe the same window), and, with the
+ * 0x840 test enabled, only those whose id matches. Both ports write the one
+ * copy: the kernel re-pushes the window state at switch-in, so no
  * per-context copy is kept.
  *
  * Screen-to-screen copies (0x2031, odyssey_copy_rect_buffer()) are
  * APPROXIMATION, INFERRED to skip the rectangles, keeping only the plane
  * bound: IRIX 6.5.30's X server issues copies whose destinations lie wholly
  * outside the rectangles in force, with no 0x204b push in between, and
- * expects them to land. A
+ * expects them to land. They skip the 0x840 test too (unknown: no traced
+ * copy ran with it enabled). A
  * per-command clip enable in one of the block's constant words fits the same
  * traces equally well; OpenBSD's tail word 0x3222204b carries 0x204b in its
  * low half, where the X server's tails carry 0x0041 or 0x4000. Whether the
@@ -1894,7 +1914,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the whole 12-bit range and the other six words zero -- the same values
  * the library's own override sends -- and a zero 0x840. That tail is the
  * context's off-screen state, not its window: the library's later
- * 0x90008116 must bring back the window pushed just before it. Without
+ * 0x90008116 must bring back the window pushed just before it, its 0x840
+ * test included, so the tail's zero 0x840 is not committed either. Without
  * that, every textured or off-screen client switched in mid-upload drew its
  * next frame at the screen origin, over other windows. INFERRED, as the
  * restore itself is: that the board keeps the window through such a tail.
@@ -1912,7 +1933,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
-#define ODSY_REG_DID_COMPARE 0x0840     /* 2 operands: zero pair only */
+#define ODSY_REG_ID_COMPARE 0x0840      /* 2 operands: id-plane base, test */
+#define ODSY_ID_COMPARE_ENABLE (1u << 16)
+#define ODSY_ID_COMPARE_MASK_SHIFT 8
 #define ODSY_REG_WINDOW_CLIP 0x204b     /* 8 operands: four rectangles */
 #define ODSY_ORIGIN_BITS 13
 #define ODSY_CLIP_FIELD_MASK 0xfff
@@ -2969,7 +2992,7 @@ static void odyssey_publish(void *opaque, const SGICompletion *c)
      * board that never wrote the fence halfword. A cookie without the validity
      * marker (a future credit-return record) wants no fence.
      */
-    if (!s->did_compare && c->kind == SGI_DONE_WRITTEN &&
+    if (c->kind == SGI_DONE_WRITTEN &&
         (c->cookie & ODSY_FENCE_VALID)) {
         odyssey_fence(s, c->cookie);
     }
@@ -3189,35 +3212,44 @@ static bool odyssey_clip_is_offscreen(SGIOdysseyState *s)
 }
 
 /*
- * A command with an unknown compare record stops command execution. This
- * guard also prevents a pending pixel write from drawing after that stop.
- * The plane itself drops an out-of-plane store, but the family checks first
- * so the shared code never has to guess whose error it is (head-ops.h).
- * odyssey_pixel_allowed() below adds the window-clip rectangles for every
- * write except a copy destination, which calls this helper directly
+ * The plane bound. The plane itself drops an out-of-plane store, but the
+ * family checks first so the shared code never has to guess whose error it
+ * is (head-ops.h). odyssey_pixel_allowed() below adds the window tests for
+ * every write except a copy destination, which calls this helper directly
  * (odyssey_copy_rect_buffer()).
  */
 static bool odyssey_pixel_in_bounds(SGIOdysseyState *s, int64_t x, int64_t y)
 {
-    if (x < 0 || y < 0 || x >= SGI_ODYSSEY_WIDTH || y >= SGI_ODYSSEY_HEIGHT) {
-        return false;
-    }
-    if (s->did_compare) {
-        return false;
-    }
-    return true;
+    return x >= 0 && y >= 0 && x < SGI_ODYSSEY_WIDTH &&
+           y < SGI_ODYSSEY_HEIGHT;
+}
+
+static bool odyssey_id_compare_active(SGIOdysseyState *s)
+{
+    return s->id_compare & ODSY_ID_COMPARE_ENABLE;
+}
+
+/* The 0x840 ownership test (ODSY_REG_ID_COMPARE) at an in-plane pixel. */
+static bool odyssey_id_compare_passes(SGIOdysseyState *s, int64_t x,
+                                      int64_t y)
+{
+    uint8_t mask = s->id_compare >> ODSY_ID_COMPARE_MASK_SHIFT;
+
+    return !odyssey_id_compare_active(s) ||
+           !((s->did[y * SGI_ODYSSEY_WIDTH + x] ^ s->id_compare) & mask);
 }
 
 /*
  * The one pixel test every write but a copy destination passes: the plane
- * and drawable-id test above, then inside at least one kept clip rectangle
+ * bound and the 0x840 id test, then inside at least one kept clip rectangle
  * -- with none kept nothing is drawn.
  */
 static bool odyssey_pixel_allowed(SGIOdysseyState *s, int64_t x, int64_t y)
 {
     unsigned int i;
 
-    if (!odyssey_pixel_in_bounds(s, x, y)) {
+    if (!odyssey_pixel_in_bounds(s, x, y) ||
+        !odyssey_id_compare_passes(s, x, y)) {
         return false;
     }
     for (i = 0; i < s->clip_kept; i++) {
@@ -5605,7 +5637,8 @@ static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
     rules = odyssey_gl_operation_rules(s);
     result = odyssey_native_mesa_draw_or_scalar(
         refusal ? NULL : &native, s->mesa_renderer, &rules, &draw,
-        odyssey_draw_buffers(s), SGI_RENDER_MONO, s->did_compare, refusal,
+        odyssey_draw_buffers(s), SGI_RENDER_MONO,
+        odyssey_id_compare_active(s), refusal,
         odyssey_gl_draw_result, s, &s->mesa_counts);
     trace_sgi_odyssey_gl_draw_path("mesa-adapter", result, true);
     return result;
@@ -8861,10 +8894,17 @@ static bool odyssey_texture_build_level(SGIOdysseyState *s)
  */
 static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
 {
+    bool after_tail = false;
+
     /* Only the kernel command right after its 0x841 can be its tail. */
     if (s->cmd_from_kernel && tag != ODSY_REG_WINDOW_ORIGIN &&
         tag != ODSY_REG_WINDOW_CLIP) {
         s->win_origin_pending = false;
+    }
+    /* And only the one right after the tail's 0x204b is its 0x840. */
+    if (s->cmd_from_kernel) {
+        after_tail = s->win_after_tail;
+        s->win_after_tail = false;
     }
     if (odyssey_is_program_word(tag)) {
         odyssey_gl_program_word(s, tag);
@@ -9630,11 +9670,18 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->win_origin_pending = true;
         }
         break;
-    case ODSY_REG_DID_COMPARE:
-        /* Active comparison is unknown; leave it inactive and report it. */
+    case ODSY_REG_ID_COMPARE:
+        s->id_compare = s->cmd_operand[1];
+        if (s->cmd_from_kernel && !after_tail) {
+            s->win_committed_id_compare = s->id_compare;
+        }
+        /*
+         * A non-zero pair still ends a pending query (which clears the
+         * operands), as when the word was undecoded: whether the board does
+         * is unknown, and no traced query has one inside it.
+         */
         if (s->cmd_operand[0] || s->cmd_operand[1]) {
             odyssey_query_cancel(s);
-            odyssey_cmd_unimplemented(s, ODSY_CMD_REGISTER_TAG | tag);
         }
         break;
     case ODSY_REG_WINDOW_CLIP:
@@ -9645,6 +9692,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             /* The off-screen tail: keep the window pushed before it. */
             memcpy(s->win_committed_origin, s->win_prior_origin,
                    sizeof(s->win_prior_origin));
+            s->win_after_tail = true;
         } else if (s->cmd_from_kernel) {
             memcpy(s->win_committed_clip, s->clip_words,
                    sizeof(s->clip_words));
@@ -9658,6 +9706,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         /* The committed window back (ODSY_CMD_WINDOW_RESTORE; INFERRED). */
         memcpy(s->win_origin, s->win_committed_origin, sizeof(s->win_origin));
         memcpy(s->clip_words, s->win_committed_clip, sizeof(s->clip_words));
+        s->id_compare = s->win_committed_id_compare;
         odyssey_clip_update(s);
         break;
     case ODSY_REG_LINE_STIPPLE:
@@ -9990,9 +10039,6 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
 /* One command-FIFO word, wherever the parser currently is. */
 static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
 {
-    if (s->did_compare) {
-        return;
-    }
     switch (s->query_stage) {
     case 1:
         s->query_count = word;
@@ -10579,12 +10625,13 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
         s->clip_words[2 * i + 1] = i ? 0 : ODSY_CLIP_RESET_FULL;
     }
     odyssey_clip_update(s);
-    s->did_compare = 0;
+    s->id_compare = 0;
     memcpy(s->win_committed_origin, s->win_origin, sizeof(s->win_origin));
     memcpy(s->win_committed_clip, s->clip_words, sizeof(s->clip_words));
-    s->win_committed_did = 0;
+    s->win_committed_id_compare = 0;
     memset(s->win_prior_origin, 0, sizeof(s->win_prior_origin));
     s->win_origin_pending = false;
+    s->win_after_tail = false;
     s->cmd_from_kernel = false;
     s->gl_primitive = 0;
     s->gl_color = 0;
@@ -11535,12 +11582,12 @@ static const VMStateDescription vmstate_odyssey_overlay = {
     },
 };
 
-/* Only between a kernel 0x841 and the command after it. */
+/* Only between a kernel 0x841 and the command after it, or after a tail. */
 static bool odyssey_window_tail_needed(void *opaque)
 {
     SGIOdysseyState *s = opaque;
 
-    return s->win_origin_pending;
+    return s->win_origin_pending || s->win_after_tail;
 }
 
 static const VMStateDescription vmstate_odyssey_window_tail = {
@@ -11551,6 +11598,7 @@ static const VMStateDescription vmstate_odyssey_window_tail = {
     .fields = (const VMStateField[]) {
         VMSTATE_INT32_ARRAY(win_prior_origin, SGIOdysseyState, 2),
         VMSTATE_BOOL(win_origin_pending, SGIOdysseyState),
+        VMSTATE_BOOL(win_after_tail, SGIOdysseyState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -11580,6 +11628,7 @@ static int odyssey_pre_load(void *opaque)
     s->gl_restart_absorb = s->gl_restart_total = 0;
     s->gl_restart_armed = false;
     s->win_origin_pending = false;
+    s->win_after_tail = false;
     memset(s->win_prior_origin, 0, sizeof(s->win_prior_origin));
     memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
     memset(s->overlay, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
@@ -11736,7 +11785,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY(clip_words, SGIOdysseyState,
                              2 * SGI_ODYSSEY_CLIP_RECTS),
         /* Sticky unsupported-command marker; keep this migration slot. */
-        VMSTATE_UINT32(did_compare, SGIOdysseyState),
+        VMSTATE_UINT32(id_compare, SGIOdysseyState),
         /* The colour buffer's base a DMA header names. */
         VMSTATE_UINT32(dma_colour_base, SGIOdysseyState),
         /* The GL depth state and the matrices it is rebuilt from. */
@@ -11765,7 +11814,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY(win_committed_clip, SGIOdysseyState,
                              2 * SGI_ODYSSEY_CLIP_RECTS),
         /* Retained for migration layout; no compare interpretation remains. */
-        VMSTATE_UINT32(win_committed_did, SGIOdysseyState),
+        VMSTATE_UINT32(win_committed_id_compare, SGIOdysseyState),
         /* The image source format and a pixel split across words. */
         VMSTATE_UINT32(image_code, SGIOdysseyState),
         VMSTATE_UINT32(image_bytes, SGIOdysseyState),
