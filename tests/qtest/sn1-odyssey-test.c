@@ -17034,8 +17034,8 @@ static void test_draw_sentinel_short_upload(void)
 /*
  * The GL library's ABGR image write (ipaste, bgpaste): code 0x6c, four
  * bytes a pixel in A, B, G, R order, bottom row first, word 1 relative to
- * the window. Callers differ in word 7 bit 27; both land. With bit 30 clear
- * the row order is unknown and nothing is painted.
+ * the window. Callers differ in word 7 bit 27; both land. Any other bit of
+ * words 4 and 7, bit 30 or bit 31 included, leaves the write unpainted.
  */
 static void test_draw_sentinel_abgr_upload(void)
 {
@@ -17071,12 +17071,20 @@ static void test_draw_sentinel_abgr_upload(void)
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 303, 403), ==, 0x97807fff);
 
-    /* Without bit 30 nothing is painted. */
+    /* Without bit 30, or with an unknown bit such as 31, nothing lands. */
     window_origin(qts, 500, 600);
     hdr[7] = 0x3201016c;
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 602), ==, 0);
+    hdr[7] = 0xc201016c;
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
+    /* Another word 4 is refused too. */
+    hdr[7] = 0x7201016c;
+    hdr[4] = 0x80035001;
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
 
     board_quit(qts);
 }
