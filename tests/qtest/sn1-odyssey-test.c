@@ -13172,6 +13172,13 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
         texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
         g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
     }
+    /*
+     * A 4x4 stored-border descriptor over this 2x2 upload: the zero-border
+     * table entry has the wrong row length and is refused; the stored one
+     * names an allocation too short for a 4x4 level, so the image is
+     * incomplete and draws untextured, as any bordered image missing a
+     * level does.
+     */
     sampler[1] = 0x08000840;
     sampler[2] = sampler[3] = 4;
     sampler[5] = linear ? 0x03002822 : 0x03002800;
@@ -13179,7 +13186,8 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
     push_user_words(qts, sampler, ARRAY_SIZE(sampler));
     odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
     texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
-    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==,
+                    stored ? 0xffff00ff : 0x123456ff);
     board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
 }
@@ -14301,6 +14309,70 @@ static void test_texture_adapter_edge_clamp_size_flag(void)
         }
         g_assert_cmphex(odsy_test_pixel(qts, 14, 11), ==, 0xff000040);
         g_assert_cmphex(odsy_test_pixel(qts, 15, 11), ==, 0x00ff0080);
+    }
+    board_quit(qts);
+}
+
+/* One bordered level: its w+2 square of stored texels at (15, 15). */
+static void texture_bordered_level_upload(QTestState *qts, uint32_t base,
+                                          unsigned w)
+{
+    unsigned n = w + 2;
+
+    upload_begin_xy(qts, base, 4, 0x080024d0, 15, 15, n, n);
+    for (unsigned y = 0; y < n; y++) {
+        user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+        user_cmd_push(qts, 0x0f01104b | n << 20);
+        user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+        user_cmd_push(qts, ODSY_IMAGE_BURST(n, ODSY_IMAGE_FMT_RGB));
+        for (unsigned x = 0; x < n; x++) {
+            user_cmd_push(qts, (0x20 * x) << 24 | (0x20 * y) << 16 |
+                               (0x40 + w) << 8 | 0xff);
+        }
+    }
+    upload_end(qts);
+}
+
+/*
+ * distort's form: a mipmapped GL_CLAMP RGBA image whose every level keeps
+ * a one-texel border, word 4's bit 28 clear and word 6's top byte 1, each
+ * level 16 texels in from its allocation's corner with a row of its width
+ * plus 32 texels in 16-texel units rounded up to even (four here, as the
+ * captured 2x2 and 1D stored-border uploads use). A linear tap past the
+ * edge reads the stored border texel, not the border colour or the edge.
+ * With a level missing the image is incomplete and draws untextured.
+ */
+static void test_texture_bordered_mipmap(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_bordered_level_upload(qts, 0x180000, 4);
+    texture_bordered_level_upload(qts, 0x181000, 2);
+    texture_bordered_level_upload(qts, 0x182000, 1);
+    texture_adapter_window(qts);
+    for (unsigned complete = 0; complete < 2; complete++) {
+        const uint32_t words[] = {
+            0x00010405, 0x10,
+            0x00011c16, 0x08000840, 4, 4, 1, 0x030028a2, 0, 0x01000000,
+            0x0001141b, 1, 0, 0, 0, 0,
+            0x00011013, 0, 0, 0x3100, 0x0f00,
+            0x00010e80, 0x180000, 0x41100004, 0,
+            0x00010e81, 0x181000, 0x41100004, 0,
+            /* Without its last level, at a base nothing was uploaded to. */
+            0x00010e82, complete ? 0x182000 : 0x183000, 0x41100004, 0,
+            0x00010406, 0,
+        };
+
+        push_user_words(qts, words, ARRAY_SIZE(words));
+        odsy_test_pixel_write(qts, 30, 12, 0x12345678);
+        texture_adapter_point(qts, 30, 12, 0.125f, 0.125f);
+        texture_adapter_point(qts, 31, 12, 0.0f, 0.125f);
+        if (!complete) {
+            g_assert_cmphex(odsy_test_pixel(qts, 30, 12), ==, 0xffff00ff);
+            continue;
+        }
+        g_assert_cmphex(odsy_test_pixel(qts, 30, 12), ==, 0x202044ff);
+        g_assert_cmphex(odsy_test_pixel(qts, 31, 12), ==, 0x102044ff);
     }
     board_quit(qts);
 }
@@ -19214,6 +19286,8 @@ int main(int argc, char **argv)
              test_texture_adapter_nearest_clamp);
     add_case("sn1/odyssey/texture-adapter/edge-clamp-size-flag",
              test_texture_adapter_edge_clamp_size_flag);
+    add_case("sn1/odyssey/texture-adapter/bordered-mipmap",
+             test_texture_bordered_mipmap);
     add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
                    test_texture_adapter_nearest_clamp_border);
     add_fresh_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",
