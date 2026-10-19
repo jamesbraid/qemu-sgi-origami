@@ -425,6 +425,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x1e0, 2 },
     /* glIglooInterfaceSGIX: one word after each selector. */
     { 0x112, 1 }, { 0x113, 1 }, { 0x1a9, 1 }, { 0x1be, 1 }, { 0x1c9, 1 },
+    /* glTexGen: coordinate, name and seven value words. */
+    { 0x14, 9 },
 };
 
 /*

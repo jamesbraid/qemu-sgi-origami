@@ -384,6 +384,16 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_IGLOO_SWAPTMESH   0x1a9
 #define SGI_KONA_CMD_GL_IGLOO_COLORNORMAL 0x1be
 #define SGI_KONA_CMD_GL_IGLOO_TMESHMODE   0x1c9
+/*
+ * glTexGen in every form sends 0x14 and nine words: the coordinate, the
+ * parameter name and seven value words, the unused ones zero (established
+ * from libGLcore's __glkonim_TexGen senders). A mode goes as one integer
+ * word; an object or eye plane as four floats; the two SGIX parameters
+ * 0x81f6 and 0x81f7 as seven floats. Texture coordinate generation is not
+ * modelled: the model frames and consumes the command.
+ */
+#define SGI_KONA_CMD_GL_TEX_GEN     0x14
+#define SGI_KONA_GL_TEX_GEN_WORDS   9
 /* glPopAttrib's per-light words after 0x119's count. */
 #define SGI_KONA_GL_POP_LIGHT_WORDS 12
 /* glPolygonStipple's rows after its three words, one word a row. */

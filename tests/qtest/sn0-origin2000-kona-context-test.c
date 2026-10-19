@@ -2701,6 +2701,48 @@ static void test_igloo_interface_framed(void)
 }
 
 /*
+ * glTexGen is 0x14 and nine words: coordinate, parameter name and seven
+ * value words. The four packets are those an IRIS GL atlantis sent while
+ * setting up its texture: an eye-linear mode for S and T, then each eye
+ * plane. Unframed, each word is dropped as neither a token nor a sync
+ * word, and a plane's float can land on a selector. Framed, nothing is
+ * dropped and the enable after them frames whole.
+ */
+static void test_tex_gen_framed(void)
+{
+    static const uint32_t sent[4][9] = {
+        { 0x2000, 0x2500, 0x2400 },
+        { 0x2000, 0x2502, 0x3a03126f },
+        { 0x2001, 0x2500, 0x2400 },
+        { 0x2001, 0x2502, 0, 0, 0x3a03126f },
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    const char *activated;
+    QTestState *s = kona_init_logged(&log);
+
+    context_a_with_filled_page(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(sent); i++) {
+        kona_command(s, 0x14, sent[i], ARRAY_SIZE(sent[i]));
+    }
+    kona_command(s, 0x24, (uint32_t[]){ 0xc60 }, 1);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    activated = strstr(found, "sgi_kona_context_activate token 0x1fd");
+    g_assert_nonnull(activated);
+    g_assert_false(log_shows_misframing(activated));
+    g_assert_cmpuint(count_occurrences(activated,
+                                       "token 0x14 argc 9 consumed"),
+                     ==, ARRAY_SIZE(sent));
+    g_assert_nonnull(strstr(activated, "token 0x14 args 0x2001 0x2502 0x0"
+                                       " argc 9\n"));
+    g_assert_nonnull(strstr(activated, "token 0x24 args 0xc60 0x0 0x0"
+                                       " argc 1\n"));
+}
+
+/*
  * A retrace request, 0x1e7 and its tag, completes at the next retrace:
  * the tag register reads the tag and the video cause bit 0x8 rises, with
  * the general vector sent, which is what runs kona_video_intr and its
@@ -2971,6 +3013,8 @@ int main(int argc, char **argv)
                    test_tex_table_usage_framed);
     qtest_add_func("sn0/origin2000/kona-context/igloo-interface-framed",
                    test_igloo_interface_framed);
+    qtest_add_func("sn0/origin2000/kona-context/tex-gen-framed",
+                   test_tex_gen_framed);
     qtest_add_func("sn0/origin2000/kona-context/retrace-request-completes",
                    test_retrace_request_completes);
     qtest_add_func("sn0/origin2000/kona-context/"
