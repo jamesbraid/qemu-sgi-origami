@@ -14265,6 +14265,46 @@ static void test_texture_adapter_nearest_clamp(void)
     board_quit(qts);
 }
 
+/*
+ * Clamp to edge (wrap field 1) on an axis comes with 0x4 in bits 23:16 of
+ * that axis's size word, as Performer's town sends; the flag is not part
+ * of the size. The flag on a repeat axis is still refused.
+ */
+static void test_texture_adapter_edge_clamp_size_flag(void)
+{
+    const uint32_t pixels[4] = {
+        0xff000040, 0x00ff0080, 0x0000ffc0, 0xffffffff,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload(qts, 0x180000, pixels);
+    texture_adapter_window(qts);
+    for (unsigned flagged = 0; flagged < 3; flagged++) {
+        const uint32_t words[] = {
+            0x00010405, 0x10,
+            0x00011c16, 0x08000420,
+            flagged ? 0x00040002 : 2, flagged == 1 ? 0x00040002 : 2, 1,
+            flagged == 2 ? 0x13000400 : 0x13001400, 0, 0,
+            0x0001141b, 1, 0, 0, 0, 0,
+            0x00010e80, 0x180000, 0, 0,
+            0x00010406, 0,
+        };
+
+        push_user_words(qts, words, ARRAY_SIZE(words));
+        odsy_test_pixel_write(qts, 14, 11, 0x12345678);
+        texture_adapter_point(qts, 14, 11, -0.25f, 0.25f);
+        texture_adapter_point(qts, 15, 11, 1.25f, 0.25f);
+        if (flagged == 2) {
+            /* Wrap field 0 on S with the flag on S: refused, no draw. */
+            g_assert_cmphex(odsy_test_pixel(qts, 14, 11), ==, 0x12345678);
+            continue;
+        }
+        g_assert_cmphex(odsy_test_pixel(qts, 14, 11), ==, 0xff000040);
+        g_assert_cmphex(odsy_test_pixel(qts, 15, 11), ==, 0x00ff0080);
+    }
+    board_quit(qts);
+}
+
 static void test_texture_adapter_nearest_clamp_border(void)
 {
     static const struct {
@@ -19172,6 +19212,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_detail_function_endpoints);
     add_case("sn1/odyssey/texture-adapter/nearest-clamp",
              test_texture_adapter_nearest_clamp);
+    add_case("sn1/odyssey/texture-adapter/edge-clamp-size-flag",
+             test_texture_adapter_edge_clamp_size_flag);
     add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
                    test_texture_adapter_nearest_clamp_border);
     add_fresh_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",

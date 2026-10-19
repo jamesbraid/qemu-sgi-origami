@@ -4930,6 +4930,19 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     if (border) {
         width &= 0xffff;
         height &= 0xffff;
+    } else {
+        /*
+         * An axis with wrap field 1 (clamp to edge) carries 0x4 in bits
+         * 23:16 of its size word, as Performer's town sends. Other axes
+         * carry none. INFERRED from that pairing, axis by axis, the way
+         * clamp to border's axes carry 0xfc.
+         */
+        if ((width_word >> 16) == (ws == 1 ? 0x4u : 0)) {
+            width &= 0xffff;
+        }
+        if ((height_word >> 16) == (wt == 1 ? 0x4u : 0)) {
+            height &= 0xffff;
+        }
     }
     if (odyssey_gl_index_mode(s)) {
         goto unsupported;
