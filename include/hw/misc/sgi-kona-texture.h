@@ -27,6 +27,8 @@ typedef struct SGIKonaTextureLevel {
     uint32_t *pixels;
     /* Borrowed views may use logical dimensions over a larger backing. */
     uint32_t stride_width, stride_height;
+    /* Where a view's texel (0, 0) sits in that backing; not migrated. */
+    uint32_t origin_x, origin_y;
     const struct SGIKonaTextureNativeImage *native_border;
 } SGIKonaTextureLevel;
 
