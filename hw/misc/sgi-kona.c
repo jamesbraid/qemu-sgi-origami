@@ -9222,7 +9222,11 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
      * with a tile the GC private holds at +0x88 (kona.so 0x539818-0x539874):
      * the GC then carries both colours and a stipple is loaded. A clear
      * stipple bit paints the background, as X's opaque stipple does
-     * (inferred; the pipe was not observed). With no stipple loaded the
+     * (inferred; the pipe was not observed). A tiled fill is drawn the same
+     * way, as a two-colour stipple from the loaded pattern and the GC's
+     * two colours: the senders seen load an 8x8 stipple before such a
+     * fill, and a tile with more than two colours could not be drawn
+     * correctly this way (approximated). With no stipple loaded the
      * pattern is unknown, so the fill is still refused.
      */
     if (!sgi_kona_x_decode_opaque(s, &gc, sgi_kona_x_stipple_loaded(s))) {
