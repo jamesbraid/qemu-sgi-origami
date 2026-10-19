@@ -6866,7 +6866,9 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     bool volume = target == 3, one_dimensional = target == 1;
     uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
 
-    if (!s->texture_bind_valid || handle == UINT32_MAX) {
+    /* A bind's record follows it; until then nothing is bound or refused. */
+    if (!s->texture_bind_valid || handle == UINT32_MAX ||
+        !s->texture_record_valid) {
         sgi_kona_texture_bind(&s->textures, UINT32_MAX, NULL);
         return;
     }

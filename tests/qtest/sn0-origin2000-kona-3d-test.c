@@ -4723,6 +4723,24 @@ static void test_texture_cache_entry_reuse(gconstpointer opaque)
     qtest_quit(s);
 }
 
+/*
+ * Every explicit bind is followed by its record. The bind alone binds
+ * nothing, which is not a refusal; the complete pair samples.
+ */
+static void test_texture_bind_awaits_record(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    texture_rebind_uploads(s, false);
+    texture_cache_bind(s, 29, 0);
+    assert_texture_pixel(s, 0, 0, 0x00ff00ff);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "unsupported native texture"),
+                     ==, 0);
+}
+
 /* One row of a 2 by 2 RGBA image under the given cache id. */
 static void texture_cache_row(QTestState *s, uint32_t id, uint32_t y,
                               const uint32_t pixels[2])
@@ -16493,6 +16511,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(2), test_texture_rebind_control);
     add_case("sn0/origin2000/kona-3d/texture/rebind-refusals",
              test_texture_rebind_refusals);
+    add_case("sn0/origin2000/kona-3d/texture-bind/awaits-record",
+             test_texture_bind_awaits_record);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/reuse",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_reuse);
     add_data_case(
