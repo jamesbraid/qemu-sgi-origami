@@ -14313,6 +14313,27 @@ static void test_texture_adapter_edge_clamp_size_flag(void)
     board_quit(qts);
 }
 
+/*
+ * 0x8080d005 with four floats is glVertex4f: the point lands where its
+ * homogeneous coordinates divide to, here (x + 0.5, y + 0.5) given as
+ * twice that over W 2. Before, the word was unknown and nothing drew.
+ */
+static void test_command_fifo_gl_vertex_4f(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_adapter_window(qts);
+    odsy_test_pixel_write(qts, 10, 20, 0x12345678);
+    push_user_words(qts, (uint32_t[]) {
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, 0, ODSY_F_ONE,
+        ODSY_CMD_GL_BEGIN, 0,
+        0x8080d005, bitmap_rect_float(21.0f), bitmap_rect_float(41.0f), 0,
+        bitmap_rect_float(2.0f), ODSY_CMD_GL_END,
+    }, 12);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 20), ==, 0xff00ffff);
+    board_quit(qts);
+}
+
 /* One bordered level: its w+2 square of stored texels at (15, 15). */
 static void texture_bordered_level_upload(QTestState *qts, uint32_t base,
                                           unsigned w)
@@ -19288,6 +19309,8 @@ int main(int argc, char **argv)
              test_texture_adapter_edge_clamp_size_flag);
     add_case("sn1/odyssey/texture-adapter/bordered-mipmap",
              test_texture_bordered_mipmap);
+    add_case("sn1/odyssey/command-fifo-gl-vertex-4f",
+             test_command_fifo_gl_vertex_4f);
     add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
                    test_texture_adapter_nearest_clamp_border);
     add_fresh_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",
