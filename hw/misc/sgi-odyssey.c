@@ -7757,12 +7757,20 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
     /* A 12-bit texture source into an object: a byte or two a component. */
     bool texel12 = obj >= 0 && comps &&
                    (bpp == comps || bpp == 2 * comps);
+    /*
+     * An 8-bit luminance-alpha source into an object, two bytes a pixel
+     * (size index 0): buttonfly's label texture, 256x256 from header words
+     * 4 0x80001000 and 7 0x32000048.
+     */
+    bool lum_alpha = obj >= 0 && bpp == 2 &&
+                     (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK) ==
+                     ODSY_IMAGE_CODE_LUM_ALPHA;
     g_autofree uint8_t *row = NULL;
     uint64_t payload = 0, pos = 0;
     uint32_t left, r, c;
     int n, i = 0;
 
-    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12) {
+    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12 && !lum_alpha) {
         if (!s->dma_bpp_reported) {
             s->dma_bpp_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA to buffer 0x%x at %u "
