@@ -394,8 +394,12 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_OFFSET_EXT, 2 },
     /* Three words of its own; the rows follow. */
     { SGI_KONA_CMD_GL_POLYGON_STIPPLE, 3 },
-    { SGI_KONA_CMD_GL_LINE_WIDTH, 1 },
-    { SGI_KONA_CMD_GL_POINT_SIZE, 1 },
+    /*
+     * The width, then the width limited to the library's maximum (32.0
+     * for lines, 22.0 for points in the n32 library).
+     */
+    { SGI_KONA_CMD_GL_LINE_WIDTH, 2 },
+    { SGI_KONA_CMD_GL_POINT_SIZE, 2 },
     { SGI_KONA_CMD_GL_LINE_STIPPLE, 2 },
     { SGI_KONA_CMD_GL_FOGF, 5 },
     { SGI_KONA_CMD_GL_FOGI, 5 },
