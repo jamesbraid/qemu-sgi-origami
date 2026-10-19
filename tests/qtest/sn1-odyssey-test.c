@@ -11690,6 +11690,50 @@ static void texture_adapter_upload_rgba8_colour_table(QTestState *qts,
 
 static void texture_adapter_window(QTestState *qts);
 
+/*
+ * pfCity's volume form: RGBA, linear and not mipmapped (word 4 0x13000022),
+ * slices 64 << level word 2 address units apart. A 2x2x4 volume with word 2
+ * of 3 puts its slices 0x200 apart, where the replaced rule (row length
+ * times word 2 times 64) put them 0x180 apart and found none past the
+ * first. A slice centre gives that slice's colour; halfway between slices
+ * 0 and 1 gives their mean.
+ */
+static void test_texture_volume_slice_spacing(void)
+{
+    static const uint32_t colours[4] = {
+        0x400000ff, 0x00c000ff, 0x0000a0ff, 0x808080ff,
+    };
+    const uint32_t words[] = {
+        0x00010405, 0x20,
+        0x00011c16, 0x08000000 | (1 << 10) | (1 << 5) | 2, 2, 2, 4,
+        0x13000022, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x190000, 0x41100002, 3,
+        0x00010406, 0,
+    };
+    QTestState *qts = board_start("");
+
+    for (unsigned z = 0; z < 4; z++) {
+        const uint32_t slice[4] = {
+            colours[z], colours[z], colours[z], colours[z],
+        };
+
+        texture_adapter_upload_3d_slice(qts, 0x190000 + z * 0x200, slice,
+                                        2, 2);
+    }
+    texture_adapter_window(qts);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    for (unsigned z = 0; z < 4; z++) {
+        odsy_test_pixel_write(qts, 10 + z, 10, 0x12345678);
+        texture_adapter_point_3d(qts, 10 + z, 10, 0.5f, 0.5f,
+                                 (z + 0.5f) / 4);
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + z, 10), ==, colours[z]);
+    }
+    texture_adapter_point_3d(qts, 14, 10, 0.5f, 0.5f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, 0x206000ff);
+    board_quit(qts);
+}
+
 static void texture_adapter_test_rgba8_colour_table(uint32_t sampler,
                                                      bool rgba, bool blend)
 {
@@ -19493,6 +19537,8 @@ int main(int argc, char **argv)
              test_texture_adapter_edge_clamp_size_flag);
     add_case("sn1/odyssey/texture-adapter/bordered-mipmap",
              test_texture_bordered_mipmap);
+    add_case("sn1/odyssey/texture-adapter/volume-slice-spacing",
+             test_texture_volume_slice_spacing);
     add_case("sn1/odyssey/command-fifo-gl-vertex-4f",
              test_command_fifo_gl_vertex_4f);
     add_fresh_case("sn1/odyssey/command-fifo-gl-empty-primitive",
