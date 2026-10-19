@@ -579,11 +579,15 @@
 #define ODSY_I2C_OPT_STATUS_READ 0x233a08
 
 /*
- * gfxinfo's displayed back-end version, bits 2:0: established as read, the
- * driver effect otherwise unknown. The model answers 0 for every profile; a
- * measured 128 MB second-generation board is believed to answer 1. Pinned
- * explicitly as an approximation rather than left to the unimplemented
- * fallback.
+ * The back-end (PB&J) version, bits 2:0. The kernel's board-information
+ * gather reads this word, masks it with 7 and reports it as gfxinfo's "PB&J
+ * version" (ESTABLISHED as driver behaviour). A 128 MB V12 (030-1611-001 rev
+ * C, BUZZ B.1) printed "PB&J version 1" in a published gfxinfo capture, and
+ * a first-party odydiags listing of a 128 MB board with BUZZ revision 10
+ * reports PB&J version 1 too. The value comes from the backend-version
+ * property: 1 for the v12 profile and the default, 0 for the other profiles,
+ * whose value no capture gives (an approximation). No library or kernel path
+ * other than the report was found to read it.
  */
 #define ODSY_BACKEND_VERSION 0x23380c
 
@@ -2348,8 +2352,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         value = odyssey_i2c_status(s->i2c_opt_cmd);
         break;
     case ODSY_BACKEND_VERSION:
-        /* Pinned at 0 for every profile; see the define's comment. */
-        value = 0;
+        value = s->backend_version & 7;
         break;
     case ODSY_ROUTE_DEST_UPPER:
     case ODSY_ROUTE_DEST_LOWER:
@@ -11025,17 +11028,19 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
  * the same second-generation part cut down to 32 MB; v8 and v6 are the first
  * generation (revision nibble 1) at 128 MB and 32 MB. No profile offers 64
  * MB, size code 3, or a revision nibble other than 0x1 and 0xa: the evidence
- * record does not establish them.
+ * record does not establish them. Only the 128 MB second-generation board's
+ * back-end version (1) is captured; the others keep 0 (ODSY_BACKEND_VERSION).
  */
 static const struct {
     const char *name;
     uint32_t revision;
     uint32_t memory_size;
+    uint32_t backend_version;
 } odyssey_profiles[] = {
-    { "v12", 0xa, 128 },
-    { "v10", 0xa, 32 },
-    { "v8",  0x1, 128 },
-    { "v6",  0x1, 32 },
+    { "v12", 0xa, 128, 1 },
+    { "v10", 0xa, 32, 0 },
+    { "v8",  0x1, 128, 0 },
+    { "v6",  0x1, 32, 0 },
 };
 
 static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
@@ -11049,6 +11054,7 @@ static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
         if (!strcmp(s->profile, odyssey_profiles[i].name)) {
             s->revision = odyssey_profiles[i].revision;
             s->memory_size = odyssey_profiles[i].memory_size;
+            s->backend_version = odyssey_profiles[i].backend_version;
             return true;
         }
     }
@@ -11552,8 +11558,8 @@ static void odyssey_instance_init(Object *obj)
  *
  * "profile" is a named preset for the generation/capacity pairs the family
  * evidence supports: v12 (default, the measured board above), v10, v8 and v6.
- * Selecting one overrides "revision" and "memory-size"; left unset, both keep
- * their own defaults/overrides unchanged.
+ * Selecting one overrides "revision", "memory-size" and "backend-version";
+ * left unset, each keeps its own default or override.
  */
 static const Property odyssey_properties[] = {
     DEFINE_PROP_LINK("pi", SGIOdysseyState, pi, TYPE_SGI_PI_GFX, Object *),
@@ -11561,6 +11567,7 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_UINT32("memory-size", SGIOdysseyState, memory_size, 128),
     DEFINE_PROP_UINT32("memory-banks", SGIOdysseyState, memory_banks, 2),
     DEFINE_PROP_UINT32("cas-latency", SGIOdysseyState, cas_latency, 3),
+    DEFINE_PROP_UINT32("backend-version", SGIOdysseyState, backend_version, 1),
     DEFINE_PROP_STRING("profile", SGIOdysseyState, profile),
     DEFINE_PROP_UINT64("nic-serial", SGIOdysseyState, nic_serial,
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),

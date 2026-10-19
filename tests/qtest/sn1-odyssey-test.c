@@ -1089,11 +1089,11 @@ static void test_reset_control_accepts_six_writes(void)
 }
 
 /*
- * gfxinfo's displayed back-end version at 0x23380c: established as read,
- * pinned at 0 for every profile as a documented approximation rather than
- * left to the generic unimplemented fallback (see the model's
- * ODSY_BACKEND_VERSION comment). A write is a guest error, the same as
- * every other read-only register in this block.
+ * gfxinfo's "PB&J version" is bits 2:0 of 0x23380c. A captured 128 MB V12
+ * printed 1, so the default and the v12 profile answer 1; the v8 profile,
+ * which no capture covers, keeps 0 (see the model's ODSY_BACKEND_VERSION
+ * comment). A write is a guest error, the same as every other read-only
+ * register in this block, and changes nothing.
  */
 static void test_backend_version_is_pinned(void)
 {
@@ -1114,8 +1114,16 @@ static void test_backend_version_is_pinned(void)
     extra = g_strdup_printf(" -d guest_errors -D %s", quoted);
     qts = board_start(extra);
 
-    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
-    qtest_writel(qts, WIDGET + ODSY_BACKEND_VERSION, 1);
+    /* The default, the v12 board: gfxinfo's "PB&J version 1". */
+    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 1);
+    qtest_writel(qts, WIDGET + ODSY_BACKEND_VERSION, 0);
+    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 1);
+    board_quit(qts);
+
+    qts = board_start(" -global sgi-odyssey.profile=v12");
+    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 1);
+    board_quit(qts);
+    qts = board_start(" -global sgi-odyssey.profile=v8");
     g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
     board_quit(qts);
 
