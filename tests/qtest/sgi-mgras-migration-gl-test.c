@@ -379,7 +379,7 @@ static void test_gl_texture_migration(void)
     g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0);
     gl_word(to, TEX_ON);
     tex_quad(to);
-    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x00ee88);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x00dd88);
     g_assert_cmphex(tex_texel_pixel(to, 3, 1), ==, 0x770088);
 
     texels[0] = 0x55;

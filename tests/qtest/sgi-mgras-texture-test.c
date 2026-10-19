@@ -2009,14 +2009,21 @@ static void test_gl_texture_volume_depth4_reset_load(void)
 }
 
 /*
- * The model keeps an RGBA4 level by truncating each 8-bit component to
- * its high four bits and draws it widened by replication, its own choice
- * (hw/misc/sgi-mgras-texture.c). The components chosen tell truncation
- * from (v + 8) >> 4 (0x18, 0x7f, 0xf8) and from round(v * 15 / 255)
- * (0x0f, 0xc0). The traced texels, 0x10 + i, 0x40 + i and 0x80 + i,
- * come out 0x11, 0x44, 0x88 under all three.
+ * The model keeps an RGBA4 level by rounding each 8-bit component to the
+ * nearest of 15, round(v * 15 / 255), and draws it widened by
+ * replication, its own choice (hw/misc/sgi-mgras-texture.c). The
+ * components chosen tell it from truncation, v >> 4 (0x0f, 0x18, 0x2a,
+ * 0x7f, 0xf8), and from (v + 8) >> 4 (0x18, 0xc0). A dark near-grey texel
+ * (0x10, 0x0c, 0x0c) stays grey, where truncation made it red. The
+ * traced texels, 0x10 + i, 0x40 + i and 0x80 + i, come out 0x11, 0x44,
+ * 0x88 under all three.
  */
-static void test_gl_texture_rgba4_truncates(gconstpointer data)
+static uint32_t tex_round4(uint8_t v)
+{
+    return (v * 15 + 127) / 255 * 0x11;
+}
+
+static void test_gl_texture_rgba4_rounds(gconstpointer data)
 {
     static const uint8_t comp[] = {
         0x0f, 0x18, 0x7f, 0xc0, 0xf8, 0x00, 0xff, 0x2a,
@@ -2030,14 +2037,18 @@ static void test_gl_texture_rgba4_truncates(gconstpointer data)
         texels[4 * i + 2] = comp[(i + 5) % 8];
         texels[4 * i + 3] = 0xc0 + i;
     }
+    texels[0] = 0x10;
+    texels[1] = 0x0c;
+    texels[2] = 0x0c;
     tex_load(t, TEX_TL_MODE_RGBA4, texels);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA4);
     tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x111111);
     for (int i = 0; i < 8; i++) {
         uint32_t want = 0;
 
         for (int k = 0; k < 3; k++) {
-            want = want << 8 | (texels[4 * i + k] >> 4) * 0x11;
+            want = want << 8 | tex_round4(texels[4 * i + k]);
         }
         g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==, want);
     }
@@ -2694,7 +2705,7 @@ static void test_gl_texture_rgb_image_into_rgba(void)
         uint32_t want = 0;
 
         for (int k = 0; k < 3; k++) {
-            want = want << 8 | (rgb[3 * i + k] >> 4) * 0x11;
+            want = want << 8 | tex_round4(rgb[3 * i + k]);
         }
         g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==, want);
     }
@@ -5508,11 +5519,11 @@ int main(int argc, char **argv)
         test_gl_texture_captured_volume_64k_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-volume-depth4-reset-load",
                    test_gl_texture_volume_depth4_reset_load);
-    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
-                        "si-t", test_gl_texture_rgba4_truncates);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-rounds",
+                        "si-t", test_gl_texture_rgba4_rounds);
     qtest_add_data_func(
-        "sn0/origin2000/mgras/gl-texture-rgba4-truncates/esi-t",
-        "esi-t", test_gl_texture_rgba4_truncates);
+        "sn0/origin2000/mgras/gl-texture-rgba4-rounds/esi-t",
+        "esi-t", test_gl_texture_rgba4_rounds);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-size-from-tl-spec",
                    test_gl_texture_size_from_tl_spec);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-tl-mode-persists",

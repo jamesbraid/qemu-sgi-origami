@@ -144,21 +144,24 @@
  *   tables, approximated: whether the board's TE1 state survives a
  *   context switch or an opener is unknown. TRAM survives both.
  *
- * - Depth. Approximated, the model's choice: an 8-bit host component
- *   kept at 4 bits is truncated (v >> 4) and widened back to 8 bits by
- *   replication (t * 17). The traced RGBA4 texels come out (1, 4, 8, 12)
- *   of 15 under it, and alpha 11 under round(v * 15 / 255), so the
- *   choice is visible; the board's conversion is unknown, and a physical
- *   render of texels differing in their low four bits would settle it.
+ * - Depth. Approximated, the model's choice: a host component kept at
+ *   4 bits is the nearest of 15, round(v * 15 / 255) for a byte and
+ *   round(c * 15 / 65535) for a halfword, and is widened back to 8 bits
+ *   by replication (t * 17). Truncating to the high four bits instead,
+ *   the earlier choice, darkened every texel by half a step on average
+ *   and turned near-grey dark texels red or black (perfly's town
+ *   streetlight base, (16, 12, 12) to (1, 0, 0)), which the
+ *   textureless SI's software texturing does not show. The board's
+ *   conversion is unknown; a physical render of texels differing in
+ *   their low four bits would settle it.
  *   An 8-bit depth keeps the host byte. A 12-bit component keeps the top
  *   12 bits of its host halfword (approximated; the board's reduction is
  *   unknown, and a render of texels differing in the dropped bits would
  *   settle it) and is drawn as the nearest of 255, the sampler's texels
  *   being 8-bit. A two-byte host component kept at 8 bits is
- *   round(c * 255 / 65535) and at 4 bits that value's top four bits,
- *   approximated for the same reason; OpenGL 1.2.1 3.6.4 defines the
- *   component as c / 65535. One-byte components into a 12-bit level are
- *   refused, logged: no such load was traced.
+ *   round(c * 255 / 65535), approximated for the same reason; OpenGL
+ *   1.2.1 3.6.4 defines the component as c / 65535. One-byte components
+ *   into a 12-bit level are refused, logged: no such load was traced.
  *
  * - Bind and draw. 0x0b00 with TEXMODE1 bit 0 set turns texturing on,
  *   0x0c00 or bit 0 clear off. A draw reads level 0 out of TRAM under the
@@ -191,7 +194,7 @@
  *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
- * gl-texture-rgba4-truncates, gl-texture-unsupported-draws-untextured,
+ * gl-texture-rgba4-rounds, gl-texture-unsupported-draws-untextured,
  * gl-texture-textureless-board-ignores, gl-texture-migration, the replay
  * fixture gl-texture-rgba4-quad, gl-texture-many-levels-in-one-context,
  * for the ABGR, short and bordered loads gl-texture-load-abgr-bytes,
@@ -2093,11 +2096,11 @@ static uint32_t mgras_tex_upload_component(const uint8_t *in, uint32_t n,
                                            uint32_t size, uint32_t depth)
 {
     if (size == 1) {
-        return depth == 4 ? in[n] >> 4 : in[n];
+        return depth == 4 ? (in[n] * 15 + 127) / 255 : in[n];
     }
     uint32_t c = lduw_be_p(&in[2 * n]);
     return depth == 12 ? c >> 4 :
-           depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
+           depth == 8 ? (c + 128) / 257 : (c * 15 + 32767) / 65535;
 }
 
 static void mgras_tex_upload_components(const uint8_t *in, uint32_t src,
