@@ -244,10 +244,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_LO    0x4e0
 #define SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_HI    0x518
 #define SGI_RAD1_AUDIO_REG_AES_SUB_A_CTRL       0x4e4
+#define SGI_RAD1_AUDIO_REG_AES_SUB_B_ADDR_LO    0x448
+#define SGI_RAD1_AUDIO_REG_AES_SUB_B_ADDR_HI    0x44c
+#define SGI_RAD1_AUDIO_REG_AES_SUB_B_CTRL       0x450
 #define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_LO   0x4d8
 #define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_HI   0x514
 #define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_CTRL      0x4dc
 #define SGI_RAD1_AUDIO_SUB_POS_A_SHIFT          4
+/*
+ * The Octane runs AES3-input subcode with no AES3 source, so the records are
+ * empty. Their rate is one per AES3 block of 192 frames at the AES3 clock's
+ * 48 kHz creation default: the driver unpacks six 32-bit words, 192 bits,
+ * per stream from each record, one AES3 channel-status block. That is an
+ * inference from the record layout; no capture times the records.
+ */
+#define SGI_RAD1_OCTANE_AES_SUB_FREQ \
+    (SGI_RAD1_AUDIO_AES_DEFAULT_FREQ / 192)
 #define SGI_RAD1_AUDIO_AES_SUB_WORDS            64
 #define SGI_RAD1_AUDIO_ADAT_SUB_WORDS           32
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO    0x4f8
@@ -612,7 +624,7 @@ struct SGIRad1AudioState {
     MemoryRegion bar0;
 
     /* Octane synthetic startup readback, separate from MediaIO state. */
-    uint32_t octane_startup[27];
+    uint32_t octane_startup[26];
     /* Two excluded doubleword holes remain unused in this address span. */
     uint64_t octane_subcode[68];
 
