@@ -599,7 +599,7 @@ bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
                                          SGIKonaTextureParams *params)
 {
     SGIKonaTextureParams next = *params;
-    uint32_t ordinary[22] = { 0, 0x00101010 };
+    uint32_t ordinary[22] = { 0, 0x00101010 }, volume_bind[5];
     unsigned min = (bind[2] >> 2) & 7, mag = (bind[2] >> 5) & 7;
 
     /* Volume clamp modes keep the R-border question; all stay refused. */
@@ -619,7 +619,19 @@ bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
         next.lod_scale_r = 1;
     }
     next.wrap_r = SGI_GL_REPEAT;
-    if (!sgi_kona_gl_texture_sampler(bind, ordinary, &next)) {
+    /*
+     * The fifth word is the texture's +0x2c0. Only the comparison setup
+     * at 0x21aa2c0 writes it: one, or zero with a comparison code in the
+     * third word's bits ten and eleven. pfCity (IRIX 6.5.30) binds its
+     * volume with zero and no comparison code, which neither branch
+     * writes, so that setup cannot have run for it. With no comparison
+     * code, zero is taken as one; that the pipe reads it so is inferred.
+     */
+    memcpy(volume_bind, bind, sizeof(volume_bind));
+    if (!volume_bind[4] && !((bind[2] >> 10) & 3)) {
+        volume_bind[4] = 1;
+    }
+    if (!sgi_kona_gl_texture_sampler(volume_bind, ordinary, &next)) {
         return false;
     }
     *params = next;
