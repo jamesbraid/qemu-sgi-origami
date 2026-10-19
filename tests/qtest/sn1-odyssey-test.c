@@ -9909,6 +9909,98 @@ static void test_command_fifo_gl_never_set_index(void)
     board_quit(qts);
 }
 
+/*
+ * The overlay. The X server's writes to the id-plane destination reach the
+ * id byte under drawing mask 0x3 -- the main id in bits 7:3, the overlay id
+ * in bits 2:0 -- and the overlay pixel byte under mask 0xc. Scanout shows
+ * overlay colormap entry 256 * group + pixel where the pixel's overlay id
+ * has an enabled mode at backend entry 0x2920 + id (group in bits 7:3, as
+ * flight's 0xb1 names group 22) and the overlay pixel is not zero; the main
+ * planes show elsewhere. An overlay GL context's colour-index clear to the
+ * same destination, bound as its draw drawable, fills the overlay byte and
+ * leaves the colour buffers and the id byte alone.
+ */
+static void draw_mask(QTestState *qts, uint32_t mask);
+static uint32_t odsy_buffer_pixel(QTestState *qts, uint32_t buffer,
+                                  uint32_t x, uint32_t y);
+
+static void aux_write(QTestState *qts, uint32_t value, uint32_t mask,
+                      uint32_t buffers, uint32_t x0, uint32_t y0,
+                      uint32_t x1, uint32_t y1)
+{
+    draw_mask(qts, buffers);
+    cmd_push(qts, ODSY_CMD_PLANE_MASK);
+    cmd_push(qts, mask << 12);
+    cmd_push(qts, 1);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0xff);
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x142000);
+    cmd_push(qts, 0x50);
+    cmd_push(qts, ODSY_DEST_ID_PLANES);
+    cmd_push(qts, 0);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_CMD_GL_QUADS);
+    cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+    cmd_push(qts, value);
+    quad_rect(qts, x0, y0, x1, y1);
+}
+
+static uint32_t odsy_did(QTestState *qts, uint32_t x, uint32_t y)
+{
+    odsy_test_pixel_select(qts, x, y);
+    return odsy_qom_get_uint(qts, "x-test-did");
+}
+
+static void test_scanout_overlay_planes(void)
+{
+    QTestState *qts = board_start("");
+
+    dispmode_write(qts, 1, ODSY_DISPMODE_GROUP17);
+    lut_write(qts, 0x1105, ODSY_LUT_RED);
+    id_plane_write(qts, 1, 0xf8, 100, 100, 140, 140);
+    colour_index_fill(qts, 5, 100, 100, 140, 140);
+    g_assert_cmphex(odsy_shown(qts, 110, 110), ==, 0xff0000ffu);
+
+    /* Overlay id 5 over the window, overlay pixel 0x30 over its left half. */
+    aux_write(qts, 5, 0x07, 0x3, 100, 100, 140, 140);
+    aux_write(qts, 0x30, 0xff, 0xc, 100, 100, 120, 140);
+    g_assert_cmphex(odsy_did(qts, 110, 110), ==, (1 << 3) | 5);
+    g_assert_cmphex(odsy_test_pixel(qts, 110, 110), ==, 5);
+    /* No mode for overlay id 5 yet: the main planes show. */
+    g_assert_cmphex(odsy_shown(qts, 110, 110), ==, 0xff0000ffu);
+
+    lut_write(qts, 0x2925, 0xb1);
+    lut_write(qts, 0x1630, ODSY_LUT_BLUE);
+    g_assert_cmphex(odsy_shown(qts, 110, 110), ==, 0x0000ffffu);
+    /* Overlay pixel 0 is transparent. */
+    g_assert_cmphex(odsy_shown(qts, 130, 110), ==, 0xff0000ffu);
+
+    /*
+     * An overlay GL context's glClearIndex(48), glClear, with the kernel's
+     * 0x608 binding the id-plane destination as its draw drawable.
+     */
+    aux_write(qts, 5, 0x07, 0x3, 256, 256, 384, 384);
+    probe_window(qts);
+    cmd_push(qts, 0x608);
+    cmd_push(qts, 0x80142000);
+    user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
+    user_cmd_push(qts, ODSY_GL_MODE_INDEX_B);
+    draw_mask(qts, 0xc);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x142000);
+    user_cmd_push(qts, 0x50);
+    user_cmd_push(qts, ODSY_DEST_ID_PLANES);
+    user_cmd_push(qts, 0);
+    push_clear(qts, 0x42400000, ODSY_F_ZERO, ODSY_F_ZERO, 0x43000000,
+               0x43000000);
+    g_assert_cmphex(odsy_shown(qts, 300, 300), ==, 0x0000ffffu);
+    g_assert_cmphex(odsy_did(qts, 300, 300), ==, 5);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 300, 300), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 300, 300), ==, 0);
+    board_quit(qts);
+}
+
 static void test_command_fifo_gl_colour_index(void)
 {
     QTestState *qts = board_start("");
@@ -18659,6 +18751,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_byte_colour_float_and_replay);
     add_case("sn1/odyssey/command-fifo-gl-float-colour-integer-vertices",
              test_command_fifo_gl_float_colour_integer_vertices);
+    add_case("sn1/odyssey/scanout-overlay-planes",
+             test_scanout_overlay_planes);
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
