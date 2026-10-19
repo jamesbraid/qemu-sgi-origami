@@ -2938,11 +2938,12 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
 /*
  * Clip IDs. When a window has no visible rectangle the kernel can give
  * (five or more), its clip validation (MgrasValidateClip, IRIX 6.5.30
- * mgras.o 0x6598-0x662c) binds the whole window as rectangle 0, mode 1,
- * and, when the window has a clip ID, sets bit 4 + ID of image word 4
- * (0x62d8-0x62f0 and 0x65d4-0x65dc compute (x & 3) | (y & 3) << 2 |
- * 1 << (4 + ID)). The same word goes to the kernel's shadow of raster
- * register 0x17b (0x634c), which the X server sets to 0xc00 for its own
+ * mgras.o, file offsets 0x6598-0x662c of the relocatable object) binds
+ * the whole window as rectangle 0, mode 1, and, when the window has a
+ * clip ID, sets bit 4 + ID of image word 4 (file offsets 0x62d8-0x62f0
+ * and 0x65d4-0x65dc compute (x & 3) | (y & 3) << 2 | 1 << (4 + ID)). The
+ * same word goes to the kernel's shadow of raster register 0x17b (file
+ * offset 0x634c), which the X server sets to 0xc00 for its own
  * drawing. The X server tags the window's visible region with that ID
  * first (sgi-mgras-raster.c, mgras_fill_clip_id()): twilight's window got
  * ID 1 over exactly its visible boxes and word 4 0x20 (run
@@ -2958,6 +2959,11 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
  * transaction a guest error cut short. Bits 11:10 (the X server's 0xc00)
  * and bits 3:0 are not modelled. The discriminating test is
  * gl-clip-id-owns-the-tagged-pixels.
+ *
+ * Limitation: the test covers GL fragment stores alone. Pixels a GL
+ * context writes through the raster path (DMA image draws, rectangle
+ * fills) are not tested against the clip ID; no capture shows a GL
+ * client writing that way into a clip-ID window.
  */
 static bool mgras_gl_owns(SGIMgrasState *s, int x, int y)
 {
