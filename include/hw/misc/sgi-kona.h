@@ -1449,6 +1449,8 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
  * definitions.
  */
 bool sgi_kona_x_pixel_dma_waiting(SGIKonaState *s);
+/* Whether the open X pixel write's owner is the current context. */
+bool sgi_kona_x_pixel_owned(SGIKonaState *s);
 bool sgi_kona_x_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                           uint32_t per_line, uint64_t pitch);
 
