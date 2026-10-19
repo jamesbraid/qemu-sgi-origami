@@ -6959,6 +6959,45 @@ static void test_command_fifo_gl_program_records_lit(void)
 }
 
 /*
+ * Colour material (the class 0x35 word): light.c's lit record, whose front
+ * diffuse material is (1, 0.5, 0.25), drawn under the current colour red.
+ * The library's word for GL_FRONT, GL_AMBIENT_AND_DIFFUSE (3) lights the
+ * triangle red; a back-only word (0x30) leaves the front material in charge,
+ * and 0, sent when GL_COLOR_MATERIAL is disabled, restores it. Bits past the
+ * eight the library uses are reported.
+ */
+static void test_command_fifo_gl_colour_material(void)
+{
+    static const uint32_t list[] = { 0x481, 0x203, 0x4ca, 0x4c5 };
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+
+    push_constants(qts, list, ARRAY_SIZE(list));
+    push_program(qts, 0, 0x5cb, 0x5d8, 0x5e5);
+    user_cmd_push(qts, ODSY_PROG(0x35, 0x3));
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe0000ffu);
+
+    user_cmd_push(qts, ODSY_PROG(0x35, 0x30));
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
+
+    user_cmd_push(qts, ODSY_PROG(0x35, 0x3));
+    user_cmd_push(qts, ODSY_PROG(0x35, 0));
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
+
+    user_cmd_push(qts, ODSY_PROG(0x35, 0x102));
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe0000ffu);
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_nonnull(strstr(log, "colour-material word value 0x102"));
+}
+
+/*
  * light.c's triangle lit under one normal sent before BEGIN, given as a
  * command word and its three operands, or under the current normal when
  * normal is NULL; returns the pixel inside it.
@@ -18088,6 +18127,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_record_lit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-records-lit",
                    test_command_fifo_gl_program_records_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-colour-material",
+                   test_command_fifo_gl_colour_material);
     add_fresh_case("sn1/odyssey/command-fifo-gl-integer-normals",
                    test_command_fifo_gl_integer_normals);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-unlit",

@@ -539,6 +539,11 @@ struct SGIOdysseyState {
     /* Raw back material retained for idle context save, not lighting. */
     uint32_t gl_back_material[16];
     uint32_t gl_back_shininess_sqrt;
+    /*
+     * The class 0x35 colour-material word's eight bits: the front then the
+     * back material colours gl_colour stands in for. Migrated when nonzero.
+     */
+    uint32_t gl_colour_material;
     uint32_t gl_normal[3];
     uint32_t gl_normal_matrix[16];
     uint32_t gl_colour[4];
