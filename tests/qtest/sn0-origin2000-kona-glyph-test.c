@@ -498,6 +498,37 @@ static void test_packing4_mono_image_geometry_gc(void)
     assert_in_step(qts);
 }
 
+#define PLANE_POPUP     10
+
+/*
+ * Packing 4 into the popup planes, as the Toolchest's menus draw their
+ * entries: cfg 0x1820, word 1 the popup pixel 2 in P(v), write mask
+ * 0x300000. Set bits store pixel 2 in the popup plane and clear bits leave
+ * it 0; the main plane is untouched. A model that took packing 4 only for
+ * the main planes refused it, and the menus showed no text.
+ */
+static void test_packing4_popup_glyph(void)
+{
+    unsigned row = KONA_FB_HEIGHT - 1 - 307;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 300, 330);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0xfff0, 0x200000, 0, 0,
+                                           0x300000, 0, 0x1820, 1, 0, 6, 0,
+                                           1, 1 }, 13);
+    bitmap_setup(qts, 4, 32, 20);
+    pixel_write(qts, 260, 304, glyph_h, 20);
+
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 260, row), ==, 2);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 261, row), ==, 0);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 268,
+                                    KONA_FB_HEIGHT - 1 - 313), ==, 2);
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_GREY);
+    assert_in_step(qts);
+}
+
 /* Several glyph writes can share the one finish sent for their label. */
 static void test_packing4_glyphs_one_finish(void)
 {
@@ -1453,6 +1484,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "packing4-mono-image-geometry-gc",
                    test_packing4_mono_image_geometry_gc);
+    qtest_add_func("sn0/origin2000/kona-glyph/packing4-popup-glyph",
+                   test_packing4_popup_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-glyphs-one-finish",
                    test_packing4_glyphs_one_finish);
     qtest_add_func("sn0/origin2000/kona-glyph/"
