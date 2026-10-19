@@ -448,6 +448,16 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_IGLOO_COLORNORMAL, 1 },
     { SGI_KONA_CMD_GL_IGLOO_TMESHMODE, 1 },
     { SGI_KONA_CMD_GL_TEX_GEN, SGI_KONA_GL_TEX_GEN_WORDS },
+    /* The double, integer and short glRasterPos forms. */
+    { SGI_KONA_CMD_GL_RASTER_POS2D, 4 },
+    { SGI_KONA_CMD_GL_RASTER_POS2I, 2 },
+    { SGI_KONA_CMD_GL_RASTER_POS2S, 2 },
+    { SGI_KONA_CMD_GL_RASTER_POS3D, 6 },
+    { SGI_KONA_CMD_GL_RASTER_POS3I, 3 },
+    { SGI_KONA_CMD_GL_RASTER_POS3S, 3 },
+    { SGI_KONA_CMD_GL_RASTER_POS4D, 8 },
+    { SGI_KONA_CMD_GL_RASTER_POS4I, 4 },
+    { SGI_KONA_CMD_GL_RASTER_POS4S, 4 },
 };
 const unsigned sgi_kona_gl_num_tokens = ARRAY_SIZE(sgi_kona_gl_tokens);
 

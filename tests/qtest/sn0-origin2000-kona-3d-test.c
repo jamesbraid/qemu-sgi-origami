@@ -6429,6 +6429,77 @@ static void draw_pixels_expected(QTestState *s, bool drawn)
     assert_window_matches(s, e);
 }
 
+/*
+ * The double, integer and short glRasterPos forms (0xa8, 0xaa to 0xb3
+ * but the float ones) place the DrawPixels image that follows. With the
+ * modelview scaled by 1/64, the integer forms' (16, 16) and the double
+ * forms' (0.25, 0.25) unscaled both land a quarter of the way into the
+ * 128-pixel window from its centre, at pixel (80, 80). A raw integer
+ * word read as a float would land at the centre instead, and an unframed
+ * form would misframe the image after it.
+ */
+static const char *const raster_pos_cases[] = {
+    "2i", "3s", "4i", "2d", "3d", "4d",
+};
+
+static void test_raster_pos_forms(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t h[] = { 2, 2, 5, 1, 0, 0, 0, 0 };
+    static const uint32_t data[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    static const uint32_t rgb[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
+    float scale[16] = { 0 };
+    g_autofree Expected *e = g_new(Expected, 1);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { -0.5, -0.5 }, 2);
+    if (mode < 3) {
+        scale[0] = scale[5] = scale[10] = 1.0f / 64;
+        scale[15] = 1;
+        kona_command_f(s, 0xd3, scale, 16);
+    }
+    switch (mode) {
+    case 0:
+        kona_command(s, 0xaa, (uint32_t[]) { 16, 16 }, 2);
+        break;
+    case 1:
+        kona_command(s, 0xaf, (uint32_t[]) { 16, 16, 0 }, 3);
+        break;
+    case 2:
+        kona_command(s, 0xb2, (uint32_t[]) { 16, 16, 0, 1 }, 4);
+        break;
+    case 3:
+        kona_command_d(s, 0xa8, (double[]) { 0.25, 0.25 }, 2);
+        break;
+    case 4:
+        kona_command_d(s, 0xac, (double[]) { 0.25, 0.25, 0 }, 3);
+        break;
+    default:
+        kona_command_d(s, 0xb0, (double[]) { 0.25, 0.25, 0, 1 }, 4);
+        break;
+    }
+    kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    for (unsigned k = 0; k < ARRAY_SIZE(data); k++) {
+        qtest_writel(s, REG_COMMAND, data[k]);
+    }
+    kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
+
+    expected_clear(e, 0x000000);
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned at = ((127 - (80 + k / 2)) * 128 + 80 + k % 2) * 3;
+
+        e->rgb[at] = rgb[k] >> 16;
+        e->rgb[at + 1] = rgb[k] >> 8;
+        e->rgb[at + 2] = rgb[k];
+    }
+    assert_window_matches(s, e);
+    qtest_quit(s);
+}
+
 static void test_draw_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -17587,6 +17658,13 @@ int main(int argc, char **argv)
         "contiguous-partial-migrates", "pack-3d-default",
         "pack-3d-refused",
     };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(raster_pos_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/raster-pos-forms/%s",
+            raster_pos_cases[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode), test_raster_pos_forms);
+    }
     for (unsigned mode = 0; mode < ARRAY_SIZE(draw_pixels_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/draw-pixels/%s", draw_pixels_cases[mode]);
