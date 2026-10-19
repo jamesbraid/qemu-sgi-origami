@@ -470,6 +470,34 @@ static void test_packing4_truecolor_glyph(void)
     assert_in_step(qts);
 }
 
+/*
+ * Packing 4 under kon_loadNfbBitmapGC's GC, konDrawMonoImage's: the glyph
+ * form's words 0 and 1 (0xfff0 and index 0x23 packed) with the geometry
+ * configuration, cfg 0xc, op 1 and ifmt 0, as the desktop's small mono
+ * images carried it. Set bits paint index 0x23 and clear bits leave the
+ * grey box. A model that took packing 4 only with cfg 0x180c refused it.
+ */
+static void test_packing4_mono_image_geometry_gc(void)
+{
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    load_entries(qts);
+    full_screen_clip(qts);
+    fill_box(qts, INDEX_GREY, 250, 300, 300, 330);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0xfff0, 0x230, 0, 0, 0xf00fff, 0,
+                                           0xc, 1, 1, 6, 0, 1, 1 }, 13);
+    bitmap_setup(qts, 4, 32, 20);
+    pixel_write(qts, 260, 304, glyph_h, 20);
+
+    g_assert_cmphex(front_at(qts, 260, 307), ==, INDEX_RED);
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(qts, 261, 307), ==, INDEX_GREY);
+    frame = kona_screendump(qts);
+    assert_glyph(frame, 260, 304, glyph_h, RGB_RED, RGB_GREY_192);
+    assert_in_step(qts);
+}
+
 /* Several glyph writes can share the one finish sent for their label. */
 static void test_packing4_glyphs_one_finish(void)
 {
@@ -1422,6 +1450,9 @@ int main(int argc, char **argv)
                    test_packing4_help_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-truecolor-glyph",
                    test_packing4_truecolor_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "packing4-mono-image-geometry-gc",
+                   test_packing4_mono_image_geometry_gc);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-glyphs-one-finish",
                    test_packing4_glyphs_one_finish);
     qtest_add_func("sn0/origin2000/kona-glyph/"

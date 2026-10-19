@@ -9869,6 +9869,7 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
     uint32_t pack = setup[SGI_KONA_X_SETUP_SRC_PACK];
     bool bitmap = pack == SGI_KONA_X_PACK_BITMAP ||
                   pack == SGI_KONA_X_PACK_OPAQUE_BITMAP;
+    bool geometry;
 
     memcpy(raw, s->x_write_gc, sizeof(raw));
     if (setup[SGI_KONA_X_SETUP_MODE] & ~SGI_KONA_X_SETUP_MODE_DMA) {
@@ -9899,8 +9900,16 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
         (!bitmap && pack != 0)) {
         return false;
     }
+    /*
+     * kon_loadNfbBitmapGC, konDrawMonoImage's loader, sends the glyph
+     * form's words 0 to 3 with the geometry configuration instead: cfg 0xc,
+     * op the format's low nibble (1), ifmt 0 (kona.so 0x439b0c-0x439c14,
+     * 0x43a0f4-0x43a1e8). The shared decoder reads that as a geometry GC,
+     * so its ifmt stays 0.
+     */
+    geometry = pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0xc;
     if (bitmap) {
-        if (raw[6] != 0x180c ||
+        if ((raw[6] != 0x180c && !geometry) ||
             raw[10] != (pack == SGI_KONA_X_PACK_BITMAP ? 0 : 5)) {
             return false;
         }
@@ -9921,7 +9930,7 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
             raw[2] = ((raw[2] & 0xfff0) << 4) | ((raw[2] & 15) << 3);
         }
         raw[1] = raw[3] = 0;
-        raw[10] = 5;
+        raw[10] = geometry ? 0 : 5;
     }
     return sgi_x_gc_decode_main_index(raw, gc) == SGI_X_GC_OK &&
            !gc->opaque_or_tiled;
