@@ -7031,6 +7031,57 @@ static void test_command_fifo_gl_clip_plane(void)
 }
 
 /*
+ * glVertex3i and glVertex3s send 0x8080cc02 and three raw signed integers.
+ * Under a combined matrix that maps object x and y straight to window
+ * pixels, the integer triangle (-100, 0) (60, 0) (-100, 120) covers window
+ * pixel (10, 20) and not (100, 100). Read as unsigned, -100 would put two
+ * corners past 4e9 and leave (10, 20) uncovered; read as floats, the
+ * operands are denormals and draw nothing. A float triangle afterwards
+ * still draws, so all three operands were consumed as data.
+ */
+static void test_command_fifo_gl_vertex_3i(void)
+{
+    static const uint32_t pixels[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0x3f800000, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0x3f800000,
+    };
+    static const uint32_t int_tri[] = {
+        ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT,
+        ODSY_GL_COLOR_3F, 0, 0x3f800000, 0,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        0x8080cc02, (uint32_t)-100, 0, 0,
+        0x8080cc02, 60, 0, 0,
+        0x8080cc02, (uint32_t)-100, 120, 7,
+        ODSY_CMD_GL_END,
+    };
+    static const uint32_t float_tri[] = {
+        ODSY_GL_COLOR_3F, 0x3f800000, 0, 0,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        ODSY_GL_VERTEX_3F, 0x42c80000, 0x42c80000, 0,  /* (100, 100) */
+        ODSY_GL_VERTEX_3F, 0x42f00000, 0x42c80000, 0,  /* (120, 100) */
+        ODSY_GL_VERTEX_3F, 0x42c80000, 0x42f00000, 0,  /* (100, 120) */
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_window_transform(qts, pixels);
+    push_block_16(qts, 0x3f800000);
+    push_user_words(qts, int_tri, ARRAY_SIZE(int_tri));
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 10, 256 + 20), ==,
+                    ODSY_PLANE_GREEN);
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 100, 256 + 100), !=,
+                    ODSY_PLANE_GREEN);
+    push_user_words(qts, float_tri, ARRAY_SIZE(float_tri));
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 102, 256 + 102), ==,
+                    0xff0000ffu);
+
+    board_quit(qts);
+}
+
+/*
  * The record light.c selects: entries 0x5cb 0x5d8 0x5e5, one directional
  * light. The triangle is lit -- (1, 0.5, 0.25) where the normal faces the
  * light, 0.8 of it at the right corner, black edge-on -- the values the
@@ -18226,6 +18277,8 @@ int main(int argc, char **argv)
              test_scanout_main_id_0_uses_drawable_1_mode);
     add_case("sn1/odyssey/command-fifo-gl-flat-shading",
              test_command_fifo_gl_flat_shading);
+    add_case("sn1/odyssey/command-fifo-gl-vertex-3i",
+             test_command_fifo_gl_vertex_3i);
     add_case("sn1/odyssey/command-fifo-gl-fog-curve",
              test_command_fifo_gl_fog_curve);
     add_case("sn1/odyssey/command-fifo-gl-fog-native-packets",
