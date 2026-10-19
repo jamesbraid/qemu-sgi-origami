@@ -660,12 +660,15 @@ static void test_deactivate_mid_user_command(void)
 }
 
 /*
- * A suspended command whose context does not come back before another
- * context sends words cannot continue: the model keeps no per-context
- * copy of it, so it ends, logged, and the new context's commands frame
- * from their own first word.
+ * The suspended command belongs to its context: when another context
+ * sends words first, the command is saved with its owner and the new
+ * context frames from its own first word; when the owner is restored, its
+ * remaining words finish the same command. Context A's viewport is cut
+ * after two words, B runs a whole command, then A comes back. A model that
+ * kept only one suspended command in place ended A's viewport at B's
+ * first word, and A's last two words framed as nothing.
  */
-static void test_suspended_command_ends_at_other_context(void)
+static void test_suspended_command_survives_other_context(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
@@ -681,6 +684,87 @@ static void test_suspended_command_ends_at_other_context(void)
     context_first_physical(s, SAVE_B, RETURN_B);
     qtest_writel(s, REG_KICK, 0);
     kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    qtest_writel(s, REG_COMMAND, 1280);
+    qtest_writel(s, REG_COMMAND, 0xe3000000);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
+                                   " argc 1\n"));
+    g_assert_nonnull(strstr(found, "token 0xe3 args 0x1 0x9 0x500"
+                                   " argc 4\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
+                     1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
+}
+
+/*
+ * A context started afresh by 0x1fd has no command of its own left open:
+ * a copy left by an earlier context with the same save area is discarded.
+ * A's viewport is cut and saved when B sends words; then A's save area is
+ * registered afresh, as for a new process, and its first command frames
+ * whole. Restoring the stale copy would take that command's words as the
+ * viewport's last two.
+ */
+static void test_fresh_context_discards_saved_command(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(s, 2);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000001 }, 1);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_null(strstr(found, "sgi_kona_input_restore "));
+    g_assert_null(strstr(found, "token 0xe3 args"));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000001 0x0 0x0"
+                                   " argc 1\n"));
+}
+
+/*
+ * A suspended GL data run holds host buffers the model does not copy, so
+ * when another context sends words first it ends, logged as
+ * unimplemented, and the new context's command frames whole. Here the
+ * polygon stipple, 0xb and three words, has two of its 32 rows.
+ */
+static void test_unsaved_command_ends_at_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0xb, (uint32_t[]){ 0, 0, 0, 0x55555555, 0xaaaaaaaa }, 5);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
     assert_textport_in_step(s);
     qtest_quit(s);
 
@@ -688,10 +772,56 @@ static void test_suspended_command_ends_at_other_context(void)
     g_assert_nonnull(strstr(found, "open command was not resumed"));
     g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
                                    " argc 1\n"));
-    g_assert_null(strstr(found, "token 0xe3 args"));
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_drop "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_resume "));
+    g_assert_null(strstr(found, "sgi_kona_input_save "));
+}
+
+/*
+ * A saved command migrates with its context: A's line-distance query 0xee
+ * is cut before its one word, B's command saves it, and the machine
+ * migrates. On the destination A is restored and its word arrives; the
+ * query is answered on A's return page. A destination that lost the
+ * saved command takes the word as nothing and never answers.
+ */
+static void test_migration_of_saved_command(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    guest_fill_word(from, REASON_PAGE, 0);
+    guest_fill_word(from, RETURN_A, 0);
+    kona_register_reason_page(from, REASON_PAGE);
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    qtest_writel(from, REG_COMMAND, 0xee);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(from, 2);
+
+    sgi_migrate_stopped(from, uri);
+
+    context_restore_physical(to, SAVE_A);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
+    qtest_writel(to, REG_COMMAND, 0);
+    g_assert_cmphex(guest_word(to, RETURN_A), !=, 0);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -1414,6 +1544,95 @@ static void corrupt_context_stream(const char *path, unsigned kind)
     g_assert_true(g_file_set_contents(path, data, length, NULL));
 }
 
+/*
+ * The saved-input subsection's first entry and its transient entry, as
+ * vmstate_sgi_kona_saved_one lays an entry out: valid; the textport and
+ * GL framers (framing, selector, expected and held counts, 32 words);
+ * the sync, video, colour map, gamma, cursor and texture-table fields;
+ * the list invocation's token, need, have and 16 words; the stipple store.
+ */
+#define SAVED_ENTRY_BYTES   1623
+#define SAVED_GL_PORT       142
+#define SAVED_CALLS_TOKEN   1531
+#define SAVED_TRANSIENT     64
+
+static void corrupt_saved_input_stream(const char *path, unsigned kind)
+{
+    static const char saved[] = "sgi-kona/saved-input";
+    g_autofree char *data = NULL;
+    gsize length;
+    uint8_t *name, *entry;
+
+    g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+    name = stream_bytes((uint8_t *)data, length, saved, sizeof(saved) - 1);
+    g_assert_cmpuint(name[-2], ==, 5); /* QEMU_VM_SUBSECTION */
+    g_assert_cmpuint(ldl_be_p(name + sizeof(saved) - 1), ==, 1);
+    entry = name + sizeof(saved) - 1 + 4;
+    /* Context A's saved viewport: 0xe3, four expected, two held. */
+    g_assert_cmpuint(entry[0], ==, 1);
+    g_assert_cmpuint(entry[SAVED_GL_PORT], ==, 1);
+    g_assert_cmphex(ldl_be_p(entry + SAVED_GL_PORT + 1), ==, 0xe3);
+    g_assert_cmpuint(ldl_be_p(entry + SAVED_GL_PORT + 5), ==, 4);
+    g_assert_cmpuint(ldl_be_p(entry + SAVED_GL_PORT + 9), ==, 2);
+    switch (kind) {
+    case 0: /* every word held: the next one would land past the packet */
+        stl_be_p(entry + SAVED_GL_PORT + 9, 4);
+        break;
+    case 1: /* a selector the GL table does not have */
+        stl_be_p(entry + SAVED_GL_PORT + 1, 0xffff);
+        break;
+    case 2: /* a list invocation with an odd count, all of it held */
+        stl_be_p(entry + SAVED_CALLS_TOKEN, 0x170);
+        stl_be_p(entry + SAVED_CALLS_TOKEN + 4, 3);
+        stl_be_p(entry + SAVED_CALLS_TOKEN + 8, 3);
+        break;
+    case 3: /* a copy for the transient slot, which holds no context */
+        entry[SAVED_TRANSIENT * SAVED_ENTRY_BYTES] = 1;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    g_assert_true(g_file_set_contents(path, data, length, NULL));
+}
+
+/*
+ * A saved command the live input could not have held is refused on load:
+ * a GL packet with all its words held, an unknown GL selector, a list
+ * invocation with an odd held count, and a copy for an unused transient
+ * slot. A destination that took them would write past the framer's or the
+ * invocation's words on the next word.
+ */
+static void test_migration_rejects_saved_input(void)
+{
+    for (unsigned kind = 0; kind < 4; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "stream", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", path);
+        QTestState *from = qtest_init(MIGRATION_ARGS);
+        QTestState *to;
+
+        context_first_physical(from, SAVE_A, RETURN_A);
+        qtest_writel(from, REG_KICK, 0);
+        kona_command(from, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+        context_deactivate(from, 1);
+        context_first_physical(from, SAVE_B, RETURN_B);
+        qtest_writel(from, REG_KICK, 0);
+        kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        corrupt_saved_input_stream(path, kind);
+        to = qtest_init(MIGRATION_ARGS " -incoming defer");
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+}
+
 static void test_migration_rejects_context_stream(void)
 {
     for (unsigned kind = 0; kind < 7; kind++) {
@@ -2127,8 +2346,18 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-context/deactivate-mid-user-command",
                    test_deactivate_mid_user_command);
     qtest_add_func("sn0/origin2000/kona-context/"
-                   "suspended-command-ends-at-other-context",
-                   test_suspended_command_ends_at_other_context);
+                   "suspended-command-survives-other-context",
+                   test_suspended_command_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "unsaved-command-ends-at-other-context",
+                   test_unsaved_command_ends_at_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
+                   test_migration_of_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "fresh-context-discards-saved-command",
+                   test_fresh_context_discards_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/migration-rejects-saved-input",
+                   test_migration_rejects_saved_input);
     qtest_add_func("sn0/origin2000/kona-context/reply-after-deactivation",
                    test_reply_after_deactivation);
     return g_test_run();
