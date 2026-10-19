@@ -381,6 +381,12 @@ struct SGIOdysseyState {
     uint32_t win_committed_clip[2 * SGI_ODYSSEY_CLIP_RECTS];
     /* Serialized legacy slot, no longer used for command interpretation. */
     uint32_t win_committed_did;
+    /*
+     * The committed origin a kernel 0x841 replaced, kept until the next
+     * kernel command shows whether that 0x841 began the off-screen tail.
+     */
+    int32_t win_prior_origin[2];
+    bool win_origin_pending;
     bool cmd_from_kernel;
 
     /*

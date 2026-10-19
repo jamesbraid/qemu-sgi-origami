@@ -1807,6 +1807,23 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * makes the context's committed window -- the values the kernel last pushed
  * on its own port -- current again. The alternative, that something unseen
  * restores the registers, draws the same pictures in every capture.
+ *
+ * One kernel push is not the window. ESTABLISHED from the IRIX 6.5.30 IP30
+ * kernel's window push (disassembly): it sends the context's 0x841 origin,
+ * the 0x840 pair and the 0x204b rectangles, then, where its window block
+ * would end with 0x90008116, a context marked as drawing off-screen instead
+ * gets 0x841 (0, 0) followed directly by 0x204b with rectangle 0 spanning
+ * the whole 12-bit range and the other six words zero -- the same values
+ * the library's own override sends -- and a zero 0x840. That tail is the
+ * context's off-screen state, not its window: the library's later
+ * 0x90008116 must bring back the window pushed just before it. So the model
+ * commits a kernel 0x841 at once but keeps the origin it replaced until the
+ * next kernel command; when that command is the off-screen 0x204b, the
+ * replaced origin is committed again and the rectangles are not committed.
+ * Without this every textured or off-screen client switched in mid-upload
+ * drew its next frame at the screen origin, over other windows. INFERRED,
+ * as the restore itself is: that the board keeps the window through such a
+ * tail.
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
@@ -1815,6 +1832,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_ORIGIN_BITS 13
 #define ODSY_CLIP_FIELD_MASK 0xfff
 #define ODSY_CLIP_X_SHIFT 12
+/* The off-screen 0x204b: rectangle 0 the full range, the rest zero. */
+#define ODSY_CLIP_OFFSCREEN_HI 0x00ffffff
+#define ODSY_CLIP_WORD_MASK 0x00ffffff
 
 /*
  * The clip rectangles out of reset: the hardware's reset value is unknown. The
@@ -3051,6 +3071,19 @@ static void odyssey_clip_update(SGIOdysseyState *s)
             s->clip_rect[s->clip_kept++] = r;
         }
     }
+}
+
+/* Whether clip_words is the off-screen form (ODSY_CMD_WINDOW_RESTORE). */
+static bool odyssey_clip_is_offscreen(SGIOdysseyState *s)
+{
+    for (unsigned int i = 0; i < 2 * SGI_ODYSSEY_CLIP_RECTS; i++) {
+        uint32_t want = i == 1 ? ODSY_CLIP_OFFSCREEN_HI : 0;
+
+        if ((s->clip_words[i] & ODSY_CLIP_WORD_MASK) != want) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /*
@@ -8248,6 +8281,11 @@ static bool odyssey_texture_build_level(SGIOdysseyState *s)
  */
 static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
 {
+    /* Only the kernel command right after its 0x841 can be its tail. */
+    if (s->cmd_from_kernel && tag != ODSY_REG_WINDOW_ORIGIN &&
+        tag != ODSY_REG_WINDOW_CLIP) {
+        s->win_origin_pending = false;
+    }
     if (odyssey_is_program_word(tag)) {
         odyssey_gl_program_word(s, tag);
         return;
@@ -8999,8 +9037,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->win_origin[0] = sextract32(s->cmd_operand[0], 0, ODSY_ORIGIN_BITS);
         s->win_origin[1] = sextract32(s->cmd_operand[1], 0, ODSY_ORIGIN_BITS);
         if (s->cmd_from_kernel) {
+            memcpy(s->win_prior_origin, s->win_committed_origin,
+                   sizeof(s->win_prior_origin));
             memcpy(s->win_committed_origin, s->win_origin,
                    sizeof(s->win_origin));
+            s->win_origin_pending = true;
         }
         break;
     case ODSY_REG_DID_COMPARE:
@@ -9012,9 +9053,18 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_REG_WINDOW_CLIP:
         memcpy(s->clip_words, s->cmd_operand, sizeof(s->clip_words));
-        if (s->cmd_from_kernel) {
+        if (s->cmd_from_kernel && s->win_origin_pending &&
+            !s->win_origin[0] && !s->win_origin[1] &&
+            odyssey_clip_is_offscreen(s)) {
+            /* The off-screen tail: keep the window pushed before it. */
+            memcpy(s->win_committed_origin, s->win_prior_origin,
+                   sizeof(s->win_prior_origin));
+        } else if (s->cmd_from_kernel) {
             memcpy(s->win_committed_clip, s->clip_words,
                    sizeof(s->clip_words));
+        }
+        if (s->cmd_from_kernel) {
+            s->win_origin_pending = false;
         }
         odyssey_clip_update(s);
         break;
@@ -9938,6 +9988,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memcpy(s->win_committed_origin, s->win_origin, sizeof(s->win_origin));
     memcpy(s->win_committed_clip, s->clip_words, sizeof(s->clip_words));
     s->win_committed_did = 0;
+    memset(s->win_prior_origin, 0, sizeof(s->win_prior_origin));
+    s->win_origin_pending = false;
     s->cmd_from_kernel = false;
     s->gl_primitive = 0;
     s->gl_color = 0;
@@ -10814,6 +10866,26 @@ static bool odyssey_colour_material_needed(void *opaque)
     return s->gl_colour_material != 0;
 }
 
+/* Only between a kernel 0x841 and the command after it. */
+static bool odyssey_window_tail_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    return s->win_origin_pending;
+}
+
+static const VMStateDescription vmstate_odyssey_window_tail = {
+    .name = "sgi-odyssey/window-tail",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_window_tail_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32_ARRAY(win_prior_origin, SGIOdysseyState, 2),
+        VMSTATE_BOOL(win_origin_pending, SGIOdysseyState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_odyssey_colour_material = {
     .name = "sgi-odyssey/colour-material",
     .version_id = 1,
@@ -11087,6 +11159,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_polygon,
         &vmstate_odyssey_back_material,
         &vmstate_odyssey_colour_material,
+        &vmstate_odyssey_window_tail,
         NULL
     },
 };
