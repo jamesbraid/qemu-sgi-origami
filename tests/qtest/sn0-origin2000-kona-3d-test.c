@@ -2928,6 +2928,27 @@ static void test_stencil_visual_present_and_absent(void)
     assert_stencil_colour(qts, 0xff0000);
 }
 
+/*
+ * mirrors' visual: 10-bit RGB, double-buffered, four samples, 15-bit
+ * depth and a one-bit stencil. Its stencil draws are taken, single
+ * sampled, and the stencil keeps one bit: a clear to 3 stores 1, so a
+ * triangle tested EQUAL to 1 under a full mask draws red.
+ */
+static void test_stencil_one_bit_multisample_visual(void)
+{
+    gl_reset();
+    gl_make_current_depth(qts, 24);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 1, (uint32_t[]){ 0, 10, 0, 1, 0, 4, 15, 1, 0, 0 }, 10);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command(qts, 0x1e, (uint32_t[]){ 3 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x400 }, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb90 }, 1);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x202, 1, 255 }, 3);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+}
+
 static void stencil_setup(QTestState *s)
 {
     gl_make_current_depth(s, 24);
@@ -16814,6 +16835,8 @@ int main(int argc, char **argv)
 
     add_case("sn0/origin2000/kona-3d/stencil/visual-present-and-absent",
              test_stencil_visual_present_and_absent);
+    add_case("sn0/origin2000/kona-3d/stencil/one-bit-multisample-visual",
+             test_stencil_one_bit_multisample_visual);
 
     add_case("sn0/origin2000/kona-3d/stencil/comparison-order-and-mask",
              test_stencil_comparison_order_and_mask);
