@@ -2738,7 +2738,19 @@ static void sgi_kona_gl_store_stencil(void *opaque, int x, int y,
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_stencil), x, y, value);
 }
 
-/* Drawing classification does not widen the zero-stencil RGB read contract. */
+/*
+ * Drawing classification does not widen the zero-stencil RGB read contract.
+ *
+ * mirrors (IRIX 6.5.30 demos) asks for the visual 0 10 0 1 0 4 15 1 0 0:
+ * 10-bit RGB components, double-buffered, four samples, a 15-bit depth
+ * buffer and a one-bit stencil. The model draws every visual single
+ * sampled with eight-bit colour, so a 10-bit RGB visual and four
+ * samples, the only count seen, are approximated: drawing is the
+ * single-sample result OpenGL gives with multisampling off. A one-bit
+ * stencil keeps
+ * its stencil values to that bit, as OpenGL's stencil width rules say;
+ * the model stores it in the low bit of its eight-bit plane.
+ */
 static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
 {
     const SGIKonaGLPipe *p;
@@ -2750,10 +2762,10 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
     p = &s->state[context]->pipe;
     v = p->draw_config;
     if (!p->draw_config_received || v[0] != 0 ||
-        !(((v[1] == 8 || v[1] == 12) && !v[2]) ||
+        !(((v[1] == 8 || v[1] == 10 || v[1] == 12) && !v[2]) ||
           (!v[1] && (v[2] == 8 || v[2] == 12))) || v[3] > 1 ||
-        v[4] != 0 || v[5] != 0 || v[6] > 32 ||
-        (v[7] != 0 && v[7] != 8) || v[8] != 0 || v[9] != 0) {
+        v[4] != 0 || (v[5] != 0 && (v[5] != 4 || !v[1])) || v[6] > 32 ||
+        (v[7] != 0 && v[7] != 1 && v[7] != 8) || v[8] != 0 || v[9] != 0) {
         return -1;
     }
     return v[7];
@@ -2767,7 +2779,7 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
     };
 
     *rules = sgi_kona_gl_rules;
-    rules->stencil_bits = stencil_bits == 8 ? 8 : 0;
+    rules->stencil_bits = stencil_bits > 0 ? stencil_bits : 0;
     *t = (SGIRasterTarget) {
         .store_colour = sgi_kona_gl_store_colour,
         .load_colour = sgi_kona_gl_load_colour,
