@@ -285,6 +285,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_FINISH, 1 },
     { SGI_KONA_CMD_GL_FLUSH_RASTER, 1 },
     { SGI_KONA_CMD_GL_GET_ERROR, 1 },
+    { SGI_KONA_CMD_GL_GET_CURRENT, 1 },
+    { SGI_KONA_CMD_GL_GET_RASTER, 1 },
     { SGI_KONA_CMD_GL_RESOLVE_A, 1 },
     { SGI_KONA_CMD_GL_RESOLVE_B, 1 },
     /* The matrices, a double counting two words. */
