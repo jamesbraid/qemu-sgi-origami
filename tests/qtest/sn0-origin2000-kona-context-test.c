@@ -1211,6 +1211,137 @@ static void test_migration_of_saved_gl_run(void)
     g_rmdir(tmpfs);
 }
 
+/* The front colour word at X coordinates (x, y), y down from the top. */
+static uint32_t front_word(QTestState *s, uint32_t x, uint32_t y)
+{
+    QDict *reply;
+    uint32_t value;
+
+    qtest_qmp_assert_success(s,
+        "{ 'execute': 'qom-set', 'arguments': { 'path': "
+        "'/machine/module0/kona0', 'property': 'x-test-plane-select', "
+        "'value': %" PRIu64 " } }", ((uint64_t)(1023 - y) << 24) | x);
+    reply = qtest_qmp(s,
+        "{ 'execute': 'qom-get', 'arguments': { 'path': "
+        "'/machine/module0/kona0', 'property': 'x-test-plane-word' } }");
+    value = qdict_get_int(reply, "return");
+    qobject_unref(reply);
+    return value;
+}
+
+/*
+ * The X server's 3 by 2 direct-colour write at (100, 200): a copy of RGB 0
+ * under mask 0xffffff, the setup for 32-bit rows, the write and the first
+ * three of its six row words. x_write_finish() sends the rest and checks.
+ */
+static const uint32_t x_write_words[] = {
+    0x00112233, 0xff445566, 0x00778899,
+    0x00aabbcc, 0x00ddeeff, 0x00010203,
+};
+
+static void x_write_start(QTestState *s)
+{
+    static const uint32_t gc[13] = {
+        0, 0x1ffe, 0, 0x1ffe, 0xffffff, 0xffffff,
+        0x2804, 0x60001, 1, 6, 8, 0, 0,
+    };
+
+    x_initialise(s, 1280);
+    kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
+    kona_command(s, 0x136, (uint32_t[]){ 0, 2, 2, 8, 3, 2, 0 }, 7);
+    kona_command(s, 0x139, (uint32_t[]){ 100, 200 }, 2);
+    for (unsigned k = 0; k < 3; k++) {
+        qtest_writel(s, REG_COMMAND, x_write_words[k]);
+    }
+}
+
+static void x_write_finish(QTestState *s)
+{
+    for (unsigned k = 3; k < 6; k++) {
+        qtest_writel(s, REG_COMMAND, x_write_words[k]);
+    }
+    kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    for (unsigned k = 0; k < 6; k++) {
+        g_assert_cmphex(front_word(s, 100 + k % 3, 200 + k / 3) & 0xffffff,
+                        ==, x_write_words[k] & 0xffffff);
+    }
+}
+
+/*
+ * An X pixel write stays with its context: A's 3 by 2 direct-colour write
+ * at (100, 200) is cut after three of its six words, B runs a command, and
+ * after A is restored its last three words and the finish draw all six.
+ * Its rows take only A's words: a model that took B's as rows, or ended
+ * the write at B's first word, drew the second row wrong or not at all.
+ */
+static void test_suspended_x_write_survives_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_write_start(s);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    x_write_finish(s);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
+                                   " argc 1\n"));
+    g_assert_null(strstr(found, "open command was not resumed"));
+}
+
+/* The same with a migration while B is current and A's write is open. */
+static void test_migration_of_suspended_x_write(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    x_write_start(from);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+
+    sgi_migrate_stopped(from, uri);
+
+    kona_command(to, 0x177, (uint32_t[]){ 0x77000001 }, 1);
+    context_deactivate(to, 2);
+    context_restore_physical(to, SAVE_A);
+    x_write_finish(to);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 /*
  * A textport bitmap moves with its context too, payload and all. A's 32 by
  * 2 bitmap is cut after its first payload word, B runs a command, and A's
@@ -1708,6 +1839,53 @@ static uint8_t *stream_bytes(uint8_t *data, size_t length,
         }
     }
     g_assert_not_reached();
+}
+
+/*
+ * An open X write's owner must be a context in use with its own
+ * generation: an owner slot no context holds, and a generation that is
+ * not the owner's, are refused on load.
+ */
+static void test_migration_rejects_x_pixel_owner(void)
+{
+    static const char owner[] = "sgi-kona/x-pixel-owner";
+
+    for (unsigned kind = 0; kind < 2; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "stream", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", path);
+        g_autofree char *data = NULL;
+        QTestState *from = qtest_init(MIGRATION_ARGS);
+        QTestState *to;
+        uint8_t *fields;
+        gsize length;
+
+        context_first_physical(from, SAVE_A, RETURN_A);
+        qtest_writel(from, REG_KICK, 0);
+        x_write_start(from);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+        /* The subsection's version, then the owner and its generation. */
+        fields = stream_bytes((uint8_t *)data, length, owner,
+                              sizeof(owner) - 1) + sizeof(owner) - 1 + 4;
+        g_assert_cmpuint(ldl_be_p(fields), ==, 0);
+        if (kind == 0) {
+            stl_be_p(fields, 40);
+        } else {
+            stq_be_p(fields + 4, ldq_be_p(fields + 4) + 1);
+        }
+        g_assert_true(g_file_set_contents(path, data, length, NULL));
+        to = qtest_init(MIGRATION_ARGS " -incoming defer");
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
 }
 
 /*
@@ -2692,6 +2870,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-context/"
                    "suspended-command-survives-other-context",
                    test_suspended_command_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "suspended-x-write-survives-other-context",
+                   test_suspended_x_write_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-of-suspended-x-write",
+                   test_migration_of_suspended_x_write);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-rejects-x-pixel-owner",
+                   test_migration_rejects_x_pixel_owner);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "suspended-bitmap-survives-other-context",
                    test_suspended_bitmap_survives_other_context);
