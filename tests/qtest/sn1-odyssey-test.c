@@ -3786,6 +3786,66 @@ static void test_command_fifo_integer_primitives_stream(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * The X server's GC function on integer primitives: 0x0422 carries it and
+ * 0x0404 bit 19 (index) or bit 20 (RGB) enables it. xdm's text-field caret
+ * is a one-pixel QUADS rectangle drawn with GXxor in index text ^ background
+ * (0x07 ^ 0x11 = 0x16), so drawing it twice must restore the field.
+ * bitmap(1)'s grid lines and squares are GXxor too.
+ */
+#define ODSY_CMD_LOGIC_OP 0x00010422
+#define ODSY_MODE_INDEX_LOGIC_OP (1u << 19)
+#define ODSY_MODE_RGB_LOGIC_OP (1u << 20)
+
+static void test_command_fifo_integer_logic_op(void)
+{
+    QTestState *qts = board_start("");
+
+    index_fill(qts, 0x11, 200, 300, 232, 332);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, ODSY_MODE_INDEX_LOGIC_OP);
+    cmd_push(qts, ODSY_CMD_LOGIC_OP);
+    cmd_push(qts, 6);
+    index_fill(qts, 0x16, 210, 300, 211, 332);
+    g_assert_cmphex(odsy_test_pixel(qts, 210, 310), ==, 0x07);
+    g_assert_cmphex(odsy_test_pixel(qts, 211, 310), ==, 0x11);
+    index_fill(qts, 0x16, 210, 300, 211, 332);
+    g_assert_cmphex(odsy_test_pixel(qts, 210, 310), ==, 0x11);
+
+    /* A line takes the same operation: the bitmap editor's grid. */
+    colour_index(qts, 0x07);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 202, 320);
+    vertex2i(qts, 206, 320);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 204, 320), ==, 0x16);
+
+    /* GXcopy (3) stores the index as it is. */
+    cmd_push(qts, ODSY_CMD_LOGIC_OP);
+    cmd_push(qts, 3);
+    index_fill(qts, 0x16, 210, 300, 211, 332);
+    g_assert_cmphex(odsy_test_pixel(qts, 210, 310), ==, 0x16);
+
+    /* Bit 19 clear: the operation is not applied to an index. */
+    cmd_push(qts, ODSY_CMD_LOGIC_OP);
+    cmd_push(qts, 6);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0);
+    index_fill(qts, 0x11, 212, 300, 213, 332);
+    g_assert_cmphex(odsy_test_pixel(qts, 212, 310), ==, 0x11);
+
+    /* Bit 20 applies it to an RGB fill and keeps the fourth byte opaque. */
+    rgb_fill(qts, 0xff, 0x00, 0x00, 300, 300, 310, 310);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, ODSY_MODE_RGB_LOGIC_OP);
+    rgb_fill(qts, 0xff, 0xff, 0x00, 300, 300, 305, 310);
+    g_assert_cmphex(odsy_test_pixel(qts, 302, 305), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 307, 305), ==, 0xff0000ff);
+
+    board_quit(qts);
+}
+
 /* A raster-box coordinate reaches the board as a float bit pattern. */
 static uint32_t coord_bits(uint32_t coord)
 {
@@ -19457,6 +19517,8 @@ int main(int argc, char **argv)
              test_command_fifo_pattern_quad);
     add_case("sn1/odyssey/command-fifo-pattern-quad-straddles-screen",
              test_command_fifo_pattern_quad_straddles_screen);
+    add_case("sn1/odyssey/command-fifo-integer-logic-op",
+             test_command_fifo_integer_logic_op);
     add_case("sn1/odyssey/command-fifo-image-raster-rgb",
              test_command_fifo_image_raster_rgb);
     add_case("sn1/odyssey/command-fifo-image-raster-descending",

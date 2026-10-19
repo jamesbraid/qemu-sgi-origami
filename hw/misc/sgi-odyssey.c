@@ -3289,6 +3289,45 @@ static uint32_t odyssey_fill_pixel(bool is_index, uint32_t value)
 }
 
 /*
+ * One pixel of an integer primitive -- a QUADS rectangle, a pattern quad, a
+ * line, point or polygon pixel -- combined with each selected buffer through
+ * the logical operation 0x0422 names, when 0x0404 enables one for the
+ * colour's kind: bit 19 for an index, bit 20 for an RGB colour. The X server
+ * sends the GC function there: xdm's text-field caret (GXxor) arrives as
+ * 0x0422 = 6 with bit 19 set and index text ^ background, and the same
+ * server's GXcopy text as 0x0422 = 3. An index result keeps the index bits;
+ * an RGB result keeps the fourth byte opaque, as every 2D fill does
+ * (odyssey_pack_pixel()). Images and copies do not come through here: whether
+ * the board applies the operation to them is unknown.
+ */
+static void odyssey_paint_integer(SGIOdysseyState *s, int64_t x, int64_t y,
+                                  bool is_index, uint32_t value)
+{
+    uint32_t src = odyssey_fill_pixel(is_index, value);
+    uint32_t enable = is_index ? ODSY_MODE_INDEX_LOGIC_OP :
+                                 ODSY_MODE_COLOR_LOGIC_OP;
+    uint8_t op = s->gl_ctx.cur.logic_op_mode - SGI_GL_CLEAR;
+    unsigned buffers = odyssey_draw_buffers(s);
+
+    if (!(s->pattern_mode & enable) || op == SGI_LOGIC_COPY) {
+        odyssey_paint_pixel(s, x, y, src);
+        return;
+    }
+    if (!odyssey_pixel_allowed(s, x, y)) {
+        return;
+    }
+    for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
+        if (buffers & (1u << b)) {
+            uint32_t out = sgi_logic_op(op, src,
+                                        odyssey_buffer_load(s, b, x, y));
+
+            odyssey_buffer_store(s, b, x, y, is_index ?
+                                 out & ODSY_INDEX_MASK : out | 0xff);
+        }
+    }
+}
+
+/*
  * odyssey_fillrect(): BEGIN(QUADS)/COLOR_3UB or COLOR_INDEX/four VERTEX_2I
  * corners/END drives the solid rectangle fill. odyssey_gl_end() routes a
  * QUADS fill here when pattern mode is off, and to odyssey_pattern_fill()
@@ -3303,8 +3342,7 @@ static void odyssey_fill_rect(SGIOdysseyState *s, uint32_t x, uint32_t y,
 
     for (row = 0; row < h; row++) {
         for (col = 0; col < w; col++) {
-            odyssey_paint_pixel(s, x + col, y + row,
-                                odyssey_fill_pixel(is_index, value));
+            odyssey_paint_integer(s, x + col, y + row, is_index, value);
         }
     }
     sgi_scanout_invalidate_all(&s->scanout);
@@ -3524,8 +3562,7 @@ static void odyssey_pattern_fill(SGIOdysseyState *s, uint32_t x, uint32_t y,
     for (v = 0; v < h; v++) {
         for (u = 0; u < w; u++) {
             if (odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v)) {
-                odyssey_paint_pixel(s, x + u, y + v,
-                                    odyssey_fill_pixel(is_index, value));
+                odyssey_paint_integer(s, x + u, y + v, is_index, value);
             }
         }
     }
@@ -7205,13 +7242,9 @@ static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
 /* One line or polygon pixel in the current colour, clipped to the plane. */
 static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
 {
-    if (odyssey_pixel_allowed(s, x, y)) {
-        odyssey_paint_pixel(s, x, y,
-                            odyssey_fill_pixel(s->gl_color_is_index,
-                                               s->gl_color_is_index ?
-                                               s->gl_color_index :
-                                               s->gl_color));
-    }
+    odyssey_paint_integer(s, x, y, s->gl_color_is_index,
+                          s->gl_color_is_index ? s->gl_color_index :
+                                                 s->gl_color);
 }
 
 /*

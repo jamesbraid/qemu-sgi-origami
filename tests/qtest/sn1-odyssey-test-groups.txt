@@ -82,6 +82,7 @@ fifo /mips64/sn1/odyssey/command-fifo-dma-page-table
 fifo /mips64/sn1/odyssey/command-fifo-dma-image
 fifo /mips64/sn1/odyssey/command-fifo-pattern-quad
 fifo /mips64/sn1/odyssey/command-fifo-pattern-quad-straddles-screen
+fifo /mips64/sn1/odyssey/command-fifo-integer-logic-op
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-rgb
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-descending
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-mixed-directions
