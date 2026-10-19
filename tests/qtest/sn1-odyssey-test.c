@@ -7581,6 +7581,38 @@ static void test_command_fifo_gl_vertex_3i_lit(void)
 }
 
 /*
+ * The same for the 2D integer word GL triangles use: glVertex2i's triangle
+ * under the positional light matches the glVertex2f one pixel for pixel.
+ */
+static void test_command_fifo_gl_vertex_2i_lit(void)
+{
+    static const uint32_t ints[] = {
+        ODSY_CMD_GL_VERTEX_2I, (uint32_t)-1, (uint32_t)-1,
+        ODSY_CMD_GL_VERTEX_2I, 1, (uint32_t)-1,
+        ODSY_CMD_GL_VERTEX_2I, (uint32_t)-1, 1,
+    };
+    static const uint32_t floats[] = {
+        ODSY_GL_VERTEX_2F, 0xbf800000, 0xbf800000,
+        ODSY_GL_VERTEX_2F, 0x3f800000, 0xbf800000,
+        ODSY_GL_VERTEX_2F, 0xbf800000, 0x3f800000,
+    };
+    uint32_t want[4], got[4];
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_positional_start(&log_path);
+
+    lit_lower_left(qts, floats, 3, want);
+    g_assert_cmphex(want[0], !=, want[1]);
+    lit_lower_left(qts, ints, 3, got);
+    for (unsigned i = 0; i < ARRAY_SIZE(got); i++) {
+        g_assert_cmphex(got[i], ==, want[i]);
+    }
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "geometry program"));
+}
+
+/*
  * Lighting takes its eye position from the model-view (slot 0x24), which no
  * longer moves the geometry. The positional setup above under a model-view
  * translating by (1, 1, 2): the triangle stays where the combined matrix
@@ -18428,6 +18460,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_list_lit_positional);
     add_fresh_case("sn1/odyssey/command-fifo-gl-vertex-3i-lit",
                    test_command_fifo_gl_vertex_3i_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-vertex-2i-lit",
+                   test_command_fifo_gl_vertex_2i_lit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-lighting-uses-modelview",
                    test_command_fifo_gl_lighting_uses_modelview);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-two-sided",

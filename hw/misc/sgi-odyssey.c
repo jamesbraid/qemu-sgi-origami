@@ -8318,9 +8318,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
              s->gl_primitive == ODSY_GL_TRIANGLE_STRIP ||
              s->gl_primitive == ODSY_GL_TRIANGLE_FAN ||
              s->gl_primitive == ODSY_GL_QUAD_STRIP)) {
+            /* Lighting takes the signed integers as object coordinates. */
             const double xyz[3] = {
-                odyssey_f32(s->cmd_operand[0]), odyssey_f32(s->cmd_operand[1]),
-                0,
+                (int32_t)s->cmd_operand[0], (int32_t)s->cmd_operand[1], 0,
             };
 
             if (!s->gl_in_prim) {
