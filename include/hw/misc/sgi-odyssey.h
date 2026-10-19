@@ -382,8 +382,11 @@ struct SGIOdysseyState {
     /* The bound reading drawable's 0x60b origin survives scratch selects. */
     int32_t read_origin[2];
     uint32_t clip_words[2 * SGI_ODYSSEY_CLIP_RECTS];
-    /* Sticky unsupported-command marker in the existing migration slot. */
-    uint32_t did_compare;
+    /*
+     * The second operand of the last 0x840: the drawable-id ownership test
+     * (enable, mask and value; hw/misc/sgi-odyssey.c, ODSY_REG_ID_COMPARE).
+     */
+    uint32_t id_compare;
     uint32_t clip_kept;
     SGIClipRect clip_rect[SGI_ODYSSEY_CLIP_RECTS];
     /*
@@ -395,14 +398,16 @@ struct SGIOdysseyState {
      */
     int32_t win_committed_origin[2];
     uint32_t win_committed_clip[2 * SGI_ODYSSEY_CLIP_RECTS];
-    /* Serialized legacy slot, no longer used for command interpretation. */
-    uint32_t win_committed_did;
+    uint32_t win_committed_id_compare;
     /*
      * The committed origin a kernel 0x841 replaced, kept until the next
      * kernel command shows whether that 0x841 began the off-screen tail.
+     * win_after_tail marks the kernel command after that tail's 0x204b,
+     * whose zero 0x840 is not the window's either.
      */
     int32_t win_prior_origin[2];
     bool win_origin_pending;
+    bool win_after_tail;
     bool cmd_from_kernel;
 
     /*
