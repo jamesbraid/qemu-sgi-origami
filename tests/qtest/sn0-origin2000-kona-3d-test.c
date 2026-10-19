@@ -8400,7 +8400,9 @@ static void test_native_index_setters(gconstpointer opaque)
             read_dma_migrate(from, &s, &to, &dir);
             qtest_writel(s, REG_COMMAND, raw);
         } else if (mode == 12) {
+            /* Short 0x1200 or byte 0x12: read as the short. */
             kona_command(s, 0x75, (uint32_t[]) { 0x12000000 }, 1);
+            expected[0] = 0x200;
         } else if (mode == 15) {
             qtest_system_reset(s);
             native_index_visual(s, 12);
@@ -8445,8 +8447,9 @@ static void test_native_packed_index(gconstpointer opaque)
     } cases[] = {
         { 0x01230000, 0x123 }, { 0xfffd0000, 0xffd },
         { 0x80010000, 1 }, { 0x7fff0000, 0xfff }, { 0, 0 },
-        { 0x01000000, 0x234 }, { 0x12000000, 0x234 },
-        { 0x80000000, 0x234 }, { 0xff000000, 0x234 },
+        /* Byte or short: read as the short (approximated). */
+        { 0x01000000, 0x100 }, { 0x12000000, 0x200 },
+        { 0x80000000, 0 }, { 0xff000000, 0xf00 }, { 0x02000000, 0x200 },
         { 0x01230001, 0x234 }, { 0x00000001, 0x234 },
     };
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -17405,7 +17408,7 @@ int main(int argc, char **argv)
         add_data_case(path, GUINT_TO_POINTER(mode),
                      test_bitmap_stencil_read);
     }
-    for (unsigned mode = 0; mode < 22; mode++) {
+    for (unsigned mode = 0; mode < 24; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/native-packed-index/%u", mode);
 

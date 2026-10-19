@@ -4990,9 +4990,14 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
         cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, a };
         break;
     case SGI_KONA_CMD_GL_INDEX_PACKED:
-        /* Byte and short senders overlap when the short's low byte is zero. */
-        if ((args[0] & 0xffff) ||
-            (args[0] && !(args[0] & 0xff0000))) {
+        /*
+         * glIndexs sends s << 16 and glIndexub b << 24, so a word whose
+         * bits 23:0 are zero fits both. Approximated: such a word is read
+         * as the short, the form the IRIS GL library imports (it does not
+         * import glIndexub). The pipe's own rule is unknown; a capture or
+         * its documentation would settle it. Bits 15:0 fit neither sender.
+         */
+        if (args[0] & 0xffff) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported packed index type;"
                           " current index preserved\n");
             return true;
