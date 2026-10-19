@@ -112,7 +112,7 @@ qtest-mips64/sn0-origin2000-kona-3d-test-renderer-fragment 147
 qtest-mips64/sn0-origin2000-kona-3d-test-state 57
 qtest-mips64/sn0-origin2000-kona-3d-test-texture 160
 qtest-mips64/sn0-origin2000-kona-bringup-test 6
-qtest-mips64/sn0-origin2000-kona-context-test 60
+qtest-mips64/sn0-origin2000-kona-context-test 99
 qtest-mips64/sn0-origin2000-kona-dma-test 2
 # The sn0-origin2000-kona-fill-test groups are estimates until the next
 # refresh: the whole test's 80 s above shared by each group's share of its
