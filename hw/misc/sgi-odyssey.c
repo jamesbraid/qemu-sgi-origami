@@ -11571,8 +11571,8 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 42,
-    .minimum_version_id = 42,
+    .version_id = 43,
+    .minimum_version_id = 43,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
     .fields = (const VMStateField[]) {
@@ -11706,8 +11706,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY(obj_width, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
         VMSTATE_UINT32_ARRAY(obj_offset, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
         VMSTATE_UINT32_ARRAY(obj_rows, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
-        VMSTATE_UINT32_ARRAY(obj_stamp, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
-        VMSTATE_UINT32(obj_clock, SGIOdysseyState),
+        VMSTATE_UINT64_ARRAY(obj_stamp, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT64(obj_clock, SGIOdysseyState),
         VMSTATE_UINT8_ARRAY(obj_valid, SGIOdysseyState,
                             SGI_ODYSSEY_OBJ_VALID_BYTES),
         /* The texture state words and coordinate. */
