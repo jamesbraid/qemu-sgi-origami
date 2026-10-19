@@ -270,8 +270,7 @@ static bool sgi_kona_gl_window_tests_id(const SGIKonaGLWindow *w)
 }
 
 /*
- * Whether window w owns plane pixel (x, y) of its rectangle, for drawing
- * and for which bank the display shows there.
+ * Whether window w owns plane pixel (x, y) of its rectangle, for drawing.
  *
  * Inferred: the kernel gives the pipe no clip list for a GL window, only
  * its rectangle and, in 0x1f3, the display ID the X server paints into
@@ -289,6 +288,23 @@ static bool sgi_kona_gl_window_owns(SGIKonaState *s,
                                     const SGIKonaGLWindow *w, int x, int y)
 {
     return !sgi_kona_gl_window_tests_id(w) ||
+           sgi_kona_display_id_at(s, x, y) == w->display_id;
+}
+
+/*
+ * Whether the display shows window w's colour bank at plane pixel (x, y)
+ * of its rectangle: where the display-ID planes hold its ID, whether or
+ * not another window covers part of it. The X server repaints a window's
+ * pixels with the IDs of what lies beneath when it unmaps the window,
+ * which retires the bank of a client that died without its context
+ * being torn down (observed in the runs: a killed client sends no
+ * 0x1f8). Inferred, as for sgi_kona_gl_window_owns(); a window whose
+ * word 9 is outside the main planes' IDs shows across its rectangle.
+ */
+static bool sgi_kona_gl_window_shows(SGIKonaState *s,
+                                     const SGIKonaGLWindow *w, int x, int y)
+{
+    return w->display_id > SGI_KONA_DISPLAY_ID_MAX ||
            sgi_kona_display_id_at(s, x, y) == w->display_id;
 }
 
@@ -376,14 +392,12 @@ static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
 
 /*
  * The colour bank the display shows at plane (x, y): bank 1 at the pixels
- * the window of a double-buffered context showing it owns, bank 0
- * everywhere else.
+ * of a double-buffered context's window showing it that hold the
+ * window's display ID, bank 0 everywhere else.
  *
  * Approximated: which bank a pixel shows is decided by window rectangles
- * and the ownership sgi_kona_gl_window_owns() gives, standing in for the
- * display table the swap rewrites, whose layout is unknown. A pixel
- * inside a window showing bank 1 that the kernel reports wholly visible
- * shows bank 1, even where another context's window lies over it.
+ * and display IDs (sgi_kona_gl_window_shows()), standing in for the
+ * display table the swap rewrites, whose layout is unknown.
  */
 static unsigned sgi_kona_displayed_bank(SGIKonaState *s, int x, int y)
 {
@@ -392,7 +406,7 @@ static unsigned sgi_kona_displayed_bank(SGIKonaState *s, int x, int y)
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
         if (sgi_kona_bank1_window(s, i, &r) &&
             x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 &&
-            sgi_kona_gl_window_owns(s, &s->state[i]->window, x, y)) {
+            sgi_kona_gl_window_shows(s, &s->state[i]->window, x, y)) {
             return 1;
         }
     }
@@ -517,7 +531,7 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
             continue;
         }
         for (int x = r.x0; x <= r.x1; x++) {
-            if (sgi_kona_gl_window_owns(s, &s->state[i]->window, x, row)) {
+            if (sgi_kona_gl_window_shows(s, &s->state[i]->window, x, row)) {
                 dst[x] = sgi_kona_bank_read(s, 1, x, row) & 0x00ffffff;
             }
         }

@@ -284,7 +284,9 @@ typedef struct SGIKonaContext {
  * (observed). The model reads them as the pipe's pixel-ownership test:
  * while partial is set, the context owns only the pixels of its
  * rectangle whose display ID is display_id (inferred, see
- * sgi_kona_gl_window_owns()).
+ * sgi_kona_gl_window_owns()). Whatever word 10 says, the display shows a
+ * double-buffered window's bank only where its ID is (see
+ * sgi_kona_gl_window_shows()).
  *
  * double_buffered is the double-buffer word of the context's buffer
  * configuration (token 1). A single-buffered context draws into colour

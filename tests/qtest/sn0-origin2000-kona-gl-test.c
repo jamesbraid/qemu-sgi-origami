@@ -165,21 +165,6 @@ static void gl_make_current(QTestState *s, bool double_buffered)
 }
 
 /*
- * kona_act_pcx's 0x1f3 and 0x1ee for a window whose lower-left pixel is
- * at plane (x, y), as the traced run's words carry it: the corner in
- * words 0 and 1 and again in 4 and 5, the size in words 6 and 7, the
- * other words as that run sent them.
- */
-static void gl_place_window(QTestState *s, uint32_t x, uint32_t y,
-                            uint32_t size)
-{
-    kona_command_kicked(s, 0x1f3,
-                        (uint32_t[]){ x, y, 0x05670080, 0x05670080, x, y,
-                                      size, size, 0, 0xd, 0 }, 11);
-    kona_command_kicked(s, 0x1ee, (uint32_t[]){ x, y, 0 }, 3);
-}
-
-/*
  * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
  * rows counted down, ends exclusive: whole-screen position and clip,
  * then a display-ID GC (cfg 8) writing id into bits 7:2, as kon_drawDid
@@ -198,6 +183,24 @@ static void x_paint_display_id(QTestState *s, uint32_t x1, uint32_t y1,
     kona_command(s, 0x12b, (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
     kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
     kona_command(s, 0x154, (uint32_t[]){ XY(x1, y1), XY(x2, y2) }, 2);
+}
+
+/*
+ * kona_act_pcx's 0x1f3 and 0x1ee for a window whose lower-left pixel is
+ * at plane (x, y), as the traced run's words carry it: the corner in
+ * words 0 and 1 and again in 4 and 5, the size in words 6 and 7, the
+ * other words as that run sent them. The X server first gives the
+ * window's pixels its display ID 0xd, as it does when it maps a window.
+ */
+static void gl_place_window(QTestState *s, uint32_t x, uint32_t y,
+                            uint32_t size)
+{
+    x_paint_display_id(s, x, FB_HEIGHT - y - size, x + size,
+                       FB_HEIGHT - y, 0xd);
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ x, y, 0x05670080, 0x05670080, x, y,
+                                      size, size, 0, 0xd, 0 }, 11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ x, y, 0 }, 3);
 }
 
 /*
@@ -629,26 +632,48 @@ static void test_overlap_clipped_to_display_id(void)
 }
 
 /*
- * A double-buffered window showing bank 1 shows it only at the pixels it
- * owns once another window covers part of it: there the display shows
- * bank 0, where the X server draws the covering window. The covered
- * pixel at the window's corner shows the X server's red, and its
- * neighbour still the GL window's magenta.
+ * A double-buffered window showing bank 1 shows it only at the pixels
+ * holding its display ID once another window covers part of it: there
+ * the display shows bank 0, where the X server draws the covering
+ * window. The covered pixel at the window's corner shows the X server's
+ * red, and its neighbour still the GL window's magenta, before and after
+ * the kernel's 0x1f3 setting word 10.
  */
 static void test_overlap_shows_bank0_where_covered(void)
 {
     const uint32_t top = FB_HEIGHT - 1 - 640;
 
     gl_reset();
-    x_paint_display_id(qts, PROBE_X, FB_HEIGHT - 640 - PROBE_SIZE,
-                       PROBE_X + PROBE_SIZE, FB_HEIGHT - 640, 0xd);
     gl_show_bank1(qts);
     x_paint_display_id(qts, PROBE_X, top, PROBE_X + 1, top + 1, 5);
     x_repaint(qts);
-    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 1, 640), ==, 0xff00ff);
     gl_place_window_id(qts, PROBE_X, 640, 0xd, 1);
     g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
     g_assert_cmphex(shown_pixel(qts, PROBE_X + 1, 640), ==, 0xff00ff);
+}
+
+/*
+ * A client killed with its window showing bank 1 sends no teardown; the
+ * X server repaints the window's pixels with the IDs beneath, here the
+ * root window's ID 1, and paints bank 0. The display then shows bank 0
+ * there although the dead context still holds its window and its swap,
+ * and the window's word 10 never changed.
+ */
+static void test_unmapped_window_shows_bank0(void)
+{
+    const uint32_t top = FB_HEIGHT - 640 - PROBE_SIZE;
+
+    gl_reset();
+    gl_show_bank1(qts);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
 }
 
 /* Only the destroy's exact reason releases the current window. */
@@ -895,6 +920,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-gl/"
                    "overlap-shows-bank0-where-covered",
                    test_overlap_shows_bank0_where_covered);
+    qtest_add_func("sn0/origin2000/kona-gl/unmapped-window-shows-bank0",
+                   test_unmapped_window_shows_bank0);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
