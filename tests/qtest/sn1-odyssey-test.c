@@ -14334,6 +14334,46 @@ static void test_command_fifo_gl_vertex_4f(void)
     board_quit(qts);
 }
 
+/*
+ * A glBegin/glEnd pair with nothing but a texture coordinate between, as
+ * Performer sends for triangles and strips, draws nothing and is not an
+ * unmodeled primitive.
+ */
+static void test_command_fifo_gl_empty_primitive(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-empty-prim-XXXXXX.log", &log_path,
+                          &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+    texture_adapter_window(qts);
+    odsy_test_pixel_write(qts, 20, 24, 0x12345678);
+    for (uint32_t prim = 4; prim <= 5; prim++) {
+        push_user_words(qts, (uint32_t[]) {
+            ODSY_CMD_GL_BEGIN, prim,
+            0xc380c821, bitmap_rect_float(20.0f), bitmap_rect_float(24.0f),
+            ODSY_CMD_GL_END,
+        }, 6);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 24), ==, 0x12345678);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "OpenGL primitive"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 /* One bordered level: its w+2 square of stored texels at (15, 15). */
 static void texture_bordered_level_upload(QTestState *qts, uint32_t base,
                                           unsigned w)
@@ -19311,6 +19351,8 @@ int main(int argc, char **argv)
              test_texture_bordered_mipmap);
     add_case("sn1/odyssey/command-fifo-gl-vertex-4f",
              test_command_fifo_gl_vertex_4f);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-empty-primitive",
+                   test_command_fifo_gl_empty_primitive);
     add_fresh_case("sn1/odyssey/texture-adapter/nearest-clamp-border",
                    test_texture_adapter_nearest_clamp_border);
     add_fresh_case("sn1/odyssey/texture-adapter/clamp-border-state-restore",
