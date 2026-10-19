@@ -1087,6 +1087,28 @@ enum {
 #define ODSY_PROG_LIGHT_VEC_SELECT 0x31
 #define ODSY_PROG_LIGHT_COLOUR_SELECT 0x32
 #define ODSY_PROG_LIST_INDEX 0x33
+/*
+ * The colour-material word, class 0x35: which material colours the current
+ * glColor stands in for. Bits 3:0 name the front material's ambient,
+ * diffuse, specular and emission, bits 7:4 the same four for the back. The
+ * GL library computes it from glColorMaterial's face and mode while
+ * GL_COLOR_MATERIAL is enabled -- the mode bit or bits shifted by 0 for
+ * GL_FRONT, 4 for GL_BACK, both for GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE
+ * setting two -- and sends 0 while it is disabled; its context setup sends 0.
+ * That encoding is ESTABLISHED as the library's (its emitter, and a capture
+ * of 0x35008003 for GL_FRONT, GL_AMBIENT_AND_DIFFUSE). That the board then
+ * lights with the current colour in place of those material colours is
+ * INFERRED from what the library leaves undone: it keeps sending glColor,
+ * not material words, before lit vertices. When a colour leaves colour
+ * material the library itself sends glMaterial with the current colour, so
+ * the board is not relied on to write the colour back into the material.
+ */
+#define ODSY_PROG_COLOUR_MATERIAL 0x35
+#define ODSY_COLOUR_MATERIAL_MASK 0xff
+#define ODSY_COLOUR_MATERIAL_AMBIENT 0x1
+#define ODSY_COLOUR_MATERIAL_DIFFUSE 0x2
+#define ODSY_COLOUR_MATERIAL_SPECULAR 0x4
+#define ODSY_COLOUR_MATERIAL_EMISSION 0x8
 #define ODSY_PROG_PROGRAM_HALFWORD 0x40
 #define ODSY_PROG_PROGRAM_HALFWORD_LAST 0x5f
 #define ODSY_PROG_CONST_STORE 0x60
@@ -5539,6 +5561,7 @@ static bool odyssey_is_program_word(uint32_t word)
     case ODSY_PROG_LIGHT_VEC_SELECT:
     case ODSY_PROG_LIGHT_COLOUR_SELECT:
     case ODSY_PROG_LIST_INDEX:
+    case ODSY_PROG_COLOUR_MATERIAL:
     case ODSY_PROG_CONST_STORE:
         return true;
     default:
@@ -5920,6 +5943,13 @@ static void odyssey_gl_program_word(SGIOdysseyState *s, uint32_t word)
     case ODSY_PROG_LIST_INDEX:
         s->gl_entry[ODSY_ENTRY_33] = v;
         break;
+    case ODSY_PROG_COLOUR_MATERIAL:
+        s->gl_colour_material = v & ODSY_COLOUR_MATERIAL_MASK;
+        if (v & ~ODSY_COLOUR_MATERIAL_MASK) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: colour-material word value "
+                          "0x%x has bits beyond the eight known ones\n", v);
+        }
+        break;
     case ODSY_PROG_LIGHT_VEC_SELECT:
         s->gl_light_vec_sel = v;
         break;
@@ -5969,6 +5999,9 @@ static void odyssey_normalize3(double v[3])
 /*
  * OpenGL 1.2.1's lighting equation (section 2.13.1, equation 2.5) at one
  * vertex, front material, from the kept light, material and matrix words.
+ * Under colour material (section 2.13.3) the current colour replaces each
+ * front material colour the class 0x35 word names (ODSY_PROG_COLOUR_MATERIAL);
+ * the back half of that word is kept but, like the back material, unused.
  * APPROXIMATION: the board's geometry engine computes this in microcode the
  * model does not run; the equation is the one that reproduces both lighting
  * captures offline. The eye position is the model-view (slot 0x24) applied to
@@ -6007,10 +6040,17 @@ static void odyssey_gl_light(SGIOdysseyState *s, const double obj[4],
     }
     odyssey_normalize3(n);
     for (k = 0; k < 4; k++) {
-        ma[k] = odyssey_f32(s->gl_material[k]);
-        md[k] = odyssey_f32(s->gl_material[4 + k]);
-        ms[k] = odyssey_f32(s->gl_material[8 + k]);
-        me[k] = odyssey_f32(s->gl_material[12 + k]);
+        double colour = odyssey_f32(s->gl_colour[k]);
+        uint32_t cm = s->gl_colour_material;
+
+        ma[k] = cm & ODSY_COLOUR_MATERIAL_AMBIENT ?
+                colour : odyssey_f32(s->gl_material[k]);
+        md[k] = cm & ODSY_COLOUR_MATERIAL_DIFFUSE ?
+                colour : odyssey_f32(s->gl_material[4 + k]);
+        ms[k] = cm & ODSY_COLOUR_MATERIAL_SPECULAR ?
+                colour : odyssey_f32(s->gl_material[8 + k]);
+        me[k] = cm & ODSY_COLOUR_MATERIAL_EMISSION ?
+                colour : odyssey_f32(s->gl_material[12 + k]);
         ga[k] = odyssey_f32(s->gl_light_colour[ODSY_GL_LIGHT_MODEL_AMBIENT * 4 +
                                                k]);
     }
@@ -9857,6 +9897,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->gl_program_mem_reported = false;
     s->gl_const_index = 0;
     memset(s->gl_entry, 0, sizeof(s->gl_entry));
+    /* GL's own initial state, colour material off, as the library sends. */
+    s->gl_colour_material = 0;
     memset(s->gl_light_colour, 0, sizeof(s->gl_light_colour));
     for (i = 0; i < 3; i++) {
         s->gl_light_colour[ODSY_GL_LIGHT_MODEL_AMBIENT * 4 + i] =
@@ -10578,12 +10620,31 @@ static const VMStateDescription vmstate_odyssey_back_material = {
     },
 };
 
+static bool odyssey_colour_material_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    return s->gl_colour_material != 0;
+}
+
+static const VMStateDescription vmstate_odyssey_colour_material = {
+    .name = "sgi-odyssey/colour-material",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_colour_material_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(gl_colour_material, SGIOdysseyState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int odyssey_pre_load(void *opaque)
 {
     SGIOdysseyState *s = opaque;
 
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
+    s->gl_colour_material = 0;
     s->gl_begin_open = false;
     s->gl_integer_prim = false;
     s->gl_open_r = s->gl_open_c = 0;
@@ -10838,6 +10899,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_buffer_select,
         &vmstate_odyssey_polygon,
         &vmstate_odyssey_back_material,
+        &vmstate_odyssey_colour_material,
         NULL
     },
 };
