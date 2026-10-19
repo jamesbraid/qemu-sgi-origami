@@ -2402,12 +2402,11 @@ static void test_native_repeat_interior_mipmaps(void)
 /*
  * tex_cube's small levels: an 8x8 texture whose 4x4, 2x2 and 1x1 levels
  * arrive in 8x4 tiles at (4, 0), (6, 2) and (7, 3), the tile's extent
- * minus the level's. The pyramid is complete, and level 2 samples the
- * texels received at (6, 2).
+ * minus the level's. Level 2 holds green, the others red.
  */
-static void test_native_small_levels_far_corner(void)
+static const SGIGLTexImage *load_far_corner_levels(SGIKonaTextureState *s,
+                                                   uint32_t wrap)
 {
-    SGIKonaTextureState s;
     SGIKonaTextureParams p;
     static const uint32_t origin[4][2] = { { 0, 0 }, { 4, 0 }, { 6, 2 },
                                            { 7, 3 } };
@@ -2415,25 +2414,20 @@ static void test_native_small_levels_far_corner(void)
         [0] = SGI_GL_TEXTURE_2D, [9] = 0x30, [10] = 9,
     };
     uint32_t pixels[64], table[16];
-    SGIGLDrawState state = { .texture_2d = true,
-                            .texture_env_mode = SGI_GL_REPLACE };
-    const float color[4] = { 1, 1, 1, 1 };
-    const float coord[4] = { .5, .5, 0, 1 };
-    float out[4];
-    const SGIGLTexImage *im;
 
-    sgi_kona_texture_init(&s);
+    sgi_kona_texture_init(s);
     sgi_kona_texture_defaults(&p);
     p.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
     p.mag_filter = SGI_GL_NEAREST;
     p.min_lod = p.max_lod = 2;
+    p.wrap_s = p.wrap_t = wrap;
     for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
         table[k] = 23 + k;
     }
-    g_assert_true(sgi_kona_texture_native_table(&s, 9, table));
-    g_assert_true(sgi_kona_texture_native_dimensions(&s, 9, 8, 8));
-    g_assert_true(sgi_kona_texture_native_layout(&s, 9, 0x33));
-    g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
+    g_assert_true(sgi_kona_texture_native_table(s, 9, table));
+    g_assert_true(sgi_kona_texture_native_dimensions(s, 9, 8, 8));
+    g_assert_true(sgi_kona_texture_native_layout(s, 9, 0x33));
+    g_assert_true(sgi_kona_texture_bind(s, 9, &p));
     for (unsigned level = 0; level < 4; level++) {
         uint32_t w = 8u >> level;
 
@@ -2449,14 +2443,53 @@ static void test_native_small_levels_far_corner(void)
         for (unsigned k = 0; k < w * w; k++) {
             pixels[k] = level == 2 ? green[0] : red[0];
         }
-        g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+        g_assert_true(sgi_kona_texture_native_upload(s, h, pixels,
                                                     SGI_GL_RGBA, SGI_GL_RGBA));
     }
-    im = sgi_kona_texture_resolve(&s);
+    return sgi_kona_texture_resolve(s);
+}
+
+/* The pyramid is complete, and level 2 samples the texels at (6, 2). */
+static void test_native_small_levels_far_corner(void)
+{
+    SGIKonaTextureState s;
+    SGIGLDrawState state = { .texture_2d = true,
+                            .texture_env_mode = SGI_GL_REPLACE };
+    const float color[4] = { 1, 1, 1, 1 };
+    const float coord[4] = { .5, .5, 0, 1 };
+    float out[4];
+    const SGIGLTexImage *im = load_far_corner_levels(&s, SGI_GL_REPEAT);
+
     g_assert_cmpuint(im->pyramid->count, ==, 4);
     g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
     g_assert_cmpfloat(out[0], ==, 0);
     g_assert_cmpfloat(out[1], ==, 1);
+    sgi_kona_texture_cleanup(&s);
+}
+
+/*
+ * Under GL_CLAMP a far-corner level has no border reader: one addressed
+ * from the tile origin would return the level's own interior texels as
+ * its border. The origin level keeps its reader, and sampling the
+ * far-corner level refuses rather than drawing interior as border.
+ */
+static void test_native_far_corner_level_has_no_border(void)
+{
+    SGIKonaTextureState s;
+    SGIGLDrawState state = { .texture_2d = true,
+                            .texture_env_mode = SGI_GL_REPLACE };
+    const float color[4] = { 1, 1, 1, 1 };
+    const float coord[4] = { .5, .5, 0, 1 };
+    float out[4];
+    const SGIGLTexImage *im = load_far_corner_levels(&s, SGI_GL_CLAMP);
+
+    g_assert_cmpuint(im->pyramid->count, ==, 4);
+    g_assert_nonnull(im->pyramid->levels[0].read_border_texel);
+    for (unsigned k = 1; k < 4; k++) {
+        g_assert_true(im->pyramid->levels[k].border);
+        g_assert_null(im->pyramid->levels[k].read_border_texel);
+    }
+    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
     sgi_kona_texture_cleanup(&s);
 }
 
@@ -2579,6 +2612,8 @@ int main(int argc, char **argv)
                     test_native_repeat_interior_mipmaps);
     g_test_add_func("/sgi/kona/texture/native-small-levels-far-corner",
                     test_native_small_levels_far_corner);
+    g_test_add_func("/sgi/kona/texture/native-far-corner-level-has-no-border",
+                    test_native_far_corner_level_has_no_border);
     g_test_add_func("/sgi/kona/texture/native-mixed-transport",
                     test_native_mixed_transport);
     g_test_add_func("/sgi/kona/texture/native-duplicate-transport-stream",
