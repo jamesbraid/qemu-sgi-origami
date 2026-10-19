@@ -5793,6 +5793,83 @@ static bool odyssey_gl_lit_record(const uint32_t e[3])
     return false;
 }
 
+/*
+ * The precompiled lit programs the GL library runs from the per-context
+ * program window. The library holds the geometry engine's whole shipped
+ * program image, which the kernel maps for it, 12 bytes an entry. For a
+ * record, it takes the lowest address b among the record's entries and
+ * list that reaches the window (a + 0x32 > 0x738), uploads min(image
+ * length - b, 0xc7) image entries from b into the window at 0x738 through
+ * class 0x27 and 0x40 words, and when b >= 0x738 rebases each address
+ * a >= b to a - b + 0x738. When b is lower, nothing is rebased and the
+ * window gets the image from 0x738 (record 13, whose 0x73b runs there).
+ * ESTABLISHED from the IP30 n32 libGLcore.so's program selection and upload
+ * and from glfalls' upload, which matches the shipped image at record 23's
+ * base. Rebased entries do not identify a record -- records 17, 18 and 19
+ * all arrive as 738 75b 77d -- so a record is recognised only when its
+ * entries arrive and the window holds exactly the body the library uploads
+ * for it, checked by the body's CRC-64/ECMA-182 over its halfwords in image
+ * order. Any other window body stays unrecognised and reported.
+ *
+ * Lit: records whose list ends in the finish word 0x4ca or 0x50f, as the
+ * resident lit records' do, and whose key has no fragment-lighting bit
+ * (INFERRED from the resident records: the unlit ones end in 0x4c5, the
+ * fragment-lighting ones in 0x518). Records 12, 20, 21 (fragment lighting)
+ * and 22 (finish 0x4c5) are left out.
+ */
+typedef struct OdysseyWindowRecord {
+    uint8_t record;
+    uint16_t entry[3];
+    uint16_t entries;
+    uint64_t crc;
+} OdysseyWindowRecord;
+
+static const OdysseyWindowRecord odyssey_window_records[] = {
+    { 13, { 0x706, 0x720, 0x73b }, 199, 0xde5dd7f66d4e70cfull },
+    { 14, { 0x4c5, 0x4c5, 0x4c5 }, 199, 0x5aa6880e8d77c0b2ull },
+    { 15, { 0x4c5, 0x4c5, 0x4c5 }, 199, 0x9391fc6eed0accdcull },
+    { 16, { 0x738, 0x75a, 0x77b }, 199, 0xb1da870f5523467full },
+    { 17, { 0x738, 0x75b, 0x77d }, 199, 0xc4bf2cd3423da137ull },
+    { 18, { 0x738, 0x75b, 0x77d }, 199, 0xe15a6186144f9887ull },
+    { 19, { 0x738, 0x75b, 0x77d }, 199, 0xa419c456a8238b77ull },
+    { 23, { 0x738, 0x760, 0x787 }, 199, 0x8d6174822a99856full },
+};
+
+#define ODSY_CRC64_ECMA_POLY 0x42f0e1eba9ea3693ull
+
+/* CRC-64/ECMA-182 (no reflection, zero initial value) of n window entries. */
+static uint64_t odyssey_window_crc(const SGIOdysseyState *s, unsigned n)
+{
+    const uint16_t *h = &s->gl_program_mem[ODSY_PROG_WINDOW_BASE *
+                                           ODSY_PROG_ENTRY_HALFWORDS];
+    uint64_t crc = 0;
+
+    for (unsigned i = 0; i < n * ODSY_PROG_ENTRY_HALFWORDS; i++) {
+        crc ^= (uint64_t)h[i] << 48;
+        for (unsigned bit = 0; bit < 16; bit++) {
+            crc = crc & (1ull << 63) ? (crc << 1) ^ ODSY_CRC64_ECMA_POLY :
+                                       crc << 1;
+        }
+    }
+    return crc;
+}
+
+/* The lit window record the entries and window body identify, or -1. */
+static int odyssey_gl_window_record(const SGIOdysseyState *s,
+                                    const uint32_t e[3])
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(odyssey_window_records); i++) {
+        const OdysseyWindowRecord *w = &odyssey_window_records[i];
+
+        if (e[0] == w->entry[0] && e[1] == w->entry[1] &&
+            e[2] == w->entry[2] &&
+            odyssey_window_crc(s, w->entries) == w->crc) {
+            return w->record;
+        }
+    }
+    return -1;
+}
+
 /* Uploaded program bodies have no reviewed decoder. */
 static bool odyssey_gl_resident(const uint32_t e[3])
 {
@@ -5832,8 +5909,13 @@ static void odyssey_gl_program(SGIOdysseyState *s)
     bool resident = odyssey_gl_resident(r);
     unsigned int i;
 
-    if (!resident) {
-        /* An uploaded program is unsupported and reported below. */
+    if (odyssey_gl_window_record(s, r) >= 0) {
+        /* A precompiled lit record the library ran from the window. */
+        odyssey_gl_walk_list(s, k, false, &p);
+        p.known = true;
+        p.lit = true;
+    } else if (!resident) {
+        /* Any other uploaded program is unsupported and reported below. */
     } else if (!r[0] && !r[1] && !r[2]) {
         p.known = true;
     } else if (r[0] == ODSY_UCODE_UNLIT && r[1] == ODSY_UCODE_UNLIT_2A &&
