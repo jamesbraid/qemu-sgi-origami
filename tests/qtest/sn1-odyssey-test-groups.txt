@@ -145,6 +145,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-colour-index-write-mask
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-unknown
 gl /mips64/sn1/odyssey/command-fifo-gl-combined-carries-modelview
 gl /mips64/sn1/odyssey/command-fifo-gl-flat-shading
+gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-curve
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-native-packets
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-migration

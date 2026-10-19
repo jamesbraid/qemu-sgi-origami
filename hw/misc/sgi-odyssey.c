@@ -994,6 +994,16 @@ enum {
 #define ODSY_GL_VERTEX_2F 0x8080c801  /* 2 operands: X, Y as IEEE floats */
 /* The GL library's glVertex3f, object coordinates (ESTABLISHED). */
 #define ODSY_GL_VERTEX_3F 0x8080cc03  /* 3 operands: X, Y, Z as IEEE floats */
+/*
+ * The GL library's glVertex3i, glVertex3s and their vector forms send this
+ * word and the three coordinates as raw signed 32-bit integers, shorts
+ * sign-extended (ESTABLISHED from the IRIX 6.5.30 IP30 n32 library's
+ * emitters). That they are object coordinates like 0x8080cc03's is
+ * INFERRED from OpenGL's own rule that glVertex3i(x, y, z) is
+ * glVertex3f(x, y, z); how the board converts them is UNKNOWN, and the
+ * model uses C's int-to-float conversion, exact up to 2^24.
+ */
+#define ODSY_GL_VERTEX_3I 0x8080cc02  /* 3 operands: X, Y, Z as int32 */
 
 /*
  * Depth state (ESTABLISHED from the GL library's entry points and the
@@ -4948,7 +4958,8 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
     /* Captured linear planes already include the eye-space transform. */
     if ((s->cmd_tag == ODSY_GL_VERTEX_2I ||
          s->cmd_tag == ODSY_GL_VERTEX_2F ||
-         s->cmd_tag == ODSY_GL_VERTEX_3F) && s->gl_linear_texgen) {
+         s->cmd_tag == ODSY_GL_VERTEX_3F ||
+         s->cmd_tag == ODSY_GL_VERTEX_3I) && s->gl_linear_texgen) {
         double vertex[4] = {
             odyssey_f32(s->cmd_operand[0]),
             odyssey_f32(s->cmd_operand[1]),
@@ -4956,9 +4967,13 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
                 odyssey_f32(s->cmd_operand[2]) : 0, 1,
         };
 
-        if (s->cmd_tag == ODSY_GL_VERTEX_2I) {
+        if (s->cmd_tag == ODSY_GL_VERTEX_2I ||
+            s->cmd_tag == ODSY_GL_VERTEX_3I) {
             vertex[0] = (int32_t)s->cmd_operand[0];
             vertex[1] = (int32_t)s->cmd_operand[1];
+        }
+        if (s->cmd_tag == ODSY_GL_VERTEX_3I) {
+            vertex[2] = (int32_t)s->cmd_operand[2];
         }
         for (unsigned axis = 0; axis < 4; axis++) {
             const uint32_t *plane = axis == 3 ? s->tex_linear_plane_q :
@@ -8485,10 +8500,24 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_GL_VERTEX_2F:
     case ODSY_GL_VERTEX_3F:
+    case ODSY_GL_VERTEX_3I: {
         /*
-         * A float vertex uses the shared GL path. Open the primitive lazily
-         * on its first vertex, as for shared integer geometry above.
+         * A float vertex uses the shared GL path, and so does an integer 3D
+         * vertex once converted to float (ODSY_GL_VERTEX_3I). Open the
+         * primitive lazily on its first vertex, as for shared integer
+         * geometry above. The open-primitive record keeps the word and its
+         * operands as sent.
          */
+        bool has_z = tag != ODSY_GL_VERTEX_2F;
+        const uint32_t *xyz = s->cmd_operand;
+        uint32_t converted[3];
+
+        if (tag == ODSY_GL_VERTEX_3I) {
+            for (unsigned k = 0; k < 3; k++) {
+                converted[k] = odyssey_f32_bits((int32_t)s->cmd_operand[k]);
+            }
+            xyz = converted;
+        }
         if (!s->gl_in_prim && !s->gl_restart_absorb) {
             uint32_t mode = s->gl_primitive;
 
@@ -8499,27 +8528,27 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->gl_primitive <= 8) {
             odyssey_open_record_vertex(s, tag);
         }
-        odyssey_gl_vertex_colour(s, tag == ODSY_GL_VERTEX_3F);
+        odyssey_gl_vertex_colour(s, has_z);
         odyssey_texture_vertex(s);
         if (s->gl_restart_absorb) {
             unsigned slot = s->gl_restart_total - s->gl_restart_absorb;
 
             if (slot < ARRAY_SIZE(s->gl_restart_vertex)) {
                 sgi_gl_capture_vertex(&s->gl_ctx, s->gl_restart_type,
-                                      s->cmd_operand,
-                                      tag == ODSY_GL_VERTEX_3F ? 3 : 2,
+                                      xyz, has_z ? 3 : 2,
                                       s->gl_restart_vertex[slot]);
             }
             s->gl_restart_absorb--;
             odyssey_restart_finish(s);
             break;
         }
-        if (tag == ODSY_GL_VERTEX_3F) {
-            odyssey_gl_feed(s, SGI_GL_OP_VERTEX3F, s->cmd_operand, 3);
+        if (has_z) {
+            odyssey_gl_feed(s, SGI_GL_OP_VERTEX3F, xyz, 3);
         } else {
-            odyssey_gl_feed(s, SGI_GL_OP_VERTEX2F, s->cmd_operand, 2);
+            odyssey_gl_feed(s, SGI_GL_OP_VERTEX2F, xyz, 2);
         }
         break;
+    }
     case ODSY_GL_LOAD_4F:
         odyssey_gl_load_block16(s);
         break;
@@ -9105,7 +9134,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         odyssey_cmd_start(s, word, 2);
         return;
     }
-    if (word == ODSY_GL_VERTEX_3F) {
+    if (word == ODSY_GL_VERTEX_3F || word == ODSY_GL_VERTEX_3I) {
         odyssey_cmd_start(s, word, 3);
         return;
     }
