@@ -4258,6 +4258,55 @@ static void test_command_fifo_image_raster_colour_index(void)
 }
 
 /*
+ * A colour-index image wider than one burst, as the X server sends its root
+ * background: a 56x3 box whose first group is a header with count 0 and
+ * three full 16-pixel bursts, and whose later groups each start with a
+ * header of count 8 (bit 16 set), an 8-pixel burst that finishes the
+ * previous row, then three full bursts. Every pixel of the first two rows
+ * and the first 48 of the third is painted; the last 8 of the third stay
+ * the background.
+ */
+static void test_command_fifo_image_raster_colour_index_groups(void)
+{
+    QTestState *qts = board_start("");
+    unsigned int g, b, w;
+
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
+    backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
+    backend_push32(qts, ODSY_BACKEND_PAD);
+    index_fill(qts, 1, 400, 400, 456, 403);
+
+    image_begin(qts, 400, 400, 456, 403);
+    for (g = 0; g < 3; g++) {
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+        cmd_push(qts, g ? 0x0f811041 : 0x0f001041);
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+        if (g) {
+            cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_CI));
+            cmd_push(qts, 0x02020202);
+            cmd_push(qts, 0x02020202);
+        }
+        for (b = 0; b < 3; b++) {
+            cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_CI));
+            for (w = 0; w < 4; w++) {
+                cmd_push(qts, 0x02020202);
+            }
+        }
+    }
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_shown(qts, 447, 400), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_shown(qts, 455, 400), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_shown(qts, 420, 401), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_shown(qts, 455, 401), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_shown(qts, 447, 402), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_shown(qts, 448, 402), ==, 0x00ff00ff);
+
+    board_quit(qts);
+}
+
+/*
  * The true-colour OpenGL path: a flat single triangle drawn through the shared
  * GL context and software rasterizer (hw/display/sgi/gl-context.h,
  * rasterizer.h), routed off the greeter's integer 2D path by its float words.
@@ -18054,6 +18103,8 @@ int main(int argc, char **argv)
              test_command_fifo_image_raster_short_incomplete);
     add_case("sn1/odyssey/command-fifo-image-raster-colour-index",
              test_command_fifo_image_raster_colour_index);
+    add_case("sn1/odyssey/command-fifo-image-raster-colour-index-groups",
+             test_command_fifo_image_raster_colour_index_groups);
     add_case("sn1/odyssey/command-fifo-gl-crossing-eye",
              test_command_fifo_gl_crossing_eye);
     add_case("sn1/odyssey/command-fifo-gl-integer-points-transform",
