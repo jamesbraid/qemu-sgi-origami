@@ -346,6 +346,8 @@ struct SGIOdysseyState {
     uint32_t query_current_valid;
     uint32_t query_captured_valid;
     uint32_t query_stage;
+    /* The open query's kind (word 0x4c0 + kind); unmigrated, like the stage. */
+    uint32_t query_kind;
     uint32_t query_count;
     uint32_t query_sync_index;
     uint64_t query_epoch;

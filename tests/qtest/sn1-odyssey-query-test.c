@@ -254,6 +254,44 @@ static void test_query_defaults(void)
     qtest_quit(qts);
 }
 
+/*
+ * The raster-position query, 0x4c3: besides the current-value records, the
+ * library reads the raster index at +0x928 and the raster colour at +0x93c,
+ * which the model answers with the current index and colour records. Here a
+ * glColor4f of (1, 0.5, 0.25, 1) and glIndexi(9) before it.
+ */
+static void test_query_raster_position(void)
+{
+    const uint32_t setters[] = {
+        0xc580c406, 9,
+        0xc580d015, 0x3f800000, 0x3f000000, 0x3e800000, 0x3f800000,
+    };
+    const uint32_t words[] = { 0x4c3, 0x55, 0x10a5a, 2, 0x1234 };
+    uint8_t expected[0x2000];
+    QTestState *qts = query_test_init();
+
+    query_seed(qts, expected);
+    query_words(qts, setters, ARRAY_SIZE(setters));
+    query_words(qts, words, ARRAY_SIZE(words));
+    query_expect_defaults(expected, 0x55, 2, 0x1234);
+    stl_be_p(expected + 0x904, 9);
+    stl_be_p(expected + 0x914, 0xc580d015);
+    stl_be_p(expected + 0x918, 0x3f800000);
+    stl_be_p(expected + 0x91c, 0x3f000000);
+    stl_be_p(expected + 0x920, 0x3e800000);
+    stl_be_p(expected + 0x924, 0x3f800000);
+    /* The raster index and colour records. */
+    stl_be_p(expected + 0x928, 0xc580c406);
+    stl_be_p(expected + 0x92c, 9);
+    stl_be_p(expected + 0x93c, 0xc580d015);
+    stl_be_p(expected + 0x940, 0x3f800000);
+    stl_be_p(expected + 0x944, 0x3f000000);
+    stl_be_p(expected + 0x948, 0x3e800000);
+    stl_be_p(expected + 0x94c, 0x3f800000);
+    query_assert_memory(qts, expected);
+    qtest_quit(qts);
+}
+
 static void query_fragment(QTestState *qts, const uint32_t *words,
                             unsigned count, bool wide, unsigned start)
 {
@@ -1286,6 +1324,7 @@ int main(int argc, char **argv)
     }
     qtest_add_func("/sgi-query/irq-ordering", test_query_irq_ordering);
     qtest_add_func("/sgi-query/defaults", test_query_defaults);
+    qtest_add_func("/sgi-query/raster-position", test_query_raster_position);
     qtest_add_func("/sgi-query/setters", test_query_setters);
     qtest_add_func("/sgi-query/partial-setter", test_query_partial_setter);
     qtest_add_func("/sgi-query/completed-event", test_query_completed_event);
