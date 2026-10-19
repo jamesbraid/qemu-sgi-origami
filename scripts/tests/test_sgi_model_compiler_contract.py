@@ -1,36 +1,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 #!/usr/bin/env python3
-"""Tests for the format-2 compiler and the compiled-catalogue emitter.
+"""Tests for the format-2 compiler and compiled-catalogue emitter.
 
-`model_compile.compile_model` is additive: today's three exporters and
-`tools/origami model qemu-inputs` are untouched (the format-2 cut-over
-replaces them once the QEMU one-builder step lands). These tests exercise
-the new modules directly.
+Record-shape tests inspect the typed graph index of resolved model fixtures
+and compare compiled fields with expected values. Golden tests capture each
+catalogued configuration's compiled JSON and manifest, or its refusal
+message, under system-model-fixtures/format2/<configuration>/.
+ORIGAMI_UPDATE_GOLDENS=1 recaptures those files.
 
-Two kinds of coverage:
-
-- Record-shape tests read a real resolved fixture's typed graph index
-  (`model_compile.index_graph`) and check one record type's compiled shape
-  against values in that fixture, independent of whether the whole
-  configuration compiles end to end -- the Origin 2000 family's routers,
-  crossbars and modules are exercised this way, since `compile_model`
-  does not yet wire crossbar-attached configurations all the way through
-  (see the module-level refusal test below).
-- Golden tests capture, per catalogued configuration, either the
-  compiled-catalogue JSON and its manifest or the specific refusal
-  message, under `system-model-fixtures/format2/<configuration>/`.
-  ORIGAMI_UPDATE_GOLDENS=1 recaptures them.
-
-The Origin 200 configuration's compiled node, its processor, its flash and
-its I/O board are additionally checked field by field against the values
-QEMU's `hw/mips/sgi/sn-model.c` (branch `sn/one-builder-step`) hand-
-transcribes from today's generated inputs -- the plan's format-2 section
-names that file the reference for exactly this configuration. Those checks
-read `compile_model`'s own untrimmed dict, not the catalogue JSON: the
-ownership rule the catalogue applies (`CatalogueJsonTests`, below) is a
-property of `render_catalogue_json`'s output, not of what the compiler
-itself resolves.
+The Origin 200 tests also check its compiled node, processor, flash and I/O
+board fields directly. These checks read compile_model's untrimmed result;
+CatalogueJsonTests checks the separately rendered catalogue output.
 """
 
 from __future__ import annotations
@@ -62,8 +43,8 @@ from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.registry import PRODUCT_MODELS
 
 
-# Every class below reads a handful of the same six real docs/machines
-# files, most read fresh and unmutated; one test point
+# These tests repeatedly resolve the same model fixture files. Most read
+# fresh, unmutated copies; one test point
 # (test_unsupported_generation_is_refused_by_name) mutates the model it
 # gets back. Resolving each configuration once here and handing every
 # caller its own deep copy keeps that mutation local while dropping the
@@ -2480,9 +2461,7 @@ class RecordShapeTests(unittest.TestCase):
         # Crossbow 1 (widget 8, hosted by node 1) and each of the four
         # Hubs' own I/O port entering its midplane Crossbow -- nodes 1
         # and 3 on Crossbow 1 (widgets 9 and 10), nodes 2 and 4 on
-        # Crossbow 2 (widgets 10 and 9) -- per
-        # docs/machines/layers/modules/origin2000-module.yaml's XIO
-        # buses.
+        # Crossbow 2 (widgets 10 and 9).
         self.assertEqual(
             {(a["crossbar_index"], a["widget"], a["node_index"])
              for a in graph["xio_attachments"]},
@@ -2517,9 +2496,8 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(router["part"], 1)
         self.assertEqual(router["revision"], 1)
         self.assertEqual(router["chip_inputs"], 15)
-        # Both routers' serials are the emulator's synthetic identities
-        # (docs/machines/layers/products/origin2000-rack.yaml,
-        # machine.emulation.synthetic_identities), the same mechanism a
+        # Both routers' serials are the emulator's synthetic identities,
+        # the same mechanism a
         # node's Hub uses -- never the identity block's own absent serial.
         self.assertEqual(router["serial"], 0x51454d555200)
         self.assertEqual(entry["routers"][1]["id"], "router-2")
@@ -2542,10 +2520,8 @@ class RecordShapeTests(unittest.TestCase):
         )
 
     def test_dual_module_compiles_two_directly_linked_nodes(self):
-        # docs/machines/origin200-dual.yaml's peer-craylink fabric bus now
-        # authors link.kind (cable); no router or crossbar is involved, so
-        # this is the flat Origin 200 node path run twice, not the
-        # router/crossbar assembly path.
+        # The peer CrayLink is a direct cable. No router or crossbar is
+        # involved, so the compiler uses the flat Origin 200 node path twice.
         entry = compile_model(_resolved("origin200-dual"))
         self.assertEqual(len(entry["nodes"]), 2)
         self.assertEqual(len(entry["io_boards"]), 2)
@@ -2577,9 +2553,8 @@ class RecordShapeTests(unittest.TestCase):
         entry = compile_model(_resolved("origin2000-rack"))
         board = entry["io_boards"][0]
         self.assertEqual(board["id"], "baseio")
-        # This is a real physical board of its own (docs/machines/layers/
-        # modules/origin2000-module.yaml's "baseio" board component, IO6
-        # slot 1), the Origin 2000 family's BaseIO. The default origin2000
+        # This is the Origin 2000 family's separate IO6-type BaseIO
+        # board in physical IO1. The default origin2000
         # module fits the plain BaseIO -- no MediaIO daughtercard -- so it
         # compiles to the BASEIO board kind, differing from the Origin 200
         # family's onboard I/O, which shares its node's own board and
@@ -2698,8 +2673,7 @@ def _fit_widget_occupant(model: dict, *, hardware_kind: str = "xg",
     connector: XG, the InfiniteReality pipe's XIO-to-graphics ASIC
     (`_XIO_WIDGET_KINDS`), attached to the connector's XIO bus
     directly with role endpoint, carrying no PCI host bridge and no PCI
-    bus of its own (docs/machines/layers/modules/kona-pipe.yaml's own
-    xg connection uses this same role for this same reason). Built in
+    bus of its own. The fixture uses the endpoint role and is built in
     memory for the same reason `_fit_occupant` is: exercising the
     compiler independently of any one composition file.
     """
@@ -2729,9 +2703,8 @@ def _fit_widget_occupant(model: dict, *, hardware_kind: str = "xg",
 
 def _fit_widget_occupant_one_wire_chain(model: dict) -> dict:
     """Extend `_fit_widget_occupant`'s XG-style widget with a one-wire
-    identity chain answering for two boards (the Onyx2 rack's pipe shape,
-    docs/machines/layers/modules/kona-pipe.yaml and
-    ir-graphics-module.yaml): a sub-board fitted on the widget's own
+    identity chain answering for two boards in an Onyx2 rack pipe:
+    a sub-board fitted on the widget's own
     board, and a separate board beside it under the same connector (the
     rack's Ktown), both reached through the widget's own one-wire master.
     """
@@ -3087,15 +3060,10 @@ class CrosstownTests(unittest.TestCase):
 
 
 class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
-    """Field values QEMU's hand-transcribed origin200 entry names.
+    """Origin 200 compiled fields with fixed expected values.
 
-    Transcribed from `hw/mips/sgi/sn-model.c` on the QEMU branch
-    `sn/one-builder-step`, commit `7632a48bbf` ("hand-author origin200's
-    format-2 entry"). Two fields the compiled entry cannot reproduce --
-    the node and module C identifiers "node0"/"chassis", names not
-    derived from any authored fact in the resolved model -- are the
-    "where it does not match and why" the packet's report names; every
-    field with hardware or emulator-identity meaning matches.
+    The checks cover hardware and emulator identity fields in the
+    compiled result. Node and module C identifiers are not model inputs.
     """
 
     def setUp(self):
@@ -3205,12 +3173,9 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
         self.assertEqual(self.entry["junk_uart"], -1)
 
     def test_processor(self):
-        # The catalogue wires the maximum population any accepted offering
-        # names (docs/machines/layers/products/origin300.yaml's
-        # supported_cpu_populations is now [[2], [4]]), so all four
-        # processor-interface slots carry a fitted assembly; -smp 2 versus
-        # -smp 4 is a QEMU builder selection over this one wiring, not a
-        # second compiled topology.
+        # The catalogue accepts two or four processors and wires four
+        # processor-interface slots, all with a fitted assembly. -smp
+        # selects the active population from this one topology.
         slots = self.entry["nodes"][0]["cpu_slots"]
         assembly = slots[0]["assembly"]
         self.assertEqual(assembly["kind"], "R14000")
@@ -3286,7 +3251,7 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
 
 
 class OriginThreeHundredTwoChassisTests(unittest.TestCase):
-    """docs/machines/origin300-two-chassis.yaml: two complete base modules
+    """Two Origin 300 chassis, each with a complete base module,
     joined by one NUMAlink 3 cable. Each chassis's Bedrock gets its own
     processors, IO-8 and L1, and nothing in the compiled topology fixes a
     NASID -- the stock PROM assigns those by discovery.
@@ -3385,9 +3350,8 @@ class RefusalTests(unittest.TestCase):
     """Reference-role and not-yet-grounded configurations are refused."""
 
     def test_reference_configuration_is_refused(self):
-        # docs/machines/origin2000.yaml (model_role: reference) describes
-        # the generic four-node system, not one this compiler ever emits
-        # a topology for.
+        # The generic Origin 2000 reference model is not an emulation
+        # target, so the compiler must refuse it.
         with self.assertRaisesRegex(CompileError, "not an emulation target"):
             compile_model(_resolved("origin2000"))
 
@@ -3398,10 +3362,8 @@ class RefusalTests(unittest.TestCase):
             compile_model(model)
 
     def test_dual_module_compiles_with_router_assembly(self):
-        # docs/machines/origin200-dual.yaml's peer-craylink fabric bus is
-        # authored with link.kind (cable); the format-2 cut-over adds router
-        # and crossbar compilation, so the origin200-dual now compiles
-        # successfully instead of being refused.
+        # The Origin 200 pair uses a direct CrayLink cable and compiles
+        # into the catalogue without a router or crossbar.
         entry = compile_model(_resolved("origin200-dual"))
         self.assertIn("modules", entry)
 
@@ -3682,9 +3644,8 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual([item["kind"] for item in networks], ["ioc3-ethernet"])
 
     def test_origin_300_has_one_offering_per_accepted_population(self):
-        # docs/machines/layers/products/origin300.yaml's own
-        # topology.supported_cpu_populations names [[2], [4]]; the
-        # catalogue must assert exactly those two offerings, sharing the
+        # Origin 300 accepts two or four processors. The catalogue must
+        # offer exactly those populations, sharing the
         # one compiled topology's maximal cpu_slots wiring, and no other.
         catalogue = json.loads(render_catalogue_json([_resolved("origin300")]))
         offerings = catalogue["offerings"]
@@ -3881,11 +3842,9 @@ class NodePopulationTests(unittest.TestCase):
             compile_model(model)
 
 
-# The six catalogued configurations the plan's format-2 section names.
-# Each captures either its compiled-catalogue JSON and manifest or its
-# refusal message under GOLDEN_ROOT; ORIGAMI_UPDATE_GOLDENS=1 recaptures
-# them. The format-2 `sn-model.c` goldens went with `render_sn_model_c`;
-# the JSON goldens stay.
+# Each catalogued configuration captures its compiled JSON and manifest,
+# or its refusal message, under GOLDEN_ROOT. ORIGAMI_UPDATE_GOLDENS=1
+# recaptures the golden files.
 CONFIGURATIONS = (
     "origin200", "origin200-dual", "origin200-gigachannel",
     "origin200-gigachannel-loopback",

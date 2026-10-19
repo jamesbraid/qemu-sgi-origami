@@ -2405,8 +2405,8 @@ static bool sgi_machine_instantiate_baseio_card(
  * hardware graphs show cards behind this adapter: a Cad Duo's keyboard at
  * /hw/module/1/slot/io5/xtalk_pci/pci/1/pckb (nekonomicon thread 5749) and
  * a SCSI card at .../io5/xtalk_pci/pci/1/scsi_ctlr/0 (thread 16727716).
- * docs/machines/layers/modules/pci-shoehorn.yaml records the same. The
- * board's own identity and the card's one-wire part come from the record.
+ * The board's identity and the card's one-wire part come from the compiled
+ * machine model.
  */
 #define SGI_MACHINE_PCI_SHOEHORN_CAD_DUO_SLOT 1
 

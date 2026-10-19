@@ -1,20 +1,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 #!/usr/bin/env python3
-"""Golden captures for the catalogued machine configurations.
+"""Golden captures for resolved machine configurations.
 
-Each configuration gets its own directory under system-model-fixtures
-holding its resolved descriptor as canonical JSON and the SHA-256 of that
-JSON -- the resolver's own output, independent of any compiler. The
-compiled-and-emitted format-2 descriptor is a separate golden,
-`test-model-format2.py`'s own `system-model-fixtures/format2/<configuration>/`:
-format 2 compiles every product's implemented configurations into one
-`sn-model.c`, so a per-configuration byte-for-byte copy of
-`tools/origami model qemu-inputs`'s own output (this file's job before the
-format-2 cut-over, when each product still had its own compiler and export)
-no longer distinguishes one configuration from a sibling sharing its
-product. ORIGAMI_UPDATE_GOLDENS=1 rewrites the golden directories instead
-of comparing against them.
+Each configuration has a directory under system-model-fixtures with its
+resolved descriptor as canonical JSON and its SHA-256. This checks resolver
+output independently of the compiler. The format-2 compiler has separate
+goldens under system-model-fixtures/format2/<configuration>/.
+ORIGAMI_UPDATE_GOLDENS=1 recaptures these files.
 """
 
 from __future__ import annotations
@@ -36,7 +29,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from sgi_model.model_validation import load_checked_system_model, schema
 
 
-# Configuration directory name -> docs/machines file.
+# Configuration name -> model input filename.
 CONFIGURATIONS = {
     "origin200": "origin200.yaml",
     "origin200-dual": "origin200-dual.yaml",

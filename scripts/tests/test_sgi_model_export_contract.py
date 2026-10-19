@@ -169,15 +169,12 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn("firmware/renamed.bin", json.dumps(actual_catalogue))
 
     def test_origin2000_graphics_module_hubs_report_ni_revision_5(self):
-        """`mgras_attach` (IRIX 6.5.30's SI Viz attach callback) reads
-        NI_STATUS_REV_ID on the master node's Hub and refuses to attach
-        below code 4; see docs/specs/sgi-hub.rst and
-        docs/machines/layers/products/origin2000-rack.yaml's
-        hub_ni_revision_overrides. Every Hub on Origin 2000's
-        graphics-capable four-node module must compile to code 5, while
-        Origin 200's node-board Hubs -- which reuse the same reusable
-        ip27-node-board module but carry no override -- keep the general
-        baseline, code 3, unaffected by the override existing at all.
+        """The Origin 2000 rack model selects Hub NI revision 5.
+
+        The Hub's network-interface status is described in
+        docs/specs/sgi-hub.rst. All four node-board Hubs in the rack model
+        must compile to revision 5. Origin 200's Hubs use the same
+        node-board model and retain the baseline revision 3.
         """
         outputs = render_qemu_inputs(INPUTS, machines=("origin2000", "origin200"))
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
