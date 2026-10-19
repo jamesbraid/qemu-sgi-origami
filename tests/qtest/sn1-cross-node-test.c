@@ -1296,7 +1296,8 @@ static void test_prom_copy_live_node(gconstpointer opaque)
     };
     const uint32_t release[] = {
         0x3c0ba800, 0x000b583c, 0x3c0c0010, 0x016c5825,
-        0x340d0042, 0xad6d0000, /* outside copy: write reaches backing RAM */
+        0x340e0000 | own, 0x000e707c, 0x016e5825, /* own node field */
+        0x340d0042, 0xad6d0000, /* outside copy: write to own RAM */
         0x34090001, 0xad090048, 0x1000ffff, 0x00000000,
     };
 
@@ -1398,6 +1399,7 @@ static void test_prom_copy_live_node(gconstpointer opaque)
     g_assert_cmphex(qtest_readl(qts, NODE(own) + HANDOFF_FLAGS + 0x48), ==, 1);
     g_assert_cmphex(qtest_readq(qts, NODE(own) + PROM_DATA_WINDOW), ==,
                     UINT64_C(0x42) << 32 | WORD1);
+    g_assert_cmphex(qtest_readq(qts, PROM_DATA_WINDOW), ==, WORD0);
     qtest_quit(qts);
     g_unlink(prom);
 }
