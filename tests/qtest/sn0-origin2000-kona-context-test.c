@@ -3096,6 +3096,29 @@ static void test_tex_gen_framed(void)
 }
 
 /*
+ * A packed index whose bits 23:0 are zero fits both glIndexs and
+ * glIndexub. The model reads it as the short and says so once, so a
+ * glIndexub client's wrong colours stay diagnosable; a word only the
+ * short sender makes, 0x01230000, is not reported.
+ */
+static void test_packed_index_short_reported_once(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    context_a_with_filled_page(s);
+    kona_command(s, 0x75, (uint32_t[]){ 0x01230000 }, 1);
+    kona_command(s, 0x75, (uint32_t[]){ 0x02000000 }, 1);
+    kona_command(s, 0x75, (uint32_t[]){ 0x12000000 }, 1);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "read as the short"), ==, 1);
+    g_assert_nonnull(strstr(found, "packed index 0x02000000 fits glIndexs"));
+}
+
+/*
  * A retrace request, 0x1e7 and its tag, completes at the next retrace:
  * the tag register reads the tag and the video cause bit 0x8 rises, with
  * the general vector sent, which is what runs kona_video_intr and its
@@ -3372,6 +3395,9 @@ int main(int argc, char **argv)
                    test_igloo_interface_framed);
     qtest_add_func("sn0/origin2000/kona-context/tex-gen-framed",
                    test_tex_gen_framed);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "packed-index-short-reported-once",
+                   test_packed_index_short_reported_once);
     qtest_add_func("sn0/origin2000/kona-context/retrace-request-completes",
                    test_retrace_request_completes);
     qtest_add_func("sn0/origin2000/kona-context/"
