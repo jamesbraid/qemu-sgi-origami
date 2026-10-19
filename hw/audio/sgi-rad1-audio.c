@@ -2010,8 +2010,8 @@ static int sgi_rad1_octane_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .pre_save = sgi_rad1_octane_pre_save,
     .post_load = sgi_rad1_octane_post_load,
     .fields = (const VMStateField[]) {
