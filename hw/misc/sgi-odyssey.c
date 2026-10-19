@@ -936,8 +936,18 @@ enum {
  * of different formats pack as the allocator's addresses suggest, are not
  * established, and a store of whole texel words is what sampling needs. A
  * luminance texel is kept as its byte in every colour channel. The store is
- * a model budget, not the board's memory size: an object that does not fit
- * is refused and reported.
+ * a model budget, not the board's memory size.
+ *
+ * The driver reuses board addresses as textures come and go, and the model
+ * is never told an object died. So the store reclaims: space a moved or
+ * reshaped object left behind is recovered by packing the live objects
+ * together, and when the table or the store is still full the object least
+ * recently selected or grown is forgotten (its slot keeps base 0, which no
+ * select names, until a new object takes it). This is a model policy, not
+ * board behaviour: on the board the bytes stay until something overwrites
+ * them, so a forgotten object that a client still samples reads as missing
+ * here (its level is incomplete) where the board would still draw it. An
+ * object that does not fit even in an empty store is refused and reported.
  */
 #define ODSY_OBJ_POOL_BYTES SGI_ODYSSEY_OBJ_POOL_BYTES
 #define ODSY_OBJ_POOL_WORDS SGI_ODYSSEY_OBJ_POOL_WORDS
@@ -3500,6 +3510,9 @@ static uint32_t odyssey_float_to_u32(uint32_t bits)
 /* The index of the object at board base base, or -1. */
 static int odyssey_object_find(SGIOdysseyState *s, uint32_t base)
 {
+    if (!base) {
+        return -1;
+    }
     for (unsigned int i = 0; i < s->obj_count; i++) {
         if (s->obj_base[i] == base) {
             return i;
@@ -3582,22 +3595,112 @@ static bool odyssey_object_region_written(const SGIOdysseyState *s,
     return true;
 }
 
+/* Mark object i as the most recently used. */
+static void odyssey_object_touch(SGIOdysseyState *s, int i)
+{
+    s->obj_stamp[i] = ++s->obj_clock;
+}
+
+/* Forget object i: its slot stays, with base 0, for a later object. */
+static void odyssey_object_forget(SGIOdysseyState *s, int i)
+{
+    s->obj_base[i] = 0;
+    s->obj_width[i] = 0;
+    s->obj_rows[i] = 0;
+    s->obj_offset[i] = 0;
+    s->obj_stamp[i] = 0;
+}
+
+/* The least recently used live object other than keep, or -1. */
+static int odyssey_object_oldest(SGIOdysseyState *s, int keep)
+{
+    int oldest = -1;
+
+    for (unsigned int i = 0; i < s->obj_count; i++) {
+        if ((int)i != keep && s->obj_base[i] &&
+            (oldest < 0 || s->obj_stamp[i] < s->obj_stamp[oldest])) {
+            oldest = i;
+        }
+    }
+    return oldest;
+}
+
+/*
+ * Pack the objects that hold rows to the front of the store, in store order,
+ * so the space between them is reclaimed. Indices do not change.
+ */
+static void odyssey_object_compact(SGIOdysseyState *s)
+{
+    uint8_t *bytes = s->obj_mem.bytes;
+    uint64_t next = 0;
+
+    for (;;) {
+        uint64_t size;
+        int pick = -1;
+
+        /* The lowest-placed object not yet packed: at or past next. */
+        for (unsigned int i = 0; i < s->obj_count; i++) {
+            if (s->obj_base[i] && s->obj_rows[i] &&
+                s->obj_offset[i] >= next &&
+                (pick < 0 || s->obj_offset[i] < s->obj_offset[pick])) {
+                pick = i;
+            }
+        }
+        if (pick < 0) {
+            break;
+        }
+        size = (uint64_t)s->obj_width[pick] * s->obj_rows[pick];
+        if (s->obj_offset[pick] != next) {
+            memmove(bytes + next * 4, bytes + (uint64_t)s->obj_offset[pick] * 4,
+                    size * 4);
+            odyssey_object_valid_move(s, s->obj_offset[pick], next, size);
+            s->obj_offset[pick] = next;
+        }
+        next += size;
+    }
+    /* Growth in place assumes the words past the store's end are zero. */
+    memset(bytes + next * 4, 0, (s->obj_used - next) * 4);
+    odyssey_object_valid_range(s, next, s->obj_used - next, false);
+    s->obj_used = next;
+}
+
+/* Whether object i can hold need words, in place or moved to the end. */
+static bool odyssey_object_fits(SGIOdysseyState *s, int i, uint64_t have,
+                                uint64_t need)
+{
+    return (have && s->obj_offset[i] + have == s->obj_used &&
+            s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) ||
+           s->obj_used + need <= ODSY_OBJ_POOL_WORDS;
+}
+
 static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
                                  uint32_t width)
 {
     int i = odyssey_object_find(s, base);
 
     if (i < 0) {
-        if (s->obj_count == SGI_ODYSSEY_OBJECTS) {
-            if (!s->obj_full_reported) {
-                s->obj_full_reported = true;
-                qemu_log_mask(LOG_UNIMP, "sgi-odyssey: more than %u "
-                              "board-memory objects; object 0x%x dropped\n",
-                              SGI_ODYSSEY_OBJECTS, base);
+        for (unsigned int j = 0; j < s->obj_count; j++) {
+            if (!s->obj_base[j]) {
+                i = j;
+                break;
             }
-            return -1;
         }
-        i = s->obj_count++;
+    }
+    if (i < 0 && s->obj_count == SGI_ODYSSEY_OBJECTS) {
+        i = odyssey_object_oldest(s, -1);
+        if (!s->obj_full_reported) {
+            s->obj_full_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: more than %u board-memory "
+                          "objects; the least recently used, 0x%x, is "
+                          "forgotten\n", SGI_ODYSSEY_OBJECTS,
+                          s->obj_base[i]);
+        }
+        odyssey_object_forget(s, i);
+    }
+    if (i < 0 || !s->obj_base[i]) {
+        if (i < 0) {
+            i = s->obj_count++;
+        }
         s->obj_base[i] = base;
         s->obj_width[i] = width;
         s->obj_offset[i] = 0;
@@ -3606,13 +3709,15 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
         s->obj_width[i] = width;
         s->obj_rows[i] = 0;
     }
+    odyssey_object_touch(s, i);
     return i;
 }
 
 /*
  * Make room for rows rows in object i: grow it in place when it is the last
- * in the store, else move it to the end. The space a moved object leaves is
- * not reused. False, reported once, when the store's budget is spent.
+ * in the store, else move it to the end. When the store is full, pack it,
+ * then forget the least recently used other objects until i fits. False,
+ * reported once, when i alone does not fit.
  */
 static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
 {
@@ -3621,6 +3726,21 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
 
     if (rows <= s->obj_rows[i]) {
         return true;
+    }
+    odyssey_object_touch(s, i);
+    while (need <= ODSY_OBJ_POOL_WORDS &&
+           !odyssey_object_fits(s, i, have, need)) {
+        int victim;
+
+        odyssey_object_compact(s);
+        if (odyssey_object_fits(s, i, have, need)) {
+            break;
+        }
+        victim = odyssey_object_oldest(s, i);
+        if (victim < 0) {
+            break;
+        }
+        odyssey_object_forget(s, victim);
     }
     if (have && s->obj_offset[i] + have == s->obj_used &&
         s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) {
@@ -10350,6 +10470,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->obj_width, 0, sizeof(s->obj_width));
     memset(s->obj_offset, 0, sizeof(s->obj_offset));
     memset(s->obj_rows, 0, sizeof(s->obj_rows));
+    memset(s->obj_stamp, 0, sizeof(s->obj_stamp));
+    s->obj_clock = 0;
     memset(s->obj_valid, 0, sizeof(s->obj_valid));
     s->obj_full_reported = false;
     s->board_oob_reported = false;
@@ -11332,8 +11454,8 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 41,
-    .minimum_version_id = 41,
+    .version_id = 42,
+    .minimum_version_id = 42,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
     .fields = (const VMStateField[]) {
@@ -11467,6 +11589,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY(obj_width, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
         VMSTATE_UINT32_ARRAY(obj_offset, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
         VMSTATE_UINT32_ARRAY(obj_rows, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT32_ARRAY(obj_stamp, SGIOdysseyState, SGI_ODYSSEY_OBJECTS),
+        VMSTATE_UINT32(obj_clock, SGIOdysseyState),
         VMSTATE_UINT8_ARRAY(obj_valid, SGIOdysseyState,
                             SGI_ODYSSEY_OBJ_VALID_BYTES),
         /* The texture state words and coordinate. */

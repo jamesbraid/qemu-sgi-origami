@@ -55,8 +55,8 @@ typedef struct SGIRenderer SGIRenderer;
  */
 #define SGI_ODYSSEY_GL_CONSTANTS 2048
 /* Off-screen board-memory objects the model keeps (texture levels). */
-#define SGI_ODYSSEY_OBJECTS 64
-#define SGI_ODYSSEY_OBJ_POOL_BYTES (16 * 1024 * 1024)
+#define SGI_ODYSSEY_OBJECTS 1024
+#define SGI_ODYSSEY_OBJ_POOL_BYTES (128 * 1024 * 1024)
 #define SGI_ODYSSEY_OBJ_POOL_WORDS (SGI_ODYSSEY_OBJ_POOL_BYTES / 4)
 #define SGI_ODYSSEY_OBJ_VALID_BYTES (SGI_ODYSSEY_OBJ_POOL_WORDS / 8)
 /* The texture level table's entries (0x0e80 .. 0x0ebf). */
@@ -270,6 +270,9 @@ struct SGIOdysseyState {
     uint32_t obj_width[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_offset[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_rows[SGI_ODYSSEY_OBJECTS];
+    /* When each object was last selected or grown (obj_clock's count). */
+    uint32_t obj_stamp[SGI_ODYSSEY_OBJECTS];
+    uint32_t obj_clock;
     uint8_t obj_valid[SGI_ODYSSEY_OBJ_VALID_BYTES];
     bool obj_full_reported;
     /* A destination base beyond the active profile's board memory. */
