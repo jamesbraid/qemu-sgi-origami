@@ -1229,6 +1229,19 @@ static bool sgi_kona_kernel_token_known(uint32_t word)
     return false;
 }
 
+/*
+ * A word for the kernel framer. A word that opens a command records
+ * whether the privileged bit was set, which decides what a forced store
+ * does to the command if it is still open (sgi_kona_bracket_write()).
+ */
+static void sgi_kona_kernel_port_word(SGIKonaState *s, uint32_t word)
+{
+    if (!s->kernel_port.framing) {
+        s->kernel_port_privileged = s->kernel_input;
+    }
+    sgi_command_port_write(&s->kernel_port, word, 4);
+}
+
 /* A word that can follow the textport's sync word as its command. */
 static bool sgi_kona_textport_selector_known(uint32_t word)
 {
@@ -11214,7 +11227,7 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         }
         if (word != SGI_KONA_TEXTPORT_SYNC_WORD &&
             sgi_kona_kernel_token_known(word)) {
-            sgi_command_port_write(&s->kernel_port, word, 4);
+            sgi_kona_kernel_port_word(s, word);
             return;
         }
         if (sgi_kona_gl_token_word(s, word, &selector)) {
@@ -11332,12 +11345,17 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
 
 /*
  * Whether a user command is part-way through its words: any framer or
- * data run of the textport, GL and X grammars still waiting for more.
+ * data run of the textport, GL and X grammars still waiting for more,
+ * including a command the kernel framer opened without the privileged
+ * bit (the X server's tokens and the GL client's list calls share its
+ * table), live or set aside by a forced store.
  */
 /* Whether the current context has a command open, part-way through. */
 static bool sgi_kona_user_command_open(SGIKonaState *s)
 {
-    return s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
+    return (s->kernel_port.framing && !s->kernel_port_privileged) ||
+           s->kernel_port_suspended.framing ||
+           s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
            s->video_open || s->color_map_remaining || s->gamma_remaining ||
            s->cursor_remaining || s->gl_tex_table_remaining ||
            s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
@@ -11398,6 +11416,29 @@ static void sgi_kona_port_restore(SGICommandPort *p, const SGIKonaSavedPort *d)
 }
 
 /*
+ * Put a user command the kernel framer had open back on it, from the copy
+ * a forced store set aside or a context's saved copy, and clear the copy.
+ * The kernel framer should be idle by then: the kernel's bracketed
+ * packets were never seen to stay open past the bracket. If one is, it
+ * ends here, logged, as it would have at the next forced store.
+ */
+static void sgi_kona_kernel_port_resume(SGIKonaState *s, SGIKonaSavedPort *d)
+{
+    if (!d->framing) {
+        return;
+    }
+    if (s->kernel_port.framing) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: kernel command 0x%" PRIx32
+                      " still open when a user command resumes; it ends"
+                      " short of its words\n", s->kernel_port.selector);
+        sgi_command_port_reset(&s->kernel_port);
+    }
+    sgi_kona_port_restore(&s->kernel_port, d);
+    s->kernel_port_privileged = false;
+    memset(d, 0, sizeof(*d));
+}
+
+/*
  * Copy the open user command out to `owner`'s saved slot and leave the
  * input idle for the context now sending words: the inferred pipe keeps a
  * context's open command with the context. The copy is exact, so the
@@ -11416,6 +11457,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->valid = true;
     sgi_kona_port_save(&v->textport, &s->textport);
     sgi_kona_port_save(&v->gl_port, &s->gl_port);
+    v->kernel_port = s->kernel_port_suspended;
     v->textport_expect_sync = s->textport_expect_sync;
     v->gl_sync_held = s->gl_sync_held;
     v->gl_token_high = s->gl_token_high;
@@ -11491,6 +11533,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
 
     sgi_command_port_reset(&s->textport);
     sgi_command_port_reset(&s->gl_port);
+    memset(&s->kernel_port_suspended, 0, sizeof(s->kernel_port_suspended));
     s->textport_expect_sync = true;
     s->gl_sync_held = false;
     s->gl_token_high = 0;
@@ -11560,6 +11603,7 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
 
     sgi_kona_port_restore(&s->textport, &v->textport);
     sgi_kona_port_restore(&s->gl_port, &v->gl_port);
+    sgi_kona_kernel_port_resume(s, &v->kernel_port);
     s->textport_expect_sync = v->textport_expect_sync;
     s->gl_sync_held = v->gl_sync_held;
     s->gl_token_high = v->gl_token_high;
@@ -11620,6 +11664,33 @@ static bool sgi_kona_kernel_only_token(uint32_t word)
 }
 
 /*
+ * The current context's user input, before its word or slot store is
+ * taken: a suspended command resumes in place if its context is current
+ * again (a kernel-framer command set aside goes back on the framer), or
+ * is saved with its owner if another context sends first; then a command
+ * the current context had saved comes back.
+ */
+static void sgi_kona_user_input(SGIKonaState *s)
+{
+    int owner = s->suspended_owner;
+    int current = s->context_current;
+
+    if (owner != SGI_KONA_CONTEXT_NONE) {
+        if (owner == current || !sgi_kona_user_command_open(s)) {
+            trace_sgi_kona_bracket_resume(owner);
+            sgi_kona_kernel_port_resume(s, &s->kernel_port_suspended);
+        } else {
+            sgi_kona_input_save(s, owner);
+        }
+        s->suspended_owner = SGI_KONA_CONTEXT_NONE;
+    }
+    if (current != SGI_KONA_CONTEXT_NONE && s->saved_input[current].valid &&
+        !sgi_kona_user_command_open(s)) {
+        sgi_kona_input_restore(s, current);
+    }
+}
+
+/*
  * A word on the command page. While the kernel's privileged bit is set
  * the word belongs to a kernel command and goes to the kernel framer
  * alone, leaving any suspended user command untouched. A privileged word
@@ -11636,15 +11707,12 @@ static bool sgi_kona_kernel_only_token(uint32_t word)
  */
 static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 {
-    int owner = s->suspended_owner;
-    int current = s->context_current;
-
     if (s->kernel_input) {
         if (s->kernel_port.framing || sgi_kona_kernel_token_known(word)) {
-            sgi_command_port_write(&s->kernel_port, word, 4);
+            sgi_kona_kernel_port_word(s, word);
             return;
         }
-        if (owner != SGI_KONA_CONTEXT_NONE) {
+        if (s->suspended_owner != SGI_KONA_CONTEXT_NONE) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: privileged word 0x%"
                           PRIx32 " opens no kernel command; ignored\n",
                           word);
@@ -11653,18 +11721,7 @@ static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
         sgi_kona_textport_push(s, word);
         return;
     }
-    if (owner != SGI_KONA_CONTEXT_NONE) {
-        if (owner == current || !sgi_kona_user_command_open(s)) {
-            trace_sgi_kona_bracket_resume(owner);
-        } else {
-            sgi_kona_input_save(s, owner);
-        }
-        s->suspended_owner = SGI_KONA_CONTEXT_NONE;
-    }
-    if (current != SGI_KONA_CONTEXT_NONE && s->saved_input[current].valid &&
-        !sgi_kona_user_command_open(s)) {
-        sgi_kona_input_restore(s, current);
-    }
+    sgi_kona_user_input(s);
     if (s->gl_grammar && sgi_kona_kernel_only_token(word) &&
         !sgi_kona_user_command_open(s) && !s->kernel_port.framing) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: kernel-only token 0x%"
@@ -11676,11 +11733,14 @@ static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 /*
  * A store to the bracket register. Force ends argument collection: a
  * kernel command still open is abandoned, logged, and an open user
- * command is suspended with the current context. Privileged, with or
- * without force, makes the following words a kernel command's; 0 returns
- * the input to user commands. Force with no command open does nothing
- * more (assumed). The low sixteen bits are written zero by the only
- * sender; other values are logged.
+ * command is suspended with the current context. A command the kernel
+ * framer opened without the privileged bit is a user command, the X
+ * server's or a GL client's list call: it is set aside so the kernel's
+ * packet frames on an idle framer, and is suspended like the others.
+ * Privileged, with or without force, makes the following words a kernel
+ * command's; 0 returns the input to user commands. Force with no command
+ * open does nothing more (assumed). The low sixteen bits are written zero
+ * by the only sender; other values are logged.
  */
 static void sgi_kona_bracket_write(SGIKonaState *s, uint32_t value)
 {
@@ -11689,7 +11749,11 @@ static void sgi_kona_bracket_write(SGIKonaState *s, uint32_t value)
                       " sets bits the kernel never sets\n", value);
     }
     if (value & SGI_KONA_BRACKET_FORCE) {
-        if (s->kernel_port.framing) {
+        if (s->kernel_port.framing && !s->kernel_port_privileged &&
+            !s->kernel_port_suspended.framing) {
+            sgi_kona_port_save(&s->kernel_port_suspended, &s->kernel_port);
+            sgi_command_port_reset(&s->kernel_port);
+        } else if (s->kernel_port.framing) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: forced store ends"
                           " kernel command 0x%" PRIx32 " short of its"
                           " words\n", s->kernel_port.selector);
@@ -11719,7 +11783,9 @@ void sgi_kona_command_word(SGIKonaState *s, uint32_t word)
  * still collecting arguments, otherwise a token (or the textport's sync
  * word). The kernel and gfxinit send every token that way. A store at
  * 0xc + 0x20 * t opens token t with the stored value as its first
- * argument, the way the X server's kona.so sends its commands.
+ * argument, the way the X server's kona.so sends its commands. Without
+ * the privileged bit a slot store first settles a suspended or saved user
+ * command, as a plain word does (sgi_kona_user_input()).
  *
  * Approximated: the decoding is inferred from the stores the senders
  * make. What distinguishes offset 0 from 0xc, and what the
@@ -11763,6 +11829,9 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_x_box_data_drop(s, token);
         sgi_kona_x_clip_run_drop(s, token);
         return;
+    }
+    if (!s->kernel_input) {
+        sgi_kona_user_input(s);
     }
     if (s->kernel_port.framing || s->gl_port.framing || s->gl_sync_held ||
         s->video_open || s->color_map_remaining || s->gamma_remaining ||
@@ -11898,7 +11967,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         s->x_stipple_store_remaining = 0;
     }
     s->activity = true;
-    sgi_command_port_write(&s->kernel_port, token, 4);
+    sgi_kona_kernel_port_word(s, token);
     sgi_command_port_write(&s->kernel_port, value, 4);
 }
 
@@ -13406,6 +13475,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->gl_sync_held = false;
     s->kernel_input = false;
     s->suspended_owner = SGI_KONA_CONTEXT_NONE;
+    s->kernel_port_privileged = false;
+    memset(&s->kernel_port_suspended, 0, sizeof(s->kernel_port_suspended));
     s->reason_page_valid = false;
     s->reason_page = 0;
     s->return_page_valid = false;
@@ -14130,38 +14201,6 @@ static bool sgi_kona_credit_needed(void *opaque)
     return true;
 }
 
-/* The bracket's input state, only while it differs from reset. */
-static bool sgi_kona_bracket_needed(void *opaque)
-{
-    SGIKonaState *s = opaque;
-
-    return s->kernel_input || s->suspended_owner != SGI_KONA_CONTEXT_NONE;
-}
-
-static int sgi_kona_bracket_post_load(void *opaque, int version_id)
-{
-    SGIKonaState *s = opaque;
-
-    if (s->suspended_owner != SGI_KONA_CONTEXT_NONE &&
-        (s->suspended_owner < 0 || s->suspended_owner >= SGI_KONA_CONTEXTS)) {
-        return -EINVAL;
-    }
-    return 0;
-}
-
-static const VMStateDescription vmstate_sgi_kona_bracket = {
-    .name = TYPE_SGI_KONA "/bracket",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = sgi_kona_bracket_needed,
-    .post_load = sgi_kona_bracket_post_load,
-    .fields = (const VMStateField[]) {
-        VMSTATE_BOOL(kernel_input, SGIKonaState),
-        VMSTATE_INT32(suspended_owner, SGIKonaState),
-        VMSTATE_END_OF_LIST()
-    },
-};
-
 /* The open X pixel write's owner, while its rows have words to come. */
 static bool sgi_kona_x_pixel_owner_needed(void *opaque)
 {
@@ -14321,8 +14360,8 @@ static const VMStateDescription vmstate_sgi_kona_saved_gl_run = {
 
 static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .name = TYPE_SGI_KONA "/saved-input-entry",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(valid, SGIKonaSavedInput),
         VMSTATE_STRUCT(textport, SGIKonaSavedInput, 1,
@@ -14363,6 +14402,8 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
         VMSTATE_UINT32(x_stipple_store_width, SGIKonaSavedInput),
         VMSTATE_UINT32(x_stipple_store_height, SGIKonaSavedInput),
         VMSTATE_UINT32(x_stipple_store_remaining, SGIKonaSavedInput),
+        VMSTATE_STRUCT(kernel_port, SGIKonaSavedInput, 1,
+                       vmstate_sgi_kona_saved_port, SGIKonaSavedPort),
         VMSTATE_UINT32(bitmap_state, SGIKonaSavedInput),
         VMSTATE_UINT32_ARRAY(bitmap_header, SGIKonaSavedInput,
                              SGI_KONA_BITMAP_HEADER_WORDS),
@@ -14522,6 +14563,9 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
                                        sgi_kona_textport_num_selectors) ||
             !sgi_kona_saved_port_valid(&v->gl_port, sgi_kona_gl_tokens,
                                        sgi_kona_gl_num_tokens) ||
+            !sgi_kona_saved_port_valid(&v->kernel_port,
+                                       sgi_kona_command_tokens,
+                                       sgi_kona_command_num_tokens) ||
             (v->gl_sync_held &&
              (v->gl_port.framing || v->textport_expect_sync))) {
             return -EINVAL;
@@ -14580,13 +14624,61 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_saved_input = {
     .name = TYPE_SGI_KONA "/saved-input",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .needed = sgi_kona_saved_input_needed,
     .post_load = sgi_kona_saved_input_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(saved_input, SGIKonaState, SGI_KONA_CONTEXTS, 1,
                              vmstate_sgi_kona_saved_one, SGIKonaSavedInput),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The bracket's input state, only while it differs from reset. */
+static bool sgi_kona_bracket_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->kernel_input || s->suspended_owner != SGI_KONA_CONTEXT_NONE ||
+           (s->kernel_port.framing && s->kernel_port_privileged);
+}
+
+/*
+ * A kernel-framer command set aside by a forced store is a packet of the
+ * kernel framer's own table that the live framer could have held, and it
+ * belongs to the suspended command's owner.
+ */
+static int sgi_kona_bracket_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (s->suspended_owner != SGI_KONA_CONTEXT_NONE &&
+        (s->suspended_owner < 0 || s->suspended_owner >= SGI_KONA_CONTEXTS)) {
+        return -EINVAL;
+    }
+    if (!sgi_kona_saved_port_valid(&s->kernel_port_suspended,
+                                   sgi_kona_command_tokens,
+                                   sgi_kona_command_num_tokens) ||
+        (s->kernel_port_suspended.framing &&
+         s->suspended_owner == SGI_KONA_CONTEXT_NONE)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_bracket = {
+    .name = TYPE_SGI_KONA "/bracket",
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .needed = sgi_kona_bracket_needed,
+    .post_load = sgi_kona_bracket_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(kernel_input, SGIKonaState),
+        VMSTATE_INT32(suspended_owner, SGIKonaState),
+        VMSTATE_BOOL(kernel_port_privileged, SGIKonaState),
+        VMSTATE_STRUCT(kernel_port_suspended, SGIKonaState, 1,
+                       vmstate_sgi_kona_saved_port, SGIKonaSavedPort),
         VMSTATE_END_OF_LIST()
     },
 };

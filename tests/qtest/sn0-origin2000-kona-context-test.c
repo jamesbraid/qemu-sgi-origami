@@ -344,6 +344,20 @@ static bool log_shows_misframing(const char *found)
 }
 
 /*
+ * The log up to the end of the line that holds `needle`, which must be
+ * there. A list call's own words come after its trace line: an empty
+ * list buffer's zeros are dropped as stray words, which says nothing
+ * about how the call itself framed.
+ */
+static char *log_through(const char *found, const char *needle)
+{
+    const char *at = strstr(found, needle);
+
+    g_assert_nonnull(at);
+    return g_strndup(found, strchr(at, '\n') + 1 - found);
+}
+
+/*
  * A swap back to a context that has run before, as a traced guest run
  * saw it: 0x1f9 with save-area word 0, the
  * save area's page word and tagged offset word and the sentinel;
@@ -787,6 +801,192 @@ static void test_suspended_gl_run_survives_other_context(void)
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
     g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
+}
+
+/*
+ * A GL client's list call, 0x16d with a byte offset and a word count,
+ * frames on the kernel framer because the two share a table, but it is a
+ * user command: sent without the privileged bit. When the kernel's forced
+ * bracket switches the client out between the offset and the count, the
+ * call is set aside and saved with its context like any other, B's
+ * command frames on its own, and the count A sends once restored finishes
+ * the same call. A model that took the forced store as cutting a kernel
+ * command dropped the call, logged "forced store ends kernel command",
+ * and A's count then framed as a command of its own.
+ */
+static void test_list_call_split_by_switch(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    g_autofree char *framed = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x16d, (uint32_t[]){ 0x6000 }, 1);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    qtest_writel(s, REG_COMMAND, 3);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    framed = log_through(found, "sgi_kona_kernel_command token 0x16d"
+                                " args 0x6000 0x3 0x0 argc 2\n");
+    g_assert_null(strstr(found, "forced store ends"));
+    g_assert_false(log_shows_misframing(framed));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
+                                   " argc 1\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
+                     1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
+}
+
+/*
+ * The X server's load position, 0x12a and four words, opened by a slot
+ * store and continued by plain words, cut by the forced bracket after its
+ * second word. Context B's first store is a slot store of its own 0x12a:
+ * it saves A's command first, as a plain word does, rather than opening
+ * on top of it. Restored, A's last two words finish A's position. A model
+ * that ended the command at the forced store logged it and took A's
+ * 0x500 and 0x400 as stray words; one whose slot store skipped the save
+ * filed B's open command as A's.
+ */
+static void test_x_command_split_by_switch(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    qtest_writel(s, REG_COMMAND_SLOT(0x12a), 0x10);
+    qtest_writel(s, REG_COMMAND_DATA, 0x20);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    qtest_writel(s, REG_COMMAND_SLOT(0x12a), 1);
+    qtest_writel(s, REG_COMMAND_DATA, 2);
+    qtest_writel(s, REG_COMMAND_DATA, 3);
+    qtest_writel(s, REG_COMMAND_DATA, 4);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    qtest_writel(s, REG_COMMAND_DATA, 0x500);
+    qtest_writel(s, REG_COMMAND_DATA, 0x400);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "forced store ends"));
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "sgi_kona_kernel_command token 0x12a"
+                                   " args 0x1 0x2 0x3 argc 4\n"));
+    g_assert_nonnull(strstr(found, "sgi_kona_kernel_command token 0x12a"
+                                   " args 0x10 0x20 0x500 argc 4\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
+                     1);
+}
+
+/*
+ * A kernel command is still the kernel's: one the forced bracket cuts
+ * short is dropped and logged as before, and the kernel's next packet
+ * frames whole. Here a reason-page registration, 0x1f1 and three words,
+ * loses its last two.
+ */
+static void test_privileged_command_cut_by_force(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    qtest_writel(s, REG_KICK, 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1f1);
+    qtest_writel(s, REG_KICK, 0x10000);
+    qtest_writel(s, REG_COMMAND, physical_page_word(REASON_PAGE));
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "forced store ends kernel"
+                                              " command 0x1f1 "), ==, 1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_suspend "));
+}
+
+/*
+ * A list call the forced bracket set aside migrates in both places it can
+ * be: still suspended, before any other context has sent words, and
+ * saved with its context after one has. On the destination A is restored
+ * and its count finishes the call, which only a destination holding the
+ * offset can frame as 0x16d 0x6000 3.
+ */
+static void test_migration_of_kernel_port_command(gconstpointer opaque)
+{
+    bool saved = GPOINTER_TO_INT(opaque);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    g_autofree char *framed = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = kona_init_logged_args(dest_args, &log);
+
+    kona_register_reason_page(from, REASON_PAGE);
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x16d, (uint32_t[]){ 0x6000 }, 1);
+    context_deactivate(from, 1);
+    if (saved) {
+        context_first_physical(from, SAVE_B, RETURN_B);
+        qtest_writel(from, REG_KICK, 0);
+        kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+        context_deactivate(from, 2);
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    context_restore_physical(to, SAVE_A);
+    qtest_writel(to, REG_COMMAND, 3);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+
+    found = kona_log_read(log);
+    framed = log_through(found, "sgi_kona_kernel_command token 0x16d"
+                                " args 0x6000 0x3 0x0 argc 2\n");
+    g_assert_false(log_shows_misframing(framed));
+    g_assert_cmpuint(count_occurrences(found, saved ?
+                                       "sgi_kona_input_restore " :
+                                       "sgi_kona_bracket_resume "), ==, 1);
 }
 
 /*
@@ -2108,34 +2308,65 @@ static void corrupt_context_stream(const char *path, unsigned kind)
  * vmstate_sgi_kona_saved_one lays an entry out: valid; the textport and
  * GL framers (framing, selector, expected and held counts, 32 words);
  * the sync, video, colour map, gamma, cursor and texture-table fields;
- * the list invocation's token, need, have and 16 words; the stipple store;
- * the textport bitmap's state, six header words, five counts and payload,
- * none while no bitmap is open.
+ * the list invocation's token, need, have and 16 words; the stipple
+ * store; the kernel framer's user command; the textport bitmap's state,
+ * six header words, five counts and payload, none while no bitmap is open.
  */
-#define SAVED_ENTRY_BYTES   1671
+#define SAVED_ENTRY_BYTES   1812
 #define SAVED_GL_PORT       142
 #define SAVED_CALLS_TOKEN   1531
-#define SAVED_BITMAP        1623
+#define SAVED_KERNEL_PORT   1623
+#define SAVED_BITMAP        1764
 #define SAVED_TRANSIENT     64
+
+/* A saved framer's selector, expected and held counts. */
+static void assert_saved_port(const uint8_t *port, uint32_t selector,
+                              uint32_t expected, uint32_t held)
+{
+    g_assert_cmpuint(port[0], ==, 1);
+    g_assert_cmphex(ldl_be_p(port + 1), ==, selector);
+    g_assert_cmpuint(ldl_be_p(port + 5), ==, expected);
+    g_assert_cmpuint(ldl_be_p(port + 9), ==, held);
+}
 
 static void corrupt_saved_input_stream(const char *path, unsigned kind)
 {
     static const char saved[] = "sgi-kona/saved-input";
+    static const char bracket[] = "sgi-kona/bracket";
     g_autofree char *data = NULL;
     gsize length;
-    uint8_t *name, *entry;
+    uint8_t *name, *entry, *port;
 
     g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+    if (kind >= 9) {
+        /* Version, kernel_input, suspended_owner and the privileged bit. */
+        name = stream_bytes((uint8_t *)data, length, bracket,
+                            sizeof(bracket) - 1);
+        g_assert_cmpuint(name[-2], ==, 5); /* QEMU_VM_SUBSECTION */
+        g_assert_cmpuint(ldl_be_p(name + sizeof(bracket) - 1), ==, 2);
+        port = name + sizeof(bracket) - 1 + 4 + 1 + 4 + 1;
+        /* Context A's list call, set aside: 0x16d, two expected, one held. */
+        assert_saved_port(port, 0x16d, 2, 1);
+        if (kind == 9) { /* every word held */
+            stl_be_p(port + 9, 2);
+        } else { /* set aside with no suspended owner */
+            stl_be_p(port - 5, (uint32_t)-1);
+        }
+        g_assert_true(g_file_set_contents(path, data, length, NULL));
+        return;
+    }
     name = stream_bytes((uint8_t *)data, length, saved, sizeof(saved) - 1);
     g_assert_cmpuint(name[-2], ==, 5); /* QEMU_VM_SUBSECTION */
-    g_assert_cmpuint(ldl_be_p(name + sizeof(saved) - 1), ==, 2);
+    g_assert_cmpuint(ldl_be_p(name + sizeof(saved) - 1), ==, 3);
     entry = name + sizeof(saved) - 1 + 4;
-    /* Context A's saved viewport: 0xe3, four expected, two held. */
     g_assert_cmpuint(entry[0], ==, 1);
-    g_assert_cmpuint(entry[SAVED_GL_PORT], ==, 1);
-    g_assert_cmphex(ldl_be_p(entry + SAVED_GL_PORT + 1), ==, 0xe3);
-    g_assert_cmpuint(ldl_be_p(entry + SAVED_GL_PORT + 5), ==, 4);
-    g_assert_cmpuint(ldl_be_p(entry + SAVED_GL_PORT + 9), ==, 2);
+    if (kind < 7) {
+        /* Context A's saved viewport: 0xe3, four expected, two held. */
+        assert_saved_port(entry + SAVED_GL_PORT, 0xe3, 4, 2);
+    } else {
+        /* Context A's saved list call: 0x16d, two expected, one held. */
+        assert_saved_port(entry + SAVED_KERNEL_PORT, 0x16d, 2, 1);
+    }
     switch (kind) {
     case 0: /* every word held: the next one would land past the packet */
         stl_be_p(entry + SAVED_GL_PORT + 9, 4);
@@ -2161,6 +2392,12 @@ static void corrupt_saved_input_stream(const char *path, unsigned kind)
     case 6: /* an empty slot with a bitmap open */
         stl_be_p(entry + SAVED_ENTRY_BYTES + SAVED_BITMAP, 1);
         break;
+    case 7: /* a kernel-framer command with every word held */
+        stl_be_p(entry + SAVED_KERNEL_PORT + 9, 2);
+        break;
+    case 8: /* a selector the kernel framer's table does not have */
+        stl_be_p(entry + SAVED_KERNEL_PORT + 1, 0xffff);
+        break;
     default:
         g_assert_not_reached();
     }
@@ -2171,13 +2408,16 @@ static void corrupt_saved_input_stream(const char *path, unsigned kind)
  * A saved command the live input could not have held is refused on load:
  * a GL packet with all its words held, an unknown GL selector, a list
  * invocation with an odd held count, a copy for an unused transient slot,
- * a bitmap payload no header sized, a bitmap header already complete and a
- * bitmap in an empty slot. A destination that took them would write past
- * the framer's, the invocation's or the bitmap's words on the next word.
+ * a bitmap payload no header sized, a bitmap header already complete, a
+ * bitmap in an empty slot, a saved kernel-framer command with all its
+ * words held or an unknown selector, and a set-aside one with all its
+ * words held or no suspended owner. A destination that took them would
+ * write past the framer's, the invocation's or the bitmap's words on the
+ * next word.
  */
 static void test_migration_rejects_saved_input(void)
 {
-    for (unsigned kind = 0; kind < 7; kind++) {
+    for (unsigned kind = 0; kind < 11; kind++) {
         g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
         g_autofree char *path = g_build_filename(dir, "stream", NULL);
         g_autofree char *uri = g_strdup_printf("file:%s", path);
@@ -2186,11 +2426,17 @@ static void test_migration_rejects_saved_input(void)
 
         context_first_physical(from, SAVE_A, RETURN_A);
         qtest_writel(from, REG_KICK, 0);
-        kona_command(from, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+        if (kind < 7) {
+            kona_command(from, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+        } else {
+            kona_command(from, 0x16d, (uint32_t[]){ 0x6000 }, 1);
+        }
         context_deactivate(from, 1);
-        context_first_physical(from, SAVE_B, RETURN_B);
-        qtest_writel(from, REG_KICK, 0);
-        kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+        if (kind < 9) {
+            context_first_physical(from, SAVE_B, RETURN_B);
+            qtest_writel(from, REG_KICK, 0);
+            kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+        }
         sgi_migrate_stopped(from, uri);
         qtest_quit(from);
         corrupt_saved_input_stream(path, kind);
@@ -3162,6 +3408,21 @@ int main(int argc, char **argv)
                    test_suspended_gl_run_survives_other_context);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
                    test_migration_of_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/list-call-split-by-switch",
+                   test_list_call_split_by_switch);
+    qtest_add_func("sn0/origin2000/kona-context/x-command-split-by-switch",
+                   test_x_command_split_by_switch);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "privileged-command-cut-by-force",
+                   test_privileged_command_cut_by_force);
+    qtest_add_data_func("sn0/origin2000/kona-context/"
+                        "migration-of-suspended-list-call",
+                        GINT_TO_POINTER(false),
+                        test_migration_of_kernel_port_command);
+    qtest_add_data_func("sn0/origin2000/kona-context/"
+                        "migration-of-saved-list-call",
+                        GINT_TO_POINTER(true),
+                        test_migration_of_kernel_port_command);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "migration-rejects-bitmap-stream",
                    test_migration_rejects_bitmap_stream);
