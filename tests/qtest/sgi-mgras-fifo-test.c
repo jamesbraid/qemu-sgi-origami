@@ -52,7 +52,6 @@
 #define REG_IR_ALIAS            0x045
 #define REG_ALPHA               0x05f
 #define REG_GLINE_XSTARTF       0x00c
-#define REG_DRBPOINTERS         0x16d
 #define MGRAS_FILLMODE_GLYPH_ROW    0x10400008
 
 /*
@@ -89,17 +88,6 @@
  */
 #define MGRAS_PP1FILLMODE_RGB12        0x4004
 #define MGRAS_PP1FILLMODE_RGB12_CLEAR  0xc804
-
-static uint32_t mgras_test_overlay(QTestState *qts, uint32_t x, uint32_t y)
-{
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH, x);
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
-    return mgras_qom_get_uint(qts, "x-test-overlay");
-}
 
 /*
  * Screen-to-host read: the trace's own read

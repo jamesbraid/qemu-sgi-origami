@@ -156,6 +156,7 @@ static inline void mgras_qtest_add_data_func(const char *path,
 #define REG_COLORMASKMSBS       0x162
 #define REG_RE_POINT            0x040
 #define REG_COLORMASKLSBSA      0x163
+#define REG_DRBPOINTERS         0x16d
 
 /*
  * FILLMODE (OpenBSD impact(4) driver name) picks a CHAR_H/CHAR_L execute's
@@ -306,6 +307,19 @@ static inline uint32_t mgras_test_display_pixel(QTestState *qts, uint32_t x,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
     return mgras_qom_get_uint(qts, "x-test-display-pixel");
+}
+
+/* The overlay index at (x, y); 0 is transparent. */
+static inline uint32_t mgras_test_overlay(QTestState *qts, uint32_t x,
+                                          uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
+    return mgras_qom_get_uint(qts, "x-test-overlay");
 }
 
 static inline uint32_t mgras_test_wid(QTestState *qts, uint32_t x, uint32_t y)
