@@ -480,8 +480,7 @@ static void l1_boot_local(SGIL1State *s)
     s->bay = s->pending_bay;
     s->console_mode = s->escaped = s->warned_off = false;
     s->command_len = 0;
-    s->frame_len = 0;
-    s->in_frame = s->escape = s->overflow = false;
+    memset(s->frame, 0, sizeof(s->frame));
     s->port_field = s->node_position << 5;
     s->promreq_debug = false;
     s->power_down_pending = false;
@@ -517,8 +516,8 @@ static uint16_t l1_fcs(uint16_t value, uint8_t byte)
     return value;
 }
 
-static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
-                           unsigned length)
+static void l1_emit_transport(SGIL1State *s, unsigned transport,
+                              const uint8_t *payload, unsigned length)
 {
     uint8_t encoded[2 * SGI_L1_FRAME_SIZE + 2];
     uint16_t crc = 0xffff;
@@ -526,8 +525,10 @@ static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
 
     /* The firmware's frame is 128 payload bytes including the header. */
     assert(length <= 128);
-    if (!s->uart) {
-        qemu_log_mask(LOG_UNIMP, "sgi-l1: no UART window attached\n");
+    if (transport >= SGI_L1_IROUTER_TRANSPORTS || !s->transport[transport]) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: no UART window attached for transport %u\n",
+                      transport);
         return;
     }
     for (unsigned i = 0; i < length; i++) {
@@ -546,7 +547,13 @@ static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
         encoded[n++] = byte;
     }
     encoded[n++] = 0x7e;
-    l1_uart_queue(s->uart, encoded, n);
+    l1_uart_queue(s->transport[transport], encoded, n);
+}
+
+static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
+                           unsigned length)
+{
+    l1_emit_transport(s, 0, payload, length);
 }
 
 static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
@@ -1635,7 +1642,8 @@ static bool l1_task_command(uint16_t command)
     }
 }
 
-static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length);
+static void l1_request_frame(SGIL1State *s, const uint8_t *p,
+                             unsigned length, unsigned transport);
 
 /*
  * A request the local router cannot deliver: the catch-all tries the cabled
@@ -1664,17 +1672,405 @@ static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
     memcpy(copy, p, length);
     stl_be_p(copy + 1, address);
     peer->reply_to = s;
-    l1_request_frame(peer, copy, length);
+    l1_request_frame(peer, copy, length, 0);
     peer->reply_to = NULL;
     return true;
 }
 
-static void l1_request(SGIL1State *s)
+static void l1_irouter_chunk(SGIL1State *s, const uint8_t *p,
+                            unsigned length, unsigned transport);
+
+static bool l1_irouter_enabled(const SGIL1State *s)
 {
-    l1_request_frame(s, s->frame, s->frame_len - 2);
+    return s->irouter_compat || s->o300_l1cmd_compat;
 }
 
-static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
+static void l1_request(SGIL1State *s, unsigned transport)
+{
+    SGIL1FrameState *frame = &s->frame[transport];
+
+    l1_request_frame(s, frame->data, frame->length - 2, transport);
+}
+
+static void l1_o300_trace_frame(const SGIL1State *s, bool reply,
+                                 unsigned transport, const uint8_t *frame,
+                                 unsigned length)
+{
+    static const char digits[] = "0123456789abcdef";
+    char hex[SGI_L1_FRAME_SIZE * 2 + 1];
+
+    if (!s->o300_l1cmd_compat || s->brick_type_code != 0x34) {
+        return;
+    }
+    g_assert(length <= SGI_L1_FRAME_SIZE);
+    for (unsigned i = 0; i < length; i++) {
+        hex[i * 2] = digits[frame[i] >> 4];
+        hex[i * 2 + 1] = digits[frame[i] & 0xf];
+    }
+    hex[length * 2] = 0;
+    trace_sgi_l1_o300_frame(reply, transport, length, hex);
+}
+
+static bool l1_o300_ascii_field(const uint8_t **cursor, const uint8_t *end,
+                                char field[64])
+{
+    unsigned length;
+
+    if (*cursor >= end || (**cursor >> 6) != 3) {
+        return false;
+    }
+    length = *(*cursor)++ & 0x3f;
+    if (!length || length >= 64 || length > end - *cursor) {
+        return false;
+    }
+    for (unsigned i = 0; i < length; i++) {
+        if (!g_ascii_isprint((*cursor)[i])) {
+            return false;
+        }
+    }
+    memcpy(field, *cursor, length);
+    field[length] = 0;
+    *cursor += length;
+    return true;
+}
+
+static void l1_o300_board_fields(SGIL1State *s, unsigned component,
+                                 char fields[5][64])
+{
+    const uint8_t *cursor, *end;
+    const SGIL1SelectedEEPROM *selected = &s->selected[component];
+    const SGIL1EEPROM *raw = &s->records[16 + component];
+    char manufacturer[64];
+    uint8_t tag;
+
+    if (selected->present && selected->kind == 1 &&
+        selected->status[1] == 0 && selected->length[1]) {
+        cursor = selected->image + selected->start[1];
+        end = cursor + selected->length[1];
+    } else if (!selected->present && raw->length && !raw->invalid) {
+        cursor = raw->data;
+        end = cursor + raw->length;
+    } else {
+        return;
+    }
+    if (end - cursor < 7) {
+        return;
+    }
+    cursor += 6;
+    if (!l1_o300_ascii_field(&cursor, end, manufacturer) ||
+        !l1_o300_ascii_field(&cursor, end, fields[0]) ||
+        !l1_o300_ascii_field(&cursor, end, fields[1]) ||
+        !l1_o300_ascii_field(&cursor, end, fields[2]) ||
+        cursor >= end) {
+        return;
+    }
+    cursor++; /* Board area's FRU byte separates part from revision. */
+    if (!l1_o300_ascii_field(&cursor, end, fields[3]) || cursor >= end) {
+        return;
+    }
+    tag = *cursor++;
+    if ((tag >> 6) != 0 || (tag & 0x3f) > end - cursor) {
+        return;
+    }
+    cursor += tag & 0x3f;
+    l1_o300_ascii_field(&cursor, end, fields[4]);
+}
+
+static char *l1_o300_command_text(SGIL1State *s, const char *command)
+{
+    const char *brick_serial = s->brick_serial && s->brick_serial[0] ?
+                               s->brick_serial : "EMU-UNKNOWN-BSN";
+    const char *system_serial = s->system_serial && s->system_serial[0] ?
+                                s->system_serial : "EMU-UNKNOWN-SSN";
+    const char *brick_location = s->brick_serial && s->brick_serial[0] ?
+                                 "CONFIGURED" : "EMULATED";
+    const char *system_location = s->system_serial && s->system_serial[0] ?
+                                  "CONFIGURED" : "EMULATED";
+    g_autofree char *partition = NULL;
+    g_autoptr(GString) text = NULL;
+    char node[5][64] = {
+        "EMU-UNKNOWN-NODE-PRODUCT", "EMU-UNKNOWN-NODE-SERIAL",
+        "EMU-UNKNOWN-NODE-PART", "EMU-UNKNOWN-NODE-REV",
+        "EMU-UNKNOWN-NODE-TW",
+    };
+    char io8[5][64] = {
+        "EMU-UNKNOWN-IO8-PRODUCT", "EMU-UNKNOWN-IO8-SERIAL",
+        "EMU-UNKNOWN-IO8-PART", "EMU-UNKNOWN-IO8-REV",
+        "EMU-UNKNOWN-IO8-TW",
+    };
+
+    if (!strcmp(command, "brick ")) {
+        partition = s->partition ? g_strdup_printf("%u", s->partition) :
+                                   g_strdup("none");
+        return g_strdup_printf(
+            "rack: %03u, slot: %02u, partition: %s, type: C (IP45) "
+            "[EMU-UNKNOWN flash], serial:%s, source: %s\n\n",
+            s->rack, s->bay, partition, brick_serial, brick_location);
+    }
+    if (!strcmp(command, "version ")) {
+        if (s->revision_major < 0) {
+            return g_strdup("L1 EMU-UNKNOWN (Image EMU-UNKNOWN), Built "
+                            "EMU-UNKNOWN [EMU-ORIGIN300-L1]\n\n");
+        }
+        return g_strdup_printf(
+            "L1 %d.%d.%d (Image EMU-UNKNOWN), Built EMU-UNKNOWN "
+            "[EMU-ORIGIN300-L1]\n\n",
+            s->revision_major, s->revision_minor, s->revision_patch);
+    }
+    if (strcmp(command, "serial all ")) {
+        return NULL;
+    }
+    l1_o300_board_fields(s, 0, node);
+    l1_o300_board_fields(s, 1, io8);
+    text = g_string_new(
+        "Data                            Location      Value\n"
+        "------------------------------  ------------  --------\n");
+    g_string_append_printf(text,
+        "Local System Serial Number      %-12s  %s\n"
+        "Reference System Serial Number  EMULATED      EMU-UNKNOWN-REF-SSN\n"
+        "Local Brick Serial Number       %-12s  %s\n"
+        "Reference Brick Serial Number   EMULATED      EMU-UNKNOWN-REF-BSN\n"
+        "\n"
+        "EEPROM      Product Name    Serial        Part Number           Rev  T/W\n"
+        "----------  --------------  -------------  --------------------  ---  ------\n",
+        system_location, system_serial, brick_location, brick_serial);
+    g_string_append_printf(text, "%-10s  %-14s  %-12s  %-20s  %-3s  %s\n",
+                           "NODE", node[0], node[1], node[2], node[3], node[4]);
+    g_string_append_printf(text, "%-10s  %-14s  %-12s  %-20s  %-3s  %s\n",
+                           "IO8", io8[0], io8[1], io8[2], io8[3], io8[4]);
+    g_string_append(text,
+        "\nAdditional EEPROM and DIMM inventory: EMU-UNKNOWN\n\n");
+    return g_string_free(g_steal_pointer(&text), false);
+}
+
+static void l1_irouter_reply(SGIL1State *s, unsigned transport,
+                             uint8_t channel, const uint8_t *request,
+                             unsigned request_length,
+                             unsigned fragment_count)
+{
+    static const char *const type_names[256] = {
+        [0x37] = "Chimera Server",
+        [0x39] = "Chimera WS",
+        [0x51] = "Rackmount WS",
+    };
+    const uint8_t *scalar = request + 20;
+    const uint8_t *string = scalar + 8;
+    uint32_t string_length = lduw_be_p(string + 2);
+    uint32_t encoded_offset = ldl_be_p(string + 4);
+    bool o300 = s->o300_l1cmd_compat && s->brick_type_code == 0x34;
+    bool ip53 = s->irouter_compat && type_names[s->brick_type_code];
+    /* Selected IP53 compatibility input, not a physical identity claim. */
+    uint32_t node_id = (s->rack << 6) | s->bay;
+    uint32_t packed_channel = (transport << 5) | channel;
+    uint32_t return_address = (node_id << 12) |
+                              (packed_channel << 5) | 0x15;
+    uint32_t local_address = (node_id << 12) | 3;
+    const char *partition = s->partition == 0 ? "none" :
+                            s->partition < 255 ? NULL : "?";
+    g_autofree char *partition_text = NULL;
+    const char *serial = s->brick_serial ? s->brick_serial : "(null)";
+    g_autofree char *text = NULL;
+    g_autofree uint8_t *response = NULL;
+    unsigned text_length, response_length, offset;
+
+    if ((!o300 && !ip53) ||
+        request_length < 36 || lduw_be_p(request) != request_length ||
+        request[2] != 2 || request[3] != 0 ||
+        request[5] != (0x80 | fragment_count) ||
+        request[6] != 0 ||
+        request[7] != 0 || ldl_be_p(request + 8) != 0x0ffff003 ||
+        request[16] != 2 || memcmp(scalar, "\0\0\0\0\0\0\0\0", 8) ||
+        string[0] != 0x0a || string[1] != 1 ||
+        encoded_offset < 16 || encoded_offset - 16 != 36 ||
+        string_length != request_length - 36 || string_length < 1 ||
+        request[request_length - 1] != 0) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: unsupported or malformed IRouter request\n");
+        return;
+    }
+    if (o300 &&
+        ((string_length == 7 && !memcmp(request + 36, "brick \0", 7)) ||
+         (string_length == 9 && !memcmp(request + 36, "version \0", 9)) ||
+         (string_length == 12 &&
+          !memcmp(request + 36, "serial all \0", 12)))) {
+        text = l1_o300_command_text(s, (const char *)request + 36);
+    } else if (!o300 && string_length == 6 &&
+               !memcmp(request + 36, "brick\0", 6)) {
+        /* The plain command spelling. */
+    } else if (!o300 && string_length == 7 &&
+               !memcmp(request + 36, "brick \0", 7)) {
+        /* The captured interpreter form includes one trailing space. */
+    } else {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: IRouter command interpreter operation refused\n");
+        return;
+    }
+
+    if (!o300) {
+        if (!partition) {
+            partition_text = g_strdup_printf("%u", s->partition);
+            partition = partition_text;
+        }
+        text = g_strdup_printf(
+            "rack: %03u, slot: %02u, partition: %s, type: %s [?MB flash], "
+            "serial:%s, source: OTHER\n\n",
+            s->rack, s->bay, partition, type_names[s->brick_type_code],
+            serial);
+    }
+    text_length = strlen(text) + 1;
+    response_length = 36 + text_length;
+    if (response_length > SGI_L1_IROUTER_MAX_FRAGMENT) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: IRouter brick response exceeds fragment limit\n");
+        return;
+    }
+    response = g_malloc0(response_length);
+    stw_be_p(response, response_length);
+    response[2] = 2;
+    response[4] = request[4];
+    response[5] = 0x81;
+    response[6] = 1;
+    stl_be_p(response + 8, return_address);
+    stl_be_p(response + 12, local_address);
+    response[16] = 2;
+    response[17] = request[17];
+    memcpy(response + 18, request + 18, 2);
+    response[20] = 0;
+    stl_be_p(response + 24, 0);
+    response[28] = 0x0a;
+    response[29] = 1;
+    stw_be_p(response + 30, text_length);
+    stl_be_p(response + 32, 0x34);
+    memcpy(response + 36, text, text_length);
+
+    for (offset = 0; offset < response_length; ) {
+        uint8_t chunk[128] = { 0 };
+        unsigned bytes = MIN(113, response_length - offset);
+        unsigned chunk_length = 10 + bytes;
+
+        chunk[0] = 0x20 | channel;
+        stw_be_p(chunk + 5, offset ? 0x3003 : 0x3001);
+        chunk[7] = offset ? 0 : 1;
+        stw_be_p(chunk + 8, offset ? 0 : response_length);
+        memcpy(chunk + 10, response + offset, bytes);
+        if (o300) {
+            l1_o300_trace_frame(s, true, transport, chunk, chunk_length);
+        }
+        l1_emit_transport(s, transport, chunk, chunk_length);
+        offset += bytes;
+    }
+}
+
+static void l1_irouter_complete_fragment(SGIL1State *s, unsigned transport,
+                                         uint8_t channel,
+                                         SGIL1IRouterAssembly *assembly)
+{
+    if (assembly->received != assembly->expected) {
+        return;
+    }
+    if (!assembly->first_length) {
+        assembly->first_length = assembly->total;
+    }
+    assembly->fragments_left--;
+    if (!assembly->fragments_left) {
+        unsigned first_length = assembly->first_length;
+        unsigned fragment_count = assembly->fragment_count;
+
+        if (fragment_count == 1) {
+            l1_irouter_reply(s, transport, channel, assembly->data,
+                             first_length, fragment_count);
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: multi-fragment IRouter dispatch is unsupported\n");
+        }
+        memset(assembly, 0, sizeof(*assembly));
+    }
+}
+
+static void l1_irouter_chunk(SGIL1State *s, const uint8_t *p,
+                             unsigned length, unsigned transport)
+{
+    uint16_t command = lduw_be_p(p + 5);
+    uint8_t channel = p[0] & 0x1f;
+    SGIL1IRouterAssembly *assembly;
+    unsigned payload_length;
+
+    if (transport >= SGI_L1_IROUTER_TRANSPORTS || length < 10 ||
+        (p[0] & 0xe0) || ldl_be_p(p + 1) != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: malformed IRouter chunk transport\n");
+        return;
+    }
+    l1_o300_trace_frame(s, false, transport, p, length);
+    assembly = &s->irouter[transport * SGI_L1_IROUTER_CHANNELS + channel];
+    payload_length = length - 10;
+    if (command == 0x3001) {
+        uint8_t fragments = p[7];
+        uint16_t fragment_length = lduw_be_p(p + 8);
+
+        if (assembly->active) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: replacing pending IRouter request\n");
+        }
+        memset(assembly, 0, sizeof(*assembly));
+        if (!l1_irouter_enabled(s) || !fragments || fragments >= 128 ||
+            !fragment_length ||
+            fragment_length > sizeof(assembly->data) ||
+            payload_length > fragment_length) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: unsupported IRouter message start\n");
+            return;
+        }
+        assembly->active = true;
+        assembly->fragment_count = fragments;
+        assembly->fragments_left = fragments;
+        assembly->expected = fragment_length;
+        memcpy(assembly->data, p + 10, payload_length);
+        assembly->received = payload_length;
+        assembly->total = payload_length;
+        l1_irouter_complete_fragment(s, transport, channel, assembly);
+    } else if (command == 0x3002) {
+        uint16_t fragment_length = lduw_be_p(p + 8);
+
+        if (!assembly->active || !assembly->fragments_left ||
+            assembly->received != assembly->expected || !fragment_length ||
+            fragment_length > sizeof(assembly->data) - assembly->total ||
+            payload_length > fragment_length) {
+            memset(assembly, 0, sizeof(*assembly));
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: invalid IRouter next fragment\n");
+            return;
+        }
+        assembly->expected = fragment_length;
+        assembly->received = payload_length;
+        memcpy(assembly->data + assembly->total, p + 10, payload_length);
+        assembly->total += payload_length;
+        l1_irouter_complete_fragment(s, transport, channel, assembly);
+    } else if (command == 0x3003) {
+        if (!assembly->active ||
+            assembly->received == assembly->expected ||
+            payload_length > assembly->expected - assembly->received ||
+            payload_length > sizeof(assembly->data) - assembly->total) {
+            memset(assembly, 0, sizeof(*assembly));
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: IRouter continuation without valid message\n");
+            return;
+        }
+        memcpy(assembly->data + assembly->total, p + 10, payload_length);
+        assembly->received += payload_length;
+        assembly->total += payload_length;
+        l1_irouter_complete_fragment(s, transport, channel, assembly);
+    } else {
+        memset(assembly, 0, sizeof(*assembly));
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: unsupported IRouter fragment command 0x%04x\n",
+                      command);
+        return;
+    }
+}
+
+static void l1_request_frame(SGIL1State *s, const uint8_t *p,
+                             unsigned length, unsigned transport)
 {
     uint8_t channel = p[0] & 0x1f;
     uint32_t address;
@@ -1685,6 +2081,12 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     uint8_t fields[48];
     unsigned field_count = 0, field_length = 0;
 
+    if (l1_irouter_enabled(s) && length >= 7 && !(p[0] & 0xe0) &&
+        ldl_be_p(p + 1) == 0 &&
+        p[5] == 0x30 && (p[6] == 1 || p[6] == 2 || p[6] == 3)) {
+        l1_irouter_chunk(s, p, length, transport);
+        return;
+    }
     if ((p[0] & 0xe0) == 0x40) {
         if (!s->profile->compute_services) {
             qemu_log_mask(LOG_UNIMP,
@@ -2046,42 +2448,45 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     l1_reply(s, channel, error, field_count, fields, field_length);
 }
 
-static void l1_parse(SGIL1State *s, uint8_t byte)
+static void l1_parse(SGIL1State *s, unsigned transport, uint8_t byte)
 {
+    SGIL1FrameState *frame = &s->frame[transport];
+
     if (byte == 0x7e) {
         /* A header and its check: the PROM's one-character echo is four. */
-        if (s->in_frame && !s->overflow && !s->escape && s->frame_len >= 3) {
+        if (frame->in_frame && !frame->overflow && !frame->escape &&
+            frame->length >= 3) {
             uint16_t crc = 0xffff;
-            for (unsigned i = 0; i < s->frame_len; i++) {
-                crc = l1_fcs(crc, s->frame[i]);
+            for (unsigned i = 0; i < frame->length; i++) {
+                crc = l1_fcs(crc, frame->data[i]);
             }
             if (crc == 0xf0b8) {
-                l1_request(s);
+                l1_request(s, transport);
             }
         }
-        s->in_frame = true;
-        s->frame_len = 0;
-        s->escape = false;
-        s->overflow = false;
+        frame->in_frame = true;
+        frame->length = 0;
+        frame->escape = false;
+        frame->overflow = false;
         return;
     }
-    if (!s->in_frame || s->overflow) {
+    if (!frame->in_frame || frame->overflow) {
         return;
     }
     if (byte == 0x7d) {
         /* A second escape only re-arms the first. */
-        s->escape = true;
+        frame->escape = true;
         return;
     }
-    if (s->escape) {
+    if (frame->escape) {
         byte ^= 0x20;
-        s->escape = false;
+        frame->escape = false;
     }
-    if (s->frame_len == SGI_L1_FRAME_SIZE) {
-        s->overflow = true;
+    if (frame->length == SGI_L1_FRAME_SIZE) {
+        frame->overflow = true;
         return;
     }
-    s->frame[s->frame_len++] = byte;
+    frame->data[frame->length++] = byte;
 }
 
 /* The UART window's register file. */
@@ -2141,7 +2546,7 @@ static void l1_uart_write(void *opaque, hwaddr offset, uint64_t value,
         } else {
             u->thre_pending = false;
             l1_uart_update_irq(u);
-            l1_parse(u->controller, value);
+            l1_parse(u->controller, u->transport_index, value);
             u->thre_pending = (u->ier & 2) != 0;
         }
         break;
@@ -2195,6 +2600,7 @@ static void l1_reset_enter(Object *obj, ResetType type)
 {
     SGIL1State *s = SGI_L1(obj);
 
+    memset(s->irouter, 0, sizeof(s->irouter));
     s->usb_test_state.set = false;
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
     g_strlcpy(s->usb_test_descriptor_result, "none",
@@ -2335,6 +2741,8 @@ static bool l1_selected_valid(const SGIL1SelectedEEPROM *record,
     return true;
 }
 
+static bool l1_frame_state_valid(void *opaque, int version_id);
+
 static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
@@ -2343,7 +2751,6 @@ static int l1_post_load(void *opaque, int version_id)
          (s->node_power || s->power_up_pending || s->power_down_pending ||
           s->console_mode || s->escaped)) ||
         s->command_len >= sizeof(s->command) ||
-        s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
         s->revision_major < -1 || s->revision_minor < -1 ||
         s->revision_patch < -1 ||
@@ -2359,6 +2766,11 @@ static int l1_post_load(void *opaque, int version_id)
         s->pending_rack >= 0x3ff || s->pending_bay >= 0x3f ||
         s->display[0][127] || s->display[1][127]) {
         return -EINVAL;
+    }
+    for (unsigned i = 0; i < SGI_L1_IROUTER_TRANSPORTS; i++) {
+        if (!l1_frame_state_valid(&s->frame[i], 0)) {
+            return -EINVAL;
+        }
     }
     for (unsigned i = 32; i < 48; i++) {
         if (s->records[i].length && s->records[i].length < 64) {
@@ -2447,6 +2859,61 @@ static const VMStateDescription vmstate_l1_selected = {
     },
 };
 
+static bool l1_irouter_assembly_valid(void *opaque, int version_id)
+{
+    SGIL1IRouterAssembly *assembly = opaque;
+
+    return assembly->expected <= SGI_L1_IROUTER_MAX_FRAGMENT &&
+           assembly->received <= assembly->expected &&
+           assembly->total <= SGI_L1_IROUTER_MAX_FRAGMENT &&
+           assembly->first_length <= assembly->total &&
+           assembly->fragments_left <= assembly->fragment_count &&
+           assembly->fragment_count < 128 &&
+           (!assembly->active || (assembly->expected &&
+                                  assembly->fragment_count));
+}
+
+static const VMStateDescription vmstate_l1_irouter_assembly = {
+    .name = "sgi-l1/irouter-assembly",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(active, SGIL1IRouterAssembly),
+        VMSTATE_UINT8(fragment_count, SGIL1IRouterAssembly),
+        VMSTATE_UINT8(fragments_left, SGIL1IRouterAssembly),
+        VMSTATE_UINT16(expected, SGIL1IRouterAssembly),
+        VMSTATE_UINT16(received, SGIL1IRouterAssembly),
+        VMSTATE_UINT16(total, SGIL1IRouterAssembly),
+        VMSTATE_UINT16(first_length, SGIL1IRouterAssembly),
+        VMSTATE_VALIDATE("assembly-bounds", l1_irouter_assembly_valid),
+        VMSTATE_UINT8_ARRAY(data, SGIL1IRouterAssembly,
+                            SGI_L1_IROUTER_MAX_FRAGMENT),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool l1_frame_state_valid(void *opaque, int version_id)
+{
+    SGIL1FrameState *frame = opaque;
+
+    return frame->length <= SGI_L1_FRAME_SIZE;
+}
+
+static const VMStateDescription vmstate_l1_frame = {
+    .name = "sgi-l1/frame",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(data, SGIL1FrameState, SGI_L1_FRAME_SIZE),
+        VMSTATE_UINT32(length, SGIL1FrameState),
+        VMSTATE_BOOL(in_frame, SGIL1FrameState),
+        VMSTATE_BOOL(escape, SGIL1FrameState),
+        VMSTATE_BOOL(overflow, SGIL1FrameState),
+        VMSTATE_VALIDATE("frame-bounds", l1_frame_state_valid),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int l1_pre_save(void *opaque)
 {
     SGIL1State *s = opaque;
@@ -2464,6 +2931,12 @@ static const VMStateDescription vmstate_l1 = {
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
+        VMSTATE_UINT64_EQUAL(irouter_profile_identity, SGIL1State),
+        VMSTATE_STRUCT_ARRAY(irouter, SGIL1State,
+                             SGI_L1_IROUTER_TRANSPORTS *
+                             SGI_L1_IROUTER_CHANNELS, 0,
+                             vmstate_l1_irouter_assembly,
+                             SGIL1IRouterAssembly),
         VMSTATE_UINT32_EQUAL(port_speed_first, SGIL1State),
         VMSTATE_UINT64_EQUAL(power_identity, SGIL1State),
         VMSTATE_UINT64_EQUAL(power_command_identity, SGIL1State),
@@ -2506,11 +2979,9 @@ static const VMStateDescription vmstate_l1 = {
                               SGI_L1_LOG_TEXT),
         VMSTATE_UINT32(log_head, SGIL1State),
         VMSTATE_UINT32(log_len, SGIL1State),
-        VMSTATE_UINT8_ARRAY(frame, SGIL1State, SGI_L1_FRAME_SIZE),
-        VMSTATE_UINT32(frame_len, SGIL1State),
-        VMSTATE_BOOL(in_frame, SGIL1State),
-        VMSTATE_BOOL(escape, SGIL1State),
-        VMSTATE_BOOL(overflow, SGIL1State),
+        VMSTATE_STRUCT_ARRAY(frame, SGIL1State,
+                             SGI_L1_IROUTER_TRANSPORTS, 0,
+                             vmstate_l1_frame, SGIL1FrameState),
         VMSTATE_UINT8_2DARRAY(display, SGIL1State, 2, 128),
         VMSTATE_END_OF_LIST()
     },
@@ -2774,12 +3245,49 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
     return true;
 }
 
+static uint64_t l1_irouter_profile_identity(const SGIL1State *s)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+
+#define L1_IROUTER_HASH_BYTE(byte) \
+    do { \
+        hash = (hash ^ (uint8_t)(byte)) * UINT64_C(1099511628211); \
+    } while (0)
+
+    L1_IROUTER_HASH_BYTE(s->irouter_compat);
+    if (s->o300_l1cmd_compat) {
+        L1_IROUTER_HASH_BYTE(1);
+    }
+    if (!l1_irouter_enabled(s)) {
+        return hash;
+    }
+    L1_IROUTER_HASH_BYTE(s->brick_type_code >> 24);
+    L1_IROUTER_HASH_BYTE(s->brick_type_code >> 16);
+    L1_IROUTER_HASH_BYTE(s->brick_type_code >> 8);
+    L1_IROUTER_HASH_BYTE(s->brick_type_code);
+    L1_IROUTER_HASH_BYTE(s->brick_serial ? 1 : 0);
+    if (s->brick_serial) {
+        for (const uint8_t *p = (const uint8_t *)s->brick_serial; *p; p++) {
+            L1_IROUTER_HASH_BYTE(*p);
+        }
+    }
+    if (s->o300_l1cmd_compat && s->system_serial) {
+        for (const uint8_t *p = (const uint8_t *)s->system_serial; *p; p++) {
+            L1_IROUTER_HASH_BYTE(*p);
+        }
+    }
+#undef L1_IROUTER_HASH_BYTE
+    return hash;
+}
+
 static void l1_realize(DeviceState *dev, Error **errp)
 {
     SGIL1State *s = SGI_L1(dev);
 
     char **files[] = { s->chassis_files, s->board_files, s->spd_files };
     uint32_t counts[] = { s->chassis_count, s->board_count, s->spd_count };
+
+    s->irouter_profile_identity = l1_irouter_profile_identity(s);
 
     if (s->fuel_mac_eeprom) {
         char data[513];
@@ -3354,6 +3862,9 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
     DEFINE_PROP_UINT32("brick-type-code", SGIL1State, brick_type_code, 0),
+    DEFINE_PROP_BOOL("irouter-compat", SGIL1State, irouter_compat, false),
+    DEFINE_PROP_BOOL("o300-l1cmd-compat", SGIL1State, o300_l1cmd_compat,
+                     false),
     DEFINE_PROP_UINT32("port-speed-first", SGIL1State, port_speed_first, 0),
     /*
      * The network mode the L1 keeps in non-volatile memory. 422 is the mode
@@ -3472,6 +3983,14 @@ static void l1_uart_reset_enter(Object *obj, ResetType type)
 {
     SGIL1UARTState *u = SGI_L1_UART(obj);
 
+    if (u->controller && u->transport_index < SGI_L1_IROUTER_TRANSPORTS) {
+        memset(&u->controller->frame[u->transport_index], 0,
+               sizeof(u->controller->frame[u->transport_index]));
+        memset(&u->controller->irouter[
+                   u->transport_index * SGI_L1_IROUTER_CHANNELS], 0,
+               SGI_L1_IROUTER_CHANNELS * sizeof(u->controller->irouter[0]));
+    }
+
     u->lcr = u->ier = u->mcr = u->scratch = 0;
     u->thre_pending = false;
     memset(u->divisor, 0, sizeof(u->divisor));
@@ -3501,6 +4020,7 @@ static const VMStateDescription vmstate_l1_uart = {
     .minimum_version_id = 1,
     .post_load = l1_uart_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(transport_index, SGIL1UARTState),
         VMSTATE_UINT8(lcr, SGIL1UARTState),
         VMSTATE_UINT8(ier, SGIL1UARTState),
         VMSTATE_BOOL(thre_pending, SGIL1UARTState),
@@ -3514,17 +4034,18 @@ static const VMStateDescription vmstate_l1_uart = {
     },
 };
 
+static const Property l1_uart_properties[] = {
+    DEFINE_PROP_UINT8("transport-index", SGIL1UARTState, transport_index, 0),
+};
+
 static void l1_uart_controller_check(const Object *obj, const char *name,
                                      Object *value, Error **errp)
 {
     SGIL1State *controller = SGI_L1(value);
 
+    (void)obj;
     if (!controller) {
         error_setg(errp, "%s cannot be set to NULL", name);
-        return;
-    }
-    if (controller->uart) {
-        error_setg(errp, "L1 controller already has a UART window");
     }
 }
 
@@ -3536,7 +4057,20 @@ static void l1_uart_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "L1 UART window needs a controller link");
         return;
     }
-    u->controller->uart = u;
+    if (u->transport_index >= SGI_L1_IROUTER_TRANSPORTS ||
+        u->controller->transport[u->transport_index]) {
+        if (u->transport_index == 0 && u->controller->transport[0]) {
+            error_setg(errp, "L1 controller already has a UART window");
+        } else {
+            error_setg(errp,
+                       "L1 UART transport index is invalid or already used");
+        }
+        return;
+    }
+    u->controller->transport[u->transport_index] = u;
+    if (u->transport_index == 0) {
+        u->controller->uart = u;
+    }
 }
 
 static void l1_uart_init(Object *obj)
@@ -3561,6 +4095,7 @@ static void l1_uart_class_init(ObjectClass *klass, const void *data)
     dc->realize = l1_uart_realize;
     dc->vmsd = &vmstate_l1_uart;
     dc->user_creatable = true;
+    device_class_set_props(dc, l1_uart_properties);
     rc->phases.enter = l1_uart_reset_enter;
     rc->phases.hold = l1_uart_reset_hold;
 }

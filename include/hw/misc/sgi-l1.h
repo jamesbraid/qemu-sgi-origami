@@ -16,6 +16,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_QUEUE_SIZE 4096
 #define SGI_L1_LOG_ENTRIES 128
 #define SGI_L1_LOG_TEXT 48
+#define SGI_L1_IROUTER_TRANSPORTS 4
+#define SGI_L1_IROUTER_CHANNELS 32
+#define SGI_L1_IROUTER_MAX_FRAGMENT 0x400
 
 typedef struct SGIL1ProductProfile SGIL1ProductProfile;
 typedef struct SGIL1QueryRouter SGIL1QueryRouter;
@@ -109,6 +112,25 @@ typedef struct SGIL1SelectedEEPROM {
     uint8_t status[5];
 } SGIL1SelectedEEPROM;
 
+typedef struct SGIL1IRouterAssembly {
+    bool active;
+    uint8_t fragment_count;
+    uint8_t fragments_left;
+    uint16_t expected;
+    uint16_t received;
+    uint16_t total;
+    uint16_t first_length;
+    uint8_t data[SGI_L1_IROUTER_MAX_FRAGMENT];
+} SGIL1IRouterAssembly;
+
+typedef struct SGIL1FrameState {
+    uint8_t data[SGI_L1_FRAME_SIZE];
+    uint32_t length;
+    bool in_frame;
+    bool escape;
+    bool overflow;
+} SGIL1FrameState;
+
 /* Qtest-only inputs for the selected image's software status builder. */
 typedef struct SGIL1USBTestState {
     bool set;
@@ -122,6 +144,11 @@ typedef struct SGIL1USBTestState {
 struct SGIL1State {
     DeviceState parent_obj;
     SGIL1UARTState *uart;
+    SGIL1UARTState *transport[SGI_L1_IROUTER_TRANSPORTS];
+    bool irouter_compat;
+    uint64_t irouter_profile_identity;
+    SGIL1IRouterAssembly irouter[SGI_L1_IROUTER_TRANSPORTS *
+                                 SGI_L1_IROUTER_CHANNELS];
     /*
      * The other chassis's controller across the RS-422 pair in a two-chassis
      * Origin 300's NUMAlink cable, or NULL. The link carries no wire format:
@@ -187,6 +214,7 @@ struct SGIL1State {
     char *brick_serial;
     char *brick_type;
     uint32_t brick_type_code;
+    bool o300_l1cmd_compat;
     const SGIL1ProductProfile *profile;
     uint32_t product_identity;
     uint32_t port_speed_first;
@@ -221,11 +249,7 @@ struct SGIL1State {
     uint8_t log_text[SGI_L1_LOG_ENTRIES][SGI_L1_LOG_TEXT];
     uint32_t log_head;
     uint32_t log_len;
-    uint8_t frame[SGI_L1_FRAME_SIZE];
-    uint32_t frame_len;
-    bool in_frame;
-    bool escape;
-    bool overflow;
+    SGIL1FrameState frame[SGI_L1_IROUTER_TRANSPORTS];
     uint8_t display[2][128];
     SGIL1USBTestState usb_test_state;
     char usb_test_result[16];
@@ -240,6 +264,7 @@ struct SGIL1UARTState {
     MemoryRegion mmio;
     qemu_irq irq;
     SGIL1State *controller;
+    uint8_t transport_index;
     bool thre_pending;
     uint8_t lcr;
     uint8_t ier;

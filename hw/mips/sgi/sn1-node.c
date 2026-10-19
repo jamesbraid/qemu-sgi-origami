@@ -2152,6 +2152,12 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
+    if (!g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "origin300") &&
+        node->l1_type_code == 0x34 &&
+        object_property_get_bool(OBJECT(machine), "origin300-l1cmd-compat",
+                                 &error_abort)) {
+        qdev_prop_set_bit(node->l1, "o300-l1cmd-compat", true);
+    }
     if (node->model_node->has_board_kind &&
         node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53 &&
         ((g_strcmp0(product, "origin350") == 0 &&

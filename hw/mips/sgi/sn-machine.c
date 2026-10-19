@@ -322,6 +322,7 @@ struct SGIMachineState {
     bool debug_leds;
     bool junk_uart_present;
     bool ip53_experimental;
+    bool origin300_l1cmd_compat;
     bool ip53_experiment_authorized;
     uint8_t elsc_dip_switches;
     uint32_t module_start_delay_ms;
@@ -7820,6 +7821,25 @@ static void sgi_machine_set_ip53_experimental(Object *obj, bool value,
     s->ip53_experimental = value;
 }
 
+static bool sgi_machine_get_origin300_l1cmd_compat(Object *obj, Error **errp)
+{
+    return SGI_MACHINE(obj)->origin300_l1cmd_compat;
+}
+
+static void sgi_machine_set_origin300_l1cmd_compat(Object *obj, bool value,
+                                                    Error **errp)
+{
+    if (sgi_machine_built("origin300-l1cmd-compat", errp)) {
+        return;
+    }
+    if (value && g_strcmp0(SGI_MACHINE_GET_CLASS(obj)->product,
+                            "origin300")) {
+        error_setg(errp, "origin300-l1cmd-compat requires origin300");
+        return;
+    }
+    SGI_MACHINE(obj)->origin300_l1cmd_compat = value;
+}
+
 static void sgi_machine_get_elsc_dip_switches(Object *obj, Visitor *v,
                                               const char *name, void *opaque,
                                               Error **errp)
@@ -8339,6 +8359,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Permit a registered IP53-backed software experiment. The Onyx 4 "
         "host serial trial uses IP53 guest compatibility behavior. Off by "
         "default and immutable after the machine is built.");
+
+    object_class_property_add_bool(oc, "origin300-l1cmd-compat",
+                                   sgi_machine_get_origin300_l1cmd_compat,
+                                   sgi_machine_set_origin300_l1cmd_compat);
+    object_class_property_set_description(oc, "origin300-l1cmd-compat",
+        "Answer selected Origin 300 L1 brick, version and serial all guest "
+        "queries with marked synthetic values. Off by default.");
 
     object_class_property_add(oc, "elsc-dip-switches", "uint8",
                               sgi_machine_get_elsc_dip_switches,
