@@ -1021,6 +1021,30 @@ enum {
 #define ODSY_GL_COLOR_3I 0xc580cc0d        /* 3 signed integers */
 #define ODSY_GL_INDEX_MODE_COLOR_3I 0xce80cc0d
 #define ODSY_GL_COLOR_4F 0xc580d015        /* 4 floats: R, G, B, A */
+/*
+ * The integer colour words, one per glColor variant, in the same shape: the
+ * operand count in bits 13:10, three or four, and the component type in the
+ * low six bits, 8 to 14 for the three-component words and 15 to 21 for the
+ * four-component ones, each run in the order unsigned byte, unsigned short,
+ * unsigned int, byte, short, int, float. Each component travels raw in its
+ * own word, the signed types sign-extended and the unsigned ones
+ * zero-extended (ESTABLISHED from the IRIX 6.5.30 IP30 n32 library's
+ * glColor emitters; pointblank draws its team panels with glColor4ub).
+ * glColor3ub, glColor3i, glColor3f and glColor4f are the words above.
+ */
+#define ODSY_GL_COLOR_3US 0xc580cc09
+#define ODSY_GL_COLOR_3UI 0xc580cc0a
+#define ODSY_GL_COLOR_3B 0xc580cc0b
+#define ODSY_GL_COLOR_3S 0xc580cc0c
+#define ODSY_GL_COLOR_4UB 0xc580d00f
+#define ODSY_GL_COLOR_4US 0xc580d010
+#define ODSY_GL_COLOR_4UI 0xc580d011
+#define ODSY_GL_COLOR_4B 0xc580d012
+#define ODSY_GL_COLOR_4S 0xc580d013
+#define ODSY_GL_COLOR_4I 0xc580d014
+#define ODSY_GL_COLOR_TYPE_MASK 0x3f
+#define ODSY_GL_COLOR_TYPE_3 8              /* glColor3ub's type code */
+#define ODSY_GL_COLOR_TYPE_4 15             /* glColor4ub's type code */
 #define ODSY_GL_NORMAL_3B 0xc180cc16       /* 3 signed bytes, one per word */
 #define ODSY_GL_NORMAL_3S 0xc180cc17       /* 3 signed shorts, one per word */
 #define ODSY_GL_NORMAL_3I 0xc180cc18       /* 3 signed integers */
@@ -8545,17 +8569,20 @@ static void odyssey_query_cancel(SGIOdysseyState *s)
 /*
  * Retain a completed setter in its public record: the whole command word and
  * its raw operands, never a converted value. The GL consumer reads the format
- * from the word's low six bits: 6 and 7 for the index, 8, 13, 14 and 21 for
- * the colour, 22 to 25 for the normal. The 0xce80 twins of the index and
- * colour words set the same records as their 0xc580 siblings; that is a model
- * choice, since whether the board updates its queried value for them is
- * unknown.
+ * from the word's low six bits: 6 and 7 for the index, 8 to 21 for the
+ * colour, 22 to 25 for the normal. The library's reader of a saved colour
+ * record dispatches on all fourteen colour types (ESTABLISHED: its jump
+ * table has a handler for each), so the integer colour words are kept like
+ * the others. The 0xce80 twins of the index and colour words set the same
+ * records as their 0xc580 siblings; that is a model choice, since whether
+ * the board updates its queried value for them is unknown.
  *
  * The consumer indexes a 256-entry table with a byte colour's raw words and
- * no mask, so a byte operand above 255 has no defined answer. Such a record
- * is retained for the context save but makes queries fail observably until
- * the next colour setter. The current texture record admits the captured
- * two- and four-float setters. Other formats remain unsupported.
+ * no mask, so a byte operand above 255 (glColor3ub or glColor4ub) has no
+ * defined answer. Such a record is retained for the context save but makes
+ * queries fail observably until the next colour setter. The current texture
+ * record admits the captured two- and four-float setters. Other formats
+ * remain unsupported.
  */
 static void odyssey_query_update(SGIOdysseyState *s, uint32_t tag)
 {
@@ -8576,12 +8603,27 @@ static void odyssey_query_update(SGIOdysseyState *s, uint32_t tag)
             supported &= s->cmd_operand[i] <= 0xff;
         }
         break;
+    case ODSY_GL_COLOR_4UB:
+        record = ODSY_QUERY_COLOUR;
+        for (i = 0; i < 4; i++) {
+            supported &= s->cmd_operand[i] <= 0xff;
+        }
+        break;
     case ODSY_GL_COLOR_3I:
     case ODSY_GL_INDEX_MODE_COLOR_3I:
     case ODSY_GL_COLOR_3F:
     case ODSY_GL_INDEX_MODE_COLOR_3F:
     case ODSY_GL_COLOR_4F:
     case ODSY_GL_INDEX_MODE_COLOR_4F:
+    case ODSY_GL_COLOR_3US:
+    case ODSY_GL_COLOR_3UI:
+    case ODSY_GL_COLOR_3B:
+    case ODSY_GL_COLOR_3S:
+    case ODSY_GL_COLOR_4US:
+    case ODSY_GL_COLOR_4UI:
+    case ODSY_GL_COLOR_4B:
+    case ODSY_GL_COLOR_4S:
+    case ODSY_GL_COLOR_4I:
         record = ODSY_QUERY_COLOUR;
         break;
     case ODSY_GL_NORMAL_3B:
@@ -8836,6 +8878,64 @@ static uint32_t odyssey_signed_to_float(uint32_t word, unsigned format)
     f *= scale;
     memcpy(&bits, &f, sizeof(bits));
     return bits;
+}
+
+/*
+ * One component of an integer colour word (ODSY_GL_COLOR_3US and the rest,
+ * ODSY_GL_COLOR_3I) as float bits. The operand is taken to its type's width
+ * and converted by OpenGL's rule, c / (2^n - 1) for an unsigned type and
+ * (2c + 1) / (2^n - 1) for a signed one; the int type keeps glColor3i's
+ * existing conversion. That the board converts by OpenGL's rule is INFERRED:
+ * the library sends the raw components and converts nothing itself.
+ */
+static uint32_t odyssey_integer_colour(uint32_t tag, uint32_t word)
+{
+    unsigned code = tag & ODSY_GL_COLOR_TYPE_MASK;
+    double c;
+
+    code -= code >= ODSY_GL_COLOR_TYPE_4 ? ODSY_GL_COLOR_TYPE_4 :
+                                           ODSY_GL_COLOR_TYPE_3;
+    switch (code) {
+    case 0:
+        c = (uint8_t)word / 255.0;
+        break;
+    case 1:
+        c = (uint16_t)word / 65535.0;
+        break;
+    case 2:
+        c = word / 4294967295.0;
+        break;
+    case 3:
+        c = (2.0 * (int8_t)word + 1) / 255.0;
+        break;
+    case 4:
+        c = (2.0 * (int16_t)word + 1) / 65535.0;
+        break;
+    default:
+        return odyssey_signed_to_float(word, ODSY_GL_COLOR_3I &
+                                       ODSY_GL_COLOR_TYPE_MASK);
+    }
+    return odyssey_f32_bits(c);
+}
+
+/* True for the integer colour words other than glColor3ub and glColor3i. */
+static bool odyssey_is_integer_colour(uint32_t word)
+{
+    switch (word) {
+    case ODSY_GL_COLOR_3US:
+    case ODSY_GL_COLOR_3UI:
+    case ODSY_GL_COLOR_3B:
+    case ODSY_GL_COLOR_3S:
+    case ODSY_GL_COLOR_4UB:
+    case ODSY_GL_COLOR_4US:
+    case ODSY_GL_COLOR_4UI:
+    case ODSY_GL_COLOR_4B:
+    case ODSY_GL_COLOR_4S:
+    case ODSY_GL_COLOR_4I:
+        return true;
+    default:
+        return false;
+    }
 }
 
 /*
@@ -9143,28 +9243,39 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_GL_COLOR_3F:
     case ODSY_GL_COLOR_3I:
-    case ODSY_GL_COLOR_4F: {
+    case ODSY_GL_COLOR_4F:
+    case ODSY_GL_COLOR_3US:
+    case ODSY_GL_COLOR_3UI:
+    case ODSY_GL_COLOR_3B:
+    case ODSY_GL_COLOR_3S:
+    case ODSY_GL_COLOR_4UB:
+    case ODSY_GL_COLOR_4US:
+    case ODSY_GL_COLOR_4UI:
+    case ODSY_GL_COLOR_4B:
+    case ODSY_GL_COLOR_4S:
+    case ODSY_GL_COLOR_4I: {
         /*
          * The current colour of the true-colour GL stream (glColor3f,
-         * glColor3i, glColor4f), or the kernel's replay of one
+         * glColor4f and the integer forms), or the kernel's replay of one
          * odyssey_ctx_save() saved. Kept so an unlit vertex after lit ones
-         * takes it back.
+         * takes it back, and so colour material lights with it.
          */
+        unsigned n = odyssey_cmd_arity(tag);
         uint32_t rgba[4];
         unsigned i;
 
         memcpy(rgba, s->cmd_operand, sizeof(rgba));
-        if (tag == ODSY_GL_COLOR_3I) {
-            for (i = 0; i < 3; i++) {
-                rgba[i] = odyssey_signed_to_float(s->cmd_operand[i], 13);
+        if (tag != ODSY_GL_COLOR_3F && tag != ODSY_GL_COLOR_4F) {
+            for (i = 0; i < n; i++) {
+                rgba[i] = odyssey_integer_colour(tag, s->cmd_operand[i]);
             }
         }
-        if (tag != ODSY_GL_COLOR_4F) {
+        if (n == 3) {
             rgba[3] = ODSY_F32_ONE;
         }
         memcpy(s->gl_colour, rgba, sizeof(s->gl_colour));
         s->gl_colour_overridden = false;
-        if (tag == ODSY_GL_COLOR_4F) {
+        if (n == 4) {
             odyssey_gl_feed(s, SGI_GL_OP_COLOR4F, rgba, 4);
         } else {
             odyssey_gl_feed(s, SGI_GL_OP_COLOR3F, rgba, 3);
@@ -9960,6 +10071,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         word == ODSY_GL_INDEX_MODE_COLOR_3F ||
         word == ODSY_GL_INDEX_MODE_COLOR_4F ||
         word == ODSY_GL_COLOR_3I || word == ODSY_GL_COLOR_4F ||
+        odyssey_is_integer_colour(word) ||
         word == ODSY_GL_NORMAL_3B || word == ODSY_GL_NORMAL_3S ||
         word == ODSY_GL_NORMAL_3I) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));

@@ -184,6 +184,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-depth-only-clear
 gl /mips64/sn1/odyssey/command-fifo-gl-program-record-lit
 gl /mips64/sn1/odyssey/command-fifo-gl-program-records-lit
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-material
+gl /mips64/sn1/odyssey/command-fifo-gl-integer-colour
 gl /mips64/sn1/odyssey/command-fifo-gl-integer-normals
 gl /mips64/sn1/odyssey/command-fifo-gl-program-record-unlit
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit
