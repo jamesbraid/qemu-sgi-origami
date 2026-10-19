@@ -819,9 +819,9 @@ enum {
  * the command-page framers' partial packets and the plain counted runs,
  * copied out of SGIKonaState while another context's words are framed and
  * copied back when the context sends words again. See
- * sgi_kona_input_save(). A textport bitmap's payload buffer moves here
- * with it. GL data runs and X pixel writes hold host buffers that are not
- * kept here.
+ * sgi_kona_input_save(). A textport bitmap's payload buffer and a GL data
+ * run's upload buffers move here with them. X pixel writes hold staging
+ * planes that are not kept here.
  */
 typedef struct SGIKonaSavedPort {
     bool framing;
@@ -876,6 +876,18 @@ typedef struct SGIKonaSavedInput {
     uint32_t *bitmap_payload;
     uint32_t bitmap_payload_have;
     uint32_t bitmap_payload_expected;
+    /*
+     * A GL data run and the uploads its token fills, their buffers owned
+     * here while saved; an upload the run does not use stays empty.
+     */
+    uint32_t gl_data_token;
+    uint32_t gl_data_remaining;
+    uint32_t gl_data_have;
+    uint32_t gl_data[SGI_KONA_GL_DATA_MAX];
+    SGIKonaTextureUpload texture_upload;
+    SGIKonaGLImageUpload gl_image_upload;
+    SGIKonaGLBitmapUpload gl_bitmap_upload;
+    SGIKonaGLPixelMapUpload gl_map_upload;
 } SGIKonaSavedInput;
 
 struct SGIKonaState {

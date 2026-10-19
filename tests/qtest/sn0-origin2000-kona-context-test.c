@@ -745,12 +745,12 @@ static void test_fresh_context_discards_saved_command(void)
 }
 
 /*
- * A suspended GL data run holds host buffers the model does not copy, so
- * when another context sends words first it ends, logged as
- * unimplemented, and the new context's command frames whole. Here the
- * polygon stipple, 0xb and three words, has two of its 32 rows.
+ * A suspended GL data run moves with its context too: the polygon
+ * stipple, 0xb and three words, has two of its 32 rows when B sends
+ * words; when A is restored its remaining 30 rows finish the same run. A
+ * model that ended the run at B's first word framed A's rows as nothing.
  */
-static void test_unsaved_command_ends_at_other_context(void)
+static void test_suspended_gl_run_survives_other_context(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
@@ -766,16 +766,27 @@ static void test_unsaved_command_ends_at_other_context(void)
     context_first_physical(s, SAVE_B, RETURN_B);
     qtest_writel(s, REG_KICK, 0);
     kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    for (unsigned row = 2; row < 32; row++) {
+        qtest_writel(s, REG_COMMAND, row & 1 ? 0xaaaaaaaa : 0x55555555);
+    }
+    kona_command(s, 0xe3, (uint32_t[]){ 1, 9, 1280, 0xe3000000 }, 4);
     assert_textport_in_step(s);
     qtest_quit(s);
 
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "open command was not resumed"));
+    g_assert_false(log_shows_misframing(found));
+    g_assert_null(strstr(found, "open command was not resumed"));
     g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
                                    " argc 1\n"));
-    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_drop "), ==,
+    g_assert_nonnull(strstr(found, "token 0xe3 args 0x1 0x9 0x500 argc 4\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_input_save "));
+    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
@@ -1096,6 +1107,108 @@ static void textport_command(QTestState *s, uint32_t cmd, const uint32_t *args,
     for (unsigned k = 0; k < argc; k++) {
         qtest_writel(s, REG_COMMAND, args[k]);
     }
+}
+
+/* The texel probe: the bound texture's base level at (x, y). */
+static uint32_t texture_pixel(QTestState *s, uint32_t x, uint32_t y)
+{
+    kona_set_uint(s, "x-test-pixel-x", x);
+    kona_set_uint(s, "x-test-pixel-y", y);
+    return kona_get_uint(s, "x-test-texture-pixel");
+}
+
+/*
+ * A 2 by 2 RGBA texel load with load identifier 5, bound first, then its
+ * header and the first two of its four texel words.
+ */
+static const uint32_t gl_run_texels[4] = {
+    0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+};
+
+static void gl_run_texture_start(QTestState *s)
+{
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    kona_command(s, 0x1d5, (uint32_t[]){ 5, (2u << 28) | (41 << 12),
+                                         0x30 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+    kona_command(s, 0x174, (uint32_t[]){ 0xde1, 2, 2, 5, 1, 0, 0, 0, 0, 0x30,
+                                         5, 0, 0, 1, 1, 0, 0x23, 0x2181, 0,
+                                         0 }, 20);
+    qtest_writel(s, REG_COMMAND, gl_run_texels[0]);
+    qtest_writel(s, REG_COMMAND, gl_run_texels[1]);
+}
+
+static void gl_run_texture_finish(QTestState *s)
+{
+    qtest_writel(s, REG_COMMAND, gl_run_texels[2]);
+    qtest_writel(s, REG_COMMAND, gl_run_texels[3]);
+    kona_command(s, 0x176, (uint32_t[]){ 5 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmphex(texture_pixel(s, k % 2, k / 2), ==, gl_run_texels[k]);
+    }
+}
+
+/*
+ * A texel load's buffer moves with its context: A's load is cut after two
+ * of its four texel words, B runs a command, and after A is restored its
+ * last two words and its load identifier publish all four texels. A
+ * model that ended the run at B's first word published nothing.
+ */
+static void test_suspended_texture_load_survives(void)
+{
+    QTestState *s = qtest_init(MIGRATION_ARGS);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    gl_run_texture_start(s);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    gl_run_texture_finish(s);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
+/* The same with a migration while B is current and A's run is saved. */
+static void test_migration_of_saved_gl_run(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    gl_run_texture_start(from);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+
+    sgi_migrate_stopped(from, uri);
+
+    context_deactivate(to, 2);
+    context_restore_physical(to, SAVE_A);
+    gl_run_texture_finish(to);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -1595,6 +1708,62 @@ static uint8_t *stream_bytes(uint8_t *data, size_t length,
         }
     }
     g_assert_not_reached();
+}
+
+/*
+ * A saved GL data run the live input could not have left is refused on
+ * load: a token that has no data run, a run with no words to come, and a
+ * texel load holding more words than its rows leave room for. The source
+ * saves A's texel load, cut after two of its four words, when B sends.
+ */
+static void test_migration_rejects_saved_gl_run(void)
+{
+    static const char run[] = "sgi-kona/saved-input-entry/gl-run";
+
+    for (unsigned kind = 0; kind < 3; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "stream", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", path);
+        g_autofree char *data = NULL;
+        QTestState *from = qtest_init(MIGRATION_ARGS);
+        QTestState *to;
+        uint8_t *fields;
+        gsize length;
+
+        context_first_physical(from, SAVE_A, RETURN_A);
+        qtest_writel(from, REG_KICK, 0);
+        gl_run_texture_start(from);
+        context_deactivate(from, 1);
+        context_first_physical(from, SAVE_B, RETURN_B);
+        qtest_writel(from, REG_KICK, 0);
+        kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+        /* The subsection's version, then token, remaining and held words. */
+        fields = stream_bytes((uint8_t *)data, length, run, sizeof(run) - 1) +
+                 sizeof(run) - 1 + 4;
+        g_assert_cmphex(ldl_be_p(fields), ==, 0x174);
+        g_assert_cmpuint(ldl_be_p(fields + 4), ==, 2);
+        g_assert_cmpuint(ldl_be_p(fields + 8), ==, 2);
+        if (kind == 0) {
+            stl_be_p(fields, 0x177);
+        } else if (kind == 1) {
+            stl_be_p(fields + 4, 0);
+        } else {
+            stl_be_p(fields + 8, 3);
+        }
+        g_assert_true(g_file_set_contents(path, data, length, NULL));
+        to = qtest_init(MIGRATION_ARGS " -incoming defer");
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
 }
 
 /*
@@ -2527,13 +2696,21 @@ int main(int argc, char **argv)
                    "suspended-bitmap-survives-other-context",
                    test_suspended_bitmap_survives_other_context);
     qtest_add_func("sn0/origin2000/kona-context/"
-                   "unsaved-command-ends-at-other-context",
-                   test_unsaved_command_ends_at_other_context);
+                   "suspended-gl-run-survives-other-context",
+                   test_suspended_gl_run_survives_other_context);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
                    test_migration_of_saved_command);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "migration-rejects-bitmap-stream",
                    test_migration_rejects_bitmap_stream);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "suspended-texture-load-survives",
+                   test_suspended_texture_load_survives);
+    qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-gl-run",
+                   test_migration_of_saved_gl_run);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-rejects-saved-gl-run",
+                   test_migration_rejects_saved_gl_run);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-bitmap",
                    test_migration_of_saved_bitmap);
     qtest_add_func("sn0/origin2000/kona-context/"
