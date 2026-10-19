@@ -920,6 +920,33 @@ static void test_dma_image_transfer_lands_in_bank_zero(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 1279, 1023), ==, shown);
 }
 
+/*
+ * The overlay form (DRBPOINTERS 0x101c0, COLORMASKMSBS bits 6:4) applies to
+ * a DMA image draw as to a fill or byte transfer: each one-byte pixel is an
+ * overlay index. The IRIX 6.5.30 server writes a Toolchest menu's overlay
+ * save-under back this way with COLORMASKLSBSA 0, so the main planes keep
+ * their pixels while the overlay takes the bytes.
+ */
+static void test_dma_image_transfer_draws_overlay_indices(void)
+{
+    static const uint8_t src[3] = { 0x00, 0x05, 0x21 };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(76, 78, 70);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0xf0));
+    dma_rules_draw(76, 70, 3, src, sizeof(src), MGRAS_LOGIC_OP_COPY, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 76, 70), ==, 0x00);
+    g_assert_cmphex(mgras_test_overlay(qts, 77, 70), ==, 0x05);
+    g_assert_cmphex(mgras_test_overlay(qts, 78, 70), ==, 0x21);
+    for (uint32_t x = 76; x <= 78; x++) {
+        g_assert_cmphex(mgras_test_pixel(qts, x, 70), ==, 0x000f0f0f);
+    }
+}
+
 #undef DMA_RULES_WIDGET
 #undef DMA_RULES_LIST_PAGE
 #undef DMA_RULES_LIST_BASE
@@ -1067,6 +1094,129 @@ static void test_dma_image_transfer_reads_screen_to_host(void)
     g_assert_cmphex(mgras_test_pixel(qts, 6, 2), ==, 7);
     g_assert_cmphex(mgras_test_pixel(qts, 4, 3), ==, 7);
     g_assert_cmphex(mgras_test_pixel(qts, 4, 0), ==, 0);
+}
+
+/*
+ * The overlay save-under round trip of a Toolchest menu on the IRIX 6.5.30
+ * desktop: before posting the menu the server reads the overlay under it
+ * with one byte a pixel in the overlay form (DRBPOINTERS 0x101c0,
+ * COLORMASKMSBS 0x77), and on taking it down writes the same bytes back in
+ * the overlay form with COLORMASKLSBSA 0. The read must return overlay
+ * indices, not the main planes' pixels, and the write must restore them,
+ * or the menu stays on screen after it closes.
+ */
+static void test_dma_image_transfer_overlay_save_under(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_READ_DATA_PFN,
+    };
+    static const uint8_t saved[8] = {
+        0x00, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x03, 0x00,
+    };
+    uint8_t got[8];
+
+    mgras_reset();
+    mgras_enter_context(qts);
+
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_PAGE),
+                   list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_BASE),
+                   list_entry, 8);
+
+    /* Main planes: CI8 0x44 over screen (0,0)-(3,1). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x44));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1u));
+
+    /* Overlay index 3 in column 2 of both rows, main planes masked off. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x03));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (2u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (2u << 16) | 1u));
+    g_assert_cmphex(mgras_test_overlay(qts, 2, 1), ==, 0x03);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+
+    /* DMA-map slot 0: node 0's list entry 0 at 0x6018, one page, widget 9. */
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 dma_read_node_addr(DMA_READ_LIST_BASE));
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484b04 << 32) | (DMA_READ_WIDGET << 16));
+
+    /* Overlay-form read, hw-y box (0,1023)-(3,1022): screen rows 0 and 1. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x77));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1022u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 2);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0xb9);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                  got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), saved, sizeof(saved));
+
+    /* The menu: overlay index 0x21 over the box. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x21));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1u));
+    g_assert_cmphex(mgras_test_overlay(qts, 0, 0), ==, 0x21);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+
+    /* Take it down: write the saved bytes back, overlay form, mask 0. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0xf0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 2);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0xb1);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    for (uint32_t y = 0; y <= 1; y++) {
+        for (uint32_t x = 0; x <= 3; x++) {
+            g_assert_cmphex(mgras_test_overlay(qts, x, y), ==,
+                            saved[y * 4 + x]);
+            g_assert_cmphex(mgras_test_pixel(qts, x, y), ==, 0x44);
+        }
+    }
 }
 
 /*
@@ -5821,9 +5971,15 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/dma-image-transfer-lands-in-bank-zero",
         test_dma_image_transfer_lands_in_bank_zero, true);
     mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-draws-overlay-indices",
+        test_dma_image_transfer_draws_overlay_indices, true);
+    mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "dma-image-transfer-reads-screen-to-host",
         test_dma_image_transfer_reads_screen_to_host, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-overlay-save-under",
+        test_dma_image_transfer_overlay_save_under, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "dma-image-transfer-reads-screen-to-host-did-selection",
