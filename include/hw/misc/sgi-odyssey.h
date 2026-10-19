@@ -247,6 +247,8 @@ struct SGIOdysseyState {
     uint32_t read_word;
     bool draw_mask_stereo_reported;
     bool draw_mask_high_reported;
+    /* A 0x60a or 0x60c to 0x60f word has been reported. Not migrated. */
+    bool drawable_word_reported;
 
     /*
      * The board-memory objects (hw/misc/sgi-odyssey.c, ODSY_OBJ_POOL_BYTES):
