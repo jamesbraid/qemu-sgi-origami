@@ -6176,9 +6176,11 @@ static void odyssey_gl_light(SGIOdysseyState *s, const double obj[4],
  * The colour a GL vertex takes, handed to the shared context just before
  * the vertex: in index mode the current index (glIndex, not glColor); under
  * a lit program the lit colour; otherwise the current glColor, restored if
- * an index or lit vertex replaced it.
+ * an index or lit vertex replaced it. xyz is the vertex's object position,
+ * already converted from whatever form its word carried, z 0 for a 2D one;
+ * lighting needs it for positional lights and the local viewer.
  */
-static void odyssey_gl_vertex_colour(SGIOdysseyState *s, bool has_z)
+static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
 {
     uint32_t words[4];
 
@@ -6200,10 +6202,7 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, bool has_z)
         odyssey_gl_feed(s, SGI_GL_OP_COLOR4F, words, 4);
         s->gl_colour_overridden = true;
     } else if (s->gl_lit) {
-        double obj[4] = {
-            odyssey_f32(s->cmd_operand[0]), odyssey_f32(s->cmd_operand[1]),
-            has_z ? odyssey_f32(s->cmd_operand[2]) : 0, 1,
-        };
+        double obj[4] = { xyz[0], xyz[1], xyz[2], 1 };
         float rgba[4];
 
         odyssey_gl_light(s, obj, rgba);
@@ -8319,13 +8318,18 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
              s->gl_primitive == ODSY_GL_TRIANGLE_STRIP ||
              s->gl_primitive == ODSY_GL_TRIANGLE_FAN ||
              s->gl_primitive == ODSY_GL_QUAD_STRIP)) {
+            const double xyz[3] = {
+                odyssey_f32(s->cmd_operand[0]), odyssey_f32(s->cmd_operand[1]),
+                0,
+            };
+
             if (!s->gl_in_prim) {
                 uint32_t mode = s->gl_primitive;
 
                 odyssey_gl_feed(s, SGI_GL_OP_BEGIN, &mode, 1);
                 s->gl_in_prim = true;
             }
-            odyssey_gl_vertex_colour(s, false);
+            odyssey_gl_vertex_colour(s, xyz);
             odyssey_texture_vertex(s);
             odyssey_gl_feed(s, SGI_GL_OP_VERTEX2I, s->cmd_operand, 2);
         } else {
@@ -8511,6 +8515,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         bool has_z = tag != ODSY_GL_VERTEX_2F;
         const uint32_t *xyz = s->cmd_operand;
         uint32_t converted[3];
+        double obj[3];
 
         if (tag == ODSY_GL_VERTEX_3I) {
             for (unsigned k = 0; k < 3; k++) {
@@ -8528,7 +8533,10 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->gl_primitive <= 8) {
             odyssey_open_record_vertex(s, tag);
         }
-        odyssey_gl_vertex_colour(s, has_z);
+        obj[0] = odyssey_f32(xyz[0]);
+        obj[1] = odyssey_f32(xyz[1]);
+        obj[2] = has_z ? odyssey_f32(xyz[2]) : 0;
+        odyssey_gl_vertex_colour(s, obj);
         odyssey_texture_vertex(s);
         if (s->gl_restart_absorb) {
             unsigned slot = s->gl_restart_total - s->gl_restart_absorb;
