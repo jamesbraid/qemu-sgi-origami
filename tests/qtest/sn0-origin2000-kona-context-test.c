@@ -1597,6 +1597,57 @@ static uint8_t *stream_bytes(uint8_t *data, size_t length,
     g_assert_not_reached();
 }
 
+/*
+ * A textport bitmap the live framer could not have left is refused on
+ * load: a header with more than its six words held, whose next word would
+ * be written past the header, and a payload count past the model's bound,
+ * which the load would otherwise try to allocate. The source is left
+ * collecting the header, two words in, whose distinctive values find the
+ * counts in the stream.
+ */
+static void test_migration_rejects_bitmap_stream(void)
+{
+    static const uint8_t header[] = {
+        0x13, 0x57, 0x24, 0x68, 0x24, 0x68, 0x13, 0x57,
+    };
+
+    for (unsigned kind = 0; kind < 2; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "stream", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", path);
+        g_autofree char *data = NULL;
+        QTestState *from = qtest_init(MIGRATION_ARGS);
+        QTestState *to;
+        uint8_t *fields;
+        gsize length;
+
+        textport_command(from, 0xa, (uint32_t[]){ 0x13572468, 0x24681357 },
+                         2);
+        sgi_migrate_stopped(from, uri);
+        qtest_quit(from);
+        g_assert_true(g_file_get_contents(path, &data, &length, NULL));
+        /* The header's six words, then held, width, height, have, expected. */
+        fields = stream_bytes((uint8_t *)data, length, header, sizeof(header));
+        g_assert_cmpuint(ldl_be_p(fields - 4), ==, 1);
+        g_assert_cmpuint(ldl_be_p(fields + 24), ==, 2);
+        if (kind == 0) {
+            stl_be_p(fields + 24, 100);
+        } else {
+            stl_be_p(fields + 24 + 16, 0x40000000);
+        }
+        g_assert_true(g_file_set_contents(path, data, length, NULL));
+        to = qtest_init(MIGRATION_ARGS " -incoming defer");
+        qtest_set_expected_status(to, 1);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+}
+
 /* Corrupt the actual same-build stream, not a mocked load path. */
 static void corrupt_context_stream(const char *path, unsigned kind)
 {
@@ -2480,6 +2531,9 @@ int main(int argc, char **argv)
                    test_unsaved_command_ends_at_other_context);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
                    test_migration_of_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-rejects-bitmap-stream",
+                   test_migration_rejects_bitmap_stream);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-bitmap",
                    test_migration_of_saved_bitmap);
     qtest_add_func("sn0/origin2000/kona-context/"

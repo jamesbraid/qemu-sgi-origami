@@ -505,6 +505,48 @@ static void sgi_kona_fill_rect(SGIKonaState *s, int32_t x0, int32_t y0,
     }
 }
 
+/*
+ * A textport bitmap as the framer leaves one, live or saved: idle and
+ * empty, collecting its six header words, or collecting the payload the
+ * header sized, within the model's bound and with its buffer present.
+ */
+static bool sgi_kona_bitmap_fields_valid(uint32_t state, const uint32_t *header,
+                                         uint32_t header_have, uint32_t width,
+                                         uint32_t height,
+                                         const uint32_t *payload,
+                                         uint32_t have, uint32_t expected)
+{
+    uint64_t words = DIV_ROUND_UP((uint64_t)header[0] * header[1], 32);
+
+    switch (state) {
+    case SGI_KONA_BITMAP_IDLE:
+        return !header_have && !expected && !have;
+    case SGI_KONA_BITMAP_HEADER:
+        return header_have < SGI_KONA_BITMAP_HEADER_WORDS && !expected &&
+               !have;
+    case SGI_KONA_BITMAP_PAYLOAD:
+        return header_have == SGI_KONA_BITMAP_HEADER_WORDS &&
+               width == header[0] && height == header[1] &&
+               words && words <= SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS &&
+               expected == words && have < expected && payload;
+    default:
+        return false;
+    }
+}
+
+/* A payload count is checked before the load allocates that many words. */
+static bool sgi_kona_bitmap_count_valid(void *opaque, int version_id)
+{
+    return ((SGIKonaState *)opaque)->bitmap_payload_expected <=
+           SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS;
+}
+
+static bool sgi_kona_saved_bitmap_count_valid(void *opaque, int version_id)
+{
+    return ((SGIKonaSavedInput *)opaque)->bitmap_payload_expected <=
+           SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS;
+}
+
 static void sgi_kona_bitmap_reset(SGIKonaState *s)
 {
     s->bitmap_state = SGI_KONA_BITMAP_IDLE;
@@ -13365,6 +13407,14 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    /* A bitmap's next word must land in its header or its payload. */
+    if (!sgi_kona_bitmap_fields_valid(s->bitmap_state, s->bitmap_header,
+                                      s->bitmap_header_have, s->bitmap_width,
+                                      s->bitmap_height, s->bitmap_payload,
+                                      s->bitmap_payload_have,
+                                      s->bitmap_payload_expected)) {
+        return -EINVAL;
+    }
     /* A gamma load can have no more entries to come than it counted. */
     if (s->gamma_remaining > s->gamma_count ||
         s->gamma_outside > s->gamma_count - s->gamma_remaining) {
@@ -13862,6 +13912,8 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
         VMSTATE_UINT32(bitmap_height, SGIKonaSavedInput),
         VMSTATE_UINT32(bitmap_payload_have, SGIKonaSavedInput),
         VMSTATE_UINT32(bitmap_payload_expected, SGIKonaSavedInput),
+        VMSTATE_VALIDATE("saved bitmap payload within bound",
+                         sgi_kona_saved_bitmap_count_valid),
         VMSTATE_VARRAY_UINT32_ALLOC(bitmap_payload, SGIKonaSavedInput,
                                    bitmap_payload_expected, 0,
                                    vmstate_info_uint32, uint32_t),
@@ -13902,35 +13954,6 @@ static bool sgi_kona_saved_port_valid(const SGIKonaSavedPort *p,
         }
     }
     return false;
-}
-
-/*
- * A saved textport bitmap as the live framer leaves one: idle and empty,
- * collecting its six header words, or collecting the payload the header
- * sized, which the model bounds and which arrived with the slot.
- */
-static bool sgi_kona_saved_bitmap_valid(const SGIKonaSavedInput *v)
-{
-    uint64_t expected = DIV_ROUND_UP((uint64_t)v->bitmap_header[0] *
-                                     v->bitmap_header[1], 32);
-
-    switch (v->bitmap_state) {
-    case SGI_KONA_BITMAP_IDLE:
-        return !v->bitmap_header_have && !v->bitmap_payload_expected &&
-               !v->bitmap_payload_have;
-    case SGI_KONA_BITMAP_HEADER:
-        return v->bitmap_header_have < SGI_KONA_BITMAP_HEADER_WORDS &&
-               !v->bitmap_payload_expected && !v->bitmap_payload_have;
-    case SGI_KONA_BITMAP_PAYLOAD:
-        return v->bitmap_header_have == SGI_KONA_BITMAP_HEADER_WORDS &&
-               v->bitmap_width == v->bitmap_header[0] &&
-               v->bitmap_height == v->bitmap_header[1] &&
-               expected && expected <= SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS &&
-               v->bitmap_payload_expected == expected &&
-               v->bitmap_payload_have < expected && v->bitmap_payload;
-    default:
-        return false;
-    }
 }
 
 /*
@@ -14008,7 +14031,12 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
             v->gl_tex_table_remaining > SGI_KONA_GL_TEX_TABLE_WORDS ||
             v->x_stipple_store_height > SGI_KONA_X_STIPPLE_MAX ||
             v->x_stipple_store_remaining > v->x_stipple_store_height ||
-            !sgi_kona_saved_bitmap_valid(v)) {
+            !sgi_kona_bitmap_fields_valid(v->bitmap_state, v->bitmap_header,
+                                          v->bitmap_header_have,
+                                          v->bitmap_width, v->bitmap_height,
+                                          v->bitmap_payload,
+                                          v->bitmap_payload_have,
+                                          v->bitmap_payload_expected)) {
             return -EINVAL;
         }
     }
@@ -15610,6 +15638,8 @@ static const VMStateDescription vmstate_sgi_kona = {
         VMSTATE_UINT32(bitmap_height, SGIKonaState),
         VMSTATE_UINT32(bitmap_payload_have, SGIKonaState),
         VMSTATE_UINT32(bitmap_payload_expected, SGIKonaState),
+        VMSTATE_VALIDATE("bitmap payload within bound",
+                         sgi_kona_bitmap_count_valid),
         /*
          * A migration mid-blit must carry the in-flight payload itself,
          * not just its counters: matches hw/misc/sgi-mgras.c's own
