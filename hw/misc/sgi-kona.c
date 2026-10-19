@@ -1405,6 +1405,14 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         }
         /* A context started afresh has no command of its own left open. */
         sgi_kona_saved_input_clear(&s->saved_input[slot]);
+        if (s->x_pixel_remaining && s->x_pixel_owner == slot) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: context %d started"
+                          " afresh with its X pixel write %" PRIu32
+                          " words short; the write is refused\n", slot,
+                          s->x_pixel_remaining);
+            s->x_pixel_remaining = 0;
+            s->x_write_refused = true;
+        }
         /* Rendering and return writes are synchronous under the big lock. */
         sgi_kona_renderer_stop(s);
         sgi_kona_state_free(s->state[slot]);
@@ -9792,6 +9800,9 @@ static void sgi_kona_x_pixel_write(SGIKonaState *s, const uint32_t *args)
     s->x_pixel_stride = stride;
     s->x_pixel_words = words;
     s->x_pixel_remaining = words;
+    s->x_pixel_owner = s->context_current;
+    s->x_pixel_owner_generation =
+        sgi_kona_context_generation(s, s->context_current);
     trace_sgi_kona_x_pixel_write(s->x_pixel_x, s->x_pixel_y, bpp, words);
     if (bpp == 1) {
         uint32_t set, clear;
@@ -9886,6 +9897,15 @@ static void sgi_kona_x_pixel_word(SGIKonaState *s, uint32_t word)
     if (--s->x_pixel_remaining == 0) {
         trace_sgi_kona_x_pixel_write_done(s->x_pixel_words);
     }
+}
+
+/*
+ * Whether the current context's words are part of an open X pixel write:
+ * the write's owner is current. Another context's words are its own.
+ */
+static bool sgi_kona_x_pixel_owned(SGIKonaState *s)
+{
+    return s->x_pixel_owner == s->context_current;
 }
 
 /*
@@ -10934,7 +10954,8 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         sgi_kona_dma_calls_word(s, word);
         return;
     }
-    if (s->x_pixel_remaining && !sgi_kona_x_pixel_dma_waiting(s)) {
+    if (s->x_pixel_remaining && sgi_kona_x_pixel_owned(s) &&
+        !sgi_kona_x_pixel_dma_waiting(s)) {
         sgi_kona_x_pixel_word(s, word);
         return;
     }
@@ -11092,75 +11113,16 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
  * Whether a user command is part-way through its words: any framer or
  * data run of the textport, GL and X grammars still waiting for more.
  */
+/* Whether the current context has a command open, part-way through. */
 static bool sgi_kona_user_command_open(SGIKonaState *s)
 {
     return s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
            s->video_open || s->color_map_remaining || s->gamma_remaining ||
            s->cursor_remaining || s->gl_tex_table_remaining ||
            s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
-           s->x_pixel_remaining || s->x_stipple_store_remaining ||
+           (s->x_pixel_remaining && sgi_kona_x_pixel_owned(s)) ||
+           s->x_stipple_store_remaining ||
            s->bitmap_state != SGI_KONA_BITMAP_IDLE;
-}
-
-/*
- * Drop a suspended user command whose context is no longer current and
- * which sgi_kona_input_save() cannot keep: a GL data run or an X pixel
- * write. The pipe keeps an open command with its context
- * and resumes it on restore (inferred); the model cannot copy these, so a
- * word of another context ends it, logged. The cost: when the dropped
- * context is restored its remaining words arrive with no command open and
- * are misframed, most dropped as neither a token nor a sync word, until
- * one opens a command.
- */
-static void sgi_kona_user_command_drop(SGIKonaState *s)
-{
-    qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's open command was not"
-                  " resumed before context %d sent words; the model keeps"
-                  " no per-context copy, so it ends here\n",
-                  s->suspended_owner, s->context_current);
-    trace_sgi_kona_bracket_drop(s->suspended_owner, s->context_current);
-    sgi_kona_x_read_invalidate(s);
-    sgi_kona_gl_read_dma_refuse(s);
-    sgi_command_port_reset(&s->textport);
-    sgi_command_port_reset(&s->gl_port);
-    s->gl_sync_held = false;
-    s->textport_expect_sync = true;
-    s->video_open = false;
-    s->color_map_remaining = 0;
-    s->gamma_remaining = 0;
-    s->cursor_remaining = 0;
-    s->cursor_stage_words = 0;
-    memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
-    if (s->gl_tex_table_remaining) {
-        sgi_kona_gl_tex_table_clear(s);
-    }
-    if (s->gl_data_remaining) {
-        sgi_kona_texture_upload_clear(s);
-        sgi_kona_gl_image_clear(s);
-        memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
-        memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
-        s->gl_data_remaining = 0;
-        s->gl_data_token = 0;
-        s->gl_data_have = 0;
-    }
-    sgi_kona_dma_calls_drop(s);
-    if (s->x_pixel_remaining) {
-        s->x_pixel_remaining = 0;
-        s->x_write_refused = true;
-    }
-    s->x_stipple_store_remaining = 0;
-    sgi_kona_bitmap_reset(s);
-}
-
-/*
- * Whether the open user command is one the model can keep with its
- * context: the framers' partial packets, the plain counted runs, a
- * textport bitmap and a GL data run. An X pixel write holds staging
- * planes the model does not move, so one still ends at a switch.
- */
-static bool sgi_kona_input_savable(SGIKonaState *s)
-{
-    return !s->x_pixel_remaining;
 }
 
 /*
@@ -11430,11 +11392,11 @@ static bool sgi_kona_kernel_only_token(uint32_t word)
  * kernel's own textport commands did before. Otherwise a suspended
  * command resumes if its context is current again. If another context
  * sends words first, the suspended command is saved with its owner
- * (sgi_kona_input_save()), or ends if it holds host buffers the model does
- * not copy; and a context whose saved command waits gets it back before
- * its first word. The word then takes the ordinary path. That a user
- * word naming a kernel-only token is logged, not refused, is the model's
- * choice: what the pipe does then is unknown.
+ * (sgi_kona_input_save()), except an X pixel write, which stays in place
+ * and takes only its owner's words; and a context whose saved command
+ * waits gets it back before its first word. The word then takes the
+ * ordinary path. That a user word naming a kernel-only token is logged,
+ * not refused, is the model's choice: what the pipe does then is unknown.
  */
 static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 {
@@ -11458,10 +11420,8 @@ static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
     if (owner != SGI_KONA_CONTEXT_NONE) {
         if (owner == current || !sgi_kona_user_command_open(s)) {
             trace_sgi_kona_bracket_resume(owner);
-        } else if (sgi_kona_input_savable(s)) {
-            sgi_kona_input_save(s, owner);
         } else {
-            sgi_kona_user_command_drop(s);
+            sgi_kona_input_save(s, owner);
         }
         s->suspended_owner = SGI_KONA_CONTEXT_NONE;
     }
@@ -13287,6 +13247,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->x_pixel_stride = 0;
     s->x_pixel_words = 0;
     s->x_pixel_remaining = 0;
+    s->x_pixel_owner = SGI_KONA_CONTEXT_NONE;
+    s->x_pixel_owner_generation = 0;
     s->x_pixel_prev = 0;
 
     /*
@@ -13957,6 +13919,38 @@ static const VMStateDescription vmstate_sgi_kona_bracket = {
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(kernel_input, SGIKonaState),
         VMSTATE_INT32(suspended_owner, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The open X pixel write's owner, while its rows have words to come. */
+static bool sgi_kona_x_pixel_owner_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->x_pixel_remaining != 0;
+}
+
+static int sgi_kona_x_pixel_owner_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (s->x_pixel_owner != SGI_KONA_CONTEXT_NONE &&
+        (s->x_pixel_owner < 0 || s->x_pixel_owner >= SGI_KONA_CONTEXTS ||
+         !sgi_kona_context_owner(s, s->x_pixel_owner,
+                                 s->x_pixel_owner_generation))) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_x_pixel_owner = {
+    .name = TYPE_SGI_KONA "/x-pixel-owner",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_x_pixel_owner_needed,
+    .post_load = sgi_kona_x_pixel_owner_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(x_pixel_owner, SGIKonaState),
+        VMSTATE_UINT64(x_pixel_owner_generation, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -16117,6 +16111,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_credit,
         &vmstate_sgi_kona_bracket,
         &vmstate_sgi_kona_saved_input,
+        &vmstate_sgi_kona_x_pixel_owner,
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,

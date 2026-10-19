@@ -820,8 +820,8 @@ enum {
  * copied out of SGIKonaState while another context's words are framed and
  * copied back when the context sends words again. See
  * sgi_kona_input_save(). A textport bitmap's payload buffer and a GL data
- * run's upload buffers move here with them. X pixel writes hold staging
- * planes that are not kept here.
+ * run's upload buffers move here with them. An X pixel write stays in
+ * place, its rows fed only by its owner (see x_pixel_owner).
  */
 typedef struct SGIKonaSavedPort {
     bool framing;
@@ -1294,6 +1294,13 @@ struct SGIKonaState {
     uint32_t x_pixel_words;
     uint32_t x_pixel_remaining;
     uint32_t x_pixel_prev;
+    /*
+     * The context whose words the open write's rows are: only its own
+     * words feed them, so another context switched in meanwhile frames
+     * its own commands and the write resumes when its owner sends again.
+     */
+    int32_t x_pixel_owner;
+    uint64_t x_pixel_owner_generation;
 
     /* Pending source pixels stay separate from canonical board storage. */
     SGIBoardMemory x_write_mem;
