@@ -11453,7 +11453,6 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
  * bit (the X server's tokens and the GL client's list calls share its
  * table), live or set aside by a forced store.
  */
-/* Whether the current context has a command open, part-way through. */
 static bool sgi_kona_user_command_open(SGIKonaState *s)
 {
     return (s->kernel_port.framing && !s->kernel_port_privileged) ||
