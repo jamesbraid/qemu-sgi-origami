@@ -13436,6 +13436,25 @@ static void test_texture_chain_construction(void)
     push_user_words(qts, bad, ARRAY_SIZE(bad));
     g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 0, 0), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
+
+    /*
+     * pointblank's RGB form: word 4 0x12e40000 and entry format 0x00c.
+     * The RGBA entry format under the RGB word stays refused.
+     */
+    for (unsigned form = 0; form < 2; form++) {
+        uint32_t rgb[ARRAY_SIZE(words)];
+        uint32_t dest = form ? 0x184000 : 0x183000;
+
+        memcpy(rgb, words, sizeof(rgb));
+        rgb[1] = dest;
+        rgb[9] = form ? 0x41100002 : 0x00c00002;
+        rgb[18] = 0x12e40000;
+        push_user_words(qts, rgb, ARRAY_SIZE(rgb));
+        g_assert_cmphex(odsy_test_object_texel(qts, dest, 1, 0), ==,
+                        form ? 0 : 0x0000ffff);
+        g_assert_cmphex(odsy_test_object_texel(qts, dest, 0, 1), ==,
+                        form ? 0 : 0x00ff00ff);
+    }
     board_quit(qts);
 }
 

@@ -8768,13 +8768,21 @@ static bool odyssey_board_address_valid(SGIOdysseyState *s, uint32_t base)
     return false;
 }
 
-/* The reviewed construction template; its (2x, 2y) taps are a model policy. */
+/*
+ * The reviewed construction template; its (2x, 2y) taps are a model policy.
+ * pointblank builds its RGB mipmaps the same way, with sampler word 4
+ * 0x12e40000 (RGB components) and level entries of format field 0x00c
+ * (0x00c00000 with the row length) in place of the RGBA 0x13640000 and
+ * 0x411. The store keeps whole texel words whatever the level's format, so
+ * the copy is the same.
+ */
 static bool odyssey_texture_build_level(SGIOdysseyState *s)
 {
     const uint32_t *p = s->cmd_operand;
     const uint32_t *entry = &s->tex_levels[60 * 3];
     uint32_t ws = s->tex_sampler[1], hs = s->tex_sampler[2];
     uint32_t wd, hd, source_base, source_units, dest_units;
+    bool rgb = s->tex_sampler[4] == 0x12e40000;
     uint64_t source_end;
     int source, dest;
 
@@ -8788,9 +8796,11 @@ static bool odyssey_texture_build_level(SGIOdysseyState *s)
     dest_units = ((wd + 15) / 16 + 1) & ~1u;
     if (s->gl_primitive != ODSY_GL_QUADS ||
         !(s->tex_mode & ODSY_TEX_MODE_2D) || s->tex_level0 != 60 ||
-        entry[1] != (0x41100000 | source_units) || entry[2] ||
+        entry[1] != ((rgb ? 0x00c00000 : 0x41100000) | source_units) ||
+        entry[2] ||
         s->tex_sampler[0] != ((ctz32(ws) << 10) | (ctz32(hs) << 5)) ||
-        s->tex_sampler[3] || s->tex_sampler[4] != 0x13640000 ||
+        s->tex_sampler[3] ||
+        (s->tex_sampler[4] != 0x13640000 && !rgb) ||
         s->tex_sampler[5] || s->tex_sampler[6] ||
         p[0] || p[1] || p[2] || p[3] || p[4] || p[5] || p[6] ||
         p[7] != odyssey_f32_bits((float)wd) ||
