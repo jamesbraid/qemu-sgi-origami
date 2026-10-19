@@ -738,6 +738,7 @@ enum {
  */
 #define MGRAS_GL_IMAGE_ORIGIN    2
 #define MGRAS_GL_IMAGE_CLIP_MODE 3
+#define MGRAS_GL_IMAGE_CLIP_ID   4
 #define MGRAS_GL_CLIP_RECTS      4
 #define MGRAS_GL_CLIP_INSIDE     1
 #define MGRAS_GL_CLIP_NULL       2
@@ -2934,11 +2935,46 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
  * an RGB pixel bypasses that map (sgi-mgras-display.c), which is what
  * makes the drawing visible. Each bank keeps its own format tag.
  */
+/*
+ * Clip IDs. When a window has no visible rectangle the kernel can give
+ * (five or more), its clip validation (MgrasValidateClip, IRIX 6.5.30
+ * mgras.o 0x6598-0x662c) binds the whole window as rectangle 0, mode 1,
+ * and, when the window has a clip ID, sets bit 4 + ID of image word 4
+ * (0x62d8-0x62f0 and 0x65d4-0x65dc compute (x & 3) | (y & 3) << 2 |
+ * 1 << (4 + ID)). The same word goes to the kernel's shadow of raster
+ * register 0x17b (0x634c), which the X server sets to 0xc00 for its own
+ * drawing. The X server tags the window's visible region with that ID
+ * first (sgi-mgras-raster.c, mgras_fill_clip_id()): twilight's window got
+ * ID 1 over exactly its visible boxes and word 4 0x20 (run
+ * irix-20261019T134838-e753a2).
+ *
+ * Inferred: a fragment of a context whose word 4 has any of bits 7:4 set
+ * belongs to the window only where the pixel's clip ID selects one of
+ * them, OpenGL's pixel ownership test (1.2.1, 4.1.1); elsewhere it is
+ * discarded before any test or write. With bits 7:4 clear, as every
+ * window the kernel describes by rectangles has them, there is no test.
+ * Word 4 is read as the image now holds it rather than at the bind, like
+ * nothing else the bind keeps; the two differ only inside a context
+ * transaction a guest error cut short. Bits 11:10 (the X server's 0xc00)
+ * and bits 3:0 are not modelled. The discriminating test is
+ * gl-clip-id-owns-the-tagged-pixels.
+ */
+static bool mgras_gl_owns(SGIMgrasState *s, int x, int y)
+{
+    uint32_t accept = (s->context[MGRAS_GL_IMAGE_CLIP_ID] >> 4) & 0xf;
+
+    return !accept ||
+           (accept >> s->clip_id[(s->height - 1 - y) * s->width + x]) & 1;
+}
+
 static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
                          uint32_t rgb)
 {
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
+    if (!mgras_gl_owns(s, x, y)) {
+        return;
+    }
     if (banks & 1) {
         s->front[idx] = rgb;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
@@ -2981,6 +3017,9 @@ static void mgras_gl_store_rgba(void *opaque, SGIColourTarget target,
     uint32_t rgb = colour->component[0] << 16 |
                    colour->component[1] << 8 | colour->component[2];
 
+    if (!mgras_gl_owns(s, x, y)) {
+        return;
+    }
     mgras_gl_put(s, target, x, y, rgb);
     if (target & 1) {
         s->front_alpha[idx] = colour->component[3];
@@ -3071,7 +3110,7 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
-    if (!(mask & 0xff)) {
+    if (!(mask & 0xff) || !mgras_gl_owns(s, x, y)) {
         return;
     }
     if (target & 1) {
@@ -3099,6 +3138,9 @@ static void mgras_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
 {
     uint32_t *word = mgras_gl_depth(opaque, x, y);
 
+    if (!mgras_gl_owns(opaque, x, y)) {
+        return;
+    }
     *word = (*word & ~MGRAS_GL_DEPTH_MASK_24) |
             (depth & MGRAS_GL_DEPTH_MASK_24);
 }
@@ -3113,6 +3155,9 @@ static void mgras_gl_store_stencil(void *opaque, int x, int y,
 {
     uint32_t *word = mgras_gl_depth(opaque, x, y);
 
+    if (!mgras_gl_owns(opaque, x, y)) {
+        return;
+    }
     *word = (*word & MGRAS_GL_DEPTH_MASK_24) |
             value << MGRAS_GL_STENCIL_SHIFT;
 }
@@ -3791,7 +3836,8 @@ static SGIRenderRefusal mgras_gl_mesa_preflight(const SGIMgrasState *s,
         st->drawable.origin[1] || st->drawable.clip.n != 1 ||
         st->drawable.clip.r[0].x0 != 0 || st->drawable.clip.r[0].y0 != 0 ||
         st->drawable.clip.r[0].x1 != s->width - 1 ||
-        st->drawable.clip.r[0].y1 != s->height - 1 || st->scissor_test) {
+        st->drawable.clip.r[0].y1 != s->height - 1 || st->scissor_test ||
+        (s->context[MGRAS_GL_IMAGE_CLIP_ID] >> 4) & 0xf) {
         return SGI_RENDER_REFUSAL_WINDOW;
     }
     if (st->drawable.front != 1 && st->drawable.front != 2) {

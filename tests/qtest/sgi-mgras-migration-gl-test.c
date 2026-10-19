@@ -1143,6 +1143,28 @@ static void test_gl_texture_matrix_migration(void)
     gl_migrate(gl_texture_setup, gl_texture_check);
 }
 
+static void gl_clip_id_setup(QTestState *from)
+{
+    mgras_enter_context(from);
+    gl_clip_id_fill(from, 1, 100, 100, 199, 149);
+}
+
+static void gl_clip_id_check(QTestState *to)
+{
+    gl_enter_clip_id_window(to, 0x20);
+    gl_viewport(to, 0, 0, 1280, 1024);
+    gl_clear_color(to, 1, 1, 1, 1);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(to, 150, 120), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(to, 640, 512), ==, 0);
+}
+
+/* The clip IDs the X server wrote cross a migration. */
+static void test_gl_clip_id_migration(void)
+{
+    gl_migrate(gl_clip_id_setup, gl_clip_id_check);
+}
+
 /* A context read out before a migration is written back after it. */
 static void test_gl_eviction_migration(void)
 {
@@ -1436,6 +1458,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-polygon/migration",
         test_gl_native_polygon_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-id/migration",
+        test_gl_clip_id_migration, false);
 
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-render-resource-snapshot-commit-reset",

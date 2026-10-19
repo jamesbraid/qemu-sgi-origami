@@ -725,6 +725,12 @@ struct SGIMgrasState {
     uint8_t *back_format;
     /* Per-pixel overlay index. 0 is transparent and shows the main planes. */
     uint8_t *overlay;
+    /*
+     * Per-pixel clip ID, 0 to 3, which the X server writes over a GL
+     * window's visible region and a GL context may require; see
+     * mgras_fill_clip_id() and mgras_gl_owns().
+     */
+    uint8_t *clip_id;
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];

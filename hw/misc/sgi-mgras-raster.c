@@ -260,6 +260,23 @@
 #define MGRAS_COLORMASKMSBS_OVERLAY 0x70
 
 /*
+ * Clip IDs. When a GL window is covered by more windows than the kernel's
+ * four clip rectangles can describe, the IRIX 6.5.30 X server tags the
+ * window's visible region with a clip ID: rectangle fills with DRBPOINTERS
+ * 0x90240 (the main-plane pointer word), COLORMASKMSBS 0xff,
+ * COLORMASKLSBSA/B 0, PP1FILLMODE 0x142600 and the ID in FILLCOLOR_R. Its
+ * fill routine (impactsr.so 0x54e310-0x54e5a0) sends FILLCOLOR_R as the ID
+ * when the ID is at most 3 and 0 otherwise, so an ID has two bits; that
+ * they sit in COLORMASKMSBS bits 1:0 is inferred (the overlay form enables
+ * bits 6:4 and its erase bits 7:4). The fill's logic-op field is 0, so the
+ * ID is stored as sent, not through the logic op: inferred, since a CLEAR
+ * would leave every window's ID 0. How a GL fragment is tested against
+ * the ID is in sgi-mgras-gl.c (mgras_gl_owns()).
+ */
+#define MGRAS_DRBPOINTERS_MAIN 0x00090240
+#define MGRAS_COLORMASKMSBS_CLIP_ID 0x03
+
+/*
  * Stippled lines. The IRIX 6.5.30 server draws stippled spans and
  * polygons as one-row RE_LINEs with FILLMODE 0x20 or 0x60 and a 32-bit
  * pattern in register 0x15a, rewritten before each row. FILLMODE 0x60 also
@@ -924,6 +941,29 @@ static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
 }
 
 
+static void mgras_fill_clip_id(SGIMgrasState *s)
+{
+    uint8_t mask = s->rss[MGRAS_RSS_COLORMASKMSBS] &
+                   MGRAS_COLORMASKMSBS_CLIP_ID;
+    uint8_t id = s->rss[MGRAS_RSS_FILLCOLOR_R] & mask;
+    int x_lo, y_lo, x_hi, y_hi;
+
+    if (!mgras_rect_bounds(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
+                           s->rss[MGRAS_RSS_BLOCKXYENDI],
+                           &x_lo, &y_lo, &x_hi, &y_hi)) {
+        return;
+    }
+    for (int y = y_lo; y <= y_hi; y++) {
+        for (int x = x_lo; x <= x_hi; x++) {
+            unsigned int idx = y * s->width + x;
+
+            if (!mgras_clipped(s, idx)) {
+                s->clip_id[idx] = (s->clip_id[idx] & ~mask) | id;
+            }
+        }
+    }
+}
+
 static void mgras_draw_fill(SGIMgrasState *s)
 {
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
@@ -934,14 +974,18 @@ static void mgras_draw_fill(SGIMgrasState *s)
     /*
      * No fill writes a window ID: scanout takes each pixel's WID from the
      * VC3's display-ID tables (sgi-mgras-display.c). The fills that carry
-     * a nonzero COLORMASKMSBS are overlay draws and clears, handled below,
-     * and the server's two start-up fills with COLORMASKMSBS 0xff and
-     * DRBPOINTERS 0x90240 (a clip-ID set-up and a plane clear) write planes
-     * nothing here displays; they are not modeled.
+     * a nonzero COLORMASKMSBS are overlay draws and clears and, with
+     * DRBPOINTERS 0x90240 and COLORMASKMSBS bits 1:0, clip-ID writes
+     * (including the server's two start-up fills), handled below. Clip IDs
+     * are not displayed; only GL fragments read them.
      */
     if ((s->rss[MGRAS_RSS_FILLMODE] & MGRAS_FILLMODE_RECT_FILL_MASK) !=
         MGRAS_FILLMODE_RECT_FILL_VALUE) {
         return;
+    }
+    if (s->rss[MGRAS_RSS_DRBPOINTERS] == MGRAS_DRBPOINTERS_MAIN &&
+        (s->rss[MGRAS_RSS_COLORMASKMSBS] & MGRAS_COLORMASKMSBS_CLIP_ID)) {
+        mgras_fill_clip_id(s);
     }
     /* An overlay fill takes FILLCOLOR_R's index, as a CI8 fill does. */
     if (mgras_overlay_target(s)) {
