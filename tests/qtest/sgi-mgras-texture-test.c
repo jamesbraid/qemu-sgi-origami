@@ -3013,6 +3013,108 @@ static void test_gl_texture_class_intensity_vs_luminance(void)
 }
 
 /*
+ * TRAM select. The client gives each one- and two-component texture a
+ * TRAM select (TL_MODE bits 4:3 on load, TEXMODE1 bits 8:7 on draw) and
+ * puts several at the same block, told apart only by it, as perfly's
+ * town database does with two 32-by-32 levels at one TXMIPMAP word under
+ * selects 0 and 3. Two LUMINANCE8 levels loaded so each draw their own
+ * texels, a select nothing was loaded under draws untextured, and the
+ * levels survive migration.
+ */
+#define TEX_TL_MODE_LUM8      0x34020
+
+static void tex_select_load(QTestState *t, uint32_t select,
+                            const uint8_t texels[8])
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+
+    tex_load_fmt(t, true, TEX_TL_MODE_LUM8 | select << 3, TEX_SPEC_4X2,
+                 texels, 4, 2, 1, 1, box, true, 0, 0);
+}
+
+static void tex_select_draw(QTestState *t, uint32_t select)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float geometry[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 }, { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+
+    tex_bind(t, tex_mode1(TEX_ENV_MODULATE, TEX_LAYOUT_ONE,
+                          TEX_CLASS_LUMINANCE, 1) | select << 7,
+             0x10000 | 1 << 2);
+    tex_quad_rect(t, white, geometry);
+}
+
+static void tex_select_expect(QTestState *t, uint32_t select,
+                              const uint8_t texels[8])
+{
+    tex_select_draw(t, select);
+    for (int i = 0; i < 8; i++) {
+        double v = texels ? texels[i] / 255.0 : 1.0;
+
+        tex_expect(tex_texel_pixel(t, i % 4, i / 4), v, v, v);
+    }
+}
+
+static void test_gl_texture_tram_select_keys_small_levels(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *t = tex_start(TEX_ARGS), *to;
+    uint8_t first[8], second[8];
+
+    for (int i = 0; i < 8; i++) {
+        first[i] = 0x10 + 0x20 * i;
+        second[i] = 0xf0 - 0x18 * i;
+    }
+    tex_enter(t, GL_SLOT_A);
+    tex_select_load(t, 0, first);
+    tex_select_load(t, 3, second);
+    tex_select_expect(t, 0, first);
+    tex_select_expect(t, 3, second);
+    tex_select_expect(t, 1, NULL);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-tram-select-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(t, uri);
+    qtest_quit(t);
+    to = qtest_initf("%s -incoming %s", TEX_ARGS, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    tex_select_expect(to, 3, second);
+    tex_select_expect(to, 0, first);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * For RGB and RGBA the client leaves TEXMODE1 bits 8:7 undefined (an
+ * uninitialised stack word), and the town database's RGBA draws carry
+ * selects 1 and 2 for textures loaded under select 0: the bits are
+ * ignored and the level draws.
+ */
+static void test_gl_texture_tram_select_ignored_for_rgba(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    for (uint32_t select = 1; select <= 3; select++) {
+        tex_load(t, TEX_TL_MODE_RGBA8, texels);
+        tex_bind(t, TEX_TEXMODE1_ON | select << 7, TEX_TEXMODE2_RGBA8);
+        tex_quad(t);
+        tex_expect_texels(t, texels);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
  * An ALPHA8 texel 0x80 under a red opaque fragment gives colour (1, 0,
  * 0) and alpha one half, whatever environment the draw names: the
  * client sends code 3 for it, and the model reads the alpha class as
@@ -5407,6 +5509,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-class-intensity-vs-luminance",
                    test_gl_texture_class_intensity_vs_luminance);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-tram-select-keys-small-levels",
+                   test_gl_texture_tram_select_keys_small_levels);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-tram-select-ignored-for-rgba",
+                   test_gl_texture_tram_select_ignored_for_rgba);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-class-alpha",
                    test_gl_texture_class_alpha);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-env-blend-constant",
