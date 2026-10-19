@@ -525,7 +525,9 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
  * Inferred: that the table sits after the colour maps, on every pixel,
  * as on SI; a component with no nonzero entry, before any load, is
  * shown unchanged. What the pipe's gamma RAM holds before the X server
- * loads it, and its index width, are unknown.
+ * loads it, its index width, and whether it applies to the cursor (the
+ * shared scanout composes the cursor afterwards, uncorrected) are
+ * unknown.
  */
 static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, uint32_t rgb)
 {
@@ -7462,8 +7464,12 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     pixels = (uint64_t)h[1] * h[2];
     if (p->pixel_transfer_unsupported) {
         reason = "native texture pixel transfer unsupported";
-    } else if (!sgi_kona_texture_native_header(h) ||
-        (h[6] && stride < layout.row_bytes)) {
+    } else if (!sgi_kona_texture_native_header(h)) {
+        /*
+         * A DMA source whose stride is shorter than its rows never gets
+         * here: sgi_kona_gl_pixels_dma_layout() refuses it above, and no
+         * DMA completes for it.
+         */
         reason = "unsupported native destination layout";
     } else if (words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
                pixels * DIV_ROUND_UP(MAX(bytes, 4), 4) >
@@ -10654,6 +10660,11 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
  * unsupported case; that the transfer itself completes is what any
  * accepted DMA does.
  */
+bool sgi_kona_texture_dma_discard_due(SGIKonaState *s)
+{
+    return s->texture_dma_discard;
+}
+
 bool sgi_kona_texture_dma_discard(SGIKonaState *s)
 {
     bool due = s->texture_dma_discard;

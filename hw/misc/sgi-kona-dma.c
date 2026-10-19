@@ -314,9 +314,10 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     SGIKonaDma *d = &s->dma;
     bool record = d->record_pending;
     bool texture = !record && sgi_kona_texture_dma_waiting(s);
-    bool discard = !record && !texture && sgi_kona_texture_dma_discard(s);
     bool pixels = !record && sgi_kona_pixels_dma_waiting(s);
     bool bitmap = !record && sgi_kona_bitmap_dma_waiting(s);
+    bool discard = !record && !texture && !pixels && !bitmap &&
+                   sgi_kona_texture_dma_discard_due(s);
     uint32_t total = w[2], per_line = w[3], gap = w[4];
     uint64_t cookie = SGI_KONA_DMA_COOKIE_NONE;
     g_autofree uint64_t *pages = NULL;
@@ -345,7 +346,8 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     io = ((uint64_t)w[0] << 12) | (w[1] & 0xfff);
     in_page = io & (SGI_KONA_DMA_PAGE_SIZE - 1);
 
-    if (!per_line || (!texture && !pixels && !bitmap && per_line % 4) ||
+    if (!per_line ||
+        (!texture && !pixels && !bitmap && !discard && per_line % 4) ||
         !total || total % per_line) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: dma of 0x%x bytes in lines of 0x%x is not "
@@ -398,6 +400,7 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         }
     } else if (discard) {
         /* A refused native texture load's source: complete it unread. */
+        sgi_kona_texture_dma_discard(s);
         if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
