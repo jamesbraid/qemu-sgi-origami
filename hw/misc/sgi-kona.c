@@ -7694,6 +7694,19 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
     case 0x0d05:                /* GL_PACK_ALIGNMENT */
         p->pack_alignment = value;
         break;
+    /*
+     * Packing for GetTexImage of 3D and 4D textures alone (OpenGL 1.2.1,
+     * table 4.5 and section 6.1.4; SGIS_texture4D). Zero is their initial
+     * value, so storing it changes nothing; the library sends it.
+     */
+    case 0x806d:                /* GL_PACK_SKIP_IMAGES */
+    case 0x806e:                /* GL_PACK_IMAGE_HEIGHT */
+    case 0x8132:                /* GL_PACK_SKIP_VOLUMES_SGIS */
+    case 0x8133:                /* GL_PACK_IMAGE_DEPTH_SGIS */
+        if (!value) {
+            break;
+        }
+        /* fall through */
     default:
         p->pixel_transfer_unsupported = true;
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPixelStore of 0x%" PRIx32

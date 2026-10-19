@@ -6356,8 +6356,8 @@ static void test_draw_pixels(gconstpointer opaque)
     bool dma = mode == 2 || mode == 3 || mode == 12 || mode == 17 || mode == 19;
     bool padded = mode == 1 || mode == 3;
     bool migrate = mode == 4 || mode == 12 || mode == 13 || mode == 24;
-    bool refused = mode >= 5 && mode < 18 && mode != 12 &&
-                   mode != 15 && mode != 16;
+    bool refused = (mode >= 5 && mode < 18 && mode != 12 &&
+                    mode != 15 && mode != 16) || mode == 26;
     uint32_t h[] = { 2, 2, 5, 1, padded ? 3 : 0, dma, padded, 0 };
     static const uint32_t plain[] = {
         0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
@@ -6415,6 +6415,17 @@ static void test_draw_pixels(gconstpointer opaque)
             malformed[6] = 2;
         }
         kona_command(s, 0x3a, malformed, ARRAY_SIZE(malformed));
+    }
+    if (mode == 25 || mode == 26) {
+        /*
+         * The library's 3D and 4D pack state at its initial zero changes
+         * nothing a DrawPixels does; another value stays unsupported.
+         */
+        static const uint32_t pack[] = { 0x806d, 0x806e, 0x8132, 0x8133 };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(pack); k++) {
+            kona_command(s, 0x33, (uint32_t[]) { pack[k], mode == 26 }, 2);
+        }
     }
     if (mode == 18 || mode == 24) {
         h[4] = 1;
@@ -17486,7 +17497,8 @@ int main(int argc, char **argv)
         "partial-context-aborted", "pio-contiguous-padded",
         "dma-strided-rowlength", "malformed-dimensions",
         "unknown-format", "malformed-source-pad", "malformed-layout",
-        "contiguous-partial-migrates",
+        "contiguous-partial-migrates", "pack-3d-default",
+        "pack-3d-refused",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(draw_pixels_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
