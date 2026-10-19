@@ -1343,6 +1343,57 @@ static void test_migration_of_suspended_x_write(void)
 }
 
 /*
+ * An X write fed by DMA takes the next unclaimed DMA packet whichever
+ * context is current, logged when its owner is not: A opens a 16 by 4
+ * colour-index image by DMA, B is activated and current when the
+ * kernel's packet arrives, and the image still lands, with the log line.
+ */
+static void test_x_dma_for_other_context_logged(void)
+{
+    static const uint32_t gc[13] = {
+        0, 0, 0, 0, 0xf00fff, 0, 0x180c, 0x40001, 1, 6, 5, 1, 1,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint8_t bytes[64];
+
+    for (unsigned k = 0; k < sizeof(bytes); k++) {
+        bytes[k] = k;
+    }
+    qtest_memwrite(s, UINT64_C(0x400000), bytes, sizeof(bytes));
+    qtest_writel(s, REG_MAPRAM(0), 0x20000000 | (0x400000 >> 12));
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_initialise(s, 1280);
+    kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
+    kona_command(s, 0x136, (uint32_t[]){ 0x10, 0, 1, 8, 16, 4, 0 }, 7);
+    kona_command(s, 0x139, (uint32_t[]){ 100, 50 }, 2);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    qtest_writel(s, REG_KICK, 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1eb);
+    qtest_writel(s, REG_KICK, 0x10000);
+    qtest_writel(s, REG_COMMAND, 0);
+    qtest_writel(s, REG_COMMAND, 0x9000);
+    qtest_writel(s, REG_COMMAND, 64);
+    qtest_writel(s, REG_COMMAND, 64);
+    qtest_writel(s, REG_COMMAND, 0);
+    qtest_writel(s, REG_COMMAND, 0x100);
+    qtest_writel(s, REG_KICK, 0);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "X pixel write takes a DMA"
+                                       " packet while context"), ==, 1);
+    g_assert_nonnull(strstr(found, "sgi_kona_x_image_dma "));
+}
+
+/*
  * A textport bitmap moves with its context too, payload and all. A's 32 by
  * 2 bitmap is cut after its first payload word, B runs a command, and A's
  * second word, after A is restored, completes the blit: both rows draw.
@@ -2879,6 +2930,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-context/"
                    "migration-rejects-x-pixel-owner",
                    test_migration_rejects_x_pixel_owner);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "x-dma-for-other-context-logged",
+                   test_x_dma_for_other_context_logged);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "suspended-bitmap-survives-other-context",
                    test_suspended_bitmap_survives_other_context);
