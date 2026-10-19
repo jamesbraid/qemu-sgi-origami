@@ -13927,6 +13927,26 @@ static void test_texture_chain_construction(void)
         g_assert_cmphex(odsy_test_object_texel(qts, dest, 0, 1), ==,
                         form ? 0 : 0x00ff00ff);
     }
+
+    /*
+     * buttonfly's luminance-alpha form: word 4 0x11e40000 and entry format
+     * 0x00b. The RGB entry format under the luminance-alpha word stays
+     * refused.
+     */
+    for (unsigned form = 0; form < 2; form++) {
+        uint32_t la[ARRAY_SIZE(words)];
+        uint32_t dest = form ? 0x186000 : 0x185000;
+
+        memcpy(la, words, sizeof(la));
+        la[1] = dest;
+        la[9] = form ? 0x00c00002 : 0x00b00002;
+        la[18] = 0x11e40000;
+        push_user_words(qts, la, ARRAY_SIZE(la));
+        g_assert_cmphex(odsy_test_object_texel(qts, dest, 1, 0), ==,
+                        form ? 0 : 0x0000ffff);
+        g_assert_cmphex(odsy_test_object_texel(qts, dest, 1, 1), ==,
+                        form ? 0 : 0xffffffff);
+    }
     board_quit(qts);
 }
 
