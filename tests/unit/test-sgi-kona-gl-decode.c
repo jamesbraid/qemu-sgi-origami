@@ -702,10 +702,13 @@ static void test_texture_sampler(void)
         g_assert_cmphex(p.wrap_t, ==, axis == 13 ? SGI_GL_CLAMP_TO_EDGE :
                                                    SGI_GL_REPEAT);
     }
+    /* distort's 2D bind sets R wrap with S and T; R does not apply. */
     p = original;
-    bind[3] = 1 << 14;
-    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
-    g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+    p.base_level = 0;
+    bind[3] = 0x7000;
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmphex(p.wrap_s, ==, SGI_GL_CLAMP_TO_EDGE);
+    g_assert_cmphex(p.wrap_t, ==, SGI_GL_CLAMP_TO_EDGE);
     bind[3] = 0;
     for (unsigned mode = 1; mode <= 3; mode++) {
         p = original;

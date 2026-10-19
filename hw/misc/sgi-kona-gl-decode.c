@@ -393,12 +393,16 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
      * REPEAT, so the pipe has one clamp behaviour for all three. Which
      * one is unknown; the model clamps taps to the edge texels, which
      * needs no border texels and differs from CLAMP only in the weight
-     * an edge tap gives the border. A 2D record's R wrap stays refused.
+     * an edge tap gives the border. Bit fourteen, R wrap, has no effect on
+     * a 2D texture (OpenGL 1.2.1, 3.8.4: only a 3D texture's r is
+     * wrapped; that the pipe follows this rule is inferred); IRIS GL
+     * clients through IGLOO set it with S and T (distort's 0x7099), so a
+     * 2D record ignores it. Volume records refuse every wrap bit before
+     * reaching here.
      */
     if (params->base_level || !min_filter[min] ||
         (record[2] & 0xfff00000) || lo > hi ||
         (mag > 1 && (mag < 3 || mag > 5)) ||
-        (bind[3] & 0x4000) ||
         !scale_s || !scale_t) {
         return false;
     }
