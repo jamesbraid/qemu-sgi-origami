@@ -14596,27 +14596,41 @@ static bool sgi_kona_gl_raw_bitmap_needed(void *opaque)
     return s->gl_image_upload.count && !s->gl_image_upload.draw_pixels;
 }
 
-static int sgi_kona_gl_image_post_load(void *opaque, int version_id)
+/* A raw bitmap or DrawPixels image as its run can leave it, for its owner. */
+static bool sgi_kona_gl_image_run_valid(SGIKonaState *s, int owner,
+                                        const SGIKonaGLImageUpload *u,
+                                        uint32_t token, uint32_t have,
+                                        uint32_t remaining)
 {
-    SGIKonaState *s = opaque;
-    const SGIKonaGLImageUpload *u = &s->gl_image_upload;
     bool dma = u->draw_pixels ? u->header[5] == 1 : u->header[3] == 1;
 
     if (!sgi_kona_gl_image_valid(u) ||
-        (dma ? (s->gl_data_token || s->gl_data_have || s->gl_data_remaining) :
-         (s->gl_data_token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
+        (dma ? (token || have || remaining) :
+         (token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
                                                SGI_KONA_CMD_GL_BITMAP) ||
-          s->gl_data_have >= u->count ||
-          s->gl_data_remaining != u->count - s->gl_data_have)) ||
-        (!u->refused && (u->context != s->context_current ||
+          have >= u->count ||
+          remaining != u->count - have)) ||
+        (!u->refused && (u->context != owner ||
         !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid))) {
-        return -EINVAL;
+        return false;
     }
-    for (uint32_t k = s->gl_data_have; k < u->count; k++) {
+    for (uint32_t k = have; k < u->count; k++) {
         if (u->words[k]) {
-            return -EINVAL;
+            return false;
         }
+    }
+    return true;
+}
+
+static int sgi_kona_gl_image_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (!sgi_kona_gl_image_run_valid(s, s->context_current,
+                                     &s->gl_image_upload, s->gl_data_token,
+                                     s->gl_data_have, s->gl_data_remaining)) {
+        return -EINVAL;
     }
     return 0;
 }
@@ -14672,19 +14686,21 @@ static bool sgi_kona_gl_bitmap_needed(void *opaque)
     return s->gl_bitmap_upload.count != 0;
 }
 
-static int sgi_kona_gl_bitmap_post_load(void *opaque, int version_id)
+/* An inline bitmap as its run can leave it, for the run's owner. */
+static bool sgi_kona_gl_bitmap_run_valid(SGIKonaState *s, int owner,
+                                         const SGIKonaGLBitmapUpload *u,
+                                         uint32_t token, uint32_t have,
+                                         uint32_t remaining)
 {
-    SGIKonaState *s = opaque;
-    const SGIKonaGLBitmapUpload *u = &s->gl_bitmap_upload;
     uint32_t words = DIV_ROUND_UP(u->count, 4);
 
     if (!u->count || u->count > SGI_KONA_GL_BITMAP_BYTES ||
         u->count != u->header[7] ||
-        s->gl_data_token != SGI_KONA_CMD_GL_BITMAP_INLINE ||
-        s->gl_data_have >= words ||
-        s->gl_data_remaining != words - s->gl_data_have ||
+        token != SGI_KONA_CMD_GL_BITMAP_INLINE ||
+        have >= words ||
+        remaining != words - have ||
         (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
-                        s->context_current != u->context ||
+                        owner != u->context ||
                         !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid ||
                         !u->header[0] || (u->header[0] & 7) ||
@@ -14696,13 +14712,25 @@ static int sgi_kona_gl_bitmap_post_load(void *opaque, int version_id)
                         u->header[6] != words + 1 ||
                         !sgi_kona_gl_bitmap_position_valid(u->header + 2,
                                                            true)))) {
-        return -EINVAL;
+        return false;
     }
-    for (unsigned at = MIN(s->gl_data_have * 4, u->count);
+    for (unsigned at = MIN(have * 4, u->count);
          at < sizeof(u->bytes); at++) {
         if (u->bytes[at]) {
-            return -EINVAL;
+            return false;
         }
+    }
+    return true;
+}
+
+static int sgi_kona_gl_bitmap_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (!sgi_kona_gl_bitmap_run_valid(s, s->context_current,
+                                      &s->gl_bitmap_upload, s->gl_data_token,
+                                      s->gl_data_have, s->gl_data_remaining)) {
+        return -EINVAL;
     }
     return 0;
 }
@@ -14732,30 +14760,45 @@ static bool sgi_kona_gl_pixel_map_needed(void *opaque)
     return s->gl_map_upload.header[1] != 0;
 }
 
-static int sgi_kona_gl_pixel_map_post_load(void *opaque, int version_id)
+/* A pixel map as its run can leave it, for the run's owner. */
+static bool sgi_kona_gl_pixel_map_run_valid(SGIKonaState *s, int owner,
+                                            const SGIKonaGLPixelMapUpload *u,
+                                            uint32_t token, uint32_t have,
+                                            uint32_t remaining)
 {
-    SGIKonaState *s = opaque;
-    const SGIKonaGLPixelMapUpload *u = &s->gl_map_upload;
 
-    if (!u->header[1] || u->token != s->gl_data_token ||
+    if (!u->header[1] || u->token != token ||
         (u->token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
          u->token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
          u->token != SGI_KONA_CMD_GL_PIXEL_MAP_US) ||
-        s->gl_data_have >= u->header[1] ||
-        s->gl_data_remaining != u->header[1] - s->gl_data_have ||
+        have >= u->header[1] ||
+        remaining != u->header[1] - have ||
         (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
-                        u->context != s->context_current ||
+                        u->context != owner ||
         !sgi_kona_context_owner(s, u->context, u->generation) ||
                         !s->contexts[u->context].valid ||
                         s->state[u->context]->gl.in_begin ||
                         !sgi_kona_gl_pixel_map_header(u->header)))) {
-        return -EINVAL;
+        return false;
     }
-    for (unsigned k = MIN(s->gl_data_have, SGI_KONA_GL_PIXEL_MAP_MAX);
+    for (unsigned k = MIN(have, SGI_KONA_GL_PIXEL_MAP_MAX);
          k < SGI_KONA_GL_PIXEL_MAP_MAX; k++) {
         if (u->values[k]) {
-            return -EINVAL;
+            return false;
         }
+    }
+    return true;
+}
+
+static int sgi_kona_gl_pixel_map_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (!sgi_kona_gl_pixel_map_run_valid(s, s->context_current,
+                                         &s->gl_map_upload, s->gl_data_token,
+                                         s->gl_data_have,
+                                         s->gl_data_remaining)) {
+        return -EINVAL;
     }
     return 0;
 }
@@ -15421,6 +15464,100 @@ static const VMStateInfo vmstate_sgi_kona_texture_upload = {
     .save = sgi_kona_texture_upload_save,
 };
 
+/*
+ * A texture or DrawPixels upload as its run can leave it, for the context
+ * that owns the run: the current one live, or the slot a saved run is in.
+ */
+static bool sgi_kona_texture_upload_run_valid(SGIKonaState *s, int owner,
+                                              const SGIKonaTextureUpload *u,
+                                              uint32_t token, uint32_t have,
+                                              uint32_t remaining)
+{
+    if (u->count) {
+        uint64_t words = sgi_kona_texture_words(u);
+
+        if (u->draw_pixels &&
+            (owner != u->draw_context ||
+             !s->contexts[u->draw_context].valid)) {
+            return false;
+        }
+
+        if (!u->complete && u->header[6]) {
+            if (remaining &&
+                !sgi_kona_gl_pixel_map_token(token)) {
+                return false;
+            }
+            for (uint32_t at = 0; at < sgi_kona_texture_buffer_words(u); at++) {
+                if (u->pixels[at]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (u->complete ?
+            (remaining &&
+             !sgi_kona_gl_pixel_map_token(token)) :
+            (token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
+                                                  SGI_KONA_CMD_GL_TEX_LOAD) ||
+             !remaining || have >= words ||
+             remaining != words - have)) {
+            return false;
+        }
+        if (!u->complete) {
+            uint32_t width = u->header[1];
+            uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3],
+                                                      u->header[4]);
+            uint32_t consumed_row, consumed_word;
+            uint32_t source_words = sgi_kona_texture_source_words(u);
+
+            sgi_kona_texture_source_position(u, have,
+                                             &consumed_row, &consumed_word);
+            for (uint32_t at = 0; at < u->count; at++) {
+                uint32_t row = at / width, x = at % width;
+                uint32_t pad = (sgi_kona_texture_source_phase(u) +
+                                (uint64_t)row * u->source_stride) & 3;
+
+                if (sgi_kona_texture_bitmap(u->header)) {
+                    uint32_t byte = (x + u->bitmap_skip) / 8;
+                    uint64_t word = u->pio_layout && !u->header[7] ?
+                        (u->pio_phase + (uint64_t)row * u->source_stride +
+                         byte) / 4 : (pad + byte) / 4;
+                    bool future = u->pio_layout && !u->header[7] ?
+                        word >= have :
+                        row > consumed_row || (row == consumed_row &&
+                                                word >= consumed_word);
+
+                    if (u->pixels[at] > 1 || (future && u->pixels[at])) {
+                        return false;
+                    }
+                    continue;
+                }
+                for (unsigned k = 0; k < source_words * 4; k++) {
+                    uint32_t word = (pad + x * bytes + k) / 4;
+                    bool future = u->pio_layout && !u->header[7] ?
+                                  (u->pio_phase +
+                                   (uint64_t)row * u->source_stride +
+                                   (uint64_t)x * bytes + k) / 4 >=
+                                  have :
+                                  u->draw_pixels && !u->header[7] ?
+                                  (u->header[5] + (uint64_t)at * bytes + k) / 4
+                                  >= have :
+                                  row > consumed_row ||
+                                  (row == consumed_row &&
+                                   word >= consumed_word);
+
+                    if ((k >= bytes || future) &&
+                        ((u->pixels[at * source_words + k / 4] >>
+                          (24 - (k % 4) * 8)) & 0xff)) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static int sgi_kona_textures_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
@@ -15446,87 +15583,10 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
                                    s->texture_associate_generation)))) {
         return -EINVAL;
     }
-    if (u->count) {
-        uint64_t words = sgi_kona_texture_words(u);
-
-        if (u->draw_pixels &&
-            (s->context_current != u->draw_context ||
-             !s->contexts[u->draw_context].valid)) {
-            return -EINVAL;
-        }
-
-        if (!u->complete && u->header[6]) {
-            if (s->gl_data_remaining &&
-                !sgi_kona_gl_pixel_map_token(s->gl_data_token)) {
-                return -EINVAL;
-            }
-            for (uint32_t at = 0; at < sgi_kona_texture_buffer_words(u); at++) {
-                if (u->pixels[at]) {
-                    return -EINVAL;
-                }
-            }
-            return 0;
-        }
-        if (u->complete ?
-            (s->gl_data_remaining &&
-             !sgi_kona_gl_pixel_map_token(s->gl_data_token)) :
-            (s->gl_data_token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
-                                                  SGI_KONA_CMD_GL_TEX_LOAD) ||
-             !s->gl_data_remaining || s->gl_data_have >= words ||
-             s->gl_data_remaining != words - s->gl_data_have)) {
-            return -EINVAL;
-        }
-        if (!u->complete) {
-            uint32_t width = u->header[1];
-            uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3],
-                                                      u->header[4]);
-            uint32_t consumed_row, consumed_word;
-            uint32_t source_words = sgi_kona_texture_source_words(u);
-
-            sgi_kona_texture_source_position(u, s->gl_data_have,
-                                             &consumed_row, &consumed_word);
-            for (uint32_t at = 0; at < u->count; at++) {
-                uint32_t row = at / width, x = at % width;
-                uint32_t pad = (sgi_kona_texture_source_phase(u) +
-                                (uint64_t)row * u->source_stride) & 3;
-
-                if (sgi_kona_texture_bitmap(u->header)) {
-                    uint32_t byte = (x + u->bitmap_skip) / 8;
-                    uint64_t word = u->pio_layout && !u->header[7] ?
-                        (u->pio_phase + (uint64_t)row * u->source_stride +
-                         byte) / 4 : (pad + byte) / 4;
-                    bool future = u->pio_layout && !u->header[7] ?
-                        word >= s->gl_data_have :
-                        row > consumed_row || (row == consumed_row &&
-                                                word >= consumed_word);
-
-                    if (u->pixels[at] > 1 || (future && u->pixels[at])) {
-                        return -EINVAL;
-                    }
-                    continue;
-                }
-                for (unsigned k = 0; k < source_words * 4; k++) {
-                    uint32_t word = (pad + x * bytes + k) / 4;
-                    bool future = u->pio_layout && !u->header[7] ?
-                                  (u->pio_phase +
-                                   (uint64_t)row * u->source_stride +
-                                   (uint64_t)x * bytes + k) / 4 >=
-                                  s->gl_data_have :
-                                  u->draw_pixels && !u->header[7] ?
-                                  (u->header[5] + (uint64_t)at * bytes + k) / 4
-                                  >= s->gl_data_have :
-                                  row > consumed_row ||
-                                  (row == consumed_row &&
-                                   word >= consumed_word);
-
-                    if ((k >= bytes || future) &&
-                        ((u->pixels[at * source_words + k / 4] >>
-                          (24 - (k % 4) * 8)) & 0xff)) {
-                        return -EINVAL;
-                    }
-                }
-            }
-        }
+    if (!sgi_kona_texture_upload_run_valid(s, s->context_current, u,
+                                           s->gl_data_token, s->gl_data_have,
+                                           s->gl_data_remaining)) {
+        return -EINVAL;
     }
     return 0;
 }
