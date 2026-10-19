@@ -6472,6 +6472,17 @@ static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
         sgi_kona_texture_source_valid(h)) {
         return SGI_GL_RGBA;
     }
+    /*
+     * The colour formats below eight bits a component store as 0x10 or
+     * 0x14 in layout family zero; the binding selects RGB or RGBA the same
+     * way. The model keeps its eight-bit components: the format names the
+     * requested precision, not the pipe's.
+     */
+    if ((h[9] == SGI_KONA_GL_STORAGE_RGB4 ||
+         h[9] == SGI_KONA_GL_STORAGE_RGB5) && !(h[17] & 1) &&
+        sgi_kona_texture_source_valid(h)) {
+        return SGI_GL_RGBA;
+    }
     return 0;
 }
 
@@ -6848,6 +6859,7 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
 {
     SGIKonaTextureParams params;
     uint32_t handle = s->texture_bind[0], width, height, depth, base, internal;
+    uint32_t index = (s->texture_bind[1] >> 12) & 0xfff, format_storage;
     unsigned target = s->texture_bind[1] >> 28;
     bool volume = target == 3, one_dimensional = target == 1;
     uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
@@ -6861,13 +6873,10 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         (target == 2 && (s->texture_bind[3] & 0xf00) !=
             ((s->texture_bind[2] & 0xc00) ? 0xf00 : 0)) ||
         !s->texture_record_valid ||
-        !sgi_kona_gl_texture_internal_format((s->texture_bind[1] >> 12) & 0xfff,
-                                             &base, &internal) ||
-        storage != (base == SGI_GL_ALPHA ? 0xe :
-                    (base == SGI_GL_LUMINANCE ||
-                     base == SGI_GL_DEPTH_COMPONENT) ? 0xd :
-                    base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
-        !sgi_kona_gl_texture_native_binding_layout(base,
+        !sgi_kona_gl_texture_internal_format(index, &base, &internal) ||
+        !sgi_kona_gl_texture_format_storage(index, &format_storage) ||
+        storage != format_storage ||
+        !sgi_kona_gl_texture_storage_binding_layout(storage,
             volume ? SGI_GL_TEXTURE_3D : one_dimensional ? SGI_GL_TEXTURE_1D :
                                                          SGI_GL_TEXTURE_2D,
             s->texture_record[0]) ||
