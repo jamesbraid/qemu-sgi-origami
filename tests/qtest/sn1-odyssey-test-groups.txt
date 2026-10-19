@@ -203,6 +203,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-texture-rgb
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-rgba
 gl /mips64/sn1/odyssey/command-fifo-gl-texture-state
 gl /mips64/sn1/odyssey/command-fifo-gl-vertex-4f
+gl /mips64/sn1/odyssey/command-fifo-gl-empty-primitive
 gl /mips64/sn1/odyssey/command-fifo-gl-never-set-index
 gl /mips64/sn1/odyssey/rgba
 gl /mips64/sn1/odyssey/byte-colour

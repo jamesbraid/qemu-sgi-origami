@@ -7413,6 +7413,14 @@ static void odyssey_gl_end(SGIOdysseyState *s)
         odyssey_gl_polygon_close(s, count >= 3);
         break;
     default:
+        /*
+         * A glBegin/glEnd pair with no vertex between draws nothing in GL
+         * (2.6.1), whatever the primitive. Performer's town and pointblank
+         * send such pairs, a texture coordinate and no vertex.
+         */
+        if (!count) {
+            return;
+        }
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: command FIFO OpenGL "
                       "primitive 0x%x is not modeled\n", s->gl_primitive);
         return;
