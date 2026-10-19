@@ -8310,6 +8310,29 @@ static void test_native_index_state(gconstpointer opaque)
     qtest_quit(s);
 }
 
+/*
+ * IRIS GL's sysmeter asks for a double-buffered 12-bit colour-index visual
+ * with 23 depth bits and a 1-bit stencil: buffer configuration words
+ * 0 0 12 1 0 0 23 1 0 0. Its clear to index 15 and its drawing must reach
+ * the back buffer. Without the 1-bit stencil accepted, the context fell
+ * back to RGB and its window stayed black.
+ */
+static void test_one_bit_stencil_visual(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current_depth(s, 0);
+    kona_command(s, 1, (uint32_t[]) { 0, 0, 12, 1, 0, 0, 23, 1, 0, 0 }, 10);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0xc4, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xc4, (uint32_t[]) { 0x405 }, 1);
+    kona_command_f(s, 0x1c, (float[]) { 15 }, 1);
+    kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+    kona_command(s, 0x37, (uint32_t[]) { 0x405 }, 1);
+    assert_native_index_pixels(s, 64, (uint32_t[]) { 15, 15 }, 2);
+    qtest_quit(s);
+}
+
 static void native_index_set(QTestState *s, unsigned type, double value)
 {
     if (!type) {
@@ -17713,6 +17736,8 @@ int main(int argc, char **argv)
         "contiguous-partial-migrates", "pack-3d-default",
         "pack-3d-refused",
     };
+    add_case("sn0/origin2000/kona-3d/one-bit-stencil-visual",
+             test_one_bit_stencil_visual);
     for (unsigned mode = 0; mode < ARRAY_SIZE(raster_pos_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/raster-pos-forms/%s",

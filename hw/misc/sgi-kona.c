@@ -4514,12 +4514,18 @@ static bool sgi_kona_gl_rgb_config(const uint32_t *v)
            v[7] == 0 && v[8] == 0 && v[9] == 0;
 }
 
-/* Reuse the desktop's 16-bit index storage for mono main GL visuals. */
+/*
+ * Reuse the desktop's 16-bit index storage for mono main GL visuals. Their
+ * stencil is none, an 8-bit one, or the 1-bit stencil of IRIS GL index
+ * visuals with 23 depth bits (sysmeter's 0 0 12 1 0 0 23 1 0 0). Whether
+ * stencil operations run on it is sgi_kona_gl_stencil_bits()'s decision;
+ * colour-index drawing does not depend on it.
+ */
 static bool sgi_kona_gl_index_config(const uint32_t *v)
 {
     return !v[0] && !v[1] && (v[2] == 8 || v[2] == 12) && v[3] <= 1 &&
-           !v[4] && !v[5] && v[6] <= 32 && (v[7] == 0 || v[7] == 8) &&
-           !v[8] && !v[9];
+           !v[4] && !v[5] && v[6] <= 32 &&
+           (v[7] == 0 || v[7] == 1 || v[7] == 8) && !v[8] && !v[9];
 }
 
 static bool sgi_kona_gl_colour_config(const uint32_t *v)
