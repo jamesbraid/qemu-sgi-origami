@@ -42,6 +42,9 @@ slow_qtests = {
   'sgi-pci-expansion-ni-test': 2050,
   # The expanded PIC suite passed in 86s locally; CI reached 80/85 at 60s.
   'sgi-pic-test': 300,
+  # Two full-machine migration cases used 43 s of the 60 s default in CI;
+  # the 27-case router binary had completed only 12 cases at that limit.
+  'sgi-sn1-router-test': 300,
   'sgi-replay-test': 330,
   # It starts every catalogue topology at its largest offering. 64.77s in a
   # parallel run of thirty SGI qtests at a load average near 60; budget
