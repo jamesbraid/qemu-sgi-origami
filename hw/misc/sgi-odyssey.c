@@ -523,6 +523,40 @@
 #define ODSY_DID_MAIN_SHIFT 3
 #define ODSY_DID_OVERLAY_MASK 0x7
 /*
+ * The overlay. The id byte's bits 2:0 are an overlay drawable id, the
+ * overlay counterpart of the main id in bits 7:3: the X server's id-plane
+ * write sends id << 3 under plane mask 0xf8 for a main id and the id itself
+ * under mask 0x07 for an overlay id, and keeps eight overlay entries beside
+ * its main ones (ESTABLISHED, the IRIX 6.5.30 X server's odyssey.so). The
+ * overlay pixels are a second byte of the same 0x1017 id-plane destination:
+ * the X server clears them with drawing mask 0xc and plane mask 0xff, where
+ * its id writes use drawing mask 0x3 (ESTABLISHED, same object), and an
+ * overlay GL context draws to that destination with mask 0xc (OBSERVED,
+ * flight). INFERRED: that mask 0xc selects an overlay pixel byte rather than
+ * a second id byte -- it is the only reading under which flight's overlay
+ * drawing and the X server's ids coexist.
+ *
+ * Each overlay id has a display-mode word at backend entry 0x2920 + id
+ * (OBSERVED: flight writes 0xb1 to 0x2922 and 0x2925, then loads colormap
+ * group 22, 0x1600, the value's bits 7:3). Scanout shows lut[256 * group +
+ * pixel] where the pixel's overlay mode has bit 0 set and its overlay pixel
+ * is not zero, and the main planes elsewhere. INFERRED: bits 7:3 as the
+ * group and bit 0 as the enable, from that one value; overlay pixel 0 as
+ * transparent, the X overlay-visual convention. A mode with other bits set
+ * is reported once.
+ */
+#define ODSY_OVERLAY_MODE_BASE 0x2920
+#define ODSY_OVERLAY_IDS 8
+#define ODSY_OVERLAY_MODE_ENABLE 0x1
+#define ODSY_OVERLAY_MODE_GROUP_SHIFT 3
+#define ODSY_OVERLAY_MODE_GROUP_MASK 0x1f
+#define ODSY_OVERLAY_MODE_KNOWN 0xf9
+/* The id-plane destination's drawing-mask buffers: ids, overlay pixels. */
+#define ODSY_AUX_ID_BUFFER 0
+#define ODSY_AUX_OVERLAY_BUFFER 1
+/* 0x608's bit 31, the software buffer state, beside the drawable's base. */
+#define ODSY_DRAW_WORD_STATE 0x80000000u
+/*
  * APPROXIMATION: a pixel whose main drawable id is 0 resolves through
  * drawable 1's display mode. The X server writes the root window's id
  * planes to 0 (mask 0xff) once its session tiles the root, and paints the
@@ -2256,6 +2290,18 @@ static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
         sgi_scanout_invalidate_all(&s->scanout);
         return;
     }
+    if (index >= ODSY_OVERLAY_MODE_BASE &&
+        index < ODSY_OVERLAY_MODE_BASE + ODSY_OVERLAY_IDS) {
+        s->overlay_mode[index - ODSY_OVERLAY_MODE_BASE] = data;
+        if ((data & ~ODSY_OVERLAY_MODE_KNOWN) &&
+            !s->overlay_mode_reported) {
+            s->overlay_mode_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: overlay mode 0x%x has "
+                          "bits this model does not decode\n", data);
+        }
+        sgi_scanout_invalidate_all(&s->scanout);
+        return;
+    }
     switch (index) {
     case ODSY_I2C_MAIN_CMD_INDEX:
         s->i2c_main_cmd = data;
@@ -2965,8 +3011,9 @@ static uint32_t odyssey_display_group(SGIOdysseyState *s, uint32_t main_id)
  * gamma pass. Main id 0 takes drawable 1's mode (ODSY_DID_ROOT_MODE, an
  * approximation). Group 25 (0x1900, the table the server keeps out of its
  * software gamma) resolves as an index table and is reported once as
- * unverified; a non-zero overlay field (bits 2:0) is UNKNOWN territory,
- * resolved through the main id and reported once.
+ * unverified. Over all of that, a pixel whose overlay id's mode is enabled
+ * and whose overlay pixel is not zero shows the overlay colormap entry
+ * instead (ODSY_OVERLAY_MODE_BASE).
  */
 static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
@@ -2980,11 +3027,15 @@ static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
                                                 main_id) & 1, x, y);
         uint32_t group = odyssey_display_group(s, main_id);
 
-        if ((did[x] & ODSY_DID_OVERLAY_MASK) && !s->scanout_overlay_reported) {
-            s->scanout_overlay_reported = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: overlay drawable id %u "
-                          "is not modeled; resolved through the main id\n",
-                          did[x] & ODSY_DID_OVERLAY_MASK);
+        uint32_t omode = s->overlay_mode[did[x] & ODSY_DID_OVERLAY_MASK];
+        uint8_t opixel = s->overlay[y * SGI_ODYSSEY_WIDTH + x];
+
+        if ((omode & ODSY_OVERLAY_MODE_ENABLE) && opixel) {
+            dst[x] = odyssey_lut_rgb(s, 256 * ((omode >>
+                                         ODSY_OVERLAY_MODE_GROUP_SHIFT) &
+                                        ODSY_OVERLAY_MODE_GROUP_MASK) +
+                                     opixel);
+            continue;
         }
         if (group >= ODSY_GAMMA_GROUP) {
             dst[x] = odyssey_gamma(s, word >> 24, ODSY_LUT_RED_SHIFT) << 16 |
@@ -3185,9 +3236,11 @@ static void odyssey_fill_rect(SGIOdysseyState *s, uint32_t x, uint32_t y,
 }
 
 /*
- * odyssey_clear_planes(): the X server's drawable-id plane write. For each
- * pixel of the rectangle, replace the plane bits the 0x1023 mask selects with
- * the id value the COLOR_INDEX word carried, leaving the colour framebuffer
+ * odyssey_clear_planes(): the X server's write to the id-plane destination.
+ * For each pixel of the rectangle, replace the plane bits the 0x1023 mask
+ * selects with the value the COLOR_INDEX word carried, in the id byte when
+ * the drawing mask selects buffer 0 and in the overlay pixel byte when it
+ * selects buffer 1 (ODSY_OVERLAY_MODE_BASE), leaving the colour framebuffer
  * untouched.
  */
 static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
@@ -3199,13 +3252,18 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
     for (row = 0; row < h; row++) {
         for (col = 0; col < w; col++) {
             uint32_t px = x + col, py = y + row;
-            uint8_t *slot;
+            uint64_t at = (uint64_t)py * SGI_ODYSSEY_WIDTH + px;
+            unsigned buffers = odyssey_draw_buffers(s);
 
             if (!odyssey_pixel_allowed(s, px, py)) {
                 continue;
             }
-            slot = &s->did[py * SGI_ODYSSEY_WIDTH + px];
-            *slot = (*slot & ~mask) | (value & mask);
+            if (buffers & (1u << ODSY_AUX_ID_BUFFER)) {
+                s->did[at] = (s->did[at] & ~mask) | (value & mask);
+            }
+            if (buffers & (1u << ODSY_AUX_OVERLAY_BUFFER)) {
+                s->overlay[at] = (s->overlay[at] & ~mask) | (value & mask);
+            }
         }
     }
     /* A pixel's drawable picks its colour at scanout. */
@@ -3976,6 +4034,45 @@ static uint32_t odyssey_float_index(uint32_t bits)
  * all-ones -- GL's own "fully open" write mask, and not the board's own
  * reset value of 0 -- that gap is reported once rather than left silent.
  */
+/*
+ * Whether GL draws go to the id-plane destination: it is selected and the
+ * kernel has bound it as the draw drawable (0x608, bit 31 aside), as it does
+ * for flight's overlay context (0x80142000; OBSERVED). The X server selects
+ * the same destination for its own id writes, which a GL context's draws do
+ * not follow.
+ */
+static bool odyssey_gl_to_aux(SGIOdysseyState *s)
+{
+    return s->dest_buffer_word == ODSY_DEST_ID_PLANES &&
+           (s->draw_word & ~ODSY_DRAW_WORD_STATE) == s->dest_base;
+}
+
+/* A GL draw aimed at the id-plane destination that has no modelled home. */
+static void odyssey_gl_aux_refused(SGIOdysseyState *s, const char *what)
+{
+    if (!s->gl_aux_reported) {
+        s->gl_aux_reported = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: %s to the id-plane destination "
+                      "is not modeled; dropped\n", what);
+    }
+}
+
+/*
+ * A colour-index GL draw to the id-plane destination: an overlay context's
+ * drawing (ODSY_OVERLAY_MODE_BASE). Buffer 1 is the overlay pixel byte and
+ * takes the index's low eight bits; the id byte is the X server's alone, so
+ * a GL write to buffer 0 is reported and dropped.
+ */
+static void odyssey_gl_store_aux(SGIOdysseyState *s, SGIColourTarget target,
+                                 int x, int y, uint32_t colour)
+{
+    if (target != ODSY_AUX_OVERLAY_BUFFER) {
+        odyssey_gl_aux_refused(s, "a GL id-byte write");
+        return;
+    }
+    s->overlay[(uint64_t)y * SGI_ODYSSEY_WIDTH + x] = colour & 0xff;
+}
+
 static void odyssey_gl_store_colour(void *opaque, SGIColourTarget target,
                                     int x, int y, uint32_t colour)
 {
@@ -3989,9 +4086,14 @@ static void odyssey_gl_store_colour(void *opaque, SGIColourTarget target,
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: index write mask 0x%03x is "
                       "decoded but not applied\n", index_mask);
     }
-    if (mask && target < ODSY_BUFFERS && odyssey_pixel_allowed(s, x, y)) {
-        odyssey_buffer_store(s, target, x, y, colour & ODSY_INDEX_MASK);
+    if (!mask || target >= ODSY_BUFFERS || !odyssey_pixel_allowed(s, x, y)) {
+        return;
     }
+    if (odyssey_gl_to_aux(s)) {
+        odyssey_gl_store_aux(s, target, x, y, colour);
+        return;
+    }
+    odyssey_buffer_store(s, target, x, y, colour & ODSY_INDEX_MASK);
 }
 
 /* The shared renderer supplies all four already quantized channel bytes. */
@@ -4002,6 +4104,10 @@ static void odyssey_gl_store_rgba(void *opaque, SGIColourTarget target,
     const uint32_t *c = colour->component;
     bool allowed = target < ODSY_BUFFERS && odyssey_pixel_allowed(s, x, y);
 
+    if (allowed && odyssey_gl_to_aux(s)) {
+        odyssey_gl_aux_refused(s, "an RGBA draw");
+        return;
+    }
     if (allowed) {
         odyssey_buffer_store(s, target, x, y,
                              (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]);
@@ -4067,6 +4173,10 @@ static void odyssey_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
 {
     SGIOdysseyState *s = opaque;
 
+    /* The overlay has no depth; an overlay clear leaves the main depth. */
+    if (odyssey_gl_to_aux(s)) {
+        return;
+    }
     if (odyssey_pixel_allowed(s, x, y)) {
         sgi_plane_store(&s->depth_mem,
                         sgi_board_memory_plane(&s->depth_mem, s->depth_plane),
@@ -10017,6 +10127,9 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->i2c_opt_cmd = 0;
     memset(s->lut, 0, sizeof(s->lut));
     memset(s->dispmode, 0, sizeof(s->dispmode));
+    memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
+    s->overlay_mode_reported = false;
+    s->gl_aux_reported = false;
     s->backend_index = 0;
     s->backend_count = 0;
     s->reported_addr_count = 0;
@@ -10237,7 +10350,6 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->ctx_shadow_fail_reported = false;
     s->gl_dither = false;
     s->gl_dither_reported = false;
-    s->scanout_overlay_reported = false;
     s->scanout_group25_reported = false;
     s->copy_src = 0;
     s->copy_size = 0;
@@ -10414,6 +10526,7 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
     sgi_board_memory_init(&s->obj_mem, ODSY_OBJ_POOL_BYTES);
 
     s->did = g_new0(uint8_t, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
+    s->overlay = g_new0(uint8_t, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     s->poly_marks = g_new0(uint8_t, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
 
     /*
@@ -10472,6 +10585,7 @@ static void odyssey_unrealize(DeviceState *dev)
     address_space_destroy(&s->fabric_as);
     sgi_scanout_cleanup(&s->scanout);
     g_free(s->did);
+    g_free(s->overlay);
     g_free(s->poly_marks);
     sgi_board_memory_cleanup(&s->mem);
     sgi_board_memory_cleanup(&s->buffer1_mem);
@@ -10503,6 +10617,7 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
     memset(s->buffer1_mem.bytes, 0, s->buffer1_mem.bytes_len);
     memset(s->obj_mem.bytes, 0, s->obj_mem.bytes_len);
     memset(s->did, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT * sizeof(*s->did));
+    memset(s->overlay, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     memset(s->poly_marks, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     /* The depth plane starts at the far value, all ones (a model choice). */
     for (int y = 0; y < SGI_ODYSSEY_HEIGHT; y++) {
@@ -10922,6 +11037,24 @@ static bool odyssey_colour_material_needed(void *opaque)
     return s->gl_colour_material != 0;
 }
 
+static bool odyssey_overlay_needed(void *opaque)
+{
+    return true;
+}
+
+static const VMStateDescription vmstate_odyssey_overlay = {
+    .name = "sgi-odyssey/overlay",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_overlay_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(overlay_mode, SGIOdysseyState, ODSY_OVERLAY_IDS),
+        VMSTATE_BUFFER_POINTER_UNSAFE(overlay, SGIOdysseyState, 0,
+                                      SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Only between a kernel 0x841 and the command after it. */
 static bool odyssey_window_tail_needed(void *opaque)
 {
@@ -10968,6 +11101,8 @@ static int odyssey_pre_load(void *opaque)
     s->gl_restart_armed = false;
     s->win_origin_pending = false;
     memset(s->win_prior_origin, 0, sizeof(s->win_prior_origin));
+    memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
+    memset(s->overlay, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     return 0;
 }
 
@@ -11218,6 +11353,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_back_material,
         &vmstate_odyssey_colour_material,
         &vmstate_odyssey_window_tail,
+        &vmstate_odyssey_overlay,
         NULL
     },
 };

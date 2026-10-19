@@ -192,6 +192,9 @@ struct SGIOdysseyState {
      */
     uint32_t lut[0x2000];
     uint32_t dispmode[32];
+    /* The overlay ids' display modes, backend entries 0x2920 + id. */
+    uint32_t overlay_mode[8];
+    bool overlay_mode_reported;
     uint32_t backend_index;
     uint32_t backend_count;
 
@@ -323,6 +326,9 @@ struct SGIOdysseyState {
      * Allocated at realize beside framebuffer, cleared at reset.
      */
     uint8_t *did;
+    /* The overlay pixel byte beside each id byte; same lifetime as did. */
+    uint8_t *overlay;
+    bool gl_aux_reported;
 
     /*
      * The command-FIFO interpreter (0x110000), reused across successive
@@ -598,7 +604,6 @@ struct SGIOdysseyState {
     bool gl_dither;
     bool gl_dither_reported;
     /* Scanout met an overlay drawable id / colormap group 25; reported. */
-    bool scanout_overlay_reported;
     bool scanout_group25_reported;
 
     /*
