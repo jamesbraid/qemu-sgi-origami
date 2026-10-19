@@ -3146,12 +3146,20 @@ static void test_rad_transfer_migration(void)
     qtest_writel(from, RAD_BAR0 + 0x5c, ctrl);
     qtest_clock_step(from, 25000);
     octane_rad_startup_program(from);
+    /* Run the input and subcode rings the startup words already point at. */
+    qtest_memset(from, RAM + 0xd000, 0xa5, 0x1000);
+    qtest_memset(from, RAM + 0xe000, 0xa5, 0x1000);
+    octane_rad_input_program(from, 0xa000d000, 0xfffff000);
+    octane_rad_aes_subcode_program(from, 0xa000e000, 0xfffff030);
+    qtest_writel(from, RAD_BAR0 + 0x4c, 0x03000001);
+    qtest_writel(from, RAD_BAR0 + 0x48, 0x14);
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_migrate_resume(to);
-    octane_rad_startup_check(to, false);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4c), ==, 0x03000001);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x48), ==, 0x14);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x2c) >> 18, ==, 1);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x30), ==, 26);
     qtest_clock_step(to, 4999);
@@ -3159,10 +3167,28 @@ static void test_rad_transfer_migration(void)
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readl(to, buffer + 3 * 0x80 + 0x7c), ==, 0x80080000);
     g_assert_cmphex(qtest_readl(to, buffer + 3 * 0x80 + 0x38), ==, 0xa0020008);
+    g_assert_cmphex(qtest_readl(to, buffer + 3 * 0x80 + 0x10), ==, 0xa000d000);
+    g_assert_cmphex(qtest_readl(to, buffer + 3 * 0x80 + 0x20), ==, 0xa000e000);
     qtest_clock_step(to, 15351);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x2c) >> 18, ==, 1);
     qtest_clock_step(to, 1);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x2c) >> 18, ==, 2);
+
+    /* Both engines keep their phase: the first record is due 4 ms on. */
+    qtest_clock_step(to, 4000000 - 20352 - 1);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readb(to, RAM + 0xe000), ==, 0xa5);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x10), ==, 1u << 4);
+    g_assert_cmphex(qtest_readb(to, RAM + 0xe0ff), ==, 0);
+    g_assert_cmphex(qtest_readb(to, RAM + 0xe100), ==, 0xa5);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x14) >> 18, ==, 176);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x18) >> 18, ==, 176);
+    g_assert_cmphex(qtest_readb(to, RAM + 0xd000 + 176 * 8 - 1), ==, 0);
+    g_assert_cmphex(qtest_readb(to, RAM + 0xd000 + 176 * 8), ==, 0xa5);
+    qtest_writel(to, RAD_BAR0 + 0x4c, 0x03000000);
+    qtest_writel(to, RAD_BAR0 + 0x48, 0x10);
+    octane_rad_startup_check(to, false);
     qtest_quit(from);
     qtest_quit(to);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
