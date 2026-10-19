@@ -5813,6 +5813,16 @@ static void test_texture_native_detail(gconstpointer opaque)
     }
 }
 
+/*
+ * The library lays a volume out in mode two, a descriptor pair per two
+ * levels, under a mipmapping filter and binds it with 0x17b. Under NEAREST
+ * or LINEAR it uses mode one, one level at the first pair, and binds with
+ * 0x17c. Mode one's family-one record byte is 0x13 and its tile minima are
+ * S 3, T 2 and R 1, so a 2x2x2 volume has physical size 0x123.
+ */
+#define VOLUME_SINGLE_LAYOUT 0x9a1
+#define VOLUME_SINGLE_PHYSICAL 0x123
+
 static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
 {
     uint32_t bind[] = {
@@ -5828,12 +5838,14 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
     if (mipmapped) {
         kona_command(s, 0x17b, mip, ARRAY_SIZE(mip));
     } else {
-        kona_command(s, 0x17c, (uint32_t[]) { 0x22, 0x113, 0x55, 0x66 }, 4);
+        kona_command(s, 0x17c, (uint32_t[]) {
+            0x13, VOLUME_SINGLE_PHYSICAL, 0x55, 0x66 }, 4);
     }
 }
 
+/* odd is a mode-two level one; bank sets mode one's bank bit. */
 static void texture_volume_header(QTestState *s, unsigned z, bool dma,
-                                   bool odd)
+                                   bool odd, bool single, bool bank)
 {
     uint32_t h[20];
 
@@ -5845,8 +5857,9 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
     h[7] = 0;
     h[13] = h[14] = odd ? 0 : 1;
     h[15] = z;
-    h[16] = 0x113;
-    h[17] = 0x1141 | (dma ? 4 : 0) | (odd ? 8 : 0);
+    h[16] = single ? VOLUME_SINGLE_PHYSICAL : 0x113;
+    h[17] = (single ? VOLUME_SINGLE_LAYOUT : 0x1141) | (dma ? 4 : 0) |
+            (odd || bank ? 8 : 0);
     h[18] = 0x55;
     h[19] = 0x66;
     kona_command(s, 0x174, h, 20);
@@ -5855,8 +5868,12 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
 static void test_texture_native_volume(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool linear = mode == 1, dma = mode == 2, missing = mode == 4;
-    bool mipmapped = mode == 5 || mode == 6, mismatch = mode == 9;
+    bool linear = mode == 1, dma = mode == 2 || mode == 10;
+    bool missing = mode == 4, bank = mode == 10;
+    bool mipmapped = mode == 5 || mode == 6 || mode == 12;
+    /* Modes 11 and 12 load in the other layout mode than the bind's. */
+    bool single = mode == 12 || (!mipmapped && mode != 11);
+    bool mismatch = mode == 9 || mode == 11 || mode == 12;
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = missing || mismatch ? kona_init_logged(&log) :
                                        qtest_init(MACHINE_ARGS);
@@ -5873,7 +5890,7 @@ static void test_texture_native_volume(gconstpointer opaque)
     for (unsigned z = 0; z < (missing ? 1 : 2); z++) {
         uint32_t pixel = z ? 0x0000ffff : 0xff0000ff;
 
-        texture_volume_header(s, z, dma, false);
+        texture_volume_header(s, z, dma, false, single, bank);
         if (dma) {
             uint8_t bytes[16];
 
@@ -5900,7 +5917,7 @@ static void test_texture_native_volume(gconstpointer opaque)
         kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
     }
     if (mipmapped) {
-        texture_volume_header(s, 0, false, true);
+        texture_volume_header(s, 0, false, true, single, false);
         qtest_writel(s, REG_COMMAND, 0x00ff00ff);
         kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
         if (mode == 6) {
@@ -5912,9 +5929,9 @@ static void test_texture_native_volume(gconstpointer opaque)
             sgi_migrate_stopped(from, uri);
         }
     }
-    if (mismatch) {
-        kona_command(s, 0x17c,
-                     (uint32_t[]) { 0x22, 0x114, 0x55, 0x66 }, 4);
+    if (mode == 9) {
+        kona_command(s, 0x17c, (uint32_t[]) {
+            0x13, VOLUME_SINGLE_PHYSICAL + 1, 0x55, 0x66 }, 4);
     }
     kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
@@ -5941,7 +5958,7 @@ static void test_texture_native_volume(gconstpointer opaque)
                            (float[]) { tri[k][0], tri[k][1], 0 }, 3);
         }
         gl_end(s);
-        assert_stencil_colour(s, 0x00ff00);
+        assert_stencil_colour(s, mismatch ? 0xffffff : 0x00ff00);
     } else {
         kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
         gl_triangle_z(s, tri, 0);
@@ -6541,18 +6558,19 @@ static void test_texture_rgb5_storage(gconstpointer opaque)
 }
 
 /*
- * pfCity's volume texture load (IRIX 6.5.30): a 128 by 128 RGBA-byte
- * header by DMA whose layout word 0x9ad is layout mode one, family one,
- * which the model does not place. The kernel then sends the source's DMA
- * packet and waits for its completion; without one it killed the pipe
- * ("idma timed out", death reason 4). The packet now completes on the
- * mailbox with no texel kept, and a later load is unaffected.
+ * pfCity's volume texture load (IRIX 6.5.30), a 128 by 128 RGBA-byte
+ * header by DMA, with its layout word 0x9ad turned into 0x9ed: layout mode
+ * three, which the model does not place for a volume. The kernel then
+ * sends the source's DMA packet and waits for its completion; without one
+ * it killed the pipe ("idma timed out", death reason 4). The packet now
+ * completes on the mailbox with no texel kept, and a later load is
+ * unaffected.
  */
 static void test_texture_refused_dma_completes(void)
 {
     static const uint32_t h[20] = {
         0x806f, 0x80, 0x80, 5, 1, 0, 1, 0, 0, 0x30,
-        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ad, 0x15610, 0x155a8,
+        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ed, 0x15610, 0x155a8,
     };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
@@ -6580,7 +6598,7 @@ static void test_texture_refused_dma_mark_spent_by_bad_packet(void)
 {
     static const uint32_t h[20] = {
         0x806f, 0x80, 0x80, 5, 1, 0, 1, 0, 0, 0x30,
-        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ad, 0x15610, 0x155a8,
+        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ed, 0x15610, 0x155a8,
     };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
@@ -9517,8 +9535,8 @@ static void test_bitmap_texture_dimensions(gconstpointer opaque)
         h[7] = 0;
         h[14] = volume ? 1 : 0;
         h[15] = z;
-        h[16] = volume ? 0x113 : 0x23;
-        h[17] = (volume ? 0x1141 : 0x2181) | (dma ? 4 : 0);
+        h[16] = volume ? VOLUME_SINGLE_PHYSICAL : 0x23;
+        h[17] = (volume ? VOLUME_SINGLE_LAYOUT : 0x2181) | (dma ? 4 : 0);
         h[18] = volume ? 0x55 : 0;
         h[19] = volume ? 0x66 : 0;
         kona_command(s, 0x174, h, ARRAY_SIZE(h));
@@ -16758,7 +16776,8 @@ int main(int argc, char **argv)
     static const char *volume_cases[] = {
         "nearest", "linear", "dma", "migrate-partial", "missing-slice",
         "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
-        "physical-mismatch",
+        "physical-mismatch", "single-bank", "single-bind-mode-two-load",
+        "mipmap-bind-mode-one-load",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {

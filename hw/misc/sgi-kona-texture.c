@@ -276,6 +276,18 @@ bool sgi_kona_texture_subimage(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+/*
+ * Header word 17's layout mode: zero for 1D and 2D, one or two for a
+ * volume. Mode one is the library's single-level volume layout, mode two
+ * its mipmapped one.
+ */
+static bool texture_native_mode_valid(const uint32_t h[20])
+{
+    uint32_t mode = h[17] & 0x60;
+
+    return h[0] == SGI_GL_TEXTURE_3D ? mode == 0x20 || mode == 0x40 : !mode;
+}
+
 static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
 {
     /* DMA byte layout is normalized before these image fragments arrive. */
@@ -299,8 +311,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
 
     if ((!volume && !one_dimensional && h[0] != SGI_GL_TEXTURE_2D) ||
         (one_dimensional && (h[2] != 1 || h[12] || h[14] || h[15])) ||
-        !rgba || h[10] == UINT32_MAX ||
-        (h[17] & 0x60) != (volume ? 0x40 : 0) ||
+        !rgba || h[10] == UINT32_MAX || !texture_native_mode_valid(h) ||
         (!volume && h[18] && h[19]) ||
         !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
         (uint64_t)h[13] - h[11] + 1 != h[1] ||
@@ -522,6 +533,19 @@ bool sgi_kona_texture_native_volume_dimensions(SGIKonaTextureState *s,
     o->native_depth = depth;
     o->native_one_dimensional = false;
     o->native_layout_valid = false;
+    o->native_volume_single = false;
+    return true;
+}
+
+bool sgi_kona_texture_native_volume_single(SGIKonaTextureState *s,
+                                           uint32_t handle, bool single)
+{
+    SGIKonaTextureObject *o = texture_object(s, handle, false);
+
+    if (!o || !o->native_depth) {
+        return false;
+    }
+    o->native_volume_single = single;
     return true;
 }
 
@@ -748,6 +772,21 @@ static bool texture_native_uses_border(uint32_t wrap)
     return wrap == SGI_GL_CLAMP || wrap == SGI_GL_CLAMP_TO_BORDER;
 }
 
+/* The word 17 layout mode an object's bind expects of its uploads. */
+static uint32_t texture_native_object_mode(const SGIKonaTextureObject *o)
+{
+    return !o->native_depth ? 0 : o->native_volume_single ? 0x20 : 0x40;
+}
+
+/*
+ * The physical T exponent's floor, the tile minimum of the object's
+ * layout mode (0x21ad180): two in modes zero and one, one in mode two.
+ */
+static int texture_native_t_minimum(const SGIKonaTextureObject *o)
+{
+    return texture_native_object_mode(o) == 0x40 ? 1 : 2;
+}
+
 static const SGIKonaTextureNativeImage *texture_native_border_image(
     const SGIKonaTextureObject *o, const SGIKonaTextureNativeImage *interior,
     unsigned level)
@@ -759,7 +798,7 @@ static const SGIKonaTextureNativeImage *texture_native_border_image(
 
     memcpy(h, interior->header, sizeof(h));
     h[16] = MIN(ctz32(width) + 1, 3) |
-            (MIN(ctz32(height) + 1, volume ? 1 : 2) << 4);
+            (MIN(ctz32(height) + 1, texture_native_t_minimum(o)) << 4);
     if (volume) {
         uint32_t depth = MAX(1u, o->native_depth >> level);
 
@@ -836,15 +875,16 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
     int ps = o->native_layout & 15;
     int pt = (o->native_layout >> 4) & 15;
     int pr = (o->native_layout >> 8) & 15;
+    int t_minimum = texture_native_t_minimum(o);
     uint32_t geometry = MAX(ps - (int)level, 3) |
-                        (MAX(pt - (int)level, volume ? 1 : 2) << 4);
+                        (MAX(pt - (int)level, t_minimum) << 4);
 
     if (volume) {
         geometry |= MAX(pr - (int)level, 1) << 8;
     }
     *x0 = *y0 = 0;
     if (o->params.base_level || !o->native_width ||
-        (n->header[17] & 0x60) != (volume ? 0x40 : 0) ||
+        (n->header[17] & 0x60) != texture_native_object_mode(o) ||
         n->header[16] != geometry || width > n->image.width ||
         height > n->image.height || depth > n->image.depth) {
         return false;
@@ -881,8 +921,21 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             const uint32_t *h = n->header;
             bool matches;
 
-            if (volume) {
+            if (volume && o->native_volume_single) {
+                /*
+                 * Mode one stores one level at the table's first pair
+                 * (0x21ae764). Its bit three is the bank state, as in
+                 * mode zero, so it does not choose among levels.
+                 */
+                matches = h[0] == SGI_GL_TEXTURE_3D && !level &&
+                    (h[17] & 0x60) == 0x20 &&
+                    h[18] == o->native_table[0] &&
+                    h[19] == o->native_table[1] &&
+                    (o->native_layout_valid ||
+                     n->image.depth == o->native_depth);
+            } else if (volume) {
                 matches = h[0] == SGI_GL_TEXTURE_3D &&
+                    (h[17] & 0x60) == 0x40 &&
                     ((h[17] >> 3) & 1) == (level & 1) &&
                     h[18] == o->native_table[level & ~1u] &&
                     h[19] == o->native_table[(level & ~1u) + 1] &&
@@ -1269,7 +1322,8 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be64(f, scale_r.u);
         qemu_put_be32(f, o->native_layout_valid |
                          (o->native_one_dimensional << 1) |
-                         (o->native_bank_one << 2));
+                         (o->native_bank_one << 2) |
+                         (o->native_volume_single << 3));
         qemu_put_be32(f, o->native_layout);
         qemu_put_be32(f, o->params.shadow_compare);
         union { double d; uint64_t u; } ambient = {
@@ -1400,7 +1454,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 (h[0] == SGI_GL_TEXTURE_1D &&
                  (l->height != 1 || h[2] != 1 || h[12] ||
                   h[14] || h[15])) || h[10] != id ||
-                (h[17] & 0x60) != (volume ? 0x40 : 0) ||
+                !texture_native_mode_valid(h) ||
                 (!volume && h[18] && h[19]) ||
                 !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
                 (uint64_t)h[13] - h[11] + 1 != h[1] ||
@@ -1504,7 +1558,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         valid = qemu_get_be32(f);
         o->native_layout = qemu_get_be32(f);
-        if (valid > 7 ||
+        if (valid > 15 || ((valid & 8) && !o->native_depth) ||
             (o->native_layout & ~(o->native_depth ? 0xfffu : 0xffu)) ||
             (o->native_layout & 15) > 13 ||
             ((o->native_layout >> 4) & 15) > 13 ||
@@ -1517,6 +1571,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         o->native_layout_valid = valid & 1;
         o->native_one_dimensional = valid & 2;
         o->native_bank_one = valid & 4;
+        o->native_volume_single = valid & 8;
         o->params.shadow_compare = qemu_get_be32(f);
         ambient.u = qemu_get_be64(f);
         o->params.shadow_ambient = ambient.d;

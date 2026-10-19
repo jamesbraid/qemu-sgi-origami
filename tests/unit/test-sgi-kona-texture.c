@@ -1269,7 +1269,8 @@ static void test_native_volume_slices(void)
     g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     h[15] = 0;
-    h[17] = 0x20;
+    /* Layout mode three; a volume loads in mode one or two. */
+    h[17] = 0x60;
     g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     h[17] = 0x40;

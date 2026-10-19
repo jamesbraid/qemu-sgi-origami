@@ -471,7 +471,7 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
 bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
 {
     bool volume = h[0] == SGI_GL_TEXTURE_3D;
-    uint32_t layout;
+    uint32_t layout, single;
 
     if ((!volume && h[0] != SGI_GL_TEXTURE_1D &&
          h[0] != SGI_GL_TEXTURE_2D) || h[6] > 1) {
@@ -484,16 +484,23 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
     case SGI_KONA_GL_STORAGE_RGB4:
     case SGI_KONA_GL_STORAGE_RGB5:
         layout = volume ? 0x11c0 : 0x2200;
+        single = 0x11a0;
         break;
     case 0x30:
         layout = volume ? 0x1141 : 0x2181;
+        single = 0x9a1;
         break;
     default:
         return false;
     }
-    /* Bit three selects a bank in ordinary mode and level parity in volume. */
+    /*
+     * Bit three selects a bank in ordinary mode and in a volume's layout
+     * mode one, and level parity in its layout mode two.
+     */
     layout |= h[6] << 2;
-    return (h[17] & ~8u) == layout;
+    single |= h[6] << 2;
+    return (h[17] & ~8u) == layout ||
+           (volume && (h[17] & ~8u) == single);
 }
 
 /*
@@ -528,6 +535,29 @@ bool sgi_kona_gl_texture_storage_binding_layout(uint32_t storage,
         return false;
     }
     return (record & 0xff) == expected;
+}
+
+/*
+ * A volume in layout mode one, the single-level layout the library picks
+ * for a NEAREST or LINEAR minification filter, binds with the short
+ * record. Its byte packs mode one's factor pair, [3, 2] in family zero
+ * and [3, 1] in family one.
+ */
+bool sgi_kona_gl_texture_storage_volume_single_layout(uint32_t storage,
+                                                      uint32_t record)
+{
+    switch (storage) {
+    case 0xd:
+    case 0xe:
+    case 8:
+    case SGI_KONA_GL_STORAGE_RGB4:
+    case SGI_KONA_GL_STORAGE_RGB5:
+        return (record & 0xff) == 0x23;
+    case 0x30:
+        return (record & 0xff) == 0x13;
+    default:
+        return false;
+    }
 }
 
 bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
