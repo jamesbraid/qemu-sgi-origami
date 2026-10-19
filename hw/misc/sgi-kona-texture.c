@@ -422,6 +422,18 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
+                                  bool bank_one)
+{
+    SGIKonaTextureObject *o = texture_object(s, handle, true);
+
+    if (!o) {
+        return false;
+    }
+    o->native_bank_one = bank_one;
+    return true;
+}
+
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
                                  const uint32_t table[16], uint32_t *handle)
 {
@@ -844,11 +856,19 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                     (o->native_layout_valid ||
                      n->image.depth == MAX(1u, o->native_depth >> level));
             } else {
+                /*
+                 * The level's table word is its address, which the load
+                 * header carries in word 19 when its bank bit is set and
+                 * in word 18 otherwise. Banks alternate by level from the
+                 * one the binding gives the first.
+                 */
+                bool bank = o->native_bank_one ^ (level & 1);
+
                 matches = h[0] == (o->native_one_dimensional ?
                                   SGI_GL_TEXTURE_1D : SGI_GL_TEXTURE_2D) &&
-                    (level & 1 ?
-                    (!h[18] && h[19] == descriptor) :
-                    (!h[19] && h[18] == descriptor));
+                    !!(h[17] & 8) == bank &&
+                    (bank ? (!h[18] && h[19] == descriptor) :
+                            (!h[19] && h[18] == descriptor));
             }
 
             matches = matches &&
@@ -1203,7 +1223,8 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         };
         qemu_put_be64(f, scale_r.u);
         qemu_put_be32(f, o->native_layout_valid |
-                         (o->native_one_dimensional << 1));
+                         (o->native_one_dimensional << 1) |
+                         (o->native_bank_one << 2));
         qemu_put_be32(f, o->native_layout);
         qemu_put_be32(f, o->params.shadow_compare);
         union { double d; uint64_t u; } ambient = {
@@ -1438,7 +1459,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         valid = qemu_get_be32(f);
         o->native_layout = qemu_get_be32(f);
-        if (valid > 3 ||
+        if (valid > 7 ||
             (o->native_layout & ~(o->native_depth ? 0xfffu : 0xffu)) ||
             (o->native_layout & 15) > 13 ||
             ((o->native_layout >> 4) & 15) > 13 ||
@@ -1450,6 +1471,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         o->native_layout_valid = valid & 1;
         o->native_one_dimensional = valid & 2;
+        o->native_bank_one = valid & 4;
         o->params.shadow_compare = qemu_get_be32(f);
         ambient.u = qemu_get_be64(f);
         o->params.shadow_ambient = ambient.d;

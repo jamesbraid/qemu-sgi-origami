@@ -61,6 +61,8 @@ typedef struct SGIKonaTextureObject {
     uint32_t native_layout;
     bool native_table_valid;
     uint32_t native_table[SGI_KONA_TEXTURE_TABLE_LEVELS];
+    /* The bank of an ordinary texture's first table level. */
+    bool native_bank_one;
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
 } SGIKonaTextureObject;
 
@@ -99,6 +101,9 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
                                    uint32_t internal_format);
 bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
                                   const uint32_t table[16]);
+/* An ordinary texture's levels alternate banks from this one. */
+bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
+                                  bool bank_one);
 /* The one object whose stored level table equals table, if exactly one. */
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
                                  const uint32_t table[16], uint32_t *handle);

@@ -4566,8 +4566,10 @@ static void texture_rebind_uploads(QTestState *s, unsigned mode)
     }
 }
 
+/* bank_one: the texture's first level is in bank one (bind bit 28). */
 static void texture_rebind_packet_layout(QTestState *s, uint32_t selector,
-                                         uint32_t handle, bool wide)
+                                         uint32_t handle, bool wide,
+                                         bool bank_one)
 {
     uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
 
@@ -4575,14 +4577,15 @@ static void texture_rebind_packet_layout(QTestState *s, uint32_t selector,
     kona_command(s, 0x178, &selector, 1);
     kona_command(s, 0x106,
                  (uint32_t[]) { handle, (2u << 28) | (41 << 12),
-                                0x30 << 14, wide ? 0x33 : 0x11, 1 }, 5);
+                                (0x30 << 14) | ((uint32_t)bank_one << 28),
+                                wide ? 0x33 : 0x11, 1 }, 5);
     kona_command(s, 0x179, record, ARRAY_SIZE(record));
 }
 
 static void texture_rebind_packet(QTestState *s, uint32_t selector,
                                   uint32_t handle)
 {
-    texture_rebind_packet_layout(s, selector, handle, false);
+    texture_rebind_packet_layout(s, selector, handle, false, false);
 }
 
 static void test_texture_rebind_control(gconstpointer opaque)
@@ -4602,19 +4605,19 @@ static void test_texture_rebind_control(gconstpointer opaque)
     kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
     kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
-    texture_rebind_packet_layout(s, 1, a, wide);
+    texture_rebind_packet_layout(s, 1, a, wide, false);
     assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_a);
     gl_triangle_z(s, tri, 0);
     assert_stencil_colour(s, sample_a >> 8);
-    texture_rebind_packet_layout(s, 0, b, wide);
+    texture_rebind_packet_layout(s, 0, b, wide, wide);
     assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_b);
     gl_triangle_z(s, tri, 0);
     assert_stencil_colour(s, sample_b >> 8);
-    texture_rebind_packet_layout(s, 1, UINT32_MAX, wide);
+    texture_rebind_packet_layout(s, 1, UINT32_MAX, wide, false);
     assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_a);
     gl_triangle_z(s, tri, 0);
     assert_stencil_colour(s, sample_a >> 8);
-    texture_rebind_packet_layout(s, 0, UINT32_MAX, wide);
+    texture_rebind_packet_layout(s, 0, UINT32_MAX, wide, wide);
     assert_texture_pixel(s, wide ? 2 : 0, wide ? 2 : 0, sample_b);
     gl_triangle_z(s, tri, 0);
     assert_stencil_colour(s, sample_b >> 8);
@@ -4739,6 +4742,40 @@ static void test_texture_bind_awaits_record(void)
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "unsupported native texture"),
                      ==, 0);
+}
+
+/*
+ * perfly's 128 by 64 and 512 by 64 textures load their base level into
+ * bank one: header word 17 carries the bank bit and word 19 the address
+ * that the record's level table names first, and the bind's third word
+ * has bit 28 set. The level must be found there, not in word 18 as an
+ * even level's address is when the first level is in bank zero.
+ */
+static void test_texture_base_level_bank(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t h[20], id = 5;
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    gl_make_current(s);
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = id;
+    h[17] |= 8;
+    h[19] = 0x118;
+    record[6] = 0x118;
+    kona_command(s, 0x106,
+                 (uint32_t[]) { id, (2u << 28) | (41 << 12),
+                                (0x30 << 14) | (1u << 28), 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, &id, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2, texture_source[k]);
+    }
+    qtest_quit(s);
 }
 
 /* One row of a 2 by 2 RGBA image under the given cache id. */
@@ -6315,8 +6352,11 @@ static void test_texture_rgb5_storage(gconstpointer opaque)
     QTestState *s = qtest_init(MACHINE_ARGS);
 
     gl_make_current(s);
+    /* As perfly's bind of it, bit 28 puts the 0x220c load's level in bank 1. */
     kona_command(s, 0x1d5, (uint32_t[]) { 0, (2u << 28) | (index << 12),
-                                        storage << 14, 0x11, 1 }, 5);
+                                        (storage << 14) |
+                                        (mode == 2 ? 1u << 28 : 0), 0x11, 1 },
+                 5);
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
     for (unsigned k = 0; k < 4; k++) {
@@ -12945,9 +12985,11 @@ static void test_texture_8x8_refused(gconstpointer opaque)
         kona_command(s, 0x174, texture_8x8_headers[image], 20);
         texture_words(s, texture_8x8_sources[image], 64, 1);
         kona_command(s, 0x176, &image, 1);
+        /* The second capture's level is in bank one: bind bit 28. */
         kona_command(s, 0x1d5,
                      (uint32_t[]) { image, (2u << 28) | (41 << 12),
-                                    0x30 << 14, 0x33, 1 }, 5);
+                                    (0x30 << 14) | (image << 28), 0x33, 1 },
+                     5);
         kona_command(s, 0x179, record, ARRAY_SIZE(record));
         for (unsigned k = 0; k < 64; k++) {
             assert_texture_pixel(s, k % 8, k / 8,
@@ -16513,6 +16555,8 @@ int main(int argc, char **argv)
              test_texture_rebind_refusals);
     add_case("sn0/origin2000/kona-3d/texture-bind/awaits-record",
              test_texture_bind_awaits_record);
+    add_case("sn0/origin2000/kona-3d/texture/base-level-bank",
+             test_texture_base_level_bank);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/reuse",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_reuse);
     add_data_case(

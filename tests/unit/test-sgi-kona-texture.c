@@ -481,11 +481,20 @@ static void test_native(void)
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
     g_assert_true(sgi_kona_texture_bind(&s, 43, &p));
     assert_image(&s, pixels, 2, 2);
-    /* Two banks matching the same descriptor leave the level unresolved. */
+    /*
+     * The same address in the other bank is another level's: the binding
+     * names the first level's bank, and only that bank's image matches.
+     */
     h[17] ^= 8;
-    g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+    h[19] = h[18];
+    h[18] = 0;
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, updated,
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
-    g_assert_cmpuint(sgi_kona_texture_resolve(&s)->pyramid->count, ==, 0);
+    g_assert_true(sgi_kona_texture_bind(&s, 43, &p));
+    assert_image(&s, pixels, 2, 2);
+    g_assert_true(sgi_kona_texture_native_bank(&s, 43, true));
+    g_assert_true(sgi_kona_texture_bind(&s, 43, &p));
+    assert_image(&s, updated, 2, 2);
     sgi_kona_texture_delete(&s, 43);
     g_assert_true(sgi_kona_texture_bind(&s, 42, &p));
     assert_image(&s, updated, 2, 2);
@@ -689,6 +698,8 @@ static void test_native_migration(void)
     table[0] = 0;
     g_assert_true(sgi_kona_texture_native_upload(&src, h, red,
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    /* The level is in bank one, which the binding's bank must migrate. */
+    g_assert_true(sgi_kona_texture_native_bank(&src, 99, true));
     g_assert_true(sgi_kona_texture_bind(&src, 99, NULL));
     a = save(&src);
     g_assert_true(load(a, &dst));
@@ -962,7 +973,7 @@ static void test_native_internal_format(void)
     SGIKonaTextureParams p;
     uint32_t h[20] = {
         [0] = SGI_GL_TEXTURE_2D, [1] = 1, [2] = 1, [9] = 0x30,
-        [10] = 9, [16] = 0x11, [17] = 0x2189, [18] = 23,
+        [10] = 9, [16] = 0x11, [17] = 0x2181, [18] = 23,
     };
     const uint32_t pixels[] = { 0x80604020 };
     uint32_t table[16];
@@ -2367,21 +2378,24 @@ static void test_native_repeat_interior_mipmaps(void)
     g_assert_cmpfloat(out[0], ==, .123f);
     o->native[1].coverage[0] |= 1;
     o->native[1].covered++;
-    /* Layout bank state differs but would expose the same eligible interior. */
+    /*
+     * The same address in the other bank is not level 0, whose bank the
+     * binding gives, so the level still resolves.
+     */
     h[1] = 8;
     h[2] = 4;
     h[13] = 7;
     h[14] = 3;
     h[16] = 0x45;
     h[17] = 8;
-    h[18] = table[0];
-    h[19] = 0;
+    h[18] = 0;
+    h[19] = table[0];
     g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
     im = sgi_kona_texture_resolve(&s);
-    out[0] = .123f;
-    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
-    g_assert_cmpfloat(out[0], ==, .123f);
+    g_assert_cmpuint(im->pyramid->count, ==, 4);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[1], ==, 1);
     sgi_kona_texture_cleanup(&s);
 }
 
