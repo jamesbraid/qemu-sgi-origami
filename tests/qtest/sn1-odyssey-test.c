@@ -9613,13 +9613,27 @@ static void dma_object_texel(QTestState *qts, uint32_t base, uint32_t units,
  * behind as a hole that a third such object reclaims without losing the
  * second. A fourth, larger object then forgets the least recently used
  * object (the second) and keeps the rest. Then more objects than the table
- * holds: the oldest is forgotten and the newest still lands. Before, the
+ * holds: the oldest is forgotten and the newest still lands. Both kinds of
+ * forgetting are reported once, naming the object. Before, the
  * 64-entry table dropped every later object and the 16 MiB store refused
  * the first large one.
  */
 static void test_object_store_reclaims(void)
 {
-    QTestState *qts = board_start("");
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-store-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
                  BEDROCK_MD_INSTALLED_SELECT2);
@@ -9661,6 +9675,15 @@ static void test_object_store_reclaims(void)
     /* The large objects were the least recently used, so they went first. */
     g_assert_cmphex(odsy_test_object_texel(qts, 0x500000, 8, 3999), ==, 0);
     board_quit(qts);
+
+    /* Each kind of forgetting is reported, naming the first object. */
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "board-memory store is full; the least "
+                            "recently used object, 0x300000, is forgotten"));
+    g_assert_nonnull(strstr(log, "more than 1024 board-memory objects; the "
+                            "least recently used, 0x200000, is forgotten"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*

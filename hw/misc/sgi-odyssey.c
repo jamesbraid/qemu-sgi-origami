@@ -3724,8 +3724,9 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
 /*
  * Make room for rows rows in object i: grow it in place when it is the last
  * in the store, else move it to the end. When the store is full, pack it,
- * then forget the least recently used other objects until i fits. False,
- * reported once, when i alone does not fit.
+ * then forget the least recently used other objects until i fits, reporting
+ * the first object forgotten. False, reported once, when i alone does not
+ * fit.
  */
 static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
 {
@@ -3747,6 +3748,14 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
         victim = odyssey_object_oldest(s, i);
         if (victim < 0) {
             break;
+        }
+        if (!s->obj_forget_reported) {
+            s->obj_forget_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: the model's %u MiB "
+                          "board-memory store is full; the least recently "
+                          "used object, 0x%x, is forgotten\n",
+                          (unsigned)(ODSY_OBJ_POOL_BYTES / MiB),
+                          s->obj_base[victim]);
         }
         odyssey_object_forget(s, victim);
     }
@@ -10559,6 +10568,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->obj_clock = 0;
     memset(s->obj_valid, 0, sizeof(s->obj_valid));
     s->obj_full_reported = false;
+    s->obj_forget_reported = false;
     s->board_oob_reported = false;
     s->tex_mode = 0;
     memset(s->tex_sampler, 0, sizeof(s->tex_sampler));
