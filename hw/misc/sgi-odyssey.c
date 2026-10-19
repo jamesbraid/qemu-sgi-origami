@@ -4890,6 +4890,15 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     bool captured_clamp = one_d_clamp || two_d_clamp || three_d_clamp;
     bool two_d_stored = stored_border && two_d_shape;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
+    /*
+     * GL_CLAMP (wrap field 2) on both axes outside the captured shapes,
+     * under any filter, as distort and tex_cube send. The board's sampling
+     * is assumed to be the OpenGL 1.2.1 rule (section 3.8.4), which the
+     * shared sampler implements: linear taps past the edge take the border
+     * colour, words 5 and 6. GL_CLAMP on one axis only stays refused; no
+     * client has been seen to send it.
+     */
+    bool general_clamp = ws == 2 && wt == 2 && !captured_clamp;
     bool colour_table_l8 = word == 0x11500001 || word == 0x11500003 ||
                            word == 0x11600001;
     bool colour_table_rgba8_rgb = word == 0x13500001;
@@ -4960,8 +4969,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                          (ctz32(height) << 5) |
                          (three_d ? ctz32(depth) : 0)) ||
         ws > 3 || wt > 3 ||
-        (!border && !captured_clamp &&
+        (!border && !captured_clamp && !general_clamp &&
          (s->tex_sampler[5] || s->tex_sampler[6])) ||
+        (general_clamp &&
+         ((s->tex_sampler[5] | s->tex_sampler[6]) & 0xff000000)) ||
         (captured_clamp && !stored_border &&
          ((s->tex_sampler[5] | s->tex_sampler[6]) & 0xff000000)) ||
         (border && (ws != 3 || wt != 3 ||
@@ -4969,7 +4980,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                     height_word != (0x00fc0000 | height) ||
                     ((s->tex_sampler[5] | s->tex_sampler[6]) &
                      0xff000000))) ||
-        ((clamp || border) && !captured_clamp &&
+        (general_clamp && three_d) ||
+        (clamp && !general_clamp && !captured_clamp) ||
+        (border && !captured_clamp &&
          ((clamp && (ws != 2 || wt != 2)) ||
           (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                           ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
@@ -5019,7 +5032,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                     border ? SGI_GL_CLAMP_TO_BORDER :
                     wt == 2 ? SGI_GL_CLAMP :
                     wt ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
-    if (border || captured_clamp) {
+    if (border || captured_clamp || general_clamp) {
         image->border_color[0] = ((s->tex_sampler[5] >> 12) & 0xfff) /
                                  4095.0f;
         image->border_color[1] = (s->tex_sampler[5] & 0xfff) / 4095.0f;

@@ -13158,12 +13158,15 @@ static void texture_two_dimensional_clamp(bool linear, bool stored)
     g_test_message("2D %s %s clamp mismatches %u/16384",
                    stored ? "stored" : "zero-border",
                    linear ? "linear" : "nearest", mismatches);
-    /* Unpaired flags, unknown filters and high fields stay unsupported. */
-    for (unsigned bad = 0; bad < 3; bad++) {
+    /*
+     * Unpaired flags and high fields stay unsupported. (Other filters
+     * under GL_CLAMP on both axes are sampled by the OpenGL rule, so
+     * minification-linear 0x13002820 is no longer among them.)
+     */
+    for (unsigned bad = 0; bad < 2; bad++) {
         sampler[5] = bad == 0 ? (linear ? 0x03002822 : 0x03002800) :
-                     bad == 1 ? 0x13002820 :
                      linear ? 0x13002822 : 0x13002800;
-        sampler[7] = bad == 2 ? 0x02303fff : 0x00303fff;
+        sampler[7] = bad == 1 ? 0x02303fff : 0x00303fff;
         push_user_words(qts, sampler, ARRAY_SIZE(sampler));
         odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
         texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
@@ -14247,11 +14250,18 @@ static void test_texture_adapter_nearest_clamp(void)
     g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, 0xff000040);
     g_assert_cmphex(odsy_test_pixel(qts, 21, 10), ==, 0x0000ffc0);
 
-    /* Unsupported filtering drops the draw before looking up this image. */
-    texture_adapter_bind(qts, 0xdead00, 0x13002802, 1);
-    odsy_test_pixel_write(qts, 22, 10, 0x12345678);
+    /*
+     * Linear magnification under GL_CLAMP: a tap past the edge takes the
+     * border colour, words 5 and 6 (zero here), as OpenGL 1.2.1 3.8.4
+     * gives, not the edge texel clamp to edge would repeat.
+     */
+    texture_adapter_bind(qts, 0x180000, 0x13002802, 1);
     texture_adapter_point(qts, 22, 10, 0.25f, 0.25f);
-    g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0x12345678);
+    texture_adapter_point(qts, 23, 10, 0.5f, 0.25f);
+    texture_adapter_point(qts, 24, 10, 0.0f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 23, 10), ==, 0x80800060);
+    g_assert_cmphex(odsy_test_pixel(qts, 24, 10), ==, 0x80000020);
     board_quit(qts);
 }
 
