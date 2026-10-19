@@ -144,6 +144,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-colour-index
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index-write-mask
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-unknown
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-record
+gl /mips64/sn1/odyssey/command-fifo-gl-program-window-local-viewer
 gl /mips64/sn1/odyssey/command-fifo-gl-combined-carries-modelview
 gl /mips64/sn1/odyssey/command-fifo-gl-flat-shading
 gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i
