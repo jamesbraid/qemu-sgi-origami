@@ -1536,6 +1536,7 @@ bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
 {
     SGIKonaTextureCurve next = { .slot = slot }, *curve;
 
+    assert(words);
     if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS) {
         return false;
     }
