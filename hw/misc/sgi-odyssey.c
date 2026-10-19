@@ -7245,23 +7245,30 @@ done:
 static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
 
 /*
- * The source format code of a GL DMA image write of A, B, G, R bytes, one
+ * Source format code 0x6c: a GL DMA image write of A, B, G, R bytes, one
  * pixel a 4-byte word (word 7's low byte, bytes-per-pixel code 1). IRIS GL's
  * lrectwrite and GL_ABGR_EXT draws (ipaste, bgpaste) send it. ESTABLISHED
- * from a model run: ipaste's payload for brick.rgb carries bytes ff 7f 80 97
- * for the image's bottom-left pixel, whose file channels are R 0x97, G 0x80,
- * B 0x7f, and the next pixels match the same way. The X server's 0x4c, one
- * 0x00RRGGBB word, is a different layout.
+ * for what the software sends, from a model run: ipaste's payload for
+ * brick.rgb carries bytes ff 7f 80 97 for the image's bottom-left pixel,
+ * whose file channels are R 0x97, G 0x80, B 0x7f, and the next pixels match
+ * the same way. INFERRED: that the board decodes the word in that order,
+ * from the image coming out right. The X server's 0x4c, one 0x00RRGGBB
+ * word, is a different layout.
+ *
+ * Word 7 of the two observed writes is 0x7201016c (ipaste) and 0x7a01016c
+ * (bgpaste). Bits 29:25 differ between them or are set with no known
+ * effect and are ignored; every other bit must match, bit 8 (set in both)
+ * included, so an unseen form stays reported.
  */
-#define ODSY_DMA_CODE_ABGR 0x6c
+#define ODSY_DMA_ABGR_CONTROL 0x4001016cu
+#define ODSY_DMA_ABGR_CONTROL_IGNORED 0x3e000000u
 
 /*
  * The draw-sentinel uploads this model takes: the captured RGBA16 write,
  * whose words 4 and 7 must match exactly, eight bytes a pixel, and the ABGR
- * write above, four bytes a pixel, with word 7 bit 30 (bottom row first) set
- * and word 4 selecting the draw drawable. Bits 29:25 and 8 of an ABGR
- * write's word 7 vary between callers (0x7201016c, 0x7a01016c) with no
- * known effect and are ignored. 0 for any other upload.
+ * write above, four bytes a pixel, whose word 7 must match apart from the
+ * ignored bits (ODSY_DMA_ABGR_CONTROL) and whose word 4 must be the observed
+ * 0x80035000. 0 for any other upload, which the caller reports.
  */
 static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr)
 {
@@ -7270,12 +7277,8 @@ static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr)
     if (hdr[ODSY_DMA_HDR_FORMAT] == 0x02635000 && control == 0x7a02006b) {
         return 8;
     }
-    if ((control & ODSY_IMAGE_CODE_MASK) == ODSY_DMA_CODE_ABGR &&
-        odyssey_dma_bpp[(control >> ODSY_DMA_BPP_SHIFT) &
-                        ODSY_DMA_BPP_MASK] == 4 &&
-        (control & ODSY_DMA_BOTTOM_UP) &&
-        ((hdr[ODSY_DMA_HDR_FORMAT] >> ODSY_DMA_FMT_SELECTOR_SHIFT) &
-         ODSY_DMA_FMT_SELECTOR_MASK) == ODSY_DMA_FMT_SELECTOR_DRAW) {
+    if (hdr[ODSY_DMA_HDR_FORMAT] == 0x80035000 &&
+        (control & ~ODSY_DMA_ABGR_CONTROL_IGNORED) == ODSY_DMA_ABGR_CONTROL) {
         return 4;
     }
     return 0;
