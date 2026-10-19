@@ -2989,7 +2989,7 @@ static void test_tezro_trial_builds_two_pic_hosts(void)
     g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "board-id-word"),
                     ==, 0x2001);
     g_assert_cmphex(qom_get_uint(qts, "/machine/node0", "l1-type-code"),
-                    ==, 0x37);
+                    ==, 0x39);
     for (unsigned int bank = 0; bank < G_N_ELEMENTS(bank_mib); bank++) {
         g_autofree char *property = g_strdup_printf("installed-bank%u-mib",
                                                      bank);
@@ -4503,10 +4503,10 @@ static void test_ip53_pxbow_route_fences_and_interrupt(void)
     g_assert_false(nasid_test_cpu_readq(fixture->qts, 0,
                                         packet_widget + 0x20, &value));
 
-    /* The reset pulse drops status but keeps the configured route carrying. */
+    /* The PXBOW pulse changes link state while PIC keeps its widget control. */
     g_assert_true(nasid_test_cpu_readq(fixture->qts, 0, pic_widget + 0x20,
                                        &value));
-    g_assert_cmphex(value, ==, 0);
+    g_assert_cmphex(value, ==, 0x0f00320f);
     qtest_writel(fixture->qts, IP53_IO_SPACE + 0x1b4, 0);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "links-alive"), ==,
                      0x8000);
@@ -4517,7 +4517,7 @@ static void test_ip53_pxbow_route_fences_and_interrupt(void)
     qtest_qmp_assert_success(fixture->qts, "{'execute':'stop'}");
     g_assert_true(nasid_test_cpu_readq(fixture->qts, 0, pic_widget + 0x20,
                                        &value));
-    g_assert_cmphex(value, ==, 0);
+    g_assert_cmphex(value, ==, 0x0f00320f);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "links-alive"), ==,
                      0x8400);
 
@@ -4562,7 +4562,7 @@ static void test_ip53_pxbow_route_fences_and_interrupt(void)
     qtest_qmp_assert_success(fixture->qts, "{'execute':'stop'}");
     g_assert_true(nasid_test_cpu_readq(fixture->qts, 0, pic_widget + 0x20,
                                        &value));
-    g_assert_cmphex(value, ==, 0);
+    g_assert_cmphex(value, ==, 0x0f00320f);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "links-alive"), ==,
                      0x8400);
     qtest_qmp_assert_success(fixture->qts,
@@ -4608,7 +4608,7 @@ static void test_ip53_pxbow_route_fences_and_interrupt(void)
 
         g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
                                             pic_head + 0x214, &device_value));
-        g_assert_cmphex(device_value, ==, 0);
+        g_assert_cmphex(device_value, ==, 0x18001004);
         g_assert_true(nasid_test_cpu_readq(fixture->qts, 0,
                                             pic_head + 0x130,
                                             &destination_value));
