@@ -8097,8 +8097,13 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             memcpy(table, args + 2, 2 * sizeof(*args));
         }
         if (s->texture_bind_valid && s->texture_bind[0] != UINT32_MAX) {
+            /* Bit 28 of the bind's third word: the first level's bank. */
             if (!sgi_kona_texture_native_table(&s->textures,
-                                               s->texture_bind[0], table)) {
+                                               s->texture_bind[0], table) ||
+                (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
+                 !sgi_kona_texture_native_bank(&s->textures, s->texture_bind[0],
+                                               (s->texture_bind[2] >> 28) &
+                                               1))) {
                 s->texture_record_valid = false;
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-kona: native texture table refused for"
