@@ -9588,6 +9588,81 @@ static void test_burst_texture_12bit_sources(void)
     board_quit(qts);
 }
 
+/* One RGBA8 texel by DMA at (x, y) of the object at base, units wide. */
+static void dma_object_texel(QTestState *qts, uint32_t base, uint32_t units,
+                             uint32_t x, uint32_t y, uint32_t rgba)
+{
+    const uint64_t table = 0xb80000;
+    const uint64_t page = 0xb84000;
+    const uint32_t hdr[8] = {
+        base, y << 16 | x, units, (1 << 16) | 1, 0x80013000, 0, 4,
+        0x3201004b,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(page, 4) };
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, rgba);
+    qtest_memwrite(qts, page, bytes, sizeof(bytes));
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+}
+
+/*
+ * The object store recycles. Two 4096-texel-wide objects of 3000 rows
+ * take most of the 128 MiB store; reshaping the first leaves its rows
+ * behind as a hole that a third such object reclaims without losing the
+ * second. A fourth, larger object then forgets the least recently used
+ * object (the second) and keeps the rest. Then more objects than the table
+ * holds: the oldest is forgotten and the newest still lands. Before, the
+ * 64-entry table dropped every later object and the 16 MiB store refused
+ * the first large one.
+ */
+static void test_object_store_reclaims(void)
+{
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    dma_object_texel(qts, 0x200000, 256, 5, 2999, 0x11111111);
+    dma_object_texel(qts, 0x300000, 256, 6, 2999, 0x22222222);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 5, 2999), ==,
+                    0x11111111);
+    /* A new row length discards the first object's rows. */
+    dma_object_texel(qts, 0x200000, 2, 1, 0, 0x33333333);
+    dma_object_texel(qts, 0x400000, 256, 7, 2999, 0x44444444);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 1, 0), ==,
+                    0x33333333);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x300000, 6, 2999), ==,
+                    0x22222222);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x400000, 7, 2999), ==,
+                    0x44444444);
+
+    dma_object_texel(qts, 0x500000, 256, 8, 3999, 0x55555555);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x500000, 8, 3999), ==,
+                    0x55555555);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x300000, 6, 2999), ==, 0);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 1, 0), ==,
+                    0x33333333);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x400000, 7, 2999), ==,
+                    0x44444444);
+
+    for (uint32_t i = 0; i < 1024; i++) {
+        user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+        user_cmd_push(qts, 0x600000 + i * 0x100);
+        user_cmd_push(qts, 2);
+        user_cmd_push(qts, 0x080024d0);
+        user_cmd_push(qts, 0);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     1024);
+    dma_object_texel(qts, 0x600000 + 1023 * 0x100, 2, 2, 2, 0x66666666);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x600000 + 1023 * 0x100,
+                                           2, 2), ==, 0x66666666);
+    /* The large objects were the least recently used, so they went first. */
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x500000, 8, 3999), ==, 0);
+    board_quit(qts);
+}
+
 /*
  * The textured draw after an upload (phase H's words): the state words are
  * accepted, the draw lands inside the probe window after 0x90008116, not at
@@ -19071,6 +19146,8 @@ int main(int argc, char **argv)
                    test_dma_texture_12bit_sources);
     add_case("sn1/odyssey/burst-texture-12bit-sources",
              test_burst_texture_12bit_sources);
+    add_fresh_case("sn1/odyssey/object-store-reclaims",
+                   test_object_store_reclaims);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",
