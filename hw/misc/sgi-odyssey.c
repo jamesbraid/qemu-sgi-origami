@@ -1816,14 +1816,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the whole 12-bit range and the other six words zero -- the same values
  * the library's own override sends -- and a zero 0x840. That tail is the
  * context's off-screen state, not its window: the library's later
- * 0x90008116 must bring back the window pushed just before it. So the model
- * commits a kernel 0x841 at once but keeps the origin it replaced until the
- * next kernel command; when that command is the off-screen 0x204b, the
- * replaced origin is committed again and the rectangles are not committed.
- * Without this every textured or off-screen client switched in mid-upload
- * drew its next frame at the screen origin, over other windows. INFERRED,
- * as the restore itself is: that the board keeps the window through such a
- * tail.
+ * 0x90008116 must bring back the window pushed just before it. Without
+ * that, every textured or off-screen client switched in mid-upload drew its
+ * next frame at the screen origin, over other windows. INFERRED, as the
+ * restore itself is: that the board keeps the window through such a tail.
+ *
+ * APPROXIMATION: how the board keeps it is unknown. The kernel chooses the
+ * tail on a private flag the board never sees, so the model recognises the
+ * tail by its values instead: it commits a kernel 0x841 at once but keeps
+ * the origin it replaced until the next kernel command, and when that
+ * command is the off-screen 0x204b and the origin is (0, 0), the replaced
+ * origin is committed again and the rectangles are not committed.
+ * Limitation: any kernel push that is exactly origin (0, 0) followed by the
+ * full-range rectangle is read as the tail, even if it were a real window.
+ * The meaning of 0x90008116 and of the kernel's flag, or a capture of the
+ * board's window registers across such a switch, would settle it.
  */
 #define ODSY_CMD_WINDOW_RESTORE 0x90008116 /* 0 operands */
 #define ODSY_REG_WINDOW_ORIGIN 0x0841   /* 2 operands: x, y */
