@@ -830,6 +830,49 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 #define MGRAS_GL_NORMALIZE       0x0000a304
 #define MGRAS_GL_GET_LIGHT       0x0000ef08
 #define MGRAS_GL_GET_MATERIAL    0x0000ee08
+
+/*
+ * IRIS GL's colour and normal rule: a vertex whose colour came after the
+ * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
+ * appendix B, "Color/normal flag"). The IRIX 6.5.30 IP27GR532
+ * libGLcore.so (SHA-256 626d6d94...) leaves it to the board. Its
+ * glIglooInterfaceSGIX (0xd9e3860), established from the listing:
+ *
+ * - GL_IGLOO_COLORNORMAL_SGIX (0x81a1) with a nonzero parameter sets
+ *   context flag bit 1 and writes 0x00010200 when bit 0 is set; with 0 it
+ *   clears bit 1 and writes 0x0000df00 (0xd9e38d4-0xd9e3998).
+ * - GL_IGLOO_LMC_COLOR_SGIX (0x81a3) calls 0xd9e3740 with the parameter.
+ *   With 1 that sets bit 0 and writes 0x0000dd00, then 0x00010200 when
+ *   bit 1 is set and 0x0000df00 when it is not. With anything else it
+ *   clears bit 0 and writes 0x0000de00 or 0x0000df00, by a flag the
+ *   listing reads at 0x1018. It writes nothing while the context byte at
+ *   0xc94, which marks an RGBA context (inferred, as for the logical
+ *   operation above), is clear.
+ *
+ * So 0x00010200 arrives exactly when both are on. The library sends it
+ * again after 0x0000dd00 when its bit 1 stayed set through a 0x0000de00,
+ * so the board has dropped the rule by then. The model reads 0x00010200
+ * as turning the rule on and 0x0000df00 and 0x0000de00 as turning it off;
+ * 0x0000dd00 changes nothing by itself. Inferred from the library: the
+ * board's meaning of each word, and what else 0x0000dd00 and 0x0000de00
+ * do, are unknown.
+ *
+ * While the rule is on and lighting is enabled in an RGBA context, the
+ * model lights a vertex whose colour came after the last normal with
+ * ambient, diffuse and specular (0, 0, 0, 1) on both faces and the
+ * current colour as both emissions, then restores the materials. That
+ * is what the Octane2 VPro library does in software for the same rule
+ * (the Origami odyssey datasheet, "IRIS GL colour after a normal").
+ * Approximated: how the GE carries out the rule is unknown; the two
+ * differ from leaving the vertex unlit only in its alpha, which the wrap
+ * makes 1. A colour-index context is lit as before: what the rule does
+ * to lit colour indices is unknown. The discriminating test is
+ * gl-iris-colour-after-normal-is-unlit.
+ */
+#define MGRAS_GL_IRIS_LMC_COLOR  0x0000dd00
+#define MGRAS_GL_IRIS_LMC_OTHER  0x0000de00
+#define MGRAS_GL_IRIS_RULE_OFF   0x0000df00
+#define MGRAS_GL_IRIS_RULE_ON    0x00010200
 #define MGRAS_GL_QUERY_READBACK  0x3ba
 
 /* The light parameter each glLightfv header carries. */
@@ -906,6 +949,10 @@ bool sgi_mgras_gl_header(uint32_t header)
     switch (header) {
     case MGRAS_GL_POLYGON_STIPPLE_UPLOAD:
         return true;
+    case MGRAS_GL_IRIS_LMC_COLOR:
+    case MGRAS_GL_IRIS_LMC_OTHER:
+    case MGRAS_GL_IRIS_RULE_OFF:
+    case MGRAS_GL_IRIS_RULE_ON:
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_RENDER_SELECT:
     case MGRAS_GL_RENDER:
@@ -1415,6 +1462,8 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
                sizeof(s->gl_context[i].readback));
         memset(s->gl_context[i].clip_query, 0,
                sizeof(s->gl_context[i].clip_query));
+        s->gl_context[i].iris_rule = 0;
+        s->gl_context[i].iris_colour_last = 0;
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
         memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
@@ -1458,6 +1507,8 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
     memset(s->gl_context[i].clip_query, 0,
            sizeof(s->gl_context[i].clip_query));
+    s->gl_context[i].iris_rule = 0;
+    s->gl_context[i].iris_colour_last = 0;
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
     memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
     sgi_mgras_texture_reset(&s->gl_context[i].tex);
@@ -2668,6 +2719,45 @@ const VMStateDescription vmstate_sgi_mgras_gl_clip_query = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_iris_rule = {
+    .name = TYPE_SGI_MGRAS "/gl-context-iris-rule",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(iris_rule, SGIMgrasGLContext),
+        VMSTATE_UINT32(iris_colour_last, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* Sent once some context has the rule on or a colour after a normal. */
+static bool mgras_gl_iris_rule_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].iris_rule ||
+            s->gl_context[i].iris_colour_last) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_iris_rule = {
+    .name = TYPE_SGI_MGRAS "/gl-iris-rule",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_iris_rule_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_iris_rule,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The GE's pixel parameters and each context's pixel draw, sent once a
  * parameter has been loaded, a draw or load is under way, or a parser is
@@ -2906,6 +2996,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             s->gl_context[i].client_read_kicked > 1 ||
             s->gl_context[i].client_read_bank >
                 MGRAS_CLIENT_READ_DEEP_BACK ||
+            s->gl_context[i].iris_rule > 1 ||
+            s->gl_context[i].iris_colour_last > 1 ||
             (s->gl_context[i].client_read_bank >=
                  MGRAS_CLIENT_READ_DEEP_FRONT &&
              (strcmp(s->board->name, "ssi") || !s->slot[0])) ||
@@ -5278,6 +5370,49 @@ static void mgras_gl_normal(SGIMgrasState *s, uint32_t header,
     mgras_gl_command(s, SGI_GL_OP_NORMAL3F, word, 3);
 }
 
+static void mgras_gl_material4(SGIMgrasState *s, uint32_t face,
+                               uint32_t pname, const float v[4])
+{
+    uint32_t word[6] = { face, pname };
+
+    memcpy(&word[2], v, 4 * sizeof(float));
+    mgras_gl_command(s, SGI_GL_OP_MATERIAL, word, 6);
+}
+
+/*
+ * A vertex, under IRIS GL's colour and normal rule when it applies: see
+ * MGRAS_GL_IRIS_RULE_ON.
+ */
+static void mgras_gl_vertex(SGIMgrasState *s, SGIGLOp op,
+                            const uint32_t *args, unsigned nargs)
+{
+    static const float none[4] = { 0, 0, 0, 1 };
+    static const uint32_t faces[2] = { SGI_GL_FRONT, SGI_GL_BACK };
+    const SGIMgrasGLContext *g = &s->gl_context[s->gl_current];
+    SGIGLContext *c = mgras_gl(s);
+    SGIGLMaterial saved[2];
+    float colour[4];
+
+    if (!g->iris_rule || !g->iris_colour_last || !c->lighting ||
+        c->cur.index_bits) {
+        mgras_gl_command(s, op, args, nargs);
+        return;
+    }
+    memcpy(saved, c->material, sizeof(saved));
+    memcpy(colour, c->cur_color, sizeof(colour));
+    mgras_gl_material4(s, SGI_GL_FRONT_AND_BACK, SGI_GL_AMBIENT, none);
+    mgras_gl_material4(s, SGI_GL_FRONT_AND_BACK, SGI_GL_DIFFUSE, none);
+    mgras_gl_material4(s, SGI_GL_FRONT_AND_BACK, SGI_GL_SPECULAR, none);
+    mgras_gl_material4(s, SGI_GL_FRONT_AND_BACK, SGI_GL_EMISSION, colour);
+    mgras_gl_command(s, op, args, nargs);
+    for (int i = 0; i < 2; i++) {
+        mgras_gl_material4(s, faces[i], SGI_GL_AMBIENT, saved[i].ambient);
+        mgras_gl_material4(s, faces[i], SGI_GL_DIFFUSE, saved[i].diffuse);
+        mgras_gl_material4(s, faces[i], SGI_GL_SPECULAR, saved[i].specular);
+        mgras_gl_material4(s, faces[i], SGI_GL_EMISSION, saved[i].emission);
+    }
+}
+
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
@@ -5640,27 +5775,41 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_ERAM_END:
         s->eram_next_addr = 0;
         return;
+    case MGRAS_GL_IRIS_LMC_COLOR:
+        return;
+    case MGRAS_GL_IRIS_LMC_OTHER:
+    case MGRAS_GL_IRIS_RULE_OFF:
+    case MGRAS_GL_IRIS_RULE_ON:
+        s->gl_context[s->gl_current].iris_rule =
+            header == MGRAS_GL_IRIS_RULE_ON;
+        return;
     case MGRAS_GL_COLOR3F:
+        s->gl_context[s->gl_current].iris_colour_last = 1;
         mgras_gl_command(s, SGI_GL_OP_COLOR3F, payload, 3);
         return;
     case MGRAS_GL_COLOR4F:
+        s->gl_context[s->gl_current].iris_colour_last = 1;
         mgras_gl_command(s, SGI_GL_OP_COLOR4F, payload, 4);
         return;
     case MGRAS_GL_COLOR3UB:
+        s->gl_context[s->gl_current].iris_colour_last = 1;
         mgras_gl_color_bytes(word, payload[0]);
         mgras_gl_command(s, SGI_GL_OP_COLOR3UB, word, 3);
         return;
     case MGRAS_GL_COLOR4UB:
+        s->gl_context[s->gl_current].iris_colour_last = 1;
         mgras_gl_color_bytes(word, payload[0]);
         mgras_gl_command(s, SGI_GL_OP_COLOR4UB, word, 4);
         return;
     case MGRAS_GL_NORMAL3F:
+        s->gl_context[s->gl_current].iris_colour_last = 0;
         mgras_gl_command(s, SGI_GL_OP_NORMAL3F, payload, 3);
         return;
     case MGRAS_GL_NORMAL3D:
     case MGRAS_GL_NORMAL3I:
     case MGRAS_GL_NORMAL3S:
     case MGRAS_GL_NORMAL3B:
+        s->gl_context[s->gl_current].iris_colour_last = 0;
         mgras_gl_normal(s, header, payload);
         return;
     case MGRAS_GL_EDGE_FLAG_TRUE:
@@ -5670,16 +5819,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_EDGE_FLAG, word, 1);
         return;
     case MGRAS_GL_VERTEX2F:
-        mgras_gl_command(s, SGI_GL_OP_VERTEX2F, payload, 2);
+        mgras_gl_vertex(s, SGI_GL_OP_VERTEX2F, payload, 2);
         return;
     case MGRAS_GL_VERTEX3F:
-        mgras_gl_command(s, SGI_GL_OP_VERTEX3F, payload, 3);
+        mgras_gl_vertex(s, SGI_GL_OP_VERTEX3F, payload, 3);
         return;
     case MGRAS_GL_VERTEX4F:
-        mgras_gl_command(s, SGI_GL_OP_VERTEX4F, payload, 4);
+        mgras_gl_vertex(s, SGI_GL_OP_VERTEX4F, payload, 4);
         return;
     case MGRAS_GL_VERTEX2I:
-        mgras_gl_command(s, SGI_GL_OP_VERTEX2I, payload, 2);
+        mgras_gl_vertex(s, SGI_GL_OP_VERTEX2I, payload, 2);
         return;
     case MGRAS_GL_VERTEX3I:
     case MGRAS_GL_RASTER_POS3I: {
@@ -5687,9 +5836,11 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                        (int32_t)payload[2] };
 
         memcpy(word, f, sizeof(f));
-        mgras_gl_command(s, header == MGRAS_GL_VERTEX3I ?
-                         SGI_GL_OP_VERTEX3F : SGI_GL_OP_RASTER_POS3F,
-                         word, 3);
+        if (header == MGRAS_GL_VERTEX3I) {
+            mgras_gl_vertex(s, SGI_GL_OP_VERTEX3F, word, 3);
+        } else {
+            mgras_gl_command(s, SGI_GL_OP_RASTER_POS3F, word, 3);
+        }
         return;
     }
     case MGRAS_GL_TEX_COORD3F:

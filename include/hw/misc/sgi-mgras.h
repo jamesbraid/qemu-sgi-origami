@@ -489,6 +489,13 @@ typedef struct SGIMgrasGLContext {
      */
     uint32_t readback[4];
     uint32_t clip_query[2];
+    /*
+     * IRIS GL's colour and normal rule (hw/misc/sgi-mgras-gl.c): whether
+     * the board applies it, and whether a colour came after the last
+     * normal. Each is 0 or 1.
+     */
+    uint32_t iris_rule;
+    uint32_t iris_colour_last;
     /* A pixel draw under way in this context. */
     SGIMgrasGLPixels pixels;
     /* Texture state, used on a board with TRAM. */

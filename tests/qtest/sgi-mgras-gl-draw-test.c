@@ -3051,6 +3051,44 @@ static void test_gl_two_sided_lighting_lights_the_back(void)
     g_assert_cmphex(gl_lit_triangle(qts, true), ==, 0x0aff0a);
     g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x0a0a0a);
 }
+/*
+ * While IRIS GL's colour and normal rule is on, a vertex whose colour came
+ * after the last normal takes that colour unlit, as the zero ambient,
+ * diffuse and specular and the colour as emission give it: (0.2, 0.4,
+ * 0.6) is 0x336699. A normal sent after the colour lights the vertex
+ * again, diffuse (0.5, 0.25, 0.125) over the 0.04 ambient giving
+ * 0x8a4a2a, and so does the rule turned off. The materials the vertex was
+ * lit with come back afterwards.
+ */
+#define GL_EMISSION           0x1600
+
+static void test_gl_iris_colour_after_normal_is_unlit(void)
+{
+    gl_lit_start(qts);
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 0.5f, 0.25f, 0.125f, 1);
+    gl_word(qts, GL_IRIS_LMC_COLOR);
+    gl_word(qts, GL_IRIS_RULE_ON);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, 1);
+    gl_color3f(qts, 0.2f, 0.4f, 0.6f);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x336699);
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_FRONT_FACE, GL_DIFFUSE,
+                (const float[4]) { 0.5f, 0.25f, 0.125f, 1 });
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_BACK_FACE, GL_EMISSION,
+                (const float[4]) { 0, 0, 0, 1 });
+
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a4a2a);
+
+    gl_color3f(qts, 0.2f, 0.4f, 0.6f);
+    gl_word(qts, GL_IRIS_RULE_OFF);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a4a2a);
+
+    gl_word(qts, GL_IRIS_LMC_COLOR);
+    gl_word(qts, GL_IRIS_RULE_ON);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x336699);
+    gl_word(qts, GL_IRIS_LMC_OTHER);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a4a2a);
+}
 #define GL_CULL_OFF           0x00007300
 #define GL_CCW                0x901
 
@@ -4878,6 +4916,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-normal-forms-convert",
         test_gl_normal_forms_convert, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-iris-colour-after-normal-is-unlit",
+        test_gl_iris_colour_after_normal_is_unlit, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-two-sided-lighting-lights-the-back",
         test_gl_two_sided_lighting_lights_the_back, true);

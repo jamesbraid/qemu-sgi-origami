@@ -748,6 +748,52 @@ static void test_gl_clip_query_migration(void)
     gl_migrate(gl_clip_query_setup, gl_clip_query_check);
 }
 
+/*
+ * Slot A has IRIS GL's colour and normal rule on and a colour after its
+ * last normal, so its lit triangle takes the colour, 0x336699; slot B
+ * has the rule on but a normal after the colour, so its triangle is lit,
+ * 0x8a4a2a. Either colour from the other slot means a field did not
+ * travel with its context.
+ */
+static void gl_iris_rule_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_one(from, GL_LIGHT_ON_HDR, 0);
+        gl_word(from, GL_LIGHTING_ON);
+        gl_material(from, GL_FRONT_FACE, GL_DIFFUSE, 0.5f, 0.25f, 0.125f,
+                    1);
+        gl_word(from, GL_IRIS_LMC_COLOR);
+        gl_word(from, GL_IRIS_RULE_ON);
+        if (slot) {
+            gl_color3f(from, 0.2f, 0.4f, 0.6f);
+            gl_three(from, GL_NORMAL3F_HDR, 0, 0, 1);
+        } else {
+            gl_three(from, GL_NORMAL3F_HDR, 0, 0, 1);
+            gl_color3f(from, 0.2f, 0.4f, 0.6f);
+        }
+    }
+}
+
+static void gl_iris_rule_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 0, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        g_assert_cmphex(gl_lit_triangle(to, false), ==,
+                        slot ? 0x8a4a2a : 0x336699);
+    }
+}
+
+/* Each context's IRIS GL colour and normal rule state migrates. */
+static void test_gl_iris_rule_migration(void)
+{
+    gl_migrate(gl_iris_rule_setup, gl_iris_rule_check);
+}
+
 static void gl_line_point_setup(QTestState *from)
 {
     for (int slot = 0; slot < 2; slot++) {
@@ -836,6 +882,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-clip-query-migration",
         test_gl_clip_query_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-iris-rule-migration",
+        test_gl_iris_rule_migration, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-line-point-migration",
         test_gl_line_point_migration, false);
