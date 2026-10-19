@@ -942,6 +942,13 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                  (!o->native_one_dimensional &&
                   texture_native_uses_border(o->params.wrap_t)) ||
                  (volume && texture_native_uses_border(o->params.wrap_r)));
+            /*
+             * Where a far-corner level's border texels sit is not read: the
+             * border reader addresses from the tile origin, which there
+             * holds the level's own interior. Give it no reader so a border
+             * read refuses rather than returning interior texels.
+             */
+            bool border_read = border && !image_x && !image_y;
 
             if (o->native_internal_valid &&
                 (image->base_format == SGI_GL_DEPTH_COMPONENT) !=
@@ -965,13 +972,13 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 view->base_format = o->native_base_format;
                 view->internal_format = o->native_internal_format;
             }
-            view->native_border = border ?
+            view->native_border = border_read ?
                 texture_native_border_image(o, interior, level) : NULL;
             o->view[count++] = (SGIGLTexLevel) {
                 .border = border,
-                .read_border_texel = border && !volume ?
+                .read_border_texel = border_read && !volume ?
                                       texture_native_read_border : NULL,
-                .read_border_texel_3d = border && volume ?
+                .read_border_texel_3d = border_read && volume ?
                                          texture_native_read_border_3d : NULL,
                 .level = level, .width = view->width, .height = view->height,
                 .depth = view->depth,
