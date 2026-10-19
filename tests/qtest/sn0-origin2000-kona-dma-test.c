@@ -68,13 +68,13 @@
 /*
  * The model's sizes, repeated as literals rather than included: a test
  * that borrowed the model's own constant could not catch the model
- * getting it wrong. The list plane's rows are 4 KiB and it is 1 MiB by
- * default.
+ * getting it wrong. The list plane's rows are 4 KiB and it is 15 MiB by
+ * default, the display-list class the model advertises.
  */
 #define KONA_FB_WIDTH   1280
 #define KONA_FB_HEIGHT  1024
 #define KONA_LIST_ROW   4096
-#define KONA_LIST_BYTES (1024 * 1024)
+#define KONA_LIST_BYTES (15 * 1024 * 1024)
 
 /* Plane ids in the order the model declares them. */
 #define PLANE_FRONT     0
@@ -536,6 +536,24 @@ static void test_dma_list_write_lands_in_list_plane(void)
     kona_dma_packet(qts, dma_node_addr(DMA_LIST_SRC), 4, 4, 0,
                     KONA_DMA_DONE_WORD);
     g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, src[0]);
+}
+
+/*
+ * pointblank's lists sit past the first MiB of the display-list class
+ * (pipe-memory 0x243000 in an IRIX 6.5.30 run): a list write there lands,
+ * as anywhere inside the class's 15 MiB the model advertises.
+ */
+static void test_dma_list_write_past_first_mib(void)
+{
+    kona_reset();
+    kona_write_be32_array(qts, dma_node_addr(DMA_LIST_SRC), dma_pixels, 4);
+    kona_dma_list_write(qts, 0x243000, 16);
+    kona_dma_packet(qts, dma_node_addr(DMA_LIST_SRC), 16, 16, 0,
+                    KONA_DMA_DONE_WORD);
+    g_assert_cmphex(kona_list_word(qts, 0x243000), ==, dma_pixels[0]);
+    g_assert_cmphex(kona_list_word(qts, 0x24300c), ==, dma_pixels[3]);
+    g_assert_cmpuint(kona_qom_get_uint(qts, "x-test-dma-last-kind"), ==,
+                     DONE_WRITTEN);
 }
 
 /*
@@ -1083,6 +1101,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/dma/"
                    "list-write-outside-plane-refused",
                    test_dma_list_write_outside_plane_refused);
+    qtest_add_func("sn0/origin2000/kona/dma/list-write-past-first-mib",
+                   test_dma_list_write_past_first_mib);
     qtest_add_func("sn0/origin2000/kona/dma/stray-words-resynchronize",
                    test_dma_stray_words_resynchronize);
     qtest_add_func("sn0/origin2000/kona/dma/"

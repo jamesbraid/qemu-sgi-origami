@@ -437,7 +437,7 @@ static void test_migration_carries_scanout(void)
 /*
  * The board memory holds six planes, declared at realize in this order:
  * front and back colour banks of 1280x1024 32-bit words (format RGB24,
- * 2), a byte-per-pixel tag plane for each (format TAG, 6), 1 MiB of list
+ * 2), a byte-per-pixel tag plane for each (format TAG, 6), 15 MiB of list
  * words in 4096-byte rows (format RAW, 9) and a 1280x1024 depth plane of
  * 32-bit words (format Z24, 4). The list size follows the
  * "list-memory-size" property, and a size that is not a whole number of
@@ -454,15 +454,15 @@ static void test_planes_declared(void)
         "plane 1 base 0x500000 len 0x500000 1280x1024 stride 5120 format 2",
         "plane 2 base 0xa00000 len 0x140000 1280x1024 stride 1280 format 6",
         "plane 3 base 0xb40000 len 0x140000 1280x1024 stride 1280 format 6",
-        "plane 4 base 0xc80000 len 0x100000 1024x256 stride 4096 format 9",
-        "plane 5 base 0xd80000 len 0x500000 1280x1024 stride 5120 format 4",
+        "plane 4 base 0xc80000 len 0xf00000 1024x3840 stride 4096 format 9",
+        "plane 5 base 0x1b80000 len 0x500000 1280x1024 stride 5120 format 4",
     };
 
     static const struct {
         const char *line;
         unsigned count;
     } internal[] = {
-        { "plane 6 base 0x1280000 len 0x140000 1280x1024 stride 1280 format 5",
+        { "plane 6 base 0x2080000 len 0x140000 1280x1024 stride 1280 format 5",
           1 },
         { "plane 0 base 0x0 len 0x500000 1280x1024 stride 5120 format 9", 2 },
         { "plane 1 base 0x500000 len 0x500000 1280x1024 stride 5120 format 9",

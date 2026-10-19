@@ -764,7 +764,13 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_TAG_X_INDEX16   3
 
 #define SGI_KONA_LIST_ROW_BYTES  4096
-#define SGI_KONA_LIST_DEFAULT    (1 * MiB)
+/*
+ * The display-list class's capacity the model advertises in the 0x1e9
+ * answer (class 1, 0x3c00 granules of 0x400 bytes): the kernel places
+ * that class's regions by class-relative granule offset, and the library
+ * addresses lists inside them, so the plane covers the whole class.
+ */
+#define SGI_KONA_LIST_DEFAULT    (15 * MiB)
 #define SGI_KONA_LIST_MAX        (64 * MiB)
 
 typedef struct SGIKonaTextureUpload {
