@@ -8041,6 +8041,29 @@ enum {
     ODSY_CMD_GL_RECT,        /* gathering a rectangle's colour and corners */
 };
 
+/*
+ * The raster-position query. The GL library sends 0x4c0 + kind with the same
+ * count, 0x0a5a fence and sequence as the current-value query (kind 0); kind
+ * 3 is the one glRasterPos's update sends. ESTABLISHED from the IRIX 6.5.30
+ * IP30 n32 libGLcore.so: after kind 3 completes the library copies the
+ * record at query base + 0x93c into the raster colour in an RGBA context, or
+ * the one at + 0x928 in a colour-index context (the context byte the library
+ * also tests in its logic-op and enable paths, read as RGBA mode: INFERRED),
+ * and the record at + 0x950 into the raster texture coordinate. The bitmap
+ * path then sends that colour as the glyph rectangle's colour, so with no
+ * answer every glyph drew in whatever stale words sat there.
+ *
+ * APPROXIMATION: the board's raster colour is the current colour after
+ * lighting; this model answers with the current colour and index records
+ * unlit, and with the current texture coordinate untransformed, beside the
+ * kind-0 records. Lit raster colours, kinds 1 and 2 and any raster-position
+ * result the library may read elsewhere are not modeled. A capture of the
+ * shadow page after a lit glRasterPos would settle the lit case.
+ */
+#define ODSY_QUERY_KIND_RASTER 3
+#define ODSY_QUERY_RASTER_INDEX 0x928
+#define ODSY_QUERY_RASTER_COLOUR 0x93c
+
 static const unsigned odyssey_query_offset[] = {
     0x900, 0x914, 0x928, 0x950, 0x978,
 };
@@ -8073,6 +8096,7 @@ static void odyssey_query_cancel(SGIOdysseyState *s)
     s->query_stage = 0;
     s->query_count = 0;
     s->query_sync_index = 0;
+    s->query_kind = 0;
     s->query_base = 0;
     s->query_sync_base = 0;
     s->query_captured_epoch = 0;
@@ -8290,6 +8314,20 @@ static void odyssey_query_finish(SGIOdysseyState *s, uint32_t sequence)
             if (sgi_odyssey_publish_be32(&bus, addr, s->query_captured[i][j])) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "sgi-odyssey: current-query payload failed\n");
+                return;
+            }
+        }
+    }
+    for (i = 0; s->query_kind == ODSY_QUERY_KIND_RASTER && i < 2; i++) {
+        const uint32_t *rec = s->query_captured[i ? ODSY_QUERY_COLOUR :
+                                                    ODSY_QUERY_INDEX];
+        uint64_t at = s->query_base + (i ? ODSY_QUERY_RASTER_COLOUR :
+                                           ODSY_QUERY_RASTER_INDEX);
+
+        for (j = 0; j < 1 + odyssey_cmd_arity(rec[0]); j++) {
+            if (sgi_odyssey_publish_be32(&bus, at + 4 * j, rec[j])) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-odyssey: raster query payload failed\n");
                 return;
             }
         }
@@ -9378,8 +9416,9 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
 {
     unsigned int i;
 
-    if (word == 0x4c0) {
+    if (word == 0x4c0 || word == 0x4c0 + ODSY_QUERY_KIND_RASTER) {
         odyssey_query_begin(s);
+        s->query_kind = word - 0x4c0;
         return;
     }
     if (word == 0x2f00c02e || word == 0x3000c02e) {
