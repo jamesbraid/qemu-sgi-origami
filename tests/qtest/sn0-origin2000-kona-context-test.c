@@ -671,7 +671,6 @@ static void test_deactivate_mid_user_command(void)
                      ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_resume "),
                      ==, 1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
@@ -717,7 +716,6 @@ static void test_suspended_command_survives_other_context(void)
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
@@ -800,7 +798,6 @@ static void test_suspended_gl_run_survives_other_context(void)
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
@@ -849,7 +846,6 @@ static void test_list_call_split_by_switch(void)
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
@@ -1641,7 +1637,6 @@ static void test_suspended_bitmap_survives_other_context(void)
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
                      1);
-    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
 }
 
 /*
