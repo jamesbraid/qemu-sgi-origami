@@ -854,6 +854,61 @@ static void test_list_from_pipe_memory_reaches_decoder(void)
 }
 
 /*
+ * The library counts display-list offsets from its context's display-list
+ * region, and the kernel places that region with 0x1e4 1 0 offset size,
+ * in 0x400-byte granules, when it restores the context. Two contexts that
+ * both use offset 0 keep their lists apart: A's region at granule 4 gets
+ * the list pulled to its offset 0 (plane 0x1000), B's region at granule 8
+ * holds nothing, so B's call of offset 0 draws nothing and A's, once A's
+ * region is placed again, draws the point; a move and a 0x170 call stay in
+ * the region too. A model that used the offsets as absolute plane
+ * addresses ran A's list for B, which under several GL clients misframed
+ * the stream (nested glBegin, garbage geometry).
+ */
+#define MEM_REGION 0x1e4u
+
+static void kona_place_lists(QTestState *s, uint32_t granule)
+{
+    kona_command(s, (const uint32_t[]) { MEM_REGION, 1, 0, granule, 2 }, 5);
+}
+
+static void test_list_offsets_follow_the_context_region(void)
+{
+    kona_reset();
+    kona_write_be32_array(qts, DMA_POOL_BASE, list_words,
+                          ARRAY_SIZE(list_words));
+    kona_register_pool(qts, DMA_POOL_BASE, 0x4000);
+
+    kona_place_lists(qts, 4);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_PULL, 0, 0, sizeof(list_words), 0,
+    }, 5);
+    g_assert_cmphex(kona_list_word(qts, 0x1000), ==, list_words[0]);
+    g_assert_cmphex(kona_list_word(qts, 0), ==, 0);
+
+    kona_place_lists(qts, 8);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALL, 0, ARRAY_SIZE(list_words),
+    }, 3);
+    g_assert_cmphex(kona_point_pixel(qts), !=, LIST_POINT_RGB);
+
+    kona_place_lists(qts, 4);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALL, 0, ARRAY_SIZE(list_words),
+    }, 3);
+    g_assert_cmphex(kona_point_pixel(qts), ==, LIST_POINT_RGB);
+
+    kona_command(qts, (const uint32_t[]) { LIST_MOVE, 0x800, 0, 16 }, 4);
+    g_assert_cmphex(kona_list_word(qts, 0x1800), ==, list_words[0]);
+    g_assert_cmphex(kona_list_word(qts, 0x800), ==, 0);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALLS, 2, 0, 9, 0x24, 4,
+    }, 6);
+    g_assert_cmphex(kona_point_pixel(qts), ==, LIST_POINT_RGB);
+    kona_assert_last_completion(qts, DONE_CONSUMED, 0, 13);
+}
+
+/*
  * 0x170 runs up to eight ranges of a list in pipe memory as one list:
  * the 13-word list pulled to 0x2000 and invoked as eight ranges draws its
  * point in the loaded colour, CONSUMED with all 13 words, so the fetch
@@ -1117,6 +1172,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/dma/"
                    "list-from-pipe-memory-reaches-decoder",
                    test_list_from_pipe_memory_reaches_decoder);
+    qtest_add_func("sn0/origin2000/kona/dma/"
+                   "list-offsets-follow-the-context-region",
+                   test_list_offsets_follow_the_context_region);
     qtest_add_func("sn0/origin2000/kona/dma/list-longer-than-class-refused",
                    test_list_longer_than_class_refused);
     qtest_add_func("sn0/origin2000/kona/dma/"

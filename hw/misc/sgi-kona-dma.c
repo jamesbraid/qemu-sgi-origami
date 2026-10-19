@@ -539,7 +539,7 @@ static bool sgi_kona_dma_fetch_next(void *opaque, const SGICommandFetch *f,
     if (!d->nranges) {
         return false;
     }
-    *offset = d->ranges[0];
+    *offset = (uint64_t)d->list_base + d->ranges[0];
     *nwords = d->ranges[1];
     d->ranges += 2;
     d->nranges--;
@@ -596,7 +596,8 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
               sgi_fetch_map(f, &bus, &pl, pairs[0], pairs[1]) :
               SGI_FAIL_BUS;
     } else {
-        ret = sgi_fetch_map_plane(f, &s->mem, s->plane_list, pairs[0],
+        ret = sgi_fetch_map_plane(f, &s->mem, s->plane_list,
+                                  (uint64_t)d->list_base + pairs[0],
                                   pairs[1], s);
     }
     if (!ret) {
@@ -629,7 +630,8 @@ static void sgi_kona_dma_pull(SGIKonaState *s, const uint32_t *args)
         sgi_kona_dma_refuse(s, SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BUS);
         return;
     }
-    sgi_kona_dma_to_list(s, &pl, args[1], args[0], args[2],
+    sgi_kona_dma_to_list(s, &pl, args[1],
+                         (uint64_t)s->dma.list_base + args[0], args[2],
                          SGI_KONA_DMA_COOKIE_NONE);
 }
 
@@ -642,14 +644,17 @@ static void sgi_kona_dma_pull(SGIKonaState *s, const uint32_t *args)
 static void sgi_kona_dma_move(SGIKonaState *s, const uint32_t *args)
 {
     const SGIPlane *list = sgi_board_memory_plane(&s->mem, s->plane_list);
-    uint32_t dest = args[0], src = args[1], len = args[2];
+    uint64_t dest = (uint64_t)s->dma.list_base + args[0];
+    uint64_t src = (uint64_t)s->dma.list_base + args[1];
+    uint32_t len = args[2];
     g_autofree uint8_t *buf = NULL;
 
     if (dest > list->len || len > list->len - dest ||
         src > list->len || len > list->len - src) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-kona: list move of 0x%x bytes from 0x%x to 0x%x "
-                      "leaves the 0x%" PRIx64 "-byte list plane; dropped\n",
+                      "sgi-kona: list move of 0x%x bytes from 0x%" PRIx64
+                      " to 0x%" PRIx64 " leaves the 0x%" PRIx64
+                      "-byte list plane; dropped\n",
                       len, src, dest, list->len);
         return;
     }
@@ -710,6 +715,39 @@ static void sgi_kona_dma_calls_open_n(SGIKonaState *s, uint32_t token,
     d->calls_have = 0;
 }
 
+/*
+ * 0x1e4 class key offset size: the kernel's placement of one of the
+ * current context's pipe-memory regions, offset and size in granules
+ * (kona_mem_reserve_func). It sends one for every region the context
+ * holds when it restores the context, and again when one is allocated or
+ * freed (size 0). The library's display-list offsets, in 0x16d, 0x170,
+ * 0x167, 0x16f and kona_dmawrite's 0x1c8, count from the start of its
+ * display-list allocation, class 1 key 0 (the grammar datasheet's
+ * display-list section), so two contexts each using offset 0 must not
+ * meet in pipe memory. The model therefore adds the class 1, key 0
+ * region's offset, at the model's 0x400-byte granule, to every list-plane
+ * address.
+ *
+ * Inferred: that the pipe relocates the offsets by the region the kernel
+ * placed. A freed region (size 0) leaves no base. Context activation
+ * clears the base before the restore's 0x1e4 packets arrive
+ * (sgi_kona_context_activate()), so a context with no region uses none.
+ */
+#define SGI_KONA_DMA_LIST_GRANULE 0x400u
+
+void sgi_kona_dma_list_region(SGIKonaState *s, const uint32_t *args)
+{
+    if (args[0] != 1 || args[1] != 0) {
+        return;
+    }
+    if (!args[3] || args[2] > SGI_KONA_DMA_LIST_MAX_WORDS * 4 /
+                              SGI_KONA_DMA_LIST_GRANULE) {
+        s->dma.list_base = 0;
+        return;
+    }
+    s->dma.list_base = args[2] * SGI_KONA_DMA_LIST_GRANULE;
+}
+
 void sgi_kona_dma_command(SGIKonaState *s, uint32_t selector,
                           const uint32_t *args)
 {
@@ -746,7 +784,8 @@ void sgi_kona_dma_command(SGIKonaState *s, uint32_t selector,
                           args[0]);
         }
         d->record_pending = true;
-        d->record_dest = args[0];
+        d->record_dest = args[0] > UINT32_MAX - d->list_base ?
+                         UINT32_MAX : d->list_base + args[0];
         d->record_bytes = args[1];
         break;
     default:
@@ -837,6 +876,7 @@ void sgi_kona_dma_reset(SGIKonaDma *d)
     d->pool_valid = false;
     d->pool_base = 0;
     d->pool_len = 0;
+    d->list_base = 0;
     sgi_kona_dma_calls_drop(container_of(d, SGIKonaState, dma));
     d->test_last_kind = 0;
     d->test_last_cookie = 0;
@@ -929,6 +969,10 @@ static int sgi_kona_dma_post_load(void *opaque, int version_id)
          d->calls_have >= d->calls_need)) {
         return -EINVAL;
     }
+    if (d->list_base % SGI_KONA_DMA_LIST_GRANULE ||
+        d->list_base > SGI_KONA_DMA_LIST_MAX_WORDS * 4) {
+        return -EINVAL;
+    }
     if (d->pool_valid &&
         (d->pool_base % SGI_KONA_DMA_POOL_PAGE || !d->pool_len ||
          d->pool_len % SGI_KONA_DMA_POOL_PAGE ||
@@ -940,8 +984,8 @@ static int sgi_kona_dma_post_load(void *opaque, int version_id)
 
 const VMStateDescription vmstate_sgi_kona_dma = {
     .name = TYPE_SGI_KONA "/dma",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .needed = sgi_kona_dma_needed,
     .post_load = sgi_kona_dma_post_load,
     .fields = (const VMStateField[]) {
@@ -957,6 +1001,7 @@ const VMStateDescription vmstate_sgi_kona_dma = {
         VMSTATE_UINT32(dma.calls_have, SGIKonaState),
         VMSTATE_UINT32_ARRAY(dma.calls_words, SGIKonaState,
                              2 * SGI_KONA_DMA_LIST_MAX_RANGES),
+        VMSTATE_UINT32(dma.list_base, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
