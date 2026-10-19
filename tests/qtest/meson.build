@@ -84,6 +84,8 @@ slow_qtests = {
   'sn0-origin2000-kona-3d-test-state': 180,
   'sn0-origin2000-kona-3d-test-texture': 840,
   'sn0-origin2000-kona-bringup-test': 230,
+  # With the suspended-command checks it took 43-64 s alone on a loaded host.
+  'sn0-origin2000-kona-context-test': 180,
   # The whole binary, which only a named run uses: its groups below are
   # what the qtest suites run.
   'sn0-origin2000-kona-fill-test': 900,
