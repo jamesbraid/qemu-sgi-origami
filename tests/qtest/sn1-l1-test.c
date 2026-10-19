@@ -2,6 +2,7 @@
 /* Isolated L1 protocol checks; this fixture does not execute firmware. */
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
+#include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -23,9 +24,12 @@ static void expect_raw_reply(QTestState *s, const uint8_t *expected,
 static size_t general(QTestState *s, uint16_t code, const uint8_t *args,
                       size_t args_len, unsigned count, uint8_t *reply);
 static void integer(uint8_t *out, uint32_t value);
+static size_t eeprom_read(QTestState *s, unsigned component, unsigned area,
+                          unsigned offset, unsigned length, uint8_t *reply);
 #define PATH "/machine/peripheral/l1"
 #define L1 "/machine/peripheral/l1c"
 #define UART " -device sgi-l1-uart,id=l1,controller=l1c"
+#define IROUTER_FRAGMENT_MAX 0x400
 
 static QTestState *start(void)
 {
@@ -53,6 +57,50 @@ static void send_frame(QTestState *s, const uint8_t *p, size_t n, bool corrupt)
 static size_t receive(QTestState *s, uint8_t *p)
 {
     return sgi_l1_test_receive(s, BASE, p, 131);
+}
+
+static void send_frame_at(QTestState *s, uint64_t base, const uint8_t *p,
+                          size_t n)
+{
+    sgi_l1_test_send(s, base, p, n, false);
+}
+
+static size_t receive_at(QTestState *s, uint64_t base, uint8_t *p,
+                         size_t capacity)
+{
+    return sgi_l1_test_receive(s, base, p, capacity);
+}
+
+static size_t irouter_brick_request(uint8_t *request)
+{
+    static const uint8_t captured[] = {
+        0x10, 0, 0, 0, 0, 0x30, 1, 1, 0, 0x2b,
+        0, 0x2b, 2, 0, 0, 0x81, 0, 0, 0x0f, 0xff,
+        0xf0, 3, 0x2f, 0xff, 0xf0, 0, 2, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0x0a,
+        1, 0, 7, 0, 0, 0, 0x34, 'b', 'r', 'i',
+        'c', 'k', ' ', 0,
+    };
+
+    memcpy(request, captured, sizeof(captured));
+    return sizeof(captured);
+}
+
+static QTestState *start_irouter(const char *l1_properties, bool second_uart,
+                                 const char *extra)
+{
+    QTestState *s = qtest_initf(
+        "-M none -cpu R10000 -S %s -device sgi-l1,id=l1c,%s "
+        "-device sgi-l1-uart,id=l1,controller=l1c %s",
+        extra, l1_properties,
+        second_uart ? "-device sgi-l1-uart,id=l1b,controller=l1c,"
+                    "transport-index=1" : "");
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    if (second_uart) {
+        qtest_sysbus_mmio_map(s, "/machine/peripheral/l1b", 0, BASE + 0x1000);
+    }
+    return s;
 }
 
 static void test_uart(void)
@@ -168,6 +216,900 @@ static void test_errors(void)
     send_frame(s, request, sizeof(request), false);
     g_assert_cmpuint(receive(s, reply), ==, sizeof(count));
     g_assert_cmpmem(reply, sizeof(count), count, sizeof(count));
+    qtest_quit(s);
+}
+
+static void test_irouter_brick_exact(void)
+{
+    static const uint8_t response_prefix[] = {
+        0, 0x8b, 2, 0, 0, 0x81, 1, 0,
+        0, 0x04, 0x42, 0x15, 0, 0x04, 0x40, 3, 2, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0x0a, 1, 0, 0x67, 0, 0, 0, 0x34,
+    };
+    static const char text[] =
+        "rack: 001, slot: 04, partition: none, type: Chimera Server "
+        "[?MB flash], serial:(null), source: OTHER\n\n";
+    uint8_t inner[sizeof(response_prefix) + sizeof(text)];
+    uint8_t first[1 + 9 + 113], continuation[1 + 9 + 26], reply[131];
+    uint8_t request[53];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = qtest_init(
+        "-M none -cpu R10000 -S -device sgi-l1,id=l1c,rack=1,bay=4,"
+        "partition=0,brick-type-code=55,irouter-compat=on "
+        "-device sgi-l1-uart,id=l1,controller=l1c");
+
+    g_assert_cmpuint(sizeof(text), ==, 103);
+    g_assert_cmpuint(sizeof(inner), ==, 139);
+    memcpy(inner, response_prefix, sizeof(response_prefix));
+    memcpy(inner + sizeof(response_prefix), text, sizeof(text));
+    first[0] = continuation[0] = 0x30;
+    memset(first + 1, 0, 4);
+    first[5] = 0x30;
+    first[6] = 1;
+    first[7] = 1;
+    first[8] = 0;
+    first[9] = sizeof(inner);
+    memcpy(first + 10, inner, 113);
+    memset(continuation + 1, 0, 4);
+    continuation[5] = 0x30;
+    continuation[6] = 3;
+    continuation[7] = continuation[8] = continuation[9] = 0;
+    memcpy(continuation + 10, inner + 113, 26);
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    send_frame(s, request, request_length, false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(first));
+    g_assert_cmpmem(reply, sizeof(first), first, sizeof(first));
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(continuation));
+    g_assert_cmpmem(reply, sizeof(continuation), continuation,
+                    sizeof(continuation));
+    qtest_quit(s);
+}
+
+static void irouter_send_chunk(QTestState *s, uint64_t base, uint8_t channel,
+                               uint16_t command, uint8_t count,
+                               uint16_t fragment_length,
+                               const uint8_t *data, size_t data_length)
+{
+    uint8_t packet[10 + IROUTER_FRAGMENT_MAX] = { 0 };
+
+    g_assert_cmpuint(data_length, <=, IROUTER_FRAGMENT_MAX);
+    packet[0] = channel;
+    stw_be_p(packet + 5, command);
+    packet[7] = count;
+    stw_be_p(packet + 8, fragment_length);
+    memcpy(packet + 10, data, data_length);
+    send_frame_at(s, base, packet, 10 + data_length);
+}
+
+static size_t irouter_encode_frame(const uint8_t *packet, size_t length,
+                                   uint8_t *wire)
+{
+    uint16_t crc = 0xffff;
+    size_t used = 0;
+
+    wire[used++] = 0x7e;
+    for (size_t i = 0; i < length; i++) {
+        uint8_t byte = packet[i];
+
+        crc = sgi_l1_test_fcs(crc, byte);
+        if (byte == 0x7e || byte == 0x7d) {
+            wire[used++] = 0x7d;
+            byte ^= 0x20;
+        }
+        wire[used++] = byte;
+    }
+    crc = ~crc;
+    for (unsigned i = 0; i < 2; i++) {
+        uint8_t byte = i ? crc >> 8 : crc;
+
+        if (byte == 0x7e || byte == 0x7d) {
+            wire[used++] = 0x7d;
+            byte ^= 0x20;
+        }
+        wire[used++] = byte;
+    }
+    wire[used++] = 0x7e;
+    return used;
+}
+
+static size_t irouter_receive(QTestState *s, uint64_t base, uint8_t *channel,
+                              uint8_t *inner, size_t capacity)
+{
+    uint8_t packet[131];
+    size_t packet_length, total, expected;
+    unsigned chunks = 0;
+
+    packet_length = receive_at(s, base, packet, sizeof(packet));
+    g_assert_cmpuint(packet_length, >=, 10);
+    *channel = packet[0];
+    g_assert_cmpmem(packet + 1, 4, "\0\0\0\0", 4);
+    g_assert_cmphex(packet[5], ==, 0x30);
+    g_assert_cmphex(packet[6], ==, 1);
+    g_assert_cmphex(packet[7], ==, 1);
+    expected = lduw_be_p(packet + 8);
+    g_assert_cmpuint(expected, >, 0);
+    g_assert_cmpuint(expected, <=, IROUTER_FRAGMENT_MAX);
+    total = packet_length - 10;
+    g_assert_cmpuint(total, <=, 113);
+    g_assert_cmpuint(total, <=, expected);
+    g_assert_cmpuint(total, <=, capacity);
+    memcpy(inner, packet + 10, total);
+    chunks++;
+
+    while (total < lduw_be_p(inner)) {
+        size_t bytes;
+
+        g_assert_cmpuint(chunks, <, 10);
+        packet_length = receive_at(s, base, packet, sizeof(packet));
+        g_assert_cmpuint(packet_length, >=, 11);
+        g_assert_cmphex(packet[0], ==, *channel);
+        g_assert_cmpmem(packet + 1, 4, "\0\0\0\0", 4);
+        g_assert_cmphex(packet[5], ==, 0x30);
+        g_assert_cmphex(packet[6], ==, 3);
+        g_assert_cmphex(packet[7], ==, 0);
+        g_assert_cmphex(packet[8], ==, 0);
+        g_assert_cmphex(packet[9], ==, 0);
+        bytes = packet_length - 10;
+        g_assert_cmpuint(bytes, <=, 113);
+        g_assert_cmpuint(total + bytes, <=, capacity);
+        memcpy(inner + total, packet + 10, bytes);
+        total += bytes;
+        chunks++;
+    }
+    g_assert_cmpuint(total, ==, lduw_be_p(inner));
+    return total;
+}
+
+static void irouter_expect_default(QTestState *s, uint64_t base,
+                                   uint8_t channel, uint32_t destination)
+{
+    uint8_t inner[IROUTER_FRAGMENT_MAX];
+    uint8_t reply_channel;
+    size_t length = irouter_receive(s, base, &reply_channel, inner,
+                                    sizeof(inner));
+    static const char expected[] =
+        "rack: 001, slot: 04, partition: none, type: Chimera Server "
+        "[?MB flash], serial:(null), source: OTHER\n\n";
+
+    g_assert_cmphex(reply_channel, ==, channel);
+    g_assert_cmpuint(length, ==, 139);
+    g_assert_cmphex(inner[4], ==, 0);
+    g_assert_cmpuint(ldl_be_p(inner + 8), ==, destination);
+    g_assert_cmphex(ldl_be_p(inner + 12), ==, 0x00044003);
+    g_assert_cmphex(inner[17], ==, 0);
+    g_assert_cmpmem(inner + 36, sizeof(expected), expected, sizeof(expected));
+}
+
+static void irouter_expect_text(QTestState *s, uint64_t base,
+                                uint8_t channel, uint32_t destination,
+                                uint32_t source, const char *expected)
+{
+    uint8_t inner[IROUTER_FRAGMENT_MAX];
+    uint8_t reply_channel;
+    size_t length = irouter_receive(s, base, &reply_channel, inner,
+                                    sizeof(inner));
+    size_t text_length = strlen(expected) + 1;
+    g_autofree char *actual = NULL;
+
+    g_assert_cmphex(reply_channel, ==, channel);
+    g_assert_cmpuint(length, ==, lduw_be_p(inner));
+    g_assert_cmpuint(ldl_be_p(inner + 8), ==, destination);
+    g_assert_cmpuint(ldl_be_p(inner + 12), ==, source);
+    g_assert_cmpuint(length, >=, 36 + text_length);
+    actual = g_strndup((const char *)inner + 36, length - 36);
+    g_assert_cmpstr(actual, ==, expected);
+    g_assert_cmpmem(inner + 36, text_length, expected, text_length);
+}
+
+static void test_irouter_fragment_channel_transport(void)
+{
+    uint8_t request[53];
+    uint8_t remainder[43];
+    uint8_t wire[112];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        true, "");
+
+    g_assert_cmpuint(request_length, ==, 53);
+    memcpy(remainder, request + 10, sizeof(remainder));
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    request[0] = 0x11;
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_default(s, BASE, 0x31, 0x00044235);
+    request[0] = 0x10;
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    send_frame_at(s, BASE + 0x1000, request, request_length);
+    irouter_expect_default(s, BASE + 0x1000, 0x30, 0x00044615);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+
+    request[0] = 0x10;
+    size_t wire_length = irouter_encode_frame(request, request_length, wire);
+    g_assert_cmpuint(wire_length, >, 16);
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_writeq(s, BASE, wire[i]);
+    }
+    request[0] = 0x11;
+    send_frame_at(s, BASE + 0x1000, request, request_length);
+    request[0] = 0x10;
+    for (size_t i = 16; i < wire_length; i++) {
+        qtest_writeq(s, BASE, wire[i]);
+    }
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+    irouter_expect_default(s, BASE + 0x1000, 0x31, 0x00044635);
+    qtest_quit(s);
+}
+
+static void test_irouter_reset_and_negative(void)
+{
+    uint8_t request[53];
+    uint8_t remainder[43];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+
+    memcpy(remainder, request + 10, sizeof(remainder));
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+    qtest_quit(s);
+
+    s = start();
+    {
+        g_autoptr(QDict) result = qtest_qmp(s,
+            "{'execute':'qom-get','arguments':"
+            "{'path':%s,'property':'irouter-compat'}}", L1);
+        g_assert_false(qdict_get_bool(result, "return"));
+    }
+    send_frame_at(s, BASE, request, request_length);
+    expect_router_error(s, 16);
+    qtest_quit(s);
+
+    s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+    {
+        const uint8_t short_wrapper[] = {
+            0x10, 0, 0, 0, 0, 0x30, 1,
+        };
+
+        send_frame_at(s, BASE, short_wrapper, sizeof(short_wrapper));
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    }
+    memcpy(remainder, request + 10, sizeof(remainder));
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+    qtest_quit(s);
+
+    s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=52,irouter-compat=on",
+        false, "");
+    send_frame_at(s, BASE, request, request_length);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder, sizeof(remainder));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+
+    s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+    request[46] = 'r';
+    memcpy(request + 47, "eset\0", 5);
+    send_frame_at(s, BASE, request, request_length);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+}
+
+static void test_irouter_replace_pending(void)
+{
+    GError *error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted_log = NULL, *extra = NULL;
+    g_autofree char *log_contents = NULL;
+    uint8_t old_request[53], new_request[53], old_fragment[43];
+    size_t request_length;
+    int fd = g_file_open_tmp("sn1-l1-irouter-replace-XXXXXX.log",
+                             &log_path, &error);
+    QTestState *s;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted_log = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d guest_errors -D %s", quoted_log);
+    request_length = irouter_brick_request(old_request);
+    g_assert_cmpuint(irouter_brick_request(new_request), ==, request_length);
+    old_request[14] = 0x12;
+    old_request[27] = 0x34;
+    memcpy(old_fragment, old_request + 10, sizeof(old_fragment));
+    s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, extra);
+
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(old_fragment),
+                       old_fragment, 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    send_frame_at(s, BASE, new_request, request_length);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       old_fragment + 12, sizeof(old_fragment) - 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log_path, &log_contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log_contents,
+                            "sgi-l1: replacing pending IRouter request"));
+    g_assert_cmpint(unlink(log_path), ==, 0);
+}
+
+static void test_irouter_multifragment_refusal(void)
+{
+    uint8_t request[53];
+    const uint8_t last_fragment[] = { 0xde, 0xad, 0xbe, 0xef };
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+
+    g_assert_cmpuint(request_length, ==, sizeof(request));
+    /* The extra fragment is synthetic; its descriptor mapping is unknown. */
+    request[15] = 0x82;
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 2, 43, request + 10, 43);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    irouter_send_chunk(s, BASE, 0x10, 0x3002, 0, sizeof(last_fragment),
+                       last_fragment, sizeof(last_fragment));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    request[0] = 0x11;
+    request[15] = 0x81;
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_default(s, BASE, 0x31, 0x00044235);
+    qtest_quit(s);
+}
+
+static void test_irouter_identity_overrides(void)
+{
+    uint8_t request[53];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=2,bay=5,partition=3,brick-type-code=57,irouter-compat=on,"
+        "brick-serial=SERIAL-X", false, "");
+    static const char serial[] =
+        "rack: 002, slot: 05, partition: 3, type: Chimera WS [?MB flash], "
+        "serial:SERIAL-X, source: OTHER\n\n";
+
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_text(s, BASE, 0x30, 0x00085215, 0x00085003, serial);
+    qtest_quit(s);
+
+    s = start_irouter(
+        "rack=3,bay=2,partition=255,brick-type-code=81,irouter-compat=on,"
+        "brick-serial=", false, "");
+    static const char empty_serial[] =
+        "rack: 003, slot: 02, partition: ?, type: Rackmount WS [?MB flash], "
+        "serial:, source: OTHER\n\n";
+
+    send_frame_at(s, BASE, request, request_length);
+    irouter_expect_text(s, BASE, 0x30, 0x000c2215, 0x000c2003,
+                        empty_serial);
+    qtest_quit(s);
+}
+
+static void o300_expect_reply(QTestState *s, uint64_t base,
+                              const uint8_t *request, uint8_t channel,
+                              uint32_t destination, uint32_t source,
+                              const char *text);
+
+static void test_o300_irouter_brick(void)
+{
+    uint8_t request[53];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=1,partition=0,brick-type-code=52,"
+        "o300-l1cmd-compat=on",
+        false, "");
+    static const char expected[] =
+        "rack: 001, slot: 01, partition: none, type: C (IP45) "
+        "[EMU-UNKNOWN flash], serial:EMU-UNKNOWN-BSN, "
+        "source: EMULATED\n\n";
+
+    send_frame_at(s, BASE, request, request_length);
+    o300_expect_reply(s, BASE, request, 0x30, 0x00041215, 0x00041003,
+                      expected);
+    qtest_quit(s);
+}
+
+static size_t o300_irouter_request(uint8_t *request, const char *command)
+{
+    size_t length = strlen(command) + 1;
+
+    g_assert_cmpuint(length, <=, 12);
+    irouter_brick_request(request);
+    stw_be_p(request + 8, 36 + length);
+    stw_be_p(request + 10, 36 + length);
+    stw_be_p(request + 40, length);
+    memcpy(request + 46, command, length);
+    return 46 + length;
+}
+
+static void o300_expect_reply(QTestState *s, uint64_t base,
+                              const uint8_t *request, uint8_t channel,
+                              uint32_t destination, uint32_t source,
+                              const char *text)
+{
+    uint8_t actual[IROUTER_FRAGMENT_MAX];
+    uint8_t expected[IROUTER_FRAGMENT_MAX] = { 0 };
+    uint8_t reply_channel;
+    size_t text_length = strlen(text) + 1;
+    size_t length = 36 + text_length;
+
+    g_assert_cmpuint(length, <=, sizeof(expected));
+    stw_be_p(expected, length);
+    expected[2] = 2;
+    expected[4] = request[14];
+    expected[5] = 0x81;
+    expected[6] = 1;
+    stl_be_p(expected + 8, destination);
+    stl_be_p(expected + 12, source);
+    expected[16] = 2;
+    expected[17] = request[27];
+    memcpy(expected + 18, request + 28, 2);
+    expected[28] = 0x0a;
+    expected[29] = 1;
+    stw_be_p(expected + 30, text_length);
+    stl_be_p(expected + 32, 0x34);
+    memcpy(expected + 36, text, text_length);
+    g_assert_cmpuint(irouter_receive(s, base, &reply_channel, actual,
+                                     sizeof(actual)), ==, length);
+    g_assert_cmphex(reply_channel, ==, channel);
+    g_assert_cmpmem(actual, length, expected, length);
+    g_assert_cmphex(qtest_readq(s, base + 0x28), ==, 0x60);
+}
+
+static void test_o300_irouter_version(void)
+{
+    uint8_t request[59];
+    QTestState *s = start_irouter(
+        "rack=1,bay=1,brick-type-code=52,"
+        "o300-l1cmd-compat=on,"
+        "revision-major=1,revision-minor=18,revision-patch=5",
+        false, "");
+    static const char expected[] =
+        "L1 1.18.5 (Image EMU-UNKNOWN), Built EMU-UNKNOWN "
+        "[EMU-ORIGIN300-L1]\n\n";
+
+    send_frame_at(s, BASE, request, o300_irouter_request(request,
+                                                         "version "));
+    o300_expect_reply(s, BASE, request, 0x30, 0x00041215, 0x00041003,
+                      expected);
+    qtest_quit(s);
+}
+
+static void test_o300_irouter_serial_all(void)
+{
+    uint8_t request[59];
+    QTestState *s = start_irouter(
+        "rack=1,bay=1,brick-type-code=52,"
+        "o300-l1cmd-compat=on,"
+        "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+        "node-board-revision=-C,mac-record=io8-board,"
+        "mac=02:00:00:00:00:01", false, "");
+    static const char expected[] =
+        "Data                            Location      Value\n"
+        "------------------------------  ------------  --------\n"
+        "Local System Serial Number      EMULATED      EMU-UNKNOWN-SSN\n"
+        "Reference System Serial Number  EMULATED      EMU-UNKNOWN-REF-SSN\n"
+        "Local Brick Serial Number       EMULATED      EMU-UNKNOWN-BSN\n"
+        "Reference Brick Serial Number   EMULATED      EMU-UNKNOWN-REF-BSN\n"
+        "\n"
+        "EEPROM      Product Name    Serial        Part Number           Rev  T/W\n"
+        "----------  --------------  -------------  --------------------  ---  ------\n"
+        "NODE        IP45_2CPU       EMUN00        030-1780-001          -C   00\n"
+        "IO8         IO8             EMUI00        NOTOBSERVED0          00   00\n"
+        "\nAdditional EEPROM and DIMM inventory: EMU-UNKNOWN\n\n";
+
+    send_frame_at(s, BASE, request, o300_irouter_request(request,
+                                                         "serial all "));
+    o300_expect_reply(s, BASE, request, 0x30, 0x00041215, 0x00041003,
+                      expected);
+    qtest_quit(s);
+}
+
+static void test_o300_irouter_overrides(void)
+{
+    uint8_t request[59];
+    uint8_t inner[IROUTER_FRAGMENT_MAX], channel;
+    size_t inner_length;
+    QTestState *s = start_irouter(
+        "rack=2,bay=5,partition=3,brick-type-code=52,"
+        "o300-l1cmd-compat=on,brick-serial=BSN1,system-serial=SSN1,"
+        "revision-major=2,revision-minor=3,revision-patch=4",
+        false, "");
+    static const char brick[] =
+        "rack: 002, slot: 05, partition: 3, type: C (IP45) "
+        "[EMU-UNKNOWN flash], serial:BSN1, source: CONFIGURED\n\n";
+    static const char version[] =
+        "L1 2.3.4 (Image EMU-UNKNOWN), Built EMU-UNKNOWN "
+        "[EMU-ORIGIN300-L1]\n\n";
+
+    o300_irouter_request(request, "brick ");
+    request[0] = 0x12;
+    request[14] = 0x47;
+    request[22] = 0x12;
+    request[23] = 0x34;
+    request[24] = 0x56;
+    request[25] = 0x78;
+    request[27] = 0x16;
+    request[28] = 0xab;
+    request[29] = 0xcd;
+    send_frame_at(s, BASE, request, 53);
+    o300_expect_reply(s, BASE, request, 0x32, 0x00085255, 0x00085003,
+                      brick);
+
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "version "));
+    o300_expect_reply(s, BASE, request, 0x30, 0x00085215, 0x00085003,
+                      version);
+
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "serial all "));
+    inner_length = irouter_receive(s, BASE, &channel, inner, sizeof(inner));
+    g_assert_cmphex(channel, ==, 0x30);
+    g_assert_cmpuint(lduw_be_p(inner), ==, inner_length);
+    g_assert_cmphex(inner[6], ==, 1);
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "Local System Serial Number      CONFIGURED    SSN1\n"));
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "Reference System Serial Number  EMULATED      EMU-UNKNOWN-REF-SSN\n"));
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "Local Brick Serial Number       CONFIGURED    BSN1\n"));
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "Reference Brick Serial Number   EMULATED      EMU-UNKNOWN-REF-BSN\n"));
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "EMU-UNKNOWN-NODE-PRODUCT"));
+    g_assert_nonnull(g_strstr_len((const char *)inner + 36,
+                                  inner_length - 36,
+        "EMU-UNKNOWN-IO8-PRODUCT"));
+    qtest_quit(s);
+}
+
+static void test_o300_irouter_selection(void)
+{
+    uint8_t request[59];
+    QTestState *s;
+
+    s = start_irouter("brick-type-code=52,irouter-compat=on", false, "");
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "brick "));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+
+    s = start_irouter("brick-type-code=37,"
+                      "o300-l1cmd-compat=on", false, "");
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "brick "));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+
+    s = start_irouter("brick-type-code=52,"
+                      "o300-l1cmd-compat=on", false, "");
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "reset "));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+}
+
+static void test_o300_irouter_isolation_reset(void)
+{
+    uint8_t request[53], remainder[43];
+    QTestState *s = start_irouter(
+        "rack=1,bay=1,brick-type-code=52,"
+        "o300-l1cmd-compat=on", true, "");
+    static const char expected[] =
+        "rack: 001, slot: 01, partition: none, type: C (IP45) "
+        "[EMU-UNKNOWN flash], serial:EMU-UNKNOWN-BSN, "
+        "source: EMULATED\n\n";
+
+    irouter_brick_request(request);
+    memcpy(remainder, request + 10, sizeof(remainder));
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    request[0] = 0x11;
+    send_frame_at(s, BASE + 0x1000, request, sizeof(request));
+    o300_expect_reply(s, BASE + 0x1000, request, 0x31, 0x00041635,
+                      0x00041003, expected);
+    send_frame_at(s, BASE, request, sizeof(request));
+    o300_expect_reply(s, BASE, request, 0x31, 0x00041235, 0x00041003,
+                      expected);
+    request[0] = 0x10;
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    o300_expect_reply(s, BASE, request, 0x30, 0x00041215, 0x00041003,
+                      expected);
+
+    irouter_send_chunk(s, BASE, 0x10, 0x3001, 1, sizeof(remainder),
+                       remainder, 12);
+    qtest_system_reset(s);
+    irouter_send_chunk(s, BASE, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+}
+
+static void test_o300_irouter_ordinary_requests(void)
+{
+    static const char *const profiles[] = {
+        "brick-type-code=52,brick-serial=BSN1,"
+        "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+        "node-board-revision=-C",
+        "brick-type-code=52,o300-l1cmd-compat=on,"
+        "brick-serial=BSN1,node-board-name=IP45_2CPU,"
+        "node-board-part=030-1780-001,node-board-revision=-C",
+    };
+    QTestState *off = start_irouter(profiles[0], false, "");
+    QTestState *on = start_irouter(profiles[1], false, "");
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 4, 0 };
+    uint8_t off_reply[131], on_reply[131];
+    size_t off_length, on_length;
+
+    send_frame_at(off, BASE, request, sizeof(request));
+    send_frame_at(on, BASE, request, sizeof(request));
+    off_length = receive_at(off, BASE, off_reply, sizeof(off_reply));
+    on_length = receive_at(on, BASE, on_reply, sizeof(on_reply));
+    g_assert_cmpuint(on_length, ==, off_length);
+    g_assert_cmpmem(on_reply, on_length, off_reply, off_length);
+
+    off_length = eeprom_read(off, 0, 2, 0, 32, off_reply);
+    on_length = eeprom_read(on, 0, 2, 0, 32, on_reply);
+    g_assert_cmpuint(on_length, ==, off_length);
+    g_assert_cmpmem(on_reply, on_length, off_reply, off_length);
+    qtest_quit(on);
+    qtest_quit(off);
+}
+
+static void test_o300_irouter_partial_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("o300-irouter-migration-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    uint8_t request[53], remainder[43];
+    const char *profile = "rack=1,bay=1,brick-type-code=52,"
+                          "o300-l1cmd-compat=on";
+    static const char expected[] =
+        "rack: 001, slot: 01, partition: none, type: C (IP45) "
+        "[EMU-UNKNOWN flash], serial:EMU-UNKNOWN-BSN, "
+        "source: EMULATED\n\n";
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    irouter_brick_request(request);
+    memcpy(remainder, request + 10, sizeof(remainder));
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_irouter(profile, true, "");
+    to = start_irouter(profile, true, "-incoming defer");
+    irouter_send_chunk(from, BASE + 0x1000, 0x10, 0x3001, 1,
+                       sizeof(remainder), remainder, 12);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    irouter_send_chunk(to, BASE + 0x1000, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    o300_expect_reply(to, BASE + 0x1000, request, 0x30, 0x00041615,
+                      0x00041003, expected);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_o300_irouter_raw_board_record(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("o300-irouter-board-XXXXXX",
+                                          &error);
+    g_autofree char *path = NULL;
+    uint8_t board[sizeof(expected_node_board_2cpu)];
+    uint8_t request[59];
+    uint8_t sum = 0;
+    QTestState *s;
+    static const char expected[] =
+        "Data                            Location      Value\n"
+        "------------------------------  ------------  --------\n"
+        "Local System Serial Number      EMULATED      EMU-UNKNOWN-SSN\n"
+        "Reference System Serial Number  EMULATED      EMU-UNKNOWN-REF-SSN\n"
+        "Local Brick Serial Number       EMULATED      EMU-UNKNOWN-BSN\n"
+        "Reference Brick Serial Number   EMULATED      EMU-UNKNOWN-REF-BSN\n"
+        "\n"
+        "EEPROM      Product Name    Serial        Part Number           Rev  T/W\n"
+        "----------  --------------  -------------  --------------------  ---  ------\n"
+        "NODE        IP45_2CPU       ABC123        030-1780-001          -C   00\n"
+        "IO8         IO8             EMUI00        NOTOBSERVED0          00   00\n"
+        "\nAdditional EEPROM and DIMM inventory: EMU-UNKNOWN\n\n";
+
+    g_assert_no_error(error);
+    memcpy(board, expected_node_board_2cpu, sizeof(board));
+    memcpy(board + 27, "ABC123", 6);
+    for (unsigned i = 0; i < sizeof(board) - 1; i++) {
+        sum += board[i];
+    }
+    board[sizeof(board) - 1] = -sum;
+    path = g_build_filename(dir, "node-board.bin", NULL);
+    g_assert_true(g_file_set_contents(path, (const char *)board,
+                                      sizeof(board), &error));
+    g_assert_no_error(error);
+    s = qtest_initf(
+        "-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+        "\"id\":\"l1c\",\"brick-type-code\":52,"
+        "\"o300-l1cmd-compat\":true,"
+        "\"node-board-name\":\"IP45_2CPU\","
+        "\"node-board-part\":\"030-1780-001\","
+        "\"node-board-revision\":\"-C\","
+        "\"mac\":\"02:00:00:00:00:01\","
+        "\"mac-record\":\"io8-board\","
+        "\"board-eeprom\":[\"%s\",\"\"]}' "
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+        "\"controller\":\"l1c\"}'",
+        path);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    send_frame_at(s, BASE, request,
+                  o300_irouter_request(request, "serial all "));
+    o300_expect_reply(s, BASE, request, 0x30, 0x00041215, 0x00041003,
+                      expected);
+    qtest_quit(s);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_irouter_plain_command(void)
+{
+    uint8_t request[53];
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+
+    request[8] = 0;
+    request[9] = 42;
+    request[10] = 0;
+    request[11] = 42;
+    request[40] = 0;
+    request[41] = 6;
+    request[51] = 0;
+    send_frame_at(s, BASE, request, request_length - 1);
+    irouter_expect_default(s, BASE, 0x30, 0x00044215);
+    qtest_quit(s);
+}
+
+static void test_irouter_sequence_preservation(void)
+{
+    uint8_t request[53], inner[IROUTER_FRAGMENT_MAX], channel;
+    size_t request_length = irouter_brick_request(request);
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+
+    request[14] = 0x34;
+    request[27] = 0x12;
+    send_frame_at(s, BASE, request, request_length);
+    g_assert_cmpuint(irouter_receive(s, BASE, &channel, inner,
+                                     sizeof(inner)), ==, 139);
+    g_assert_cmphex(channel, ==, 0x30);
+    g_assert_cmphex(inner[4], ==, 0x34);
+    g_assert_cmphex(inner[17], ==, 0x12);
+    qtest_quit(s);
+}
+
+static void test_irouter_partial_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("l1-irouter-migration-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    uint8_t request[53];
+    uint8_t remainder[43];
+    static const char migrated_text[] =
+        "rack: 001, slot: 04, partition: none, type: Chimera Server "
+        "[?MB flash], serial:SERIAL-X, source: OTHER\n\n";
+    const char *profile = "rack=1,bay=4,partition=0,brick-type-code=55,"
+                          "irouter-compat=on,brick-serial=SERIAL-X";
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    g_assert_cmpuint(irouter_brick_request(request), ==, sizeof(request));
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    memcpy(remainder, request + 10, sizeof(remainder));
+    from = start_irouter(profile, true, "");
+    to = start_irouter(profile, true, "-incoming defer");
+    irouter_send_chunk(from, BASE + 0x1000, 0x10, 0x3001, 1,
+                       sizeof(remainder), remainder, 12);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    irouter_send_chunk(to, BASE + 0x1000, 0x10, 0x3003, 0, 0,
+                       remainder + 12, sizeof(remainder) - 12);
+    irouter_expect_text(to, BASE + 0x1000, 0x30, 0x00044615, 0x00044003,
+                        migrated_text);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+
+    for (unsigned mismatch = 0; mismatch < 3; mismatch++) {
+        g_autofree char *mismatch_dir = NULL;
+        g_autofree char *mismatch_socket = NULL, *mismatch_uri = NULL;
+        const char *destination = mismatch == 0 ?
+            "rack=1,bay=4,partition=0,brick-type-code=55,"
+            "irouter-compat=off,brick-serial=SERIAL-X" : mismatch == 1 ?
+            "rack=1,bay=4,partition=0,brick-type-code=55,"
+            "irouter-compat=on,brick-serial=SERIAL-Y" :
+            "rack=1,bay=4,partition=0,brick-type-code=57,"
+            "irouter-compat=on,brick-serial=SERIAL-X";
+
+        mismatch_dir = g_dir_make_tmp("l1-irouter-mismatch-XXXXXX", &error);
+        g_assert_no_error(error);
+        mismatch_socket = g_build_filename(mismatch_dir, "migration.sock",
+                                           NULL);
+        mismatch_uri = g_strdup_printf("unix:%s", mismatch_socket);
+        from = start_irouter(profile, false, "");
+        to = start_irouter(destination, false, "-incoming defer");
+        qtest_set_expected_status(to, EXIT_FAILURE);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}",
+            mismatch_uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", mismatch_uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        qtest_quit(from);
+        unlink(mismatch_socket);
+        g_assert_cmpint(rmdir(mismatch_dir), ==, 0);
+    }
+}
+
+static void test_irouter_nonzero_destination_routing(void)
+{
+    QTestState *s = start_irouter(
+        "rack=1,bay=4,partition=0,brick-type-code=55,irouter-compat=on",
+        false, "");
+    const uint8_t request[] = {
+        0x10, 0x12, 0x34, 0x50, 0x06, 0x30, 0x01, 0,
+    };
+
+    send_frame_at(s, BASE, request, sizeof(request));
+    expect_router_error(s, 16);
     qtest_quit(s);
 }
 
@@ -5352,6 +6294,41 @@ int main(int argc, char **argv)
                    test_output_escape_startup);
     qtest_add_func("sn1/l1/identity", test_identity);
     qtest_add_func("sn1/l1/errors", test_errors);
+    qtest_add_func("sn1/l1/irouter/brick-exact", test_irouter_brick_exact);
+    qtest_add_func("sn1/l1/irouter/fragment-channel-transport",
+                   test_irouter_fragment_channel_transport);
+    qtest_add_func("sn1/l1/irouter/reset-negative",
+                   test_irouter_reset_and_negative);
+    qtest_add_func("sn1/l1/irouter/replacement-pending",
+                   test_irouter_replace_pending);
+    qtest_add_func("sn1/l1/irouter/multifragment-refusal",
+                   test_irouter_multifragment_refusal);
+    qtest_add_func("sn1/l1/irouter/nonzero-destination-routing",
+                   test_irouter_nonzero_destination_routing);
+    qtest_add_func("sn1/l1/irouter/identity-overrides",
+                   test_irouter_identity_overrides);
+    qtest_add_func("sn1/l1/irouter/partial-migration",
+                   test_irouter_partial_migration);
+    qtest_add_func("sn1/l1/irouter/plain-command",
+                   test_irouter_plain_command);
+    qtest_add_func("sn1/l1/irouter/sequence-preservation",
+                   test_irouter_sequence_preservation);
+    qtest_add_func("sn1/l1/o300-irouter/brick", test_o300_irouter_brick);
+    qtest_add_func("sn1/l1/o300-irouter/version", test_o300_irouter_version);
+    qtest_add_func("sn1/l1/o300-irouter/serial-all",
+                   test_o300_irouter_serial_all);
+    qtest_add_func("sn1/l1/o300-irouter/overrides",
+                   test_o300_irouter_overrides);
+    qtest_add_func("sn1/l1/o300-irouter/selection",
+                   test_o300_irouter_selection);
+    qtest_add_func("sn1/l1/o300-irouter/isolation-reset",
+                   test_o300_irouter_isolation_reset);
+    qtest_add_func("sn1/l1/o300-irouter/ordinary-requests",
+                   test_o300_irouter_ordinary_requests);
+    qtest_add_func("sn1/l1/o300-irouter/partial-migration",
+                   test_o300_irouter_partial_migration);
+    qtest_add_func("sn1/l1/o300-irouter/raw-board-record",
+                   test_o300_irouter_raw_board_record);
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
     qtest_add_func("sn1/l1/eeprom-six-entries", test_eeprom_six_entries);
