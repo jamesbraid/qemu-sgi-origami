@@ -10963,6 +10963,8 @@ static int odyssey_pre_load(void *opaque)
     s->gl_open_m3 = s->gl_open_m4 = s->gl_open_held = 0;
     s->gl_restart_absorb = s->gl_restart_total = 0;
     s->gl_restart_armed = false;
+    s->win_origin_pending = false;
+    memset(s->win_prior_origin, 0, sizeof(s->win_prior_origin));
     return 0;
 }
 

@@ -9094,6 +9094,81 @@ static void test_command_fifo_gl_window_offscreen_tail(void)
 }
 
 /*
+ * The tail's pending origin across migration. Saved between the tail's
+ * 0x841 and its 0x204b, the destination still recognises the 0x204b as the
+ * tail and the restore brings back the probe window. Loaded from a source
+ * with nothing pending, a destination that had a 0x841 pending of its own
+ * drops it: the following off-screen 0x204b commits nothing old, and the
+ * restore keeps the source's window at (0, 0).
+ */
+static void kernel_offscreen_clip(QTestState *qts)
+{
+    cmd_push(qts, ODSY_CMD_WINDOW_CLIP);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x00ffffff);
+    for (unsigned i = 0; i < 6; i++) {
+        cmd_push(qts, 0);
+    }
+}
+
+static void window_tail_migration(bool pending)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-window-tail-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    probe_window(from);
+    window_origin(from, 0, 0);
+    if (!pending) {
+        /* A real window at (0, 0): the compare pair ends the pending 0x841. */
+        cmd_push(from, ODSY_CMD_DID_COMPARE);
+        cmd_push(from, 0);
+        cmd_push(from, 0);
+        window_clip(from, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    }
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    if (!pending) {
+        /* Live destination state the absent subsection must replace. */
+        window_origin(to, 500, 500);
+        window_origin(to, 0, 0);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    kernel_offscreen_clip(to);
+    user_cmd_push(to, ODSY_CMD_WINDOW_RESTORE);
+    push_captured_clear(to);
+    if (pending) {
+        g_assert_cmphex(odsy_test_pixel(to, 256, 256), ==, ODSY_PLANE_BLUE);
+        g_assert_cmphex(odsy_test_pixel(to, 10, 10), ==, 0);
+    } else {
+        g_assert_cmphex(odsy_test_pixel(to, 10, 10), ==, ODSY_PLANE_BLUE);
+        g_assert_cmphex(odsy_test_pixel(to, 510, 510), ==, 0);
+    }
+    board_quit(from);
+    board_quit(to);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_command_fifo_gl_window_tail_migration(void)
+{
+    window_tail_migration(true);
+}
+
+static void test_command_fifo_gl_window_tail_migration_absent(void)
+{
+    window_tail_migration(false);
+}
+
+/*
  * Texture uploads. The GL library overrides the window to (0, 0), selects
  * the texture level's board-memory object with 0x1017 (base in 16-byte
  * units, row length in 16-texel units, an 0x08... format word) and sends a
@@ -18684,6 +18759,10 @@ int main(int argc, char **argv)
              test_command_fifo_gl_window_restore);
     add_case("sn1/odyssey/command-fifo-gl-window-offscreen-tail",
              test_command_fifo_gl_window_offscreen_tail);
+    add_case("sn1/odyssey/command-fifo-gl-window-tail-migration",
+             test_command_fifo_gl_window_tail_migration);
+    add_case("sn1/odyssey/command-fifo-gl-window-tail-migration-absent",
+             test_command_fifo_gl_window_tail_migration_absent);
     add_case("sn1/odyssey/command-fifo-gl-texture-luminance",
              test_command_fifo_gl_texture_luminance);
     add_case("sn1/odyssey/command-fifo-gl-texture-rgb",
