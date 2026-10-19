@@ -850,6 +850,8 @@ typedef struct SGIKonaSavedInput {
     bool valid;
     SGIKonaSavedPort textport;
     SGIKonaSavedPort gl_port;
+    /* A user command open on the kernel framer, as the X server's are. */
+    SGIKonaSavedPort kernel_port;
     bool textport_expect_sync;
     bool gl_sync_held;
     uint32_t gl_token_high;
@@ -1054,9 +1056,15 @@ struct SGIKonaState {
      * user command that was open where it stands, as the context's
      * suspended command, and suspended_owner names that context (or is
      * SGI_KONA_CONTEXT_NONE). See sgi_kona_bracket_write().
+     * kernel_port_privileged says whether kernel_port's open command
+     * began with the privileged bit set; kernel_port_suspended holds a
+     * user command a forced store took off kernel_port, so the kernel's
+     * packet frames on an idle framer.
      */
     bool kernel_input;
     int32_t suspended_owner;
+    bool kernel_port_privileged;
+    SGIKonaSavedPort kernel_port_suspended;
     /* Each context's saved open command, valid while saved. */
     SGIKonaSavedInput saved_input[SGI_KONA_CONTEXTS];
     /*
