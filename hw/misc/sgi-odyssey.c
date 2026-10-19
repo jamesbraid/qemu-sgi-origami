@@ -1105,9 +1105,6 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_UCODE_UNLIT_CLIP 0x0f3
 #define ODSY_UCODE_UNLIT_CLIP_2A 0x100
 #define ODSY_UCODE_UNLIT_CLIP_2C 0x10c
-#define ODSY_UCODE_LIT_DIR1 0x5cb
-#define ODSY_UCODE_LIT_DIR1_2A 0x5d8
-#define ODSY_UCODE_LIT_DIR1_2C 0x5e5
 #define ODSY_PROG_WINDOW_BASE 0x738
 #define ODSY_PROG_WINDOW_ENTRIES SGI_ODYSSEY_GL_WINDOW_ENTRIES
 /*
@@ -5701,6 +5698,39 @@ static bool odyssey_prog_in_window(uint32_t a)
            a < ODSY_PROG_WINDOW_BASE + ODSY_PROG_WINDOW_ENTRIES;
 }
 
+/*
+ * The GL library's precompiled lit programs whose three entries are all
+ * resident. The IRIX 6.5.30 library picks a precompiled program from a
+ * 24-record table by a 64-bit feature key and assembles a list only when
+ * no record covers the context (ESTABLISHED: the table's entries and keys
+ * read from the IP30 n32 libGLcore.so, and record 3's selection by
+ * light.c in a capture). Each key below has lighting on, the infinite
+ * viewer and only directional lights, and no fragment lighting; a key
+ * covers every context whose features are a subset of it, so the texture,
+ * texture-generation and two-sided bits it also carries do not say the
+ * context uses them. The model lights every program here from the light
+ * blocks as it does an assembled list (odyssey_gl_light()).
+ */
+static const uint32_t odyssey_ucode_lit_records[][3] = {
+    { 0x5cb, 0x5d8, 0x5e5 },    /* record 3: one light */
+    { 0x62c, 0x63d, 0x64d },    /* record 6: two lights, texgen */
+    { 0x6d8, 0x6eb, 0x6fd },    /* record 7: one light, two-sided, texgen */
+    { 0x5f0, 0x605, 0x619 },    /* record 9: one light, GL_NORMALIZE */
+    { 0x657, 0x66e, 0x684 },    /* record 10: two lights, GL_NORMALIZE */
+    { 0x699, 0x6b4, 0x6ce },    /* record 11: four lights, texgen */
+};
+
+static bool odyssey_gl_lit_record(const uint32_t e[3])
+{
+    for (unsigned int i = 0; i < ARRAY_SIZE(odyssey_ucode_lit_records); i++) {
+        if (!memcmp(e, odyssey_ucode_lit_records[i],
+                    sizeof(odyssey_ucode_lit_records[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Uploaded program bodies have no reviewed decoder. */
 static bool odyssey_gl_resident(const uint32_t e[3])
 {
@@ -5753,8 +5783,7 @@ static void odyssey_gl_program(SGIOdysseyState *s)
                r[2] == ODSY_UCODE_UNLIT_CLIP_2C) {
         odyssey_gl_walk_list(s, k, false, &p);
         p.known = true;
-    } else if (r[0] == ODSY_UCODE_LIT_DIR1 && r[1] == ODSY_UCODE_LIT_DIR1_2A &&
-               r[2] == ODSY_UCODE_LIT_DIR1_2C) {
+    } else if (odyssey_gl_lit_record(r)) {
         odyssey_gl_walk_list(s, k, false, &p);
         p.known = true;
         p.lit = true;
