@@ -435,6 +435,12 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_TEX_BIND_LINEAR, 5 },
     { SGI_KONA_CMD_GL_TEX_POST_SCALE, 4 },
     { SGI_KONA_CMD_GL_TEX_TABLE_USAGE, 2 },
+    /* IRIS GL's glIglooInterfaceSGIX. */
+    { SGI_KONA_CMD_GL_IGLOO_IRISGL_MODE, 1 },
+    { SGI_KONA_CMD_GL_IGLOO_LMC_COLOR, 1 },
+    { SGI_KONA_CMD_GL_IGLOO_SWAPTMESH, 1 },
+    { SGI_KONA_CMD_GL_IGLOO_COLORNORMAL, 1 },
+    { SGI_KONA_CMD_GL_IGLOO_TMESHMODE, 1 },
 };
 const unsigned sgi_kona_gl_num_tokens = ARRAY_SIZE(sgi_kona_gl_tokens);
 

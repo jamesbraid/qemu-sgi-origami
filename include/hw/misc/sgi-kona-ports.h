@@ -368,6 +368,22 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * with them is unknown, so the model frames and consumes them.
  */
 #define SGI_KONA_CMD_GL_TEX_TABLE_USAGE 0x1e0
+/*
+ * glIglooInterfaceSGIX, which IRIS GL's IGLOO library calls to set IRIS GL
+ * behaviour, sends one selector and one word for each of five parameters
+ * (established from libGLcore's __glkonim_IglooInterfaceSGIX): IRIS GL
+ * mode 0x81a2 as 0x112, LMC colour 0x81a3 as 0x113, colour-normal 0x81a1
+ * as 0x1be and tmesh mode 0x81a4 as 0x1c9, each with the caller's first
+ * parameter word, and swap-tmesh 0x81a0 as 0x1a9 and a literal 0. Full
+ * screen 0x819e is a kernel request and viewport offset 0x819f sends
+ * nothing. What the pipe does with them is unknown, so the model frames
+ * and consumes them.
+ */
+#define SGI_KONA_CMD_GL_IGLOO_IRISGL_MODE 0x112
+#define SGI_KONA_CMD_GL_IGLOO_LMC_COLOR   0x113
+#define SGI_KONA_CMD_GL_IGLOO_SWAPTMESH   0x1a9
+#define SGI_KONA_CMD_GL_IGLOO_COLORNORMAL 0x1be
+#define SGI_KONA_CMD_GL_IGLOO_TMESHMODE   0x1c9
 /* glPopAttrib's per-light words after 0x119's count. */
 #define SGI_KONA_GL_POP_LIGHT_WORDS 12
 /* glPolygonStipple's rows after its three words, one word a row. */
