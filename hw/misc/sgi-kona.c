@@ -7994,7 +7994,11 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
      * gives a texture an entry, 0x1c5 when it frees one. Freeing an entry
      * and taking it again re-binds the texture without reloading it, so
      * neither discards the image; a load header right after 0x1c4 retires
-     * it instead, when the id has gone to a new texture.
+     * it instead, when the id has gone to a new texture. So an image whose
+     * entry is freed for good, by glDeleteTextures for example, stays until
+     * its id is taken for a new load or the pipe is reset. The model's
+     * texture budget bounds what such images hold, and a load refused for
+     * that budget is logged.
      */
     case SGI_KONA_CMD_GL_TEX_PREFIX:
         s->texture_state_used = true;
