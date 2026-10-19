@@ -9903,7 +9903,7 @@ static void sgi_kona_x_pixel_word(SGIKonaState *s, uint32_t word)
  * Whether the current context's words are part of an open X pixel write:
  * the write's owner is current. Another context's words are its own.
  */
-static bool sgi_kona_x_pixel_owned(SGIKonaState *s)
+bool sgi_kona_x_pixel_owned(SGIKonaState *s)
 {
     return s->x_pixel_owner == s->context_current;
 }

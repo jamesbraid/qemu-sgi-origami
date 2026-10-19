@@ -399,8 +399,17 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         /*
          * The X server's image: its bytes feed the open pixel write
          * through the map RAM, and the completion follows the last byte
-         * read. A packet that cannot be read completes nothing.
+         * read. A packet that cannot be read completes nothing. The
+         * write's rows are its owner's alone; a packet arriving while
+         * another context is current is still taken, logged, since what
+         * else could claim it is unknown.
          */
+        if (!sgi_kona_x_pixel_owned(s)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's X pixel write"
+                          " takes a DMA packet while context %d is"
+                          " current\n", s->x_pixel_owner,
+                          s->context_current);
+        }
         if (sgi_kona_x_image_dma(s, io, lines, per_line, pitch) &&
             cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
