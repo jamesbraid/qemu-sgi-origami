@@ -5823,12 +5823,14 @@ static void test_texture_native_detail(gconstpointer opaque)
 #define VOLUME_SINGLE_LAYOUT 0x9a1
 #define VOLUME_SINGLE_PHYSICAL 0x123
 
-static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
+/* unset sends the fifth bind word as zero, as pfCity's volume bind does. */
+static void texture_volume_bind_word(QTestState *s, bool linear,
+                                     bool mipmapped, bool unset)
 {
     uint32_t bind[] = {
         0, (3u << 28) | (41 << 12),
         (0x30 << 14) | (mipmapped ? 3 << 2 : linear ? (1 << 2) | (1 << 5) : 0),
-        0x111, 1,
+        0x111, !unset,
     };
     uint32_t mip[] = { 0x22, 0x101010, 256u << 10, 0x113, 0x55, 0x66,
                        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
@@ -5841,6 +5843,11 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
         kona_command(s, 0x17c, (uint32_t[]) {
             0x13, VOLUME_SINGLE_PHYSICAL, 0x55, 0x66 }, 4);
     }
+}
+
+static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
+{
+    texture_volume_bind_word(s, linear, mipmapped, false);
 }
 
 /* odd is a mode-two level one; bank sets mode one's bank bit. */
@@ -5886,7 +5893,7 @@ static void test_texture_native_volume(gconstpointer opaque)
 
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 1);
-    texture_volume_bind(s, linear, mipmapped);
+    texture_volume_bind_word(s, linear, mipmapped, mode == 13);
     for (unsigned z = 0; z < (missing ? 1 : 2); z++) {
         uint32_t pixel = z ? 0x0000ffff : 0xff0000ff;
 
@@ -16777,7 +16784,7 @@ int main(int argc, char **argv)
         "nearest", "linear", "dma", "migrate-partial", "missing-slice",
         "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
         "physical-mismatch", "single-bank", "single-bind-mode-two-load",
-        "mipmap-bind-mode-one-load",
+        "mipmap-bind-mode-one-load", "unset-comparison-word",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {

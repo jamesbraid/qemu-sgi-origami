@@ -924,6 +924,10 @@ static void test_texture_comparison_flag(void)
 
             bind[4] = refused[k];
             p = before;
+            if (t == 2 && !bind[4]) {
+                /* texture-volume-unset-comparison accepts this one. */
+                continue;
+            }
             if (t == 0) {
                 /* Normalizing unused axes must not erase comparison state. */
                 bind[3] = 0x6000;
@@ -939,6 +943,30 @@ static void test_texture_comparison_flag(void)
             g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
         }
     }
+}
+
+/*
+ * A volume bind's fifth word is zero when the library never ran its
+ * comparison setup, as pfCity's is; with no comparison code it samples
+ * like one. The 2D sampler still requires one.
+ */
+static void test_texture_volume_unset_comparison(void)
+{
+    uint32_t bind[5] = { 9, 0x33022001, 0x38c0025, 0x677, 0 };
+    uint32_t record[22] = { 0x101010 };
+    SGIKonaTextureParams p = { .max_level = 1000 };
+
+    g_assert_true(sgi_kona_gl_texture_volume_sampler(bind, NULL, false, &p));
+    g_assert_cmpuint(p.min_filter, ==, SGI_GL_LINEAR);
+    g_assert_cmpuint(p.shadow_compare, ==, 0);
+    bind[2] |= 1 << 10;
+    g_assert_false(sgi_kona_gl_texture_volume_sampler(bind, NULL, false, &p));
+    bind[1] = 0x23022001;
+    bind[2] &= ~(1u << 10);
+    bind[3] = 0x77;
+    record[0] = 0;
+    record[1] = 0x101010;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
 }
 
 static void test_texture_volume_layout(void)
@@ -3135,6 +3163,8 @@ int main(int argc, char **argv)
                     test_texture_native_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-volume-layout",
                     test_texture_volume_layout);
+    g_test_add_func("/sgi-kona-gl-decode/texture-volume-unset-comparison",
+                    test_texture_volume_unset_comparison);
     g_test_add_func("/sgi-kona-gl-decode/texture-comparison-flag",
                     test_texture_comparison_flag);
     g_test_add_func("/sgi-kona-gl-decode/texture-binding-layout",
