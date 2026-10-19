@@ -74,6 +74,8 @@ sgi_kona_command_unmodelled(uint32_t token, unsigned int argc) "token 0x%x argc 
 sgi_kona_bracket_suspend(int context) "context %d"
 sgi_kona_bracket_resume(int context) "context %d"
 sgi_kona_bracket_drop(int owner, int current) "context %d's command ended by context %d"
+sgi_kona_input_save(int context) "context %d's open command saved"
+sgi_kona_input_restore(int context) "context %d's open command restored"
 # A pool region the kernel places (0x1e4), offset and size in granules;
 # size 0 frees it.
 sgi_kona_kernel_mem_region(uint32_t pool_class, uint32_t key, uint32_t offset, uint32_t size) "class %u key %u offset 0x%x size 0x%x"

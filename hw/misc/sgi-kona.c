@@ -1208,6 +1208,7 @@ static void sgi_kona_contexts_clear(SGIKonaState *s)
     }
     memset(s->contexts, 0, sizeof(s->contexts));
     memset(s->pending_swaps, 0, sizeof(s->pending_swaps));
+    memset(s->saved_input, 0, sizeof(s->saved_input));
     s->context_count = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
@@ -1342,6 +1343,8 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
                                   "logical context state allocation failed");
             return;
         }
+        /* A context started afresh has no command of its own left open. */
+        memset(&s->saved_input[slot], 0, sizeof(s->saved_input[slot]));
         /* Rendering and return writes are synchronous under the big lock. */
         sgi_kona_renderer_stop(s);
         sgi_kona_state_free(s->state[slot]);
@@ -10962,12 +10965,14 @@ static bool sgi_kona_user_command_open(SGIKonaState *s)
 }
 
 /*
- * Drop a suspended user command whose context is no longer current. The
- * pipe keeps an open command with its context and resumes it on restore
- * (inferred); the model keeps one in place only, so a word of another
- * context ends it, logged. The cost: when the dropped context is restored
- * its remaining words arrive with no command open and are misframed, most
- * dropped as neither a token nor a sync word, until one opens a command.
+ * Drop a suspended user command whose context is no longer current and
+ * which sgi_kona_input_save() cannot keep: a GL data run, an X pixel write
+ * or a textport bitmap. The pipe keeps an open command with its context
+ * and resumes it on restore (inferred); the model cannot copy these, so a
+ * word of another context ends it, logged. The cost: when the dropped
+ * context is restored its remaining words arrive with no command open and
+ * are misframed, most dropped as neither a token nor a sync word, until
+ * one opens a command.
  */
 static void sgi_kona_user_command_drop(SGIKonaState *s)
 {
@@ -11009,6 +11014,149 @@ static void sgi_kona_user_command_drop(SGIKonaState *s)
     sgi_kona_bitmap_reset(s);
 }
 
+/*
+ * Whether the open user command is one the model can keep with its
+ * context: the framers' partial packets and the plain counted runs. A GL
+ * data run, an X pixel write or a textport bitmap holds host buffers the
+ * model does not copy, so one of those still ends at a switch.
+ */
+static bool sgi_kona_input_savable(SGIKonaState *s)
+{
+    return !s->gl_data_remaining && !s->x_pixel_remaining &&
+           s->bitmap_state == SGI_KONA_BITMAP_IDLE;
+}
+
+static void sgi_kona_port_save(SGIKonaSavedPort *d, const SGICommandPort *p)
+{
+    d->framing = p->framing;
+    d->selector = p->selector;
+    d->argc_expected = p->argc_expected;
+    d->argc_have = p->argc_have;
+    memcpy(d->args, p->args, sizeof(d->args));
+}
+
+static void sgi_kona_port_restore(SGICommandPort *p, const SGIKonaSavedPort *d)
+{
+    p->framing = d->framing;
+    p->selector = d->selector;
+    p->argc_expected = d->argc_expected;
+    p->argc_have = d->argc_have;
+    memcpy(p->args, d->args, sizeof(p->args));
+}
+
+/*
+ * Copy the open user command out to `owner`'s saved slot and leave the
+ * input idle for the context now sending words: the inferred pipe keeps a
+ * context's open command with the context. The copy is exact, so the
+ * context's next words continue the same command when it is restored.
+ * Saved words leave the framers, so the credit register's held-word count
+ * (SGI_KONA_CREDIT) no longer includes them; their processor-interface
+ * credits went back when the kernel's packet ended. Limitation, as for the
+ * in-place resume: the kernel also writes unbracketed words, such as the
+ * 0x172 0 that follows a memory allocation, and after a switch those
+ * restore the current context's copy and can be taken as its arguments.
+ */
+static void sgi_kona_input_save(SGIKonaState *s, int owner)
+{
+    SGIKonaSavedInput *v = &s->saved_input[owner];
+
+    v->valid = true;
+    sgi_kona_port_save(&v->textport, &s->textport);
+    sgi_kona_port_save(&v->gl_port, &s->gl_port);
+    v->textport_expect_sync = s->textport_expect_sync;
+    v->gl_sync_held = s->gl_sync_held;
+    v->gl_token_high = s->gl_token_high;
+    v->video_open = s->video_open;
+    v->video_command = s->video_command;
+    v->video_have = s->video_have;
+    v->video_first = s->video_first;
+    v->video_tail_sum = s->video_tail_sum;
+    v->color_map_start = s->color_map_start;
+    v->color_map_count = s->color_map_count;
+    v->color_map_remaining = s->color_map_remaining;
+    v->color_map_outside = s->color_map_outside;
+    v->gamma_start = s->gamma_start;
+    v->gamma_count = s->gamma_count;
+    v->gamma_remaining = s->gamma_remaining;
+    v->gamma_outside = s->gamma_outside;
+    v->cursor_remaining = s->cursor_remaining;
+    v->cursor_stage_words = s->cursor_stage_words;
+    v->cursor_stage_entry = s->cursor_stage_entry;
+    memcpy(v->cursor_stage, s->cursor_stage, sizeof(v->cursor_stage));
+    v->gl_tex_table_remaining = s->gl_tex_table_remaining;
+    v->gl_tex_table_slot = s->gl_tex_table_slot;
+    memcpy(v->gl_tex_table_words, s->gl_tex_table_words,
+           sizeof(v->gl_tex_table_words));
+    v->gl_tex_table_refused = s->gl_tex_table_refused;
+    v->calls_token = s->dma.calls_token;
+    v->calls_need = s->dma.calls_need;
+    v->calls_have = s->dma.calls_have;
+    memcpy(v->calls_words, s->dma.calls_words, sizeof(v->calls_words));
+    v->x_stipple_store_entry = s->x_stipple_store_entry;
+    v->x_stipple_store_width = s->x_stipple_store_width;
+    v->x_stipple_store_height = s->x_stipple_store_height;
+    v->x_stipple_store_remaining = s->x_stipple_store_remaining;
+
+    sgi_command_port_reset(&s->textport);
+    sgi_command_port_reset(&s->gl_port);
+    s->textport_expect_sync = true;
+    s->gl_sync_held = false;
+    s->gl_token_high = 0;
+    s->video_open = false;
+    s->color_map_remaining = 0;
+    s->gamma_remaining = 0;
+    s->cursor_remaining = 0;
+    s->cursor_stage_words = 0;
+    s->gl_tex_table_remaining = 0;
+    sgi_kona_dma_calls_drop(s);
+    s->x_stipple_store_remaining = 0;
+    trace_sgi_kona_input_save(owner);
+}
+
+/* Copy `owner`'s saved command back into the input, which is idle. */
+static void sgi_kona_input_restore(SGIKonaState *s, int owner)
+{
+    SGIKonaSavedInput *v = &s->saved_input[owner];
+
+    sgi_kona_port_restore(&s->textport, &v->textport);
+    sgi_kona_port_restore(&s->gl_port, &v->gl_port);
+    s->textport_expect_sync = v->textport_expect_sync;
+    s->gl_sync_held = v->gl_sync_held;
+    s->gl_token_high = v->gl_token_high;
+    s->video_open = v->video_open;
+    s->video_command = v->video_command;
+    s->video_have = v->video_have;
+    s->video_first = v->video_first;
+    s->video_tail_sum = v->video_tail_sum;
+    s->color_map_start = v->color_map_start;
+    s->color_map_count = v->color_map_count;
+    s->color_map_remaining = v->color_map_remaining;
+    s->color_map_outside = v->color_map_outside;
+    s->gamma_start = v->gamma_start;
+    s->gamma_count = v->gamma_count;
+    s->gamma_remaining = v->gamma_remaining;
+    s->gamma_outside = v->gamma_outside;
+    s->cursor_remaining = v->cursor_remaining;
+    s->cursor_stage_words = v->cursor_stage_words;
+    s->cursor_stage_entry = v->cursor_stage_entry;
+    memcpy(s->cursor_stage, v->cursor_stage, sizeof(s->cursor_stage));
+    s->gl_tex_table_remaining = v->gl_tex_table_remaining;
+    s->gl_tex_table_slot = v->gl_tex_table_slot;
+    memcpy(s->gl_tex_table_words, v->gl_tex_table_words,
+           sizeof(s->gl_tex_table_words));
+    s->gl_tex_table_refused = v->gl_tex_table_refused;
+    s->dma.calls_token = v->calls_token;
+    s->dma.calls_need = v->calls_need;
+    s->dma.calls_have = v->calls_have;
+    memcpy(s->dma.calls_words, v->calls_words, sizeof(s->dma.calls_words));
+    s->x_stipple_store_entry = v->x_stipple_store_entry;
+    s->x_stipple_store_width = v->x_stipple_store_width;
+    s->x_stipple_store_height = v->x_stipple_store_height;
+    s->x_stipple_store_remaining = v->x_stipple_store_remaining;
+    memset(v, 0, sizeof(*v));
+    trace_sgi_kona_input_restore(owner);
+}
+
 /* The tokens only the kernel sends: the context switch and teardown. */
 static bool sgi_kona_kernel_only_token(uint32_t word)
 {
@@ -11025,33 +11173,49 @@ static bool sgi_kona_kernel_only_token(uint32_t word)
  * that opens no kernel command is logged and ignored while a user command
  * is suspended; with none suspended it takes the ordinary path, as the
  * kernel's own textport commands did before. Otherwise a suspended
- * command resumes if its context is current again, and the word takes the
- * ordinary path. That a user word naming a kernel-only token is logged,
- * not refused, is the model's choice: what the pipe does then is unknown.
+ * command resumes if its context is current again. If another context
+ * sends words first, the suspended command is saved with its owner
+ * (sgi_kona_input_save()), or ends if it holds host buffers the model does
+ * not copy; and a context whose saved command waits gets it back before
+ * its first word. The word then takes the ordinary path. That a user
+ * word naming a kernel-only token is logged, not refused, is the model's
+ * choice: what the pipe does then is unknown.
  */
 static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 {
+    int owner = s->suspended_owner;
+    int current = s->context_current;
+
     if (s->kernel_input) {
         if (s->kernel_port.framing || sgi_kona_kernel_token_known(word)) {
             sgi_command_port_write(&s->kernel_port, word, 4);
             return;
         }
-        if (s->suspended_owner != SGI_KONA_CONTEXT_NONE) {
+        if (owner != SGI_KONA_CONTEXT_NONE) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: privileged word 0x%"
                           PRIx32 " opens no kernel command; ignored\n",
                           word);
             return;
         }
-    } else if (s->suspended_owner != SGI_KONA_CONTEXT_NONE) {
-        if (s->suspended_owner != s->context_current &&
-            sgi_kona_user_command_open(s)) {
-            sgi_kona_user_command_drop(s);
+        sgi_kona_textport_push(s, word);
+        return;
+    }
+    if (owner != SGI_KONA_CONTEXT_NONE) {
+        if (owner == current || !sgi_kona_user_command_open(s)) {
+            trace_sgi_kona_bracket_resume(owner);
+        } else if (sgi_kona_input_savable(s)) {
+            sgi_kona_input_save(s, owner);
         } else {
-            trace_sgi_kona_bracket_resume(s->suspended_owner);
+            sgi_kona_user_command_drop(s);
         }
         s->suspended_owner = SGI_KONA_CONTEXT_NONE;
-    } else if (s->gl_grammar && sgi_kona_kernel_only_token(word) &&
-               !sgi_kona_user_command_open(s) && !s->kernel_port.framing) {
+    }
+    if (current != SGI_KONA_CONTEXT_NONE && s->saved_input[current].valid &&
+        !sgi_kona_user_command_open(s)) {
+        sgi_kona_input_restore(s, current);
+    }
+    if (s->gl_grammar && sgi_kona_kernel_only_token(word) &&
+        !sgi_kona_user_command_open(s) && !s->kernel_port.framing) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: kernel-only token 0x%"
                       PRIx32 " without the privileged bit\n", word);
     }
@@ -13532,6 +13696,193 @@ static const VMStateDescription vmstate_sgi_kona_bracket = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_saved_port = {
+    .name = TYPE_SGI_KONA "/saved-port",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(framing, SGIKonaSavedPort),
+        VMSTATE_UINT32(selector, SGIKonaSavedPort),
+        VMSTATE_UINT32(argc_expected, SGIKonaSavedPort),
+        VMSTATE_UINT32(argc_have, SGIKonaSavedPort),
+        VMSTATE_UINT32_ARRAY(args, SGIKonaSavedPort,
+                             SGI_COMMAND_PORT_MAX_ARGS),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_saved_one = {
+    .name = TYPE_SGI_KONA "/saved-input-entry",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(valid, SGIKonaSavedInput),
+        VMSTATE_STRUCT(textport, SGIKonaSavedInput, 1,
+                       vmstate_sgi_kona_saved_port, SGIKonaSavedPort),
+        VMSTATE_STRUCT(gl_port, SGIKonaSavedInput, 1,
+                       vmstate_sgi_kona_saved_port, SGIKonaSavedPort),
+        VMSTATE_BOOL(textport_expect_sync, SGIKonaSavedInput),
+        VMSTATE_BOOL(gl_sync_held, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_token_high, SGIKonaSavedInput),
+        VMSTATE_BOOL(video_open, SGIKonaSavedInput),
+        VMSTATE_UINT32(video_command, SGIKonaSavedInput),
+        VMSTATE_UINT32(video_have, SGIKonaSavedInput),
+        VMSTATE_UINT32(video_first, SGIKonaSavedInput),
+        VMSTATE_UINT32(video_tail_sum, SGIKonaSavedInput),
+        VMSTATE_UINT32(color_map_start, SGIKonaSavedInput),
+        VMSTATE_UINT32(color_map_count, SGIKonaSavedInput),
+        VMSTATE_UINT32(color_map_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(color_map_outside, SGIKonaSavedInput),
+        VMSTATE_UINT32(gamma_start, SGIKonaSavedInput),
+        VMSTATE_UINT32(gamma_count, SGIKonaSavedInput),
+        VMSTATE_UINT32(gamma_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(gamma_outside, SGIKonaSavedInput),
+        VMSTATE_UINT32(cursor_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(cursor_stage_words, SGIKonaSavedInput),
+        VMSTATE_UINT32(cursor_stage_entry, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(cursor_stage, SGIKonaSavedInput, 260),
+        VMSTATE_UINT32(gl_tex_table_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_tex_table_slot, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(gl_tex_table_words, SGIKonaSavedInput,
+                             SGI_KONA_GL_TEX_TABLE_WORDS),
+        VMSTATE_BOOL(gl_tex_table_refused, SGIKonaSavedInput),
+        VMSTATE_UINT32(calls_token, SGIKonaSavedInput),
+        VMSTATE_UINT32(calls_need, SGIKonaSavedInput),
+        VMSTATE_UINT32(calls_have, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(calls_words, SGIKonaSavedInput,
+                             2 * SGI_KONA_DMA_LIST_MAX_RANGES),
+        VMSTATE_UINT32(x_stipple_store_entry, SGIKonaSavedInput),
+        VMSTATE_UINT32(x_stipple_store_width, SGIKonaSavedInput),
+        VMSTATE_UINT32(x_stipple_store_height, SGIKonaSavedInput),
+        VMSTATE_UINT32(x_stipple_store_remaining, SGIKonaSavedInput),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The saved open commands, only while one is saved. */
+static bool sgi_kona_saved_input_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        if (s->saved_input[i].valid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * A saved framer as the live one could have left it: idle and empty, or
+ * part-way through a packet of a selector in its own table, with the
+ * table's word count and fewer words than that.
+ */
+static bool sgi_kona_saved_port_valid(const SGIKonaSavedPort *p,
+                                      const SGICommandPortSelector *table,
+                                      unsigned n)
+{
+    if (!p->framing) {
+        return !p->argc_have && !p->argc_expected;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (table[i].selector == p->selector) {
+            return p->argc_expected == table[i].argc &&
+                   p->argc_expected <= SGI_COMMAND_PORT_MAX_ARGS &&
+                   p->argc_have < p->argc_expected;
+        }
+    }
+    return false;
+}
+
+/*
+ * A saved command must be one the live input could have held. Each check
+ * is the live field's own, from sgi_kona_post_load_validate(), the DMA
+ * engine's post_load and the contexts' post_load: framers by their
+ * tables, a list invocation by its token, even count and bound, the
+ * texture-table slot, and the counted runs. The slot must be a context in
+ * use, the transient one only while it holds state.
+ */
+static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        const SGIKonaSavedInput *v = &s->saved_input[i];
+        uint32_t calls_max = v->calls_token == SGI_KONA_CMD_LIST_CALLS ?
+                             2 * SGI_KONA_LIST_CALLS_MAX :
+                             2 * SGI_KONA_LIST_CALLS_POOL_MAX;
+
+        if (!v->valid) {
+            continue;
+        }
+        if (i == SGI_KONA_CONTEXT_TRANSIENT ?
+            !s->state[SGI_KONA_CONTEXT_TRANSIENT] : i >= s->context_count) {
+            return -EINVAL;
+        }
+        if (!sgi_kona_saved_port_valid(&v->textport,
+                                       sgi_kona_textport_selectors,
+                                       sgi_kona_textport_num_selectors) ||
+            !sgi_kona_saved_port_valid(&v->gl_port, sgi_kona_gl_tokens,
+                                       sgi_kona_gl_num_tokens) ||
+            (v->gl_sync_held &&
+             (v->gl_port.framing || v->textport_expect_sync))) {
+            return -EINVAL;
+        }
+        if (v->calls_need &&
+            ((v->calls_token != SGI_KONA_CMD_LIST_CALLS &&
+              v->calls_token != SGI_KONA_CMD_LIST_CALLS_POOL) ||
+             v->calls_need > calls_max || v->calls_need % 2 ||
+             v->calls_have >= v->calls_need)) {
+            return -EINVAL;
+        }
+        if (!v->calls_need && v->calls_have) {
+            return -EINVAL;
+        }
+        if (v->gl_tex_table_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS &&
+            !v->gl_tex_table_refused) {
+            return -EINVAL;
+        }
+        if (v->video_open) {
+            uint32_t length = sgi_kona_video_data_words(v->video_command);
+
+            if (length == SGI_KONA_VIDEO_DATA_UNKNOWN ?
+                v->video_have >= SGI_KONA_VIDEO_SEARCH_MAX_WORDS :
+                v->video_have > length) {
+                return -EINVAL;
+            }
+        }
+        if ((v->cursor_stage_words != 0 && v->cursor_stage_words != 4 &&
+             v->cursor_stage_words != SGI_KONA_X_CURSOR_DATA_WORDS) ||
+            v->cursor_stage_entry > SGI_KONA_CURSOR_ENTRIES ||
+            v->cursor_remaining > v->cursor_stage_words ||
+            !v->cursor_remaining != !v->cursor_stage_words ||
+            v->gamma_remaining > v->gamma_count ||
+            v->gamma_outside > v->gamma_count - v->gamma_remaining ||
+            v->color_map_remaining > v->color_map_count ||
+            v->color_map_outside >
+            v->color_map_count - v->color_map_remaining ||
+            v->gl_tex_table_remaining > SGI_KONA_GL_TEX_TABLE_WORDS ||
+            v->x_stipple_store_height > SGI_KONA_X_STIPPLE_MAX ||
+            v->x_stipple_store_remaining > v->x_stipple_store_height) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_input = {
+    .name = TYPE_SGI_KONA "/saved-input",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_input_needed,
+    .post_load = sgi_kona_saved_input_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(saved_input, SGIKonaState, SGI_KONA_CONTEXTS, 1,
+                             vmstate_sgi_kona_saved_one, SGIKonaSavedInput),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_credit = {
     .name = TYPE_SGI_KONA "/credit",
     .version_id = 2,
@@ -15206,6 +15557,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_dma,
         &vmstate_sgi_kona_credit,
         &vmstate_sgi_kona_bracket,
+        &vmstate_sgi_kona_saved_input,
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,

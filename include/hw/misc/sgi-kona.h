@@ -814,6 +814,60 @@ enum {
     SGI_KONA_FALLBACK__MAX,
 };
 
+/*
+ * A user command a context left open when the kernel switched it out:
+ * the command-page framers' partial packets and the plain counted runs,
+ * copied out of SGIKonaState while another context's words are framed and
+ * copied back when the context sends words again. See
+ * sgi_kona_input_save(). Runs that hold host buffers (a GL data run, an X
+ * pixel write, a textport bitmap) are not kept here.
+ */
+typedef struct SGIKonaSavedPort {
+    bool framing;
+    uint32_t selector;
+    uint32_t argc_expected;
+    uint32_t argc_have;
+    uint32_t args[SGI_COMMAND_PORT_MAX_ARGS];
+} SGIKonaSavedPort;
+
+typedef struct SGIKonaSavedInput {
+    bool valid;
+    SGIKonaSavedPort textport;
+    SGIKonaSavedPort gl_port;
+    bool textport_expect_sync;
+    bool gl_sync_held;
+    uint32_t gl_token_high;
+    bool video_open;
+    uint32_t video_command;
+    uint32_t video_have;
+    uint32_t video_first;
+    uint32_t video_tail_sum;
+    uint32_t color_map_start;
+    uint32_t color_map_count;
+    uint32_t color_map_remaining;
+    uint32_t color_map_outside;
+    uint32_t gamma_start;
+    uint32_t gamma_count;
+    uint32_t gamma_remaining;
+    uint32_t gamma_outside;
+    uint32_t cursor_remaining;
+    uint32_t cursor_stage_words;
+    uint32_t cursor_stage_entry;
+    uint32_t cursor_stage[260];
+    uint32_t gl_tex_table_remaining;
+    uint32_t gl_tex_table_slot;
+    uint32_t gl_tex_table_words[SGI_KONA_GL_TEX_TABLE_WORDS];
+    bool gl_tex_table_refused;
+    uint32_t calls_token;
+    uint32_t calls_need;
+    uint32_t calls_have;
+    uint32_t calls_words[2 * SGI_KONA_DMA_LIST_MAX_RANGES];
+    uint32_t x_stipple_store_entry;
+    uint32_t x_stipple_store_width;
+    uint32_t x_stipple_store_height;
+    uint32_t x_stipple_store_remaining;
+} SGIKonaSavedInput;
+
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
@@ -966,6 +1020,8 @@ struct SGIKonaState {
      */
     bool kernel_input;
     int32_t suspended_owner;
+    /* Each context's saved open command, valid while saved. */
+    SGIKonaSavedInput saved_input[SGI_KONA_CONTEXTS];
     /*
      * The GL client's commands, framed by sgi_kona_gl_tokens[] on a port
      * of their own because several of their numbers are the textport's.
