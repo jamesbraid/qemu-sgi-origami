@@ -9140,13 +9140,17 @@ static bool sgi_kona_x_clip_contains(SGIKonaState *s, int64_t x, int64_t y)
     return false;
 }
 
-/* Complete GC diagnostics retain unsupported semantic fields. */
-static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
+/*
+ * Complete GC diagnostics retain unsupported semantic fields. Only the
+ * fills take an opaque or tiled GC (`opaque`); see sgi_kona_x_fill_source().
+ */
+static bool sgi_kona_x_decode_opaque(SGIKonaState *s, SGIXGC *gc,
+                                     bool opaque)
 {
     SGIXGCStatus status = s->x_gc[6] == 0xc || s->x_gc[6] == 0x180c ?
         sgi_x_gc_decode_main_index(s->x_gc, gc) : sgi_x_gc_decode(s->x_gc, gc);
 
-    if (status == SGI_X_GC_OK && !gc->opaque_or_tiled) {
+    if (status == SGI_X_GC_OK && (opaque || !gc->opaque_or_tiled)) {
         return true;
     }
     qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported X GC status %u:", status);
@@ -9155,6 +9159,22 @@ static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
     }
     qemu_log_mask(LOG_UNIMP, "\n");
     return false;
+}
+
+static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
+{
+    return sgi_kona_x_decode_opaque(s, gc, false);
+}
+
+/*
+ * Whether a stipple is loaded for the fills to use: the entry the last
+ * 0x13c named, inside the cache, with a pattern stored.
+ */
+static bool sgi_kona_x_stipple_loaded(SGIKonaState *s)
+{
+    uint32_t entry = s->x_stipple_loaded;
+
+    return entry < SGI_KONA_X_STIPPLE_ENTRIES && s->x_stipple_width[entry];
 }
 
 /*
@@ -9173,7 +9193,15 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     SGIXGC gc;
     SGIKonaRect clip;
 
-    if (!sgi_kona_x_decode(s, &gc)) {
+    /*
+     * Word 4's bit 31 marks kon_parseGC's FillOpaqueStippled, and FillTiled
+     * with a tile the GC private holds at +0x88 (kona.so 0x539818-0x539874):
+     * the GC then carries both colours and a stipple is loaded. A clear
+     * stipple bit paints the background, as X's opaque stipple does
+     * (inferred; the pipe was not observed). With no stipple loaded the
+     * pattern is unknown, so the fill is still refused.
+     */
+    if (!sgi_kona_x_decode_opaque(s, &gc, sgi_kona_x_stipple_loaded(s))) {
         return false;
     }
     if (gc.target == SGI_X_GC_DID || gc.target == SGI_X_GC_OVERLAY0 ||
@@ -9217,7 +9245,8 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
 
                 for (int x = x1; x < x2; x++) {
                     if (!sgi_kona_x_clip_contains(s, x, y) ||
-                        !sgi_kona_x_stipple_bit(s, x, y)) {
+                        (!gc.opaque_or_tiled &&
+                         !sgi_kona_x_stipple_bit(s, x, y))) {
                         continue;
                     }
                     if ((tag[bank] &&
@@ -9244,14 +9273,18 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
 
             for (int x = x1; x < x2; x++) {
                 uint32_t old, value;
+                bool set;
 
-                if (!sgi_kona_x_clip_contains(s, x, y) ||
-                    !sgi_kona_x_stipple_bit(s, x, y)) {
+                if (!sgi_kona_x_clip_contains(s, x, y)) {
+                    continue;
+                }
+                set = sgi_kona_x_stipple_bit(s, x, y);
+                if (!set && !gc.opaque_or_tiled) {
                     continue;
                 }
                 old = sgi_plane_load(memory, front[bank], x, row);
-                value = sgi_x_gc_apply(&gc, background ? gc.background :
-                                                        gc.foreground, old);
+                value = sgi_x_gc_apply(&gc, background || !set ?
+                                       gc.background : gc.foreground, old);
                 if (value != old ||
                     (tag[bank] &&
                      sgi_plane_load(memory, tag[bank], x, row) != target_tag)) {
