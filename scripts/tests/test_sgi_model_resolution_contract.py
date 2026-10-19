@@ -48,8 +48,8 @@ class SystemModelResolutionTests(unittest.TestCase):
                     self.load_layer_changes([
                         ("origin200.yaml", lambda document: document.update({field: value}))])
 
-    # The real compositions under docs/machines that more than one test
-    # loads directly (not through load_layer_changes's own mutated copy):
+    # Several tests load the same model inputs directly instead of
+    # using load_layer_changes's mutated copy:
     # resolving each is 100-200ms, and dozens of tests read one unchanged,
     # so setUpClass resolves each exactly once and tests take a fresh deep
     # copy from real_model() instead of paying for their own resolution.
@@ -68,7 +68,7 @@ class SystemModelResolutionTests(unittest.TestCase):
             for name in cls.REAL_COMPOSITIONS
         }
         # load_layer_changes's own copytree source: staged once here instead
-        # of re-walking docs/machines on every one of its 16 rounds.
+        # of copying the model input tree on every one of its 16 rounds.
         cls._staged_machines = tempfile.mkdtemp(prefix="origami-machines-")
         shutil.copytree(INPUTS, cls._staged_machines,
                         dirs_exist_ok=True,
