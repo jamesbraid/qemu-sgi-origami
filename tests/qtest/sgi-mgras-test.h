@@ -1984,6 +1984,52 @@ static inline void mgras_enter_gl_clip(QTestState *qts, uint32_t origin,
 #define GL_CLIP_SPAN(first, last) (((first) << 16) | (last))
 
 /*
+ * The X server's clip-ID fill: DRBPOINTERS 0x90240, COLORMASKMSBS 0xff,
+ * COLORMASKLSBSA/B 0, PP1FILLMODE 0x142600, the ID in FILLCOLOR_R, over
+ * screen columns x0-x1 and rows y0-y1 counted from the top.
+ */
+static inline void gl_clip_id_fill(QTestState *qts, uint32_t id, uint32_t x0,
+                                   uint32_t y0, uint32_t x1,
+                                   uint32_t y1)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x00090240));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x142600));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, id));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (x1 << 16) | y1));
+}
+
+/* A whole-screen window, mode 1 rectangle 0, with image word 4 as given. */
+static inline void gl_enter_clip_id_window(QTestState *qts, uint32_t word4)
+{
+    uint32_t image[MGRAS_CONTEXT_WORDS];
+
+    memcpy(image, gl_context_image, sizeof(image));
+    image[2] = image[14] = 0;
+    image[3] = 0x11;
+    image[4] = word4;
+    image[11] = GL_CLIP_SPAN(0, 1279);
+    image[12] = GL_CLIP_SPAN(0, 1023);
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, image[i]);
+    }
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+/*
  * Migrate a guest that setup has driven to a fresh destination, and hand
  * the destination to check.
  */

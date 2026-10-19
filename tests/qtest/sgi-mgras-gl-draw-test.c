@@ -2723,6 +2723,48 @@ static void test_gl_clip_takes_every_enabled_rectangle(void)
 }
 
 /*
+ * twilight's window, covered by the Toolchest, the Console icon and the
+ * desktop icons, has too many visible rectangles for the image: the kernel
+ * binds it whole and sets bit 4 + ID of word 4, and the X server tags its
+ * visible boxes with that clip ID (ID 1, word 4 0x20, in a captured run).
+ * A clear then fills only the pixels carrying an ID word 4 selects, and
+ * leaves the covering windows alone. Word 4 with bits 7:4 clear, as every
+ * window described by rectangles has, tests nothing.
+ */
+static void test_gl_clip_id_owns_the_tagged_pixels(void)
+{
+    mgras_reset();
+    mgras_enter_context(qts);
+    gl_clip_id_fill(qts, 1, 100, 100, 199, 149);
+    gl_clip_id_fill(qts, 2, 200, 100, 249, 149);
+    gl_enter_clip_id_window(qts, 0x20);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 100), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 199, 149), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 220, 120), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 99, 120), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0);
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    gl_clip_id_fill(qts, 1, 100, 100, 199, 149);
+    gl_clip_id_fill(qts, 2, 200, 100, 249, 149);
+    gl_enter_clip_id_window(qts, 0x60);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 150, 120), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 220, 120), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0);
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    gl_clip_id_fill(qts, 1, 100, 100, 199, 149);
+    gl_enter_clip_id_window(qts, 0xc00);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 150, 120), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0xffffff);
+}
+
+/*
  * A rectangle whose enable bit is clear is not the window's, whatever its
  * words hold: the kernel leaves them as the image last had them.
  */
@@ -4710,6 +4752,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-clip-takes-every-enabled-rectangle",
         test_gl_clip_takes_every_enabled_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-id-owns-the-tagged-pixels",
+        test_gl_clip_id_owns_the_tagged_pixels, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-clip-ignores-disabled-rectangles",
         test_gl_clip_ignores_disabled_rectangles, true);

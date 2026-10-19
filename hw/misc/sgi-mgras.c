@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Bounded functional MGRAS graphics endpoint. */
 #include "qemu/osdep.h"
+#include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/core/qdev-properties.h"
@@ -1468,6 +1469,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     memset(s->format, 0, s->width * s->height);
     memset(s->back_format, 0, s->width * s->height);
     memset(s->overlay, 0, s->width * s->height);
+    memset(s->clip_id, 0, s->width * s->height);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -1715,6 +1717,7 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->format = g_new0(uint8_t, s->width * s->height);
     s->back_format = g_new0(uint8_t, s->width * s->height);
     s->overlay = g_new0(uint8_t, s->width * s->height);
+    s->clip_id = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     /* Only a board with TRAM keeps a TRAM image; texture paths check. */
@@ -1822,6 +1825,7 @@ static void mgras_unrealize(DeviceState *dev)
     g_free(s->depth); g_free(s->format);
     g_free(s->back_format);
     g_free(s->overlay);
+    g_free(s->clip_id);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->tram);
     s->tram = NULL;
@@ -2129,6 +2133,26 @@ static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
     },
 };
 
+/* Only a desktop that has tagged a window carries clip IDs. */
+static bool mgras_clip_id_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    return !buffer_is_zero(s->clip_id, s->front_count);
+}
+
+static const VMStateDescription vmstate_sgi_mgras_clip_id = {
+    .name = TYPE_SGI_MGRAS "/clip-id",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_clip_id_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VARRAY_UINT32(clip_id, SGIMgrasState, front_count, 0,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 36, .minimum_version_id = 36,
     .pre_load = mgras_pre_load,
@@ -2335,6 +2359,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_pixel_flags,
         &vmstate_sgi_mgras_texture,
         &vmstate_sgi_mgras_tram,
+        &vmstate_sgi_mgras_clip_id,
         NULL
     }
 };
