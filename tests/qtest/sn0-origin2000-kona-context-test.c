@@ -1087,6 +1087,115 @@ static uint32_t shown_pixel(QTestState *s, uint32_t x, uint32_t y)
     return kona_get_uint(s, "x-test-pixel");
 }
 
+/* A textport command from a user context: the sync word, then the command. */
+static void textport_command(QTestState *s, uint32_t cmd, const uint32_t *args,
+                             unsigned argc)
+{
+    qtest_writel(s, REG_COMMAND, 1);
+    qtest_writel(s, REG_COMMAND, cmd);
+    for (unsigned k = 0; k < argc; k++) {
+        qtest_writel(s, REG_COMMAND, args[k]);
+    }
+}
+
+/*
+ * A textport bitmap moves with its context too, payload and all. A's 32 by
+ * 2 bitmap is cut after its first payload word, B runs a command, and A's
+ * second word, after A is restored, completes the blit: both rows draw.
+ * A model that ended the bitmap at B's first word drew nothing.
+ */
+static void test_suspended_bitmap_survives_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    textport_command(s, 3, (uint32_t[]){ 1, 0xab << 2, 0xcd << 2,
+                                         0xef << 2 }, 4);
+    textport_command(s, 2, (uint32_t[]){ 1 }, 1);
+    textport_command(s, 4, (uint32_t[]){ 300, 400 }, 2);
+    textport_command(s, 0xa, (uint32_t[]){ 32, 2, 0, 0, 0, 0 }, 6);
+    qtest_writel(s, REG_COMMAND, 0x80000001);
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    qtest_writel(s, REG_COMMAND, 0x00018000);
+    g_assert_cmphex(shown_pixel(s, 300, 400), ==, 0x00abcdef);
+    g_assert_cmphex(shown_pixel(s, 301, 400), ==, 0);
+    g_assert_cmphex(shown_pixel(s, 331, 400), ==, 0x00abcdef);
+    g_assert_cmphex(shown_pixel(s, 315, 401), ==, 0x00abcdef);
+    g_assert_cmphex(shown_pixel(s, 316, 401), ==, 0x00abcdef);
+    g_assert_cmphex(shown_pixel(s, 300, 401), ==, 0);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "token 0x177 args 0x77000000 0x0 0x0"
+                                   " argc 1\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_save "), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_input_restore "), ==,
+                     1);
+    g_assert_null(strstr(found, "sgi_kona_bracket_drop "));
+}
+
+/*
+ * A saved textport bitmap migrates with its payload: A's 32 by 2 bitmap is
+ * cut after one payload word and saved when B sends words, the machine
+ * migrates, and on the destination A's second word completes the blit.
+ */
+static void test_migration_of_saved_bitmap(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    textport_command(from, 3, (uint32_t[]){ 1, 0xab << 2, 0xcd << 2,
+                                            0xef << 2 }, 4);
+    textport_command(from, 2, (uint32_t[]){ 1 }, 1);
+    textport_command(from, 4, (uint32_t[]){ 300, 400 }, 2);
+    textport_command(from, 0xa, (uint32_t[]){ 32, 2, 0, 0, 0, 0 }, 6);
+    qtest_writel(from, REG_COMMAND, 0x80000001);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(from, 2);
+
+    sgi_migrate_stopped(from, uri);
+
+    context_restore_physical(to, SAVE_A);
+    qtest_writel(to, REG_COMMAND, 0x00018000);
+    g_assert_cmphex(shown_pixel(to, 331, 400), ==, 0x00abcdef);
+    g_assert_cmphex(shown_pixel(to, 316, 401), ==, 0x00abcdef);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void context_window(QTestState *s, uint32_t x, uint32_t y,
                             bool buffered)
 {
@@ -1550,11 +1659,14 @@ static void corrupt_context_stream(const char *path, unsigned kind)
  * vmstate_sgi_kona_saved_one lays an entry out: valid; the textport and
  * GL framers (framing, selector, expected and held counts, 32 words);
  * the sync, video, colour map, gamma, cursor and texture-table fields;
- * the list invocation's token, need, have and 16 words; the stipple store.
+ * the list invocation's token, need, have and 16 words; the stipple store;
+ * the textport bitmap's state, six header words, five counts and payload,
+ * none while no bitmap is open.
  */
-#define SAVED_ENTRY_BYTES   1623
+#define SAVED_ENTRY_BYTES   1671
 #define SAVED_GL_PORT       142
 #define SAVED_CALLS_TOKEN   1531
+#define SAVED_BITMAP        1623
 #define SAVED_TRANSIENT     64
 
 static void corrupt_saved_input_stream(const char *path, unsigned kind)
@@ -1567,7 +1679,7 @@ static void corrupt_saved_input_stream(const char *path, unsigned kind)
     g_assert_true(g_file_get_contents(path, &data, &length, NULL));
     name = stream_bytes((uint8_t *)data, length, saved, sizeof(saved) - 1);
     g_assert_cmpuint(name[-2], ==, 5); /* QEMU_VM_SUBSECTION */
-    g_assert_cmpuint(ldl_be_p(name + sizeof(saved) - 1), ==, 1);
+    g_assert_cmpuint(ldl_be_p(name + sizeof(saved) - 1), ==, 2);
     entry = name + sizeof(saved) - 1 + 4;
     /* Context A's saved viewport: 0xe3, four expected, two held. */
     g_assert_cmpuint(entry[0], ==, 1);
@@ -1590,6 +1702,16 @@ static void corrupt_saved_input_stream(const char *path, unsigned kind)
     case 3: /* a copy for the transient slot, which holds no context */
         entry[SAVED_TRANSIENT * SAVED_ENTRY_BYTES] = 1;
         break;
+    case 4: /* a bitmap collecting a payload no header sized */
+        stl_be_p(entry + SAVED_BITMAP, 2);
+        break;
+    case 5: /* a bitmap header with all six words held */
+        stl_be_p(entry + SAVED_BITMAP, 1);
+        stl_be_p(entry + SAVED_BITMAP + 28, 6);
+        break;
+    case 6: /* an empty slot with a bitmap open */
+        stl_be_p(entry + SAVED_ENTRY_BYTES + SAVED_BITMAP, 1);
+        break;
     default:
         g_assert_not_reached();
     }
@@ -1599,13 +1721,14 @@ static void corrupt_saved_input_stream(const char *path, unsigned kind)
 /*
  * A saved command the live input could not have held is refused on load:
  * a GL packet with all its words held, an unknown GL selector, a list
- * invocation with an odd held count, and a copy for an unused transient
- * slot. A destination that took them would write past the framer's or the
- * invocation's words on the next word.
+ * invocation with an odd held count, a copy for an unused transient slot,
+ * a bitmap payload no header sized, a bitmap header already complete and a
+ * bitmap in an empty slot. A destination that took them would write past
+ * the framer's, the invocation's or the bitmap's words on the next word.
  */
 static void test_migration_rejects_saved_input(void)
 {
-    for (unsigned kind = 0; kind < 4; kind++) {
+    for (unsigned kind = 0; kind < 7; kind++) {
         g_autofree char *dir = g_dir_make_tmp("sn0-kona-context-XXXXXX", NULL);
         g_autofree char *path = g_build_filename(dir, "stream", NULL);
         g_autofree char *uri = g_strdup_printf("file:%s", path);
@@ -2350,10 +2473,15 @@ int main(int argc, char **argv)
                    "suspended-command-survives-other-context",
                    test_suspended_command_survives_other_context);
     qtest_add_func("sn0/origin2000/kona-context/"
+                   "suspended-bitmap-survives-other-context",
+                   test_suspended_bitmap_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
                    "unsaved-command-ends-at-other-context",
                    test_unsaved_command_ends_at_other_context);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
                    test_migration_of_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-bitmap",
+                   test_migration_of_saved_bitmap);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "fresh-context-discards-saved-command",
                    test_fresh_context_discards_saved_command);
