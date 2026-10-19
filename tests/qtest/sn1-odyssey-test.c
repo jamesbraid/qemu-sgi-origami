@@ -9619,6 +9619,49 @@ static void test_dma_texture_object(void)
 }
 
 /*
+ * buttonfly's label texture: a 256x256 luminance-alpha image by DMA, two
+ * bytes a pixel (size index 0) under source format 0x48, with header words
+ * 4 and 7 as the guest sent them. Each (L, A) pair lands as one texel word
+ * (L, L, L, A). Before, the two-byte size was refused and the object stayed
+ * empty, so the label drew as solid blocks.
+ */
+static void test_dma_texture_luminance_alpha(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t table = 0xb80000;
+    const uint64_t page = 0xb84000;
+    const uint32_t hdr[8] = {
+        0x0016c800, 0, 0x10, (2 << 16) | 0x100, 0x80001000, 0, 0x200,
+        0x32000048,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(page, 1024) };
+    uint8_t rows[1024];
+    uint32_t x, y;
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    for (y = 0; y < 2; y++) {
+        for (x = 0; x < 256; x++) {
+            rows[2 * (256 * y + x)] = x;
+            rows[2 * (256 * y + x) + 1] = x ^ (y ? 0xff : 0x0f);
+        }
+    }
+    qtest_memwrite(qts, page, rows, sizeof(rows));
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c800, 0, 0), ==,
+                    0x0000000fu);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c800, 0x81, 0), ==,
+                    0x8181818eu);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c800, 0xff, 1), ==,
+                    0xffffff00u);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c800, 0, 2), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
+    board_quit(qts);
+}
+
+/*
  * One two-texel DMA row of a 12-bit texture source into the object at base:
  * word 7 carries the source code and its size index (bits 18:16).
  */
@@ -19908,6 +19951,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_texture_rgba);
     add_fresh_case("sn1/odyssey/dma-texture-object",
                    test_dma_texture_object);
+    add_fresh_case("sn1/odyssey/dma-texture-luminance-alpha",
+                   test_dma_texture_luminance_alpha);
     add_fresh_case("sn1/odyssey/dma-texture-12bit-sources",
                    test_dma_texture_12bit_sources);
     add_case("sn1/odyssey/burst-texture-12bit-sources",
