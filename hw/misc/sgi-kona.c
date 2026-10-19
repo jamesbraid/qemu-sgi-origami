@@ -8058,10 +8058,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                     handle = p->texture_assoc_handle[slot];
                     s->texture_bind[0] = handle;
                 } else {
+                    /* Reported at the record if it cannot find the image. */
                     p->texture_rebind_refused = true;
-                    qemu_log_mask(LOG_UNIMP,
-                                  "sgi-kona: texture rebind without an "
-                                  "associated selector; draw refused\n");
                 }
             } else if (p->texture_selector_valid) {
                 s->texture_associate_pending = true;
@@ -8126,8 +8124,14 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0]);
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             i != SGI_KONA_CONTEXT_NONE && i == s->texture_bind_context &&
-            s->state[i]->pipe.texture_rebind_refused && resolved) {
-            s->state[i]->pipe.texture_rebind_refused = false;
+            s->state[i]->pipe.texture_rebind_refused) {
+            if (resolved) {
+                s->state[i]->pipe.texture_rebind_refused = false;
+            } else if (s->texture_bind[0] == UINT32_MAX) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: texture rebind without an "
+                              "associated selector; draw refused\n");
+            }
         }
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         s->texture_bind_generation = 0;
