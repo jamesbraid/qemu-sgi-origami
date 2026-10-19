@@ -3264,6 +3264,14 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
             if (buffers & (1u << ODSY_AUX_OVERLAY_BUFFER)) {
                 s->overlay[at] = (s->overlay[at] & ~mask) | (value & mask);
             }
+            if (!(buffers & ((1u << ODSY_AUX_ID_BUFFER) |
+                             (1u << ODSY_AUX_OVERLAY_BUFFER))) &&
+                !s->aux_mask_reported) {
+                s->aux_mask_reported = true;
+                qemu_log_mask(LOG_UNIMP, "sgi-odyssey: id-plane write with "
+                              "drawing mask 0x%x selects neither the id nor "
+                              "the overlay byte; dropped\n", s->draw_mask);
+            }
         }
     }
     /* A pixel's drawable picks its colour at scanout. */
@@ -10137,6 +10145,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
     s->overlay_mode_reported = false;
     s->gl_aux_reported = false;
+    s->aux_mask_reported = false;
     s->backend_index = 0;
     s->backend_count = 0;
     s->reported_addr_count = 0;
