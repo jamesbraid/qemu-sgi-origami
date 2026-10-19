@@ -1186,6 +1186,37 @@ static void test_stipple_masks_boxes_and_ignores_stray_bits(void)
 }
 
 /*
+ * An opaque-stipple fill, word 4's bit 31 with both colours in the GC, as
+ * the desktop's 50% patterns carry it: set stipple bits paint the
+ * foreground and clear bits the background. With no stipple loaded the
+ * pattern is unknown and the fill is refused, leaving the pixels alone.
+ */
+static void test_opaque_stipple_paints_background(void)
+{
+    const uint32_t gc[13] = { INDEX_RED << 12, 0x1ffe, INDEX_GREEN << 12,
+                              0x1ffe, 0x80f00fff, 0, 0x180c, 0x40001, 1, 6,
+                              5, 1, 1 };
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(0, 2), XY(8, 3) }, 2);
+    g_assert_cmphex(front_tag_at(qts, 0, 2), ==, 0);
+
+    x_command(qts, TOKEN_STORE_STIPPLE, (uint32_t[]){ 2, 2, 1 }, 3);
+    data_words(qts, (uint32_t[]){ 0x80000000 }, 1);
+    x_command(qts, TOKEN_LOAD_STIPPLE, (uint32_t[]){ 2 }, 1);
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(0, 0), XY(8, 1) }, 2);
+    for (unsigned x = 0; x < 8; x++) {
+        g_assert_cmphex(front_tag_at(qts, x, 0), ==, TAG_X_INDEX);
+        g_assert_cmphex(front_at(qts, x, 0), ==,
+                        x % 2 ? INDEX_GREEN : INDEX_RED);
+    }
+    assert_in_step(qts);
+}
+
+/*
  * A store that does not fit the model's cache, an entry past it or a
  * pattern over 32 bits wide, is logged and its rows consumed; loading an
  * entry past the cache is logged and unloads the stipple, and loading one
@@ -1530,6 +1561,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "stipple-masks-boxes-and-ignores-stray-bits",
                    test_stipple_masks_boxes_and_ignores_stray_bits);
+    qtest_add_func("sn0/origin2000/kona-glyph/opaque-stipple-paints-background",
+                   test_opaque_stipple_paints_background);
     qtest_add_func("sn0/origin2000/kona-glyph/stipple-outside-cache",
                    test_stipple_outside_cache);
     qtest_add_func("sn0/origin2000/kona-glyph/"
