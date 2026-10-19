@@ -11287,8 +11287,15 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
 /*
  * Move a saved GL data run back. Its uploads replace the live ones, which
  * hold nothing of an open command; one that still holds a finished upload
- * of another context, waiting for its load identifier, loses it, logged.
+ * of another context, waiting for its load identifier or its DMA, loses
+ * it, logged for each kind.
  */
+static void sgi_kona_gl_run_displaces(SGIKonaState *s, const char *what)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: a finished %s upload gives way to"
+                  " context %d's restored run\n", what, s->context_current);
+}
+
 static void sgi_kona_gl_run_restore(SGIKonaState *s, SGIKonaSavedInput *v)
 {
     s->gl_data_token = v->gl_data_token;
@@ -11297,22 +11304,30 @@ static void sgi_kona_gl_run_restore(SGIKonaState *s, SGIKonaSavedInput *v)
     memcpy(s->gl_data, v->gl_data, sizeof(s->gl_data));
     if (v->texture_upload.count) {
         if (s->texture_upload.count) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: a finished texture upload"
-                          " gives way to a restored context's run\n");
+            sgi_kona_gl_run_displaces(s, "texture");
         }
         sgi_kona_texture_upload_clear(s);
         s->texture_upload = v->texture_upload;
         v->texture_upload = (SGIKonaTextureUpload) { 0 };
     }
     if (v->gl_image_upload.count) {
+        if (s->gl_image_upload.count) {
+            sgi_kona_gl_run_displaces(s, "image");
+        }
         sgi_kona_gl_image_clear(s);
         s->gl_image_upload = v->gl_image_upload;
         memset(&v->gl_image_upload, 0, sizeof(v->gl_image_upload));
     }
     if (v->gl_bitmap_upload.count) {
+        if (s->gl_bitmap_upload.count) {
+            sgi_kona_gl_run_displaces(s, "inline bitmap");
+        }
         s->gl_bitmap_upload = v->gl_bitmap_upload;
     }
     if (v->gl_map_upload.header[1]) {
+        if (s->gl_map_upload.header[1]) {
+            sgi_kona_gl_run_displaces(s, "pixel map");
+        }
         s->gl_map_upload = v->gl_map_upload;
     }
 }
