@@ -388,13 +388,17 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     unsigned compare = (bind[2] >> 10) & 3;
 
     /*
-     * Non-repeat S/T collapse three public clamp modes into the same bits.
-     * Their border storage is not established by this sampler record.
+     * Bits twelve and thirteen are S and T wrap: the library emits one for
+     * each of CLAMP, CLAMP_TO_EDGE and CLAMP_TO_BORDER and zero for
+     * REPEAT, so the pipe has one clamp behaviour for all three. Which
+     * one is unknown; the model clamps taps to the edge texels, which
+     * needs no border texels and differs from CLAMP only in the weight
+     * an edge tap gives the border. A 2D record's R wrap stays refused.
      */
     if (params->base_level || !min_filter[min] ||
         (record[2] & 0xfff00000) || lo > hi ||
         (mag > 1 && (mag < 3 || mag > 5)) ||
-        (bind[3] & 0x7000) ||
+        (bind[3] & 0x4000) ||
         !scale_s || !scale_t) {
         return false;
     }
@@ -450,7 +454,8 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
         next.detail_level = -(int)detail_level;
         next.detail_mode = mag == 3 ? SGI_GL_ADD : SGI_GL_MODULATE;
     }
-    next.wrap_s = next.wrap_t = SGI_GL_REPEAT;
+    next.wrap_s = bind[3] & 0x1000 ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
+    next.wrap_t = bind[3] & 0x2000 ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
     next.lod_scale_s = scale_s / 16.0;
     next.lod_scale_t = scale_t / 16.0;
     next.min_lod = sgi_kona_gl_texture_lod(lo);
@@ -529,7 +534,7 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
     uint32_t ordinary_bind[5], ordinary_record[22];
 
     /* Only the base-zero, repeat interior profile is established. */
-    if ((bind[1] >> 28) != 1 || (bind[3] & 0xf0) ||
+    if ((bind[1] >> 28) != 1 || (bind[3] & 0x10f0) ||
         (bind[3] & 0xf00) != ((bind[2] & 0xc00) ? 0xf00 : 0) ||
         params->base_level || ((bind[2] >> 5) & 7) > 1) {
         return false;
@@ -563,7 +568,9 @@ bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
     uint32_t ordinary[22] = { 0, 0x00101010 };
     unsigned min = (bind[2] >> 2) & 7, mag = (bind[2] >> 5) & 7;
 
+    /* Volume clamp modes keep the R-border question; all stay refused. */
     if ((bind[1] >> 28) != 3 || params->base_level || mag > 1 ||
+        (bind[3] & 0x7000) ||
         (mipmapped ? min < 3 || min > 6 : min > 1 || min != mag)) {
         return false;
     }
