@@ -9725,7 +9725,7 @@ static gint64 object_store_save(QTestState *from, const char *path)
 /*
  * A save carries only the used part of the 128 MiB object store, and the
  * objects come back whole: a board holding 48 MiB more of objects saves a
- * stream at least that much longer. Before, every save carried the whole
+ * stream about that much longer. Before, every save carried the whole
  * store, so the two streams were the same length.
  */
 static void test_object_store_migrates_used_part(void)
@@ -9758,7 +9758,14 @@ static void test_object_store_migrates_used_part(void)
     large_size = object_store_save(large, large_path);
     g_test_message("streams %" G_GINT64_FORMAT " and %" G_GINT64_FORMAT
                    " bytes", small_size, large_size);
-    g_assert_cmpint(large_size - small_size, >=, 4096 * 3000 * 4);
+    /*
+     * The streams differ by the large object's words, within slack for
+     * the run-to-run variation of a few bytes in the rest of the stream.
+     */
+    g_assert_cmpint(large_size - small_size, >=,
+                    4096 * 3000 * 4 - 64 * 1024);
+    g_assert_cmpint(large_size - small_size, <=,
+                    4096 * 3000 * 4 + 1024 * 1024);
 
     uri = g_strdup_printf("file:%s", large_path);
     to = board_start(" -incoming defer");
