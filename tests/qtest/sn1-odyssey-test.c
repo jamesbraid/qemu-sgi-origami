@@ -16956,6 +16956,56 @@ static void test_draw_sentinel_short_upload(void)
     board_quit(qts);
 }
 
+/*
+ * The GL library's ABGR image write (ipaste, bgpaste): code 0x6c, four
+ * bytes a pixel in A, B, G, R order, bottom row first, word 1 relative to
+ * the window. Callers differ in word 7 bit 27; both land. With bit 30 clear
+ * the row order is unknown and nothing is painted.
+ */
+static void test_draw_sentinel_abgr_upload(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, (2 << 16) | 3, 0x50, (2 << 16) | 2,
+        0x80035000, 0, 8, 0x7201016c,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 16) };
+    const uint8_t pixels[16] = {
+        0xff, 0x7f, 0x80, 0x97, 0x80, 0x00, 0x00, 0xff,
+        0x40, 0x00, 0xff, 0x00, 0x00, 0x11, 0x22, 0x33,
+    };
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+    qtest_memwrite(qts, RB_PAGE_A, pixels, sizeof(pixels));
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+
+    /* Source row zero lands on the lower row; each word is A, B, G, R. */
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 203), ==, 0x97807fff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 203), ==, 0xff000080);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 202), ==, 0x00ff0040);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 202), ==, 0x33221100);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 105, 203), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 103, 203), ==, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+
+    /* bgpaste's word 7 differs in bit 27 and lands the same way. */
+    window_origin(qts, 300, 400);
+    hdr[7] = 0x7a01016c;
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 303, 403), ==, 0x97807fff);
+
+    /* Without bit 30 nothing is painted. */
+    window_origin(qts, 500, 600);
+    hdr[7] = 0x3201016c;
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 602), ==, 0);
+
+    board_quit(qts);
+}
+
 static void test_draw_sentinel_short_row_gap(void)
 {
     QTestState *qts = readback_start("");
@@ -18316,6 +18366,8 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short",
                    test_draw_sentinel_short_upload);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-abgr",
+                   test_draw_sentinel_abgr_upload);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-row-gap",
                    test_draw_sentinel_short_row_gap);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",

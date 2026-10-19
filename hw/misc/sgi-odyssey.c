@@ -7238,6 +7238,43 @@ done:
 static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
 
 /*
+ * The source format code of a GL DMA image write of A, B, G, R bytes, one
+ * pixel a 4-byte word (word 7's low byte, bytes-per-pixel code 1). IRIS GL's
+ * lrectwrite and GL_ABGR_EXT draws (ipaste, bgpaste) send it. ESTABLISHED
+ * from a model run: ipaste's payload for brick.rgb carries bytes ff 7f 80 97
+ * for the image's bottom-left pixel, whose file channels are R 0x97, G 0x80,
+ * B 0x7f, and the next pixels match the same way. The X server's 0x4c, one
+ * 0x00RRGGBB word, is a different layout.
+ */
+#define ODSY_DMA_CODE_ABGR 0x6c
+
+/*
+ * The draw-sentinel uploads this model takes: the captured RGBA16 write,
+ * whose words 4 and 7 must match exactly, eight bytes a pixel, and the ABGR
+ * write above, four bytes a pixel, with word 7 bit 30 (bottom row first) set
+ * and word 4 selecting the draw drawable. Bits 29:25 and 8 of an ABGR
+ * write's word 7 vary between callers (0x7201016c, 0x7a01016c) with no
+ * known effect and are ignored. 0 for any other upload.
+ */
+static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr)
+{
+    uint32_t control = hdr[ODSY_DMA_HDR_CONTROL];
+
+    if (hdr[ODSY_DMA_HDR_FORMAT] == 0x02635000 && control == 0x7a02006b) {
+        return 8;
+    }
+    if ((control & ODSY_IMAGE_CODE_MASK) == ODSY_DMA_CODE_ABGR &&
+        odyssey_dma_bpp[(control >> ODSY_DMA_BPP_SHIFT) &
+                        ODSY_DMA_BPP_MASK] == 4 &&
+        (control & ODSY_DMA_BOTTOM_UP) &&
+        ((hdr[ODSY_DMA_HDR_FORMAT] >> ODSY_DMA_FMT_SELECTOR_SHIFT) &
+         ODSY_DMA_FMT_SELECTOR_MASK) == ODSY_DMA_FMT_SELECTOR_DRAW) {
+        return 4;
+    }
+    return 0;
+}
+
+/*
  * Stage the pixel bytes first so a failed source read cannot leave a
  * partially painted rectangle. Entry lengths count pixels; row gaps advance
  * the address cursor only while the current entry has bytes remaining.
@@ -7257,10 +7294,10 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     uint64_t payload_len = 0, pos = 0, out = 0;
     g_autofree uint8_t *payload = NULL;
     uint32_t left, r;
+    unsigned psize = odyssey_dma_draw_sentinel_bytes(hdr);
     int n, i;
 
-    if (hdr[ODSY_DMA_HDR_FORMAT] != 0x02635000 ||
-        hdr[ODSY_DMA_HDR_CONTROL] != 0x7a02006b) {
+    if (!psize) {
         if (odyssey_dma_report(s, ODSY_DMA_REPORT_UPLOAD_SENTINEL)) {
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA upload to sentinel "
                           "0x%x with format 0x%x and control 0x%x is not "
@@ -7278,7 +7315,7 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     for (int j = 0; j < n; j++) {
         payload_len += e[j].len;
     }
-    if (!w || !h || rowbytes != (uint64_t)w * 8 ||
+    if (!w || !h || rowbytes != (uint64_t)w * psize ||
         payload_len != (uint64_t)rowbytes * h) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: draw-sentinel DMA "
                       "header at 0x%" PRIx64 " disagrees with its payload\n",
@@ -7318,18 +7355,26 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
 
     for (r = 0; r < h; r++) {
         for (uint32_t c = 0; c < w; c++) {
-            const uint8_t *src = payload + (uint64_t)r * rowbytes + c * 8;
-            uint32_t rgba, red = lduw_be_p(src), green = lduw_be_p(src + 2);
-            uint32_t blue = lduw_be_p(src + 4), alpha = lduw_be_p(src + 6);
+            const uint8_t *src = payload + (uint64_t)r * rowbytes +
+                                 c * psize;
             int64_t px = (int64_t)x + c + s->win_origin[0];
             int64_t py = (int64_t)y + h - 1 - r + s->win_origin[1];
+            uint32_t rgba;
 
-            rgba = odyssey_pack_pixel(
-                (red * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                (green * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                (blue * 255 + UINT16_MAX / 2) / UINT16_MAX);
-            rgba = (rgba & ~0xffu) |
-                   ((alpha * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            if (psize == 4) {
+                rgba = (odyssey_pack_pixel(src[3], src[2], src[1]) & ~0xffu) |
+                       src[0];
+            } else {
+                uint32_t red = lduw_be_p(src), green = lduw_be_p(src + 2);
+                uint32_t blue = lduw_be_p(src + 4), alpha = lduw_be_p(src + 6);
+
+                rgba = odyssey_pack_pixel(
+                    (red * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                    (green * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                    (blue * 255 + UINT16_MAX / 2) / UINT16_MAX);
+                rgba = (rgba & ~0xffu) |
+                       ((alpha * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            }
             odyssey_paint_pixel(s, px, py, rgba);
         }
     }
@@ -7788,7 +7833,8 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
  * the FIFO -- whose row length is word 2's (16-pixel units), created when no
  * 0x1017 named it first. A zero word 0 names no buffer and is refused. An
  * upload to a sentinel (GL's DMA image write) is accepted only by the
- * experimental draw-sentinel SHORT adapter. The 0xe03 opcode, which only the
+ * draw-sentinel adapter, for the two layouts it knows
+ * (odyssey_dma_draw_sentinel_bytes()). The 0xe03 opcode, which only the
  * diagnostic region path emits, is reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
