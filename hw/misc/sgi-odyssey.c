@@ -3635,20 +3635,35 @@ static int odyssey_object_oldest(SGIOdysseyState *s, int keep)
 
 /*
  * Pack the objects that hold rows to the front of the store, in store order,
- * so the space between them is reclaimed. Indices do not change.
+ * so the space between them is reclaimed, then object last (when not -1)
+ * after them all, so that it can grow in place. Indices do not change.
  */
-static void odyssey_object_compact(SGIOdysseyState *s)
+static void odyssey_object_compact(SGIOdysseyState *s, int last)
 {
     uint8_t *bytes = s->obj_mem.bytes;
+    uint64_t last_size = last >= 0 ?
+                         (uint64_t)s->obj_width[last] * s->obj_rows[last] : 0;
+    g_autofree uint8_t *held = NULL;
+    g_autofree bool *held_valid = NULL;
     uint64_t next = 0;
 
+    /* Packing the others may overwrite last's words: keep them aside. */
+    if (last_size) {
+        held = g_memdup2(bytes + (uint64_t)s->obj_offset[last] * 4,
+                         last_size * 4);
+        held_valid = g_new(bool, last_size);
+        for (uint64_t k = 0; k < last_size; k++) {
+            held_valid[k] = odyssey_object_word_valid(s,
+                                                      s->obj_offset[last] + k);
+        }
+    }
     for (;;) {
         uint64_t size;
         int pick = -1;
 
         /* The lowest-placed object not yet packed: at or past next. */
         for (unsigned int i = 0; i < s->obj_count; i++) {
-            if (s->obj_base[i] && s->obj_rows[i] &&
+            if ((int)i != last && s->obj_base[i] && s->obj_rows[i] &&
                 s->obj_offset[i] >= next &&
                 (pick < 0 || s->obj_offset[i] < s->obj_offset[pick])) {
                 pick = i;
@@ -3666,19 +3681,18 @@ static void odyssey_object_compact(SGIOdysseyState *s)
         }
         next += size;
     }
+    if (last_size) {
+        memcpy(bytes + next * 4, held, last_size * 4);
+        for (uint64_t k = 0; k < last_size; k++) {
+            odyssey_object_word_set_valid(s, next + k, held_valid[k]);
+        }
+        s->obj_offset[last] = next;
+        next += last_size;
+    }
     /* Growth in place assumes the words past the store's end are zero. */
     memset(bytes + next * 4, 0, (s->obj_used - next) * 4);
     odyssey_object_valid_range(s, next, s->obj_used - next, false);
     s->obj_used = next;
-}
-
-/* Whether object i can hold need words, in place or moved to the end. */
-static bool odyssey_object_fits(SGIOdysseyState *s, int i, uint64_t have,
-                                uint64_t need)
-{
-    return (have && s->obj_offset[i] + have == s->obj_used &&
-            s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) ||
-           s->obj_used + need <= ODSY_OBJ_POOL_WORDS;
 }
 
 static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
@@ -3723,10 +3737,10 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
 
 /*
  * Make room for rows rows in object i: grow it in place when it is the last
- * in the store, else move it to the end. When the store is full, pack it,
- * then forget the least recently used other objects until i fits, reporting
- * the first object forgotten. False, reported once, when i alone does not
- * fit.
+ * in the store, else move it to the end. When there is no room, forget the
+ * least recently used other objects until the live objects and i's new
+ * size fit, reporting the first object forgotten, then pack the store once
+ * with i last. False, reported once, when i alone does not fit.
  */
 static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
 {
@@ -3737,27 +3751,35 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
         return true;
     }
     odyssey_object_touch(s, i);
-    while (need <= ODSY_OBJ_POOL_WORDS &&
-           !odyssey_object_fits(s, i, have, need)) {
-        int victim;
+    if (need <= ODSY_OBJ_POOL_WORDS &&
+        !(have && s->obj_offset[i] + have == s->obj_used &&
+          s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) &&
+        s->obj_used + need > ODSY_OBJ_POOL_WORDS) {
+        uint64_t live = 0;
 
-        odyssey_object_compact(s);
-        if (odyssey_object_fits(s, i, have, need)) {
-            break;
+        for (unsigned int j = 0; j < s->obj_count; j++) {
+            if ((int)j != i && s->obj_base[j]) {
+                live += (uint64_t)s->obj_width[j] * s->obj_rows[j];
+            }
         }
-        victim = odyssey_object_oldest(s, i);
-        if (victim < 0) {
-            break;
+        while (live + need > ODSY_OBJ_POOL_WORDS) {
+            int victim = odyssey_object_oldest(s, i);
+
+            if (victim < 0) {
+                break;
+            }
+            live -= (uint64_t)s->obj_width[victim] * s->obj_rows[victim];
+            if (!s->obj_forget_reported) {
+                s->obj_forget_reported = true;
+                qemu_log_mask(LOG_UNIMP, "sgi-odyssey: the model's %u MiB "
+                              "board-memory store is full; the least "
+                              "recently used object, 0x%x, is forgotten\n",
+                              (unsigned)(ODSY_OBJ_POOL_BYTES / MiB),
+                              s->obj_base[victim]);
+            }
+            odyssey_object_forget(s, victim);
         }
-        if (!s->obj_forget_reported) {
-            s->obj_forget_reported = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: the model's %u MiB "
-                          "board-memory store is full; the least recently "
-                          "used object, 0x%x, is forgotten\n",
-                          (unsigned)(ODSY_OBJ_POOL_BYTES / MiB),
-                          s->obj_base[victim]);
-        }
-        odyssey_object_forget(s, victim);
+        odyssey_object_compact(s, have ? i : -1);
     }
     if (have && s->obj_offset[i] + have == s->obj_used &&
         s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) {

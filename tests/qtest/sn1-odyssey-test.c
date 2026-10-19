@@ -9687,6 +9687,31 @@ static void test_object_store_reclaims(void)
 }
 
 /*
+ * Growing an object that is not last in a full store forgets only what the
+ * new size needs. Two 3000-row objects fill most of the store; growing the
+ * first to 4000 rows fits beside the second once the store is packed with
+ * the first last, so the second survives and the first keeps its rows.
+ * Before, each round packed the store and then forgot the second anyway.
+ */
+static void test_object_store_grows_without_forgetting(void)
+{
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    dma_object_texel(qts, 0x200000, 256, 5, 2999, 0x11111111);
+    dma_object_texel(qts, 0x300000, 256, 6, 2999, 0x22222222);
+    dma_object_texel(qts, 0x200000, 256, 7, 3999, 0x33333333);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 5, 2999), ==,
+                    0x11111111);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 7, 3999), ==,
+                    0x33333333);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x300000, 6, 2999), ==,
+                    0x22222222);
+    board_quit(qts);
+}
+
+/*
  * The textured draw after an upload (phase H's words): the state words are
  * accepted, the draw lands inside the probe window after 0x90008116, not at
  * the screen origin the upload's override named, and -- until the shared
@@ -19354,6 +19379,8 @@ int main(int argc, char **argv)
              test_burst_texture_12bit_sources);
     add_fresh_case("sn1/odyssey/object-store-reclaims",
                    test_object_store_reclaims);
+    add_fresh_case("sn1/odyssey/object-store-grows-without-forgetting",
+                   test_object_store_grows_without_forgetting);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",
