@@ -7321,6 +7321,60 @@ static void test_command_fifo_gl_colour_material(void)
 }
 
 /*
+ * The integer colour words: glColor4ub as pointblank sends it, and one each
+ * of the three-component unsigned short and four-component signed byte
+ * forms, all with the component type in the word's low six bits and one raw
+ * component a word. Under the unlit record each draws light.c's triangle in
+ * its colour. Under light.c's lit record with colour material on the front
+ * diffuse (0x35 value 2), glColor4ub's colour must reach the lighting: the
+ * pastel red lights where the material's (1, 0.5, 0.25) would.
+ */
+static void test_command_fifo_gl_integer_colour(void)
+{
+    static const uint32_t list[] = { 0x481, 0x203, 0x4ca, 0x4c5 };
+    static const struct {
+        uint32_t word, op[4];
+        uint32_t pixel;
+    } colours[] = {
+        { 0xc580d00f, { 0x33, 0x66, 0x99, 0xff }, 0x336699ffu },
+        { 0xc580cc09, { 0xffff, 0x8000, 0 }, 0xff8000ffu },
+        { 0xc580d012, { 0x7f, 0xffffff80, 0, 0x7f }, 0xff0001ffu },
+    };
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+    uint32_t tri[ARRAY_SIZE(odsy_lit_triangle) + 1];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(colours); i++) {
+        unsigned n = (colours[i].word >> 10) & 0xf;
+
+        push_program(qts, 0, 0x0d6, 0x0e0, 0x0ea);
+        user_cmd_push(qts, colours[i].word);
+        push_user_words(qts, colours[i].op, n);
+        /* light.c's triangle without its glColor3f. */
+        push_user_words(qts, odsy_lit_triangle + 4,
+                        ARRAY_SIZE(odsy_lit_triangle) - 4);
+        g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, colours[i].pixel);
+    }
+
+    push_constants(qts, list, ARRAY_SIZE(list));
+    push_program(qts, 0, 0x5cb, 0x5d8, 0x5e5);
+    user_cmd_push(qts, ODSY_PROG(0x35, 0x2));
+    tri[0] = 0xc580d00f;
+    tri[1] = 0xcc;
+    tri[2] = 0x66;
+    tri[3] = 0x66;
+    tri[4] = 0xff;
+    memcpy(&tri[5], odsy_lit_triangle + 4,
+           (ARRAY_SIZE(odsy_lit_triangle) - 4) * sizeof(uint32_t));
+    push_user_words(qts, tri, ARRAY_SIZE(tri));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xcb6565ffu);
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "command FIFO word"));
+}
+
+/*
  * light.c's triangle lit under one normal sent before BEGIN, given as a
  * command word and its three operands, or under the current normal when
  * normal is NULL; returns the pixel inside it.
@@ -19788,6 +19842,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_records_lit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-material",
                    test_command_fifo_gl_colour_material);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-integer-colour",
+                   test_command_fifo_gl_integer_colour);
     add_fresh_case("sn1/odyssey/command-fifo-gl-integer-normals",
                    test_command_fifo_gl_integer_normals);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-unlit",
