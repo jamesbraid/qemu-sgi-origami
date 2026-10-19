@@ -7498,6 +7498,89 @@ static void test_command_fifo_gl_program_list_lit_positional(void)
 }
 
 /*
+ * The positional setup above, light 1 reaching every vertex, so a vertex's
+ * colour depends on where it is: attenuation and L = P - eye both follow it.
+ */
+static QTestState *lit_positional_start(char **log_path)
+{
+    QTestState *qts = lit_start(log_path);
+
+    push_user_words(qts, odsy_light2_data, ARRAY_SIZE(odsy_light2_data));
+    push_user_words(qts, odsy_light2_light1_wide,
+                     ARRAY_SIZE(odsy_light2_light1_wide));
+    push_constants(qts, odsy_light2_list, ARRAY_SIZE(odsy_light2_list));
+    push_program(qts, 1, 0x290, 0x4c5, 0x4c5);
+    return qts;
+}
+
+/*
+ * Window pixels inside the triangle (-1, -1) (1, -1) (-1, 1), which covers
+ * the lower-left half of the probe's window, away from its edges.
+ */
+static const unsigned odsy_lower_left_pixels[][2] = {
+    { 270, 370 }, { 300, 340 }, { 330, 370 }, { 270, 320 },
+};
+
+/*
+ * Draw that triangle smooth under a +z normal, its three vertices given as
+ * the word and operands in v (four words each, or three when stride is 3),
+ * and read back odsy_lower_left_pixels.
+ */
+static void lit_lower_left(QTestState *qts, const uint32_t *v,
+                           unsigned stride, uint32_t out[4])
+{
+    static const uint32_t head[] = {
+        ODSY_GL_COLOR_3F, 0x3f800000, 0, 0,
+        ODSY_REG_GL_MODE, ODSY_GL_MODE_SMOOTH,
+        ODSY_GL_NORMAL_3F, 0, 0, 0x3f800000,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+    };
+
+    push_user_words(qts, head, ARRAY_SIZE(head));
+    push_user_words(qts, v, 3 * stride);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    for (unsigned i = 0; i < ARRAY_SIZE(odsy_lower_left_pixels); i++) {
+        out[i] = odsy_test_pixel(qts, odsy_lower_left_pixels[i][0],
+                                 odsy_lower_left_pixels[i][1]);
+    }
+}
+
+/*
+ * A lit integer 3D vertex lights where it is drawn: glVertex3i's triangle
+ * under the positional light takes exactly the colours of the same
+ * triangle sent as floats. Read as float bits, -1 would be a NaN and 1 a
+ * denormal, so attenuation and the light direction would come out wrong.
+ * The first two sampled pixels differ, so the position matters here.
+ */
+static void test_command_fifo_gl_vertex_3i_lit(void)
+{
+    static const uint32_t ints[] = {
+        0x8080cc02, (uint32_t)-1, (uint32_t)-1, 0,
+        0x8080cc02, 1, (uint32_t)-1, 0,
+        0x8080cc02, (uint32_t)-1, 1, 0,
+    };
+    static const uint32_t floats[] = {
+        ODSY_GL_VERTEX_3F, 0xbf800000, 0xbf800000, 0,
+        ODSY_GL_VERTEX_3F, 0x3f800000, 0xbf800000, 0,
+        ODSY_GL_VERTEX_3F, 0xbf800000, 0x3f800000, 0,
+    };
+    uint32_t want[4], got[4];
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_positional_start(&log_path);
+
+    lit_lower_left(qts, floats, 4, want);
+    g_assert_cmphex(want[0], !=, want[1]);
+    lit_lower_left(qts, ints, 4, got);
+    for (unsigned i = 0; i < ARRAY_SIZE(got); i++) {
+        g_assert_cmphex(got[i], ==, want[i]);
+    }
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "geometry program"));
+}
+
+/*
  * Lighting takes its eye position from the model-view (slot 0x24), which no
  * longer moves the geometry. The positional setup above under a model-view
  * translating by (1, 1, 2): the triangle stays where the combined matrix
@@ -18343,6 +18426,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_list_lit_local_viewer);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit-positional",
                    test_command_fifo_gl_program_list_lit_positional);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-vertex-3i-lit",
+                   test_command_fifo_gl_vertex_3i_lit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-lighting-uses-modelview",
                    test_command_fifo_gl_lighting_uses_modelview);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-two-sided",

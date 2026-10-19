@@ -178,6 +178,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-program-record-unlit
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit-local-viewer
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit-positional
+gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i-lit
 gl /mips64/sn1/odyssey/command-fifo-gl-lighting-uses-modelview
 gl /mips64/sn1/odyssey/command-fifo-gl-program-two-sided
 gl /mips64/sn1/odyssey/command-fifo-gl-program-texgen
