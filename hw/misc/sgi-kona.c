@@ -518,6 +518,13 @@ static void sgi_kona_bitmap_reset(SGIKonaState *s)
     s->bitmap_payload_expected = 0;
 }
 
+/* Empty a saved slot, freeing the buffers it owns. */
+static void sgi_kona_saved_input_clear(SGIKonaSavedInput *v)
+{
+    g_free(v->bitmap_payload);
+    memset(v, 0, sizeof(*v));
+}
+
 /*
  * Unpack the completed payload into a rectangle anchored on the
  * textport's own raster position, one bit per pixel, MSB-first,
@@ -1208,7 +1215,9 @@ static void sgi_kona_contexts_clear(SGIKonaState *s)
     }
     memset(s->contexts, 0, sizeof(s->contexts));
     memset(s->pending_swaps, 0, sizeof(s->pending_swaps));
-    memset(s->saved_input, 0, sizeof(s->saved_input));
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        sgi_kona_saved_input_clear(&s->saved_input[i]);
+    }
     s->context_count = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
@@ -1344,7 +1353,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
             return;
         }
         /* A context started afresh has no command of its own left open. */
-        memset(&s->saved_input[slot], 0, sizeof(s->saved_input[slot]));
+        sgi_kona_saved_input_clear(&s->saved_input[slot]);
         /* Rendering and return writes are synchronous under the big lock. */
         sgi_kona_renderer_stop(s);
         sgi_kona_state_free(s->state[slot]);
@@ -11033,8 +11042,8 @@ static bool sgi_kona_user_command_open(SGIKonaState *s)
 
 /*
  * Drop a suspended user command whose context is no longer current and
- * which sgi_kona_input_save() cannot keep: a GL data run, an X pixel write
- * or a textport bitmap. The pipe keeps an open command with its context
+ * which sgi_kona_input_save() cannot keep: a GL data run or an X pixel
+ * write. The pipe keeps an open command with its context
  * and resumes it on restore (inferred); the model cannot copy these, so a
  * word of another context ends it, logged. The cost: when the dropped
  * context is restored its remaining words arrive with no command open and
@@ -11083,15 +11092,15 @@ static void sgi_kona_user_command_drop(SGIKonaState *s)
 
 /*
  * Whether the open user command is one the model can keep with its
- * context: the framers' partial packets and the plain counted runs. A GL
- * data run, an X pixel write or a textport bitmap holds host buffers the
- * model does not copy, so one of those still ends at a switch.
+ * context: the framers' partial packets, the plain counted runs and a
+ * textport bitmap. A GL data run or an X pixel write holds host buffers
+ * the model does not move, so one of those still ends at a switch.
  */
 static bool sgi_kona_input_savable(SGIKonaState *s)
 {
-    return !s->gl_data_remaining && !s->x_pixel_remaining &&
-           s->bitmap_state == SGI_KONA_BITMAP_IDLE;
+    return !s->gl_data_remaining && !s->x_pixel_remaining;
 }
+
 
 static void sgi_kona_port_save(SGIKonaSavedPort *d, const SGICommandPort *p)
 {
@@ -11163,6 +11172,17 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->x_stipple_store_width = s->x_stipple_store_width;
     v->x_stipple_store_height = s->x_stipple_store_height;
     v->x_stipple_store_remaining = s->x_stipple_store_remaining;
+    /* The bitmap's payload buffer moves with it rather than being copied. */
+    v->bitmap_state = s->bitmap_state;
+    memcpy(v->bitmap_header, s->bitmap_header, sizeof(v->bitmap_header));
+    v->bitmap_header_have = s->bitmap_header_have;
+    v->bitmap_width = s->bitmap_width;
+    v->bitmap_height = s->bitmap_height;
+    v->bitmap_payload = s->bitmap_payload;
+    v->bitmap_payload_have = s->bitmap_payload_have;
+    v->bitmap_payload_expected = s->bitmap_payload_expected;
+    s->bitmap_payload = NULL;
+    sgi_kona_bitmap_reset(s);
 
     sgi_command_port_reset(&s->textport);
     sgi_command_port_reset(&s->gl_port);
@@ -11220,7 +11240,17 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
     s->x_stipple_store_width = v->x_stipple_store_width;
     s->x_stipple_store_height = v->x_stipple_store_height;
     s->x_stipple_store_remaining = v->x_stipple_store_remaining;
-    memset(v, 0, sizeof(*v));
+    sgi_kona_bitmap_reset(s);
+    s->bitmap_state = v->bitmap_state;
+    memcpy(s->bitmap_header, v->bitmap_header, sizeof(s->bitmap_header));
+    s->bitmap_header_have = v->bitmap_header_have;
+    s->bitmap_width = v->bitmap_width;
+    s->bitmap_height = v->bitmap_height;
+    s->bitmap_payload = v->bitmap_payload;
+    s->bitmap_payload_have = v->bitmap_payload_have;
+    s->bitmap_payload_expected = v->bitmap_payload_expected;
+    v->bitmap_payload = NULL;
+    sgi_kona_saved_input_clear(v);
     trace_sgi_kona_input_restore(owner);
 }
 
@@ -13782,8 +13812,8 @@ static const VMStateDescription vmstate_sgi_kona_saved_port = {
 
 static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .name = TYPE_SGI_KONA "/saved-input-entry",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(valid, SGIKonaSavedInput),
         VMSTATE_STRUCT(textport, SGIKonaSavedInput, 1,
@@ -13824,6 +13854,17 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
         VMSTATE_UINT32(x_stipple_store_width, SGIKonaSavedInput),
         VMSTATE_UINT32(x_stipple_store_height, SGIKonaSavedInput),
         VMSTATE_UINT32(x_stipple_store_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(bitmap_state, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(bitmap_header, SGIKonaSavedInput,
+                             SGI_KONA_BITMAP_HEADER_WORDS),
+        VMSTATE_UINT32(bitmap_header_have, SGIKonaSavedInput),
+        VMSTATE_UINT32(bitmap_width, SGIKonaSavedInput),
+        VMSTATE_UINT32(bitmap_height, SGIKonaSavedInput),
+        VMSTATE_UINT32(bitmap_payload_have, SGIKonaSavedInput),
+        VMSTATE_UINT32(bitmap_payload_expected, SGIKonaSavedInput),
+        VMSTATE_VARRAY_UINT32_ALLOC(bitmap_payload, SGIKonaSavedInput,
+                                   bitmap_payload_expected, 0,
+                                   vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -13864,6 +13905,35 @@ static bool sgi_kona_saved_port_valid(const SGIKonaSavedPort *p,
 }
 
 /*
+ * A saved textport bitmap as the live framer leaves one: idle and empty,
+ * collecting its six header words, or collecting the payload the header
+ * sized, which the model bounds and which arrived with the slot.
+ */
+static bool sgi_kona_saved_bitmap_valid(const SGIKonaSavedInput *v)
+{
+    uint64_t expected = DIV_ROUND_UP((uint64_t)v->bitmap_header[0] *
+                                     v->bitmap_header[1], 32);
+
+    switch (v->bitmap_state) {
+    case SGI_KONA_BITMAP_IDLE:
+        return !v->bitmap_header_have && !v->bitmap_payload_expected &&
+               !v->bitmap_payload_have;
+    case SGI_KONA_BITMAP_HEADER:
+        return v->bitmap_header_have < SGI_KONA_BITMAP_HEADER_WORDS &&
+               !v->bitmap_payload_expected && !v->bitmap_payload_have;
+    case SGI_KONA_BITMAP_PAYLOAD:
+        return v->bitmap_header_have == SGI_KONA_BITMAP_HEADER_WORDS &&
+               v->bitmap_width == v->bitmap_header[0] &&
+               v->bitmap_height == v->bitmap_header[1] &&
+               expected && expected <= SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS &&
+               v->bitmap_payload_expected == expected &&
+               v->bitmap_payload_have < expected && v->bitmap_payload;
+    default:
+        return false;
+    }
+}
+
+/*
  * A saved command must be one the live input could have held. Each check
  * is the live field's own, from sgi_kona_post_load_validate(), the DMA
  * engine's post_load and the contexts' post_load: framers by their
@@ -13882,6 +13952,11 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
                              2 * SGI_KONA_LIST_CALLS_POOL_MAX;
 
         if (!v->valid) {
+            /* An empty slot owns no buffer. */
+            if (v->bitmap_state != SGI_KONA_BITMAP_IDLE ||
+                v->bitmap_payload_expected) {
+                return -EINVAL;
+            }
             continue;
         }
         if (i == SGI_KONA_CONTEXT_TRANSIENT ?
@@ -13932,7 +14007,8 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
             v->color_map_count - v->color_map_remaining ||
             v->gl_tex_table_remaining > SGI_KONA_GL_TEX_TABLE_WORDS ||
             v->x_stipple_store_height > SGI_KONA_X_STIPPLE_MAX ||
-            v->x_stipple_store_remaining > v->x_stipple_store_height) {
+            v->x_stipple_store_remaining > v->x_stipple_store_height ||
+            !sgi_kona_saved_bitmap_valid(v)) {
             return -EINVAL;
         }
     }
@@ -13941,8 +14017,8 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_saved_input = {
     .name = TYPE_SGI_KONA "/saved-input",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = sgi_kona_saved_input_needed,
     .post_load = sgi_kona_saved_input_post_load,
     .fields = (const VMStateField[]) {
