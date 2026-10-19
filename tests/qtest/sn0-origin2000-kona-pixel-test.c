@@ -1474,6 +1474,37 @@ static void test_read_reply_order(void)
     g_assert_true(payload < ready);
 }
 
+/*
+ * The frame-buffer word read answers with bits 15:0 zero, so an alpha the
+ * X server asks for comes back 0; the model says so once.
+ */
+static void test_read_fb_word_low_bits_reported(void)
+{
+    static const uint32_t gc[13] = {
+        0, 0, 0, 0, 0xffffff, 0xffffff, 0x1008, 0x68001, 1, 6, 0xa, 1, 1,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    const char *message = "frame-buffer word read answered with bits 15:0";
+    const char *first;
+
+    read_activate(s, READ_SAVE, READ_PAGE);
+    read_gc(s);
+    read_write_pattern(s, 454, 700, 4, 2);
+    x_command(s, TOKEN_GC, gc, 13);
+    x_command(s, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 2, 0 }, 7);
+    for (unsigned k = 0; k < 2; k++) {
+        read_prepare(s, READ_PAGE);
+        x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+        g_assert_cmphex(read_guest_word(s, READ_PAGE), ==, 1);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    first = strstr(found, message);
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + 1, message));
+}
+
 static void test_read_payload_failure(void)
 {
     const uint64_t page = 64 * 1024 * 1024 - 8;
@@ -3587,6 +3618,9 @@ int main(int argc, char **argv)
                    test_read_indexed_rows);
     qtest_add_func("sn0/origin2000/kona-pixel/read-fb-word",
                    test_read_fb_word);
+    qtest_add_func("sn0/origin2000/kona-pixel/"
+                   "read-fb-word-low-bits-reported",
+                   test_read_fb_word_low_bits_reported);
     qtest_add_func("sn0/origin2000/kona-pixel/weave", test_weave);
     qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/rows",
                         GUINT_TO_POINTER(0), test_read_index12);

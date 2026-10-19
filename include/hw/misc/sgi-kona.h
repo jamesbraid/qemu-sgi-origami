@@ -1414,6 +1414,8 @@ struct SGIKonaState {
     bool desktop_id_reported;
     /* Host state: an overlapping packed index was read as a short. */
     bool packed_index_short_reported;
+    /* Host state: a frame-buffer word read was answered with zero low bits. */
+    bool fb_word_low_bits_reported;
     /*
      * Not migrated: counts changes to the display-ID plane, so a window
      * cut to its display ID is cut again before its next command.
