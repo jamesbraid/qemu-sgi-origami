@@ -2737,6 +2737,119 @@ static void test_rad_input_clock(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+static void octane_rad_aes_subcode_program(QTestState *qts, uint64_t base,
+                                           uint32_t ctrl)
+{
+    qtest_writel(qts, RAD_BAR0 + 0x4e0, base);
+    qtest_writel(qts, RAD_BAR0 + 0x518, base >> 32);
+    qtest_writel(qts, RAD_BAR0 + 0x4e4, ctrl);
+    qtest_writel(qts, RAD_BAR0 + 0x448, base);
+    qtest_writel(qts, RAD_BAR0 + 0x44c, base >> 32);
+    qtest_writel(qts, RAD_BAR0 + 0x450, ctrl);
+}
+
+/*
+ * audiostate asks for the AES3 input's channel status: IRIX starts the
+ * AES3-input subcode channel alone and sleeps until its status servicer
+ * has unpacked a 256-byte record. With no AES3 source connected the
+ * channel delivers empty records, one per 192-frame block at 48 kHz.
+ */
+static void test_rad_aes_subcode(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    const uint64_t buffer = RAM + 0x8000;
+    const uint64_t ring = RAM + 0xa000;
+    int fd = g_file_open_tmp("octane-rad-subcode-XXXXXX", &log_path, NULL);
+    uint8_t memory[0x1000];
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = octane_start_args(extra);
+    qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_memset(qts, ring, 0xa5, sizeof(memory));
+
+    /* Without the subcode tag the sets name no subcode ring. */
+    octane_rad_aes_subcode_program(qts, 0xa000a000, 0xfffff000);
+    qtest_writel(qts, RAD_BAR0 + 0x48, 0x14);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0);
+
+    /* The logged IRIX ring: tag 6, 4 KiB, sixteen records. */
+    octane_rad_aes_subcode_program(qts, 0xa000a000, 0xfffff030);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4e4), ==, 0xfffff030);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x450), ==, 0xfffff030);
+    /* The AES3 audio input itself stays unsupported. */
+    qtest_writel(qts, RAD_BAR0 + 0x48, 0x15);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x48, 0x14);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0x14);
+    qtest_clock_step(qts, 3999999);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x10), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x10), ==, 1u << 4);
+    qtest_memread(qts, ring, memory, sizeof(memory));
+    for (unsigned i = 0; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, i < 0x100 ? 0 : 0xa5);
+    }
+
+    /* A running ring cannot be reprogrammed. */
+    qtest_writel(qts, RAD_BAR0 + 0x448, 0xa000b000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x448), ==, 0xa000a000);
+
+    qtest_clock_step(qts, 76000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x10), ==, 20u << 4);
+    qtest_memread(qts, ring, memory, sizeof(memory));
+    for (unsigned i = 0; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0);
+    }
+    octane_rad_status_program(qts, 0xa0008000, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x20), ==,
+                    0xa000a000 + 20 * 0x100 % 0x1000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x50), ==, 20u << 4);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x7c), ==, 0x80080000);
+
+    /* Clearing bit 2 stops the records and keeps the other bits. */
+    qtest_writel(qts, RAD_BAR0 + 0x48, 0x10);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0x10);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x10), ==, 20u << 4);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(qtest_get_irq(qts, i));
+    }
+
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4e0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x450), ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x48 "
+                                 "value 0x14"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x48 "
+                                 "value 0x15"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x448 "
+                                 "value 0xa000b000"));
+    g_assert_null(strstr(log, "at 0x518"));
+    g_assert_null(strstr(log, "at 0x4e4"));
+    g_assert_null(strstr(log, "at 0x450"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_rad_status_continuous(void)
 {
     QTestState *qts = octane_start();
@@ -2835,8 +2948,8 @@ static void test_rad_startup_unsupported(void)
     const unsigned enables[] = { 0x44, 0x48, 0x4c, 0x50, 0x54 };
     const unsigned holes[] = { 0x1078, 0x107c, 0x10f8, 0x10fc, 0x1220 };
     const unsigned descriptors[] = {
-        0x4c4, 0x4cc, 0x4dc, 0x4e4, 0x4ec, 0x4f4,
-        0x508, 0x50c, 0x514, 0x518, 0x51c, 0x520,
+        0x4c4, 0x4cc, 0x4dc, 0x4ec, 0x4f4,
+        0x508, 0x50c, 0x514, 0x51c, 0x520,
     };
     uint8_t memory[0x100];
 
@@ -4822,6 +4935,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-status-routes", test_rad_status_routes);
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
+    qtest_add_func("/octane/rad-aes-subcode", test_rad_aes_subcode);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);
     qtest_add_func("/octane/rad-status-overrun", test_rad_status_overrun);
     qtest_add_func("/octane/rad-transfer-migration",
