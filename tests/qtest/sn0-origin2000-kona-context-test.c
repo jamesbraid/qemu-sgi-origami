@@ -452,8 +452,9 @@ static void test_make_current_stream_framed(void)
     g_assert_nonnull(strstr(found, "token 0x17e args 0x1 0x0 0x0 argc 1\n"));
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_gl_tex_table "), ==,
                      2);
-    g_assert_cmpuint(count_occurrences(found, "token 0x17e argc 34 consumed"),
-                     ==, 2);
+    /* Both tables are kept; the commands after them show their framing. */
+    g_assert_cmpuint(count_occurrences(found, "invalid texture filter table"),
+                     ==, 0);
     g_assert_nonnull(strstr(found, "token 0xee args 0xee000000 0x0 0x0"
                                    " argc 1\n"));
     g_assert_nonnull(strstr(found, "token 0x1ce args 0xce000000 0x0 0x0"

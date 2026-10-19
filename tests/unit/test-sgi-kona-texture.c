@@ -866,11 +866,13 @@ static void test_filter_curves(void)
     g_assert_cmpfloat(sgi_kona_texture_curve(&s, 0)[0], ==, -1);
     g_assert_cmpfloat(sgi_kona_texture_curve(&s, 4095)[0], ==, 1);
     g_assert_cmpuint(s.bytes, ==, bytes);
+    /* A table that is not a spline still replaces the slot. */
     words[31] = 0x100;
-    g_assert_false(sgi_kona_texture_curve_upload(&s, 0, words));
     g_assert_false(sgi_kona_texture_curve_upload(&s, 4096, words));
-    g_assert_false(sgi_kona_texture_curve_upload(&s, 0, NULL));
     g_assert_cmpfloat(sgi_kona_texture_curve(&s, 0)[0], ==, -1);
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 0, words));
+    g_assert_null(sgi_kona_texture_curve(&s, 0));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&s, 4095)[0], ==, 1);
     g_assert_cmpuint(s.bytes, ==, bytes);
     sgi_kona_texture_reset(&s);
     g_assert_null(sgi_kona_texture_curve(&s, 0));
@@ -2419,9 +2421,10 @@ static void test_filter_curve_migration(void)
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
     bytes = dst.bytes;
     /* Header16, count4, slot4; each subsequent entry has 32 packed words. */
+    /* Words that are not a spline are slot state and arrive without one. */
     stl_be_p(a->data + 28, 0x100);
-    g_assert_false(load(a, &dst));
-    g_assert_cmpfloat(sgi_kona_texture_curve(&dst, 13)[3], ==, -4);
+    g_assert_true(load(a, &dst));
+    g_assert_null(sgi_kona_texture_curve(&dst, 13));
     g_assert_cmpuint(dst.bytes, ==, bytes);
     g_byte_array_unref(a);
     a = save(&src);
