@@ -360,6 +360,15 @@ typedef struct SGIMgrasGLPixels {
 #define SGI_MGRAS_TRAM_BLOCK_BYTES (16 * 1024)
 #define SGI_MGRAS_TRAM_BYTES \
     (SGI_MGRAS_TRAM_BLOCKS * SGI_MGRAS_TRAM_BLOCK_BYTES)
+/*
+ * The model's TRAM image: one TRAM's bytes for each of the four TRAM
+ * selects a one- or two-component texture can name (hw/misc/
+ * sgi-mgras-texture.c, "Storage"). Select 0's image is TRAM as the save
+ * and restore see it.
+ */
+#define SGI_MGRAS_TRAM_SELECTS 4
+#define SGI_MGRAS_TRAM_IMAGE_BYTES \
+    (SGI_MGRAS_TRAM_SELECTS * SGI_MGRAS_TRAM_BYTES)
 
 /*
  * One level of a draw as the sampler reads it out of TRAM: the bit its
@@ -827,7 +836,7 @@ struct SGIMgrasState {
      * register pairs carry outside any GL context.
      */
     uint8_t *tram;
-    uint32_t tram_written[SGI_MGRAS_TRAM_BLOCKS / 32];
+    uint32_t tram_written[SGI_MGRAS_TRAM_SELECTS * SGI_MGRAS_TRAM_BLOCKS / 32];
     uint32_t tram_transfer;
     uint32_t tram_rows, tram_words, tram_first_row;
     uint32_t tram_read_block, tram_load_block;

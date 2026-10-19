@@ -101,6 +101,23 @@
  *   what keeps a context's texels across another context's loads, and
  *   the client's own save and restore what keeps a texture its own
  *   manager evicted.
+ *   TRAM select. On a four-TRAM board the client gives every one- and
+ *   two-component texture a TRAM select, sent in TL_MODE bits 4:3 on its
+ *   loads and TEXMODE1 bits 8:7 on its draws, and places up to four such
+ *   textures at the same blocks, told apart only by it (established from
+ *   the client; perfly's town database loads two 32-by-32 levels at
+ *   TXMIPMAP word 0x1fe with selects 0 and 3). For RGB and RGBA the bits
+ *   carry an undefined value and are ignored (inferred: the stock client
+ *   would otherwise draw at random). The model keys a one- or
+ *   two-component level by its select as well as its block: each select
+ *   has its own TRAM-sized image in the model's own layout, so levels
+ *   sharing a block under different selects never overlap, and levels
+ *   under one select overlap exactly as before. Approximated, the model's
+ *   choice: which TRAM or lane each select names on the board is
+ *   unknown, and so is how far the textures of different selects share
+ *   capacity, so the model gives each select a whole TRAM's room. The
+ *   kernel's TRAM save and restore move select 0's image only, so a level
+ *   under another select is not carried by them.
  *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
  *   keeps one TRAM for both, approximated: each path holding the full
  *   texture is inferred, so a load, a base write and a draw reach the
@@ -151,7 +168,9 @@
  * read (TEXMODE2 bit 4 and TL_MODE bit 8), the border texels of a
  * bordered image (see "Load"), detail,
  * the texture colour table, one-dimensional and volume textures,
- * texture-select groups and two-component GL_ABGR_EXT loads.
+ * SGIS_texture_select's dual and quad groups (their draws name a
+ * select no load used, so they find no level) and two-component
+ * GL_ABGR_EXT loads.
  *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
@@ -482,7 +501,7 @@ enum {
  * bits. Bound the migration array by all TRAM bits and cache slots.
  */
 #define MGRAS_TEX_BORDER_WORDS_MAX \
-    ((uint64_t)SGI_MGRAS_TRAM_BYTES * 4 + \
+    ((uint64_t)SGI_MGRAS_TRAM_IMAGE_BYTES * 4 + \
      (uint64_t)SGI_MGRAS_TEX_BORDER_CACHES * 6)
 
 /* Parser payload slots a 0x7c08 block keeps its place in. */
@@ -621,9 +640,21 @@ static void mgras_tram_mark(SGIMgrasState *s, uint64_t bit, uint64_t bits)
 }
 
 /*
+ * The TRAM select of a level of the kept format mode, in TL_MODE's
+ * fields: bits 4:3 for a one- or two-component layout, 0 for RGB and
+ * RGBA, whose select bits the client leaves undefined (see "Storage").
+ */
+static uint32_t mgras_tex_select(uint32_t mode)
+{
+    return MGRAS_TEX_LAYOUT(mode) <= MGRAS_TEX_LAYOUT_LA ?
+           (mode >> 3) & 3 : 0;
+}
+
+/*
  * Where a level of the kept format mode, 1 << log2w by 1 << log2h, starts
- * in TRAM, in bits, under base and TXMIPMAP word: false, with nothing
- * set, when it would run past TRAM's end.
+ * in the TRAM image, in bits, under base and TXMIPMAP word, in the image
+ * of its TRAM select: false, with nothing set, when it would run past
+ * that image's end.
  */
 static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
                              uint32_t log2h, uint32_t mode, uint64_t *bit)
@@ -631,6 +662,8 @@ static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
     uint64_t bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w) << log2h;
     uint64_t block = (uint64_t)(base & 0xff) + (word & 0xff);
     uint64_t start = block * MGRAS_TRAM_BLOCK_BITS;
+    uint64_t image = (uint64_t)mgras_tex_select(mode) *
+                     SGI_MGRAS_TRAM_BYTES * 8;
 
     if (bits <= MGRAS_TRAM_BLOCK_BITS / 2) {
         start += MGRAS_TRAM_BLOCK_BITS - 2 * bits;
@@ -638,7 +671,7 @@ static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
     if (start + bits > (uint64_t)SGI_MGRAS_TRAM_BYTES * 8) {
         return false;
     }
-    *bit = start;
+    *bit = image + start;
     return true;
 }
 
@@ -1403,7 +1436,7 @@ bool sgi_mgras_texture_transfer_valid(const SGIMgrasState *s)
 void sgi_mgras_texture_board_reset(SGIMgrasState *s)
 {
     if (s->tram) {
-        memset(s->tram, 0, SGI_MGRAS_TRAM_BYTES);
+        memset(s->tram, 0, SGI_MGRAS_TRAM_IMAGE_BYTES);
     }
     memset(s->tram_written, 0, sizeof(s->tram_written));
     for (uint32_t i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
@@ -2724,8 +2757,13 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     uint32_t cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
     uint32_t layout = MGRAS_TEXMODE1_LAYOUT(t->texmode1);
     uint32_t depth = (t->texmode2 >> 2) & 3;
-    /* The kept format the draw names, in TL_MODE's fields. */
-    uint32_t mode = layout << 1 | depth << 5;
+    /*
+     * The kept format the draw names, in TL_MODE's fields, with the TRAM
+     * select of TEXMODE1 bits 8:7 for a one- or two-component layout.
+     */
+    uint32_t mode = layout << 1 | depth << 5 |
+                    (layout <= MGRAS_TEX_LAYOUT_LA ?
+                     ((t->texmode1 & MGRAS_TEXMODE1_SELECT) >> 7) << 3 : 0);
     uint32_t mip = t->texmode2 & MGRAS_TEXMODE2_MIP;
     bool pixel_endpoint = mgras_tex_captured_pixel_endpoint(t);
     bool ordinary_volume = mgras_tex_captured_ordinary_volume(t,
@@ -2758,7 +2796,6 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
          (t->txsize & 0xffff) != (size << 8 | size)) ||
         (!volume && depth_size != 1) || depth_size > 64 ||
         depth > MGRAS_TEX_DEPTH_12 ||
-        (t->texmode1 & MGRAS_TEXMODE1_SELECT) ||
         (color_table_mode && color_table_mode != MGRAS_TEX_COLOR_TABLE_MODE) ||
         !mgras_tex_environment(s, cls) ||
         !mgras_tex_format(layout, cls, &format) ||
@@ -2893,9 +2930,10 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
             count != mgras_tex_border_pixels(t->border_width[i],
                                               t->border_height[i]) ||
             !t->border_bits[i] ||
-            t->border_start[i] > (uint64_t)SGI_MGRAS_TRAM_BYTES * 8 ||
+            t->border_start[i] > (uint64_t)SGI_MGRAS_TRAM_IMAGE_BYTES * 8 ||
             t->border_bits[i] >
-                (uint64_t)SGI_MGRAS_TRAM_BYTES * 8 - t->border_start[i] ||
+                (uint64_t)SGI_MGRAS_TRAM_IMAGE_BYTES * 8 -
+                t->border_start[i] ||
             (uint64_t)t->border_offset[i] + count > t->border_words) {
             return false;
         }
@@ -3229,14 +3267,15 @@ static bool mgras_tram_needed(void *opaque)
 
 const VMStateDescription vmstate_sgi_mgras_tram = {
     .name = TYPE_SGI_MGRAS "/tram",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = mgras_tram_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(tram_written, SGIMgrasState,
+                             SGI_MGRAS_TRAM_SELECTS *
                              SGI_MGRAS_TRAM_BLOCKS / 32),
         VMSTATE_BUFFER_POINTER_UNSAFE(tram, SGIMgrasState, 0,
-                                      SGI_MGRAS_TRAM_BYTES),
+                                      SGI_MGRAS_TRAM_IMAGE_BYTES),
         VMSTATE_END_OF_LIST()
     }
 };
